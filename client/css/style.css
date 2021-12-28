@@ -1,3 +1,9 @@
 .mytable>tbody>tr>td, .mytable>tbody>tr>th, .mytable>tfoot>tr>td, .mytable>tfoot>tr>th, .mytable>thead>tr>td, .mytable>thead>tr>th {
     padding: 12px;
 }
+
+
+.bootstrap-table.fullscreen {
+
+  background-image: url(images/pattern.png) !important;
+background-color: black !important;}
