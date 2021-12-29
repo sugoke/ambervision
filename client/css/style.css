@@ -7,3 +7,10 @@
 
   background-image: url(images/pattern.png) !important;
 background-color: black !important;}
+
+.heatmap-strong-green { background-color: rgba(0, 255, 0, 0.2) !important; }
+.heatmap-weak-green { background-color: rgba(137, 255, 0, 0.1) !important; }
+.heatmap-strong-orange { background-color: rgba(255, 128, 0, 0.1) !important; }
+.heatmap-weak-orange { background-color: rgba(255, 162, 0, 0.2) !important; }
+.heatmap-strong-red { background-color: rgba(255, 77, 0, 0.1) !important; }
+.heatmap-weak-red { background-color: rgba(255, 0, 0, 0.2) !important; }

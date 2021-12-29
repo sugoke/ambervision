@@ -4,6 +4,9 @@ Router.configure({
 });
 
 
+Router.route('/myunderlyings', function () {
+  this.render('myunderlyings');
+});
 
 
 Router.route('/productdetail', function () {
