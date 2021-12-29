@@ -1,7 +1,7 @@
 <template name="layout">
 
 	<!-- BEGIN #app -->
-	<div id="app" class="app app-sidebar-collapsed app-footer-fixed app-content-full-width">
+	<div id="app" class="app app-sidebar-collapsed app-footer-fixed app-boxed-layout">
 		<!-- BEGIN #header -->
 		<div id="header" class="app-header">
 			<!-- BEGIN desktop-toggler -->
@@ -211,27 +211,33 @@
 				<!-- BEGIN menu -->
 				<div class="menu">
 					<div class="menu-header">Navigation</div>
-					<div class="menu-item active">
-						<a href="/productlist" class="menu-link">
+					<div class="menu-item">
+						<a href="/productdetail" class="menu-link"  data-toggle-class="app-sidebar-mobile-toggled" data-toggle-target=".app">
+							<span class="menu-icon"><i class="bi bi-search"></i></span>
+							<span class="menu-text">Product details</span>
+						</a>
+					</div>
+					<div class="menu-item">
+						<a href="/productlist" class="menu-link"  data-toggle-class="app-sidebar-mobile-toggled" data-toggle-target=".app">
 							<span class="menu-icon"><i class="bi bi-bar-chart"></i></span>
 							<span class="menu-text">My products</span>
 						</a>
 					</div>
 					<div class="menu-item">
-						<a href="/myunderlyings" class="menu-link">
+						<a href="/myunderlyings" class="menu-link" data-toggle-class="app-sidebar-mobile-toggled" data-toggle-target=".app">
 							<span class="menu-icon"><i class="bi bi-list"></i></span>
 							<span class="menu-text">My Underlyings</span>
 						</a>
 					</div>
 					<div class="menu-item">
-						<a href="/calendar" class="menu-link">
+						<a href="/calendar" class="menu-link" data-toggle-class="app-sidebar-mobile-toggled" data-toggle-target=".app">
 							<span class="menu-icon"><i class="bi bi-calendar-check"></i></span>
-							<span class="menu-text">Calendar</span>
+							<span class="menu-text">Events</span>
 						</a>
 					</div>
 					<div class="menu-header">Administrator</div>
 					<div class="menu-item">
-						<a href="widgets.html" class="menu-link">
+						<a href="widgets.html" class="menu-link"  data-toggle-class="app-sidebar-mobile-toggled" data-toggle-target=".app">
 							<span class="menu-icon"><i class="bi bi-columns-gap"></i></span>
 							<span class="menu-text">Add Product</span>
 						</a>
@@ -259,11 +265,10 @@
 		<div id="content" class="app-content">
 
 
-			<div class="container">
 
 				{{>yield}}
 
-			</div>
+
 
 
 

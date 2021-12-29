@@ -16,3 +16,8 @@ Router.route('/productdetail', function () {
 Router.route('/productlist', function () {
   this.render('productlist');
 });
+
+
+Router.route('/calendar', function () {
+  this.render('calendar');
+});

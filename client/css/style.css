@@ -8,9 +8,51 @@
   background-image: url(images/pattern.png) !important;
 background-color: black !important;}
 
-.heatmap-strong-green { background-color: rgba(0, 255, 0, 0.2) !important; }
-.heatmap-weak-green { background-color: rgba(137, 255, 0, 0.1) !important; }
-.heatmap-strong-orange { background-color: rgba(255, 128, 0, 0.1) !important; }
-.heatmap-weak-orange { background-color: rgba(255, 162, 0, 0.2) !important; }
-.heatmap-strong-red { background-color: rgba(255, 77, 0, 0.1) !important; }
-.heatmap-weak-red { background-color: rgba(255, 0, 0, 0.2) !important; }
+
+
+#myDIV {
+  width: 300px;
+  height: 200px;
+  background: red;
+  animation: mymove 1s infinite;
+}
+
+
+
+.heatmap-strong-green {
+
+  animation: mymovedg 6s infinite;
+}
+@keyframes mymovedg {
+  10% {background-color: rgba(0, 255, 0, 0.1);}
+}
+
+.heatmap-weak-green {   animation: mymovedog 6s infinite; }
+
+@keyframes mymovedog {
+  20% {background-color: rgba(137, 255, 0, 0.1);}
+}
+
+.heatmap-strong-orange {   animation: mymovegd 4s infinite; }
+
+@keyframes mymovegd {
+  10% {background-color: rgba(255, 128, 0, 0.1);}
+}
+
+.heatmap-weak-orange {   animation: mymovewo 4s infinite; }
+
+@keyframes mymovewo {
+  20% {background-color: rgba(255, 162, 0, 0.2);}
+}
+
+.heatmap-strong-red {   animation: mymovesr 4s infinite; }
+
+@keyframes mymovesr {
+  10% {background-color: rgba(255, 77, 0, 0.1);}
+}
+
+.heatmap-weak-red {   animation: mymovewr 4s infinite; }
+
+@keyframes mymovewr {
+  20% {background-color: rgba(255, 0, 0, 0.2);}
+}
