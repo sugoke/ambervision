@@ -1,58 +1,86 @@
 .mytable>tbody>tr>td, .mytable>tbody>tr>th, .mytable>tfoot>tr>td, .mytable>tfoot>tr>th, .mytable>thead>tr>td, .mytable>thead>tr>th {
-    padding: 12px;
+  padding: 12px;
 }
-
 
 .bootstrap-table.fullscreen {
-
   background-image: url(images/pattern.png) !important;
-background-color: black !important;}
-
-
-
-#myDIV {
-  width: 300px;
-  height: 200px;
-  background: red;
-  animation: mymove 1s infinite;
+  background-color: black !important;
 }
 
-
+#logo-menu {
+  border-radius: 0px;
+}
 
 .heatmap-strong-green {
-
   animation: mymovedg 6s infinite;
 }
+
 @keyframes mymovedg {
-  10% {background-color: rgba(0, 255, 0, 0.1);}
+  10% {
+    background-color: rgba(0, 255, 0, 0.1);
+  }
 }
 
-.heatmap-weak-green {   animation: mymovedog 6s infinite; }
+.heatmap-weak-green {
+  animation: mymovedog 6s infinite;
+}
 
 @keyframes mymovedog {
-  20% {background-color: rgba(137, 255, 0, 0.1);}
+  20% {
+    background-color: rgba(137, 255, 0, 0.1);
+  }
 }
 
-.heatmap-strong-orange {   animation: mymovegd 4s infinite; }
+.heatmap-strong-orange {
+  animation: mymovegd 4s infinite;
+}
 
 @keyframes mymovegd {
-  10% {background-color: rgba(255, 128, 0, 0.1);}
+  10% {
+    background-color: rgba(255, 128, 0, 0.1);
+  }
 }
 
-.heatmap-weak-orange {   animation: mymovewo 4s infinite; }
+.heatmap-weak-orange {
+  animation: mymovewo 4s infinite;
+}
 
 @keyframes mymovewo {
-  20% {background-color: rgba(255, 162, 0, 0.2);}
+  20% {
+    background-color: rgba(255, 162, 0, 0.2);
+  }
 }
 
-.heatmap-strong-red {   animation: mymovesr 4s infinite; }
+.heatmap-strong-red {
+  animation: mymovesr 4s infinite;
+}
 
 @keyframes mymovesr {
-  10% {background-color: rgba(255, 77, 0, 0.1);}
+  10% {
+    background-color: rgba(255, 77, 0, 0.1);
+  }
 }
 
-.heatmap-weak-red {   animation: mymovewr 4s infinite; }
+.heatmap-weak-red {
+  animation: mymovewr 4s infinite;
+}
 
 @keyframes mymovewr {
-  20% {background-color: rgba(255, 0, 0, 0.2);}
+  20% {
+    background-color: rgba(255, 0, 0, 0.2);
+  }
+}
+
+.pace .pace-progress {
+  background: var(--bs-orange) !important;
+}
+
+.pace .pace-activity {
+  border-color: transparent !important;
+  border-top-color: var(--bs-orange) !important;
+
+  height: 20px !important;
+  top: 20px !important;
+  top: 50%; left: 50%; /* à 50%/50% du parent référent */
+  transform: translate(-50%, -50%); /* décalage de 50% de sa propre taille */
 }
