@@ -81,6 +81,6 @@
 
   height: 20px !important;
   top: 20px !important;
-  top: 50%; left: 50%; /* à 50%/50% du parent référent */
+  left: 30%; /* à 50%/50% du parent référent */
   transform: translate(-50%, -50%); /* décalage de 50% de sa propre taille */
 }

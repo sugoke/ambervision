@@ -4,6 +4,10 @@ Router.configure({
 });
 
 
+Router.route('/', function () {
+  this.render('dashboard');
+});
+
 Router.route('/myunderlyings', function () {
   this.render('myunderlyings');
 });
