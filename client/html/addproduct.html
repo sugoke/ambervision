@@ -1,53 +1,338 @@
 <template name="addproduct">
 
+	<div class="d-flex align-items-center mb-3 shadow">
+		<div>
+			<ul class="breadcrumb">
+				<li class="breadcrumb-item"><a href="#">AMBERVISION</a></li>
+				<li class="breadcrumb-item active">Add product to database</li>
+			</ul>
+			<h1 class="page-header mb-0">Add product</h1>
+		</div>
 
+
+	</div>
 	<!-- basic usage -->
 	<div class="card">
-		<div class="card-header fw-bold small">DESCRIPTION</div>
+		<div class="card-header fw-bold small">Characteristics</div>
 		<div class="card-body">
 
+			<ul class="nav nav-tabs">
+				<li class="nav-item me-1"><a href="#main" class="nav-link active" data-bs-toggle="tab">Main</a></li>
+				<li class="nav-item me-1"><a href="#features" class="nav-link" data-bs-toggle="tab">Features</a></li>
+				<li class="nav-item me-1"><a href="#dates" class="nav-link" data-bs-toggle="tab">Dates</a></li>
+				<li class="nav-item me-1"><a href="#underlyings" class="nav-link" data-bs-toggle="tab">Underlyings</a></li>
 
 
-			<div class="form-group">
-				<label class="form-label" for="productType">Product type </label>
-				<select class="form-select" id="productType" aria-label="Default select example">
-					<option selected>Please Choose</option>
-					<option value="1">Phoenix</option>
-					<option value="2">Daily Fast Trigger</option>
-					<option value="3">Athena</option>
-				</select>
-			</div>
+			</ul>
+			<div class="tab-content pt-3">
+				<!-- Tab Main  -->
+
+				<div class="tab-pane fade show active" id="main">
+
+					<div class="container">
+
+						<div class="row mb-3">
+							<div class="col">
+								<div class="form-group mb-3">
+									<label for="isin_input" class="form-label">ISIN</label>
+									<input type="text" class="form-control" id="isin_input" value="XS123456789">
+								</div>
+							</div>
+
+							<div class="col">
+								<div class="form-group mb-3">
+									<label for="reoffer" class="form-label">Re-offer</label>
+									<input type="text" class="form-control" id="reoffer" value="100%">
+								</div>
+							</div>
 
 
+							<div class="col">
+								<div class="form-group mb-3">
+									<label for="issue_price" class="form-label">Issue price</label>
+									<input type="text" class="form-control" id="issue_price" value="100%">
+								</div>
+							</div>
 
-			<div class="form-group">
-				<label class="form-label" for="productType">Product type </label>
-				<select class="form-select" id="productType" aria-label="Default select example">
-					<option selected>Please Choose</option>
-					<option value="1">Phoenix</option>
-					<option value="2">Daily Fast Trigger</option>
-					<option value="3">Athena</option>
-				</select>
-			</div>
+							<div class="col">
+								<div class="form-group mb-3">
+									<label for="brokerage_fee" class="form-label">Broker fee</label>
+									<input type="text" class="form-control" id="brokerage_fee" value="0%">
+								</div>
+							</div>
 
 
+						</div>
+
+						<div class="row mb-3">
+							<div class="col">
+
+								<label for="producttype" class="form-label">Product type</label>
+								<select class="form-control" id="producttype">
+									<option selected>Please select</option>
+									<option value="1">Reverse Convertible</option>
+									<option value="2">Phoenix</option>
+								</select>
+
+							</div>
+
+							<div class="col">
+
+								<label class="form-label">Duration</label>
+								<div class="input-group mb-3">
+									<input type="text" class="form-control" placeholder="Duration" aria-label="Duration" aria-describedby="basic-addon2">
+									<div class="input-group-append">
+
+										<select class="form-select" id="productType" aria-label="Default select example">
+											<option selected>Unit</option>
+											<option value="1">Months</option>
+											<option value="2">Years</option>
+
+										</select>
 
 
-			<label class="form-label">Duration</label>
-			<div class="input-group mb-3">
-				<input type="text" class="form-control" placeholder="Duration" aria-label="Duration" aria-describedby="basic-addon2">
-				<div class="input-group-append">
+									</div>
+								</div>
 
-					<select class="form-select" id="productType" aria-label="Default select example">
-						<option selected>Unit</option>
-						<option value="1">Months</option>
-						<option value="2">Years</option>
+							</div>
+							<div class="col">
 
-					</select>
+								<label for="producttype" class="form-label">Issuer</label>
+								<select class="form-control" id="producttype">
+									<option selected>Please select</option>
+									<option value="1">BNP Paribas</option>
+									<option value="2">Exane</option>
+									<option value="2">Société Générale</option>
 
+								</select>
+
+
+							</div>
+							<div class="col">
+								<label for="currency_input" class="form-label">Currency</label>
+
+								<select id="currency_input" class="js-example-basic-single form-control">
+									<option value="EUR">EUR</option>
+									<option value="USD">USD</option>
+									<option value="GBP">GBP</option>
+
+								</select>
+							</div>
+						</div>
+
+						<div class="row mb-3">
+
+						</div>
+					</div>
 
 				</div>
+				<div class="tab-pane fade" id="underlyings">...</div>
+
+				<div class="tab-pane fade" id="features">
+
+					<div class="container">
+
+						<div class="row mb-3">
+							<div class="col">
+								<div class="form-group mb-3">
+									<label for="coupon" class="form-label">Coupon</label>
+									<input type="text" class="form-control" id="coupon" value="5.00%">
+								</div>
+							</div>
+
+							<div class="col">
+								<div class="form-group mb-3">
+									<label for="reoffer" class="form-label">Observation Periodicity</label>
+									<select id="frequency_input" class="form-control">
+										<option value="" selected="selected">Please Choose</option>
+										<option value="d">Daily</option>
+										<option value="W">Weekly</option>
+										<option value="M">Monthly</option>
+										<option value="Q">Quarterly</option>
+										<option value="SA">Semi-annually</option>
+										<option value="Y">Annually</option>
+										<option value="at_maturity">Maturity</option>
+									</select>
+								</div>
+							</div>
+
+
+							<div class="col">
+								<div class="form-group mb-3">
+									<label for="coupon_barrier" class="form-label">Coupon barrier</label>
+									<input type="text" class="form-control" id="coupon_barrier" value="60%">
+								</div>
+							</div>
+
+							<div class="col">
+								<div class="form-group mb-3">
+									<label for="protection_barrier" class="form-label">Protection barrier</label>
+									<input type="text" class="form-control" id="protection_barrier" value="60%">
+								</div>
+							</div>
+
+
+						</div>
+
+						<div class="row mb-3">
+							<div class="col">
+
+								<label for="producttype" class="form-label">Product type</label>
+								<div class="form-check form-switch">
+									<input type="checkbox" class="form-check-input" id="customSwitch1">
+									<label class="form-check-label" for="customSwitch1">Memory Coupon</label>
+
+								</div>
+								<div class="form-check form-switch">
+									<input type="checkbox" class="form-check-input" id="customSwitch1">
+									<label class="form-check-label" for="customSwitch1">Memory Autocall</label>
+								</div>
+								<div class="form-check form-switch">
+									<input type="checkbox" class="form-check-input" id="customSwitch1">
+									<label class="form-check-label" for="customSwitch1">Geared Put</label>
+								</div>
+								<div class="form-check form-switch">
+									<input type="checkbox" class="form-check-input" id="customSwitch1">
+									<label class="form-check-label" for="customSwitch1">One Star</label>
+								</div>
+								<div class="form-check form-switch">
+									<input type="checkbox" class="form-check-input" id="customSwitch1">
+									<label class="form-check-label" for="customSwitch1">Step-down</label>
+								</div>
+								<div class="form-check form-switch">
+									<input type="checkbox" class="form-check-input" id="customSwitch1">
+									<label class="form-check-label" for="customSwitch1">Max effect</label>
+								</div>
+
+
+
+							</div>
+
+							<div class="col">
+
+							</div>
+							<div class="col">
+
+							</div>
+							<div class="col">
+							</div>
+						</div>
+
+						<div class="row mb-3">
+
+						</div>
+
+					</div>
+				</div>
+
+
+
+
+				<div class="tab-pane fade" id="dates">
+					<div class="container">
+
+						<div class="container">
+
+							<div class="row mb-3">
+								<div class="col">
+									<div class="form-group mb-3">
+										<label for="reoffer" class="form-label">Launch date</label>
+										<input type="text" class="form-control" id="datepicker" placeholder="dd/mm/yyyy" />
+									</div>
+								</div>
+
+								<div class="col">
+									<div class="form-group mb-3">
+										<label for="reoffer" class="form-label">Payment date</label>
+										<input type="text" class="form-control" id="datepicker" placeholder="dd/mm/yyyy" />
+									</div>
+								</div>
+
+
+								<div class="col">
+									<div class="form-group mb-3">
+										<label for="issue_price" class="form-label">Issue price</label>
+										<input type="text" class="form-control" id="issue_price" value="100%">
+									</div>
+								</div>
+
+								<div class="col">
+									<div class="form-group mb-3">
+										<label for="brokerage_fee" class="form-label">Broker fee</label>
+										<input type="text" class="form-control" id="brokerage_fee" value="0%">
+									</div>
+								</div>
+
+
+							</div>
+
+							<div class="row mb-3">
+								<div class="col">
+
+									<label for="producttype" class="form-label">Product type</label>
+									<select class="form-control" id="producttype">
+										<option selected>Please select</option>
+										<option value="1">Reverse Convertible</option>
+										<option value="2">Phoenix</option>
+									</select>
+
+								</div>
+
+								<div class="col">
+
+									<label class="form-label">Duration</label>
+									<div class="input-group mb-3">
+										<input type="text" class="form-control" placeholder="Duration" aria-label="Duration" aria-describedby="basic-addon2">
+										<div class="input-group-append">
+
+											<select class="form-select" id="productType" aria-label="Default select example">
+												<option selected>Unit</option>
+												<option value="1">Months</option>
+												<option value="2">Years</option>
+
+											</select>
+
+
+										</div>
+									</div>
+
+								</div>
+								<div class="col">
+
+									<label for="producttype" class="form-label">Issuer</label>
+									<select class="form-control" id="producttype">
+										<option selected>Please select</option>
+										<option value="1">BNP Paribas</option>
+										<option value="2">Exane</option>
+										<option value="2">Société Générale</option>
+
+									</select>
+
+
+								</div>
+								<div class="col">
+									<label for="currency_input" class="form-label">Currency</label>
+
+									<select id="currency_input" class="js-example-basic-single form-control">
+										<option value="EUR">EUR</option>
+										<option value="USD">USD</option>
+										<option value="GBP">GBP</option>
+
+									</select>
+								</div>
+							</div>
+
+							<div class="row mb-3">
+
+							</div>
+						</div>
+
+
+					</div>
+				</div>
+				<div class="tab-pane fade" id="main">...</div>
 			</div>
+
 
 		</div>
 
@@ -59,5 +344,8 @@
 			<div class="card-arrow-bottom-right"></div>
 		</div>
 	</div>
+
+
+
 
 </template>
