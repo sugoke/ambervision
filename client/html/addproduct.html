@@ -1,5 +1,5 @@
 <template name="addproduct">
-
+<script src="plugins/bootstrap-datepicker/dist/js/bootstrap-datepicker.min.js"></script>
 	<div class="d-flex align-items-center mb-3 shadow">
 		<div>
 			<ul class="breadcrumb">
@@ -237,90 +237,23 @@
 								<div class="col">
 									<div class="form-group mb-3">
 										<label for="reoffer" class="form-label">Launch date</label>
-										<input type="text" class="form-control" id="datepicker" placeholder="dd/mm/yyyy" />
+										<input type="text" class="form-control" id="launchdate" placeholder="dd/mm/yyyy" />
 									</div>
 								</div>
 
 								<div class="col">
-									<div class="form-group mb-3">
-										<label for="reoffer" class="form-label">Payment date</label>
-										<input type="text" class="form-control" id="datepicker" placeholder="dd/mm/yyyy" />
+									<label for="reoffer" class="form-label">Payment lag</label>
+									<div class="input-group flex-nowrap mb-3">
+										<span class="input-group-text" id="addon-wrapping">t+</span>
+										<input type="text" class="form-control" placeholder="" />
 									</div>
 								</div>
 
-
-								<div class="col">
-									<div class="form-group mb-3">
-										<label for="issue_price" class="form-label">Issue price</label>
-										<input type="text" class="form-control" id="issue_price" value="100%">
-									</div>
-								</div>
-
-								<div class="col">
-									<div class="form-group mb-3">
-										<label for="brokerage_fee" class="form-label">Broker fee</label>
-										<input type="text" class="form-control" id="brokerage_fee" value="0%">
-									</div>
-								</div>
 
 
 							</div>
 
-							<div class="row mb-3">
-								<div class="col">
 
-									<label for="producttype" class="form-label">Product type</label>
-									<select class="form-control" id="producttype">
-										<option selected>Please select</option>
-										<option value="1">Reverse Convertible</option>
-										<option value="2">Phoenix</option>
-									</select>
-
-								</div>
-
-								<div class="col">
-
-									<label class="form-label">Duration</label>
-									<div class="input-group mb-3">
-										<input type="text" class="form-control" placeholder="Duration" aria-label="Duration" aria-describedby="basic-addon2">
-										<div class="input-group-append">
-
-											<select class="form-select" id="productType" aria-label="Default select example">
-												<option selected>Unit</option>
-												<option value="1">Months</option>
-												<option value="2">Years</option>
-
-											</select>
-
-
-										</div>
-									</div>
-
-								</div>
-								<div class="col">
-
-									<label for="producttype" class="form-label">Issuer</label>
-									<select class="form-control" id="producttype">
-										<option selected>Please select</option>
-										<option value="1">BNP Paribas</option>
-										<option value="2">Exane</option>
-										<option value="2">Société Générale</option>
-
-									</select>
-
-
-								</div>
-								<div class="col">
-									<label for="currency_input" class="form-label">Currency</label>
-
-									<select id="currency_input" class="js-example-basic-single form-control">
-										<option value="EUR">EUR</option>
-										<option value="USD">USD</option>
-										<option value="GBP">GBP</option>
-
-									</select>
-								</div>
-							</div>
 
 							<div class="row mb-3">
 
@@ -347,5 +280,13 @@
 
 
 
+
+	<script>
+	  $('#launchdate').datepicker({
+	    autoclose: true,
+			todayHighlight:true,
+			orientation: "bottom left"
+	  });
+	</script>
 
 </template>

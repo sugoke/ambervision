@@ -29,3 +29,7 @@ Router.route('/calendar', function () {
 Router.route('/addproduct', function () {
   this.render('addproduct');
 });
+
+Router.route('/trackrecord', function () {
+  this.render('trackrecord');
+});
