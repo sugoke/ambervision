@@ -78,20 +78,66 @@
 .pace .pace-activity {
   border-color: transparent !important;
   border-top-color: var(--bs-orange) !important;
-
   height: 20px !important;
   top: 20px !important;
-  left: 30%; /* à 50%/50% du parent référent */
-  transform: translate(-50%, -50%); /* décalage de 50% de sa propre taille */
+  left: 30%;
+  /* à 50%/50% du parent référent */
+  transform: translate(-50%, -50%);
+  /* décalage de 50% de sa propre taille */
 }
 
 table.table-fit {
-    width: auto !important;
-    table-layout: auto !important;
+  width: auto !important;
+  table-layout: auto !important;
 }
+
 table.table-fit thead th, table.table-fit tfoot th {
-    width: auto !important;
+  width: auto !important;
 }
+
 table.table-fit tbody td, table.table-fit tfoot td {
-    width: auto !important;
+  width: auto !important;
+}
+
+.reveal{
+
+  white-space: nowrap;
+  overflow: hidden;
+  width: 30em;
+  animation: type 8s steps(60, end);
+}
+
+
+@keyframes type{
+  from { width: 0; }
+}
+
+.flip {
+
+
+  margin: auto;
+  -webkit-animation: rotateY 3s infinite;
+  animation: rotateY 3s infinite;
+}
+@-webkit-keyframes rotateY {
+  to { -webkit-transform: rotateY(360deg); }
+}
+@keyframes rotateY {
+  to { transform: rotateY(360deg); }
+}
+
+
+
+
+@mixin sp-layout {
+  @media screen and (max-width: 750px) {
+    @content;
+  }
+}
+
+body {
+
+  min-height: 100vh;
+   background: radial-gradient(ellipse at bottom, #0d1d31 0%, #0c0d13 100%);  /**/
+  overflow: hidden;
 }

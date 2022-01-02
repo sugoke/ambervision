@@ -19,9 +19,8 @@
 			<ul class="nav nav-tabs">
 				<li class="nav-item me-1"><a href="#main" class="nav-link active" data-bs-toggle="tab">Main</a></li>
 				<li class="nav-item me-1"><a href="#features" class="nav-link" data-bs-toggle="tab">Features</a></li>
-				<li class="nav-item me-1"><a href="#dates" class="nav-link" data-bs-toggle="tab">Dates</a></li>
 				<li class="nav-item me-1"><a href="#underlyings" class="nav-link" data-bs-toggle="tab">Underlyings</a></li>
-
+				<li class="nav-item me-1"><a href="#dates" class="nav-link" data-bs-toggle="tab">Dates</a></li>
 
 			</ul>
 			<div class="tab-content pt-3">
@@ -126,7 +125,55 @@
 					</div>
 
 				</div>
-				<div class="tab-pane fade" id="underlyings">...</div>
+				<div class="tab-pane fade" id="underlyings">
+
+					<div class="container">
+
+						<div class="row mb-3">
+							<div class="col">
+								<label class="form-label">Ticker</label>
+								<div class="input-group mb-3">
+									<input type="text" class="form-control" placeholder="Ticker" aria-label="Ticker" aria-describedby="basic-addon2">
+									<div class="input-group-append">
+
+										<select class="form-select" id="exchange" aria-label="Default select example">
+											<option selected>US</option>
+											<option value="1">FR</option>
+											<option value="2">DE</option>
+
+										</select>
+
+
+									</div>
+								</div>
+							</div>
+
+							<div class="col">
+								<div class="form-group mb-3">
+									<label for="reoffer" class="form-label">Last close</label>
+									<input type="text" class="form-control" id="reoffer" value="">
+								</div>
+							</div>
+
+							<div class="col">
+								<div class="form-group mb-3">
+									<label for="addstock" class="form-label">Add line</label>
+									<button type="button" id="addstock" class="btn btn-outline-theme form-control"><i class="fas fa-plus"></i></button>
+								</div>
+							</div>
+
+
+						</div>
+
+
+
+						<div class="row mb-3">
+
+						</div>
+					</div>
+
+
+				</div>
 
 				<div class="tab-pane fade" id="features">
 
@@ -263,7 +310,7 @@
 
 					</div>
 				</div>
-				<div class="tab-pane fade" id="main">...</div>
+
 			</div>
 
 
