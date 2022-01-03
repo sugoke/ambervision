@@ -11,6 +11,7 @@
 
 
 	</div>
+	<button class="btn btn-outline-theme pull-right mb-3" id='next_ticker'><i class="fas fa-plus"></i>  Add product</button>
 	<!-- basic usage -->
 	<div class="card">
 		<div class="card-header fw-bold small">Characteristics</div>
@@ -343,7 +344,7 @@
 			<th style="width: 10%">Obs</th>
 			<th style="width: 25%">Date</th>
 			<th style="width: 25%">Payment</th>
-			<th style="width: 10%">Autocall</th>
+			<th style="width: 10%" class="text-center">Autocall</th>
 			{{#if features.memory_autocall}}
 				<th style="width: 10%">Memory Lock</th>
 			{{/if}}
@@ -398,7 +399,7 @@
 			<input type="date" class="form-control date js-date pmt_date_output datepick" name={{label}} value="{{this.pmt_date}}" />
 
 		</td>
-		<td>
+		<td class="text-center">
 
 			<!-- <input type="checkbox" class="callable_date_output form-check-input form-control" checked={{this.autocall}} name={{label}}> -->
 
@@ -407,7 +408,7 @@
 </td>
 
 		{{#if features.memory_autocall}}
-			<td><input type="checkbox" class="memorylock_output form-control" checked={{this.memorylock}} name={{label}}></td>
+			<td class="text-center"><input type="checkbox" class="memorylock_output form-control" checked={{this.memorylock}} name={{label}}></td>
 
 		{{/if}}
 
