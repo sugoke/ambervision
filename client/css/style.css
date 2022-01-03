@@ -103,8 +103,8 @@ table.table-fit tbody td, table.table-fit tfoot td {
 
   white-space: nowrap;
   overflow: hidden;
-  width: 30em;
-  animation: type 8s steps(60, end);
+  width: 45em;
+  animation: type 8s steps(70, end);
 }
 
 
@@ -137,7 +137,7 @@ table.table-fit tbody td, table.table-fit tfoot td {
 
 body {
 
-  min-height: 100vh;
-   background: radial-gradient(ellipse at bottom, #0d1d31 0%, #0c0d13 100%);  /**/
-  overflow: hidden;
+
+  /* background: radial-gradient(ellipse at bottom, #0d1d31 0%, #0c0d13 100%);  */
+
 }
