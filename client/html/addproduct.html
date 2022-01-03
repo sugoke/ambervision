@@ -1,5 +1,5 @@
 <template name="addproduct">
-<script src="plugins/bootstrap-datepicker/dist/js/bootstrap-datepicker.min.js"></script>
+	<script src="plugins/bootstrap-datepicker/dist/js/bootstrap-datepicker.min.js"></script>
 	<div class="d-flex align-items-center mb-3 shadow">
 		<div>
 			<ul class="breadcrumb">
@@ -126,58 +126,38 @@
 
 				</div>
 				<div class="tab-pane fade" id="underlyings">
-
 					<div class="container">
 
-						<div class="row mb-3">
-							<div class="col">
-								<label class="form-label">Ticker</label>
-								<div class="input-group mb-3">
-									<input type="text" class="form-control" placeholder="Ticker" aria-label="Ticker" aria-describedby="basic-addon2">
-									<div class="input-group-append">
-
-										<select class="form-select" id="exchange" aria-label="Default select example">
-											<option selected>US</option>
-											<option value="1">FR</option>
-											<option value="2">DE</option>
-
-										</select>
-
-
-									</div>
-								</div>
-							</div>
-
-							<div class="col">
-								<div class="form-group mb-3">
-									<label for="reoffer" class="form-label">Last close</label>
-									<input type="text" class="form-control" id="lastclose" value="">
-								</div>
-							</div>
-
-							<div class="col">
-								<div class="form-group mb-3">
-									<label for="reoffer" class="form-label">Strike</label>
-									<input type="text" class="form-control" id="strike" value="">
-								</div>
-							</div>
-
-							<div class="col">
-								<div class="form-group mb-3">
-									<label for="addstock" class="form-label">Add line</label>
-									<button type="button" id="addstock" class="btn btn-outline-theme form-control"><i class="fas fa-plus"></i></button>
-								</div>
-							</div>
+						<table class="table">
+							<button class="btn btn-outline-theme pull-right mb-2" id='next_ticker'><i class="fas fa-plus"></i> Add ticker</button>
+							<tbody class="underlyings_input">
+								<tr id="underlying_line_1" class="">
+									<th scope="row"><label for="underlying_1" class="mb-2">Ticker</label>
+										<div class="input-group">
+											<input type="text" class="form-control underlyings underlyings_change" id="underlying_1" placeholder="Ticker" aria-label="Ticker" aria-describedby="basic-addon2">
+											<div class="input-group-append">
+												<select class="form-select underlyings_change" id="country_1" aria-label="Default select example">
+													<option selected>US</option>
+													<option value="1">FR</option>
+													<option value="2">DE</option>
+												</select>
+											</div>
+										</div>
+									</th>
+									<td><label for="close_1" class="mb-2">Close ()</label><input type="text" class="form-control cash" id="close_1" value="" disabled></td>
+									<td><label for="strike_1" class="mb-2">Strike</label><input type="text" class="form-control cash" id="strike_1" value=""></td>
 
 
-						</div>
+									<td></td>
+								</tr>
 
+							</tbody>
+						</table>
 
-
-						<div class="row mb-3">
-
-						</div>
 					</div>
+
+
+
 
 
 				</div>
@@ -196,7 +176,7 @@
 
 							<div class="col">
 								<div class="form-group mb-3">
-									<label for="reoffer" class="form-label">Observation Periodicity</label>
+									<label for="reoffer" class="form-label">Periodicity</label>
 									<select id="frequency_input" class="form-control">
 										<option value="" selected="selected">Please Choose</option>
 										<option value="d">Daily</option>
@@ -291,7 +271,7 @@
 								<div class="col">
 									<div class="form-group mb-3">
 										<label for="reoffer" class="form-label">Launch date</label>
-										<input type="text" class="form-control" id="launchdate" placeholder="dd/mm/yyyy" />
+										<input type="text" class="form-control datepick" id="launchdate" placeholder="dd/mm/yyyy" />
 									</div>
 								</div>
 
@@ -299,7 +279,7 @@
 									<label for="reoffer" class="form-label">Payment lag</label>
 									<div class="input-group flex-nowrap mb-3">
 										<span class="input-group-text" id="addon-wrapping">t+</span>
-										<input type="text" class="form-control" placeholder="" />
+										<input type="text" class="form-control" value="7" placeholder="" />
 									</div>
 								</div>
 
@@ -310,8 +290,80 @@
 
 
 							<div class="row mb-3">
+								<button class="btn btn-outline-theme pull-right mb-2" id='next_ticker'><i class="fas fa-calendar-check"></i> Generate schedule</button>
+							</div>
+
+ <hr/>
+
+							<div class="row mb-3">
+								<div class="col">
+									<div class="form-group mb-3">
+										<label for="isin_input" class="form-label">Trade date</label>
+										<input type="text" class="form-control" id="isin_input" value="XS123456789">
+									</div>
+								</div>
+
+								<div class="col">
+									<div class="form-group mb-3">
+										<label for="reoffer" class="form-label">Payment date</label>
+										<input type="text" class="form-control" id="reoffer" value="100%">
+									</div>
+								</div>
+
+
+								<div class="col">
+									<div class="form-group mb-3">
+										<label for="issue_price" class="form-label">Final Date</label>
+										<input type="text" class="form-control" id="issue_price" value="100%">
+									</div>
+								</div>
+
+								<div class="col">
+									<div class="form-group mb-3">
+										<label for="brokerage_fee" class="form-label">Payment date</label>
+										<input type="text" class="form-control" id="brokerage_fee" value="0%">
+									</div>
+								</div>
+
+								<div class="col">
+									<div class="form-group mb-3">
+										<label for="brokerage_fee" class="form-label">1st call date</label>
+										<input type="text" class="form-control" id="brokerage_fee" value="0%">
+									</div>
+								</div>
 
 							</div>
+
+  <hr/>
+
+	<!-- default table -->
+<table class="table table-striped">
+  <thead>
+		<tr>
+			<th style="width: 10%">Obs</th>
+			<th style="width: 25%">Date</th>
+			<th style="width: 25%">Payment</th>
+			<th style="width: 10%">Autocall</th>
+			{{#if features.memory_autocall}}
+				<th style="width: 10%">Memory Lock</th>
+			{{/if}}
+			<th style="width: 10%">Autocall Level</th>
+			<th style="width: 10%">Coupon barrier</th>
+		</tr>
+  </thead>
+  <tbody>
+
+
+		{{>schedule}}
+		{{>schedule}}
+
+
+
+  </tbody>
+</table>
+
+
+
 						</div>
 
 
@@ -332,15 +384,46 @@
 		</div>
 	</div>
 
-
-
-
-	<script>
-	  $('#launchdate').datepicker({
-	    autoclose: true,
-			todayHighlight:true,
-			orientation: "bottom left"
-	  });
-	</script>
-
 </template>
+
+<template name="schedule">
+
+	<tr>
+		<td scope="row"><input type="text" class="unique_obs form-control" value={{label}} name={{label}}></td>
+		<td>
+
+			<input type="date" class="date_output form-control date js-date datepick" name={{label}} value="{{this.date}}" />
+		</td>
+		<td>
+			<input type="date" class="form-control date js-date pmt_date_output datepick" name={{label}} value="{{this.pmt_date}}" />
+
+		</td>
+		<td>
+
+			<!-- <input type="checkbox" class="callable_date_output form-check-input form-control" checked={{this.autocall}} name={{label}}> -->
+
+			<input class="form-check-input" type="checkbox" value="" id="defaultCheck1" />
+
+</td>
+
+		{{#if features.memory_autocall}}
+			<td><input type="checkbox" class="memorylock_output form-control" checked={{this.memorylock}} name={{label}}></td>
+
+		{{/if}}
+
+		<td><input type="text" class="autocall_level_output form-control" id='autocall_level_{{label}}' name={{label}} value="{{this.call_level}}"></td>
+
+		{{#if this.autocall}}
+			<script>  </script>
+		{{/if}}
+
+
+			<td><input type="text" class="protection_barrier_output form-control" id='bonus_level_{{label}}' name={{label}} value="{{this.bonus_barrier}}"></td>
+			<script>
+
+			</script>
+
+
+	</tr>
+
+	</template>
