@@ -11,6 +11,8 @@
     "@babel/runtime": "^7.15.4",
     "chart.js": "^2.9.3",
     "jquery": "^3.6.0",
-    "meteor-node-stubs": "^1.1.0"
+    "meteor-node-stubs": "^1.1.0",
+    "moment": "^2.29.1",
+    "moment-business-days": "^1.2.0"
   }
 }

@@ -12,6 +12,64 @@ Template.addproduct.events({
 
 },
 
+'click #generateschedule'(event) {
+
+  event.preventDefault();
+  event.stopPropagation()
+
+  moment = require('moment');
+  moment.locale('en-gb')
+
+//Remplissage des 5 cases relatives aux dates
+
+  var lag = document.getElementById('pmtlag').value;
+
+  var duration = document.getElementById('duration').value;
+  var duration_unit =  document.getElementById('duration_unit').value;
+
+  var tradedate = document.getElementById('launchdate').value;
+  var tradepaymentdate = moment(tradedate, 'DD/MM/YYYY').add(7, 'days').format('DD/MM/YYYY');
+
+  var finaldate = moment(tradedate, 'DD/MM/YYYY').add(duration, duration_unit).format('DD/MM/YYYY');
+
+  var finalpaymentdate = moment(finaldate, 'DD/MM/YYYY').add(7, 'days').format('DD/MM/YYYY');
+
+  var duration_nc = document.getElementById('duration_nc').value;
+  var duration_unit_nc = document.getElementById('duration_unit_nc').value;
+
+var first_call_date = moment(tradedate, 'DD/MM/YYYY').add(duration_nc, duration_unit_nc).format('DD/MM/YYYY');
+
+
+document.getElementById('tradedate').value = tradedate;
+document.getElementById('tradepaymentdate').value = tradepaymentdate;
+document.getElementById('finaldate').value = finaldate;
+document.getElementById('finalpaymentdate').value = finalpaymentdate;
+document.getElementById('firstcalldate').value = first_call_date;
+
+//Fin remplissage 5 cases relatives aux dates
+
+//Maintenant on doit générer le tableau de toutes les observation_dates
+
+Session.set('observation_dates', null)   //création de l'objet observation_dates
+
+setTimeout(function() {
+
+
+  var productType = document.getElementById('product_type_input').value;
+
+  var noncall_duration = document.getElementById('duration_nc').value; var noncall_unit = document.getElementById('duration_unit_nc').value;
+  var first_call_date = moment(tradedate, 'DD/MM/YYYY').add(noncall_duration, noncall_unit).format('DD/MM/YYYY');
+
+  var autocall_base_level = parseFloat(document.getElementById('autocall_barrier_input').value) / 100;
+  var protection_barrier = Number(document.getElementById('protection_barrier_input').value);
+  var stepdown = document.getElementById('step_down').checked;
+  var periodicity = document.getElementById('periodicity').value;
+
+    }, 50);
+
+
+},
+
 });
 
 
@@ -22,6 +80,7 @@ Template.addproduct.onRendered(function() {
     $('.datepick').datepicker({
       autoclose: true,
       todayHighlight: true,
+      format: "dd/mm/yyyy",
       orientation: "bottom left"
     });
 

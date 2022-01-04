@@ -67,8 +67,8 @@
 						<div class="row mb-3">
 							<div class="col">
 
-								<label for="producttype" class="form-label">Product type</label>
-								<select class="form-control" id="producttype">
+								<label for="product_type" class="form-label">Product type</label>
+								<select class="form-control" id="product_type_input">
 									<option selected>Please select</option>
 									<option value="1">Reverse Convertible</option>
 									<option value="2">Phoenix</option>
@@ -80,13 +80,13 @@
 
 								<label class="form-label">Duration</label>
 								<div class="input-group mb-3">
-									<input type="text" class="form-control" placeholder="Duration" aria-label="Duration" aria-describedby="basic-addon2">
+									<input type="text" class="form-control" placeholder="Duration" aria-label="Duration" aria-describedby="basic-addon2" id="duration">
 									<div class="input-group-append">
 
-										<select class="form-select" id="productType" aria-label="Default select example">
+										<select class="form-select" id="duration_unit" aria-label="Default select example">
 											<option selected>Unit</option>
-											<option value="1">Months</option>
-											<option value="2">Years</option>
+											<option value="months">Months</option>
+											<option value="years">Years</option>
 
 										</select>
 
@@ -178,7 +178,7 @@
 							<div class="col">
 								<div class="form-group mb-3">
 									<label for="reoffer" class="form-label">Periodicity</label>
-									<select id="frequency_input" class="form-control">
+									<select id="periodicity" class="form-control">
 										<option value="" selected="selected">Please Choose</option>
 										<option value="d">Daily</option>
 										<option value="W">Weekly</option>
@@ -208,38 +208,77 @@
 
 
 						</div>
+						<div class="row mb-3">
+
+							<div class="col-3">
+
+								<label class="form-label">Non-call period</label>
+								<div class="input-group mb-3">
+									<input type="text" class="form-control" placeholder="Duration" aria-label="Duration" aria-describedby="basic-addon2" id="duration_nc">
+									<div class="input-group-append">
+
+										<select class="form-select" id="duration_unit_nc" aria-label="Default select example">
+
+											<option selected value="months">Months</option>
+											<option value="years">Years</option>
+
+										</select>
+
+
+									</div>
+								</div>
+
+							</div>
+
+							<div class="col-3">
+							</div>
+
+							<div class="col-3">
+								<div class="form-group mb-3">
+									<label for="protection_barrier" class="form-label">Autocall base level</label>
+									<input type="text" class="form-control" id="autocall_base_level" value="60%">
+								</div>
+							</div>
+
+						</div>
 
 						<div class="row mb-3">
 							<div class="col">
 
 								<label for="producttype" class="form-label">Product type</label>
 								<div class="form-check form-switch">
-									<input type="checkbox" class="form-check-input" id="customSwitch1">
+									<input type="checkbox" class="form-check-input" id="memory_coupon">
 									<label class="form-check-label" for="customSwitch1">Memory Coupon</label>
 
 								</div>
 								<div class="form-check form-switch">
-									<input type="checkbox" class="form-check-input" id="customSwitch1">
+									<input type="checkbox" class="form-check-input" id="memory_autocall">
 									<label class="form-check-label" for="customSwitch1">Memory Autocall</label>
 								</div>
 								<div class="form-check form-switch">
-									<input type="checkbox" class="form-check-input" id="customSwitch1">
+									<input type="checkbox" class="form-check-input" id="geared_put">
 									<label class="form-check-label" for="customSwitch1">Geared Put</label>
 								</div>
 								<div class="form-check form-switch">
-									<input type="checkbox" class="form-check-input" id="customSwitch1">
+									<input type="checkbox" class="form-check-input" id="one_star">
 									<label class="form-check-label" for="customSwitch1">One Star</label>
 								</div>
 								<div class="form-check form-switch">
-									<input type="checkbox" class="form-check-input" id="customSwitch1">
+									<input type="checkbox" class="form-check-input" id="step_down">
 									<label class="form-check-label" for="customSwitch1">Step-down</label>
 								</div>
 								<div class="form-check form-switch">
-									<input type="checkbox" class="form-check-input" id="customSwitch1">
+									<input type="checkbox" class="form-check-input" id="max_effect">
 									<label class="form-check-label" for="customSwitch1">Max effect</label>
 								</div>
-
-
+								<div class="form-check form-switch">
+									<input type="checkbox" class="form-check-input" id="best_strike">
+									<label class="form-check-label" for="customSwitch1">Best strike</label>
+								</div>
+								<div class="form-check form-switch">
+									<input type="checkbox" class="form-check-input" id="non_call">
+									<label class="form-check-label" for="customSwitch1">Non-call</label>
+								</div>
 
 							</div>
 
@@ -272,7 +311,7 @@
 								<div class="col">
 									<div class="form-group mb-3">
 										<label for="reoffer" class="form-label">Launch date</label>
-										<input type="text" class="form-control datepick" id="launchdate" placeholder="dd/mm/yyyy" />
+										<input type="text" class="form-control datepick" id="launchdate" placeholder="dd/mm/yyyy" autocomplete="off"/>
 									</div>
 								</div>
 
@@ -280,7 +319,7 @@
 									<label for="reoffer" class="form-label">Payment lag</label>
 									<div class="input-group flex-nowrap mb-3">
 										<span class="input-group-text" id="addon-wrapping">t+</span>
-										<input type="text" class="form-control" value="7" placeholder="" />
+										<input type="text" class="form-control" value="7" placeholder="" id="pmtlag"/>
 									</div>
 								</div>
 
@@ -291,7 +330,7 @@
 
 
 							<div class="row mb-3">
-								<button class="btn btn-outline-theme pull-right mb-2" id='next_ticker'><i class="fas fa-calendar-check"></i> Generate schedule</button>
+								<button class="btn btn-outline-theme pull-right mb-2" id='generateschedule'><i class="fas fa-calendar-check"></i> Generate schedule</button>
 							</div>
 
  <hr/>
@@ -300,14 +339,14 @@
 								<div class="col">
 									<div class="form-group mb-3">
 										<label for="isin_input" class="form-label">Trade date</label>
-										<input type="text" class="form-control" id="isin_input" value="XS123456789">
+										<input type="text" class="form-control" id="tradedate" value="">
 									</div>
 								</div>
 
 								<div class="col">
 									<div class="form-group mb-3">
 										<label for="reoffer" class="form-label">Payment date</label>
-										<input type="text" class="form-control" id="reoffer" value="100%">
+										<input type="text" class="form-control" id="tradepaymentdate" value="">
 									</div>
 								</div>
 
@@ -315,21 +354,21 @@
 								<div class="col">
 									<div class="form-group mb-3">
 										<label for="issue_price" class="form-label">Final Date</label>
-										<input type="text" class="form-control" id="issue_price" value="100%">
+										<input type="text" class="form-control" id="finaldate" value="">
 									</div>
 								</div>
 
 								<div class="col">
 									<div class="form-group mb-3">
 										<label for="brokerage_fee" class="form-label">Payment date</label>
-										<input type="text" class="form-control" id="brokerage_fee" value="0%">
+										<input type="text" class="form-control" id="finalpaymentdate" value="">
 									</div>
 								</div>
 
 								<div class="col">
 									<div class="form-group mb-3">
 										<label for="brokerage_fee" class="form-label">1st call date</label>
-										<input type="text" class="form-control" id="brokerage_fee" value="0%">
+										<input type="text" class="form-control" id="firstcalldate" value="">
 									</div>
 								</div>
 
