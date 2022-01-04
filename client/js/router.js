@@ -33,3 +33,12 @@ Router.route('/addproduct', function () {
 Router.route('/trackrecord', function () {
   this.render('trackrecord');
 });
+
+Router.route('login',  {
+        layoutTemplate: '' //set the layout template to null
+    });
+
+
+    Router.route('register',  {
+            layoutTemplate: '' //set the layout template to null
+        });
