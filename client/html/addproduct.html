@@ -11,7 +11,7 @@
 
 
 	</div>
-	<button class="btn btn-outline-theme pull-right mb-3" id='next_ticker'><i class="fas fa-plus"></i>  Add product</button>
+
 	<!-- basic usage -->
 	<div class="card">
 		<div class="card-header fw-bold small">Characteristics</div>
@@ -72,7 +72,9 @@
 				<div class="tab-pane fade" id="summary">
 					<div class="container">
 
-You are going to add the following Reverse Convertible in the database.
+						<p>	<button class="btn btn-outline-theme pull-right mb-3 mt-3" id='next_ticker'><i class="fas fa-plus"></i>  Add product</button> </p>
+
+{{#if is product_type "Reverse Convertible"}}   {{>summary_reverse_convertible}}  {{/if}}
 
 					</div>
 				</div>

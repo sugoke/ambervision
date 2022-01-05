@@ -11,17 +11,23 @@
 
 
 
-    <div class="col">
-      <div class="form-group mb-3">
-        <label for="coupon_barrier" class="form-label">Coupon barrier</label>
-        <input type="text" class="form-control" id="coupon_barrier" value="60%"  autocomplete="off">
-      </div>
-    </div>
 
     <div class="col">
-      <div class="form-group mb-3">
-        <label for="protection_barrier" class="form-label">Protection barrier</label>
-        <input type="text" class="form-control" id="protection_barrier" value="60%"  autocomplete="off">
+
+      <label class="form-label">Protection barrier</label>
+      <div class="input-group mb-3">
+        <input type="text" class="form-control" aria-label="Duration" aria-describedby="basic-addon2" id="protection_barrier" autocomplete="off">
+        <div class="input-group-append">
+
+          <select class="form-select" id="duration_unit" aria-label="Default select example">
+
+            <option selected value="European">European</option>
+            <option value="American">American</option>
+
+          </select>
+
+
+        </div>
       </div>
     </div>
 
@@ -31,7 +37,6 @@
   <div class="row mb-3">
     <div class="col">
 
-      <label for="producttype" class="form-label">Product type</label>
 
 
       <div class="form-check form-switch">
@@ -72,7 +77,7 @@
     <div class="col">
       <div class="form-group mb-3">
         <label for="reoffer" class="form-label">Launch date</label>
-        <input type="text" class="form-control datepick" id="launchdate" placeholder="dd/mm/yyyy" autocomplete="off"/>
+        <input type="text" class="form-control datepick" id="launchdate" placeholder="dd/mm/yyyy" autocomplete="off" />
       </div>
     </div>
 
@@ -80,7 +85,7 @@
       <label for="reoffer" class="form-label">Payment lag</label>
       <div class="input-group flex-nowrap mb-3">
         <span class="input-group-text" id="addon-wrapping">t+</span>
-        <input type="text" class="form-control" value="7" placeholder="" id="pmtlag"  autocomplete="off"/>
+        <input type="text" class="form-control" value="7" placeholder="" id="pmtlag" autocomplete="off" />
       </div>
     </div>
 
@@ -91,23 +96,28 @@
 
 
   <div class="row mb-3">
-    <button class="btn btn-outline-theme pull-right mb-2" id='generateschedule'><i class="fas fa-calendar-check"></i> Generate schedule</button>
-  </div>
 
-<hr/>
+    <div class="col">
+    <button class="btn btn-outline-theme mb-2" id='generateschedule'><i class="fas fa-calendar-check"></i>  Generate schedule</button>
+  </div>
+  </div>
+  <input type="text" class="form-control" id="test" value="" required />
+  <div class="valid-feedback">Looks good!</div>
+   <div class="invalid-feedback">Field is required</div>
+  <hr />
 
   <div class="row mb-3">
     <div class="col">
       <div class="form-group mb-3">
         <label for="isin_input" class="form-label">Trade date</label>
-        <input type="text" class="form-control" id="tradedate" value=""  autocomplete="off">
+        <input type="text" class="form-control" id="tradedate" value="" autocomplete="off">
       </div>
     </div>
 
     <div class="col">
       <div class="form-group mb-3">
         <label for="reoffer" class="form-label">Payment date</label>
-        <input type="text" class="form-control" id="tradepaymentdate" value=""  autocomplete="off">
+        <input type="text" class="form-control" id="tradepaymentdate" value="" autocomplete="off">
       </div>
     </div>
 
@@ -115,16 +125,127 @@
     <div class="col">
       <div class="form-group mb-3">
         <label for="issue_price" class="form-label">Final Date</label>
-        <input type="text" class="form-control" id="finaldate" value=""  autocomplete="off">
+        <input type="text" class="form-control" id="finaldate" value="" autocomplete="off">
       </div>
     </div>
 
     <div class="col">
       <div class="form-group mb-3">
         <label for="brokerage_fee" class="form-label">Payment date</label>
-        <input type="text" class="form-control" id="finalpaymentdate" value=""  autocomplete="off">
+        <input type="text" class="form-control" id="finalpaymentdate" value="" autocomplete="off">
       </div>
     </div>
   </div>
+
+</template>
+
+
+<template name="summary_reverse_convertible">
+  <span class="lead">You are going to add the following Reverse Convertible into the database.</span>
+  <!-- BEGIN card -->
+  <div class="card mb-3 mt-3">
+    <!-- BEGIN card-body -->
+    <a href="#" class="card text-decoration-none">
+      <div class="card-body d-flex align-items-center text-white m-5px mt-3">
+
+
+        <dl class="row mt-3">
+          <dt class="col-sm-3">ISIN</dt>
+          <dd class="col-sm-9">XS1234321234</dd>
+          <dt class="col-sm-3">Tenor</dt>
+          <dd class="col-sm-9">2Y</dd>
+          <dt class="col-sm-3">Currency</dt>
+          <dd class="col-sm-9">EUR</dd>
+          <dt class="col-sm-3">Issuer</dt>
+          <dd class="col-sm-9">BNP Paribas</dd>
+
+          <dt class="col-sm-3">Guaranteed coupon</dt>
+          <dd class="col-sm-9">5.00%</dd>
+          <dt class="col-sm-3">Protection barrier</dt>
+          <dd class="col-sm-9">60% European (Geared Put)</dd>
+          <dt class="col-sm-3">Coupon per period</dt>
+          <dd class="col-sm-9">5.00%</dd>
+
+
+          <dt class="col-sm-3">Dates</dt>
+          <dd class="col-sm-9">
+            <dl class="row">
+              <dt class="col-sm-4">Launch date</dt>
+              <dd class="col-sm-8">12/09/2022</dd>
+            </dl>
+            <dl class="row">
+              <dt class="col-sm-4">Payment date</dt>
+              <dd class="col-sm-8">12/09/2022</dd>
+            </dl>
+            <dl class="row">
+              <dt class="col-sm-4">Final observation date</dt>
+              <dd class="col-sm-8">12/09/2022</dd>
+            </dl>
+            <dl class="row">
+              <dt class="col-sm-4">Payment date</dt>
+              <dd class="col-sm-8">12/09/2022</dd>
+            </dl>
+          </dd>
+
+
+          <dt class="col-sm-3">Prices</dt>
+          <dd class="col-sm-9">
+            <dl class="row">
+              <dt class="col-sm-4">Re-Offer</dt>
+              <dd class="col-sm-8">100%</dd>
+            </dl>
+            <dl class="row">
+              <dt class="col-sm-4">Issue price</dt>
+              <dd class="col-sm-8">100%</dd>
+            </dl>
+            <dl class="row">
+              <dt class="col-sm-4">Brokerage fee</dt>
+              <dd class="col-sm-8">0.50%</dd>
+            </dl>
+
+          </dd>
+
+          <dt class="col-sm-3">Underlying / Strikes</dt>
+          <dd class="col-sm-9">
+            <dl class="row">
+              <dt class="col-sm-4">MSFT.US</dt>
+              <dd class="col-sm-8">100</dd>
+            </dl>
+            <dl class="row">
+              <dt class="col-sm-4">NVDA.US</dt>
+              <dd class="col-sm-8">120</dd>
+            </dl>
+
+          </dd>
+
+          <dl class="row">
+            <dt class="col-sm-3">Other features</dt>
+            <dd class="col-sm-9">
+    <p>One Star</p>
+    <p>Best strike</p>
+  </dd>
+          </dl>
+
+
+        </dl>
+      </div>
+
+      <!-- card-arrow -->
+      <div class="card-arrow">
+        <div class="card-arrow-top-left"></div>
+        <div class="card-arrow-top-right"></div>
+        <div class="card-arrow-bottom-left"></div>
+        <div class="card-arrow-bottom-right"></div>
+      </div>
+    </a>
+    <!-- END card-body -->
+
+    <!-- BEGIN card-arrow -->
+
+    <!-- END card-arrow -->
+  </div>
+
+
+
 
 </template>

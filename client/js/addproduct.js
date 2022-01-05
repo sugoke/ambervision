@@ -107,3 +107,14 @@ Template.addproduct.helpers({
 
   }
 });
+
+
+Template.addproduct.events({
+  'change #isin_input': function(event) {
+
+$( "#isin_input" ).addClass( "is-valid" );
+
+
+console.log("event")
+  }
+  });
