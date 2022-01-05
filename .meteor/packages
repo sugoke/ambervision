@@ -29,3 +29,4 @@ iron:router
 ephemer:reactive-datatables
 ksrv:datatables
 session
+nordlys:logic-helpers

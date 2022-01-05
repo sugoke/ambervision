@@ -1,0 +1,130 @@
+<template name="features_reverse_convertible">
+
+
+  <div class="row mb-3">
+    <div class="col">
+      <div class="form-group mb-3">
+        <label for="coupon" class="form-label">Guaranteed Coupon</label>
+        <input type="text" class="form-control" id="coupon" value="5.00%">
+      </div>
+    </div>
+
+
+
+    <div class="col">
+      <div class="form-group mb-3">
+        <label for="coupon_barrier" class="form-label">Coupon barrier</label>
+        <input type="text" class="form-control" id="coupon_barrier" value="60%"  autocomplete="off">
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="form-group mb-3">
+        <label for="protection_barrier" class="form-label">Protection barrier</label>
+        <input type="text" class="form-control" id="protection_barrier" value="60%"  autocomplete="off">
+      </div>
+    </div>
+
+
+  </div>
+
+  <div class="row mb-3">
+    <div class="col">
+
+      <label for="producttype" class="form-label">Product type</label>
+
+
+      <div class="form-check form-switch">
+        <input type="checkbox" class="form-check-input" id="geared_put">
+        <label class="form-check-label" for="customSwitch1">Geared Put</label>
+      </div>
+      <div class="form-check form-switch">
+        <input type="checkbox" class="form-check-input" id="one_star">
+        <label class="form-check-label" for="customSwitch1">One Star</label>
+      </div>
+
+      <div class="form-check form-switch">
+        <input type="checkbox" class="form-check-input" id="best_strike">
+        <label class="form-check-label" for="customSwitch1">Best strike</label>
+      </div>
+
+
+    </div>
+
+    <div class="col">
+    </div>
+    <div class="col">
+    </div>
+    <div class="col">
+    </div>
+  </div>
+
+  <div class="row mb-3">
+
+  </div>
+
+
+</template>
+
+<template name="dates_reverse_convertible">
+
+  <div class="row mb-3">
+    <div class="col">
+      <div class="form-group mb-3">
+        <label for="reoffer" class="form-label">Launch date</label>
+        <input type="text" class="form-control datepick" id="launchdate" placeholder="dd/mm/yyyy" autocomplete="off"/>
+      </div>
+    </div>
+
+    <div class="col">
+      <label for="reoffer" class="form-label">Payment lag</label>
+      <div class="input-group flex-nowrap mb-3">
+        <span class="input-group-text" id="addon-wrapping">t+</span>
+        <input type="text" class="form-control" value="7" placeholder="" id="pmtlag"  autocomplete="off"/>
+      </div>
+    </div>
+
+
+
+  </div>
+
+
+
+  <div class="row mb-3">
+    <button class="btn btn-outline-theme pull-right mb-2" id='generateschedule'><i class="fas fa-calendar-check"></i> Generate schedule</button>
+  </div>
+
+<hr/>
+
+  <div class="row mb-3">
+    <div class="col">
+      <div class="form-group mb-3">
+        <label for="isin_input" class="form-label">Trade date</label>
+        <input type="text" class="form-control" id="tradedate" value=""  autocomplete="off">
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="form-group mb-3">
+        <label for="reoffer" class="form-label">Payment date</label>
+        <input type="text" class="form-control" id="tradepaymentdate" value=""  autocomplete="off">
+      </div>
+    </div>
+
+
+    <div class="col">
+      <div class="form-group mb-3">
+        <label for="issue_price" class="form-label">Final Date</label>
+        <input type="text" class="form-control" id="finaldate" value=""  autocomplete="off">
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="form-group mb-3">
+        <label for="brokerage_fee" class="form-label">Payment date</label>
+        <input type="text" class="form-control" id="finalpaymentdate" value=""  autocomplete="off">
+      </div>
+    </div>
+  </div>
+
+</template>
