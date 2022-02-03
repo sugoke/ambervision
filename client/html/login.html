@@ -3,37 +3,36 @@
   <body class='pace-top'>
   	<!-- BEGIN #app -->
   	<div id="app" class="app app-full-height app-without-header">
+
+
+
+
   		<!-- BEGIN login -->
   		<div class="login">
   			<!-- BEGIN login-content -->
   			<div class="login-content">
-  				<form action="index.html" method="POST" name="login_form">
-  					<h1 class="text-center">Sign In</h1>
-  					<div class="text-white text-opacity-50 text-center mb-4">
-  						For your protection, please verify your identity.
-  					</div>
-  					<div class="mb-3">
-  						<label class="form-label">Email Address <span class="text-danger">*</span></label>
-  						<input type="text" class="form-control form-control-lg bg-white bg-opacity-5" value="" placeholder="" />
-  					</div>
-  					<div class="mb-3">
-  						<div class="d-flex">
-  							<label class="form-label">Password <span class="text-danger">*</span></label>
-  							<a href="#" class="ms-auto text-white text-decoration-none text-opacity-50">Forgot password?</a>
-  						</div>
-  						<input type="password" class="form-control form-control-lg bg-white bg-opacity-5" value="" placeholder="" />
-  					</div>
-  					<div class="mb-3">
-  						<div class="form-check">
-  							<input class="form-check-input" type="checkbox" value="" id="customCheck1" />
-  							<label class="form-check-label" for="customCheck1">Remember me</label>
-  						</div>
-  					</div>
-  					<button type="submit" class="btn btn-outline-theme btn-lg d-block w-100 fw-500 mb-3">Sign In</button>
-  					<div class="text-center text-white text-opacity-50">
-  						Don't have an account yet? <a href="/register">Sign up</a>.
-  					</div>
-  				</form>
+
+
+          <div class="card mt-4 shadow animate__animated animate__flipInX">
+
+            <div class="card-header d-flex align-items-center bg-white bg-opacity-15">
+              <span class="flex-grow-1 fw-400">Ambervision</span>
+
+            </div>
+            <div class="card-body">
+{{> atForm}}
+            </div>
+            <!-- card-arrow -->
+            <div class="card-arrow">
+              <div class="card-arrow-top-left"></div>
+              <div class="card-arrow-top-right"></div>
+              <div class="card-arrow-bottom-left"></div>
+              <div class="card-arrow-bottom-right"></div>
+            </div>
+          </div>
+
+
+
   			</div>
   			<!-- END login-content -->
   		</div>
@@ -46,10 +45,7 @@
   	</div>
   	<!-- END #app -->
 
-  	<!-- ================== BEGIN core-js ================== -->
-  	<script src="assets/js/vendor.min.js"></script>
-  	<script src="assets/js/app.min.js"></script>
-  	<!-- ================== END core-js ================== -->
+
 
   </body>
 

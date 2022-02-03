@@ -1,17 +1,18 @@
 <template name="common">
 
   <div class="row mb-3">
-    <div class="col">
+    <div class="col-2">
       <div class="form-group mb-3">
         <label for="isin_input" class="form-label">ISIN</label>
-        <input type="text" class="form-control" id="isin_input" value="XS123456789">
+        <input type="text" class="form-control add_field required" id="isin_input"   autocomplete="off" maxlength="12" style="text-transform:uppercase"  required>
+        <div class="valid-feedback">Looks good!</div> <div class="invalid-feedback">Format not correct</div>
       </div>
     </div>
 
     <div class="col-2">
       <div class="form-group mb-3">
         <label for="reoffer" class="form-label">Re-offer</label>
-        <input type="text" class="form-control" id="reoffer" value="100%">
+        <input type="text" class="form-control percent add_field required" id="reoffer" value="100"  autocomplete="off">
       </div>
     </div>
 
@@ -19,14 +20,14 @@
     <div class="col-2">
       <div class="form-group mb-3">
         <label for="issue_price" class="form-label">Issue price</label>
-        <input type="text" class="form-control" id="issue_price" value="100%">
+        <input type="text" class="form-control percent add_field required" id="issue_price" value="100"  autocomplete="off">
       </div>
     </div>
 
-    <div class="col">
+    <div class="col-2">
       <div class="form-group mb-3">
         <label for="brokerage_fee" class="form-label">Broker fee</label>
-        <input type="text" class="form-control" id="brokerage_fee" value="0%">
+        <input type="text" class="form-control percent add_field required" id="brokerage_fee" value="0"  autocomplete="off">
       </div>
     </div>
 
@@ -39,13 +40,13 @@
 
       <label class="form-label">Duration</label>
       <div class="input-group mb-3">
-        <input type="text" class="form-control" placeholder="Duration" aria-label="Duration" aria-describedby="basic-addon2" id="duration"  autocomplete="off">
+        <input type="number" class="form-control add_field required" placeholder="Duration" aria-label="Duration" aria-describedby="basic-addon2" id="duration"  autocomplete="off">
         <div class="input-group-append">
 
-          <select class="form-select" id="duration_unit" aria-label="Default select example">
-            <option selected>Unit</option>
+          <select class="form-select add_field" id="duration_unit" aria-label="Default select example">
+
             <option value="months">Months</option>
-            <option value="years">Years</option>
+            <option value="years" selected>Years</option>
 
           </select>
 
@@ -57,26 +58,37 @@
     <div class="col-3">
 
       <label for="producttype" class="form-label">Issuer</label>
-      <select class="form-control" id="producttype">
-        <option selected>Please select</option>
-        <option value="1">BNP Paribas</option>
-        <option value="2">Exane</option>
-        <option value="2">Société Générale</option>
+      <select class="form-control add_field required" id="issuer">
+        <option ></option>
+        <option value="BNP Paribas">BNP Paribas</option>
+        <option value="Exane">Exane</option>
+        <option value="Société Générale">Société Générale</option>
 
       </select>
 
 
     </div>
-  <div class="col-1">
+  <div class="col-2">
       <label for="currency_input" class="form-label">Currency</label>
 
-      <select id="currency_input" class="js-example-basic-single form-control">
+      <select id="currency_input" class="js-example-basic-single form-control add_field">
         <option value="EUR">EUR</option>
         <option value="USD">USD</option>
         <option value="GBP">GBP</option>
 
       </select>
     </div>
+
+    <div class="col-2">
+        <label for="currency_input" class="form-label">Settlement</label>
+
+        <select id="settlement_type" class="js-example-basic-single form-control add_field">
+          <option value="physical_settlement">Physical</option>
+          <option value="cash_settlement" selected>Cash</option>
+
+
+        </select>
+      </div>
   </div>
 
   <div class="row mb-3">

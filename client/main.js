@@ -18,3 +18,5 @@ import 'moment/locale/en-gb';
 import {
   holidays
 } from 'moment-business-days'
+
+import AutoNumeric from 'autonumeric';

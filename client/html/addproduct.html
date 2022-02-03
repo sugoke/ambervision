@@ -23,7 +23,6 @@
 				<li class="nav-item me-1"><a href="#underlyings" class="nav-link" data-bs-toggle="tab">Underlyings</a></li>
 				<li class="nav-item me-1"><a href="#features" class="nav-link" data-bs-toggle="tab">Features</a></li>
 				<li class="nav-item me-1"><a href="#dates" class="nav-link" data-bs-toggle="tab">Dates</a></li>
-								<li class="nav-item me-1"><a href="#summary" class="nav-link" data-bs-toggle="tab">Summary </a></li>
 
 			</ul>
 			<div class="tab-content pt-3">
@@ -72,7 +71,7 @@
 				<div class="tab-pane fade" id="summary">
 					<div class="container">
 
-						<p>	<button class="btn btn-outline-theme pull-right mb-3 mt-3" id='next_ticker'><i class="fas fa-plus"></i>  Add product</button> </p>
+
 
 {{#if is product_type "Reverse Convertible"}}   {{>summary_reverse_convertible}}  {{/if}}
 
@@ -91,6 +90,21 @@
 			<div class="card-arrow-bottom-left"></div>
 			<div class="card-arrow-bottom-right"></div>
 		</div>
+	</div>
+
+<!-- ///////////// Summary modals //////////////////-->
+	<div class="modal fade" id="modalLg">
+	  <div class="modal-dialog modal-lg">
+	    <div class="modal-content">
+	      <div class="modal-header">
+	        <h5 class="modal-title">You are about to add the following Reverse Convertible into the database.</h5>
+	        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+	      </div>
+	      <div class="modal-body">
+	        {{>summary_reverse_convertible}}
+	      </div>
+	    </div>
+	  </div>
 	</div>
 
 </template>

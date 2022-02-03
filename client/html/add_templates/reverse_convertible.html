@@ -2,24 +2,24 @@
 
 
   <div class="row mb-3">
-    <div class="col">
+    <div class="col-3">
       <div class="form-group mb-3">
         <label for="coupon" class="form-label">Guaranteed Coupon</label>
-        <input type="text" class="form-control" id="coupon" value="5.00%">
+        <input type="text" class="form-control add_field required" id="coupon" value="5.00%">
       </div>
     </div>
 
 
 
 
-    <div class="col">
+    <div class="col-4">
 
       <label class="form-label">Protection barrier</label>
       <div class="input-group mb-3">
-        <input type="text" class="form-control" aria-label="Duration" aria-describedby="basic-addon2" id="protection_barrier" autocomplete="off">
+        <input type="text" class="form-control percent  add_field" aria-label="Duration" aria-describedby="basic-addon2" id="protection_barrier" autocomplete="off">
         <div class="input-group-append">
 
-          <select class="form-select" id="duration_unit" aria-label="Default select example">
+          <select class="form-select add_field required" id="barrier_type" aria-label="Default select example">
 
             <option selected value="European">European</option>
             <option value="American">American</option>
@@ -40,17 +40,17 @@
 
 
       <div class="form-check form-switch">
-        <input type="checkbox" class="form-check-input" id="geared_put">
-        <label class="form-check-label" for="customSwitch1">Geared Put</label>
+        <input type="checkbox" class="form-check-input  add_checkbox" id="geared_put" name="Geared Put">
+        <label class="form-check-label" for="geared_put">Geared Put</label>
       </div>
       <div class="form-check form-switch">
-        <input type="checkbox" class="form-check-input" id="one_star">
-        <label class="form-check-label" for="customSwitch1">One Star</label>
+        <input type="checkbox" class="form-check-input add_checkbox" id="one_star" name="One Star">
+        <label class="form-check-label" for="one_star">One Star</label>
       </div>
 
       <div class="form-check form-switch">
-        <input type="checkbox" class="form-check-input" id="best_strike">
-        <label class="form-check-label" for="customSwitch1">Best strike</label>
+        <input type="checkbox" class="form-check-input add_checkbox" id="best_strike" name="Best strike">
+        <label class="form-check-label" for="best_strike">Best strike</label>
       </div>
 
 
@@ -70,120 +70,133 @@
 
 
 </template>
+<!-- /////////////////////////////////////////////////////////////////////////////////////  -->
+
 
 <template name="dates_reverse_convertible">
 
   <div class="row mb-3">
-    <div class="col">
+    <div class="col-3">
       <div class="form-group mb-3">
         <label for="reoffer" class="form-label">Launch date</label>
-        <input type="text" class="form-control datepick" id="launchdate" placeholder="dd/mm/yyyy" autocomplete="off" />
+        <input type="text" class="form-control datepick add_field required" id="launch_date" placeholder="dd/mm/yyyy" autocomplete="off" />
       </div>
     </div>
 
-    <div class="col">
+    <div class="col-2">
       <label for="reoffer" class="form-label">Payment lag</label>
       <div class="input-group flex-nowrap mb-3">
         <span class="input-group-text" id="addon-wrapping">t+</span>
-        <input type="text" class="form-control" value="7" placeholder="" id="pmtlag" autocomplete="off" />
+        <input type="number" class="form-control  add_field required" value="7" placeholder="" id="pmt_lag" autocomplete="off" />
       </div>
     </div>
 
 
 
   </div>
-
-
 
   <div class="row mb-3">
 
     <div class="col">
-    <button class="btn btn-outline-theme mb-2" id='generateschedule'><i class="fas fa-calendar-check"></i>  Generate schedule</button>
+    <button class="btn btn-outline-theme mb-2" id='generate_schedule_reverse_convertible' disabled><i class="fas fa-calendar-check"></i>  Generate schedule</button>
   </div>
   </div>
-  <input type="text" class="form-control" id="test" value="" required />
-  <div class="valid-feedback">Looks good!</div>
-   <div class="invalid-feedback">Field is required</div>
+
   <hr />
 
   <div class="row mb-3">
     <div class="col">
       <div class="form-group mb-3">
-        <label for="isin_input" class="form-label">Trade date</label>
-        <input type="text" class="form-control" id="tradedate" value="" autocomplete="off">
+        <label for="trade_date" class="form-label">Trade date</label>
+        <input type="text" class="form-control  datepick add_field required" id="trade_date" placeholder="dd/mm/yyyy" value="" autocomplete="off">
       </div>
     </div>
 
     <div class="col">
       <div class="form-group mb-3">
-        <label for="reoffer" class="form-label">Payment date</label>
-        <input type="text" class="form-control" id="tradepaymentdate" value="" autocomplete="off">
+        <label for="trade_payment_date" class="form-label">Payment date</label>
+        <input type="text" class="form-control datepick add_field required" id="trade_payment_date" placeholder="dd/mm/yyyy"  value="" autocomplete="off">
       </div>
     </div>
 
 
     <div class="col">
       <div class="form-group mb-3">
-        <label for="issue_price" class="form-label">Final Date</label>
-        <input type="text" class="form-control" id="finaldate" value="" autocomplete="off">
+        <label for="final_date" class="form-label">Final Date</label>
+        <input type="text" class="form-control datepick add_field required" id="final_date" placeholder="dd/mm/yyyy"  value="" autocomplete="off">
       </div>
     </div>
 
     <div class="col">
       <div class="form-group mb-3">
-        <label for="brokerage_fee" class="form-label">Payment date</label>
-        <input type="text" class="form-control" id="finalpaymentdate" value="" autocomplete="off">
+        <label for="final_payment_date" class="form-label">Payment date</label>
+        <input type="text" class="form-control datepick add_field required" id="final_payment_date" placeholder="dd/mm/yyyy"  value="" autocomplete="off">
       </div>
     </div>
   </div>
 
+<hr />
+
+
+  <!-- modal-lg -->
+<button type="button"  id='check_details' class="btn btn-outline-theme me-2" data-bs-toggle="modal" data-bs-target="#modalLg"><i class="fas fa-search"></i>  Check details</button>
+
+
+
+
+<hr />
+
 </template>
+
+<!-- ////////////////////////////////////////////////////////////////////////////////////////////////////// -->
 
 
 <template name="summary_reverse_convertible">
-  <span class="lead">You are going to add the following Reverse Convertible into the database.</span>
-  <!-- BEGIN card -->
-  <div class="card mb-3 mt-3">
-    <!-- BEGIN card-body -->
-    <a href="#" class="card text-decoration-none">
-      <div class="card-body d-flex align-items-center text-white m-5px mt-3">
+<div  class= "container">
+  <button class="btn btn-outline-theme pull-right mb-3 mt-3" id='insert_product'><i class="fas fa-plus"></i>  Add product</button>
 
+<div  class= "row">
 
+<div  class= "col-1">
+
+</div>
+{{#with new_product}}
+
+<div  class= "col">
         <dl class="row mt-3">
           <dt class="col-sm-3">ISIN</dt>
-          <dd class="col-sm-9">XS1234321234</dd>
-          <dt class="col-sm-3">Tenor</dt>
-          <dd class="col-sm-9">2Y</dd>
+          <dd class="col-sm-9">{{isin_input}}</dd>
+          <dt class="col-sm-3">Duration</dt>
+          <dd class="col-sm-9">{{duration}} {{duration_unit}}</dd>
           <dt class="col-sm-3">Currency</dt>
-          <dd class="col-sm-9">EUR</dd>
+          <dd class="col-sm-9">{{currency_input}}</dd>
           <dt class="col-sm-3">Issuer</dt>
-          <dd class="col-sm-9">BNP Paribas</dd>
-
+          <dd class="col-sm-9">{{issuer}}</dd>
+<br>
           <dt class="col-sm-3">Guaranteed coupon</dt>
-          <dd class="col-sm-9">5.00%</dd>
+          <dd class="col-sm-9">{{coupon}}</dd>
           <dt class="col-sm-3">Protection barrier</dt>
-          <dd class="col-sm-9">60% European (Geared Put)</dd>
-          <dt class="col-sm-3">Coupon per period</dt>
-          <dd class="col-sm-9">5.00%</dd>
+          <dd class="col-sm-9">{{protection_barrier}} {{barrier_type}}</dd>
+
 
 
           <dt class="col-sm-3">Dates</dt>
           <dd class="col-sm-9">
             <dl class="row">
               <dt class="col-sm-4">Launch date</dt>
-              <dd class="col-sm-8">12/09/2022</dd>
+              <dd class="col-sm-8">{{trade_date}}</dd>
             </dl>
             <dl class="row">
               <dt class="col-sm-4">Payment date</dt>
-              <dd class="col-sm-8">12/09/2022</dd>
+              <dd class="col-sm-8">{{trade_payment_date}}</dd>
             </dl>
             <dl class="row">
               <dt class="col-sm-4">Final observation date</dt>
-              <dd class="col-sm-8">12/09/2022</dd>
+              <dd class="col-sm-8">{{final_date}}</dd>
             </dl>
             <dl class="row">
               <dt class="col-sm-4">Payment date</dt>
-              <dd class="col-sm-8">12/09/2022</dd>
+              <dd class="col-sm-8">{{final_payment_date}}</dd>
             </dl>
           </dd>
 
@@ -192,60 +205,48 @@
           <dd class="col-sm-9">
             <dl class="row">
               <dt class="col-sm-4">Re-Offer</dt>
-              <dd class="col-sm-8">100%</dd>
+              <dd class="col-sm-8">{{reoffer}}</dd>
             </dl>
             <dl class="row">
               <dt class="col-sm-4">Issue price</dt>
-              <dd class="col-sm-8">100%</dd>
+              <dd class="col-sm-8">{{issue_price}}</dd>
             </dl>
             <dl class="row">
               <dt class="col-sm-4">Brokerage fee</dt>
-              <dd class="col-sm-8">0.50%</dd>
+              <dd class="col-sm-8">{{brokerage_fee}}</dd>
             </dl>
 
           </dd>
 
           <dt class="col-sm-3">Underlying / Strikes</dt>
           <dd class="col-sm-9">
+
+{{#each underlyings}}
+
             <dl class="row">
-              <dt class="col-sm-4">MSFT.US</dt>
-              <dd class="col-sm-8">100</dd>
+              <dt class="col-sm-4">{{ticker}}.{{exchange}}</dt>
+              <dd class="col-sm-8">{{strike}}</dd>
             </dl>
-            <dl class="row">
-              <dt class="col-sm-4">NVDA.US</dt>
-              <dd class="col-sm-8">120</dd>
-            </dl>
+
+{{/each}}
 
           </dd>
 
           <dl class="row">
             <dt class="col-sm-3">Other features</dt>
             <dd class="col-sm-9">
-    <p>One Star</p>
-    <p>Best strike</p>
+{{#each features}}
+<p>{{this}}</p>
+{{/each}}
   </dd>
           </dl>
 
 
         </dl>
-      </div>
 
-      <!-- card-arrow -->
-      <div class="card-arrow">
-        <div class="card-arrow-top-left"></div>
-        <div class="card-arrow-top-right"></div>
-        <div class="card-arrow-bottom-left"></div>
-        <div class="card-arrow-bottom-right"></div>
-      </div>
-    </a>
-    <!-- END card-body -->
+</div>
 
-    <!-- BEGIN card-arrow -->
-
-    <!-- END card-arrow -->
-  </div>
-
-
-
-
+{{/with}}
+</div>
+</div>
 </template>

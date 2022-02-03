@@ -1,5 +1,7 @@
 <template name="layout">
 
+{{#if currentUser}}
+
 	<!-- BEGIN #app -->
 	<div id="app" class="app app-sidebar-collapsed app-footer-fixed app-content-full-width">
 		<!-- BEGIN #header -->
@@ -174,7 +176,7 @@
 						<div class="menu-img online" >
 							<img src="https://amberlakepartners.com/assets/logos/Icon%201.png" id="logo-menu"/>
 						</div>
-						<div class="menu-text d-sm-block d-none">username@account.com</div>
+						<div class="menu-text d-sm-block d-none">Account 12345678</div>
 					</a>
 					<div class="dropdown-menu dropdown-menu-end me-lg-3 fs-11px mt-1">
 						<a class="dropdown-item d-flex align-items-center" href="#">PROFILE <i class="bi bi-person-circle ms-auto text-theme fs-16px my-n1"></i></a>
@@ -182,7 +184,7 @@
 						<a class="dropdown-item d-flex align-items-center" href="#">CALENDAR <i class="bi bi-calendar ms-auto text-theme fs-16px my-n1"></i></a>
 						<a class="dropdown-item d-flex align-items-center" href="#">SETTINGS <i class="bi bi-gear ms-auto text-theme fs-16px my-n1"></i></a>
 						<div class="dropdown-divider"></div>
-						<a class="dropdown-item d-flex align-items-center" href="#">LOGOUT <i class="bi bi-toggle-off ms-auto text-theme fs-16px my-n1"></i></a>
+						<a class="dropdown-item d-flex align-items-center" href="#" onclick="Meteor.logout()">LOGOUT <i class="bi bi-toggle-off ms-auto text-theme fs-16px my-n1"></i></a>
 					</div>
 				</div>
 			</div>
@@ -342,6 +344,13 @@
 
 	</div>
 	<!-- END #app -->
+
+{{else}}
+
+{{>login}}
+
+{{/if}}
+
 
 
 </template>
