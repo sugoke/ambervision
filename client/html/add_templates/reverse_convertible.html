@@ -235,9 +235,10 @@
           <dl class="row">
             <dt class="col-sm-3">Other features</dt>
             <dd class="col-sm-9">
-{{#each features}}
-<p>{{this}}</p>
-{{/each}}
+
+<p>{{#if features.geared_put}}<i class="far fa-check-circle text-warning fa-fw fa-lg animate__animated animate__delay-1s animate__bounceIn "></i> Geared Put{{/if}}</p>
+<p>{{#if features.one_star}}<i class="far fa-check-circle text-warning fa-fw fa-lg animate__animated animate__delay-1s animate__bounceIn "></i> One Star{{/if}}</p>
+<p>{{#if features.best_strike}}<i class="far fa-check-circle text-warning fa-fw fa-lg animate__animated animate__delay-1s animate__bounceIn "></i> Best Strike{{/if}}</p>
   </dd>
           </dl>
 

@@ -1,4 +1,18 @@
+
+
+Template.addproduct.events({
+
+  'click #insert_product'(summary){
+  console.log('yeah')
+  Meteor.call('insert_product',Session.get("summary"))
+
+  },
+
+  });
+
+
 Template.dates_reverse_convertible.events({
+
 
   'click #check_details'(event) {
 
@@ -7,7 +21,7 @@ Template.dates_reverse_convertible.events({
 
     var new_product = {};
     var underlyings = [];
-    var features = [];
+    var features = {};
 
     $('.underlyings').each(function(i, obj) {
 
@@ -31,7 +45,11 @@ Template.dates_reverse_convertible.events({
     $('.add_checkbox').each(function(i, obj) {
 
       if (obj.checked) {
-        features.push(obj.name)
+        //features.push({obj.id:true})
+
+        console.log(obj.id)
+        features[obj.id] = true;  ////////ici probleme
+
       }
 
     });
@@ -39,7 +57,7 @@ Template.dates_reverse_convertible.events({
     console.log(features)
     new_product['features'] = features;
     new_product['underlyings'] = underlyings
-
+    new_product['type'] = "Reverse convertible"
 
 
     Session.set('summary', new_product)

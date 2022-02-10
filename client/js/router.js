@@ -42,3 +42,7 @@ Router.route('login',  {
     Router.route('register',  {
             layoutTemplate: '' //set the layout template to null
         });
+
+        Router.route('/product_details_reverse_convertible', function () {
+          this.render('product_details_reverse_convertible');
+        });

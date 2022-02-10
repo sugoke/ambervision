@@ -28,7 +28,7 @@ msavin:mongol
 iron:router
 ephemer:reactive-datatables
 ksrv:datatables
-session
+session@1.2.0
 nordlys:logic-helpers
 useraccounts:iron-routing
 accounts-password@2.2.0

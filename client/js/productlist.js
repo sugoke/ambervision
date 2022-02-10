@@ -3,6 +3,15 @@ dataTableData = function () {
 };
 
 Template.productlist.helpers({
+
+  product_list: function() {
+
+return Products.find().fetch()
+
+  },
+
+
+
     reactiveDataFunction: function () {
         return dataTableData;
     },
@@ -22,3 +31,10 @@ var optionsObject = {
     }],
     // ... see jquery.dataTables docs for more
 }
+
+
+
+function detailFormatter(index, row) {
+
+    return 'yeahhhh'
+  }

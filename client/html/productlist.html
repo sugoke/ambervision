@@ -25,175 +25,56 @@
     <div class="card-body">
       <!-- html -->
       <table class="table" data-toggle="table" id="table" data-toolbar="#toolbar" data-search="true" data-show-refresh="false" data-show-toggle="true" data-show-fullscreen="false" data-show-columns="true" data-show-columns-toggle-all="true"
-        data-detail-view="true" data-show-export="true" data-click-to-select="true" data-detail-formatter="function(index, row, element) {
-return '';
-}" data-minimum-count-columns="2" data-show-pagination-switch="true" data-pagination="true"
+        data-detail-view="true" data-show-export="true" data-click-to-select="true"
+  data-detail-formatter="detailFormatter" data-minimum-count-columns="2" data-show-pagination-switch="true" data-pagination="true"
         data-id-field="id">
 
 
         <thead>
           <tr>
             <th data-sortable="true">Isin </th>
+            <th data-sortable="true">Type</th>
             <th data-sortable="true">Underlyings</th>
-            <th data-sortable="true">Office</th>
-            <th data-sortable="true">Age</th>
-            <th data-sortable="true">Start date</th>
-            <th data-sortable="true">Salary</th>
+
+            <th data-sortable="true">Worst-of</th>
+            <th data-sortable="true">Worst-of Perf.</th>
+            <th data-sortable="true">Bid</th>
+            <th data-sortable="true">Launch date</th>
+            <th data-sortable="true">Final observation</th>
           </tr>
         </thead>
         <tbody>
-          <tr>
-            <td><button type="button" class="btn btn-sm btn-outline-warning">XS10123456789</button></td>
-            <td>
-              <div class="widget-user-list">
-                <div class="widget-user-list-item w-30px h-30px">
-                  <div class="widget-user-list-link w-30px h-30px"><img src="https://storage.googleapis.com/webdesignledger.pub.network/WDL/12f213e1-t1.jpg" alt="" /></div>
-                </div>
-                <div class="widget-user-list-item w-30px h-30px ms-n1">
-                  <div class="widget-user-list-link w-30px h-30px"><img src="https://i0.wp.com/cloudwize.co.za/wp-content/uploads/2019/03/new-microsoft-logo-SIZED-SQUARE.jpg?ssl=1" alt="" /></div>
-                </div>
-                <div class="widget-user-list-item w-30px h-30px ms-n1">
-                  <div class="widget-user-list-link w-30px h-30px"><img src="https://logodownload.org/wp-content/uploads/2014/09/nvidia-logo-0.png" alt="" /></div>
-                </div>
 
-                <!--      <div class="widget-user-list-item w-30px h-30px ms-n2"><div class="widget-user-list-link w-30px h-30px bg-gray-200 text-gray-500 fs-12px fw-400">+2</div></div>  -->
-              </div>
-            </td>
-            <td>Edinburgh</td>
-            <td>61</td>
-            <td>2011/04/25</td>
-            <td>$320,800</td>
-          </tr>
-          <tr>
-            <td>Garrett Winters</td>
-            <td>Accountant</td>
-            <td>Tokyo</td>
-            <td>63</td>
-            <td>2011/07/25</td>
-            <td>$170,750</td>
-          </tr>
-          <tr>
-            <td>Ashton Cox</td>
-            <td>Junior Technical Author</td>
-            <td>San Francisco</td>
-            <td>66</td>
-            <td>2009/01/12</td>
-            <td>$86,000</td>
-          </tr>
-          <tr>
-            <td>Cedric Kelly</td>
-            <td>Senior Javascript Developer</td>
-            <td>Edinburgh</td>
-            <td>22</td>
-            <td>2012/03/29</td>
-            <td>$433,060</td>
-          </tr>
-          <tr>
-            <td>Airi Satou</td>
-            <td>Accountant</td>
-            <td>Tokyo</td>
-            <td>33</td>
-            <td>2008/11/28</td>
-            <td>$162,700</td>
-          </tr>
-          <tr>
-            <td>Brielle Williamson</td>
-            <td>Integration Specialist</td>
-            <td>New York</td>
-            <td>61</td>
-            <td>2012/12/02</td>
-            <td>$372,000</td>
-          </tr>
+          {{#each product_list}}
+            <tr>
+              <td><button type="button" class="btn btn-sm btn-outline-warning" onclick="location.href='productdetail';">{{isin_input}}</button></td>
+              <td>{{type}}</td>
+              <td>
+                <div class="widget-user-list">
+                  <div class="widget-user-list-item w-30px h-30px">
+                    <div class="widget-user-list-link w-30px h-30px"><img src="https://storage.googleapis.com/webdesignledger.pub.network/WDL/12f213e1-t1.jpg" alt="" /></div>
+                  </div>
+                  <div class="widget-user-list-item w-30px h-30px ms-n1">
+                    <div class="widget-user-list-link w-30px h-30px"><img src="https://i0.wp.com/cloudwize.co.za/wp-content/uploads/2019/03/new-microsoft-logo-SIZED-SQUARE.jpg?ssl=1" alt="" /></div>
+                  </div>
+                  <div class="widget-user-list-item w-30px h-30px ms-n1">
+                    <div class="widget-user-list-link w-30px h-30px"><img src="https://logodownload.org/wp-content/uploads/2014/09/nvidia-logo-0.png" alt="" /></div>
+                  </div>
 
-          <tr>
-            <td>Howard Hatfield</td>
-            <td>Office Manager</td>
-            <td>San Francisco</td>
-            <td>51</td>
-            <td>2008/12/16</td>
-            <td>$164,500</td>
-          </tr>
-          <tr>
-            <td>Hope Fuentes</td>
-            <td>Secretary</td>
-            <td>San Francisco</td>
-            <td>41</td>
-            <td>2010/02/12</td>
-            <td>$109,850</td>
-          </tr>
-          <tr>
-            <td>Vivian Harrell</td>
-            <td>Financial Controller</td>
-            <td>San Francisco</td>
-            <td>62</td>
-            <td>2009/02/14</td>
-            <td>$452,500</td>
-          </tr>
-          <tr>
-            <td>Timothy Mooney</td>
-            <td>Office Manager</td>
-            <td>London</td>
-            <td>37</td>
-            <td>2008/12/11</td>
-            <td>$136,200</td>
-          </tr>
-          <tr>
-            <td>Jackson Bradshaw</td>
-            <td>Director</td>
-            <td>New York</td>
-            <td>65</td>
-            <td>2008/09/26</td>
-            <td>$645,750</td>
-          </tr>
-          <tr>
-            <td>Olivia Liang</td>
-            <td>Support Engineer</td>
-            <td>Singapore</td>
-            <td>64</td>
-            <td>2011/02/03</td>
-            <td>$234,500</td>
-          </tr>
+                  <!--      <div class="widget-user-list-item w-30px h-30px ms-n2"><div class="widget-user-list-link w-30px h-30px bg-gray-200 text-gray-500 fs-12px fw-400">+2</div></div>  -->
+                </div>
+              </td>
 
-          <tr>
-            <td>Lael Greer</td>
-            <td>Systems Administrator</td>
-            <td>London</td>
-            <td>21</td>
-            <td>2009/02/27</td>
-            <td>$103,500</td>
-          </tr>
-          <tr>
-            <td>Jonas Alexander</td>
-            <td>Developer</td>
-            <td>San Francisco</td>
-            <td>30</td>
-            <td>2010/07/14</td>
-            <td>$86,500</td>
-          </tr>
-          <tr>
-            <td>Shad Decker</td>
-            <td>Regional Director</td>
-            <td>Edinburgh</td>
-            <td>51</td>
-            <td>2008/11/13</td>
-            <td>$183,000</td>
-          </tr>
-          <tr>
-            <td>Michael Bruce</td>
-            <td>Javascript Developer</td>
-            <td>Singapore</td>
-            <td>29</td>
-            <td>2011/06/27</td>
-            <td>$183,000</td>
-          </tr>
-          <tr>
-            <td>Donna Snider</td>
-            <td>Customer Support</td>
-            <td>New York</td>
-            <td>27</td>
-            <td>2011/01/25</td>
-            <td>$112,000</td>
-          </tr>
+
+              <td>x</td>
+              <td>x%</td>
+              <td>Bid</td>
+              <td>{{trade_date}}</td>
+              <td>{{final_date}}</td>
+            </tr>
+
+          {{/each}}
+
         </tbody>
         <tfoot>
           <tr>
@@ -206,6 +87,18 @@ return '';
           </tr>
         </tfoot>
       </table>
+
+      <script>
+        function detailFormatter(index, row) {
+          var html = []
+          $.each(row, function (key, value) {
+            html.push('<p><b>' + key + ':</b> ' + value + '</p>')
+          })
+          return html.join('')
+        }
+      </script>
+
+
     </div>
     <!-- card-arrow -->
     <div class="card-arrow">

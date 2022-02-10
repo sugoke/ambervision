@@ -1,0 +1,355 @@
+<template name="product_details_reverse_convertible">
+
+  <div class="d-flex align-items-center mb-3">
+    <div>
+      <ul class="breadcrumb">
+        <li class="breadcrumb-item"><a href="#">AMBERVISION</a></li>
+        <li class="breadcrumb-item active">Product details</li>
+      </ul>
+      <h1 class="page-header mb-0 reveal">{{current_product.isin_input}}<span class="animate__animated animate__flash animate__infinite">_</span></h1>
+    </div>
+
+
+  </div>
+
+  <div class="row">
+
+    <div class="col-xl-3">
+
+      <div class="desktop-sticky-top d-none d-lg-block">
+      <div class="card shadow">
+
+
+        <div class="card-header fw-bold medium lead">{{current_product.duration}} {{current_product.duration_unit}} Reverse Convertible on {{#each current_product.underlyings}}  {{ticker}}  {{/each}}</div>
+
+
+
+        <div class="card-body">
+          <h5 class="card-title">
+            <div class="spinner-grow spinner-grow-sm text-warning"></div> Live Product
+          </h5>
+          <h6 class="card-subtitle mb-3 text-white text-opacity-50 animate__animated animate__pulse">Bid price: 101,50%</h6>
+
+          <div class="row">
+            <div class="col-12 col-sm-6 col-xl-12">
+
+              <ul class="list-group list-group-horizontal mt-3">
+                <li class="list-group-item flex-fill">Currency</li>
+                <li class="list-group-item pull-right">EUR</li>
+              </ul>
+
+              <ul class="list-group list-group-horizontal">
+                <li class="list-group-item flex-fill">Nominal</li>
+                <li class="list-group-item  pull-right">1 000 000</li>
+              </ul>
+              <ul class="list-group list-group-horizontal">
+                <li class="list-group-item flex-fill">Coupon</li>
+                <li class="list-group-item  pull-right">{{current_product.coupon}}</li>
+              </ul>
+              <ul class="list-group list-group-horizontal">
+                <li class="list-group-item flex-fill">Protection barrier</li>
+                <li class="list-group-item  pull-right">{{current_product.protection_barrier}}</li>
+              </ul>
+
+              <ul class="list-group list-group-horizontal">
+                <li class="list-group-item flex-fill">Issuer</li>
+                <li class="list-group-item  pull-right">{{current_product.issuer}}</li>
+              </ul>
+
+              <ul class="list-group list-group-horizontal">
+                <li class="list-group-item flex-fill">Trade date</li>
+                <li class="list-group-item  pull-right">{{current_product.trade_date}}</li>
+              </ul>
+
+              <ul class="list-group list-group-horizontal">
+                <li class="list-group-item flex-fill">Maturity</li>
+                <li class="list-group-item  pull-right">{{current_product.final_payment_date}}</li>
+              </ul>
+              <ul class="list-group list-group-horizontal">
+                <li class="list-group-item flex-fill">Settlement</li>
+                <li class="list-group-item  pull-right">{{#if is current_product.settlement_type 'cash_settlement'}}Cash{{else}}{{#if is current_product.settlement_type 'physical_settlement'}}Physical{{/if}}{{/if}}</li>
+              </ul>
+            </div>
+
+
+            <div class="col-12 col-sm-6 col-xl-12">
+              <p class="card-text mb-3 mt-3">
+
+                <!-- BEGIN card -->
+                <div class="card mb-3">
+                  <!-- BEGIN card-header -->
+                  <div class="card-header d-flex align-items-center bg-white bg-opacity-15">
+                    <span class="flex-grow-1 fw-400">Features</span>
+
+                  </div>
+                  <!-- END card-header -->
+
+
+                  <ul class="list-group">
+
+                    <li class="list-group-item">
+                      {{#if current_product.features.geared_put}}
+                      <i class="far fa-check-circle text-warning fa-fw fa-lg animate__animated animate__delay-1s animate__bounceIn "></i> Geared Put
+                      {{else}}
+                      <i class="far fa-check-circle text-dark fa-fw fa-lg animate__animated animate__delay-1s animate__bounceIn "></i> <span class="text-muted">Geared Put</span>
+                      {{/if}}
+                    </li>
+
+                    <li class="list-group-item">
+                      {{#if current_product.features.best_strike}}
+                      <i class="far fa-check-circle text-warning fa-fw fa-lg animate__animated animate__delay-1s animate__bounceIn "></i> Best Strike
+                      {{else}}
+                      <i class="far fa-check-circle text-dark fa-fw fa-lg animate__animated animate__delay-1s animate__bounceIn "></i> Best Strike
+                      {{/if}}
+                    </li>
+
+                    <li class="list-group-item">
+                      {{#if current_product.features.one_star}}
+                      <i class="far fa-check-circle text-warning fa-fw fa-lg animate__animated animate__delay-1s animate__bounceIn "></i> One Star
+                      {{else}}
+                      <i class="far fa-check-circle text-dark fa-fw fa-lg animate__animated animate__delay-1s animate__bounceIn "></i> One Star
+                      {{/if}}
+                    </li>
+
+
+                  </ul>
+
+
+
+                  <!-- BEGIN card-arrow -->
+                  <div class="card-arrow">
+                    <div class="card-arrow-top-left"></div>
+                    <div class="card-arrow-top-right"></div>
+                    <div class="card-arrow-bottom-left"></div>
+                    <div class="card-arrow-bottom-right"></div>
+                  </div>
+                  <!-- END card-arrow -->
+                </div>
+                <!-- END card -->
+
+              </p>
+
+            </div>
+          </div>
+        </div>
+
+        <!-- arrow -->
+        <div class="card-arrow">
+          <div class="card-arrow-top-left"></div>
+          <div class="card-arrow-top-right"></div>
+          <div class="card-arrow-bottom-left"></div>
+          <div class="card-arrow-bottom-right"></div>
+        </div>
+      </div>
+    </div>
+</div>
+
+    <div class="col-xl-9">
+      <!-- basic usage -->
+
+          <!-- BEGIN card -->
+          <div class="card mb-3">
+            <!-- BEGIN card-body -->
+            <div class="card-body">
+              <!-- BEGIN title -->
+              <div class="d-flex fw-bold small mb-3">
+                <span class="flex-grow-1">UNDERLYINGS</span>
+                <a href="#" data-toggle="card-expand" class="text-white text-opacity-50 text-decoration-none"><i class="bi bi-fullscreen"></i></a>
+              </div>
+              <!-- END title -->
+              <!-- BEGIN table -->
+              <div class="table-responsive">
+                <table class="w-100 mb-0 small align-middle text-nowrap mytable">
+                  <tbody>
+
+{{#each current_product.underlyings}}
+
+                    <tr>
+                      <td>
+                        <div class="d-flex">
+                          <div class="position-relative mb-2">
+                            <div class="bg-center bg-cover bg-no-repeat w-60px h-60px rounded-circle flip" style="background-image: url(https://storage.googleapis.com/webdesignledger.pub.network/WDL/12f213e1-t1.jpg);">
+                            </div>
+
+                          </div>
+                          <div class="flex-1 ps-3">
+                            <div class="mb-1"><small class="fs-9px fw-500 lh-1 d-inline-block rounded-0 badge bg-white bg-opacity-25 text-white text-opacity-75 pt-5px ">{{ticker}}.{{exchange}}</small></div>
+                            <div class="fw-500 text-white">Tesla</div>
+                            $ 2014.45
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <table class="mb-2">
+                          <tr>
+                            <td class="pe-3">Strike:</td>
+                            <td class="text-white text-opacity-75 fw-500"> USD {{strike}}</td>
+                          </tr>
+                          <tr>
+                            <td class="pe-3">Performance:</td>
+                            <td class="text-white text-opacity-75 fw-500">+ 120,54%</td>
+                          </tr>
+                          <tr>
+                            <td class="pe-3 text-nowrap">Distance to barrier:</td>
+                            <td class="text-white text-opacity-75 fw-500">+ 20,54%</td>
+                          </tr>
+                        </table>
+                      </td>
+                      <td><a href="#" class="text-decoration-none text-dark"><i class="bi bi-lock"></i></a></td>
+                    </tr>
+
+{{/each}}
+
+                  </tbody>
+                </table>
+              </div>
+              <!-- END table -->
+            </div>
+            <!-- END card-body -->
+
+            <!-- BEGIN card-arrow -->
+            <div class="card-arrow">
+              <div class="card-arrow-top-left"></div>
+              <div class="card-arrow-top-right"></div>
+              <div class="card-arrow-bottom-left"></div>
+              <div class="card-arrow-bottom-right"></div>
+            </div>
+            <!-- END card-arrow -->
+          </div>
+          <!-- END card -->
+          <!-- basic usage -->
+          <div class="card">
+
+
+            <div class="card-header d-flex">
+
+              <div class="nav-wizards-container">
+                <nav class="nav nav-wizards-3 mb-2">
+                  <div class="nav-item col">
+                    <a class="nav-link completed" href="#">
+                      <div class="nav-dot"></div>
+                      <div class="nav-title">Launch</div>
+                      <div class="nav-text">{{current_product.trade_date}}</div>
+                    </a>
+                  </div>
+                  <div class="nav-item col">
+                    <a class="nav-link completed" href="#">
+                      <div class="nav-dot"></div>
+                      <div class="nav-title">Issue date</div>
+                      <div class="nav-text">{{current_product.trade_payment_date}}</div>
+                    </a>
+                  </div>
+                  <div class="nav-item col">
+                    <a class="nav-link disabled" href="#">
+                      <div class="nav-dot"></div>
+                      <div class="nav-title">Final</div>
+                      <div class="nav-text">{{current_product.final_date}}</div>
+                    </a>
+                  </div>
+                  <div class="nav-item col">
+                    <a class="nav-link disabled" href="#">
+                      <div class="nav-dot"></div>
+                      <div class="nav-title">Maturity</div>
+                      <div class="nav-text">{{current_product.final_payment_date}}</div>
+                    </a>
+                  </div>
+                </nav>
+              </div>
+
+
+            </div>
+
+
+            <!-- arrow -->
+            <div class="card-arrow">
+              <div class="card-arrow-top-left"></div>
+              <div class="card-arrow-top-right"></div>
+              <div class="card-arrow-bottom-left"></div>
+              <div class="card-arrow-bottom-right"></div>
+            </div>
+          </div>
+
+
+
+
+
+
+
+          <div class="card">
+            <div class="card-body text-white text-center">
+
+              <!-- BEGIN title -->
+              <div class="d-flex fw-bold small mb-3">
+                <span class="flex-grow-1">CHART</span>
+                <a href="#" data-toggle="card-expand" class="text-white text-opacity-50 text-decoration-none"><i class="bi bi-fullscreen"></i></a>
+              </div>
+              <!-- END title -->
+
+
+              <!-- html -->
+              <canvas id="lineChart"></canvas>
+
+              <!-- script -->
+              <script>
+                var ctx = document.getElementById('lineChart');
+                var lineChart = new Chart(ctx, {
+                  type: 'line',
+                  data: {
+                    labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'],
+                    datasets: [{
+                      color: COLOR_THEME,
+                      backgroundColor: hexToRgba(COLOR_THEME, .2),
+                      borderColor: COLOR_THEME,
+                      borderWidth: 1.5,
+                      pointBackgroundColor: COLOR_WHITE,
+                      pointBorderWidth: 1.5,
+                      pointRadius: 4,
+                      pointHoverBackgroundColor: COLOR_THEME,
+                      pointHoverBorderColor: COLOR_WHITE,
+                      pointHoverRadius: 7,
+                      label: 'Total Sales',
+                      data: [12, 19, 4, 5, 2, 3]
+                    }]
+                  }
+                });
+              </script>
+
+
+            </div>
+
+
+            <!-- card-arrow -->
+            <div class="card-arrow">
+              <div class="card-arrow-top-left"></div>
+              <div class="card-arrow-top-right"></div>
+              <div class="card-arrow-bottom-left"></div>
+              <div class="card-arrow-bottom-right"></div>
+            </div>
+          </div>
+
+
+
+
+
+        </div>
+
+        <!-- arrow -->
+        <div class="card-arrow">
+          <div class="card-arrow-top-left"></div>
+          <div class="card-arrow-top-right"></div>
+          <div class="card-arrow-bottom-left"></div>
+          <div class="card-arrow-bottom-right"></div>
+        </div>
+
+
+
+
+
+
+
+
+  </div>
+
+
+
+</template>
