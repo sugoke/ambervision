@@ -404,10 +404,10 @@
                 var barChart = new Chart(ctx2, {
                   type: 'bar',
                   data: {
-                    labels: ['Q1', 'Q2', 'Q3'],
+                    labels: ['Q1', 'Q2', 'Q3','Q4', 'Q5', 'Q6'],
                     datasets: [{
                       label: 'Cash Flows',
-                      data: [60000, 50000, 150000],
+                      data: [60000, 60000, 0,120000,60000,60000],
                       backgroundColor: hexToRgba(COLOR_THEME, .2),
                       borderColor: COLOR_THEME,
                       borderWidth: 1.5
@@ -429,7 +429,7 @@
                   <div class="small text-white text-opacity-50">If maturity were tomorrow, the capital would be redeemed at 100%.</div>
                 </div>
                 <div>
-                  <h2 class="mb-0">EUR 150k</h2>
+                  <h2 class="mb-0">EUR 360k</h2>
                 </div>
               </div>
             </div>
@@ -465,21 +465,64 @@
                 var lineChart = new Chart(ctx, {
                   type: 'line',
                   data: {
-                    labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'],
-                    datasets: [{
-                      color: COLOR_THEME,
-                      backgroundColor: hexToRgba(COLOR_THEME, .2),
-                      borderColor: COLOR_THEME,
-                      borderWidth: 1.5,
-                      pointBackgroundColor: COLOR_WHITE,
-                      pointBorderWidth: 1.5,
-                      pointRadius: 4,
-                      pointHoverBackgroundColor: COLOR_THEME,
-                      pointHoverBorderColor: COLOR_WHITE,
-                      pointHoverRadius: 7,
-                      label: 'Total Sales',
-                      data: [12, 19, 4, 5, 2, 3]
-                    }]
+                    labels: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+                    datasets: [
+                    {
+                              data: [40,40,40,40,40,40,40,40,40,40,40,40],
+                              label: "Protection barrier",
+                              borderColor: '#C0392B',
+                              fill: true,
+                              backgroundColor: "rgba(225,215,160,0.2)",
+                            },
+
+
+                    {
+                        label: "Stock A",
+                        fill: false,
+                        lineTension: 0.1,
+                        backgroundColor: "rgba(225,0,0,0.4)",
+                        borderColor: "#FAD7A0", // The main line color
+                        borderCapStyle: 'square',
+                        borderDash: [], // try [5, 15] for instance
+                        borderDashOffset: 0.0,
+                        borderJoinStyle: 'miter',
+                        pointBorderColor: "black",
+                        pointBackgroundColor: "white",
+                        pointBorderWidth: 1,
+                        pointHoverRadius: 8,
+                        pointHoverBackgroundColor: "yellow",
+                        pointHoverBorderColor: "brown",
+                        pointHoverBorderWidth: 2,
+                        pointRadius: 4,
+                        pointHitRadius: 10,
+                        // notice the gap in the data and the spanGaps: true
+                        data: [65, 59, 80, 81, 56, 55, 40,45 ,60,55,30,78],
+                        spanGaps: true,
+                      }, {
+                        label: "Stock B",
+                        fill: false,
+                        lineTension: 0.1,
+                        backgroundColor: "rgba(167,105,0,0.4)",
+                        borderColor: "rgb(167, 105, 0)",
+                        borderCapStyle: 'butt',
+                        borderDash: [],
+                        borderDashOffset: 0.0,
+                        borderJoinStyle: 'miter',
+                        pointBorderColor: "white",
+                        pointBackgroundColor: "black",
+                        pointBorderWidth: 1,
+                        pointHoverRadius: 8,
+                        pointHoverBackgroundColor: "brown",
+                        pointHoverBorderColor: "yellow",
+                        pointHoverBorderWidth: 2,
+                        pointRadius: 4,
+                        pointHitRadius: 10,
+                        // notice the gap in the data and the spanGaps: false
+                        data: [65, 40, 60, 95, 64, 78, 90,45,70,40,70,89],
+                        spanGaps: false,
+                      }
+
+                    ]
                   }
                 });
               </script>
