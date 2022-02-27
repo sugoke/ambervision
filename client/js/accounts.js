@@ -10,6 +10,7 @@ AccountsTemplates.configure({
         signIn: "Sign In",
         signUp: "Sign Up",
         verifyEmail: "Verify Email Title",
+        
 
       },
       button: {
