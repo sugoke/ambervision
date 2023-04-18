@@ -5,3 +5,4 @@ Meteor.startup(() => {
 });
 
 import moment from 'moment'
+import percentage from 'percentage'

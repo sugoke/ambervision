@@ -5,6 +5,8 @@ import './main.html';
 import { Chart } from 'chart.js'
 //import { DataTables } from 'datatables.net'
 
+import 'jquery-ui-dist/jquery-ui.min.css';
+
 
 import {
   moment

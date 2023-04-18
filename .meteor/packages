@@ -34,3 +34,5 @@ useraccounts:iron-routing
 accounts-password@2.2.0
 useraccounts:core
 useraccounts:bootstrap
+manuelro:blaze-math
+natestrauser:select2

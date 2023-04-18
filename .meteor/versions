@@ -55,6 +55,7 @@ ksrv:datatables@0.0.1
 launch-screen@1.3.0
 localstorage@1.2.0
 logging@1.3.1
+manuelro:blaze-math@0.0.2
 meteor@1.10.0
 meteor-base@1.5.1
 meteortoys:toykit@10.0.0
@@ -72,6 +73,7 @@ mongo-decimal@0.1.2
 mongo-dev-server@1.1.0
 mongo-id@1.0.8
 msavin:mongol@10.0.1
+natestrauser:select2@4.0.3
 nordlys:logic-helpers@0.1.1_1
 npm-mongo@4.3.1
 observe-sequence@1.0.19

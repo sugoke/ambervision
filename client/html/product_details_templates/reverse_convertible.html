@@ -28,7 +28,7 @@
           <h5 class="card-title">
             <div class="spinner-grow spinner-grow-sm text-warning"></div> Live Product
           </h5>
-          <h6 class="card-subtitle mb-3 text-white text-opacity-50 animate__animated animate__pulse">Bid price: {{current_product.product_details}}</h6>
+          <h6 class="card-subtitle mb-3 text-white text-opacity-50 animate__animated animate__pulse">Bid price: {{current_product.product_details.last_bid}}% ({{current_product.product_details.bid_date}})</h6>
 
           <div class="row">
             <div class="col-12 col-sm-6 col-xl-12">
@@ -174,8 +174,8 @@
                           </div>
                           <div class="flex-1 ps-3">
                             <div class="mb-1"><small class="fs-9px fw-500 lh-1 d-inline-block rounded-0 badge bg-white bg-opacity-25 text-white text-opacity-75 pt-5px ">{{ticker}}.{{exchange}}</small></div>
-                            <div class="fw-500 text-white">Tesla</div>
-                            $ 2014.45
+                            <div class="fw-500 text-white">{{full_name}}</div>
+                            {{last_close}} ({{date_last_close}})
                           </div>
                         </div>
                       </td>
@@ -187,11 +187,11 @@
                           </tr>
                           <tr>
                             <td class="pe-3">Performance:</td>
-                            <td class="text-white text-opacity-75 fw-500">+ 120,54%</td>
+                            <td class="text-white text-opacity-75 fw-500">{{perf}}</td>
                           </tr>
                           <tr>
                             <td class="pe-3 text-nowrap">Distance to barrier:</td>
-                            <td class="text-white text-opacity-75 fw-500">+ 20,54%</td>
+                            <td class="text-white text-opacity-75 fw-500">{{distance}}</td>
                           </tr>
                         </table>
                       </td>
@@ -287,9 +287,9 @@
 
 
               <!-- html -->
-              <canvas id="lineChart"></canvas>
+              <canvas id="rc_chart"></canvas>
 
-              <!-- script -->
+              <!-- script
               <script>
                 var ctx = document.getElementById('lineChart');
                 var lineChart = new Chart(ctx, {
@@ -313,7 +313,7 @@
                   }
                 });
               </script>
-
+-->
 
             </div>
 

@@ -1,3 +1,16 @@
+
+
+
+
+
+Template.body.events({
+  'click .removable': function (event) {
+    $(event.target).parent().remove();
+  },
+});
+
+
+
 Template.addproduct.events({
 
   'click #next_ticker'(event) {
@@ -6,7 +19,7 @@ Template.addproduct.events({
     var numItems = $('.underlyings').length
     numItems++
     console.log(numItems)
-    $(".underlyings_input").append('<tr id="underlying_line_' + numItems + '"><th scope="row"><label for=id="underlying_' + numItems + '"  class="mb-2">Ticker</label><div class="input-group"><input type="text" class="form-control underlyings underlyings_change" id=id="underlying_' + numItems + '" placeholder="Ticker" aria-label="Ticker" aria-describedby="basic-addon2"   style="text-transform:uppercase"  autocomplete="off"><div class="input-group-append"><select class="form-select underlyings_change" id="country_' + numItems + '" aria-label="Default select example"><option selected>US</option><option value="1">FR</option><option value="2">DE</option></select></div></div></th><td><label for="close_1"  class="mb-2">Close ({{td}})</label><input type="text" class="form-control cash" id="close_' + numItems + '" value="" disabled></td><td><label for="strike_1"  class="mb-2">Strike</label><input type="text" class="form-control cash" id="strike_' + numItems + '" value=""  autocomplete="off"></td><td><label for="remove_underlying_' + numItems + ' "  class="mb-2">Del.</label><button class="btn btn-outline-theme form-control" type="button" id="remove_underlying_' + numItems + ' " onclick="$(this).parent().parent().remove();">X</button></td></tr>');
+    $(".underlyings_input").append('<tr id="underlying_line_' + numItems + '"><th scope="row"><label for=id="underlying_' + numItems + '"  class="mb-2">Ticker</label><div class="input-group"><input type="text" class="form-control underlyings underlyings_change" id="underlying_' + numItems + '" placeholder="Ticker" aria-label="Ticker" aria-describedby="basic-addon2"   style="text-transform:uppercase"  autocomplete="off"><div class="input-group-append"><select class="form-select underlyings_change" id="country_' + numItems + '" aria-label="Default select example"><option selected>US</option><option value="1">FR</option><option value="2">DE</option></select></div></div></th><td><label for="full_name_' + numItems + '" class="mb-2">Full name</label><input type="text" class="form-control cash" id="full_name_' + numItems + '" value=""></td><td><label for="close_' + numItems + '"  class="mb-2">Close ()</label><input type="text" class="form-control cash" id="close_' + numItems + '" value="" disabled></td><td><label for="strike_' + numItems + '"  class="mb-2">Strike</label><input type="text" class="form-control cash" id="strike_' + numItems + '" value=""  autocomplete="off"></td><td><label for="remove_underlying_' + numItems + ' "  class="mb-2">Del.</label><button class="btn btn-outline-theme form-control" type="button" id="remove_underlying_' + numItems + ' " onclick="$(this).parent().parent().remove();">X</button></td></tr>');
 
     cash_mask_id('strike_' + numItems);
 

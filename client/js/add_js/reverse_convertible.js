@@ -30,7 +30,8 @@ Template.dates_reverse_convertible.events({
       underlyings[i] = {
         'ticker': obj.value.toUpperCase(),
         'exchange': document.getElementById('country_' + idplusone).value,
-        'strike': document.getElementById('strike_' + idplusone).value
+        'strike': document.getElementById('strike_' + idplusone).value,
+        'full_name': document.getElementById('full_name_' + idplusone).value,
       }
 
     });
