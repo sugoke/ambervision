@@ -8,14 +8,25 @@ import { ReactiveVar } from 'meteor/reactive-var';
 import 'jquery-ui-dist/jquery-ui.min.css';
 
 import './main.html';
-import './testtt.js';
+import { Products } from '/imports/api/products/products.js';
+// /client/main.js
+import '/lib/router.js';
+
+// Importing products.js into main.js
+import './js/products.js';
+import './mainlayout.js';
 
 
+
+
+import './mainlayout.html';
+import './html/home.html';
+import './html/products.html';
+
+
+Meteor.subscribe('products');
 
 Meteor.startup(() => {
-
-
-
 
   var app = {
       id: "#app",

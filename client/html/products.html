@@ -1,0 +1,111 @@
+<template name="products">
+  <div id="content" class="app-content">
+
+      <div class="d-flex align-items-center mb-3">
+        <div>
+          <ul class="breadcrumb">
+            <li class="breadcrumb-item"><a href="#">AMBERVISION</a></li>
+            <li class="breadcrumb-item active">Products list</li>
+          </ul>
+          <h1 class="page-header mb-0 reveal">Products list<span class="animate__animated animate__flash animate__infinite">_</span></h1>
+        </div>
+
+
+      </div>
+
+
+      <!-- required css / js -->
+      <!-- Latest compiled and minified CSS -->
+      <link rel="stylesheet" href="https://unpkg.com/bootstrap-table@1.19.1/dist/bootstrap-table.min.css">
+
+      <!-- Latest compiled and minified JavaScript -->
+      <script src="https://unpkg.com/bootstrap-table@1.19.1/dist/bootstrap-table.min.js"></script>
+
+      <div class="card shadow">
+        <div class="card-body">
+          <!-- html -->
+          <table class="table" data-toggle="table" id="table" data-toolbar="#toolbar" data-search="true" data-show-refresh="false" data-show-toggle="true" data-show-fullscreen="false" data-show-columns="true" data-show-columns-toggle-all="true"
+            data-detail-view="true" data-show-export="true" data-click-to-select="true"
+      data-detail-formatter="detailFormatter" data-minimum-count-columns="2" data-show-pagination-switch="true" data-pagination="true"
+            data-id-field="id">
+
+
+            <thead>
+              <tr>
+                <th data-sortable="true">Isin </th>
+                <th data-sortable="true">Currency</th>
+                <th data-sortable="true">Nominal</th>
+                <th data-sortable="true">Type</th>
+                <th data-sortable="true">Underlyings</th>
+
+                <th data-sortable="true">Worst-of</th>
+                <th data-sortable="true">Worst-of Perf.</th>
+                <th data-sortable="true">Bid</th>
+                <th data-sortable="true">Launch date</th>
+                <th data-sortable="true">Final observation</th>
+              </tr>
+            </thead>
+            <tbody>
+
+              {{#each product_list}}
+                <tr>
+                  <td><button type="button" class="btn btn-sm btn-outline-warning" onclick="location.href='productdetail';">{{isin}}</button></td>
+                  <td>{{referenceCurrency}}</td>
+                  <td>1 000 000</td>
+                  <td>{{type}}</td>
+
+
+
+                  <td>
+                    <div class="widget-user-list">
+                      <div class="widget-user-list-item w-30px h-30px">
+                        <div class="widget-user-list-link w-30px h-30px"><img src="https://storage.googleapis.com/webdesignledger.pub.network/WDL/12f213e1-t1.jpg" alt="" /></div>
+                      </div>
+
+                      <div class="widget-user-list-item w-30px h-30px ms-n1">
+                        <div class="widget-user-list-link w-30px h-30px"><img src="https://logodownload.org/wp-content/uploads/2014/09/nvidia-logo-0.png" alt="" /></div>
+                      </div>
+
+                      <!--      <div class="widget-user-list-item w-30px h-30px ms-n2"><div class="widget-user-list-link w-30px h-30px bg-gray-200 text-gray-500 fs-12px fw-400">+2</div></div>  -->
+                    </div>
+                  </td>
+
+
+                  <td>x</td>
+                  <td>x%</td>
+                  <td>Bid</td>
+                  <td>{{initialFixingDate}}</td>
+                  <td>{{repaymentDate}}</td>
+                </tr>
+
+              {{/each}}
+
+            </tbody>
+
+          </table>
+
+          <script>
+            function detailFormatter(index, row) {
+              var html = []
+              $.each(row, function (key, value) {
+                html.push('<p><b>' + key + ':</b> ' + value + '</p>')
+              })
+              return html.join('')
+            }
+          </script>
+
+
+        </div>
+        <!-- card-arrow -->
+        <div class="card-arrow">
+          <div class="card-arrow-top-left"></div>
+          <div class="card-arrow-top-right"></div>
+          <div class="card-arrow-bottom-left"></div>
+          <div class="card-arrow-bottom-right"></div>
+        </div>
+      </div>
+
+  </div>
+
+
+  </template>
