@@ -5,6 +5,9 @@
   <div id="app" class="app">
     <!-- BEGIN #header -->
     <div id="header" class="app-header">
+
+
+
       <!-- BEGIN desktop-toggler -->
       <div class="desktop-toggler">
         <button type="button" class="menu-toggler" data-toggle-class="app-sidebar-collapsed" data-dismiss-class="app-sidebar-toggled" data-toggle-target=".app">
@@ -61,7 +64,7 @@
               <div class="col-4">
     <a href="#" id="refreshButton" class="dropdown-item text-decoration-none p-3 bg-none">
       <div><i class="bi bi-hdd-network h2 opacity-5 d-block my-1"></i></div>
-      <div class="fw-500 fs-10px text-inverse">REFRESH</div>
+      <div class="fw-500 fs-10px text-inverse">REFRESH DATA</div>
     </a>
   </div>
 
@@ -120,7 +123,7 @@
                 <i class="bi bi-person-fill fs-32px mb-n3"></i>
               </div>
             </div>
-            <div class="menu-text d-sm-block d-none w-170px">username@account.com</div>
+            <div class="menu-text d-sm-block d-none w-170px">{{> loginButtons}}</div>
           </a>
           <div class="dropdown-menu dropdown-menu-end me-lg-3 fs-11px mt-1">
             <a class="dropdown-item d-flex align-items-center" href="#">PROFILE <i class="bi bi-person-circle ms-auto text-theme fs-16px my-n1"></i></a>
@@ -165,6 +168,10 @@
             <a href="/products" class="menu-link">
               <span class="menu-icon"><i class="bi bi-card-checklist"></i></span>
               <span class="menu-text">Products</span>
+            </a>
+            <a href="/productDetails?isin=XS1234567890" class="menu-link">
+              <span class="menu-icon"><i class="bi bi-card-checklist"></i></span>
+              <span class="menu-text">Details</span>
             </a>
           </div>
         </div>
@@ -302,6 +309,37 @@
         </div>
       </div>
     </div>
+    <!-- END theme-panel -->
+    <!-- BEGIN btn-scroll-top -->
+    <a href="#" data-toggle="scroll-to-top" class="btn-scroll-top fade"><i class="fa fa-arrow-up"></i></a>
+    <!-- END btn-scroll-top -->
+  </div>
+
+
+  <script src="/assets/js/vendor.min.js"></script>
+  <script src="/assets/js/app.min.js"></script>
+
+
+</template>
+
+<!-- /client/templates/MainLayout.html -->
+<template name="loginLayout">
+
+    <!-- BEGIN #app -->
+  <div id="app" class="app">
+
+
+
+    <!-- BEGIN mobile-sidebar-backdrop -->
+    <button class="app-sidebar-mobile-backdrop" data-toggle-target=".app" data-toggle-class="app-sidebar-mobile-toggled"></button>
+    <!-- END mobile-sidebar-backdrop -->
+
+    <!-- BEGIN #content -->
+
+  {{> yield}}
+    <!-- END #content -->
+
+
     <!-- END theme-panel -->
     <!-- BEGIN btn-scroll-top -->
     <a href="#" data-toggle="scroll-to-top" class="btn-scroll-top fade"><i class="fa fa-arrow-up"></i></a>

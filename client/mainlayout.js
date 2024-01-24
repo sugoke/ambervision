@@ -10,9 +10,9 @@ Template.mainLayout.events({
 
 
 
-    Meteor.call('updateAllProducts', (error, result) => {
+    Meteor.call('updateAllMarketData', (error, result) => {
       if (error) {
-        console.error("Error calling updateAllProducts:", error);
+        console.error("Error calling updateAllMarketData:", error);
       } else {
         console.log("Products updated successfully");
 console.log(result);

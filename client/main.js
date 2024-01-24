@@ -1,8 +1,5 @@
 import { Meteor } from 'meteor/meteor';
 
-
-
-
 import { Template } from 'meteor/templating';
 import { ReactiveVar } from 'meteor/reactive-var';
 import 'jquery-ui-dist/jquery-ui.min.css';
@@ -14,19 +11,33 @@ import '/lib/router.js';
 
 // Importing products.js into main.js
 import './js/products.js';
+import './js/productDetails.js';
 import './mainlayout.js';
-
-
+import './js/login.js';
 
 
 import './mainlayout.html';
 import './html/home.html';
 import './html/products.html';
+import './html/productDetails.html';
+import './html/login.html';
+
+//import '/imports/startup/both/accounts-config.js';
+//import '/imports/startup/both/useraccounts-configuration.js';
+
 
 
 Meteor.subscribe('products');
+// Client-side JavaScript
+Meteor.subscribe('historicalData');
+
+
+
+
 
 Meteor.startup(() => {
+
+
 
   var app = {
       id: "#app",
@@ -622,7 +633,6 @@ Meteor.startup(() => {
 
 
 });
-
 
 
 

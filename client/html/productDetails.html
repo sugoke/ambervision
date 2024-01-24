@@ -1,0 +1,475 @@
+<template name="productDetails">
+  <div id="content" class="app-content">
+
+    <div class="d-flex align-items-center mb-3">
+      <div>
+        <ul class="breadcrumb">
+          <li class="breadcrumb-item"><a href="#">AMBERVISION</a></li>
+          <li class="breadcrumb-item active">Product details</li>
+        </ul>
+        <h1 class="page-header mb-0 reveal">{{productDetails.isin}}<span class="animate__animated animate__flash animate__infinite">_</span></h1>
+      </div>
+
+
+    </div>
+
+    <div class="row">
+
+      <div class="col-xl-3">
+
+        <div class="desktop-sticky-top d-none d-lg-block">
+        <div class="card shadow">
+
+
+          <div class="card-header fw-bold medium lead">{{productDetails.name}}</div>
+
+
+
+          <div class="card-body">
+            <h5 class="card-title">
+              <div class="spinner-grow spinner-grow-sm text-warning"></div> Live Product
+            </h5>
+            <h6 class="card-subtitle mb-3 text-white text-opacity-50 animate__animated animate__pulse">Bid price: 101,50%</h6>
+
+            <div class="row">
+              <div class="col-12 col-sm-6 col-xl-12">
+
+                <ul class="list-group list-group-horizontal mt-3">
+                  <li class="list-group-item flex-fill">Currency</li>
+                  <li class="list-group-item pull-right">{{productDetails.referenceCurrency}}</li>
+                </ul>
+
+                <ul class="list-group list-group-horizontal">
+                  <li class="list-group-item flex-fill">Nominal</li>
+                  <li class="list-group-item  pull-right">{{productDetails.nominalValue}}</li>
+                </ul>
+                <ul class="list-group list-group-horizontal">
+                  <li class="list-group-item flex-fill">Coupon</li>
+                  <li class="list-group-item  pull-right">{{productDetails.couponRate}}</li>
+                </ul>
+                <ul class="list-group list-group-horizontal">
+                  <li class="list-group-item flex-fill">Protection barrier</li>
+                  <li class="list-group-item  pull-right">60%</li>
+                </ul>
+
+                <ul class="list-group list-group-horizontal">
+                  <li class="list-group-item flex-fill">Coupon barrier</li>
+                  <li class="list-group-item  pull-right">60%</li>
+                </ul>
+                <ul class="list-group list-group-horizontal">
+                  <li class="list-group-item flex-fill">Issuer</li>
+                  <li class="list-group-item  pull-right">{{productDetails.issuer}}</li>
+                </ul>
+
+                <ul class="list-group list-group-horizontal">
+                  <li class="list-group-item flex-fill">Issue date</li>
+                  <li class="list-group-item  pull-right">{{productDetails.initialFixingDate}}</li>
+                </ul>
+
+                <ul class="list-group list-group-horizontal">
+                  <li class="list-group-item flex-fill">Maturity</li>
+                  <li class="list-group-item  pull-right">{{productDetails.repaymentDate}}</li>
+                </ul>
+                <ul class="list-group list-group-horizontal">
+                  <li class="list-group-item flex-fill">Settlement</li>
+                  <li class="list-group-item  pull-right">{{productDetails.settlement}}</li>
+                </ul>
+              </div>
+
+
+              <div class="col-12 col-sm-6 col-xl-12">
+                <p class="card-text mb-3">
+
+                  <!-- BEGIN card -->
+                  <div class="card mb-3">
+                    <!-- BEGIN card-header -->
+                    <div class="card-header d-flex align-items-center bg-white bg-opacity-15">
+                      <span class="flex-grow-1 fw-400">Features</span>
+
+                    </div>
+                    <!-- END card-header -->
+
+
+                    <ul class="list-group">
+                      <li class="list-group-item">
+
+                        <i class="far fa-check-circle text-warning fa-fw fa-lg animate__animated animate__delay-1s animate__bounceIn "></i> Geared Put</li>
+                      <li class="list-group-item">
+                        <i class="far fa-check-circle text-warning fa-fw fa-lg animate__animated animate__delay-1s animate__bounceIn "></i> Memory Coupons</li>
+                      <li class="list-group-item">
+                        <i class="far fa-check-circle text-warning fa-fw fa-lg animate__animated animate__delay-1s animate__bounceIn "></i> Memory Locks</li>
+                      <li class="list-group-item">
+                        <i class="far fa-check-circle text-dark fa-fw fa-lg animate__animated animate__delay-1s animate__bounceIn "></i> One Star</li>
+
+                    </ul>
+
+
+
+                    <!-- BEGIN card-arrow -->
+                    <div class="card-arrow">
+                      <div class="card-arrow-top-left"></div>
+                      <div class="card-arrow-top-right"></div>
+                      <div class="card-arrow-bottom-left"></div>
+                      <div class="card-arrow-bottom-right"></div>
+                    </div>
+                    <!-- END card-arrow -->
+                  </div>
+                  <!-- END card -->
+
+                </p>
+
+              </div>
+            </div>
+          </div>
+
+          <!-- arrow -->
+          <div class="card-arrow">
+            <div class="card-arrow-top-left"></div>
+            <div class="card-arrow-top-right"></div>
+            <div class="card-arrow-bottom-left"></div>
+            <div class="card-arrow-bottom-right"></div>
+          </div>
+        </div>
+      </div>
+  </div>
+
+      <div class="col-xl-9">
+        <!-- basic usage -->
+
+            <!-- BEGIN card -->
+            <div class="card mb-3">
+              <!-- BEGIN card-body -->
+              <div class="card-body">
+                <!-- BEGIN title -->
+                <div class="d-flex fw-bold small mb-3">
+                  <span class="flex-grow-1">UNDERLYINGS</span>
+                  <a href="#" data-toggle="card-expand" class="text-white text-opacity-50 text-decoration-none"><i class="bi bi-fullscreen"></i></a>
+                </div>
+                <!-- END title -->
+                <!-- BEGIN table -->
+                <div class="table-responsive">
+                  <table class="w-100 mb-0 small align-middle text-nowrap mytable">
+                    <tbody>
+                      <tr>
+                        <td>
+                          <div class="d-flex">
+                            <div class="position-relative mb-2">
+                              <div class="bg-center bg-cover bg-no-repeat w-60px h-60px rounded-circle flip" style="background-image: url(https://storage.googleapis.com/webdesignledger.pub.network/WDL/12f213e1-t1.jpg);">
+                              </div>
+
+                            </div>
+                            <div class="flex-1 ps-3">
+                              <div class="mb-1"><small class="fs-9px fw-500 lh-1 d-inline-block rounded-0 badge bg-white bg-opacity-25 text-white text-opacity-75 pt-5px ">TSLA.US</small></div>
+                              <div class="fw-500 text-white">Tesla</div>
+                              $ 2014.45
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          <table class="mb-2">
+                            <tr>
+                              <td class="pe-3">Strike:</td>
+                              <td class="text-white text-opacity-75 fw-500"> USD 1290</td>
+                            </tr>
+                            <tr>
+                              <td class="pe-3">Performance:</td>
+                              <td class="text-white text-opacity-75 fw-500">+ 120,54%</td>
+                            </tr>
+                            <tr>
+                              <td class="pe-3 text-nowrap">Distance to barrier:</td>
+                              <td class="text-white text-opacity-75 fw-500">+ 20,54%</td>
+                            </tr>
+                          </table>
+                        </td>
+                        <td><a href="#" class="text-decoration-none text-dark"><i class="bi bi-lock"></i></a></td>
+                      </tr>
+                      <tr>
+                        <td>
+                          <div class="d-flex mb-2 align-items-center">
+                            <div class="position-relative">
+                              <div class="bg-center bg-cover bg-no-repeat w-60px h-60px rounded-circle flip" style="background-image: url(https://i0.wp.com/cloudwize.co.za/wp-content/uploads/2019/03/new-microsoft-logo-SIZED-SQUARE.jpg?ssl=1);">
+                              </div>
+
+                            </div>
+                            <div class="flex-1 ps-3">
+                              <div class="mb-1"><small class="fs-9px fw-500 lh-1 d-inline-block rounded-0 badge bg-white bg-opacity-25 text-white text-opacity-75 pt-5px">MSFT.US</small></div>
+                              <div class="text-white fw-500">Microsoft</div>
+                              $99.00
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          <table class="mb-2">
+                            <tr>
+                              <td class="pe-3">Strike:</td>
+                              <td class="text-white text-opacity-75 fw-500"> USD 1290</td>
+                            </tr>
+                            <tr>
+                              <td class="pe-3">Performance:</td>
+                              <td class="text-white text-opacity-75 fw-500">+ 120,54%</td>
+                            </tr>
+                            <tr>
+                              <td class="pe-3 text-nowrap">Distance to barrier:</td>
+                              <td class="text-white text-opacity-75 fw-500">+ 20,54%</td>
+                            </tr>
+                          </table>
+                        </td>
+                        <td><a href="#" class="text-decoration-none"><i class="bi bi-lock-fill"></i></a></td>
+                      </tr>
+                      <tr>
+                        <td>
+                          <div class="d-flex mb-2 align-items-center">
+                            <div class="position-relative">
+                              <div class="bg-center bg-cover bg-no-repeat w-60px h-60px rounded-circle flip" style="background-image: url(https://logodownload.org/wp-content/uploads/2014/09/nvidia-logo-0.png);">
+                              </div>
+                              <div class="position-absolute top-0 start-0">
+                                <span class="badge bg-theme text-theme-900 rounded-0 d-flex align-items-center justify-content-center w-50px h-20px">Worst-of</span>
+                              </div>
+                            </div>
+                            <div class="flex-1 ps-3">
+                              <div class="mb-1"><small class="fs-9px fw-500 lh-1 d-inline-block rounded-0 badge bg-white bg-opacity-25 text-white text-opacity-75 pt-5px">NVDA.US</small></div>
+                              <div class="text-white fw-500">Nvidia</div>
+                              $599
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          <table class="mb-2">
+                            <tr>
+                              <td class="pe-3">Strike:</td>
+                              <td class="text-white text-opacity-75 fw-500"> USD 1290</td>
+                            </tr>
+                            <tr>
+                              <td class="pe-3">Performance:</td>
+                              <td class="text-white text-opacity-75 fw-500">+ 120,54%</td>
+                            </tr>
+                            <tr>
+                              <td class="pe-3 text-nowrap">Distance to barrier:</td>
+                              <td class="text-white text-opacity-75 fw-500">+ 20,54%</td>
+                            </tr>
+                          </table>
+                        </td>
+                        <td><a href="#" class="text-decoration-none"><i class="bi bi-lock-fill"></i></a></td>
+                      </tr>
+
+
+                    </tbody>
+                  </table>
+                </div>
+                <!-- END table -->
+              </div>
+              <!-- END card-body -->
+
+              <!-- BEGIN card-arrow -->
+              <div class="card-arrow">
+                <div class="card-arrow-top-left"></div>
+                <div class="card-arrow-top-right"></div>
+                <div class="card-arrow-bottom-left"></div>
+                <div class="card-arrow-bottom-right"></div>
+              </div>
+              <!-- END card-arrow -->
+            </div>
+            <!-- END card -->
+            <!-- basic usage -->
+            <div class="card">
+
+
+              <div class="card-header d-flex">
+
+                <div class="nav-wizards-container">
+                  <nav class="nav nav-wizards-3 mb-2">
+                    <div class="nav-item col">
+                      <a class="nav-link completed" href="#">
+                        <div class="nav-dot"></div>
+                        <div class="nav-title">Launch</div>
+                        <div class="nav-text">21/02/2021</div>
+                      </a>
+                    </div>
+                    <div class="nav-item col">
+                      <a class="nav-link completed" href="#">
+                        <div class="nav-dot"></div>
+                        <div class="nav-title">Issue date</div>
+                        <div class="nav-text">28/02/2021</div>
+                      </a>
+                    </div>
+                    <div class="nav-item col">
+                      <a class="nav-link active" href="#">
+                        <div class="nav-dot"></div>
+                        <div class="nav-title">1st call</div>
+                        <div class="nav-text">21/08/2021</div>
+                      </a>
+                    </div>
+                    <div class="nav-item col">
+                      <a class="nav-link disabled" href="#">
+                        <div class="nav-dot"></div>
+                        <div class="nav-title">Final</div>
+                        <div class="nav-text">21/05/2023</div>
+                      </a>
+                    </div>
+                    <div class="nav-item col">
+                      <a class="nav-link disabled" href="#">
+                        <div class="nav-dot"></div>
+                        <div class="nav-title">Maturity</div>
+                        <div class="nav-text">28/05/2023</div>
+                      </a>
+                    </div>
+                  </nav>
+                </div>
+
+
+              </div>
+
+              <div class="card-body">
+                <div class="d-flex fw-bold small mb-3">
+                  <span class="flex-grow-1">OBSERVATIONS</span>
+                  <a href="#" data-toggle="card-expand" class="text-white text-opacity-50 text-decoration-none"><i class="bi bi-fullscreen"></i></a>
+                </div>
+                <div class="table-responsive d-flex">
+                  <table class="small text-nowrap mytable">
+
+
+                    <thead>
+                      <tr>
+                        <th scope="col" class="text-center">#</th>
+                        <th scope="col" class="text-center">Date</th>
+                        <th scope="col" class="text-center">Payment Date</th>
+                        <th scope="col" class="text-center">Callable</th>
+                        <th scope="col" class="text-center">Worst-of</th>
+                        <th scope="col" class="text-center">Wo Perf.</th>
+                        <th scope="col" class="text-center">Outcome</th>
+                        <th scope="col" class="text-center">Coupon paid</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <th scope="row" class="text-center">Q1</th>
+                        <td class="text-center">27/07/2021</td>
+                        <td class="text-center">28/07/2021</td>
+                        <td class="text-center">Yes (100%)</td>
+                        <td class="text-center">NVDA</td>
+                        <td class="text-center">-42.00%</td>
+                        <td class="text-center">Coupon in Memory</td>
+                        <td class="text-center">0.00%</td>
+                      </tr>
+                      <tr>
+                        <th scope="row" class="text-center">Q2</th>
+                        <td class="text-center">27/10/2021</td>
+                        <td class="text-center">28/07/2021</td>
+                        <td class="text-center">Yes (100%)</td>
+                        <td class="text-center">NVDA</td>
+                        <td class="text-center">-46.00%</td>
+                        <td class="text-center">Coupon in Memory</td>
+                        <td class="text-center">0.00%</td>
+                      </tr>
+                      <tr>
+                        <th scope="row" class="text-center">Q3</th>
+                        <td class="text-center">27/01/2022</td>
+                        <td class="text-center">28/07/2021</td>
+                        <td class="text-center">Yes (100%)</td>
+                        <td class="text-center">NVDA</td>
+                        <td class="text-center">-26.00%</td>
+                        <td class="text-center">Coupon paid
+                        </td>
+                        <td class="text-center">12.00%</td>
+                      </tr>
+
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <!-- arrow -->
+              <div class="card-arrow">
+                <div class="card-arrow-top-left"></div>
+                <div class="card-arrow-top-right"></div>
+                <div class="card-arrow-bottom-left"></div>
+                <div class="card-arrow-bottom-right"></div>
+              </div>
+            </div>
+
+
+
+
+
+            <div class="card">
+              <div class="card-body text-white text-center">
+                <div class="fs-16px fw-bold">Cash Flows</div>
+                <div class="fs-13px mb-3">Unrealized P&L on this product: +15,50%.</div>
+
+
+
+
+
+              </div>
+              <div class="list-group">
+                <div class="list-group-item border-top-0 rounded-top-0 d-flex align-items-center p-3">
+                  <div class="w-40px h-40px bg-white bg-opacity-25 d-flex align-items-center justify-content-center">
+                    <i class="fa fa-tag fa-lg"></i>
+                  </div>
+                  <div class="flex-fill px-3">
+                    <div class="fw-bold">Total Coupons</div>
+                    <div class="small text-white text-opacity-50">If maturity were tomorrow, the capital would be redeemed at 100%.</div>
+                  </div>
+                  <div>
+                    <h2 class="mb-0">EUR 360k</h2>
+                  </div>
+                </div>
+              </div>
+
+              <!-- card-arrow -->
+              <div class="card-arrow">
+                <div class="card-arrow-top-left"></div>
+                <div class="card-arrow-top-right"></div>
+                <div class="card-arrow-bottom-left"></div>
+                <div class="card-arrow-bottom-right"></div>
+              </div>
+            </div>
+
+
+
+            <div class="card">
+              <div class="card-body text-white text-center">
+
+                <!-- BEGIN title -->
+                <div class="d-flex fw-bold small mb-3">
+                  <span class="flex-grow-1">CHART</span>
+                  <a href="#" data-toggle="card-expand" class="text-white text-opacity-50 text-decoration-none"><i class="bi bi-fullscreen"></i></a>
+                </div>
+                <!-- END title -->
+
+
+
+              </div>
+
+
+              <!-- card-arrow -->
+              <div class="card-arrow">
+                <div class="card-arrow-top-left"></div>
+                <div class="card-arrow-top-right"></div>
+                <div class="card-arrow-bottom-left"></div>
+                <div class="card-arrow-bottom-right"></div>
+              </div>
+            </div>
+
+
+
+
+
+          </div>
+
+          <!-- arrow -->
+          <div class="card-arrow">
+            <div class="card-arrow-top-left"></div>
+            <div class="card-arrow-top-right"></div>
+            <div class="card-arrow-bottom-left"></div>
+            <div class="card-arrow-bottom-right"></div>
+          </div>
+
+
+
+    </div>
+
+
+  </div>
+
+
+  </template>
