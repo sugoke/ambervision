@@ -12,20 +12,81 @@ import moment from 'moment';
 
 Template.editProduct.helpers({
   isEditMode() {
-    // This assumes you're using Iron Router or a similar router for handling URLs
+    // Accessing the URL query parameters using Iron Router
     const mode = Router.current().params.query.mode;
+    console.log("isEditMode check:", mode);
     return mode === "editProduct";
   },
 
   tickers() {
-    return Template.instance().tickers.get();
+    const tickers = Template.instance().tickers.get();
+    console.log("tickers:", tickers);
+    return tickers;
+  },
+
+  productData() {
+    const productData = Template.instance().productData.get();
+    console.log("productData:", productData);
+    return productData;
+  }
+});
+
+Template.editProduct.onCreated(function() {
+  // Initialize reactive variables
+  this.productData = new ReactiveVar({});
+  this.tickers = new ReactiveVar([]);
+  this.isEditMode = new ReactiveVar(false);
+
+  // Check if we are in edit mode based on URL query parameters
+  const queryParams = Router.current().params.query;
+  if (queryParams.mode === 'editProduct' && queryParams.ISINCode) {
+    this.isEditMode.set(true);
+    const ISINCode = queryParams.ISINCode;
+
+    // Subscribe to the publication and fetch product data only in edit mode
+    this.autorun(() => {
+      const handle = this.subscribe('productByISIN', ISINCode);
+      if (handle.ready()) {
+        const product = Products.findOne({"genericInformation.ISINCode": ISINCode});
+        if (product) {
+          console.log('Product fetched successfully:', product);
+          this.productData.set(product); // Set product data
+          this.tickers.set(product.underlyings || []); // Set underlyings data
+          // Optionally, log the underlyings data for verification
+          console.log("Underlyings set:", product.underlyings);
+
+          // Dynamically update form fields with product data
+          $('#isin_code').val(product.genericInformation.ISINCode);
+          $('#currency').val(product.genericInformation.currency);
+          $('#issuer').val(product.genericInformation.issuer);
+          $('#product_type').val(product.genericInformation.productType);
+          $('#reoffer_price').val(product.genericInformation.reofferPrice);
+          $('#issue_price').val(product.genericInformation.issuePrice);
+          $('#settlement_type').val(product.genericInformation.settlementType);
+          $('#settlement_tx').val(product.genericInformation.settlementTx);
+          $('#tradeDate').val(product.genericInformation.tradeDate);
+          $('#paymentDate').val(product.genericInformation.paymentDate);
+          $('#finalObservation').val(product.genericInformation.finalObservation);
+          $('#maturityDate').val(product.genericInformation.maturity);
+        } else {
+          console.log("No product found with the given ISINCode.");
+        }
+      } else {
+        console.log('Waiting for subscription to be ready...');
+      }
+    });
+  } else {
+    // If not in edit mode, clear or reset variables if necessary
+    this.isEditMode.set(false);
+    this.productData.set({});
+    this.tickers.set([]);
   }
 });
 
 
-Template.editProduct.onCreated(function() {
-  this.tickers = new ReactiveVar([]);
-});
+
+
+
 
 Template.editProduct.events({
   'click #add_ticker': function(event, instance) {

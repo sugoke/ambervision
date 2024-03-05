@@ -46,7 +46,7 @@
 
 
                 </ul>
-                <div class="tab-content pt-3">
+                <div class="tab-content pt-3" id="tabContent">
                   <!-- Tab Main  -->
 
                   <div class="tab-pane fade show active" id="main">
@@ -187,34 +187,36 @@
                     </div>
                   </div>
 
-                  <div class="tab-pane fade" id="underlyings">
+                  <div class="tab-pane fade" id="underlyings" role="tabpanel">
                     <div class="container">
                       <div class="row">
                         <div class="col">
-                          <h5 class="mb-3"></h5>
-                          <button class="btn btn-outline-theme mb-2" id="add_ticker"><i class="fas fa-plus"></i> Add ticker</button>
-                          <br><br>
-                          <!-- Table structure to hold dynamic rows -->
                           <table class="table table-bordered">
                             <thead>
                               <tr>
                                 <th>Ticker</th>
                                 <th>Full name</th>
-                                <th>Close ()</th>
+                                <th>Close</th>
                                 <th>Strike</th>
                                 <th>Actions</th>
                               </tr>
                             </thead>
                             <tbody id="underlyingRowsContainer">
-                              {{#each ticker in tickers}}
-                                {{> underlyingRow ticker=ticker}}
+                              <!-- Dynamically inserted rows will go here -->
+
+
+                              {{#each tickers}}
+                                {{> underlyingRow this}}
                               {{/each}}
+
+
                             </tbody>
                           </table>
                         </div>
                       </div>
                     </div>
                   </div>
+
 
 
                   <div class="tab-pane fade" id="mechanism">
