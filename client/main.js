@@ -8,12 +8,14 @@ import './main.html';
 import { Products } from '/imports/api/products/products.js';
 // /client/main.js
 import '/lib/router.js';
-
+import moment from 'moment';
 // Importing products.js into main.js
-import './js/products.js';
+
 import './js/productDetails.js';
 import './mainlayout.js';
 import './js/login.js';
+import './js/products.js';
+import './js/editProduct.js';
 
 
 import './mainlayout.html';
@@ -21,6 +23,8 @@ import './html/home.html';
 import './html/products.html';
 import './html/productDetails.html';
 import './html/login.html';
+import './html/editProduct.html';
+
 
 //import '/imports/startup/both/accounts-config.js';
 //import '/imports/startup/both/useraccounts-configuration.js';
@@ -32,6 +36,9 @@ Meteor.subscribe('products');
 Meteor.subscribe('historicalData');
 
 
+Template.registerHelper('formatDate', function(date) {
+  return moment(date).format('DD/MM/YYYY');
+});
 
 
 

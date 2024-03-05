@@ -49,10 +49,10 @@
 
               {{#each product_list}}
                 <tr>
-                  <td><button type="button" class="btn btn-sm btn-outline-warning" onclick="location.href='productdetail';">{{isin}}</button></td>
-                  <td>{{referenceCurrency}}</td>
+                  <td><button type="button" class="btn btn-sm btn-outline-warning" onclick="location.href='productDetails?isin={{genericInformation.ISINCode}}';">{{genericInformation.ISINCode}}</button></td>
+                  <td>{{genericInformation.currency}}</td>
                   <td>1 000 000</td>
-                  <td>{{type}}</td>
+                  <td>{{genericInformation.type}}</td>
 
 
 
@@ -74,8 +74,8 @@
                   <td>x</td>
                   <td>x%</td>
                   <td>Bid</td>
-                  <td>{{initialFixingDate}}</td>
-                  <td>{{repaymentDate}}</td>
+                  <td>{{formatDate genericInformation.tradeDate}}</td>
+                  <td>{{formatDate genericInformation.finalObservation}}</td>
                 </tr>
 
               {{/each}}

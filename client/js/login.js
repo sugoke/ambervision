@@ -21,6 +21,15 @@ Template.login.events({
       } else {
         // Redirect to a different page or handle the login success
         console.log('Logged in successfully');
+
+        $(document).ready(function() {
+           setTimeout(function() {
+             App.init();
+           }, 500); // Adjust the time as necessary
+         });
+
+
+
       }
     });
   },
@@ -39,6 +48,14 @@ Template.login.events({
       } else {
         // Redirect or handle the account creation success
         console.log('Account created successfully');
+
+
+        $(document).ready(function() {
+           setTimeout(function() {
+             App.init();
+           }, 500); // Adjust the time as necessary
+         });
+
       }
     });
   }

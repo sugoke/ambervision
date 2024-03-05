@@ -66,6 +66,21 @@ function formatDate(date) {
 
 
 Meteor.methods({
+
+  'products.insert'(productData) {
+    // Server-side validation could be added here for productData
+
+    // Check for existing product with the same ISIN
+    const existingProduct = Products.findOne({ 'genericInformation.ISINCode': productData.genericInformation.ISINCode });
+    if (existingProduct) {
+      throw new Meteor.Error('product-exists', 'A product with this ISIN code already exists.');
+    }
+
+    // Insert the new product
+    return Products.insert(productData);
+  },
+
+
   'updateAllMarketData'() {
     console.log("Starting the updateAllProducts method");
 

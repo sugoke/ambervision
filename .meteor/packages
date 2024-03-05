@@ -25,7 +25,7 @@ hot-module-replacement@0.5.3  # Update code in development without reloading the
 blaze-hot               # Update files using Blaze's API with HMR
 iron:router
 msavin:mongol
-session
+session@1.2.1
 http
-accounts-password
-accounts-ui
+accounts-password@2.4.0
+accounts-ui@1.4.2

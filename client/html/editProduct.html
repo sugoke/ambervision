@@ -1,0 +1,390 @@
+<template name="editProduct">
+
+  <div id="content" class="app-content">
+    <div class="d-flex align-items-center mb-3">
+      <div>
+        <ul class="breadcrumb">
+          <li class="breadcrumb-item"><a href="#">AMBERVISION</a></li>
+          <li class="breadcrumb-item active">New product</li>
+        </ul>
+        <h1 class="page-header mb-0 reveal">
+
+          {{#if isEditMode}}
+            Edit an existing product
+          {{else}}
+            Add a product to the database
+          {{/if}}
+
+          <span class="animate__animated animate__flash animate__infinite">_</span></h1>
+
+      </div>
+
+
+    </div>
+
+
+    <div class="row">
+
+      <div class="col-xl-12">
+
+        <div class="desktop-sticky-top d-none d-lg-block">
+          <div class="card shadow">
+
+
+            <!-- basic usage -->
+            <div class="card">
+              <div class="card-header fw-bold small">Characteristics</div>
+              <div class="card-body">
+
+                <ul class="nav nav-tabs">
+
+                  <li class="nav-item me-1"><a href="#main" class="nav-link active" data-bs-toggle="tab">Main</a></li>
+                  <li class="nav-item me-1"><a href="#underlyings" class="nav-link" data-bs-toggle="tab">Underlyings</a></li>
+                  <li class="nav-item me-1"><a href="#dates" class="nav-link" data-bs-toggle="tab">Dates</a></li>
+                  <li class="nav-item me-1"><a href="#mechanism" class="nav-link" data-bs-toggle="tab">Mechanism</a></li>
+                  <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#summary">Summary</a></li>
+
+
+                </ul>
+                <div class="tab-content pt-3">
+                  <!-- Tab Main  -->
+
+                  <div class="tab-pane fade show active" id="main">
+                    <div class="container">
+
+                      <div class="row mb-3">
+
+
+                        <div class="col-3">
+                          <div class="form-group mb-3">
+                            <label for="isin_code" class="form-label">ISIN Code</label>
+                            <input type="text" class="form-control" id="isin_code" maxlength="12" style="text-transform:uppercase" value="{{productDetails.genericInformation.ISINCode}}" autocomplete="off" required>
+                          </div>
+                        </div>
+
+                        <div class="col-1">
+                          <div class="form-group mb-3">
+                            <label for="currency" class="form-label">Currency</label>
+                            <select id="currency" class="form-control">
+                              <option value="USD">USD</option>
+                              <option value="EUR">EUR</option>
+                              <option value="GBP">GBP</option>
+
+                            </select>
+                          </div>
+                        </div>
+
+                        <div class="col-3">
+                          <div class="form-group mb-3">
+                            <label for="issuer" class="form-label">Issuer</label>
+                            <input type="text" class="form-control" id="issuer" placeholder="Issuer Name" value="{{productDetails.genericInformation.issuer}}" required>
+                          </div>
+                        </div>
+
+                        <div class="col-3">
+                          <div class="form-group mb-3">
+                            <label for="product_type" class="form-label">Type</label>
+                            <input type="text" class="form-control" id="product_type" value="{{productDetails.genericInformation.productType}}" placeholder="Phoenix Autocallable" required>
+                          </div>
+                        </div>
+                      </div>
+
+                      <hr>
+
+                      <div class="row mb-3">
+
+                        <!-- Re-offer Price Field -->
+                        <div class="col-3">
+                          <div class="form-group mb-3">
+                            <label for="reoffer_price" class="form-label">Re-offer Price</label>
+                            <input type="number" class="form-control" id="reoffer_price" placeholder="Enter re-offer price" step="0.01" value="{{productDetails.genericInformation.reofferPrice}}" autocomplete="off" required>
+
+                          </div>
+                        </div>
+
+                        <!-- Issue Price Field -->
+                        <div class="col-3">
+                          <div class="form-group mb-3">
+                            <label for="issue_price" class="form-label">Issue Price</label>
+                            <input type="number" class="form-control" id="issue_price" placeholder="Enter issue price" step="0.01" value="{{productDetails.genericInformation.issuePrice}}" autocomplete="off" required>
+
+                          </div>
+                        </div>
+
+                      </div>
+
+                      <hr>
+
+                      <div class="row mb-3">
+
+                        <div class="col-3">
+                          <div class="form-group mb-3">
+                            <label for="settlement_type" class="form-label">Settlement Type</label>
+                            <select id="settlement_type" class="form-control">
+                              <option value="Cash" selected>Cash</option>
+                              <option value="Physical">Physical</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div class="col-3">
+                          <div class="form-group mb-3">
+                            <label for="settlement_tx" class="form-label">Settlement T+x</label>
+                            <input type="number" class="form-control" id="settlement_tx" placeholder="Enter number of days" min="0" autocomplete="off" value=7 required>
+
+                          </div>
+                        </div>
+
+
+                      </div>
+
+                      <hr>
+                      <div class="row mb-3">
+
+
+
+                        <div class="col-3">
+                          <div class="form-group mb-3">
+                            <label for="trade_date" class="form-label">Trade Date</label>
+                            <input type="date" class="form-control" id="tradeDate" value="{{formatDate productDetails.genericInformation.tradeDate}}" required>
+                          </div>
+
+                        </div>
+
+                        <div class="col-3">
+                          <div class="form-group mb-3">
+                            <label for="trade_date" class="form-label">Payment Date</label>
+                            <input type="date" class="form-control" id="paymentDate" value="{{formatDate productDetails.genericInformation.paymentDate}}" required>
+                          </div>
+
+                        </div>
+
+
+                      </div>
+
+                      <div class="row mb-3">
+                        <div class="col-3">
+                          <div class="form-group mb-3">
+                            <label for="final_observation" class="form-label">Final Observation</label>
+                            <input type="date" class="form-control" id="finalObservation" value="2026-02-08" required>
+                          </div>
+                        </div>
+
+                        <div class="col-3">
+                          <div class="form-group mb-3">
+                            <label for="maturity" class="form-label">Maturity</label>
+                            <input type="date" class="form-control" id="maturityDate" value="2026-02-15" required>
+                          </div>
+                        </div>
+
+
+
+                      </div>
+                      <hr>
+                      <div class="row mb-3">
+
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="tab-pane fade" id="underlyings">
+                    <div class="container">
+                      <div class="row">
+                        <div class="col">
+                          <h5 class="mb-3"></h5>
+                          <button class="btn btn-outline-theme mb-2" id="add_ticker"><i class="fas fa-plus"></i> Add ticker</button>
+                          <br><br>
+                          <!-- Table structure to hold dynamic rows -->
+                          <table class="table table-bordered">
+                            <thead>
+                              <tr>
+                                <th>Ticker</th>
+                                <th>Full name</th>
+                                <th>Close ()</th>
+                                <th>Strike</th>
+                                <th>Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody id="underlyingRowsContainer">
+                              {{#each ticker in tickers}}
+                                {{> underlyingRow ticker=ticker}}
+                              {{/each}}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+
+                  <div class="tab-pane fade" id="mechanism">
+                    <div class="container">
+                      <div class="row">
+                        <div class="col">
+                          <h5 class="mb-3">During the life of the product</h5>
+                          <button id="addRuleButton" class="btn btn-outline-theme"><i class="fas fa-plus"></i> Add Rule</button>
+
+                          <table id="rulesTable" class="table mt-3">
+                            <thead>
+                              <tr>
+                                <th>Rule</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <!-- Existing rules will be added here -->
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+
+
+
+
+                  <div class="tab-pane fade" id="dates">
+                    <div class="container">
+                      <!-- Existing code for other fields -->
+
+                      <div class="row align-items-end mb-3">
+                        <!-- Add a margin-bottom (mb-3) to the row for space below the button -->
+                        <!-- Smaller Dropdown for Observation Frequency -->
+                        <div class="col-auto">
+                          <div class="form-group mb-1">
+                            <label for="observation_frequency" class="form-label">Observation Frequency</label>
+                            <select class="form-select" id="observation_frequency">
+                              <option value="at_maturity">At Maturity</option>
+                              <option value="daily">Daily Continuous</option>
+                              <option value="daily">Daily On Close</option>
+                              <option value="" disabled>───────────</option> <!-- Separator -->
+                              <optgroup label="Frequencies">
+                                <option value="weekly">Weekly</option>
+                                <option value="monthly">Monthly</option>
+                                <option value="quarterly">Quarterly</option>
+                                <option value="semi-annually">Semi-Annually</option>
+                                <option value="annual">Annual</option>
+                              </optgroup>
+                            </select>
+                          </div>
+                        </div>
+
+
+                        <!-- Button to Generate Schedule next to the dropdown -->
+                        <div class="col-auto">
+                          <button class="btn btn-outline-theme" id="generateSchedule">
+                            <i class="fas fa-plus"></i> Generate Schedule
+                          </button>
+                        </div>
+                      </div>
+
+                      <table class="table" id="scheduleTable">
+                        <thead>
+                          <tr>
+                            <th>#</th> <!-- Header for the line numbers -->
+                            <th>Observation Date</th>
+                            <th>Payment Date</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <!-- First line with pre-filled input fields -->
+                          <tr>
+                            <td>Initial</td> <!-- Line number -->
+                            <td><input type="date" class="form-control" id="observationDate0" disabled></td>
+                            <td><input type="date" class="form-control" id="paymentDate0" disabled></td>
+                          </tr>
+                          <!-- Second line with pre-filled input fields -->
+                          <tr>
+                            <td>Final</td> <!-- Line number -->
+                            <td><input type="date" class="form-control" id="observationDate1" disabled></td>
+                            <td><input type="date" class="form-control" id="paymentDate1" disabled></td>
+                          </tr>
+
+                          <tr>
+
+                          </tr>
+
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+
+                  <div class="tab-pane fade" id="summary">
+                    <div class="container">
+                      <p>ISIN Code: <span id="summaryIsinCode"></span></p>
+                      <p>Currency: <span id="summaryCurrency"></span></p>
+                      <p>Issuer: <span id="summaryIssuer"></span></p>
+                      <p>Product Type: <span id="summaryProductType"></span></p>
+                      <p>Re-offer Price: <span id="summaryReofferPrice"></span></p>
+                      <p>Issue Price: <span id="summaryIssuePrice"></span></p>
+                      <p>Settlement Type: <span id="summarySettlementType"></span></p>
+                      <p>Settlement T+x: <span id="summarySettlementTx"></span></p>
+                      <p>Trade Date: <span id="summaryTradeDate"></span></p>
+                      <p>Payment Date: <span id="summaryPaymentDate"></span></p>
+                      <p>Final Observation: <span id="summaryFinalObservation"></span></p>
+                      <p>Maturity: <span id="summaryMaturity"></span></p>
+                      <!-- Continue for other fields as needed -->
+                      <button type="button" class="btn btn-primary" id="submitProduct">Submit Product</button>
+                    </div>
+                  </div>
+
+
+
+                </div>
+
+
+              </div>
+
+              <!-- arrow -->
+              <div class="card-arrow">
+                <div class="card-arrow-top-left"></div>
+                <div class="card-arrow-top-right"></div>
+                <div class="card-arrow-bottom-left"></div>
+                <div class="card-arrow-bottom-right"></div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+
+
+</template>
+
+
+
+<template name="underlyingRow">
+  <tr id="tickerRow-{{ticker.id}}">
+    <td>
+      <!-- Grouping ticker input and dropdown together -->
+      <div class="d-flex align-items-start">
+        <!-- Ticker Input -->
+        <input type="text" id="tickerInput-{{ticker.id}}" class="form-control underlyings underlyings_change required me-2" placeholder="Ticker" aria-label="Ticker" style="text-transform: uppercase; flex-grow: 1;" autocomplete="off" value="{{ticker}}">
+        <!-- Dropdown for selecting the country code next to the ticker input -->
+        <select id="countrySelect-{{ticker.id}}" class="form-select" style="width: auto;">
+          <option value="US">US</option>
+          <option value="GY">GY</option>
+          <option value="FR">FR</option>
+        </select>
+      </div>
+    </td>
+    <td>
+      <input type="text" id="fullNameInput-{{ticker.id}}" class="form-control cash" value="{{fullName}}">
+    </td>
+    <td>
+      <input type="text" id="closeInput-{{ticker.id}}" class="form-control cash" value="{{close}}" disabled="">
+    </td>
+    <td>
+      <input type="text" id="strikeInput-{{ticker.id}}" class="form-control required cash" value="{{strike}}" autocomplete="off">
+    </td>
+    <td>
+      <!-- Example action: Remove button -->
+      <button class="btn btn-danger btn-sm remove_ticker" type="button" data-id="{{ticker.id}}">×</button>
+    </td>
+  </tr>
+</template>

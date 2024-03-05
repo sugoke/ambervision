@@ -1,0 +1,55 @@
+.table-responsive {
+  margin: 0 auto; /* This centers the div if it has a set width */
+  max-width: 80%; /* Example to not stretch the table to full width, adjust as needed */
+}
+
+.mytable {
+  table-layout: fixed; /* Ensure columns widths are respected */
+  width: 100%; /* Keep the table width to 100% of its container */
+}
+
+.mytable th, .mytable td {
+  /* Example of giving the first column a bit more width and the rest equal */
+  width: 25%; /* Adjust the width as needed */
+}
+
+/* Specific column width adjustments */
+.mytable th:nth-child(1), .mytable td:nth-child(1) { width: 30%; } /* Make the first column wider */
+.mytable th:nth-child(2), .mytable td:nth-child(2) { width: 17.5%; } /* Adjust subsequent columns accordingly */
+.mytable th:nth-child(3), .mytable td:nth-child(3) { width: 17.5%; }
+.mytable th:nth-child(4), .mytable td:nth-child(4) { width: 17.5%; }
+.mytable th:nth-child(5), .mytable td:nth-child(5) { width: 17.5%; }
+
+@keyframes rotateYLogo {
+  from {
+    transform: rotateY(0deg);
+  }
+  to {
+    transform: rotateY(360deg);
+  }
+}
+
+
+.logo-container {
+  background-color: white;
+  border-radius: 50%;
+  width: 60px;
+  height: 60px;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+  animation: rotateYLogo 10s linear infinite;
+  transform-style: preserve-3d; /* Essential for 3D transformations */
+}
+
+
+.logo-container img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 50%;
+  animation: rotateLogo 20s linear infinite; /* Apply the animation here */
+}
