@@ -191,12 +191,23 @@
                     <div class="container">
                       <div class="row">
                         <div class="col">
+
+                          <div class="row">
+                            <div class="col-auto mb-3"> <!-- Adds bottom margin -->
+                              <button class="btn btn-outline-theme btn-sm" id="add_ticker">
+                                <i class="fas fa-plus"></i> Add Ticker
+                              </button>
+                            </div>
+                          </div>
+
+
+
                           <table class="table table-bordered">
                             <thead>
                               <tr>
+                                <th>Name</th>
                                 <th>Ticker</th>
-                                <th>Full name</th>
-                                <th>Close</th>
+                                <th>Last Close</th>
                                 <th>Strike</th>
                                 <th>Actions</th>
                               </tr>
@@ -283,29 +294,15 @@
                       <table class="table" id="scheduleTable">
                         <thead>
                           <tr>
-                            <th>#</th> <!-- Header for the line numbers -->
+                            <th>#</th>
                             <th>Observation Date</th>
                             <th>Payment Date</th>
                           </tr>
                         </thead>
                         <tbody>
-                          <!-- First line with pre-filled input fields -->
-                          <tr>
-                            <td>Initial</td> <!-- Line number -->
-                            <td><input type="date" class="form-control" id="observationDate0" disabled></td>
-                            <td><input type="date" class="form-control" id="paymentDate0" disabled></td>
-                          </tr>
-                          <!-- Second line with pre-filled input fields -->
-                          <tr>
-                            <td>Final</td> <!-- Line number -->
-                            <td><input type="date" class="form-control" id="observationDate1" disabled></td>
-                            <td><input type="date" class="form-control" id="paymentDate1" disabled></td>
-                          </tr>
-
-                          <tr>
-
-                          </tr>
-
+                          {{#each observations}}
+                            {{> observationRow this}}
+                          {{/each}}
                         </tbody>
                       </table>
                     </div>
@@ -362,31 +359,44 @@
 
 <template name="underlyingRow">
   <tr id="tickerRow-{{ticker.id}}">
+
+    <td>
+       <input type="text" id="fullNameInput-{{ticker.id}}" class="form-control cash fullName-autocomplete" value="{{fullName}}">
+     </td>
     <td>
       <!-- Grouping ticker input and dropdown together -->
       <div class="d-flex align-items-start">
         <!-- Ticker Input -->
         <input type="text" id="tickerInput-{{ticker.id}}" class="form-control underlyings underlyings_change required me-2" placeholder="Ticker" aria-label="Ticker" style="text-transform: uppercase; flex-grow: 1;" autocomplete="off" value="{{ticker}}">
         <!-- Dropdown for selecting the country code next to the ticker input -->
-        <select id="countrySelect-{{ticker.id}}" class="form-select" style="width: auto;">
-          <option value="US">US</option>
-          <option value="GY">GY</option>
-          <option value="FR">FR</option>
-        </select>
+        <td>
+          <!-- This is now a readonly input field instead of a select dropdown -->
+          <input type="text" id="countryInput-{{ticker.id}}" class="form-control" readonly style="width: auto;">
+        </td>
       </div>
     </td>
+
     <td>
-      <input type="text" id="fullNameInput-{{ticker.id}}" class="form-control cash" value="{{fullName}}">
-    </td>
-    <td>
-      <input type="text" id="closeInput-{{ticker.id}}" class="form-control cash" value="{{close}}" disabled="">
-    </td>
+ <span id="closeText-{{ticker.id}}" class="form-control-plaintext">{{close}}</span>    </td>
     <td>
       <input type="text" id="strikeInput-{{ticker.id}}" class="form-control required cash" value="{{strike}}" autocomplete="off">
     </td>
     <td>
       <!-- Example action: Remove button -->
       <button class="btn btn-danger btn-sm remove_ticker" type="button" data-id="{{ticker.id}}">×</button>
+    </td>
+  </tr>
+</template>
+
+
+<template name="observationRow">
+  <tr>
+    <td>{{n}}</td>
+    <td>
+      <input type="date" class="form-control observation-date" value="{{observationDate}}" {{disabledIf this}}>
+    </td>
+    <td>
+      <input type="date" class="form-control payment-date" value="{{paymentDate}}" {{disabledIf this}}>
     </td>
   </tr>
 </template>

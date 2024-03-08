@@ -64,92 +64,62 @@ function formatDate(date) {
 
 //############################################################################################################
 
-
 Meteor.methods({
+  'products.upsert'(productData) {
+    const { isEditMode, isinCodeQueryParam, genericInformation, underlyings, observations } = productData;
 
-  'products.insert'(productData) {
-    // Server-side validation could be added here for productData
+    // Remove properties not part of the product schema
+    delete productData.isEditMode;
+    delete productData.isinCodeQueryParam;
 
-    // Check for existing product with the same ISIN
-    const existingProduct = Products.findOne({ 'genericInformation.ISINCode': productData.genericInformation.ISINCode });
-    if (existingProduct) {
-      throw new Meteor.Error('product-exists', 'A product with this ISIN code already exists.');
-    }
+    if (isEditMode) {
+      // Assuming the ISIN code in query param is used to find the existing product
+      const existingProduct = Products.findOne({ 'genericInformation.ISINCode': isinCodeQueryParam });
 
-    // Insert the new product
-    return Products.insert(productData);
-  },
-
-
-  'updateAllMarketData'() {
-    console.log("Starting the updateAllProducts method");
-
-    // List all Underlyings
-    const tickers = {};
-    const products = Products.find().fetch();
-    console.log(`Found ${products.length} products`);
-
-    products.forEach((product, index) => {
-      if (product.underlyings && Array.isArray(product.underlyings)) {
-        console.log(`Processing product ${index + 1} with ${product.underlyings.length} underlyings`);
-        product.underlyings.forEach(underlying => {
-          if (underlying.ticker) {
-            tickers[underlying.ticker] = true; // Store the ticker
-            console.log(`Added ticker: ${underlying.ticker}`);
-          }
-        });
+      if (!existingProduct) {
+        throw new Meteor.Error('product-not-found', 'No product found with the specified ISIN code for update.');
       }
-    });
 
-    console.log(`Tickers found: ${Object.keys(tickers).join(', ')}`);
-
-    // Fetch and update historical data for each ticker
-    Object.keys(tickers).forEach(ticker => {
-      try {
-        console.log(`Fetching historical data for ticker: ${ticker}`);
-
-        // Always start from '2024-01-01'
-        let startDate = '2023-01-01';
-        console.log(`Fetching data for ${ticker}, starting from ${startDate}`);
-
-        const apiUrl = `https://eodhd.com/api/eod/${ticker}?api_token=5c265eab2c9066.19444326&fmt=json&from=${startDate}`;
-        const response = HTTP.get(apiUrl);
-        let historicalData = response.data;
-        console.log(`Fetched ${historicalData.length} records for ticker: ${ticker}`);
-
-        // Fill in missing data
-        historicalData = fillMissingData(historicalData);
-
-        // Update or insert historical data for each ticker
-        const existingDocument = Historical.findOne({
-          ticker: ticker
+      // Update scenario
+      // If ISIN is being modified, ensure it's unique
+      if (genericInformation.ISINCode !== isinCodeQueryParam) {
+        const isinConflict = Products.findOne({
+          'genericInformation.ISINCode': genericInformation.ISINCode,
+          '_id': { $ne: existingProduct._id }
         });
 
-        if (existingDocument) {
-          // Append new data to existing document
-          Historical.update({
-            ticker: ticker
-          }, {
-            $push: {
-              data: {
-                $each: historicalData
-              }
-            }
-          });
-        } else {
-          // Create new document for the ticker
-          Historical.insert({
-            ticker: ticker,
-            data: historicalData
-          });
+        if (isinConflict) {
+          throw new Meteor.Error('isin-conflict', 'Another product with the same ISIN code already exists.');
         }
-
-      } catch (error) {
-        console.error(`Error fetching historical data for ${ticker}:`, error);
       }
-    });
 
-    console.log("Product update process complete");
-    return "Product update process complete";
+      Products.update(existingProduct._id, {
+        $set: {
+          genericInformation,
+          underlyings,
+          observations
+        }
+      });
+
+      return { status: 'updated', productId: existingProduct._id };
+    } else {
+      // Insert scenario
+      // Ensure ISIN code uniqueness
+      const existingProductByISIN = Products.findOne({
+        'genericInformation.ISINCode': genericInformation.ISINCode
+      });
+
+      if (existingProductByISIN) {
+        throw new Meteor.Error('isin-conflict', 'A product with this ISIN code already exists.');
+      }
+
+      const productId = Products.insert({
+        genericInformation,
+        underlyings,
+        observations
+      });
+
+      return { status: 'inserted', productId: productId };
+    }
   }
 });

@@ -10,6 +10,16 @@ import {
 } from '/imports/api/products/products.js';
 import moment from 'moment';
 
+Template.observationRow.helpers({
+  disabledIf(observation) {
+    return observation.disabled ? 'disabled' : '';
+  }
+});
+
+// On your client side
+let isSubmitting = false;
+
+
 Template.editProduct.helpers({
   isEditMode() {
     // Accessing the URL query parameters using Iron Router
@@ -28,7 +38,11 @@ Template.editProduct.helpers({
     const productData = Template.instance().productData.get();
     console.log("productData:", productData);
     return productData;
-  }
+  },
+
+  observations() {
+  return Template.instance().observations.get();
+},
 });
 
 Template.editProduct.onCreated(function() {
@@ -36,6 +50,7 @@ Template.editProduct.onCreated(function() {
   this.productData = new ReactiveVar({});
   this.tickers = new ReactiveVar([]);
   this.isEditMode = new ReactiveVar(false);
+  this.observations = new ReactiveVar([]);
 
   // Check if we are in edit mode based on URL query parameters
   const queryParams = Router.current().params.query;
@@ -68,12 +83,20 @@ Template.editProduct.onCreated(function() {
           $('#paymentDate').val(product.genericInformation.paymentDate);
           $('#finalObservation').val(product.genericInformation.finalObservation);
           $('#maturityDate').val(product.genericInformation.maturity);
+
+this.observations.set(product.observations || []);
+
+
         } else {
           console.log("No product found with the given ISINCode.");
         }
       } else {
         console.log('Waiting for subscription to be ready...');
       }
+
+
+
+
     });
   } else {
     // If not in edit mode, clear or reset variables if necessary
@@ -113,78 +136,80 @@ Template.editProduct.events({
   'click #submitProduct'(event, instance) {
     event.preventDefault();
 
+    // Extracting mode and ISIN code from URL parameters
+    const queryParams = new URLSearchParams(window.location.search);
+    const mode = queryParams.get('mode');
+    const isinCodeQueryParam = queryParams.get('ISINCode');
+    const isEditMode = mode === 'editProduct';
+
     // Generic Information
     const genericInformation = {
-      ISINCode: $('#isin_code').val().toUpperCase(),
-      currency: $('#currency').val(),
-      issuer: $('#issuer').val(),
-      productType: $('#product_type').val(),
-      tradeDate: $('#tradeDate').val(),
-      paymentDate: $('#paymentDate').val(),
-      finalObservation: $('#finalObservation').val(),
-      issuePrice: $('#issue_price').val(),
-      reofferPrice: $('#reoffer_price').val(),
-      maturity: $('#maturityDate').val(),
-      settlementType: $('#settlement_type').val(),
-      settlementTx: $('#settlement_tx').val(),
-      // Include other fields as necessary
+        ISINCode: $('#isin_code').val().toUpperCase(),
+        currency: $('#currency').val(),
+        issuer: $('#issuer').val(),
+        productType: $('#product_type').val(),
+        tradeDate: $('#tradeDate').val(),
+        paymentDate: $('#paymentDate').val(),
+        finalObservation: $('#finalObservation').val(),
+        issuePrice: $('#issue_price').val(),
+        reofferPrice: $('#reoffer_price').val(),
+        maturity: $('#maturityDate').val(),
+        settlementType: $('#settlement_type').val(),
+        settlementTx: $('#settlement_tx').val(),
     };
 
+    // Collecting Underlyings
     let underlyings = [];
+    $("#underlyingRowsContainer tr").each(function() {
+        const ticker = $(this).find('input[id^="tickerInput"]').val();
+        const fullName = $(this).find('input[id^="fullNameInput"]').val();
+        const strike = $(this).find('input[id^="strikeInput"]').val();
+        const country = $(this).find('select[id^="countrySelect"]').val();
 
-  $("#underlyingRowsContainer tr").each(function(index) {
-    const rowId = $(this).attr("id").split("-")[1]; // Extract the ticker ID from the row ID
+        if (ticker) {
+            underlyings.push({
+                ticker,
+                fullName,
+                strike: parseFloat(strike || 0),
+                country
+            });
+        }
+    });
 
-    const ticker = $(`#tickerInput-${rowId}`).val();
-    const fullName = $(`#fullNameInput-${rowId}`).val();
-    const strike = $(`#strikeInput-${rowId}`).val();
-    const country = $(`#countrySelect-${rowId}`).val();
-
-    if (ticker && fullName && strike) {
-      underlyings.push({ ticker, country, fullName, strike: parseFloat(strike) });
-    } else {
-      console.log(`Missing required field in row ${index}. Ticker: ${ticker}, FullName: ${fullName}, Strike: ${strike}`);
-    }
-  });
-
-  console.log("Collected underlyings:", underlyings);
-
-
-    // Observations logic remains the same as provided
-
+    // Collecting Observations
     let observations = [];
     $('#scheduleTable tbody tr').each(function(index) {
-      const observationDate = $(this).find('input[type="date"]:first').val();
-      const paymentDate = $(this).find('input[type="date"]:last').val();
-
-      if (observationDate && paymentDate) {
+        const observationDate = $(this).find('.observation-date').val();
+        const paymentDate = $(this).find('.payment-date').val();
         observations.push({
-          n: index + 1,
-          observationDate,
-          paymentDate,
+            n: index + 1,
+            observationDate,
+            paymentDate,
         });
-      }
     });
 
-    // Prepare the full product data
+    // Preparing the product data
     const productData = {
-      genericInformation,
-      underlyings,
-      observations,
-      // Include additional sections as necessary
+        genericInformation,
+        underlyings,
+        observations,
+        isEditMode,
+        isinCodeQueryParam
     };
 
-    // Call the Meteor method to insert the product data
-    Meteor.call('products.insert', productData, (error, result) => {
-      if (error) {
-        console.error('Error inserting product:', error);
-        alert(error.reason);
-      } else {
-        console.log('Product inserted successfully:', result);
-        // Optionally, redirect the user or clear the form here
-      }
+    // Decide which Meteor method to call based on the mode
+    Meteor.call('products.upsert', productData, (error, result) => {
+        if (error) {
+            console.error('Error inserting/updating product:', error);
+            alert(`Error: ${error.reason}`);
+        } else {
+            console.log('Product inserted/updated successfully. Result:', result);
+            // Optionally, redirect the user or clear the form here
+        }
     });
-  },
+}
+
+,
 
   'click a[href="#summary"]'(event, instance) {
     // Copy values to Summary
@@ -317,118 +342,92 @@ Template.editProduct.events({
     currentRow.add(sublines).remove();
   },
 
-
-
   'click #generateSchedule'(event, instance) {
     event.preventDefault();
 
-    const tradeDate = new Date(instance.$('#tradeDate').val()); // Assuming this is the ID on the Main tab
-    const finalObservationDate = new Date(instance.$('#finalObservation').val()); // Assuming this is the ID on the Main tab
-    const settlementTx = parseInt(instance.$('#settlement_tx').val(), 10); // The number of days for settlement
 
+    // Helper functions
+    function toISODateString(date) {
+      return date.toISOString().split('T')[0];
+    }
+
+    function addMonths(date, months) {
+      const newDate = new Date(date);
+      newDate.setMonth(newDate.getMonth() + months);
+      return newDate;
+    }
+
+    function addDays(date, days) {
+      const newDate = new Date(date);
+      newDate.setDate(newDate.getDate() + days);
+      return newDate;
+    }
+
+    // Extracting input values
+    const tradeDate = new Date(instance.$('#tradeDate').val());
+    const finalObservationDate = new Date(instance.$('#finalObservation').val());
+    const settlementTx = parseInt(instance.$('#settlement_tx').val(), 10);
+    const observationFrequency = instance.$('#observation_frequency').val();
+
+    // Validation
     if (isNaN(settlementTx)) {
       console.error('Settlement T+x is not a valid number');
       return;
     }
 
-    const observationFrequency = instance.$('#observation_frequency').val();
-    let currentDate = new Date(tradeDate);
-    const schedule = [];
+    const observations = [];
 
-    // Clear existing table rows
-    const scheduleTableBody = instance.$('#scheduleTable tbody');
-    scheduleTableBody.empty();
+    // Always include the "Initial" observation as disabled
+    observations.push({
+      n: 'Initial',
+      observationDate: toISODateString(tradeDate),
+      paymentDate: toISODateString(tradeDate),
+      disabledAttribute: 'disabled' // This ensures the input fields are disabled
+    });
 
-    if (observationFrequency === 'daily' || observationFrequency === 'at_maturity') {
-      // Display message for daily observation or observation at maturity
-      const initialRow = `<tr><td>Initial</td><td><input type="date" class="form-control" value="${tradeDate.toISOString().substring(0, 10)}" disabled></td><td><input type="date" class="form-control" value="${addDays(tradeDate, settlementTx).toISOString().substring(0, 10)}" disabled></td></tr>`;
-      const finalRow = `<tr><td>Final</td><td><input type="date" class="form-control" value="${finalObservationDate.toISOString().substring(0, 10)}" disabled></td><td><input type="date" class="form-control" value="${finalObservationDate.toISOString().substring(0, 10)}" disabled></td></tr>`;
-      scheduleTableBody.append(initialRow);
-      scheduleTableBody.append(finalRow);
+    // Handling for specific frequencies
+    if (['weekly', 'monthly', 'quarterly', 'semi-annually', 'annual'].includes(observationFrequency)) {
+      let currentDate = addDays(tradeDate, 1); // Start from the day after the trade date
 
-      // Add comment below the dates based on the selected frequency
-      let comment = '';
-      if (observationFrequency === 'daily') {
-        comment = 'Daily observations from trade date to final date';
-      } else {
-        comment = 'Observation only at maturity';
+      while (currentDate < finalObservationDate) {
+        observations.push({
+          n: observations.length, // Use the current length of observations as the label
+          observationDate: toISODateString(currentDate),
+          paymentDate: toISODateString(addDays(currentDate, settlementTx)),
+          disabledAttribute: ''
+        });
+
+        // Increment the date based on the selected frequency
+        switch (observationFrequency) {
+          case 'weekly':
+            currentDate = addDays(currentDate, 7);
+            break;
+          case 'monthly':
+            currentDate = addMonths(currentDate, 1);
+            break;
+          case 'quarterly':
+            currentDate = addMonths(currentDate, 3);
+            break;
+          case 'semi-annually':
+            currentDate = addMonths(currentDate, 6);
+            break;
+          case 'annual':
+            currentDate = addMonths(currentDate, 12);
+            break;
+        }
       }
-      const commentRow = `<tr><td colspan="3">${comment}</td></tr>`;
-      scheduleTableBody.append(commentRow);
-
-      return; // No need to proceed further
     }
 
-    let index = 0;
-    while (currentDate <= finalObservationDate) {
-      const observationDate = currentDate.toISOString().substring(0, 10);
-      const paymentDate = addDays(currentDate, settlementTx).toISOString().substring(0, 10);
+    observations.push({
+      n: 'Final',
+      observationDate: toISODateString(finalObservationDate),
+      paymentDate: toISODateString(finalObservationDate),
+      disabledAttribute: 'disabled' // This ensures the input fields are disabled
+    });
 
-      // Determine the label based on the observation frequency
-      let label = '';
-      switch (observationFrequency) {
-        case 'weekly':
-          label = `W${index}`;
-          break;
-        case 'monthly':
-          label = `M${index}`;
-          break;
-        case 'quarterly':
-          label = `Q${index}`;
-          break;
-        case 'semi-annually':
-          label = `S${index}`;
-          break;
-        case 'annual':
-          label = `Y${index}`;
-          break;
-          // Handle other cases as necessary
-      }
-
-      // Check if it's the first or last row
-      if (index === 0) {
-        label = 'Initial';
-      } else if (currentDate >= finalObservationDate) {
-        label = 'Final';
-      }
-
-      // Create a new table row with input fields
-      const newRow = `
-        <tr>
-          <td>${label}</td>
-          <td><input type="date" class="form-control" value="${observationDate}" ${index === 0 || currentDate >= finalObservationDate ? 'disabled' : ''}></td>
-          <td><input type="date" class="form-control" value="${paymentDate}" ${index === 0 || currentDate >= finalObservationDate ? 'disabled' : ''}></td>
-        </tr>
-      `;
-
-      // Append the new row to the table body
-      scheduleTableBody.append(newRow);
-
-      // Increment currentDate by the selected frequency
-      switch (observationFrequency) {
-        case 'weekly':
-          currentDate = addDays(currentDate, 7);
-          break;
-        case 'monthly':
-          currentDate.setMonth(currentDate.getMonth() + 1);
-          break;
-        case 'quarterly':
-          currentDate.setMonth(currentDate.getMonth() + 3);
-          break;
-        case 'semi-annually':
-          currentDate.setMonth(currentDate.getMonth() + 6);
-          break;
-        case 'annual':
-          currentDate.setFullYear(currentDate.getFullYear() + 1);
-          break;
-          // Handle other cases as necessary
-      }
-      index++;
-    }
-  }
-
-
-  ,
+    // Update the reactive variable with observations
+    instance.observations.set(observations);
+  },
 
   'show.bs.tab a[data-bs-toggle="tab"]'(event, instance) {
     if (event.target.hash === '#dates') { // Check if the Dates tab is being shown
@@ -447,9 +446,109 @@ Template.editProduct.events({
   },
 
 
+  'shown.bs.tab a[href="#dates"]'(event, instance) {
+      // Fetch values from the main pane
+      const tradeDate = instance.$('#tradeDate').val();
+      const paymentDate = instance.$('#paymentDate').val();
+      const finalObservation = instance.$('#finalObservation').val();
+      const maturityDate = instance.$('#maturityDate').val();
 
+      // Retrieve or initialize the observations array
+      let observations = instance.observations.get() || [];
+
+      // Ensure the "Initial" and "Final" entries exist
+      if (observations.length < 2) {
+        observations = [
+          { observationDate: tradeDate, paymentDate: paymentDate, disabled: true },
+          { observationDate: finalObservation, paymentDate: maturityDate, disabled: true }
+        ];
+      } else {
+        // Update "Initial"
+        observations[0].observationDate = tradeDate;
+        observations[0].paymentDate = paymentDate;
+        observations[0].disabled = true;  // Ensure the input field is disabled
+
+        // Update "Final"
+        observations[observations.length - 1].observationDate = finalObservation;
+        observations[observations.length - 1].paymentDate = maturityDate;
+        observations[observations.length - 1].disabled = true;  // Ensure the input field is disabled
+      }
+
+      // Re-set the reactive variable to update the UI
+      instance.observations.set(observations);
+
+      // Optionally, update the UI directly if the observations are directly rendered in HTML
+      // This is a fallback method and ideally should be managed through reactive data binding
+      instance.$('#datesTable .observation-date:first').prop('disabled', true);
+      instance.$('#datesTable .observation-date:last').prop('disabled', true);
+      instance.$('#datesTable .payment-date:first').prop('disabled', true);
+      instance.$('#datesTable .payment-date:last').prop('disabled', true);
+    }
 
 });
+
+Template.underlyingRow.onRendered(function() {
+  const templateInstance = this;
+
+  templateInstance.autorun(() => {
+    templateInstance.$('.fullName-autocomplete').autocomplete({
+      source: function(request, response) {
+        console.log("Autocomplete search started for:", request.term);
+        Meteor.call('searchTickersByName', request.term, (error, tickers) => {
+          if (error) {
+            console.error("Error searching tickers by name:", error);
+          } else {
+            console.log("Tickers found for autocomplete:", tickers);
+            const formattedTickers = tickers.map((ticker) => ({
+              label: `${ticker.Name} (${ticker.Code}) - ${ticker.Country}`,
+              value: ticker.Name,
+              tickerCode: ticker.Code,
+              country: ticker.Country,
+              exchange: ticker.Exchange,
+              currency: ticker.Currency
+            }));
+            response(formattedTickers);
+          }
+        });
+      },
+      select: function(event, ui) {
+        event.preventDefault();
+        const $row = $(this).closest('tr');
+
+        console.log("Autocomplete item selected:", ui.item);
+
+        $row.find('.fullName-autocomplete').val(ui.item.value);
+        $row.find('[id^="tickerInput-"]').val(ui.item.tickerCode);
+        $row.find('[id^="countryInput-"]').val(ui.item.country);
+
+        const symbolWithExchange = `${ui.item.tickerCode}.${ui.item.exchange}`;
+        console.log("Fetching closing price for:", symbolWithExchange);
+
+        Meteor.call('getTickerClosingPrice', symbolWithExchange, (error, result) => {
+          if (!error && result) {
+            console.log('Fetched closing price data:', result);
+            const { close: lastAvailablePrice, date: priceDate } = result[0] || {};
+            console.log('Extracted closing price:', lastAvailablePrice, 'on date:', priceDate);
+            if (lastAvailablePrice && priceDate) {
+              $row.find(`[id^="closeText-"]`).text(`${ui.item.currency} ${lastAvailablePrice} (${priceDate})`);
+            } else {
+              console.log('No closing price data received.');
+            }
+          } else {
+            console.log("Error fetching closing price:", error);
+          }
+        });
+
+
+        return false;
+      },
+      minLength: 2,
+    });
+  });
+});
+
+
+
 
 // Assuming you have a helper function to parse dates and add days
 const addDays = (date, days) => {

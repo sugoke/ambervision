@@ -1,5 +1,6 @@
 import { Meteor } from 'meteor/meteor';
 
+
 import { Template } from 'meteor/templating';
 import { ReactiveVar } from 'meteor/reactive-var';
 import 'jquery-ui-dist/jquery-ui.min.css';
@@ -35,6 +36,9 @@ Meteor.subscribe('products');
 // Client-side JavaScript
 Meteor.subscribe('historicalData');
 
+/*
+Meteor.subscribe('tickers');
+*/
 
 Template.registerHelper('formatDate', function(date) {
   return moment(date).format('DD/MM/YYYY');
