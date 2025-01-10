@@ -1,5 +1,6 @@
 import { Meteor } from 'meteor/meteor';
 import { check } from 'meteor/check';
+import { MongoInternals } from 'meteor/mongo';
 // /server/main.js
 import '/server/methods/updateProducts.js';
 import '/server/methods/tickers.js';
@@ -45,36 +46,64 @@ import './methods/eod.js';
 import './methods/prices.js';
 
 Meteor.startup(() => {
-  // Log environment details
+  // Enhanced environment and connection logging
+  console.log('=== DATABASE CONNECTION INFO ===');
   console.log('Environment:', Meteor.isProduction ? 'PRODUCTION' : 'DEVELOPMENT');
   
-  // Don't log full URL in production for security
+  // Get database info
+  const driver = MongoInternals.defaultRemoteCollectionDriver();
+  const db = driver.mongo.db;
+  
+  console.log('Connected Database:', {
+    name: db.databaseName,
+    host: db.serverConfig?.s?.url || 'Unknown host',
+    collections: Object.keys(db.collections)
+  });
+
   if (Meteor.isProduction) {
-    console.log('Using production MongoDB connection');
+    console.log('Production MongoDB connection active');
   } else {
-    console.log('MongoDB URL:', process.env.MONGO_URL?.replace(/:[^:\/]+@/, ':****@'));
+    const sanitizedUrl = process.env.MONGO_URL?.replace(
+      /(mongodb(\+srv)?:\/\/)([^:]+):([^@]+)@/,
+      '$1***:***@'
+    );
+    console.log('MongoDB URL:', sanitizedUrl);
   }
   
-  // Test database connection immediately
+  // Test database connection with detailed logging
   try {
+    console.log('\n=== DATABASE CONNECTION TEST ===');
+    
+    // Test write
     const testDoc = {
       test: true,
       timestamp: new Date(),
       environment: Meteor.isProduction ? 'production' : 'development'
     };
-
-    // Test write
+    
+    console.log('Attempting to write test document...');
     const testId = Products.insert(testDoc);
-    console.log('Test write successful, ID:', testId);
+    console.log('Test write successful:', {
+      collection: 'Products',
+      documentId: testId,
+      database: db.databaseName
+    });
 
     // Test read
+    console.log('Attempting to read test document...');
     const readTest = Products.findOne(testId);
-    console.log('Test read successful:', !!readTest);
+    console.log('Test read successful:', {
+      found: !!readTest,
+      documentId: testId,
+      content: readTest
+    });
 
     // Clean up
+    console.log('Cleaning up test document...');
     Products.remove({ _id: testId });
-
-    // Log collection counts - with error handling for each collection
+    
+    // Collection statistics
+    console.log('\n=== COLLECTION STATISTICS ===');
     const collections = {
       Products,
       Holdings,
@@ -89,18 +118,46 @@ Meteor.startup(() => {
       }
       try {
         const count = collection.find().count();
-        console.log(`${name} collection count:`, count);
+        const indexes = collection.rawCollection().indexes();
+        console.log(`${name} Collection:`, {
+          count,
+          database: db.databaseName,
+          indexes: indexes
+        });
       } catch (err) {
-        console.error(`Error counting ${name}:`, err);
+        console.error(`Error accessing ${name}:`, err);
       }
     });
 
-  } catch (error) {
-    console.error('Database initialization error:', error);
-    // Log more details in development
-    if (!Meteor.isProduction) {
-      console.error('Full error:', error);
+    // Test user creation
+    console.log('\n=== USER CREATION TEST ===');
+    const testUser = {
+      username: `test_${new Date().getTime()}`,
+      email: `test_${new Date().getTime()}@test.com`,
+      password: 'password123'
+    };
+    
+    try {
+      const userId = Accounts.createUser(testUser);
+      console.log('Test user created:', {
+        userId,
+        database: db.databaseName
+      });
+      // Clean up test user
+      Meteor.users.remove(userId);
+      console.log('Test user removed');
+    } catch (userError) {
+      console.error('User creation test failed:', userError);
     }
+
+  } catch (error) {
+    console.error('\n=== DATABASE ERROR ===');
+    console.error('Database initialization error:', {
+      error: error.message,
+      stack: error.stack,
+      database: db?.databaseName,
+      collections: Object.keys(db?.collections || {})
+    });
   }
 });
 
