@@ -1,0 +1,111 @@
+<template name="editProduct">
+
+  <div id="content" class="app-content">
+    <div class="d-flex align-items-center mb-3">
+      <div>
+        <ul class="breadcrumb">
+          <li class="breadcrumb-item"><a href="#">AMBERVISION</a></li>
+          <li class="breadcrumb-item active">{{#if isEditMode}}Edit product{{else}}New product{{/if}}</li>
+        </ul>
+        <h1 class="page-header mb-0 reveal">
+
+          {{#if isEditMode}}
+            Edit an existing product
+          {{else}}
+            Add a product to the database
+          {{/if}}
+
+          <span class="animate__animated animate__flash animate__infinite">_</span></h1>
+
+      </div>
+
+
+    </div>
+
+    <div class="row mb-3">
+      <div class="col-3">
+        <div class="form-group">
+          <label for="product_type" class="form-label">Product Type</label>
+          <select id="product_type" class="form-select" {{disabledAttribute}}>
+            <option value="">Select Product Type</option>
+            <option value="phoenix">Phoenix</option>
+            <option value="orion">Orion</option>
+            <option value="twinWin">Twin Win</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div id="productTypeContent">
+
+
+      {{#if currentTemplate}}
+
+      {{#unless isEditMode}}
+        <!-- Upload Term Sheet module -->
+        <div class="card bg-transparent text-white mb-4 border border-secondary">
+          <div class="card-header border-secondary">
+            <h5 class="mb-0">Upload Term Sheet</h5>
+          </div>
+          <div class="card-body text-center py-5">
+            {{#unless uploadedFile}}
+              <div id="dragArea" class="border border-2 border-warning rounded p-4 mx-2" style="border-style: dashed !important;">
+                <i class="fas fa-cloud-upload-alt fa-3x text-warning mb-3"></i>
+                <div class="d-flex flex-column align-items-center">
+                  <span class="text-white mb-2">Drag & Drop</span>
+                  <span class="text-white mb-2">or</span>
+                  <button class="btn btn-warning px-4 mb-2 browse-btn">Browse File</button>
+                  <input type="file" id="pdfInput" accept=".pdf" class="d-none">
+                  <small class="text-muted">Supports: PDF</small>
+                </div>
+              </div>
+            {{/unless}}
+            {{#if uploadedFile}}
+              <div class="mt-3 d-flex justify-content-between align-items-center bg-secondary bg-opacity-25 rounded p-2">
+                <span class="text-white">{{uploadedFile.name}}</span>
+                <button class="btn btn-sm btn-danger remove-file ms-2">×</button>
+              </div>
+              <button class="btn btn-outline-warning mt-3 send-file">
+                <i class="fas fa-paper-plane me-2"></i>Send Term Sheet
+              </button>
+            {{/if}}
+          </div>
+        </div>
+
+        {{/unless}}
+        {{> Template.dynamic template=currentTemplate}}
+      {{else}}
+        <p class="text-white">Please select a product type</p>
+      {{/if}}
+
+
+
+
+    </div>
+  </div>
+
+
+</template>
+
+<!-- Keep only the observationRow template here -->
+<template name="observationRow">
+  <tr>
+    <td>{{n}}</td>
+    <td>
+      <input type="date" class="form-control observation-date" value="{{observationDate}}" {{disabledAttribute}}>
+    </td>
+    <td>
+      <input type="date" class="form-control payment-date" value="{{paymentDate}}" {{disabledAttribute}}>
+    </td>
+    <td>
+      <input type="text" class="form-control coupon-barrier" value="{{couponBarrier}}" {{disabledAttribute}}>
+    </td>
+    <td>
+      <input type="text" class="form-control autocall-barrier" value="{{autocallBarrier}}" {{disabledAttribute}}>
+    </td>
+    <td>
+      <input type="text" class="form-control coupon-per-period" value="{{couponPerPeriod}}" {{disabledAttribute}}>
+    </td>
+  </tr>
+</template>
+

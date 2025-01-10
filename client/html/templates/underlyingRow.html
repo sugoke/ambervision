@@ -1,0 +1,30 @@
+<template name="underlyingRow">
+  <tr id="tickerRow-{{id}}" data-row-id="{{id}}">
+    <td>
+      <input type="text" class="form-control fullName-autocomplete" id="fullNameInput-{{id}}" value="{{fullName}}" autocomplete="off" data-row-id="{{id}}">
+    </td>
+    <td>
+      <input type="text" class="form-control ticker-autocomplete" id="tickerInput-{{id}}" value="{{ticker}}" style="text-transform: uppercase;" autocomplete="off">
+    </td>
+    <td>
+      <input type="text" class="form-control" id="exchangeInput-{{id}}" value="{{exchange}}">
+    </td>
+    <td>
+      <input type="text" class="form-control" id="countryInput-{{id}}" value="{{country}}">
+    </td>
+    <td>
+      <input type="text" class="form-control" id="currencyInput-{{id}}" value="{{currency}}">
+    </td>
+    <td>
+      <span id="closeText-{{id}}">{{close}}</span>
+    </td>
+    <td>
+      <input type="number" class="form-control" id="strikeInput-{{id}}" value="{{strike}}" step="0.01">
+    </td>
+    <td>
+      <button class="btn btn-outline-danger btn-sm remove_ticker" data-id="{{id}}">
+        <i class="fas fa-times"></i>
+      </button>
+    </td>
+  </tr>
+</template> 

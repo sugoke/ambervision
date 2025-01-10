@@ -1,0 +1,185 @@
+<template name="orion">
+
+<!-- Orion template specific content -->
+
+<div id="content" class="app-content">
+    <div class="d-flex align-items-center mb-3">
+      <div>
+        <ol class="breadcrumb">
+          <li class="breadcrumb-item"><a href="#">AMBERVISION</a></li>
+          <li class="breadcrumb-item active">Product details</li>
+        </ol>
+        <h1 class="page-header mb-0 reveal">{{genericData.ISINCode}}</h1> 
+
+        {{#if isSuperAdmin}}
+        <a href="/editProduct?isin={{genericData.ISINCode}}&mode=editProduct" class="btn btn-primary mt-2">Edit Product</a>
+      {{/if}}
+
+      
+      </div>
+    </div>
+
+
+  <div class="row">
+      <div class="col-xl-3">
+        <div class="desktop-sticky-top d-none d-lg-block">
+          <div class="card shadow">
+            <div class="card-header fw-bold medium lead">
+              {{genericData.name}}
+            </div>
+            <div class="card-body">
+              <h5 class="card-title">
+                <span class="spinner-grow spinner-grow-sm text-warning"></span> Live Product
+              </h5>
+              <h6 class="card-subtitle mb-3 text-white text-opacity-50 animate__animated animate__pulse">
+                Bid price: 101.50%
+              </h6>
+              <div class="row">
+                <div class="col-12 col-sm-6 col-xl-12">
+                  <dl>
+                    <dt>Currency</dt>
+                    <dd>{{genericData.currency}}</dd>
+                    
+                    <dt>Issuer</dt>
+                    <dd>{{genericData.issuer}}</dd>
+                    <dt>Issue date</dt>
+                    <dd>{{formatDate genericData.issueDate}}</dd>
+                    <dt>Maturity</dt>
+                    <dd>{{formatDate genericData.maturityDate}}</dd>
+                    
+                    <dt>Average Basket Performance</dt>
+                    <dd>{{formatPercentage avgBasket}}%</dd>
+                    
+                    <dt>Average Product Performance</dt>
+                    <dd>{{formatPercentage avgProduct}}%</dd>
+                  </dl>
+                </div>
+              </div>
+            </div>
+            <div class="card-arrow">
+              <div class="card-arrow-top-left"></div>
+              <div class="card-arrow-top-right"></div>
+              <div class="card-arrow-bottom-left"></div>
+              <div class="card-arrow-bottom-right"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-xl-9">
+        <!-- First card: Performance Analysis -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <div class="d-flex fw-bold small mb-3">
+              <span class="flex-grow-1">PERFORMANCE ANALYSIS</span>
+            </div>
+            <div class="row">
+              <div class="col-12 mb-3">
+                <p class="mb-1">The performance of the basket is: 
+                  <span class="{{#if (isNegative avgBasket)}}text-warning{{else}}text-success{{/if}}">
+                    {{formatPercentage avgBasket}}%
+                  </span>
+                </p>
+                <p class="mb-0">The performance of the Orion basket is: 
+                  <span class="{{#if (isNegative avgProduct)}}text-warning{{else}}text-success{{/if}}">
+                    {{formatPercentage avgProduct}}%
+                  </span>
+                </p>
+                {{#if (eq status "live")}}
+                  <p class="mt-2">If the product were to stop today it would be redeemed at {{formatPercentage redemption}}%</p>
+                {{else}}
+                  <p class="mt-2">The product has been redeemed at {{formatPercentage redemption}}%</p>
+                {{/if}}
+              </div>
+            </div>
+          </div>
+          <div class="card-arrow">
+            <div class="card-arrow-top-left"></div>
+            <div class="card-arrow-top-right"></div>
+            <div class="card-arrow-bottom-left"></div>
+            <div class="card-arrow-bottom-right"></div>
+          </div>
+        </div>
+
+        <!-- Second card: Performance Table -->
+        <div class="card mb-3">
+          <div class="card-body p-0 mb-3">
+            <div class="table-responsive" style="max-width: 97% !important;">
+              <table class="table table-striped table-borderless mb-0 w-100">
+                <thead>
+                  <tr>
+                    <th class="text-nowrap px-2 text-center align-middle">Name</th>
+                    <th class="text-nowrap px-2 text-center align-middle">Ticker</th>
+                    <th class="text-nowrap px-2 text-center align-middle">Initial<br>Reference<br>Level</th>
+                    <th class="text-nowrap px-2 text-center align-middle">Performance</th>
+                    <th class="text-nowrap px-2 text-center align-middle">Considered<br>Performance</th>
+                    <th class="text-nowrap px-2 text-center align-middle">Upper Barrier<br>Touched</th>
+                    <th class="text-nowrap px-2 text-center align-middle">Touch Date</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {{#each outputTable.underlyings}}
+                    <tr>
+                      <td class="px-2 text-center">{{name}}</td>
+                      <td class="px-2 text-center">{{ticker}}</td>
+                      <td class="px-2 text-center">{{initialReferenceLevel}}</td>
+                      <td class="px-2 text-center">
+                        {{#if (isNegative perfOfStock)}}
+                          <span style="color: orange;">{{formatPercentage perfOfStock}}%</span>
+                        {{else}}
+                          <span style="color: rgb(152, 209, 128);">{{formatPercentage perfOfStock}}%</span>
+                        {{/if}}
+                      </td>
+                      <td class="px-2 text-center">
+                        {{#if (isNegative consideredPerformance)}}
+                          <span style="color: orange;">{{formatPercentage consideredPerformance}}%</span>
+                        {{else}}
+                          <span style="color: rgb(152, 209, 128);">{{formatPercentage consideredPerformance}}%</span>
+                        {{/if}}
+                      </td>
+                      <td class="px-2 text-center">
+                        {{#if upperBarrierTouched}}
+                          <span class="badge bg-success">Yes</span>
+                        {{else}}
+                          <span class="badge bg-danger">No</span>
+                        {{/if}}
+                      </td>
+                      <td class="px-2 text-center">{{touchDate}}</td>
+                    </tr>
+                  {{/each}}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card-arrow">
+            <div class="card-arrow-top-left"></div>
+            <div class="card-arrow-top-right"></div>
+            <div class="card-arrow-bottom-left"></div>
+            <div class="card-arrow-bottom-right"></div>
+          </div>
+        </div>
+
+        <!-- Third card: Performance Chart -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <div class="d-flex fw-bold small mb-3">
+              <span class="flex-grow-1">Performance Chart</span>
+            </div>
+            <div id="productChartContainer" style="height: 400px; position: relative;">
+              <canvas id="productChart"></canvas>
+            </div>
+          </div>
+          <div class="card-arrow">
+            <div class="card-arrow-top-left"></div>
+            <div class="card-arrow-top-right"></div>
+            <div class="card-arrow-bottom-left"></div>
+            <div class="card-arrow-bottom-right"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+</template>

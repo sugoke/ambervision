@@ -1,0 +1,46 @@
+{
+  "name": "ambervision",
+  "private": true,
+  "scripts": {
+    "start": "meteor run",
+    "test": "meteor test --once --driver-package meteortesting:mocha",
+    "test-app": "TEST_WATCH=1 meteor test --full-app --driver-package meteortesting:mocha",
+    "visualize": "meteor --production --extra-packages bundle-visualizer"
+  },
+  "dependencies": {
+    "@babel/runtime": "^7.23.5",
+    "@popperjs/core": "^2.11.8",
+    "bootstrap": "^5.3.3",
+    "chart.js": "^4.4.4",
+    "chartjs-adapter-date-fns": "^3.0.0",
+    "chartjs-plugin-annotation": "^3.0.1",
+    "datatables": "^1.10.18",
+    "datatables.net": "^2.1.5",
+    "datatables.net-bs": "^2.1.5",
+    "datatables.net-bs5": "^2.1.7",
+    "datatables.net-buttons": "^3.1.2",
+    "datatables.net-buttons-dt": "^3.1.2",
+    "datatables.net-dt": "^2.1.5",
+    "date-fns": "^3.6.0",
+    "html2canvas": "^1.4.1",
+    "html2pdf.js": "^0.10.2",
+    "jquery": "^3.7.1",
+    "jquery-ui-dist": "^1.13.2",
+    "jspdf": "^2.5.2",
+    "meteor-node-stubs": "^1.2.7",
+    "moment": "^2.30.1",
+    "openai": "^3.2.1",
+    "pdf-img-convert": "^2.0.0",
+    "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^4.7.76",
+    "pdfreader": "^3.0.5",
+    "perfect-scrollbar": "^1.5.5"
+  },
+  "meteor": {
+    "mainModule": {
+      "client": "client/main.js",
+      "server": "server/main.js"
+    },
+    "testModule": "tests/main.js"
+  }
+}

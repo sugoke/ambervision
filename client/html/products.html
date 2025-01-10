@@ -1,0 +1,62 @@
+<template name="products">
+
+  
+  <div id="content" class="app-content">
+    <div class="d-flex align-items-center mb-3">
+      <div>
+        <ul class="breadcrumb">
+          <li class="breadcrumb-item"><a href="#">AMBERVISION</a></li>
+          <li class="breadcrumb-item active">Products list</li>
+        </ul>
+        <h1 class="page-header mb-0 reveal">Products list</h1>
+      </div>
+    </div>
+
+
+
+
+    <!-- required css / js -->
+    <link rel="stylesheet" href="https://unpkg.com/bootstrap-table@1.19.1/dist/bootstrap-table.min.css">
+    <script src="https://unpkg.com/bootstrap-table@1.19.1/dist/bootstrap-table.min.js"></script>
+
+<!-- BEGIN #responsiveTables -->
+
+
+  <div class="card">
+    <div class="card-body">
+      <div class="table-responsive">
+        {{#if productsAvailable}}
+          <table id="productsTable" class="table table-striped table-bordered table-hover">
+            <thead>
+              <tr>
+                <th>ISIN</th>
+                <th>Product Name</th>
+                <th>Currency</th>
+                <th>Issuer</th>
+                <th>Status</th>
+                <th>Nominal Invested</th>
+              </tr>
+            </thead>
+          </table>
+        {{else}}
+          <p>No products available.</p>
+        {{/if}}
+      </div>
+    </div>
+    <div class="card-arrow">
+      <div class="card-arrow-top-left"></div>
+      <div class="card-arrow-top-right"></div>
+      <div class="card-arrow-bottom-left"></div>
+      <div class="card-arrow-bottom-right"></div>
+    </div>
+  </div>
+
+<!-- END #responsiveTables -->
+
+
+        
+
+
+  </div>
+
+</template>

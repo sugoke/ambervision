@@ -1,0 +1,226 @@
+<!-- Product type specific templates -->
+<template name="orionTemplate">
+    <div class="card shadow" id="characteristicsCard">
+      <div class="card-header fw-bold small">Orion Characteristics</div>
+      <div class="card-body">
+        <ul class="nav nav-tabs">
+          <li class="nav-item me-1"><a href="#main" class="nav-link active" data-bs-toggle="tab">Main</a></li>
+          <li class="nav-item me-1"><a href="#underlyings" class="nav-link" data-bs-toggle="tab">Underlyings</a></li>
+        
+          <li class="nav-item me-1"><a href="#mechanism" class="nav-link" data-bs-toggle="tab">Mechanism</a></li>
+          <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#summary">Summary</a></li>
+        </ul>
+        <div class="tab-content pt-3" id="tabContent">
+          <!-- Tab Main -->
+          <div class="tab-pane fade show active" id="main">
+            <div class="container">
+              <div class="row mb-3">
+                <div class="col-3">
+                  <div class="form-group mb-3">
+                    <label for="isin_code" class="form-label">ISIN Code</label>
+                    <input type="text" class="form-control" id="isin_code" maxlength="12" style="text-transform:uppercase" value="{{productDetails.genericInformation.ISINCode}}" autocomplete="off" required>
+                  </div>
+                </div>
+  
+                <div class="col-2">
+                  <div class="form-group mb-3">
+                    <label for="currency" class="form-label">Currency</label>
+                    <select id="currency" class="form-select dark-text">
+                      <option value="USD">USD</option>
+                      <option value="EUR">EUR</option>
+                      <option value="GBP">GBP</option>
+                    </select>
+                  </div>
+                </div>
+  
+                <div class="col-3">
+                  <div class="form-group mb-3">
+                    <label for="issuer" class="form-label">Issuer</label>
+                    <input type="text" class="form-control" id="issuer" placeholder="Issuer Name" value="{{productDetails.genericInformation.issuer}}" required>
+                  </div>
+                </div>
+              </div>
+  
+             
+  
+             
+  
+              <hr>
+              <div class="row mb-3">
+                <div class="col-3">
+                  <div class="form-group mb-3">
+                    <label for="trade_date" class="form-label">Trade Date</label>
+                    <input type="date" class="form-control" id="tradeDate" value="{{formatDate productDetails.genericInformation.tradeDate}}" required>
+                  </div>
+                </div>
+  
+                <div class="col-3">
+                  <div class="form-group mb-3">
+                    <label for="trade_date" class="form-label">Payment Date</label>
+                    <input type="date" class="form-control" id="paymentDate" value="{{formatDate productDetails.genericInformation.paymentDate}}" required>
+                  </div>
+                </div>
+              </div>
+  
+              <div class="row mb-3">
+                <div class="col-3">
+                  <div class="form-group mb-3">
+                    <label for="final_observation" class="form-label">Final Observation</label>
+                    <input type="date" class="form-control" id="finalObservation" value="2026-02-08" required>
+                  </div>
+                </div>
+  
+                <div class="col-3">
+                  <div class="form-group mb-3">
+                    <label for="maturity" class="form-label">Maturity</label>
+                    <input type="date" class="form-control" id="maturityDate" value="2026-02-15" required>
+                  </div>
+                </div>
+              </div>
+              <hr>
+              <div class="row mb-3">
+                <div class="col-3">
+                  <div class="form-group mb-3">
+                    <label for="valoren" class="form-label">Valoren</label>
+                    <input type="text" class="form-control" id="valoren" placeholder="Enter Valoren" required>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+  
+          <!-- Tab Underlyings -->
+          <div class="tab-pane fade" id="underlyings" role="tabpanel">
+            <div class="container">
+              <div class="row">
+                <div class="col">
+                  <div class="row">
+                    <div class="col-auto mb-3">
+                      <button class="btn btn-outline-theme btn-sm" id="add_ticker">
+                        <i class="fas fa-plus"></i> Add Ticker
+                      </button>
+                    </div>
+                  </div>
+  
+                  <table class="table table-bordered" id="underlyings">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Ticker</th>
+                        <th>Exchange</th>
+                        <th>Country</th>
+                        <th>Currency</th>
+                        <th>Last Close</th>
+                        <th>Strike</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="underlyingRowsContainer">
+  
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+  
+          <!-- Tab Mechanism -->
+          <div class="tab-pane fade" id="mechanism">
+            <div class="container">
+              <div class="row">
+                <div class="col">
+                  <div class="form-group mb-3">
+                    <label for="upperBarrier" class="form-label">Upper Barrier (%)</label>
+                    <input type="number" class="form-control" id="upperBarrier" placeholder="Enter Upper Barrier" step="0.01" min="0" max="200">
+                  </div>
+                  <div class="form-group mb-3">
+                    <label for="rebate" class="form-label">Rebate (%)</label>
+                    <input type="number" class="form-control" id="rebate" placeholder="Enter Rebate" step="0.01" min="0" max="100">
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+  
+      
+          <!-- Tab Summary -->
+          <div class="tab-pane fade" id="summary">
+            <div class="container">
+              <h4 class="mb-4">Product Summary</h4>
+              
+              <div class="row">
+                <div class="col-md-6">
+                  <h5>General Information</h5>
+                  <table class="table table-sm">
+                    <tr><td><strong>ISIN Code:</strong></td><td id="summaryIsinCode"></td></tr>
+                    <tr><td><strong>Valoren:</strong></td><td id="summaryValoren"></td></tr>
+                    <tr><td><strong>Currency:</strong></td><td id="summaryCurrency"></td></tr>
+                    <tr><td><strong>Issuer:</strong></td><td id="summaryIssuer"></td></tr>
+                    <tr><td><strong>Product Type:</strong></td><td id="summaryProductType"></td></tr>
+                    <tr><td><strong>Settlement Type:</strong></td><td id="summarySettlementType"></td></tr>
+                    <tr><td><strong>Settlement T+x:</strong></td><td id="summarySettlementTx"></td></tr>
+                  </table>
+                </div>
+                
+                <div class="col-md-6">
+                  <h5>Key Dates</h5>
+                  <table class="table table-sm">
+                    <tr><td><strong>Trade Date:</strong></td><td id="summaryTradeDate"></td></tr>
+                    <tr><td><strong>Payment Date:</strong></td><td id="summaryPaymentDate"></td></tr>
+                    <tr><td><strong>Final Observation:</strong></td><td id="summaryFinalObservation"></td></tr>
+                    <tr><td><strong>Maturity:</strong></td><td id="summaryMaturity"></td></tr>
+                  </table>
+                </div>
+              </div>
+              
+              <div class="row mt-4">
+                <div class="col-md-12">
+                  <h5>Underlyings</h5>
+                  <table class="table table-sm" id="summaryUnderlyings">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Ticker</th>
+                        <th>Strike</th>
+                        <th>EOD Ticker</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <!-- Underlying rows will be dynamically added here -->
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              
+              <div class="row mt-4">
+                <div class="col-md-6">
+                  <h5>Product Mechanism</h5>
+                  <table class="table table-sm">
+                    <tr><td><strong>Upper Barrier:</strong></td><td id="summaryUpperBarrier"></td></tr>
+                    <tr><td><strong>Rebate:</strong></td><td id="summaryRebate"></td></tr>
+                  </table>
+                </div>
+              </div>
+              
+              <div class="row mt-4">
+                <div class="col-md-12">
+                  <button type="submit" class="btn btn-primary" id="submitOrionProduct">Submit</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+  
+      <!-- arrow -->
+      <div class="card-arrow">
+        <div class="card-arrow-top-left"></div>
+        <div class="card-arrow-top-right"></div>
+        <div class="card-arrow-bottom-left"></div>
+        <div class="card-arrow-bottom-right"></div>
+      </div>
+    </div>
+  </template>
+  
+
+

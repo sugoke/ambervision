@@ -1,0 +1,250 @@
+<template name="admin">
+  <div id="alertContainer" class="position-fixed top-0 end-0 p-3" style="z-index: 1100;">
+    <!-- Alerts will be inserted here dynamically -->
+  </div>
+
+  <div id="clientBanner" class="alert alert-info mb-3 text-center" style="display: none;">
+    <div class="d-flex align-items-center justify-content-between">
+      <div>
+        <i class="fas fa-user me-2"></i>
+        <span id="clientName"></span>
+      </div>
+      <button type="button" class="btn-close" aria-label="Close"></button>
+    </div>
+  </div>
+
+  <div id="content" class="app-content">
+    <ul class="breadcrumb">
+      <li class="breadcrumb-item"><a href="#">DASHBOARD</a></li>
+      <li class="breadcrumb-item active">USER LIST</li>
+    </ul>
+
+    <!-- User List Card -->
+    <div class="row g-3">
+      <div class="col-12">
+        <div class="card mb-4">
+          <div class="card-body">
+            <h3>User List</h3>
+            <div id="usersTableContainer">
+              <table class="table table-striped table-bordered">
+                <colgroup>
+                  <col style="width: 20%">
+                  <col style="width: 35%">
+                  <col style="width: 15%">
+                  <col style="width: 15%">
+                  <col style="width: 15%">
+                </colgroup>
+                <thead class="sticky-top bg-dark text-white">
+                  <tr>
+                    <th>Email</th>
+                    <th>Bank Accounts</th>
+                    <th>Role</th>
+                    <th>Last Login</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {{#each users}}
+                    <tr class="client-row" data-id="{{_id}}" data-name="{{username}}" style="cursor: pointer;">
+                      <td class="text-break">{{username}}</td>
+                      <td class="text-break">
+                        {{#each bankAccounts this}}
+                          <div class="small">
+                            <i class="bi bi-bank me-1"></i>{{bank}} - {{accountNumber}}
+                            {{#if refCurrency}}({{refCurrency}}){{/if}}
+                          </div>
+                        {{/each}}
+                      </td>
+                      <td>{{role this}}</td>
+                      <td>{{lastLogin this}}</td>
+                      <td>
+                        <div class="btn-group btn-group-sm">
+                          <button class="btn btn-primary edit-user" data-id="{{_id}}">Edit</button>
+                          <button class="btn btn-danger delete-user" data-id="{{_id}}">Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  {{/each}}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card-arrow">
+            <div class="card-arrow-top-left"></div>
+            <div class="card-arrow-top-right"></div>
+            <div class="card-arrow-bottom-left"></div>
+            <div class="card-arrow-bottom-right"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- BEGIN Issuer List Card -->
+      <div class="col-12">
+        <div class="card mb-4">
+          <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <h3>Issuer List</h3>
+              <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addIssuerModal">
+                <i class="fas fa-plus me-1"></i> Add Issuer
+              </button>
+            </div>
+            <div id="issuersTableContainer">
+              <table class="table table-striped table-bordered">
+                <thead class="sticky-top bg-dark text-white">
+                  <tr>
+                    <th>Name</th>
+                    <th>Added Date</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {{#each issuers}}
+                    <tr>
+                      <td>{{name}}</td>
+                      <td>{{formatDate createdAt}}</td>
+                      <td>
+                        <div class="btn-group btn-group-sm">
+                          <button class="btn btn-primary edit-issuer" data-id="{{_id}}">Edit</button>
+                          <button class="btn btn-danger delete-issuer" data-id="{{_id}}">Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  {{/each}}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card-arrow">
+            <div class="card-arrow-top-left"></div>
+            <div class="card-arrow-top-right"></div>
+            <div class="card-arrow-bottom-left"></div>
+            <div class="card-arrow-bottom-right"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-md-6">
+        <div class="card mb-4">
+          <div class="card-body">
+            <h3>Add New User</h3>
+            <form id="addUserForm">
+              <div class="mb-3">
+                <label for="newEmail" class="form-label">Email</label>
+                <input type="email" class="form-control" id="newEmail" required>
+              </div>
+              <div class="mb-3">
+                <label for="newRole" class="form-label">Role</label>
+                <select class="form-control" id="newRole" required>
+                  <option value="user">User</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+              <div class="mb-3">
+                <label for="newUserPassword" class="form-label">Initial Password</label>
+                <input type="password" class="form-control" id="newUserPassword" name="newPassword" required>
+              </div>
+              <button type="submit" class="btn btn-primary">Add User</button>
+            </form>
+          </div>
+          <div class="card-arrow">
+            <div class="card-arrow-top-left"></div>
+            <div class="card-arrow-top-right"></div>
+            <div class="card-arrow-bottom-left"></div>
+            <div class="card-arrow-bottom-right"></div>
+          </div>
+        </div>
+        
+        <div class="card mb-4">
+          <div class="card-body">
+            <h3>Upload Excel for Prices</h3>
+            <form id="uploadExcelForm">
+              <div class="mb-3">
+                <label for="excelFile" class="form-label">Select Excel File</label>
+                <input type="file" class="form-control" id="excelFile" accept=".csv">
+              </div>
+              <button type="submit" class="btn btn-success">Upload and Update Prices</button>
+            </form>
+            <div id="uploadMessage" class="mt-2"></div>
+          </div>
+          <div class="card-arrow">
+            <div class="card-arrow-top-left"></div>
+            <div class="card-arrow-top-right"></div>
+            <div class="card-arrow-bottom-left"></div>
+            <div class="card-arrow-bottom-right"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-md-6">
+        <div class="card mb-4">
+          <div class="card-body">
+            <h3>Account Actions</h3>
+            <button id="signOutButton" class="btn btn-danger mb-3">Sign Out</button>
+            
+            <h4>Change Password</h4>
+            <form id="changePasswordForm">
+              <div class="mb-3">
+                <label for="currentPassword" class="form-label">Current Password</label>
+                <input type="password" class="form-control" id="currentPassword" required>
+              </div>
+              <div class="mb-3">
+                <label for="changePassword" class="form-label">New Password</label>
+                <input type="password" class="form-control" id="changePassword" name="newPassword" required>
+              </div>
+              <button type="submit" class="btn btn-primary">Change Password</button>
+            </form>
+            <div id="passwordChangeMessage" class="mt-2"></div>
+          </div>
+          <div class="card-arrow">
+            <div class="card-arrow-top-left"></div>
+            <div class="card-arrow-top-right"></div>
+            <div class="card-arrow-bottom-left"></div>
+            <div class="card-arrow-bottom-right"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add Issuer Modal -->
+    <div class="modal fade" id="addIssuerModal" tabindex="-1" data-bs-backdrop="static">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Add New Issuer</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <form id="addIssuerForm">
+              <div class="mb-3">
+                <label for="issuerName" class="form-label">Issuer Name</label>
+                <input type="text" class="form-control" id="issuerName" required>
+              </div>
+            </form>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            <button type="button" class="btn btn-primary" id="saveIssuer">Save Issuer</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal fade" id="confirmModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Confirm Action</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <p id="confirmMessage"></p>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-danger" id="confirmAction">Delete</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>

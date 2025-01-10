@@ -1,0 +1,67 @@
+<template name="login">
+
+      <div class="login">
+        <div class="login-content">
+          <div class="card mt-4 shadow animate__animated animate__flipInX">
+            <div class="card-header d-flex align-items-center bg-white bg-opacity-15">
+              <span class="flex-grow-1 fw-400">Ambervision</span>
+            </div>
+            <div class="card-body">
+
+
+              <h3 class="text-center mb-4">Login</h3>
+
+                <div class="form-group mb-3">
+                  <label for="login-username">Username</label>
+                  <input type="text" id="login-username" name="username" class="form-control" placeholder="Username" required>
+                </div>
+                <div class="form-group mb-4">
+                  <label for="login-password">Password</label>
+                  <input type="password" id="login-password" name="password" class="form-control" placeholder="Password" required>
+                </div>
+                <div class="text-center">
+                   <button type="button" class="btn btn-secondary btn-block" id="register-button">Register</button>
+                  <button type="button" class="btn btn-primary btn-block" id="login-button">Login</button>
+                </div>
+
+              <div class="text-center mt-3">
+
+                <a href="/forgot-password">Forgot Password?</a>
+              </div>
+
+
+
+
+
+            </div>
+
+            <div class="card-arrow">
+              <div class="card-arrow-top-left"></div>
+              <div class="card-arrow-top-right"></div>
+              <div class="card-arrow-bottom-left"></div>
+              <div class="card-arrow-bottom-right"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+  		<!-- END login -->
+      <!-- Bootstrap Modal for Error Messages -->
+        <div class="modal" id="errorModal" tabindex="-1" role="dialog">
+          <div class="modal-dialog" role="document">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title">Registration Error</h5>
+
+              </div>
+              <div class="modal-body">
+                <p id="errorMessage"></p>
+              </div>
+              <div class="modal-footer">
+
+
+              </div>
+            </div>
+          </div>
+        </div>
+</template>

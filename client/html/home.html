@@ -1,0 +1,240 @@
+<template name="home">
+  <div id="content" class="app-content">
+    <ul class="breadcrumb">
+      <li class="breadcrumb-item"><a href="#">DASHBOARD</a></li>
+      <li class="breadcrumb-item active">HOME PAGE</li>
+    </ul>
+
+    <p>
+
+<!-- BEGIN #statsWidget -->
+								<div id="statsWidget" class="mb-5">
+									<h4>Stats</h4>
+									<p>Content of you portfolio</p>
+									<div class="card">
+										<div class="card-body">
+											<div class="row">
+												<div class="col-md-6">
+													<a href="#" class="card text-decoration-none">
+														<div class="card-body d-flex align-items-center text-inverse m-5px bg-inverse bg-opacity-10">
+															<div class="flex-fill">
+																<div class="mb-1">Number of live products</div>
+																<h2>{{liveProductsCount}}</h2>
+																<div>As of today</div>
+															</div>
+															<div class="opacity-5">
+																<i class="fa fa-chart-bar fa-4x"></i>
+															</div>
+														</div>
+														<div class="card-arrow">
+															<div class="card-arrow-top-left"></div>
+															<div class="card-arrow-top-right"></div>
+															<div class="card-arrow-bottom-left"></div>
+															<div class="card-arrow-bottom-right"></div>
+														</div>
+													</a>
+												</div>
+												<div class="col-md-6">
+													<a href="#" class="card text-decoration-none">
+														<div class="card-body d-flex align-items-center text-inverse m-5px bg-inverse bg-opacity-10">
+															<div class="flex-fill">
+																<div class="mb-1">Estimated value in EUR</div>
+																<h2>{{liveProductsNominalValue}}</h2>
+																<div>{{formatDate (now)}}</div>
+															</div>
+															<div class="opacity-5">
+																<i class="fa fa-euro-sign fa-4x"></i>
+															</div>
+														</div>
+														<div class="card-arrow">
+															<div class="card-arrow-top-left"></div>
+															<div class="card-arrow-top-right"></div>
+															<div class="card-arrow-bottom-left"></div>
+															<div class="card-arrow-bottom-right"></div>
+														</div>
+													</a>
+												</div>
+											</div>
+										</div>
+										<div class="card-arrow">
+											<div class="card-arrow-top-left"></div>
+											<div class="card-arrow-top-right"></div>
+											<div class="card-arrow-bottom-left"></div>
+											<div class="card-arrow-bottom-right"></div>
+										</div>
+
+									</div>
+								</div>
+								<!-- END #statsWidget -->
+    </p>
+
+    <!-- BEGIN #smallTable -->
+    <div id="smallTable" class="mb-5">
+      <h4>Schedule</h4>
+      <p>Events on {{#if isSuperAdmin}}the portfolio{{else}}your holdings{{/if}}.</p>
+      <div class="card">
+        <div class="card-body">
+          <div id="scheduleTableContainer" style="height: 300px; overflow-y: auto; overflow-x: auto;">
+            <table class="table table-sm mb-0">
+              <thead class="sticky-top bg-dark">
+                <tr>
+                  <th scope="col">Days Left</th>
+                  <th scope="col">Date</th>
+                  <th scope="col">ISIN</th>
+                  <th scope="col">Product Name</th>
+                  <th scope="col">Event Type</th>
+                </tr>
+              </thead>
+              <tbody>
+                {{#each scheduleEvents}}
+                  <tr class="{{#if isPastEvent}}text-muted opacity-50{{else if isNextObservation}}text-warning fw-bold{{else}}text-white{{/if}}">
+                    <td>
+                      {{#if isPastEvent}}
+                        <span>Past</span>
+                      {{else}}
+                        {{daysLeft}}
+                      {{/if}}
+                    </td>
+                    <td>
+                      {{formatDate date}}
+                    </td>
+                    <td>
+                      {{#if ISINCode}}
+                        <a href="/productDetails?isin={{ISINCode}}" class="btn btn-outline-warning btn-sm isin-btn">
+                          {{ISINCode}}
+                        </a>
+                      {{else}}
+                        N/A
+                      {{/if}}
+                    </td>
+                    <td>
+                      {{productName}}
+                    </td>
+                    <td>
+                      {{capitalizeFirstLetter observationType}}
+                    </td>
+                  </tr>
+                {{else}}
+                  <tr>
+                    <td colspan="5">No scheduled events found.</td>
+                  </tr>
+                {{/each}}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card-arrow">
+          <div class="card-arrow-top-left"></div>
+          <div class="card-arrow-top-right"></div>
+          <div class="card-arrow-bottom-left"></div>
+          <div class="card-arrow-bottom-right"></div>
+        </div>
+      </div>
+    </div>
+    <!-- END #smallTable -->
+
+    <!-- BEGIN #riskBubbleChart -->
+    <div id="riskBubbleChartContainer" class="mb-5">
+      <h4>Risk Bubble Chart</h4>
+      <p>Visualization of risk data from the products with protection barrier.</p>
+      <div class="card">
+        <div class="card-body" style="height: 450px;">
+          <canvas id="riskBubbleChart"></canvas>
+        </div>
+        <div class="card-arrow">
+          <div class="card-arrow-top-left"></div>
+          <div class="card-arrow-top-right"></div>
+          <div class="card-arrow-bottom-left"></div>
+          <div class="card-arrow-bottom-right"></div>
+        </div>
+      </div>
+    </div>
+    <!-- END #riskBubbleChart -->
+
+    <!-- BEGIN #riskTable -->
+    <div id="riskTable" class="mb-5">
+      <h4>Risk Data</h4>
+      <p>Detailed information from the risk collection.</p>
+      <div class="card">
+        <div class="card-body">
+          <div id="riskTableContainer" style="height: 300px; overflow-y: auto; overflow-x: auto;">
+            <table class="table table-sm mb-0">
+              <thead class="sticky-top bg-dark">
+                <tr>
+                  <th scope="col">ISIN</th>
+                  <th scope="col">Underlying Name</th>
+                  <th scope="col">Performance</th>
+                  <th scope="col">Distance to Barrier</th>
+                </tr>
+              </thead>
+              <tbody>
+                {{#if filteredRiskData.length}}
+                  {{#each filteredRiskData}}
+                    <tr class="risk-row" data-days-left="{{daysLeft}}" {{riskRowAttributes}}>
+                      <td>
+                        <a href="/productDetails?isin={{ISINCode}}" class="btn btn-outline-warning btn-sm isin-btn">
+                          {{ISINCode}}
+                        </a>
+                      </td>
+                      <td>{{underlyingName}}</td>
+                      <td>
+                        {{#if (lt performance 0)}}
+                          <span style="color: orange;">
+                            {{#if (eq (formatPercentage performance) '-')}}
+                              {{formatPercentage performance}}
+                            {{else}}
+                              {{formatPercentage performance}}%
+                            {{/if}}
+                          </span>
+                        {{else}}
+                          <span style="color: rgb(152, 209, 128);">
+                            {{#if (eq (formatPercentage performance) '-')}}
+                              {{formatPercentage performance}}
+                            {{else}}
+                              {{formatPercentage performance}}%
+                            {{/if}}
+                          </span>
+                        {{/if}}
+                      </td>
+                      <td>
+                        {{#if (lt distanceToBarrier 0)}}
+                          <span style="color: orange;">
+                            {{#if (eq (formatPercentage distanceToBarrier) '-')}}
+                              {{formatPercentage distanceToBarrier}}
+                            {{else}}
+                              {{formatPercentage distanceToBarrier}}%
+                            {{/if}}
+                          </span>
+                        {{else}}
+                          <span style="color: rgb(152, 209, 128);">
+                            {{#if (eq (formatPercentage distanceToBarrier) '-')}}
+                              {{formatPercentage distanceToBarrier}}
+                            {{else}}
+                              {{formatPercentage distanceToBarrier}}%
+                            {{/if}}
+                          </span>
+                        {{/if}}
+                      </td>
+                    </tr>
+                  {{/each}}
+                {{else}}
+                  <tr>
+                    <td colspan="6">No risk data available.</td>
+                  </tr>
+                {{/if}}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card-arrow">
+          <div class="card-arrow-top-left"></div>
+          <div class="card-arrow-top-right"></div>
+          <div class="card-arrow-bottom-left"></div>
+          <div class="card-arrow-bottom-right"></div>
+        </div>
+      </div>
+    </div>
+    <!-- END #riskTable -->
+
+  </div>
+</template>

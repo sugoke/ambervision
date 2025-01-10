@@ -1,0 +1,55 @@
+<template name="clientProducts">
+  <div id="content" class="app-content">
+    <div class="container mt-3">
+      {{#if user}}
+        <div class="alert alert-info">
+          <i class="fas fa-user me-2"></i>
+          Showing products of <strong>{{user.username}}</strong>
+        </div>
+      {{/if}}
+      
+      {{#if userProducts.length}}
+        <div class="card">
+          <div class="card-body">
+            <table class="table table-striped">
+              <thead>
+                <tr>
+                  <th>Product Name</th>
+                  <th>ISIN</th>
+                  <th>Quantity</th>
+                  <th>Purchase Price</th>
+                  <th>Current Price</th>
+                </tr>
+              </thead>
+              <tbody>
+                {{#each userProducts}}
+                  <tr>
+                    <td>{{genericData.name}}</td>
+                    <td>
+                      <a href="/productDetails?isin={{genericData.ISINCode}}" class="btn btn-outline-theme btn-sm">
+                        {{genericData.ISINCode}}
+                      </a>
+                    </td>
+                    <td>{{quantityForThisHolding _id}}</td>
+                    <td>{{purchasePriceForThisHolding _id}}</td>
+                    <td>{{currentPrice genericData.ISINCode}}</td>
+                  </tr>
+                {{/each}}
+              </tbody>
+            </table>
+          </div>
+          <div class="card-arrow">
+            <div class="card-arrow-top-left"></div>
+            <div class="card-arrow-top-right"></div>
+            <div class="card-arrow-bottom-left"></div>
+            <div class="card-arrow-bottom-right"></div>
+          </div>
+        </div>
+      {{else}}
+        <div class="alert alert-warning">
+          No products found for this client.
+        </div>
+      {{/if}}
+    </div>
+  </div>
+</template> 

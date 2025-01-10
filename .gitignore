@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Settings and Environment Variables
+settings.json
+settings-*.json
+.env
+.env.*
+!.env.example
+
+# Deploy
+.deploy/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
