@@ -8,6 +8,8 @@ import { HTTP } from 'meteor/http';
 import { ReactiveVar } from 'meteor/reactive-var';
 
 Template.home.onCreated(function() {
+  const instance = this;
+  
   this.autorun(() => {
     const selectedUserId = Session.get('selectedClientId');
     const user = Meteor.user();
@@ -25,11 +27,33 @@ Template.home.onCreated(function() {
   
   // Fetch news when template is created
   this.autorun(() => {
-    const riskData = Risk.find().fetch();
-    if (riskData.length) {
-      this.loadNews(riskData);
+    if (Meteor.userId()) {
+      const riskData = Risk.find().fetch();
+      if (riskData.length) {
+        instance.loadNews(riskData);
+      }
     }
   });
+
+  // Add loadNews function to the template instance
+  instance.loadNews = async function(riskData) {
+    instance.newsLoading.set(true);
+    try {
+      const tickers = [...new Set(riskData.map(r => r.underlyingEodticker))].filter(Boolean);
+      
+      if (tickers.length > 0) {
+        const news = await Meteor.callAsync('getEodNews', tickers);
+        instance.newsItems.set(news);
+      } else {
+        instance.newsItems.set([]);
+      }
+    } catch (error) {
+      console.error('Error loading news:', error);
+      instance.newsItems.set([]);
+    } finally {
+      instance.newsLoading.set(false);
+    }
+  };
 });
 
 Template.home.helpers({
@@ -214,24 +238,5 @@ Template.home.onDestroyed(function() {
     this.chart.destroy();
   }
 });
-
-Template.home.prototype.loadNews = async function(riskData) {
-  this.newsLoading.set(true);
-  try {
-    const tickers = [...new Set(riskData.map(r => r.underlyingEodticker))].filter(Boolean);
-    
-    if (tickers.length > 0) {
-      const news = await Meteor.callAsync('getEodNews', tickers);
-      this.newsItems.set(news);
-    } else {
-      this.newsItems.set([]);
-    }
-  } catch (error) {
-    console.error('Error loading news:', error);
-    this.newsItems.set([]);
-  } finally {
-    this.newsLoading.set(false);
-  }
-};
 
 

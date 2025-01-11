@@ -21,30 +21,28 @@ Template.registerHelper('eq', function (a, b) {
 });
 
 Template.mainLayout.onCreated(function() {
-  this.autorun(() => {
-    const selectedClientId = Session.get('selectedClientId');
-    if (selectedClientId) {
-      this.subscribe('clientFilteredProducts', selectedClientId);
+  const instance = this;
+  
+  // Wait for user subscription to be ready
+  instance.autorun(() => {
+    if (!Meteor.userId()) {
+      Router.go('/login');
     }
   });
 });
 
 Template.mainLayout.helpers({
-  currentUser: function() {
+  currentUser() {
     return Meteor.user();
   },
-  isSuperAdmin: function() {
-    try {
-      const user = Meteor.user();
-      if (!user || !user.profile) return false;
-      return user.profile.role === 'superAdmin';
-    } catch (err) {
-      console.error('Error in isSuperAdmin helper:', err);
-      return false;
-    }
+  
+  isSuperAdmin() {
+    const user = Meteor.user();
+    return user && user.profile && user.profile.role === 'superAdmin';
   },
-  selectedClientName() {
-    return Session.get('selectedClientName');
+  
+  shouldShowMenu() {
+    return !!Meteor.userId();
   }
 });
 
