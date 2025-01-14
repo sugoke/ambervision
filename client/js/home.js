@@ -3,13 +3,9 @@ import { Products, Holdings, Risk, Schedules } from '/imports/api/products/produ
 import moment from 'moment';
 import '../html/home.html';
 import { renderBubbleChart } from './modular/bubbleChartHome.js';
-import '../css/home.css';
-import { HTTP } from 'meteor/http';
-import { ReactiveVar } from 'meteor/reactive-var';
+
 
 Template.home.onCreated(function() {
-  const instance = this;
-  
   this.autorun(() => {
     const selectedUserId = Session.get('selectedClientId');
     const user = Meteor.user();
@@ -20,40 +16,6 @@ Template.home.onCreated(function() {
       this.subscribe('clientFilteredProducts', selectedUserId);
     }
   });
-  
-  // Add news state
-  this.newsLoading = new ReactiveVar(true);
-  this.newsItems = new ReactiveVar([]);
-  
-  // Fetch news when template is created
-  this.autorun(() => {
-    if (Meteor.userId()) {
-      const riskData = Risk.find().fetch();
-      if (riskData.length) {
-        instance.loadNews(riskData);
-      }
-    }
-  });
-
-  // Add loadNews function to the template instance
-  instance.loadNews = async function(riskData) {
-    instance.newsLoading.set(true);
-    try {
-      const tickers = [...new Set(riskData.map(r => r.underlyingEodticker))].filter(Boolean);
-      
-      if (tickers.length > 0) {
-        const news = await Meteor.callAsync('getEodNews', tickers);
-        instance.newsItems.set(news);
-      } else {
-        instance.newsItems.set([]);
-      }
-    } catch (error) {
-      console.error('Error loading news:', error);
-      instance.newsItems.set([]);
-    } finally {
-      instance.newsLoading.set(false);
-    }
-  };
 });
 
 Template.home.helpers({
@@ -191,14 +153,6 @@ Template.home.helpers({
   isPastEvent() {
     if (!this.date) return false;
     return moment(this.date, 'YYYY-MM-DD').isBefore(moment(), 'day');
-  },
-
-  newsItems() {
-    return Template.instance().newsItems.get();
-  },
-  
-  newsLoading() {
-    return Template.instance().newsLoading.get();
   }
 });
 
@@ -237,6 +191,24 @@ Template.home.onDestroyed(function() {
   if (this.chart) {
     this.chart.destroy();
   }
+});
+
+// Add missing helpers for comparisons
+Template.registerHelper('lt', function(a, b) {
+  return a < b;
+});
+
+Template.registerHelper('eq', function(a, b) {
+  return a === b;
+});
+
+Template.registerHelper('formatPercentage', function(value) {
+  if (!value && value !== 0) return '-';
+  return value.toFixed(2);
+});
+
+Template.registerHelper('now', function() {
+  return new Date();
 });
 
 

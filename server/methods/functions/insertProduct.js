@@ -10,6 +10,18 @@ import { Mongo } from 'meteor/mongo';
 
 import { Holdings } from '/imports/api/products/products.js';
 
+const DATE_CACHE = new Map();
+
+function parseAndNormalizeDate(dateString) {
+  const [year, month, day] = dateString.split('-').map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function formatDate(date) {
+  if (!date) return null;
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
 Meteor.methods({
   'validateProductForm'(formData) {
     check(formData, {
@@ -50,7 +62,7 @@ Meteor.methods({
     };
   },
 
-  'insertProduct'(productData) {
+  'insertProduct': async function(productData) {
     try {
       // Validate user
       if (!this.userId) {
@@ -76,7 +88,7 @@ Meteor.methods({
       productData.underlyings = productData.underlyings || [];
       productData.observationDates = productData.observationDates || [];
 
-      // Clean and validate underlyings
+      // Clean and validate underlyings with adjusted reference levels
       productData.underlyings = productData.underlyings.map(underlying => ({
         name: underlying.name || '',
         ticker: underlying.ticker || '',
@@ -85,8 +97,9 @@ Meteor.methods({
         currency: underlying.currency || '',
         initialReferenceLevel: parseFloat(underlying.initialReferenceLevel) || null,
         eodTicker: underlying.eodTicker || '',
-        lastPriceInfo: underlying.lastPriceInfo || {
+        lastPriceInfo: {
           price: null,
+          adjustedPrice: null,
           performance: null,
           distanceToBarrier: null,
           date: null,
@@ -112,15 +125,74 @@ Meteor.methods({
 
       console.log('Cleaned product data:', JSON.stringify(productData, null, 2));
 
-      // Insert with error catching
-      try {
-        const productId = Products.insert(productData);
-        console.log('Product inserted successfully with ID:', productId);
-        return productId;
-      } catch (dbError) {
-        console.error('Database insertion error:', dbError);
-        throw new Meteor.Error('db-error', 'Failed to insert product into database', dbError);
-      }
+      // Create the final product object with processed underlyings
+      const product = {
+        ISINCode: productData.genericData.ISINCode,
+        status: productData.status || 'pending',
+        genericData: productData.genericData,
+        features: productData.features,
+        underlyings: productData.underlyings.map(underlying => {
+          const initialRef = parseFloat(underlying.initialReferenceLevel) || null;
+          let adjustedInitialRef = initialRef;
+
+          // Find historical data for trade date
+          if (underlying.eodTicker && productData.genericData?.tradeDate) {
+            const historicalData = Historical.findOne({ eodTicker: underlying.eodTicker });
+            if (historicalData?.data?.length) {
+              const tradeDate = parseAndNormalizeDate(productData.genericData.tradeDate);
+              const initialData = historicalData.data
+                .find(d => parseAndNormalizeDate(d.date).getTime() === tradeDate.getTime());
+
+              if (initialData?.adjusted_close) {
+                const adjustmentFactor = initialData.adjusted_close / initialData.close;
+                adjustedInitialRef = initialRef * adjustmentFactor;
+                console.log('Setting adjusted reference for', underlying.ticker, adjustedInitialRef);
+              }
+            }
+          }
+
+          return {
+            name: underlying.name || '',
+            ticker: underlying.ticker || '',
+            exchange: underlying.exchange || '',
+            country: underlying.country || '',
+            currency: underlying.currency || '',
+            initialReferenceLevel: initialRef,
+            adjustedInitialReferenceLevel: adjustedInitialRef,
+            eodTicker: underlying.eodTicker || '',
+            lastPriceInfo: {
+              price: null,
+              adjustedPrice: null,
+              performance: null,
+              distanceToBarrier: null,
+              date: null,
+              isWorstOf: false
+            }
+          };
+        }),
+        observationDates: productData.observationDates.map(obs => ({
+          observationDate: obs.observationDate || null,
+          paymentDate: obs.paymentDate || null,
+          couponBarrierLevel: parseFloat(obs.couponBarrierLevel) || null,
+          autocallLevel: parseFloat(obs.autocallLevel) || null,
+          couponPerPeriod: parseFloat(obs.couponPerPeriod) || null
+        })),
+        observationsTable: [],
+        capitalRedemption: null,
+        chart100: [],
+        chartOptions: {},
+        redemptionIfToday: null,
+        autocallDate: null,
+        autocalled: false,
+        totalCouponPaid: 0
+      };
+
+      console.log('Product underlyings before insert:', JSON.stringify(product.underlyings, null, 2));
+
+      // Insert the product
+      const productId = Products.insert(product);
+      console.log('Product inserted successfully with ID:', productId);
+      return productId;
 
     } catch (error) {
       console.error('Product insertion error:', error);

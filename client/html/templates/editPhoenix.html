@@ -18,14 +18,14 @@
                   <div class="col-3">
                     <div class="form-group mb-3">
                       <label for="isin_code" class="form-label">ISIN Code</label>
-                      <input type="text" class="form-control" id="isin_code" maxlength="12" style="text-transform:uppercase" value="{{productDetails.genericInformation.ISINCode}}" autocomplete="off" required>
+                      <input type="text" class="form-control" id="isin_code" tabindex="1" maxlength="12" style="text-transform:uppercase" value="{{productDetails.genericInformation.ISINCode}}" autocomplete="off" required>
                     </div>
                   </div>
     
                   <div class="col-2">
                     <div class="form-group mb-3">
                       <label for="currency" class="form-label">Currency</label>
-                      <select id="currency" class="form-select dark-text">
+                      <select id="currency" class="form-select dark-text" tabindex="2">
                         <option value="USD">USD</option>
                         <option value="EUR">EUR</option>
                         <option value="GBP">GBP</option>
@@ -36,7 +36,7 @@
                   <div class="col-3">
                     <div class="form-group mb-3">
                       <label for="issuer" class="form-label">Issuer</label>
-                      <select class="form-select" id="issuer" required>
+                      <select class="form-select" id="issuer" tabindex="3" required>
                         <option value="">Select</option>
                         {{#each availableIssuers}}
                           <option value="{{name}}" {{selected name}}>{{name}}</option>
@@ -52,7 +52,7 @@
                   <div class="col-3">
                     <div class="form-group mb-3">
                       <label for="settlement_type" class="form-label">Settlement Type</label>
-                      <select id="settlement_type" class="form-control">
+                      <select id="settlement_type" class="form-control" tabindex="4">
                         <option value="Cash" selected>Cash</option>
                         <option value="Physical">Physical</option>
                       </select>
@@ -62,7 +62,7 @@
                   <div class="col-3">
                     <div class="form-group mb-3">
                       <label for="settlement_tx" class="form-label">Settlement T+x</label>
-                      <input type="number" class="form-control" id="settlement_tx" placeholder="Enter number of days" min="0" autocomplete="off" value=7 required>
+                      <input type="number" class="form-control" id="settlement_tx" tabindex="5" placeholder="Enter number of days" min="0" autocomplete="off" value=7 required>
                     </div>
                   </div>
                 </div>
@@ -72,14 +72,14 @@
                   <div class="col-3">
                     <div class="form-group mb-3">
                       <label for="trade_date" class="form-label">Trade Date</label>
-                      <input type="date" class="form-control" id="tradeDate" value="{{formatDate productDetails.genericInformation.tradeDate}}" required>
+                      <input type="date" class="form-control" id="tradeDate" tabindex="6" value="{{formatDate productDetails.genericInformation.tradeDate}}" required>
                     </div>
                   </div>
     
                   <div class="col-3">
                     <div class="form-group mb-3">
                       <label for="trade_date" class="form-label">Payment Date</label>
-                      <input type="date" class="form-control" id="paymentDate" value="{{formatDate productDetails.genericInformation.paymentDate}}" required>
+                      <input type="date" class="form-control" id="paymentDate" tabindex="7" value="{{formatDate productDetails.genericInformation.paymentDate}}" required>
                     </div>
                   </div>
                 </div>
@@ -88,14 +88,14 @@
                   <div class="col-3">
                     <div class="form-group mb-3">
                       <label for="final_observation" class="form-label">Final Observation</label>
-                      <input type="date" class="form-control" id="finalObservation" value="2026-02-08" required>
+                      <input type="date" class="form-control" id="finalObservation" tabindex="8" value="2026-02-08" required>
                     </div>
                   </div>
     
                   <div class="col-3">
                     <div class="form-group mb-3">
                       <label for="maturity" class="form-label">Maturity</label>
-                      <input type="date" class="form-control" id="maturityDate" value="2026-02-15" required>
+                      <input type="date" class="form-control" id="maturityDate" tabindex="9" value="2026-02-15" required>
                     </div>
                   </div>
                 </div>
@@ -104,7 +104,7 @@
                   <div class="col-3">
                     <div class="form-group mb-3">
                       <label for="valoren" class="form-label">Valoren</label>
-                      <input type="text" class="form-control" id="valoren" placeholder="Enter Valoren" required>
+                      <input type="text" class="form-control" id="valoren" tabindex="10" placeholder="Enter Valoren" required>
                     </div>
                   </div>
                 </div>
@@ -155,25 +155,25 @@
                   <div class="col">
                     <div class="form-group mb-3">
                       <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="memoryCoupon">
+                        <input class="form-check-input" type="checkbox" id="memoryCoupon" tabindex="11">
                         <label class="form-check-label" for="memoryCoupon">
                           Memory Coupon
                         </label>
                       </div>
                       <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="memoryAutocall">
+                        <input class="form-check-input" type="checkbox" id="memoryAutocall" tabindex="12">
                         <label class="form-check-label" for="memoryAutocall">
                           Memory Locks
                         </label>
                       </div>
                       <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="oneStar">
+                        <input class="form-check-input" type="checkbox" id="oneStar" tabindex="13">
                         <label class="form-check-label" for="oneStar">
                           One Star
                         </label>
                       </div>
                       <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="lowStrike">
+                        <input class="form-check-input" type="checkbox" id="lowStrike" tabindex="14">
                         <label class="form-check-label" for="lowStrike">
                           Low Strike
                         </label>
@@ -181,24 +181,24 @@
                       <div id="lowStrikeField" style="display: none;">
                         <div class="form-group mb-3">
                           <label for="lowStrikeValue" class="form-label">Low Strike Value (%)</label>
-                          <input type="number" class="form-control" id="lowStrikeValue" placeholder="Enter Low Strike Value" step="0.01" min="0" max="100">
+                          <input type="number" class="form-control" id="lowStrikeValue" tabindex="15" placeholder="Enter Low Strike Value" step="0.01" min="0" max="100">
                         </div>
                       </div>
                       <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="autocallStepdown">
+                        <input class="form-check-input" type="checkbox" id="autocallStepdown" tabindex="16">
                         <label class="form-check-label" for="autocallStepdown">
                           Autocall Stepdown
                         </label>
                       </div>
                     
                       <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="jump">
+                        <input class="form-check-input" type="checkbox" id="jump" tabindex="17">
                         <label class="form-check-label" for="jump">
                           Jump
                         </label>
                       </div>
                       <div class="form-check mb-3">
-                        <input type="checkbox" class="form-check-input" id="step_down">
+                        <input type="checkbox" class="form-check-input" id="step_down" tabindex="18">
                         <label class="form-check-label" for="step_down">Step Down</label>
                       </div>
                      
@@ -222,14 +222,14 @@
                     <div class="col-auto">
                       <div class="form-group mb-1">
                         <label for="phoenix_coupon_per_period" class="form-label">Coupon per Period (%)</label>
-                        <input type="number" class="form-control" id="phoenix_coupon_per_period" name="phoenix_coupon_per_period" placeholder="Enter Coupon per Period" step="0.01" min="0">
+                        <input type="number" class="form-control" id="phoenix_coupon_per_period" tabindex="19" name="phoenix_coupon_per_period" placeholder="Enter Coupon per Period" step="0.01" min="0">
                       </div>
                     </div>
     
                     <div class="col-auto">
                       <div class="form-group mb-1">
                         <label for="phoenix_observation_frequency" class="form-label">Observation Frequency</label>
-                        <select class="form-select" id="phoenix_observation_frequency" name="phoenix_observation_frequency">
+                        <select class="form-select" id="phoenix_observation_frequency" tabindex="20" name="phoenix_observation_frequency">
                           <option value="">Select</option>
                           <option value="weekly">Weekly</option>
                           <option value="monthly">Monthly</option>
@@ -243,7 +243,7 @@
                     <div class="col-auto">
                       <div class="form-group mb-1">
                         <label for="phoenix_non_call_periods" class="form-label">Non-Call Periods</label>
-                        <input type="number" id="phoenix_non_call_periods" name="phoenix_non_call_periods" class="form-control" value="0" min="0">
+                        <input type="number" id="phoenix_non_call_periods" tabindex="21" name="phoenix_non_call_periods" class="form-control" value="0" min="0">
                       </div>
                     </div>
                   </div>
@@ -253,28 +253,28 @@
                     <div class="col-auto">
                       <div class="form-group mb-1">
                         <label for="phoenix_coupon_barrier" class="form-label">Coupon Barrier (%)</label>
-                        <input type="number" class="form-control" id="phoenix_coupon_barrier" name="phoenix_coupon_barrier" placeholder="Enter Coupon Barrier">
+                        <input type="number" class="form-control" id="phoenix_coupon_barrier" tabindex="22" name="phoenix_coupon_barrier" placeholder="Enter Coupon Barrier">
                       </div>
                     </div>
     
                     <div class="col-auto">
                       <div class="form-group mb-1">
                         <label for="phoenix_autocall_level" class="form-label">Autocall Level (%)</label>
-                        <input type="number" class="form-control" id="phoenix_autocall_level" name="phoenix_autocall_level" placeholder="Enter Autocall Level">
+                        <input type="number" class="form-control" id="phoenix_autocall_level" tabindex="23" name="phoenix_autocall_level" placeholder="Enter Autocall Level">
                       </div>
                     </div>
     
                     <div class="col-auto">
                       <div class="form-group mb-1">
                         <label for="phoenix_capital_protection_barrier" class="form-label">Capital Protection Barrier (%)</label>
-                        <input type="number" class="form-control" id="phoenix_capital_protection_barrier" name="phoenix_capital_protection_barrier" placeholder="Enter Capital Protection Barrier">
+                        <input type="number" class="form-control" id="phoenix_capital_protection_barrier" tabindex="24" name="phoenix_capital_protection_barrier" placeholder="Enter Capital Protection Barrier">
                       </div>
                     </div>
     
                     <div class="col-auto">
                       <div class="form-group mb-1">
                         <div class="form-check">
-                          <input class="form-check-input" type="checkbox" id="phoenix_step_down" name="phoenix_step_down">
+                          <input class="form-check-input" type="checkbox" id="phoenix_step_down" tabindex="25" name="phoenix_step_down">
                           <label class="form-check-label" for="phoenix_step_down">Step down</label>
                         </div>
                       </div>
@@ -285,7 +285,7 @@
                     <div class="col-auto">
                       <div class="form-group mb-1">
                         <label for="phoenix_step_size" class="form-label">Step Down Size (%)</label>
-                        <input type="number" class="form-control" id="phoenix_step_size" name="phoenix_step_size" placeholder="Enter step size" step="0.01" min="0" max="100">
+                        <input type="number" class="form-control" id="phoenix_step_size" tabindex="26" name="phoenix_step_size" placeholder="Enter step size" step="0.01" min="0" max="100">
                       </div>
                     </div>
                   </div>

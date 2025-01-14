@@ -100,7 +100,7 @@ Template.products.onRendered(function () {
             render: function(data, type, row) {
               if (type === 'display' && data) {
                 const path = Router.path('productDetails', {}, { query: `isin=${data}` });
-                return `<a href="${path}" class="btn btn-outline-warning btn-sm">${data}</a>`;
+                return `<a href="${path}" class="btn btn-outline-warning btn-sm isin-btn">${data}</a>`;
               }
               return data || '';
             }

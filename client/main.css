@@ -681,3 +681,8 @@
     margin-left: 0;
   }
 } 
+
+.isin-btn {
+  width: 120px;
+  text-align: center;
+} 

@@ -18,7 +18,7 @@ TabularTables.Products = new Tabular.Table({
       render: function(val, type, doc) {
         if (type === 'display') {
           console.log('Rendering ISIN link for:', val);
-          return `<a href="#" onclick="event.preventDefault(); Router.go('productDetails', {}, {query: {isin: '${val}'}}); return false;" class="btn btn-outline-theme btn-sm">${val}</a>`;
+          return `<a href="#" onclick="event.preventDefault(); Router.go('productDetails', {}, {query: {isin: '${val}'}}); return false;" class="btn btn-outline-theme btn-sm isin-btn">${val}</a>`;
         }
         return val;
       }

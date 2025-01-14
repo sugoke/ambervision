@@ -117,9 +117,17 @@
                         <div class="d-flex align-items-center mb-2 justify-content-between">
                           <div>
                             <i class="fa fa-dollar-sign fa-fw me-2"></i>
-                            <span>Initial level:</span>
+                            <span>Initial level <small class="text-white-50">({{formatDate ../genericData.tradeDate}})</small>:</span>
                           </div>
                           <span class="badge bg-dark bg-opacity-75">{{currency}} {{initialReferenceLevel}}</span>
+                        </div>
+                        
+                        <div class="d-flex align-items-center mb-2 justify-content-between">
+                          <div>
+                            <i class="fa fa-dollar-sign fa-fw me-2"></i>
+                            <span>Adjusted initial <small class="text-white-50">({{formatDate ../genericData.tradeDate}})</small>:</span>
+                          </div>
+                          <span class="badge bg-dark bg-opacity-75">{{currency}} {{adjustedInitialReferenceLevel}}</span>
                         </div>
                         
                         <div class="d-flex align-items-center mb-2 justify-content-between">
@@ -180,7 +188,7 @@
                   <div class="card-body d-flex align-items-center text-inverse">
                     <div class="flex-fill">
                       <div class="mb-1">Total Coupons paid</div>
-                      <h2>{{formatPercentage totalCouponPaid}}%</h2>
+                      <h2>{{#if totalCouponPaid}}{{formatPercentage totalCouponPaid}}%{{else}}-{{/if}}</h2>
                       <div>{{formatDate (currentDate)}}</div>
                     </div>
                     <div class="opacity-5">
@@ -200,9 +208,15 @@
                 <div class="card bg-inverse bg-opacity-10">
                   <div class="card-body d-flex align-items-center text-inverse">
                     <div class="flex-fill">
-                      <div class="mb-1">If redemption was today</div>
-                      <h2>{{formatPercentage redemptionIfToday}}%</h2>
-                      <div>Indicative information</div>
+                      {{#if (or (eq status "matured") (eq status "autocalled"))}}
+                        <div class="mb-1">Capital redeemed</div>
+                        <h2>{{#if capitalRedemption}}{{formatPercentage capitalRedemption}}%{{else}}-{{/if}}</h2>
+                        <div>Final redemption</div>
+                      {{else}}
+                        <div class="mb-1">If redemption was today</div>
+                        <h2>{{#if redemptionIfToday}}{{formatPercentage redemptionIfToday}}%{{else}}-{{/if}}</h2>
+                        <div>Indicative information</div>
+                      {{/if}}
                     </div>
                     <div class="opacity-5">
                       <i class="fa fa-calculator fa-4x"></i>
@@ -221,9 +235,23 @@
                 <div class="card bg-inverse bg-opacity-10">
                   <div class="card-body d-flex align-items-center text-inverse">
                     <div class="flex-fill">
-                      <div class="mb-1">Unrealized P&L</div>
-                      <h2>{{formatPercentage unrealizedPnL}}%</h2>
-                      <div>{{formatDate (currentDate)}}</div>
+                      <div class="mb-1">
+                        {{#if (or (eq status "matured") (eq status "autocalled"))}}
+                          P&L
+                        {{else}}
+                          Unrealized P&L
+                        {{/if}}
+                      </div>
+                      <h2>
+                        {{#if (or (eq status "matured") (eq status "autocalled"))}}
+                          {{#if pnl}}{{formatPercentage pnl}}%{{else}}-{{/if}}
+                        {{else}}
+                          {{#if unrealizedPnL}}{{formatPercentage unrealizedPnL}}%{{else}}-{{/if}}
+                        {{/if}}
+                      </h2>
+                      {{#unless (or (eq status "matured") (eq status "autocalled"))}}
+                        <div>{{formatDate (currentDate)}}</div>
+                      {{/unless}}
                     </div>
                     <div class="opacity-5">
                       <i class="fa fa-chart-line fa-4x"></i>
@@ -320,7 +348,11 @@
                         {{#if (eq couponPaid "-")}}
                           -
                         {{else}}
-                          {{formatPercentage couponPaid}}%
+                          {{#if (gt couponPaid 0)}}
+                            <span class="badge bg-success">{{formatPercentage couponPaid}}%</span>
+                          {{else}}
+                            <span class="badge bg-danger">{{formatPercentage couponPaid}}%</span>
+                          {{/if}}
                         {{/if}}
                       </td>
                       <td class="px-2 text-center">

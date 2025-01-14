@@ -10,6 +10,10 @@ Chart.register(...registerables, annotationPlugin);
 const CHART_HEIGHT = 400;
 const CHART_WIDTH = '100%';
 
+function formatDate(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
 Template.registerHelper('join', function(array, separator) {
     return array.join(separator);
 });
@@ -113,36 +117,61 @@ Template.phoenix.helpers({
 
   unrealizedPnL() {
     const product = Template.instance().data;
-    if (!product) return 0;
+    if (!product) return null;
 
-    // Calculate total coupons paid
-    const totalCoupons = product.observationsTable
-      .filter(obs => obs.couponPaid !== '-')
-      .reduce((sum, obs) => sum + parseFloat(obs.couponPaid), 0);
+    // Get redemption if today
+    const redemptionIfToday = product.redemptionIfToday;
+    if (redemptionIfToday === null) return null;
 
-    // Get current bid price (assuming it's stored in product.bidPrice)
-    const bidPrice = product.bidPrice || 100; // Default to 100 if not available
+    // Get total coupons paid
+    const totalCouponPaid = product.totalCouponPaid || 0;
 
-    // Calculate P&L: (Current Bid Price + Total Coupons - Initial Investment) / Initial Investment
-    return ((bidPrice + totalCoupons - 100) / 100) * 100;
+    // Calculate unrealized P&L: (Redemption if today - 100 + Total Coupons)
+    const unrealizedPnL = redemptionIfToday - 100 + totalCouponPaid;
+    
+    console.log('Unrealized P&L calculation:', {
+      redemptionIfToday,
+      totalCouponPaid,
+      formula: `${redemptionIfToday} - 100 + ${totalCouponPaid}`,
+      result: unrealizedPnL
+    });
+
+    return unrealizedPnL;
   },
 
   newsLoading() {
-    return Template.instance().newsLoading.get();
+    return false;
   },
 
   underlyingNews() {
-    return Template.instance().underlyingNews.get();
+    return [];
   },
 
   truncateText(text, lines) {
-    if (!text) return '';
-    const sentences = text.split(/[.!?]+\s/);
-    return sentences.slice(0, lines).join('. ') + '...';
+    return '';
   },
 
   isPdfLoading() {
     return Template.instance().pdfLoading.get();
+  },
+
+  gt(a, b) {
+    return a > b;
+  },
+
+  or(a, b) {
+    return a || b;
+  },
+
+  formatPercentage(value) {
+    if (value === null || value === undefined || value === '-') {
+      return '-';
+    }
+    const num = Number(value);
+    if (isNaN(num)) {
+      return '-';
+    }
+    return num.toFixed(2);
   }
 });
 
@@ -362,48 +391,76 @@ datasets.forEach(dataset => {
         };
       });
 
-    // Add memory autocall annotations
+    // Create datasets array with coupon payments as a separate dataset
+    const couponDataset = {
+      label: 'Coupons',
+      data: product.observationsTable
+        .filter(obs => obs.couponPaid && obs.couponPaid > 0)
+        .map(obs => ({
+          x: new Date(obs.observationDate),
+          y: 100  // Fixed position at 100
+        })),
+      pointStyle: 'circle',  // Changed to circle
+      pointRadius: 8,        // Slightly smaller
+      pointHoverRadius: 10,
+      backgroundColor: 'white',  // White fill
+      borderColor: 'rgba(40, 167, 69, 1)',  // Solid green border
+      borderWidth: 2,        // Make border visible
+      pointBackgroundColor: 'white',
+      pointBorderColor: 'rgba(40, 167, 69, 1)',
+      pointBorderWidth: 2,
+      showLine: false,
+      order: -1  // To ensure coupons are drawn on top
+    };
+
+    // Add coupon dataset to existing datasets
+    datasets.push(couponDataset);
+
+    // Add dataset for memory autocall points
     if (product.features.memoryAutocall && product.observationsTable) {
-      product.observationsTable.forEach((observation, index) => {
-        if (observation.newlyLockedStocks && observation.newlyLockedStocks.length > 0 && new Date(observation.observationDate) <= endDate) {
-          observation.newlyLockedStocks.forEach((ticker, tickerIndex) => {
-            const dataPoint = filteredChart100.find(item => item.date === observation.observationDate);
-            if (dataPoint) {
-              const yValue = dataPoint.values[ticker];
-              if (yValue !== undefined && yValue !== null) {
-                console.log(`Adding memory autocall marker for ${ticker} on ${observation.observationDate} at value ${yValue}`);
-                annotations[`lock${index}_${tickerIndex}`] = {
-                  type: 'point',
-                  xValue: new Date(observation.observationDate),
-                  yValue: yValue,
-                  backgroundColor: 'rgba(255, 165, 0, 0.8)',
-                  borderColor: 'rgba(255, 165, 0, 1)',
-                  borderWidth: 2,
-                  radius: 8,
-                  label: {
-                    content: '\uf023',
-                    enabled: true,
-                    position: 'center',
-                    font: {
-                      family: "'Font Awesome 5 Free'",
-                      size: 14,
-                      weight: 'bold',
-                      style: 'normal'
-                    },
-                    color: 'white'
-                  }
-                };
-              } else {
-                console.warn(`No valid y-value found for ${ticker} on ${observation.observationDate}`);
-              }
-            } else {
-              console.warn(`No data point found for ${ticker} on ${observation.observationDate}`);
+      const memoryAutocallPoints = product.observationsTable
+        .filter(obs => obs.newlyLockedStocks && obs.newlyLockedStocks.length > 0)
+        .flatMap(obs => {
+          const dataPoint = filteredChart100.find(item => item.date === obs.observationDate);
+          if (!dataPoint) return [];
+
+          return obs.newlyLockedStocks.map(ticker => ({
+            x: new Date(obs.observationDate),
+            y: dataPoint.values[ticker],
+            lockedStock: ticker,
+            allLocked: obs.allLockedStocks || []
+          }));
+        });
+
+      datasets.push({
+        label: 'Memory Autocall Points',
+        data: memoryAutocallPoints,
+        type: 'scatter',
+        pointStyle: 'rectRot',
+        radius: 8,
+        hitRadius: 8,
+        hoverRadius: 10,
+        backgroundColor: 'rgba(255, 165, 0, 0.8)',
+        borderColor: 'rgba(255, 165, 0, 1)',
+        borderWidth: 2,
+        order: -2,
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              const point = context.raw;
+              return [
+                `Memory Autocall: ${point.lockedStock}`,
+                `Date: ${point.x.toLocaleDateString()}`,
+                `Performance: ${point.y.toFixed(2)}%`,
+                `All Locked: ${point.allLocked.join(', ')}`
+              ];
             }
-          });
+          }
         }
       });
     }
 
+    // Chart options with custom plugin
     const chartOptions = {
       maintainAspectRatio: false,
       responsive: true,
@@ -419,15 +476,42 @@ datasets.forEach(dataset => {
           min: new Date(product.genericData.tradeDate),
           max: endDate,
           ticks: {
-            color: '#ffffff'
+            color: '#ffffff',
+            callback: function(value) {
+              const date = new Date(value);
+              const dateStr = formatDate(date);
+              
+              // Show trade date
+              if (dateStr === product.genericData.tradeDate) {
+                return 'Trade';
+              }
+              
+              // Show observation dates
+              const obsIndex = product.observationDates.findIndex(
+                obs => formatDate(new Date(obs.observationDate)) === dateStr
+              );
+              
+              if (obsIndex !== -1) {
+                return `Obs ${obsIndex + 1}`;
+              }
+              
+              // Hide all other dates
+              return '';
+            },
+            // Force show all observation dates
+            source: 'data',
+            autoSkip: false,
+            major: {
+              enabled: true
+            },
+            // Include all observation dates in the ticks
+            include: [
+              new Date(product.genericData.tradeDate),
+              ...product.observationDates.map(obs => new Date(obs.observationDate))
+            ]
           },
           grid: {
             display: false
-          },
-          title: {
-            display: true,
-            text: 'Date',
-            color: '#ffffff'
           }
         },
         y: {
@@ -437,92 +521,116 @@ datasets.forEach(dataset => {
           grid: {
             display: false
           },
-          title: {
-            display: true,
-            text: 'Value',
-            color: '#ffffff'
-          },
-          min: Math.floor(Math.min(...datasets.flatMap(dataset => 
-            dataset.data.map(point => point.y).filter(y => y !== null && y !== undefined)
-          )) * 0.9),
-          suggestedMax: 120
+          // Fix the scale to show all data points clearly
+          min: Math.min(
+            60,  // Minimum value to always show
+            Math.floor(Math.min(...datasets.flatMap(dataset => 
+              dataset.data.map(point => point.y)
+                .filter(y => y !== null && y !== undefined)
+            )) * 0.95)
+          ),
+          max: Math.max(
+            140,  // Maximum value to always show
+            Math.ceil(Math.max(...datasets.flatMap(dataset => 
+              dataset.data.map(point => point.y)
+                .filter(y => y !== null && y !== undefined)
+            )) * 1.05)
+          )
         }
       },
       plugins: {
         tooltip: {
           enabled: true,
-          mode: 'index',
-          intersect: false,
-          titleColor: '#ffffff', // Set tooltip title color to white
-          bodyColor: '#ffffff', // Set tooltip body text color to white
-          backgroundColor: 'rgba(0, 0, 0, 0.7)' // Set tooltip background to a dark color for contrast
-        },
-        annotation: {
-          annotations: {
-            ...annotations,
+          mode: 'nearest',
+          intersect: true,
+          callbacks: {
+            label: function(context) {
+              if (context.dataset.label === 'Coupons') {
+                const observation = product.observationsTable
+                  .find(obs => {
+                    if (!obs.couponPaid || obs.couponPaid <= 0) return false;
+                    const obsDate = new Date(obs.observationDate);
+                    const contextDate = new Date(context.parsed.x);
+                    return obsDate.getTime() === contextDate.getTime();
+                  });
 
-            autocallLevel: {
-              type: 'line',
-              mode: 'horizontal',
-              scaleID: 'y',
-              value: filteredChart100[0].autocallLevel, // Use the first autocall level value
-              borderColor: 'rgba(255, 215, 0, 0.7)', // Gold line for visibility
-              borderWidth: 1,
-              label: {
-                content: 'Autocall Level',
-                enabled: true,
-                position: 'end',
-                backgroundColor: 'rgba(255, 215, 0, 0.5)',
-                color: '#ffffff',
-                padding: 4
+                if (observation) {
+                  return [
+                    `Coupon Payment: ${observation.couponPaid}%`,
+                    `Date: ${new Date(observation.observationDate).toLocaleDateString()}`,
+                    `Payment Date: ${new Date(observation.paymentDate).toLocaleDateString()}`
+                  ];
+                }
               }
+              // For other datasets
+              const value = typeof context.parsed.y === 'number' ? 
+                context.parsed.y.toFixed(2) : context.parsed.y;
+              return `${context.dataset.label}: ${value}`;
             }
           }
         },
-        legend: {
-          display: true,  // Ensure the legend is displayed
-        },
-
-      },
-      layout: {
-        padding: {
-          top: 20,
-          right: 20,
-          bottom: 20,
-          left: 20
+        annotation: {
+          annotations: {
+            line1: {
+              type: 'line',
+              mode: 'vertical',
+              scaleID: 'x',
+              value: new Date(product.genericData.tradeDate),
+              borderColor: 'rgba(255, 255, 255, 0.7)',
+              borderWidth: 1,
+              label: {
+                content: 'Initial',
+                enabled: true,
+                position: 'top'
+              }
+            },
+            // Add observation date lines
+            ...product.observationDates
+              .filter(obs => new Date(obs.observationDate) <= endDate)
+              .reduce((acc, obs, index) => ({
+                ...acc,
+                [`obs${index}`]: {
+                  type: 'line',
+                  mode: 'vertical',
+                  scaleID: 'x',
+                  value: new Date(obs.observationDate),
+                  borderColor: 'rgba(255, 255, 255, 0.7)',
+                  borderWidth: 1,
+                  label: {
+                    content: `Obs ${index + 1}`,
+                    enabled: true,
+                    position: 'top'
+                  }
+                }
+              }), {})
+          }
         }
       }
     };
 
-    // Create or update the chart
+    // Create or update chart
     if (chartInstance) {
-      console.log("Updating existing chart with datasets:", datasets);
-      chartInstance.data.datasets = datasets;
-      chartInstance.options = mergeChartOptions(chartInstance.options, chartOptions);
-      chartInstance.update();
-    } else {
-      console.log("Creating new chart with datasets:", datasets);
-      chartInstance = new Chart(ctx, {
-        type: 'line',
-        data: {
-          datasets: datasets
-        },
-        options: chartOptions
-      });
+      chartInstance.destroy();
     }
+    
+    chartInstance = new Chart(ctx, {
+      type: 'line',
+      data: { datasets },
+      options: chartOptions
+    });
 
     // Mark chart as drawn after render
     chartInstance.drawn = true;
   });
 
-  // Fetch news for underlyings
+  /* Comment out news fetching
   this.autorun(() => {
     const product = Template.currentData();
     if (!product || !product.underlyings) return;
 
     const tickers = product.underlyings
-      .filter(u => u && u.ticker) // Filter out undefined or missing tickers
-      .map(u => u.eodTicker || u.ticker); // Use eodTicker if available, fallback to ticker
+      .filter(u => u && u.ticker)
+      .map(u => u.eodTicker || u.ticker);
     if (!tickers.length) return;
 
     console.log('Fetching news for tickers:', tickers);
@@ -534,42 +642,62 @@ datasets.forEach(dataset => {
         console.error('Error fetching news:', error);
         this.underlyingNews.set([]);
       } else {
-        // Sort news by date, most recent first
         const sortedNews = (result || []).sort((a, b) => 
           new Date(b.publishedAt) - new Date(a.publishedAt)
         ).map(news => ({
           ...news,
-          url: news.url || '#', // Provide fallback URL
+          url: news.url || '#',
           linkText: news.url ? (news.url.includes('twitter.com') ? 'View Tweet' : 'Read More') : 'No Link'
         }));
         this.underlyingNews.set(sortedNews);
       }
     });
   });
+  */
 });
 
 Template.phoenix.onCreated(function() {
-  this.newsLoading = new ReactiveVar(false);
-  this.underlyingNews = new ReactiveVar([]);
+  // Initialize only the pdfLoading ReactiveVar
   this.pdfLoading = new ReactiveVar(false);
 });
 
 Template.phoenix.helpers({
+  // Remove news-related helpers or return null/empty values
   newsLoading() {
-    return Template.instance().newsLoading.get();
+    return false;  // Or remove this helper entirely
   },
+
   underlyingNews() {
-    return Template.instance().underlyingNews.get();
+    return [];  // Or remove this helper entirely
   },
+
   truncateText(text, lines) {
-    if (!text) return '';
-    const sentences = text.split(/[.!?]+\s/);
-    return sentences.slice(0, lines).join('. ') + '...';
+    return '';  // Or remove this helper entirely
   },
+
+  // Keep other helpers
   isPdfLoading() {
     return Template.instance().pdfLoading.get();
   },
-  // ... existing helpers ...
+
+  gt(a, b) {
+    return a > b;
+  },
+
+  or(a, b) {
+    return a || b;
+  },
+
+  formatPercentage(value) {
+    if (value === null || value === undefined || value === '-') {
+      return '-';
+    }
+    const num = Number(value);
+    if (isNaN(num)) {
+      return '-';
+    }
+    return num.toFixed(2);
+  }
 });
 
 Template.phoenix.onDestroyed(function() {
