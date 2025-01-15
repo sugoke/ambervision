@@ -97,9 +97,9 @@
                     <div class="card-body">
                       <div class="d-flex fw-bold small mb-3 align-items-center">
                         <span class="flex-grow-1">{{name}}</span>
-                        <div class="company-logo-container" style="width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;">
-                          <img src="{{getLogoUrl eodTicker}}" alt="Company Logo" class="company-logo" style="width: 32px; height: 32px; object-fit: contain;" 
-                            onerror="this.onerror=null; this.parentElement.innerHTML='<i class=\'fas fa-building text-muted\' style=\'font-size: 24px; line-height: 32px;\'></i>';">
+                        <div class="company-logo-container">
+                          <img src="{{getLogoUrl eodTicker}}" alt="Company Logo" class="company-logo" 
+                            onerror="this.onerror=null; this.parentElement.innerHTML='<i class=\'fas fa-building text-muted\'></i>';">
                         </div>
                       </div>
                       <div class="row align-items-center mb-2">
@@ -183,7 +183,7 @@
               <span class="flex-grow-1">STATISTICS</span>
             </div>
             <div class="row">
-              <div class="col-4">
+              <div class="col-12 col-md-4">
                 <div class="card bg-inverse bg-opacity-10">
                   <div class="card-body d-flex align-items-center text-inverse">
                     <div class="flex-fill">
@@ -204,7 +204,7 @@
                 </div>
               </div>
               
-              <div class="col-4">
+              <div class="col-12 col-md-4">
                 <div class="card bg-inverse bg-opacity-10">
                   <div class="card-body d-flex align-items-center text-inverse">
                     <div class="flex-fill">
@@ -231,7 +231,7 @@
                 </div>
               </div>
 
-              <div class="col-4">
+              <div class="col-12 col-md-4">
                 <div class="card bg-inverse bg-opacity-10">
                   <div class="card-body d-flex align-items-center text-inverse">
                     <div class="flex-fill">
@@ -445,89 +445,174 @@
         <div class="card mb-4">
           <div class="card-body">
             <div class="row g-4">
+              <!-- Generic Data Section -->
               <div class="col-md-6">
-                <h5>Generic Data</h5>
-                <dl class="row">
-                  <dt class="col-sm-6">ISIN Code</dt>
-                  <dd class="col-sm-6">{{genericData.ISINCode}}</dd>
-                  <dt class="col-sm-6">Settlement Type</dt>
-                  <dd class="col-sm-6">{{genericData.settlementType}}</dd>
-                  <dt class="col-sm-6">Settlement T+</dt>
-                  <dd class="col-sm-6">{{genericData.settlementTx}}</dd>
-                  <dt class="col-sm-6">Trade Date</dt>
-                  <dd class="col-sm-6">{{formatDate genericData.tradeDate}}</dd>
-                  <dt class="col-sm-6">Payment Date</dt>
-                  <dd class="col-sm-6">{{formatDate genericData.paymentDate}}</dd>
-                  <dt class="col-sm-6">Final Observation</dt>
-                  <dd class="col-sm-6">{{formatDate genericData.finalObservation}}</dd>
-                </dl>
+                <h5 class="border-bottom pb-2 mb-3">
+                  <i class="bi bi-info-circle me-2"></i>Generic Data
+                </h5>
+                <div class="generic-data-grid">
+                  <div class="data-item">
+                    <div class="data-label">
+                      <i class="bi bi-upc me-2"></i>ISIN Code
+                    </div>
+                    <div class="data-value">{{genericData.ISINCode}}</div>
+                  </div>
+                  
+                  <div class="data-item">
+                    <div class="data-label">
+                      <i class="bi bi-gear me-2"></i>Settlement Type
+                    </div>
+                    <div class="data-value">{{genericData.settlementType}}</div>
+                  </div>
+                  
+                  <div class="data-item">
+                    <div class="data-label">
+                      <i class="bi bi-clock-history me-2"></i>Settlement T+
+                    </div>
+                    <div class="data-value">{{genericData.settlementTx}}</div>
+                  </div>
+                  
+                  <div class="data-item">
+                    <div class="data-label">
+                      <i class="bi bi-calendar-check me-2"></i>Trade Date
+                    </div>
+                    <div class="data-value">{{formatDate genericData.tradeDate}}</div>
+                  </div>
+                  
+                  <div class="data-item">
+                    <div class="data-label">
+                      <i class="bi bi-calendar-date me-2"></i>Payment Date
+                    </div>
+                    <div class="data-value">{{formatDate genericData.paymentDate}}</div>
+                  </div>
+                  
+                  <div class="data-item">
+                    <div class="data-label">
+                      <i class="bi bi-calendar-event me-2"></i>Final Observation
+                    </div>
+                    <div class="data-value">{{formatDate genericData.finalObservation}}</div>
+                  </div>
+                </div>
               </div>
+
+              <!-- Features Section (keep existing code) -->
               <div class="col-md-6">
-                <h5>Features</h5>
-                <dl class="row">
-                  <dt class="col-sm-6">Memory Coupon</dt>
-                  <dd class="col-sm-6">
-                    {{#if features.memoryCoupon}}
-                      <i class="bi bi-check-circle-fill text-warning"></i>
-                    {{else}}
-                      <i class="bi bi-x-circle-fill text-secondary"></i>
-                    {{/if}}
-                  </dd>
-                  <dt class="col-sm-6">Memory Autocall</dt>
-                  <dd class="col-sm-6">
-                    {{#if features.memoryAutocall}}
-                      <i class="bi bi-check-circle-fill text-warning"></i>
-                    {{else}}
-                      <i class="bi bi-x-circle-fill text-secondary"></i>
-                    {{/if}}
-                  </dd>
-                  <dt class="col-sm-6">One Star</dt>
-                  <dd class="col-sm-6">
-                    {{#if features.oneStar}}
-                      <i class="bi bi-check-circle-fill text-warning"></i>
-                    {{else}}
-                      <i class="bi bi-x-circle-fill text-secondary"></i>
-                    {{/if}}
-                  </dd>
-                  <dt class="col-sm-6">Low Strike</dt>
-                  <dd class="col-sm-6">
-                    {{#if features.lowStrike}}
-                      <i class="bi bi-check-circle-fill text-warning"></i>
-                    {{else}}
-                      <i class="bi bi-x-circle-fill text-secondary"></i>
-                    {{/if}}
-                  </dd>
-                  <dt class="col-sm-6">Autocall Step-down</dt>
-                  <dd class="col-sm-6">
-                    {{#if features.autocallStepdown}}
-                      <i class="bi bi-check-circle-fill text-warning"></i>
-                    {{else}}
-                      <i class="bi bi-x-circle-fill text-secondary"></i>
-                    {{/if}}
-                  </dd>
-                  <dt class="col-sm-6">Jump</dt>
-                  <dd class="col-sm-6">
-                    {{#if features.jump}}
-                      <i class="bi bi-check-circle-fill text-warning"></i>
-                    {{else}}
-                      <i class="bi bi-x-circle-fill text-secondary"></i>
-                    {{/if}}
-                  </dd>
-                  <dt class="col-sm-6">Step Down</dt>
-                  <dd class="col-sm-6">
-                    {{#if features.stepDown}}
-                      <i class="bi bi-check-circle-fill text-warning"></i>
-                    {{else}}
-                      <i class="bi bi-x-circle-fill text-secondary"></i>
-                    {{/if}}
-                  </dd>
-                  <dt class="col-sm-6">Step Down Size</dt>
-                  <dd class="col-sm-6">{{features.stepDownSize}}%</dd>
-                  <dt class="col-sm-6">Coupon Barrier</dt>
-                  <dd class="col-sm-6">{{features.couponBarrier}}%</dd>
-                  <dt class="col-sm-6">Capital Protection Barrier</dt>
-                  <dd class="col-sm-6">{{features.capitalProtectionBarrier}}%</dd>
-                </dl>
+                <h5 class="border-bottom pb-2 mb-3">
+                  <i class="bi bi-gear-fill me-2"></i>Features
+                </h5>
+                <div class="features-grid">
+                  <div class="data-item">
+                    <div class="data-label">
+                      <i class="bi bi-repeat me-2"></i>Memory Coupon
+                    </div>
+                    <div class="data-value feature-value">
+                      {{#if features.memoryCoupon}}
+                        <i class="bi bi-check-circle-fill text-success"></i>
+                      {{else}}
+                        <i class="bi bi-x-circle-fill text-danger"></i>
+                      {{/if}}
+                    </div>
+                  </div>
+
+                  <div class="data-item">
+                    <div class="data-label">
+                      <i class="bi bi-arrow-repeat me-2"></i>Memory Autocall
+                    </div>
+                    <div class="data-value feature-value">
+                      {{#if features.memoryAutocall}}
+                        <i class="bi bi-check-circle-fill text-success"></i>
+                      {{else}}
+                        <i class="bi bi-x-circle-fill text-danger"></i>
+                      {{/if}}
+                    </div>
+                  </div>
+
+                  <div class="data-item">
+                    <div class="data-label">
+                      <i class="bi bi-star-fill me-2"></i>One Star
+                    </div>
+                    <div class="data-value feature-value">
+                      {{#if features.oneStar}}
+                        <i class="bi bi-check-circle-fill text-success"></i>
+                      {{else}}
+                        <i class="bi bi-x-circle-fill text-danger"></i>
+                      {{/if}}
+                    </div>
+                  </div>
+
+                  <div class="data-item">
+                    <div class="data-label">
+                      <i class="bi bi-arrow-down-circle me-2"></i>Low Strike
+                    </div>
+                    <div class="data-value feature-value">
+                      {{#if features.lowStrike}}
+                        <i class="bi bi-check-circle-fill text-success"></i>
+                      {{else}}
+                        <i class="bi bi-x-circle-fill text-danger"></i>
+                      {{/if}}
+                    </div>
+                  </div>
+
+                  <div class="data-item">
+                    <div class="data-label">
+                      <i class="bi bi-ladder me-2"></i>Autocall Step-down
+                    </div>
+                    <div class="data-value feature-value">
+                      {{#if features.autocallStepdown}}
+                        <i class="bi bi-check-circle-fill text-success"></i>
+                      {{else}}
+                        <i class="bi bi-x-circle-fill text-danger"></i>
+                      {{/if}}
+                    </div>
+                  </div>
+
+                  <div class="data-item">
+                    <div class="data-label">
+                      <i class="bi bi-lightning-fill me-2"></i>Jump
+                    </div>
+                    <div class="data-value feature-value">
+                      {{#if features.jump}}
+                        <i class="bi bi-check-circle-fill text-success"></i>
+                      {{else}}
+                        <i class="bi bi-x-circle-fill text-danger"></i>
+                      {{/if}}
+                    </div>
+                  </div>
+
+                  <div class="data-item">
+                    <div class="data-label">
+                      <i class="bi bi-arrow-down-square me-2"></i>Step Down
+                    </div>
+                    <div class="data-value feature-value">
+                      {{#if features.stepDown}}
+                        <i class="bi bi-check-circle-fill text-success"></i>
+                      {{else}}
+                        <i class="bi bi-x-circle-fill text-danger"></i>
+                      {{/if}}
+                    </div>
+                  </div>
+
+                  <div class="data-item">
+                    <div class="data-label">
+                      <i class="bi bi-arrows-collapse me-2"></i>Step Down Size
+                    </div>
+                    <div class="data-value">{{features.stepDownSize}}%</div>
+                  </div>
+
+                  <div class="data-item">
+                    <div class="data-label">
+                      <i class="bi bi-bar-chart me-2"></i>Coupon Barrier
+                    </div>
+                    <div class="data-value">{{features.couponBarrier}}%</div>
+                  </div>
+
+                  <div class="data-item">
+                    <div class="data-label">
+                      <i class="bi bi-shield-fill me-2"></i>Capital Protection
+                    </div>
+                    <div class="data-value">{{features.capitalProtectionBarrier}}%</div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>

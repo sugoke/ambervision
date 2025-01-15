@@ -286,6 +286,17 @@ Template.mainLayout.events({
     Meteor.logout(() => {
       Router.go('/login');
     });
+  },
+
+  'click .app-sidebar-mobile-backdrop'(event) {
+    document.querySelector('.app').classList.remove('app-sidebar-mobile-toggled');
+  },
+
+  'click .menu-link'(event, template) {
+    // Close sidebar when menu item is clicked on mobile
+    if (window.innerWidth <= 767) {
+      document.querySelector('.app').classList.remove('app-sidebar-mobile-toggled');
+    }
   }
 });
 
@@ -328,5 +339,42 @@ Template.mainLayout.onRendered(function() {
     Tracker.afterFlush(() => {
       initBootstrapComponents();
     });
+  });
+
+  // Prevent body scrolling when sidebar is open on mobile
+  const toggleBodyScroll = (shouldPreventScroll) => {
+    document.body.classList.toggle('no-scroll', shouldPreventScroll);
+  };
+
+  // Handle mobile menu toggle
+  const mobileToggler = document.querySelector('.mobile-toggler .menu-toggler');
+  if (mobileToggler) {
+    mobileToggler.addEventListener('click', function(e) {
+      e.preventDefault();
+      const app = document.querySelector('.app');
+      const isOpening = !app.classList.contains('app-sidebar-mobile-toggled');
+      app.classList.toggle('app-sidebar-mobile-toggled');
+      toggleBodyScroll(isOpening);
+    });
+  }
+
+  // Close sidebar when clicking outside
+  document.addEventListener('click', function(e) {
+    if (window.innerWidth <= 767) {
+      const sidebar = document.querySelector('.app-sidebar');
+      const toggler = document.querySelector('.mobile-toggler');
+      if (!sidebar.contains(e.target) && !toggler.contains(e.target)) {
+        document.querySelector('.app').classList.remove('app-sidebar-mobile-toggled');
+        toggleBodyScroll(false);
+      }
+    }
+  });
+
+  // Handle window resize
+  window.addEventListener('resize', function() {
+    if (window.innerWidth > 767) {
+      document.querySelector('.app').classList.remove('app-sidebar-mobile-toggled');
+      toggleBodyScroll(false);
+    }
   });
 });
