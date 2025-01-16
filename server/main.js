@@ -44,6 +44,8 @@ import './publications/issuers.js';
 import './methods/issuers.js';
 import './methods/eod.js';
 import './methods/prices.js';
+import { Accounts } from 'meteor/accounts-base';
+import { Random } from 'meteor/random';
 
 Meteor.startup(() => {
   // Enhanced environment and connection logging
@@ -69,6 +71,50 @@ Meteor.startup(() => {
     );
     console.log('MongoDB URL:', sanitizedUrl);
   }
+
+  // SMTP Configuration
+  const smtp = Meteor.settings.private.smtp2go;
+  
+  // Using direct SMTP settings
+  const mailUrl = `smtps://${smtp.apiKey}:${smtp.apiKey}@send.smtp2go.com:465`;
+  process.env.MAIL_URL = mailUrl;
+  
+  console.log('SMTP Config:', {
+    mailUrl: mailUrl.replace(smtp.apiKey, '***'),
+    from: smtp.from
+  });
+
+  Accounts.emailTemplates.from = smtp.from;
+  Accounts.emailTemplates.resetPassword.subject = () => "Reset Your Password";
+  Accounts.emailTemplates.resetPassword.text = (user, url) => {
+    return `Click this link to reset your password: ${url}`;
+  };
+
+  // Override default email sending
+  Accounts.emailTemplates.from = smtp.from;
+  
+  // Override the default password reset email
+  Accounts.sendResetPasswordEmail = function(userId, email) {
+    // Generate token using Accounts method
+    const token = Random.secret();
+    const when = new Date();
+    const tokenRecord = {
+      token: token,
+      email: email,
+      when: when
+    };
+
+    Accounts.users.update(userId, {
+      $set: {
+        "services.password.reset": tokenRecord
+      }
+    });
+
+    const resetUrl = Meteor.absoluteUrl(`reset-password/${token}`);
+    
+    Meteor.call('email.sendResetLink', email, resetUrl);
+    return tokenRecord;
+  };
 });
 
 Meteor.methods({

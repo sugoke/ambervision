@@ -47,7 +47,9 @@ import './html/profile.html';
 import './html/admin.html';
 import PerfectScrollbar from 'perfect-scrollbar';
 
-
+import './js/login.js';
+import './js/reset-password.js';
+import './html/reset-password.html';
 
 Template.registerHelper('isSuperAdmin', function() {
   const user = Meteor.user();
@@ -640,6 +642,22 @@ Template.products.onCreated(function() {
     Meteor.subscribe('userProducts');
   });
 });
+
+Accounts.onLoginFailure(function(error) {
+  console.log('Login failure details:', {
+    error: error,
+    user: Meteor.user(),
+    connectionId: Meteor.connection._lastSessionId
+  });
+});
+
+Accounts.onCreateUserFailure = function(error) {
+  console.log('Registration failure details:', {
+    error: error,
+    attemptedUsername: error.details?.username,
+    timestamp: new Date()
+  });
+};
 
 
 

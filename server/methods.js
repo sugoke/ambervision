@@ -17,6 +17,26 @@ const getApiKey = () => {
   return null;
 };
 
+const sendEmail = ({ to, subject, text }) => {
+  const smtp = Meteor.settings.private.smtp2go;
+  
+  try {
+    const result = HTTP.post('https://api.smtp2go.com/v3/email/send', {
+      data: {
+        api_key: smtp.apiKey,
+        to: [to],
+        sender: smtp.from,
+        subject: subject,
+        text_body: text
+      }
+    });
+    return result;
+  } catch (error) {
+    console.error('SMTP2GO API Error:', error);
+    throw new Meteor.Error('email-error', error.message);
+  }
+};
+
 Meteor.methods({
   'getLastPrice'(eodTicker) {
     check(eodTicker, String);
@@ -87,5 +107,16 @@ Meteor.methods({
       console.error("Failed to fetch ticker closing price for", symbolWithExchange, ":", error);
       throw new Meteor.Error('api-call-failed', 'Failed to fetch ticker closing price');
     }
+  },
+
+  'email.sendResetLink': function(to, url) {
+    check(to, String);
+    check(url, String);
+    
+    return sendEmail({
+      to: to,
+      subject: "Reset Your Password",
+      text: `Click this link to reset your password: ${url}`
+    });
   }
 }); 

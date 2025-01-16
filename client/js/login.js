@@ -1,6 +1,7 @@
 import { Template } from 'meteor/templating';
 import { Meteor } from 'meteor/meteor';
-import { Router } from 'meteor/iron:router'; // Make sure to import Router
+import { Router } from 'meteor/iron:router';
+import { Modal } from 'bootstrap';
 
 import '../html/login.html';
 
@@ -12,19 +13,20 @@ Template.login.events({
     button.querySelector('.login-text').classList.add('d-none');
     button.querySelector('.spinner-border').classList.remove('d-none');
 
-    const username = template.find('#login-username').value;
+    const email = template.find('#login-username').value;
     const password = template.find('#login-password').value;
 
-    Meteor.loginWithPassword(username, password, (error) => {
+    Meteor.loginWithPassword({ email }, password, (error) => {
       button.disabled = false;
       button.querySelector('.login-text').classList.remove('d-none');
       button.querySelector('.spinner-border').classList.add('d-none');
 
       if (error) {
-        console.log('Login Error:', error.reason);
+        const errorModal = new Modal(document.getElementById('errorModal'));
+        document.getElementById('errorMessage').textContent = error.reason;
+        errorModal.show();
       } else {
         Router.go('/');
-        // ... rest of the success code
       }
     });
   },
@@ -36,19 +38,48 @@ Template.login.events({
     button.querySelector('.register-text').classList.add('d-none');
     button.querySelector('.spinner-border').classList.remove('d-none');
 
-    const username = template.find('#login-username').value;
+    const email = template.find('#login-username').value;
     const password = template.find('#login-password').value;
 
-    Accounts.createUser({ username, password }, (error) => {
+    Accounts.createUser({ 
+      email: email,
+      password: password 
+    }, (error) => {
       button.disabled = false;
       button.querySelector('.register-text').classList.remove('d-none');
       button.querySelector('.spinner-border').classList.add('d-none');
 
       if (error) {
-        console.log('Registration Error:', error.reason);
+        const errorModal = new Modal(document.getElementById('errorModal'));
+        document.getElementById('errorMessage').textContent = error.reason;
+        errorModal.show();
       } else {
         Router.go('home');
-        // ... rest of the success code
+      }
+    });
+  },
+
+  'click a[href="/forgot-password"]'(event) {
+    event.preventDefault();
+    const email = document.getElementById('login-username').value;
+    
+    if (!email) {
+      const errorModal = new Modal(document.getElementById('errorModal'));
+      document.getElementById('errorMessage').textContent = 'Please enter your email address first';
+      errorModal.show();
+      return;
+    }
+
+    Accounts.forgotPassword({ email }, (error) => {
+      if (error) {
+        console.error('Forgot password error:', error);
+        const errorModal = new Modal(document.getElementById('errorModal'));
+        document.getElementById('errorMessage').textContent = 'Error sending reset email. Please try again later.';
+        errorModal.show();
+      } else {
+        const successModal = new Modal(document.getElementById('successModal'));
+        document.getElementById('successMessage').textContent = 'Password reset email sent. Please check your inbox.';
+        successModal.show();
       }
     });
   }

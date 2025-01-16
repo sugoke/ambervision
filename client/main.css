@@ -352,4 +352,178 @@
   right: 8px;
   top: 50%;
   transform: translateY(-50%);
+}
+
+/* Company Logo - from main.css */
+.company-logo {
+  max-width: 150px;
+  margin: 20px 0;
+}
+
+.phoenix-container {
+  position: relative;
+}
+
+/* Print styles */
+@media print {
+  .company-logo {
+    max-width: 120px;
+    margin: 15px 0;
+  }
+  
+  .page-break-before {
+    page-break-before: always;
+  }
+  
+  .badge-success {
+    background: #ccf3e6 !important;
+    color: #0f5132 !important;
+  }
+  
+  .badge-danger {
+    background: #fde8e8 !important;
+    color: #981b1b !important;
+  }
+}
+
+/* Menu Search Results */
+.menu-search-results {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: #2d353c;
+  border: 1px solid rgba(255,255,255,.15);
+  border-radius: 4px;
+  margin-top: 4px;
+  max-height: 400px;
+  overflow-y: auto;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0,0,0,.2);
+}
+
+.search-result-item {
+  padding: 10px 15px;
+  border-bottom: 1px solid rgba(255,255,255,.1);
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.search-result-item:hover {
+  background: rgba(255,255,255,.15);
+}
+
+.search-result-item .result-title {
+  color: #fff;
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.search-result-item .result-details {
+  font-size: 12px;
+  color: rgba(255,255,255,.5);
+}
+
+.search-result-item .badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  margin-right: 8px;
+}
+
+.search-result-item:focus {
+  outline: none;
+}
+
+/* Profile and Header Styles */
+.profile-image {
+  background-image: url('https://amberlakepartners.com/assets/logos/Icon%201.png');
+  background-size: cover;
+  background-position: center;
+}
+
+.app-header .menu {
+  width: auto;
+  max-width: 360px;
+}
+
+.app-header .menu .dropdown-menu {
+  width: 280px;
+  min-width: auto;
+}
+
+.app-header .menu .row-grid .col-4 {
+  padding: 0 5px;
+}
+
+.app-header .menu-item .menu-text {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.app-header .menu-img {
+  width: 32px;
+  height: 32px;
+}
+
+.app-header .menu .h2 {
+  font-size: 1.5rem;
+}
+
+/* Sidebar width adjustments */
+.app-sidebar {
+  width: 130px !important; /* Reduced from default 260px */
+}
+
+/* Adjust main content margin when sidebar is visible */
+.app-sidebar-collapsed .app-sidebar {
+  width: 65px !important; /* Reduced from default 130px */
+}
+
+/* Adjust content margin to match new sidebar width */
+@media (min-width: 992px) {
+  .app-content {
+    margin-left: 130px !important; /* Match new sidebar width */
+  }
+  .app-sidebar-collapsed .app-content {
+    margin-left: 65px !important; /* Match collapsed width */
+  }
+}
+
+/* Adjust sidebar menu items for smaller width */
+.app-sidebar .menu .menu-item .menu-link {
+  padding: 7px 15px !important;
+}
+
+.app-sidebar .menu .menu-item .menu-icon {
+  font-size: 1rem !important;
+}
+
+.app-sidebar .menu .menu-item .menu-text {
+  font-size: 0.8rem !important;
+}
+
+.app-sidebar .menu .menu-header {
+  padding: 10px 15px !important;
+  font-size: 0.75rem !important;
+}
+
+/* Adjust brand area */
+.app-sidebar .brand {
+  height: 50px !important;
+}
+
+.app-sidebar .brand .brand-logo {
+  font-size: 0.9rem !important;
+}
+
+/* Adjust search box in sidebar */
+.app-sidebar .menu-item .form-control-sm {
+  font-size: 0.75rem !important;
+  padding: 0.25rem 0.5rem !important;
+}
+
+/* Adjust buttons in sidebar */
+.app-sidebar .menu-item .btn-sm {
+  font-size: 0.75rem !important;
+  padding: 0.25rem 0.5rem !important;
 } 
