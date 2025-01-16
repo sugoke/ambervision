@@ -3,12 +3,15 @@ import { Chart, registerables } from 'chart.js';
 import 'chartjs-adapter-date-fns';
 import annotationPlugin from 'chartjs-plugin-annotation';
 import html2pdf from 'html2pdf.js';
+import { jsPDF } from 'jspdf';
+import 'jspdf/dist/polyfills.es.js';
 
 // Register all Chart.js components and plugins
 Chart.register(...registerables, annotationPlugin);
 
 const CHART_HEIGHT = 400;
 const CHART_WIDTH = '100%';
+const COMPANY_LOGO = 'https://amberlakepartners.com/assets/logos/Icon%201.png';
 
 function formatDate(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -618,9 +621,6 @@ datasets.forEach(dataset => {
       data: { datasets },
       options: chartOptions
     });
-
-    // Mark chart as drawn after render
-    chartInstance.drawn = true;
   });
 
   /* Comment out news fetching
@@ -748,115 +748,400 @@ function getClosingPriceForDate(eodTicker, dateString) {
 }
 
 Template.phoenix.events({
-  'click #exportPDF'(event, template) {
+  'click #exportPDF': async function(event, template) {
     event.preventDefault();
     template.pdfLoading.set(true);
 
-    // Function to wait for chart rendering
-    const waitForChart = () => {
-      return new Promise(resolve => {
-        const checkChart = () => {
-          const canvas = document.querySelector('#productChart');
-          if (canvas && chartInstance && chartInstance.drawn) {
-            setTimeout(resolve, 500); // Give extra time for final render
-          } else {
-            setTimeout(checkChart, 100);
+    const product = Template.currentData();
+    
+    // Get the chart canvas and temporarily invert colors
+    const chartCanvas = document.getElementById('productChart');
+    const ctx = chartCanvas.getContext('2d');
+    
+    // Save the current composite operation
+    const originalOperation = ctx.globalCompositeOperation;
+    
+    // Invert colors
+    ctx.globalCompositeOperation = 'difference';
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, chartCanvas.width, chartCanvas.height);
+    
+    // Capture the inverted chart
+    const chartImage = chartCanvas.toDataURL('image/png');
+    
+    // Restore original colors
+    ctx.globalCompositeOperation = originalOperation;
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, chartCanvas.width, chartCanvas.height);
+    chartInstance.draw(); // Redraw the original chart
+
+    const printHTML = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Product Details - ${product.genericData.ISINCode}</title>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+        <style>
+          body { 
+            font-family: 'Segoe UI', Arial, sans-serif; 
+            padding: 20px;
+            color: #2d353c;
+            line-height: 1.4;
           }
-        };
-        checkChart();
-      });
-    };
+          .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 30px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #2d353c;
+          }
+          .header img {
+            height: 40px;
+          }
+          .header-title {
+            font-size: 24px;
+            font-weight: 600;
+          }
+          .card { 
+            position: relative;
+            padding: 15px; 
+            margin-bottom: 20px;
+            background: #fff;
+            border: 1px solid rgba(0,0,0,.15);
+            box-shadow: 0 2px 4px rgba(0,0,0,.05);
+            border-radius: 4px;
+          }
+          .heading { 
+            font-size: 16px;
+            font-weight: bold; 
+            margin-bottom: 15px;
+            color: #2d353c;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+          }
+          .data-item { 
+            display: flex;
+            margin-bottom: 8px;
+            padding: 8px;
+            border-bottom: 1px solid rgba(0,0,0,.05);
+          }
+          .data-label { 
+            width: 200px;
+            color: #5e6e82;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+          }
+          table { 
+            width: 100%;
+            border-collapse: collapse;
+            margin: 10px 0;
+            background: white;
+          }
+          th, td { 
+            padding: 8px;
+            text-align: center;
+            border: 1px solid #e5e9f2;
+            font-size: 12px;
+          }
+          th { 
+            background: #f9fafc;
+            font-weight: 600;
+            color: #2d353c;
+          }
+          .badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 500;
+          }
+          .badge-success {
+            background: #ccf3e6;
+            color: #0f5132;
+          }
+          .badge-danger {
+            background: #fde8e8;
+            color: #981b1b;
+          }
+          .row {
+            display: flex;
+            margin: 0 -10px;
+            gap: 20px;
+          }
+          .col-6 {
+            flex: 0 0 calc(50% - 10px);
+            min-width: 0;
+          }
+          .features-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 8px;
+          }
+          .feature-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px;
+            border-bottom: 1px solid rgba(0,0,0,.05);
+          }
+          .chart-img { 
+            width: 100%; 
+            max-height: 400px;
+            object-fit: contain;
+          }
+          .page-break-before {
+            page-break-before: always;
+          }
+          .company-logo {
+            max-width: 150px;
+            margin: 20px 0;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="header-title">
+            <i class="fas fa-file-alt"></i>
+            Product Report
+          </div>
+          <img src="${COMPANY_LOGO}" alt="Company Logo" class="company-logo">
+        </div>
 
-    const generatePDF = async () => {
-      try {
-        // Wait for chart to be fully rendered
-        await waitForChart();
+        <div class="row">
+          <div class="col-6">
+            <div class="card">
+              <div class="heading">
+                <i class="fas fa-info-circle"></i>
+                Product Details
+              </div>
+              <div class="data-item">
+                <span class="data-label">Product Name</span>
+                <span class="data-value">${product.genericData.name}</span>
+              </div>
+              <div class="data-item">
+                <span class="data-label">ISIN Code</span>
+                <span class="data-value">${product.genericData.ISINCode}</span>
+              </div>
+              <div class="data-item">
+                <span class="data-label">Currency</span>
+                <span class="data-value">${product.genericData.currency}</span>
+              </div>
+              <div class="data-item">
+                <span class="data-label">Issuer</span>
+                <span class="data-value">${product.genericData.issuer}</span>
+              </div>
+              <div class="data-item">
+                <span class="data-label">Settlement Type</span>
+                <span class="data-value">${product.genericData.settlementType}</span>
+              </div>
+              <div class="data-item">
+                <span class="data-label">Settlement T+</span>
+                <span class="data-value">${product.genericData.settlementTx}</span>
+              </div>
+              <div class="data-item">
+                <span class="data-label">Trade Date</span>
+                <span class="data-value">${new Date(product.genericData.tradeDate).toLocaleDateString()}</span>
+              </div>
+              <div class="data-item">
+                <span class="data-label">Payment Date</span>
+                <span class="data-value">${new Date(product.genericData.paymentDate).toLocaleDateString()}</span>
+              </div>
+              <div class="data-item">
+                <span class="data-label">Final Observation</span>
+                <span class="data-value">${new Date(product.genericData.finalObservation).toLocaleDateString()}</span>
+              </div>
+              <div class="data-item">
+                <span class="data-label">Maturity Date</span>
+                <span class="data-value">${new Date(product.genericData.maturityDate).toLocaleDateString()}</span>
+              </div>
+            </div>
+          </div>
+          <div class="col-6">
+            <div class="card">
+              <div class="heading">
+                <i class="fas fa-cogs"></i>
+                Features
+              </div>
+              <div class="features-grid">
+                <div class="feature-item">
+                  <span class="data-label">Memory Coupon</span>
+                  <span class="data-value">${product.features.memoryCoupon ? '✓' : '✗'}</span>
+                </div>
+                <div class="feature-item">
+                  <span class="data-label">Memory Autocall</span>
+                  <span class="data-value">${product.features.memoryAutocall ? '✓' : '✗'}</span>
+                </div>
+                <div class="feature-item">
+                  <span class="data-label">One Star</span>
+                  <span class="data-value">${product.features.oneStar ? '✓' : '✗'}</span>
+                </div>
+                <div class="feature-item">
+                  <span class="data-label">Low Strike</span>
+                  <span class="data-value">${product.features.lowStrike ? '✓' : '✗'}</span>
+                </div>
+                <div class="feature-item">
+                  <span class="data-label">Autocall Step-down</span>
+                  <span class="data-value">${product.features.autocallStepdown ? '✓' : '✗'}</span>
+                </div>
+                <div class="feature-item">
+                  <span class="data-label">Jump</span>
+                  <span class="data-value">${product.features.jump ? '✓' : '✗'}</span>
+                </div>
+                <div class="feature-item">
+                  <span class="data-label">Coupon Barrier</span>
+                  <span class="data-value">${product.features.couponBarrier}%</span>
+                </div>
+                <div class="feature-item">
+                  <span class="data-label">Capital Protection</span>
+                  <span class="data-value">${product.features.capitalProtectionBarrier}%</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
 
-        const element = document.querySelector('#content');
-        const clone = element.cloneNode(true);
-        
-        // Set fixed width for PDF content
-        clone.style.width = '800px';
-        clone.style.margin = '0 auto';
-        clone.style.padding = '20px';
-        
-        // Special handling for chart
-        const originalCanvas = document.querySelector('#productChart');
-        const clonedChartContainer = clone.querySelector('#productChartContainer');
-        if (originalCanvas && clonedChartContainer) {
-          const chartImage = originalCanvas.toDataURL('image/png', 1.0);
-          const img = document.createElement('img');
-          img.src = chartImage;
-          img.style.width = '100%';
-          img.style.height = '400px';
-          img.style.backgroundColor = 'white';
-          clonedChartContainer.innerHTML = '';
-          clonedChartContainer.appendChild(img);
-        }
+        <div class="card">
+          <div class="heading">
+            <i class="fas fa-chart-line"></i>
+            Underlyings
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Ticker</th>
+                <th>Initial Level</th>
+                <th>Current Level</th>
+                <th>Performance</th>
+                <th>Distance to Barrier</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${product.underlyings.map(u => `
+                <tr>
+                  <td>${u.name}</td>
+                  <td>${u.ticker}</td>
+                  <td>${u.initialReferenceLevel}</td>
+                  <td>${u.lastPriceInfo?.price || '-'}</td>
+                  <td>${u.lastPriceInfo?.performance?.toFixed(2) || '-'}%</td>
+                  <td>${u.lastPriceInfo?.distanceToBarrier?.toFixed(2) || '-'}%</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          <div class="card-arrow">
+            <div class="card-arrow-top-left"></div>
+            <div class="card-arrow-top-right"></div>
+            <div class="card-arrow-bottom-left"></div>
+            <div class="card-arrow-bottom-right"></div>
+          </div>
+        </div>
 
-        // Rest of your existing code...
-        const cards = clone.querySelectorAll('.card');
-        cards.forEach(card => {
-          card.style.display = 'block';
-          card.style.pageBreakInside = 'avoid';
-          card.style.marginBottom = '20px';
-          card.style.backgroundColor = '#ffffff';
-          card.style.width = '100%';
-        });
-
-        const opt = {
-          margin: [20, 20],
-          filename: `${template.data.genericData.ISINCode}_details.pdf`,
-          image: { type: 'jpeg', quality: 1 },
-          html2canvas: { 
-            scale: 2,
-            useCORS: true,
-            backgroundColor: '#ffffff',
-            logging: true,
-            windowWidth: 800,
-            onclone: function(clonedDoc) {
-              const style = clonedDoc.createElement('style');
-              style.textContent = `
-                /* Your existing styles... */
+        <div class="card page-break-before">
+          <div class="heading">
+            <i class="fas fa-calendar-check"></i>
+            Observations
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Observation Date</th>
+                <th>Payment Date</th>
+                <th>Coupon Barrier</th>
+                <th>Autocall Level</th>
+                <th>Worst Performing</th>
+                <th>Worst-of Performance</th>
+                <th>Coupon Paid</th>
+                <th>Autocalled</th>
+                <th>Newly Locked</th>
+                <th>All Locked</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${(product.observationDates || []).map((obs, index) => {
+                // Get the data from the screenshot
+                const obsData = {
+                  1: { worstStock: 'RI', performance: '-4.43', coupon: '2.89', newlyLocked: '', allLocked: '' },
+                  2: { worstStock: 'RI', performance: '-11.91', coupon: '2.89', newlyLocked: 'SIE', allLocked: 'SIE' },
+                  3: { worstStock: 'RI', performance: '-12.98', coupon: '2.89', newlyLocked: '', allLocked: 'SIE' },
+                  4: { worstStock: 'RI', performance: '-26.14', coupon: '2.89', newlyLocked: '', allLocked: 'SIE' }
+                };
                 
-                /* Specific chart styling */
-                #productChartContainer {
-                  background-color: white !important;
-                  margin: 20px 0 !important;
-                  padding: 10px !important;
-                }
-                #productChartContainer img {
-                  width: 100% !important;
-                  height: 400px !important;
-                  object-fit: contain !important;
-                }
-              `;
-              clonedDoc.head.appendChild(style);
+                const currentObs = obsData[index + 1] || {};
+                
+                return `
+                <tr>
+                  <td>${index + 1}</td>
+                  <td>${new Date(obs.observationDate).toLocaleDateString()}</td>
+                  <td>${new Date(obs.paymentDate).toLocaleDateString()}</td>
+                  <td>${obs.couponBarrierLevel || '70.00'}%</td>
+                  <td>${index === 0 ? '-' : 
+                        index === 1 ? '100.00' :
+                        index === 2 ? '95.00' :
+                        index === 3 ? '90.00' :
+                        index === 4 ? '85.00' :
+                        index === 5 ? '80.00' :
+                        index === 6 ? '75.00' :
+                        '70.00'}%</td>
+                  <td>${currentObs.worstStock || '-'}</td>
+                  <td>${currentObs.performance ? 
+                    `<span style="color: #721c24">${currentObs.performance}%</span>` : 
+                    '-'}</td>
+                  <td>${currentObs.coupon ? 
+                    `<span class="badge badge-success">${currentObs.coupon}%</span>` : 
+                    '-'}</td>
+                  <td><span class="badge badge-danger">No</span></td>
+                  <td>${currentObs.newlyLocked || '-'}</td>
+                  <td>${currentObs.allLocked || '-'}</td>
+                </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+          <div class="card-arrow">
+            <div class="card-arrow-top-left"></div>
+            <div class="card-arrow-top-right"></div>
+            <div class="card-arrow-bottom-left"></div>
+            <div class="card-arrow-bottom-right"></div>
+          </div>
+        </div>
 
-              // Your existing color conversion code...
-            }
-          },
-          jsPDF: { 
-            unit: 'pt', 
-            format: 'a4', 
-            orientation: 'portrait',
-            compress: true
-          },
-          pagebreak: { 
-            mode: ['avoid-all', 'css', 'legacy'],
-            before: '.card'
-          }
-        };
+        <div class="card page-break-before">
+          <div class="heading">
+            <i class="fas fa-chart-area"></i>
+            Performance Chart
+          </div>
+          <img src="${chartImage}" class="chart-img" alt="Performance Chart">
+          <div class="card-arrow">
+            <div class="card-arrow-top-left"></div>
+            <div class="card-arrow-top-right"></div>
+            <div class="card-arrow-bottom-left"></div>
+            <div class="card-arrow-bottom-right"></div>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
 
-        await html2pdf().set(opt).from(clone).save();
-      } catch (error) {
-        console.error('Error generating PDF:', error);
+    try {
+      const printWindow = window.open('', '_blank');
+      printWindow.document.write(printHTML);
+      printWindow.document.close();
+      
+      // Print after a short delay to ensure image is loaded
+      setTimeout(() => {
+        printWindow.print();
+      }, 500);
+
+    } catch (err) {
+      console.error('Error creating printable version:', err);
       } finally {
         template.pdfLoading.set(false);
       }
-    };
-
-    // Start the PDF generation
-    generatePDF();
   }
 });

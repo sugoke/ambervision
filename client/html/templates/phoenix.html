@@ -1,160 +1,199 @@
 <template name="phoenix">
-  <div id="content" class="app-content container">
-    <div class="card shadow mb-4">
-      <div class="card-header">
-        <ol class="breadcrumb mb-1">
-          <li class="breadcrumb-item"><a href="#"><i class="fas fa-home"></i> AMBERVISION</a></li>
-          <li class="breadcrumb-item active">Product details</li>
-        </ol>
-        <div class="d-flex justify-content-between align-items-center">
-          <h1 class="page-header mb-0">{{genericData.ISINCode}}</h1>
-          <div>
-            <button id="exportPDF" class="btn btn-primary me-2" disabled="{{isPdfLoading}}">
-              <i class="fas fa-{{#if isPdfLoading}}spinner fa-spin{{else}}file-pdf{{/if}}"></i>
-              Export PDF
-            </button>
-            {{#if isSuperAdmin}}
-              <a href="/editProduct?isin={{genericData.ISINCode}}&mode=editProduct" class="btn btn-primary">
-                <i class="fas fa-edit"></i> Edit Product
-              </a>
-            {{/if}}
+  <div class="phoenix-container">
+    <div id="content" class="app-content">
+      <div class="card shadow mb-4">
+        <div class="card-header">
+          <ol class="breadcrumb mb-1">
+            <li class="breadcrumb-item"><a href="#"><i class="fas fa-home"></i> AMBERVISION</a></li>
+            <li class="breadcrumb-item active">Product details</li>
+          </ol>
+          <div class="d-flex justify-content-between align-items-center">
+            <h1 class="page-header mb-0">{{genericData.ISINCode}}</h1>
+            <div>
+              <button id="exportPDF" class="btn btn-primary me-2" disabled="{{isPdfLoading}}">
+                <i class="fas fa-{{#if isPdfLoading}}spinner fa-spin{{else}}file-pdf{{/if}}"></i>
+                Export PDF
+              </button>
+              {{#if isSuperAdmin}}
+                <a href="/editProduct?isin={{genericData.ISINCode}}&mode=editProduct" class="btn btn-primary">
+                  <i class="fas fa-edit"></i> Edit Product
+                </a>
+              {{/if}}
+            </div>
           </div>
         </div>
-      </div>
-      <div class="card-body">
-        <div class="row">
-          <div class="col-md-6">
-            <div class="product-title mb-4">
-              <h4 class="d-flex align-items-center">
-                <i class="fas fa-chart-line text-warning me-2"></i>
-                {{genericData.name}}
-              </h4>
-              <div class="status-badge mt-2">
-                <i class="fas fa-circle-notch fa-spin text-warning me-2"></i>
-                Status: 
-                {{#if (eq status "autocalled")}}
-                  <span class="badge bg-success"><i class="fas fa-check-circle"></i> Autocalled</span>
-                {{else if (eq status "matured")}}
-                  <span class="badge bg-info"><i class="fas fa-flag-checkered"></i> Matured</span>
-                {{else if (eq status "pending")}}
-                  <span class="badge bg-info"><i class="fas fa-clock"></i> Pending</span>
-                {{else}}
-                  <span class="badge bg-warning"><i class="fas fa-broadcast-tower"></i> Live</span>
-                {{/if}}
+        <div class="card-body">
+          <div class="row">
+            <div class="col-md-6">
+              <div class="product-title mb-4">
+                <h4 class="d-flex align-items-center">
+                  <i class="fas fa-chart-line text-warning me-2"></i>
+                  {{genericData.name}}
+                </h4>
+                <div class="status-badge mt-2">
+                  <i class="fas fa-circle-notch fa-spin text-warning me-2"></i>
+                  Status: 
+                  {{#if (eq status "autocalled")}}
+                    <span class="badge bg-success"><i class="fas fa-check-circle"></i> Autocalled</span>
+                  {{else if (eq status "matured")}}
+                    <span class="badge bg-info"><i class="fas fa-flag-checkered"></i> Matured</span>
+                  {{else if (eq status "pending")}}
+                    <span class="badge bg-info"><i class="fas fa-clock"></i> Pending</span>
+                  {{else}}
+                    <span class="badge bg-warning"><i class="fas fa-broadcast-tower"></i> Live</span>
+                  {{/if}}
+                </div>
+              </div>
+              <div class="bid-price mb-3">
+                <h5><i class="fas fa-tag text-success"></i> Bid price: <span class="text-success">101.50%</span></h5>
               </div>
             </div>
-            <div class="bid-price mb-3">
-              <h5><i class="fas fa-tag text-success"></i> Bid price: <span class="text-success">101.50%</span></h5>
-            </div>
-          </div>
-          <div class="col-md-6">
-            <div class="product-details">
-              <dl class="row g-3">
-                <dt class="col-5"><i class="fas fa-money-bill-wave text-muted"></i> Currency</dt>
-                <dd class="col-7">{{genericData.currency}}</dd>
-                
-                <dt class="col-5"><i class="fas fa-percentage text-muted"></i> Coupon</dt>
-                <dd class="col-7 text-success fw-bold">{{formatPercentage features.couponPerPeriod}}%</dd>
-                
-                <dt class="col-5"><i class="fas fa-building text-muted"></i> Issuer</dt>
-                <dd class="col-7">{{genericData.issuer}}</dd>
-                
-                <dt class="col-5"><i class="fas fa-calendar-plus text-muted"></i> Issue date</dt>
-                <dd class="col-7">{{formatDate genericData.issueDate}}</dd>
-                
-                <dt class="col-5"><i class="fas fa-calendar-check text-muted"></i> Maturity</dt>
-                <dd class="col-7">{{formatDate genericData.maturityDate}}</dd>
-                
-                {{#if observationsTable.capitalRedemption}}
-                  <dt class="col-5"><i class="fas fa-shield-alt text-muted"></i> Capital redemption</dt>
-                  <dd class="col-7 text-primary fw-bold">{{formatPercentage observationsTable.capitalRedemption}}%</dd>
-                {{/if}}
-              </dl>
+            <div class="col-md-6">
+              <div class="product-details">
+                <dl class="row g-3">
+                  <dt class="col-5"><i class="fas fa-money-bill-wave text-muted"></i> Currency</dt>
+                  <dd class="col-7">{{genericData.currency}}</dd>
+                  
+                  <dt class="col-5"><i class="fas fa-percentage text-muted"></i> Coupon</dt>
+                  <dd class="col-7 text-success fw-bold">{{formatPercentage features.couponPerPeriod}}%</dd>
+                  
+                  <dt class="col-5"><i class="fas fa-building text-muted"></i> Issuer</dt>
+                  <dd class="col-7">{{genericData.issuer}}</dd>
+                  
+                  <dt class="col-5"><i class="fas fa-calendar-plus text-muted"></i> Issue date</dt>
+                  <dd class="col-7">{{formatDate genericData.issueDate}}</dd>
+                  
+                  <dt class="col-5"><i class="fas fa-calendar-check text-muted"></i> Maturity</dt>
+                  <dd class="col-7">{{formatDate genericData.maturityDate}}</dd>
+                  
+                  {{#if observationsTable.capitalRedemption}}
+                    <dt class="col-5"><i class="fas fa-shield-alt text-muted"></i> Capital redemption</dt>
+                    <dd class="col-7 text-primary fw-bold">{{formatPercentage observationsTable.capitalRedemption}}%</dd>
+                  {{/if}}
+                </dl>
+              </div>
             </div>
           </div>
         </div>
+        <div class="card-arrow">
+          <div class="card-arrow-top-left"></div>
+          <div class="card-arrow-top-right"></div>
+          <div class="card-arrow-bottom-left"></div>
+          <div class="card-arrow-bottom-right"></div>
+        </div>
       </div>
-      <div class="card-arrow">
-        <div class="card-arrow-top-left"></div>
-        <div class="card-arrow-top-right"></div>
-        <div class="card-arrow-bottom-left"></div>
-        <div class="card-arrow-bottom-right"></div>
-      </div>
-    </div>
 
-    <div class="row gx-4">
-      <div class="col-12">
-        <!-- Underlyings Section -->
-        <div class="card mb-4">
-          <div class="card-body">
-            <div class="d-flex fw-bold small mb-3">
-              <span class="flex-grow-1">UNDERLYINGS</span>
+      <div class="row gx-4">
+        <div class="col-12">
+          <!-- Underlyings Section -->
+          <div class="card mb-4">
+            <div class="card-body">
+              <div class="d-flex fw-bold small mb-3">
+                <span class="flex-grow-1">UNDERLYINGS</span>
+              </div>
+              <div class="row row-cols-1 row-cols-md-2 row-cols-xl-3 g-2">
+                {{#each underlyings}}
+                  <div class="col">
+                    <div class="card border-theme h-100 {{#if lastPriceInfo.isWorstOf}}bg-theme bg-opacity-30{{/if}}">
+                      <div class="card-body">
+                        <div class="d-flex fw-bold small mb-3 align-items-center">
+                          <span class="flex-grow-1">{{name}}</span>
+                          <div class="company-logo-container">
+                            <img src="{{getLogoUrl eodTicker}}" alt="Company Logo" class="company-logo" 
+                              onerror="this.onerror=null; this.parentElement.innerHTML='<i class=\'fas fa-building text-muted\'></i>';">
+                          </div>
+                        </div>
+                        <div class="row align-items-center mb-2">
+                          <div class="col-7">
+                            <h3 class="mb-0">{{ticker}}</h3>
+                          </div>
+                          <div class="col-5" style="min-width: 100px;">
+                            <div class="chart-container" style="height: 30px; overflow: hidden;">
+                              <div class="mt-n2" data-render="apexchart" data-type="bar" data-title="Performance" data-height="30" 
+                                style="min-width: 80px; width: 100%; position: relative; flex: 1 1 auto;"></div>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="text-white" style="font-size: 0.95rem;">
+                          <div class="d-flex align-items-center mb-2 justify-content-between">
+                            <div>
+                              <i class="fa fa-dollar-sign fa-fw me-2"></i>
+                              <span>Initial level <small class="text-white-50">({{formatDate ../genericData.tradeDate}})</small>:</span>
+                            </div>
+                            <span class="badge bg-dark bg-opacity-75">{{currency}} {{initialReferenceLevel}}</span>
+                          </div>
+                          
+                          <div class="d-flex align-items-center mb-2 justify-content-between">
+                            <div>
+                              <i class="fa fa-dollar-sign fa-fw me-2"></i>
+                              <span>Adjusted initial <small class="text-white-50">({{formatDate ../genericData.tradeDate}})</small>:</span>
+                            </div>
+                            <span class="badge bg-dark bg-opacity-75">{{currency}} {{adjustedInitialReferenceLevel}}</span>
+                          </div>
+                          
+                          <div class="d-flex align-items-center mb-2 justify-content-between">
+                            <div>
+                              <i class="bi bi-tag-fill me-2"></i>
+                              <span>Last price <small class="text-white-50">({{formatDate lastPriceInfo.date}})</small>:</span>
+                            </div>
+                            <span class="badge bg-dark bg-opacity-75">{{currency}} {{lastPriceInfo.price}}</span>
+                          </div>
+                          
+                          <div class="d-flex align-items-center mb-2 justify-content-between">
+                            <div>
+                              <i class="bi bi-graph-up me-2"></i>
+                              <span>Performance:</span>
+                            </div>
+                            <span class="badge {{#if (isNegative lastPriceInfo.performance)}}bg-danger{{else}}bg-success{{/if}} bg-opacity-75">
+                              {{formatPercentage lastPriceInfo.performance}}%
+                            </span>
+                          </div>
+                          
+                          <div class="d-flex align-items-center justify-content-between">
+                            <div>
+                              <i class="bi bi-arrows-collapse me-2"></i>
+                              <span>Distance:</span>
+                            </div>
+                            <span class="badge bg-primary bg-opacity-75">{{formatPercentage lastPriceInfo.distanceToBarrier}}%</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="card-arrow">
+                        <div class="card-arrow-top-left"></div>
+                        <div class="card-arrow-top-right"></div>
+                        <div class="card-arrow-bottom-left"></div>
+                        <div class="card-arrow-bottom-right"></div>
+                      </div>
+                    </div>
+                  </div>
+                {{/each}}
+              </div>
             </div>
-            <div class="row row-cols-1 row-cols-md-2 row-cols-xl-3 g-2">
-              {{#each underlyings}}
-                <div class="col">
-                  <div class="card border-theme h-100 {{#if lastPriceInfo.isWorstOf}}bg-theme bg-opacity-30{{/if}}">
-                    <div class="card-body">
-                      <div class="d-flex fw-bold small mb-3 align-items-center">
-                        <span class="flex-grow-1">{{name}}</span>
-                        <div class="company-logo-container">
-                          <img src="{{getLogoUrl eodTicker}}" alt="Company Logo" class="company-logo" 
-                            onerror="this.onerror=null; this.parentElement.innerHTML='<i class=\'fas fa-building text-muted\'></i>';">
-                        </div>
+            <div class="card-arrow">
+              <div class="card-arrow-top-left"></div>
+              <div class="card-arrow-top-right"></div>
+              <div class="card-arrow-bottom-left"></div>
+              <div class="card-arrow-bottom-right"></div>
+            </div>
+          </div>
+
+          <!-- Stats Widget -->
+          <div class="card mb-4">
+            <div class="card-body">
+              <div class="d-flex fw-bold small mb-3">
+                <span class="flex-grow-1">STATISTICS</span>
+              </div>
+              <div class="row">
+                <div class="col-12 col-md-4">
+                  <div class="card bg-inverse bg-opacity-10">
+                    <div class="card-body d-flex align-items-center text-inverse">
+                      <div class="flex-fill">
+                        <div class="mb-1">Total Coupons paid</div>
+                        <h2>{{#if totalCouponPaid}}{{formatPercentage totalCouponPaid}}%{{else}}-{{/if}}</h2>
+                        <div>{{formatDate (currentDate)}}</div>
                       </div>
-                      <div class="row align-items-center mb-2">
-                        <div class="col-7">
-                          <h3 class="mb-0">{{ticker}}</h3>
-                        </div>
-                        <div class="col-5" style="min-width: 100px;">
-                          <div class="chart-container" style="height: 30px; overflow: hidden;">
-                            <div class="mt-n2" data-render="apexchart" data-type="bar" data-title="Performance" data-height="30" 
-                              style="min-width: 80px; width: 100%; position: relative; flex: 1 1 auto;"></div>
-                          </div>
-                        </div>
-                      </div>
-                      <div class="text-white" style="font-size: 0.95rem;">
-                        <div class="d-flex align-items-center mb-2 justify-content-between">
-                          <div>
-                            <i class="fa fa-dollar-sign fa-fw me-2"></i>
-                            <span>Initial level <small class="text-white-50">({{formatDate ../genericData.tradeDate}})</small>:</span>
-                          </div>
-                          <span class="badge bg-dark bg-opacity-75">{{currency}} {{initialReferenceLevel}}</span>
-                        </div>
-                        
-                        <div class="d-flex align-items-center mb-2 justify-content-between">
-                          <div>
-                            <i class="fa fa-dollar-sign fa-fw me-2"></i>
-                            <span>Adjusted initial <small class="text-white-50">({{formatDate ../genericData.tradeDate}})</small>:</span>
-                          </div>
-                          <span class="badge bg-dark bg-opacity-75">{{currency}} {{adjustedInitialReferenceLevel}}</span>
-                        </div>
-                        
-                        <div class="d-flex align-items-center mb-2 justify-content-between">
-                          <div>
-                            <i class="bi bi-tag-fill me-2"></i>
-                            <span>Last price <small class="text-white-50">({{formatDate lastPriceInfo.date}})</small>:</span>
-                          </div>
-                          <span class="badge bg-dark bg-opacity-75">{{currency}} {{lastPriceInfo.price}}</span>
-                        </div>
-                        
-                        <div class="d-flex align-items-center mb-2 justify-content-between">
-                          <div>
-                            <i class="bi bi-graph-up me-2"></i>
-                            <span>Performance:</span>
-                          </div>
-                          <span class="badge {{#if (isNegative lastPriceInfo.performance)}}bg-danger{{else}}bg-success{{/if}} bg-opacity-75">
-                            {{formatPercentage lastPriceInfo.performance}}%
-                          </span>
-                        </div>
-                        
-                        <div class="d-flex align-items-center justify-content-between">
-                          <div>
-                            <i class="bi bi-arrows-collapse me-2"></i>
-                            <span>Distance:</span>
-                          </div>
-                          <span class="badge bg-primary bg-opacity-75">{{formatPercentage lastPriceInfo.distanceToBarrier}}%</span>
-                        </div>
+                      <div class="opacity-5">
+                        <i class="fa fa-shopping-bag fa-4x"></i>
                       </div>
                     </div>
                     <div class="card-arrow">
@@ -165,468 +204,431 @@
                     </div>
                   </div>
                 </div>
-              {{/each}}
-            </div>
-          </div>
-          <div class="card-arrow">
-            <div class="card-arrow-top-left"></div>
-            <div class="card-arrow-top-right"></div>
-            <div class="card-arrow-bottom-left"></div>
-            <div class="card-arrow-bottom-right"></div>
-          </div>
-        </div>
-
-        <!-- Stats Widget -->
-        <div class="card mb-4">
-          <div class="card-body">
-            <div class="d-flex fw-bold small mb-3">
-              <span class="flex-grow-1">STATISTICS</span>
-            </div>
-            <div class="row">
-              <div class="col-12 col-md-4">
-                <div class="card bg-inverse bg-opacity-10">
-                  <div class="card-body d-flex align-items-center text-inverse">
-                    <div class="flex-fill">
-                      <div class="mb-1">Total Coupons paid</div>
-                      <h2>{{#if totalCouponPaid}}{{formatPercentage totalCouponPaid}}%{{else}}-{{/if}}</h2>
-                      <div>{{formatDate (currentDate)}}</div>
-                    </div>
-                    <div class="opacity-5">
-                      <i class="fa fa-shopping-bag fa-4x"></i>
-                    </div>
-                  </div>
-                  <div class="card-arrow">
-                    <div class="card-arrow-top-left"></div>
-                    <div class="card-arrow-top-right"></div>
-                    <div class="card-arrow-bottom-left"></div>
-                    <div class="card-arrow-bottom-right"></div>
-                  </div>
-                </div>
-              </div>
-              
-              <div class="col-12 col-md-4">
-                <div class="card bg-inverse bg-opacity-10">
-                  <div class="card-body d-flex align-items-center text-inverse">
-                    <div class="flex-fill">
-                      {{#if (or (eq status "matured") (eq status "autocalled"))}}
-                        <div class="mb-1">Capital redeemed</div>
-                        <h2>{{#if capitalRedemption}}{{formatPercentage capitalRedemption}}%{{else}}-{{/if}}</h2>
-                        <div>Final redemption</div>
-                      {{else}}
-                        <div class="mb-1">If redemption was today</div>
-                        <h2>{{#if redemptionIfToday}}{{formatPercentage redemptionIfToday}}%{{else}}-{{/if}}</h2>
-                        <div>Indicative information</div>
-                      {{/if}}
-                    </div>
-                    <div class="opacity-5">
-                      <i class="fa fa-calculator fa-4x"></i>
-                    </div>
-                  </div>
-                  <div class="card-arrow">
-                    <div class="card-arrow-top-left"></div>
-                    <div class="card-arrow-top-right"></div>
-                    <div class="card-arrow-bottom-left"></div>
-                    <div class="card-arrow-bottom-right"></div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="col-12 col-md-4">
-                <div class="card bg-inverse bg-opacity-10">
-                  <div class="card-body d-flex align-items-center text-inverse">
-                    <div class="flex-fill">
-                      <div class="mb-1">
+                
+                <div class="col-12 col-md-4">
+                  <div class="card bg-inverse bg-opacity-10">
+                    <div class="card-body d-flex align-items-center text-inverse">
+                      <div class="flex-fill">
                         {{#if (or (eq status "matured") (eq status "autocalled"))}}
-                          P&L
+                          <div class="mb-1">Capital redeemed</div>
+                          <h2>{{#if capitalRedemption}}{{formatPercentage capitalRedemption}}%{{else}}-{{/if}}</h2>
+                          <div>Final redemption</div>
                         {{else}}
-                          Unrealized P&L
+                          <div class="mb-1">If redemption was today</div>
+                          <h2>{{#if redemptionIfToday}}{{formatPercentage redemptionIfToday}}%{{else}}-{{/if}}</h2>
+                          <div>Indicative information</div>
                         {{/if}}
                       </div>
-                      <h2>
-                        {{#if (or (eq status "matured") (eq status "autocalled"))}}
-                          {{#if pnl}}{{formatPercentage pnl}}%{{else}}-{{/if}}
-                        {{else}}
-                          {{#if unrealizedPnL}}{{formatPercentage unrealizedPnL}}%{{else}}-{{/if}}
-                        {{/if}}
-                      </h2>
-                      {{#unless (or (eq status "matured") (eq status "autocalled"))}}
-                        <div>{{formatDate (currentDate)}}</div>
-                      {{/unless}}
+                      <div class="opacity-5">
+                        <i class="fa fa-calculator fa-4x"></i>
+                      </div>
                     </div>
-                    <div class="opacity-5">
-                      <i class="fa fa-chart-line fa-4x"></i>
+                    <div class="card-arrow">
+                      <div class="card-arrow-top-left"></div>
+                      <div class="card-arrow-top-right"></div>
+                      <div class="card-arrow-bottom-left"></div>
+                      <div class="card-arrow-bottom-right"></div>
                     </div>
                   </div>
-                  <div class="card-arrow">
-                    <div class="card-arrow-top-left"></div>
-                    <div class="card-arrow-top-right"></div>
-                    <div class="card-arrow-bottom-left"></div>
-                    <div class="card-arrow-bottom-right"></div>
+                </div>
+
+                <div class="col-12 col-md-4">
+                  <div class="card bg-inverse bg-opacity-10">
+                    <div class="card-body d-flex align-items-center text-inverse">
+                      <div class="flex-fill">
+                        <div class="mb-1">
+                          {{#if (or (eq status "matured") (eq status "autocalled"))}}
+                            P&L
+                          {{else}}
+                            Unrealized P&L
+                          {{/if}}
+                        </div>
+                        <h2>
+                          {{#if (or (eq status "matured") (eq status "autocalled"))}}
+                            {{#if pnl}}{{formatPercentage pnl}}%{{else}}-{{/if}}
+                          {{else}}
+                            {{#if unrealizedPnL}}{{formatPercentage unrealizedPnL}}%{{else}}-{{/if}}
+                          {{/if}}
+                        </h2>
+                        {{#unless (or (eq status "matured") (eq status "autocalled"))}}
+                          <div>{{formatDate (currentDate)}}</div>
+                        {{/unless}}
+                      </div>
+                      <div class="opacity-5">
+                        <i class="fa fa-chart-line fa-4x"></i>
+                      </div>
+                    </div>
+                    <div class="card-arrow">
+                      <div class="card-arrow-top-left"></div>
+                      <div class="card-arrow-top-right"></div>
+                      <div class="card-arrow-bottom-left"></div>
+                      <div class="card-arrow-bottom-right"></div>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
-          <div class="card-arrow">
-            <div class="card-arrow-top-left"></div>
-            <div class="card-arrow-top-right"></div>
-            <div class="card-arrow-bottom-left"></div>
-            <div class="card-arrow-bottom-right"></div>
-          </div>
-        </div>
-
-        <!-- Timeline -->
-        <div class="card mb-4">
-          <div class="card-body">
-            <div class="nav-wizards-container" style="overflow-x: auto;">
-              <nav class="nav nav-wizards-3 mb-2" style="width: max-content; min-width: 100%;">
-                {{#each timelineSteps}}
-                  <div class="nav-item d-inline-block" style="width: 150px;">
-                    <a class="nav-link {{status}}" href="#">
-                      <div class="nav-dot"></div>
-                      <div class="nav-title">{{formatDate date}}</div>
-                      <div class="nav-text" style="white-space: normal; overflow: visible; text-overflow: clip;">
-                        {{label}}
-                      </div>
-                    </a>
-                  </div>
-                {{/each}}
-              </nav>
+            <div class="card-arrow">
+              <div class="card-arrow-top-left"></div>
+              <div class="card-arrow-top-right"></div>
+              <div class="card-arrow-bottom-left"></div>
+              <div class="card-arrow-bottom-right"></div>
             </div>
           </div>
-          <div class="card-arrow">
-            <div class="card-arrow-top-left"></div>
-            <div class="card-arrow-top-right"></div>
-            <div class="card-arrow-bottom-left"></div>
-            <div class="card-arrow-bottom-right"></div>
-          </div>
-        </div>
 
-        <!-- Observations Table -->
-        <div class="card mb-4">
-          <div class="card-body">
-            <div class="table-responsive">
-              <table class="table table-striped table-borderless mb-0 w-100">
-                <thead>
-                  <tr>
-                    <th class="text-nowrap px-2 text-center align-middle">#</th>
-                    <th class="text-nowrap px-2 text-center align-middle">Observation<br>Date</th>
-                    <th class="text-nowrap px-2 text-center align-middle">Payment<br>Date</th>
-                    <th class="text-nowrap px-2 text-center align-middle">Coupon<br>Barrier</th>
-                    <th class="text-nowrap px-2 text-center align-middle">Autocall<br>Level</th>
-                    <th class="text-nowrap px-2 text-center align-middle">Worst<br>Performing<br>Stock</th>
-                    <th class="text-nowrap px-2 text-center align-middle">Worst-of<br>Performance</th>
-                    <th class="text-nowrap px-2 text-center align-middle">Coupon<br>Paid</th>
-                    <th class="text-nowrap px-2 text-center align-middle">Autocalled</th>
-                    {{#if features.memoryAutocall}}
-                      <th class="text-nowrap px-2 text-center align-middle">Newly Locked<br>Stocks</th>
-                      <th class="text-nowrap px-2 text-center align-middle">All Locked<br>Stocks</th>
-                    {{/if}}
-                  </tr>
-                </thead>
-                <tbody>
-                  {{#each observationsTable}}
+          <!-- Timeline -->
+          <div class="card mb-4">
+            <div class="card-body">
+              <div class="nav-wizards-container" style="overflow-x: auto;">
+                <nav class="nav nav-wizards-3 mb-2" style="width: max-content; min-width: 100%;">
+                  {{#each timelineSteps}}
+                    <div class="nav-item d-inline-block" style="width: 150px;">
+                      <a class="nav-link {{status}}" href="#">
+                        <div class="nav-dot"></div>
+                        <div class="nav-title">{{formatDate date}}</div>
+                        <div class="nav-text" style="white-space: normal; overflow: visible; text-overflow: clip;">
+                          {{label}}
+                        </div>
+                      </a>
+                    </div>
+                  {{/each}}
+                </nav>
+              </div>
+            </div>
+            <div class="card-arrow">
+              <div class="card-arrow-top-left"></div>
+              <div class="card-arrow-top-right"></div>
+              <div class="card-arrow-bottom-left"></div>
+              <div class="card-arrow-bottom-right"></div>
+            </div>
+          </div>
+
+          <!-- Observations Table -->
+          <div class="card mb-4">
+            <div class="card-body">
+              <div class="table-responsive">
+                <table class="table table-striped table-borderless mb-0 w-100">
+                  <thead>
                     <tr>
-                      <td class="px-2 text-center">{{inc @index}}</td>
-                      <td class="px-2 text-center">{{formatDate observationDate}}</td>
-                      <td class="px-2 text-center">{{formatDate paymentDate}}</td>
-                      <td class="px-2 text-center">{{formatPercentage couponBarrierLevel}}%</td>
-                      <td class="px-2 text-center">{{formatPercentage autocallLevel}}%</td>
-                      <td class="px-2 text-center">{{worstPerformingUnderlying}}</td>
-                      <td class="px-2 text-center">
-                        {{#if (eq worstPerformance "-")}}
-                          -
-                        {{else}}
-                          {{#if (isNegative worstPerformance)}}
-                            <span style="color: orange;">{{formatPercentage worstPerformance}}%</span>
-                          {{else}}
-                            <span style="color: rgb(152, 209, 128);">{{formatPercentage worstPerformance}}%</span>
-                          {{/if}}
-                        {{/if}}
-                      </td>
-                      <td class="px-2 text-center">
-                        {{#if (eq couponPaid "-")}}
-                          -
-                        {{else}}
-                          {{#if (gt couponPaid 0)}}
-                            <span class="badge bg-success">{{formatPercentage couponPaid}}%</span>
-                          {{else}}
-                            <span class="badge bg-danger">{{formatPercentage couponPaid}}%</span>
-                          {{/if}}
-                        {{/if}}
-                      </td>
-                      <td class="px-2 text-center">
-                        {{#if (eq worstPerformingUnderlying "-")}}
-                          
-                        {{else if autocalled}}
-                          <span class="badge bg-success">Yes</span>
-                        {{else}}
-                          <span class="badge bg-danger">No</span>
-                        {{/if}}
-                      </td>
-                      {{#if ../features.memoryAutocall}}
-                        <td class="px-2 text-center">{{join newlyLockedStocks ", "}}</td>
-                        <td class="px-2 text-center">{{join allLockedStocks ", "}}</td>
+                      <th class="text-nowrap px-2 text-center align-middle">#</th>
+                      <th class="text-nowrap px-2 text-center align-middle">Observation<br>Date</th>
+                      <th class="text-nowrap px-2 text-center align-middle">Payment<br>Date</th>
+                      <th class="text-nowrap px-2 text-center align-middle">Coupon<br>Barrier</th>
+                      <th class="text-nowrap px-2 text-center align-middle">Autocall<br>Level</th>
+                      <th class="text-nowrap px-2 text-center align-middle">Worst<br>Performing<br>Stock</th>
+                      <th class="text-nowrap px-2 text-center align-middle">Worst-of<br>Performance</th>
+                      <th class="text-nowrap px-2 text-center align-middle">Coupon<br>Paid</th>
+                      <th class="text-nowrap px-2 text-center align-middle">Autocalled</th>
+                      {{#if features.memoryAutocall}}
+                        <th class="text-nowrap px-2 text-center align-middle">Newly Locked<br>Stocks</th>
+                        <th class="text-nowrap px-2 text-center align-middle">All Locked<br>Stocks</th>
                       {{/if}}
                     </tr>
-                  {{/each}}
-                </tbody>
-              </table>
-            </div>
-          </div>
-          <div class="card-arrow">
-            <div class="card-arrow-top-left"></div>
-            <div class="card-arrow-top-right"></div>
-            <div class="card-arrow-bottom-left"></div>
-            <div class="card-arrow-bottom-right"></div>
-          </div>
-        </div>
-
-        <!-- Chart -->
-        <div class="card mb-4">
-          <div class="card-body">
-            <div class="d-flex fw-bold small mb-3">
-              <span class="flex-grow-1">Chart</span>
-            </div>
-            <div id="productChartContainer" style="height: 400px !important; width: 100% !important; position: relative;">
-              <canvas id="productChart"></canvas>
-            </div>
-          </div>
-          <div class="card-arrow">
-            <div class="card-arrow-top-left"></div>
-            <div class="card-arrow-top-right"></div>
-            <div class="card-arrow-bottom-left"></div>
-            <div class="card-arrow-bottom-right"></div>
-          </div>
-        </div>
-
-        <!-- News -->
-        <div class="card mb-4">
-          <div class="card-body">
-            <div class="d-flex fw-bold small mb-3">
-              <span class="flex-grow-1">Latest News</span>
-            </div>
-            {{#if newsLoading}}
-              <div class="text-center">
-                <i class="fas fa-spinner fa-spin"></i> Loading news...
+                  </thead>
+                  <tbody>
+                    {{#each observationsTable}}
+                      <tr>
+                        <td class="px-2 text-center">{{inc @index}}</td>
+                        <td class="px-2 text-center">{{formatDate observationDate}}</td>
+                        <td class="px-2 text-center">{{formatDate paymentDate}}</td>
+                        <td class="px-2 text-center">{{formatPercentage couponBarrierLevel}}%</td>
+                        <td class="px-2 text-center">{{formatPercentage autocallLevel}}%</td>
+                        <td class="px-2 text-center">{{worstPerformingUnderlying}}</td>
+                        <td class="px-2 text-center">
+                          {{#if (eq worstPerformance "-")}}
+                            -
+                          {{else}}
+                            {{#if (isNegative worstPerformance)}}
+                              <span style="color: orange;">{{formatPercentage worstPerformance}}%</span>
+                            {{else}}
+                              <span style="color: rgb(152, 209, 128);">{{formatPercentage worstPerformance}}%</span>
+                            {{/if}}
+                          {{/if}}
+                        </td>
+                        <td class="px-2 text-center">
+                          {{#if (eq couponPaid "-")}}
+                            -
+                          {{else}}
+                            {{#if (gt couponPaid 0)}}
+                              <span class="badge bg-success">{{formatPercentage couponPaid}}%</span>
+                            {{else}}
+                              <span class="badge bg-danger">{{formatPercentage couponPaid}}%</span>
+                            {{/if}}
+                          {{/if}}
+                        </td>
+                        <td class="px-2 text-center">
+                          {{#if (eq worstPerformingUnderlying "-")}}
+                            
+                          {{else if autocalled}}
+                            <span class="badge bg-success">Yes</span>
+                          {{else}}
+                            <span class="badge bg-danger">No</span>
+                          {{/if}}
+                        </td>
+                        {{#if ../features.memoryAutocall}}
+                          <td class="px-2 text-center">{{join newlyLockedStocks ", "}}</td>
+                          <td class="px-2 text-center">{{join allLockedStocks ", "}}</td>
+                        {{/if}}
+                      </tr>
+                    {{/each}}
+                  </tbody>
+                </table>
               </div>
-            {{else}}
-              <div class="row">
-                {{#each newsItem in underlyingNews}}
-                  <div class="col-md-6 mb-3">
-                    <div class="news-item p-3 border rounded">
-                      <div class="d-flex align-items-center mb-2">
-                        <span class="badge bg-primary me-2">{{newsItem.ticker}}</span>
-                        <small class="text-muted me-2">{{newsItem.date}}</small>
-                        <small class="text-muted ms-auto">{{newsItem.source}}</small>
+            </div>
+            <div class="card-arrow">
+              <div class="card-arrow-top-left"></div>
+              <div class="card-arrow-top-right"></div>
+              <div class="card-arrow-bottom-left"></div>
+              <div class="card-arrow-bottom-right"></div>
+            </div>
+          </div>
+
+          <!-- Chart -->
+          <div class="card mb-4">
+            <div class="card-body">
+              <div class="d-flex fw-bold small mb-3">
+                <span class="flex-grow-1">Chart</span>
+              </div>
+              <div id="productChartContainer" style="height: 400px !important; width: 100% !important; position: relative;">
+                <canvas id="productChart"></canvas>
+              </div>
+            </div>
+            <div class="card-arrow">
+              <div class="card-arrow-top-left"></div>
+              <div class="card-arrow-top-right"></div>
+              <div class="card-arrow-bottom-left"></div>
+              <div class="card-arrow-bottom-right"></div>
+            </div>
+          </div>
+
+          <!-- News -->
+          <div class="card mb-4">
+            <div class="card-body">
+              <div class="d-flex fw-bold small mb-3">
+                <span class="flex-grow-1">Latest News</span>
+              </div>
+              {{#if newsLoading}}
+                <div class="text-center">
+                  <i class="fas fa-spinner fa-spin"></i> Loading news...
+                </div>
+              {{else}}
+                <div class="row">
+                  {{#each newsItem in underlyingNews}}
+                    <div class="col-md-6 mb-3">
+                      <div class="news-item p-3 border rounded">
+                        <div class="d-flex align-items-center mb-2">
+                          <span class="badge bg-primary me-2">{{newsItem.ticker}}</span>
+                          <small class="text-muted me-2">{{newsItem.date}}</small>
+                          <small class="text-muted ms-auto">{{newsItem.source}}</small>
+                        </div>
+                        <h5 class="mb-2">{{newsItem.title}}</h5>
+                        <p class="text-muted small mb-2">{{truncateText newsItem.text 2}}</p>
+                        <a href="{{newsItem.link}}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-primary">Read full article</a>
                       </div>
-                      <h5 class="mb-2">{{newsItem.title}}</h5>
-                      <p class="text-muted small mb-2">{{truncateText newsItem.text 2}}</p>
-                      <a href="{{newsItem.link}}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-primary">Read full article</a>
                     </div>
-                  </div>
-                {{else}}
-                  <div class="col-12">
-                    <p class="text-center text-muted">No recent news available</p>
-                  </div>
-                {{/each}}
-              </div>
-            {{/if}}
+                  {{else}}
+                    <div class="col-12">
+                      <p class="text-center text-muted">No recent news available</p>
+                    </div>
+                  {{/each}}
+                </div>
+              {{/if}}
+            </div>
+            <div class="card-arrow">
+              <div class="card-arrow-top-left"></div>
+              <div class="card-arrow-top-right"></div>
+              <div class="card-arrow-bottom-left"></div>
+              <div class="card-arrow-bottom-right"></div>
+            </div>
           </div>
-          <div class="card-arrow">
-            <div class="card-arrow-top-left"></div>
-            <div class="card-arrow-top-right"></div>
-            <div class="card-arrow-bottom-left"></div>
-            <div class="card-arrow-bottom-right"></div>
-          </div>
-        </div>
 
-        <!-- Product Features -->
-        <div class="card mb-4">
-          <div class="card-body">
-            <div class="row g-4">
-              <!-- Generic Data Section -->
-              <div class="col-md-6">
-                <h5 class="border-bottom pb-2 mb-3">
-                  <i class="bi bi-info-circle me-2"></i>Generic Data
-                </h5>
-                <div class="generic-data-grid">
-                  <div class="data-item">
-                    <div class="data-label">
-                      <i class="bi bi-upc me-2"></i>ISIN Code
+          <!-- Product Features -->
+          <div class="card mb-4">
+            <div class="card-body">
+              <div class="row g-4">
+                <!-- Generic Data Section -->
+                <div class="col-md-6">
+                  <h5 class="border-bottom pb-2 mb-3">
+                    <i class="bi bi-info-circle me-2"></i>Generic Data
+                  </h5>
+                  <div class="generic-data-grid">
+                    <div class="data-item">
+                      <div class="data-label">
+                        <i class="bi bi-upc me-2"></i>ISIN Code
+                      </div>
+                      <div class="data-value">{{genericData.ISINCode}}</div>
                     </div>
-                    <div class="data-value">{{genericData.ISINCode}}</div>
-                  </div>
-                  
-                  <div class="data-item">
-                    <div class="data-label">
-                      <i class="bi bi-gear me-2"></i>Settlement Type
+                    
+                    <div class="data-item">
+                      <div class="data-label">
+                        <i class="bi bi-gear me-2"></i>Settlement Type
+                      </div>
+                      <div class="data-value">{{genericData.settlementType}}</div>
                     </div>
-                    <div class="data-value">{{genericData.settlementType}}</div>
-                  </div>
-                  
-                  <div class="data-item">
-                    <div class="data-label">
-                      <i class="bi bi-clock-history me-2"></i>Settlement T+
+                    
+                    <div class="data-item">
+                      <div class="data-label">
+                        <i class="bi bi-clock-history me-2"></i>Settlement T+
+                      </div>
+                      <div class="data-value">{{genericData.settlementTx}}</div>
                     </div>
-                    <div class="data-value">{{genericData.settlementTx}}</div>
-                  </div>
-                  
-                  <div class="data-item">
-                    <div class="data-label">
-                      <i class="bi bi-calendar-check me-2"></i>Trade Date
+                    
+                    <div class="data-item">
+                      <div class="data-label">
+                        <i class="bi bi-calendar-check me-2"></i>Trade Date
+                      </div>
+                      <div class="data-value">{{formatDate genericData.tradeDate}}</div>
                     </div>
-                    <div class="data-value">{{formatDate genericData.tradeDate}}</div>
-                  </div>
-                  
-                  <div class="data-item">
-                    <div class="data-label">
-                      <i class="bi bi-calendar-date me-2"></i>Payment Date
+                    
+                    <div class="data-item">
+                      <div class="data-label">
+                        <i class="bi bi-calendar-date me-2"></i>Payment Date
+                      </div>
+                      <div class="data-value">{{formatDate genericData.paymentDate}}</div>
                     </div>
-                    <div class="data-value">{{formatDate genericData.paymentDate}}</div>
-                  </div>
-                  
-                  <div class="data-item">
-                    <div class="data-label">
-                      <i class="bi bi-calendar-event me-2"></i>Final Observation
+                    
+                    <div class="data-item">
+                      <div class="data-label">
+                        <i class="bi bi-calendar-event me-2"></i>Final Observation
+                      </div>
+                      <div class="data-value">{{formatDate genericData.finalObservation}}</div>
                     </div>
-                    <div class="data-value">{{formatDate genericData.finalObservation}}</div>
                   </div>
                 </div>
-              </div>
 
-              <!-- Features Section (keep existing code) -->
-              <div class="col-md-6">
-                <h5 class="border-bottom pb-2 mb-3">
-                  <i class="bi bi-gear-fill me-2"></i>Features
-                </h5>
-                <div class="features-grid">
-                  <div class="data-item">
-                    <div class="data-label">
-                      <i class="bi bi-repeat me-2"></i>Memory Coupon
+                <!-- Features Section (keep existing code) -->
+                <div class="col-md-6">
+                  <h5 class="border-bottom pb-2 mb-3">
+                    <i class="bi bi-gear-fill me-2"></i>Features
+                  </h5>
+                  <div class="features-grid">
+                    <div class="data-item">
+                      <div class="data-label">
+                        <i class="bi bi-repeat me-2"></i>Memory Coupon
+                      </div>
+                      <div class="data-value feature-value">
+                        {{#if features.memoryCoupon}}
+                          <i class="bi bi-check-circle-fill text-success"></i>
+                        {{else}}
+                          <i class="bi bi-x-circle-fill text-danger"></i>
+                        {{/if}}
+                      </div>
                     </div>
-                    <div class="data-value feature-value">
-                      {{#if features.memoryCoupon}}
-                        <i class="bi bi-check-circle-fill text-success"></i>
-                      {{else}}
-                        <i class="bi bi-x-circle-fill text-danger"></i>
-                      {{/if}}
-                    </div>
-                  </div>
 
-                  <div class="data-item">
-                    <div class="data-label">
-                      <i class="bi bi-arrow-repeat me-2"></i>Memory Autocall
+                    <div class="data-item">
+                      <div class="data-label">
+                        <i class="bi bi-arrow-repeat me-2"></i>Memory Autocall
+                      </div>
+                      <div class="data-value feature-value">
+                        {{#if features.memoryAutocall}}
+                          <i class="bi bi-check-circle-fill text-success"></i>
+                        {{else}}
+                          <i class="bi bi-x-circle-fill text-danger"></i>
+                        {{/if}}
+                      </div>
                     </div>
-                    <div class="data-value feature-value">
-                      {{#if features.memoryAutocall}}
-                        <i class="bi bi-check-circle-fill text-success"></i>
-                      {{else}}
-                        <i class="bi bi-x-circle-fill text-danger"></i>
-                      {{/if}}
-                    </div>
-                  </div>
 
-                  <div class="data-item">
-                    <div class="data-label">
-                      <i class="bi bi-star-fill me-2"></i>One Star
+                    <div class="data-item">
+                      <div class="data-label">
+                        <i class="bi bi-star-fill me-2"></i>One Star
+                      </div>
+                      <div class="data-value feature-value">
+                        {{#if features.oneStar}}
+                          <i class="bi bi-check-circle-fill text-success"></i>
+                        {{else}}
+                          <i class="bi bi-x-circle-fill text-danger"></i>
+                        {{/if}}
+                      </div>
                     </div>
-                    <div class="data-value feature-value">
-                      {{#if features.oneStar}}
-                        <i class="bi bi-check-circle-fill text-success"></i>
-                      {{else}}
-                        <i class="bi bi-x-circle-fill text-danger"></i>
-                      {{/if}}
-                    </div>
-                  </div>
 
-                  <div class="data-item">
-                    <div class="data-label">
-                      <i class="bi bi-arrow-down-circle me-2"></i>Low Strike
+                    <div class="data-item">
+                      <div class="data-label">
+                        <i class="bi bi-arrow-down-circle me-2"></i>Low Strike
+                      </div>
+                      <div class="data-value feature-value">
+                        {{#if features.lowStrike}}
+                          <i class="bi bi-check-circle-fill text-success"></i>
+                        {{else}}
+                          <i class="bi bi-x-circle-fill text-danger"></i>
+                        {{/if}}
+                      </div>
                     </div>
-                    <div class="data-value feature-value">
-                      {{#if features.lowStrike}}
-                        <i class="bi bi-check-circle-fill text-success"></i>
-                      {{else}}
-                        <i class="bi bi-x-circle-fill text-danger"></i>
-                      {{/if}}
-                    </div>
-                  </div>
 
-                  <div class="data-item">
-                    <div class="data-label">
-                      <i class="bi bi-ladder me-2"></i>Autocall Step-down
+                    <div class="data-item">
+                      <div class="data-label">
+                        <i class="bi bi-ladder me-2"></i>Autocall Step-down
+                      </div>
+                      <div class="data-value feature-value">
+                        {{#if features.autocallStepdown}}
+                          <i class="bi bi-check-circle-fill text-success"></i>
+                        {{else}}
+                          <i class="bi bi-x-circle-fill text-danger"></i>
+                        {{/if}}
+                      </div>
                     </div>
-                    <div class="data-value feature-value">
-                      {{#if features.autocallStepdown}}
-                        <i class="bi bi-check-circle-fill text-success"></i>
-                      {{else}}
-                        <i class="bi bi-x-circle-fill text-danger"></i>
-                      {{/if}}
-                    </div>
-                  </div>
 
-                  <div class="data-item">
-                    <div class="data-label">
-                      <i class="bi bi-lightning-fill me-2"></i>Jump
+                    <div class="data-item">
+                      <div class="data-label">
+                        <i class="bi bi-lightning-fill me-2"></i>Jump
+                      </div>
+                      <div class="data-value feature-value">
+                        {{#if features.jump}}
+                          <i class="bi bi-check-circle-fill text-success"></i>
+                        {{else}}
+                          <i class="bi bi-x-circle-fill text-danger"></i>
+                        {{/if}}
+                      </div>
                     </div>
-                    <div class="data-value feature-value">
-                      {{#if features.jump}}
-                        <i class="bi bi-check-circle-fill text-success"></i>
-                      {{else}}
-                        <i class="bi bi-x-circle-fill text-danger"></i>
-                      {{/if}}
-                    </div>
-                  </div>
 
-                  <div class="data-item">
-                    <div class="data-label">
-                      <i class="bi bi-arrow-down-square me-2"></i>Step Down
+                    <div class="data-item">
+                      <div class="data-label">
+                        <i class="bi bi-arrow-down-square me-2"></i>Step Down
+                      </div>
+                      <div class="data-value feature-value">
+                        {{#if features.stepDown}}
+                          <i class="bi bi-check-circle-fill text-success"></i>
+                        {{else}}
+                          <i class="bi bi-x-circle-fill text-danger"></i>
+                        {{/if}}
+                      </div>
                     </div>
-                    <div class="data-value feature-value">
-                      {{#if features.stepDown}}
-                        <i class="bi bi-check-circle-fill text-success"></i>
-                      {{else}}
-                        <i class="bi bi-x-circle-fill text-danger"></i>
-                      {{/if}}
-                    </div>
-                  </div>
 
-                  <div class="data-item">
-                    <div class="data-label">
-                      <i class="bi bi-arrows-collapse me-2"></i>Step Down Size
+                    <div class="data-item">
+                      <div class="data-label">
+                        <i class="bi bi-arrows-collapse me-2"></i>Step Down Size
+                      </div>
+                      <div class="data-value">{{features.stepDownSize}}%</div>
                     </div>
-                    <div class="data-value">{{features.stepDownSize}}%</div>
-                  </div>
 
-                  <div class="data-item">
-                    <div class="data-label">
-                      <i class="bi bi-bar-chart me-2"></i>Coupon Barrier
+                    <div class="data-item">
+                      <div class="data-label">
+                        <i class="bi bi-bar-chart me-2"></i>Coupon Barrier
+                      </div>
+                      <div class="data-value">{{features.couponBarrier}}%</div>
                     </div>
-                    <div class="data-value">{{features.couponBarrier}}%</div>
-                  </div>
 
-                  <div class="data-item">
-                    <div class="data-label">
-                      <i class="bi bi-shield-fill me-2"></i>Capital Protection
+                    <div class="data-item">
+                      <div class="data-label">
+                        <i class="bi bi-shield-fill me-2"></i>Capital Protection
+                      </div>
+                      <div class="data-value">{{features.capitalProtectionBarrier}}%</div>
                     </div>
-                    <div class="data-value">{{features.capitalProtectionBarrier}}%</div>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
-          <div class="card-arrow">
-            <div class="card-arrow-top-left"></div>
-            <div class="card-arrow-top-right"></div>
-            <div class="card-arrow-bottom-left"></div>
-            <div class="card-arrow-bottom-right"></div>
+            <div class="card-arrow">
+              <div class="card-arrow-top-left"></div>
+              <div class="card-arrow-top-right"></div>
+              <div class="card-arrow-bottom-left"></div>
+              <div class="card-arrow-bottom-right"></div>
+            </div>
           </div>
         </div>
       </div>
+      <script>
+        console.log("Phoenix template rendered");
+      </script>
     </div>
-    <script>
-      console.log("Phoenix template rendered");
-    </script>
   </div>
 </template>

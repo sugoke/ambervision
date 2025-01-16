@@ -1,0 +1,31 @@
+/* Add these styles */
+.company-logo {
+  max-width: 150px;
+  margin: 20px 0;
+}
+
+.phoenix-container {
+  position: relative;
+}
+
+/* Print-specific styles */
+@media print {
+  .company-logo {
+    max-width: 120px;
+    margin: 15px 0;
+  }
+  
+  .page-break-before {
+    page-break-before: always;
+  }
+  
+  .badge-success {
+    background: #ccf3e6 !important;
+    color: #0f5132 !important;
+  }
+  
+  .badge-danger {
+    background: #fde8e8 !important;
+    color: #981b1b !important;
+  }
+} 

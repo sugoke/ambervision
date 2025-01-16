@@ -21,6 +21,9 @@ Template.registerHelper('eq', function (a, b) {
 });
 
 Template.mainLayout.onCreated(function() {
+  this.userReady = new ReactiveVar(false);
+  
+  // Add your existing subscription autorun
   this.autorun(() => {
     const selectedClientId = Session.get('selectedClientId');
     if (selectedClientId) {
@@ -33,15 +36,10 @@ Template.mainLayout.helpers({
   currentUser: function() {
     return Meteor.user();
   },
-  isSuperAdmin: function() {
-    try {
-      const user = Meteor.user();
-      if (!user || !user.profile) return false;
-      return user.profile.role === 'superAdmin';
-    } catch (err) {
-      console.error('Error in isSuperAdmin helper:', err);
-      return false;
-    }
+  isSuperAdmin() {
+    const instance = Template.instance();
+    const user = Meteor.user();
+    return instance.userReady.get() && user?.profile?.role === 'superAdmin';
   },
   selectedClientName() {
     return Session.get('selectedClientName');
@@ -301,14 +299,23 @@ Template.mainLayout.events({
 });
 
 Template.mainLayout.onRendered(function() {
-  Tracker.autorun(() => {
+  // Add user tracking
+  this.autorun(() => {
     const user = Meteor.user();
-    console.log('Current user details:', {
-      id: user?._id,
-      username: user?.username,
-      role: user?.role,
-      fullUser: user
-    });
+    
+    if (!Meteor.loggingIn() && user) {
+      this.userReady.set(true);
+      const userRole = user.profile?.role;
+      
+      console.log('Current user details:', {
+        id: user._id,
+        username: user.username,
+        role: userRole,
+        profile: { role: userRole },
+        fullUser: user,
+        ready: true
+      });
+    }
   });
 
   // Initialize Bootstrap components
