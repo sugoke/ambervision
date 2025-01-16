@@ -1,5 +1,6 @@
 import { Template } from 'meteor/templating';
 import { Router } from 'meteor/iron:router';
+import { Products } from '/imports/api/products/products.js';
 
 import './mainlayout.html';
 
@@ -30,6 +31,15 @@ Template.mainLayout.onCreated(function() {
       this.subscribe('clientFilteredProducts', selectedClientId);
     }
   });
+  
+  // Add subscription for product search
+  this.searchQuery = new ReactiveVar('');
+  this.autorun(() => {
+    const query = this.searchQuery.get();
+    if (query && query.length >= 2) {
+      this.subscribe('searchProducts', query);
+    }
+  });
 });
 
 Template.mainLayout.helpers({
@@ -43,21 +53,49 @@ Template.mainLayout.helpers({
   },
   selectedClientName() {
     return Session.get('selectedClientName');
+  },
+  searchResults() {
+    const query = Template.instance().searchQuery.get();
+    if (!query || query.length < 2) return [];
+    
+    const regex = new RegExp(query, 'i');
+    return Products.find({
+      $or: [
+        { ISINCode: regex },
+        { 'genericData.name': regex },
+        { 'underlyings.ticker': regex },
+        { 'underlyings.name': regex }
+      ]
+    }, { limit: 10 }).map(product => ({
+      ...product,
+      matchedField: 
+        (product.ISINCode && product.ISINCode.match(regex)) ? 'ISIN' :
+        (product.genericData?.name && product.genericData.name.match(regex)) ? 'Name' :
+        (product.underlyings?.some(u => u.ticker?.match(regex))) ? 'Ticker' :
+        'Underlying'
+    }));
   }
 });
 
+// Add these helper functions at the top of the file
+const showLoading = () => {
+  document.getElementById('loadingBackdrop').classList.remove('d-none');
+};
+
+const hideLoading = () => {
+  document.getElementById('loadingBackdrop').classList.add('d-none');
+};
+
 Template.mainLayout.events({
   'click #refreshButton'(event) {
-    event.preventDefault();  // Prevent default anchor behavior
-
+    event.preventDefault();
+    showLoading();
     Meteor.call('updateAllMarketData', (error, result) => {
+      hideLoading();
       if (error) {
         console.error("Error calling updateAllMarketData:", error);
       } else {
         console.log("Products updated successfully");
-        console.log(result);
-
-        // Additional success logic
       }
     });
   },
@@ -202,7 +240,9 @@ Template.mainLayout.events({
 
   'click #updateMarketDataBtn'(event) {
     event.preventDefault();
+    showLoading();
     Meteor.call('updateMarketData', (error, result) => {
+      hideLoading();
       if (error) {
         console.error('Error calling updateLiveMarketData:', error);
       } else {
@@ -213,7 +253,9 @@ Template.mainLayout.events({
 
   'click #processBtn'(event) {
     event.preventDefault();
+    showLoading();
     Meteor.call('process', (error, result) => {
+      hideLoading();
       if (error) {
         console.error('Error processing Phoenix products:', error);
       } else {
@@ -227,7 +269,9 @@ Template.mainLayout.events({
 
   'click #riskBtn'(event) {
     event.preventDefault();
+    showLoading();
     Meteor.call('risk', (error, result) => {
+      hideLoading();
       if (error) {
         console.error('Error running risk method:', error);
       } else {
@@ -242,8 +286,10 @@ Template.mainLayout.events({
     const originalText = btn.innerHTML;
     btn.innerHTML = 'Generating...';
     btn.disabled = true;
+    showLoading();
 
     Meteor.call('generateUserSchedule', Meteor.userId(), (error, result) => {
+      hideLoading();
       btn.disabled = false;
       btn.innerHTML = originalText;
       
@@ -295,6 +341,50 @@ Template.mainLayout.events({
     if (window.innerWidth <= 767) {
       document.querySelector('.app').classList.remove('app-sidebar-mobile-toggled');
     }
+  },
+
+  'input .menu-search input': debounce(function(event, template) {
+    const query = event.target.value.trim();
+    template.searchQuery.set(query.length >= 2 ? query : '');
+  }, 300),
+
+  'click .search-result-item'(event) {
+    const isin = event.currentTarget.dataset.isin;
+    if (isin) {
+      // Close the search dropdown
+      const app = document.querySelector('.app');
+      app.classList.remove('app-header-menu-search-toggled');
+      
+      // Clear search and hide results
+      const searchInput = document.querySelector('.menu-search input');
+      if (searchInput) {
+        searchInput.value = '';
+        Template.instance().searchQuery.set('');
+      }
+      
+      Router.go(`/productDetails?isin=${isin}`);
+    }
+  },
+
+  'keydown .menu-search input'(event) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      const searchInput = event.target;
+      searchInput.value = '';
+      Template.instance().searchQuery.set('');
+      searchInput.blur();
+    }
+    // Prevent form submission
+    if (event.key === 'Enter') {
+      event.preventDefault();
+    }
+  },
+
+  'blur .menu-search input'(event, template) {
+    // Delay hiding results slightly to allow click events to register
+    Meteor.setTimeout(() => {
+      template.searchQuery.set('');
+    }, 200);
   }
 });
 

@@ -1,88 +1,169 @@
 import { Meteor } from 'meteor/meteor';
 import { HTTP } from 'meteor/http';
 import { Products } from '/imports/api/products/products.js';
+import { Issuers } from '/imports/api/issuers/issuers.js';
 import pdfParse from 'pdf-parse';
+
+const EXCHANGE_MAPPING = {
+  'UW': '.US',  // NASDAQ
+  'UN': '.US',  // NYSE
+  'FP': '.PA',  // Euronext Paris
+  'SE': '.SW',  // SIX Swiss Exchange
+  'LN': '.L',   // London Stock Exchange
+  'GY': '.XETRA',  // Deutsche Börse (XETRA)
+  'IM': '.MI',  // Borsa Italiana
+  'NA': '.AS',  // Euronext Amsterdam
+  'SM': '.MC',  // Bolsa de Madrid
+  'SS': '.SZ',  // Shenzhen Stock Exchange
+  'SH': '.SS',  // Shanghai Stock Exchange
+  'T': '.JP',   // Tokyo Stock Exchange
+  'HK': '.HK',  // Hong Kong Stock Exchange
+  'AX': '.AU',  // Australian Securities Exchange
+  'SI': '.SG',  // Singapore Exchange
+  'TO': '.CA',  // Toronto Stock Exchange
+  'BO': '.IN',  // Bombay Stock Exchange
+  'NS': '.IN',  // National Stock Exchange of India
+  'NZ': '.NZ',  // New Zealand Exchange
+  'BB': '.BR',  // Euronext Brussels
+  'ID': '.IR',  // Euronext Dublin
+  'PL': '.LS',  // Euronext Lisbon
+  'NO': '.OL',  // Oslo Stock Exchange
+  'HE': '.HE',  // Helsinki Stock Exchange
+  'CO': '.CO',  // Copenhagen Stock Exchange
+  'ST': '.ST',  // Stockholm Stock Exchange
+  'IS': '.IS',  // Istanbul Stock Exchange
+  'WA': '.WA',  // Warsaw Stock Exchange
+  'PR': '.PR',  // Prague Stock Exchange
+  'BU': '.BU',  // Budapest Stock Exchange
+  'RO': '.RO',  // Bucharest Stock Exchange
+  'ZA': '.ZA',  // Johannesburg Stock Exchange
+};
+
+
+const mapToEODTicker = (rawTicker) => {
+  const [symbol, exchange] = rawTicker.split(/\s+/);
+  const eodSuffix = EXCHANGE_MAPPING[exchange] || '';
+  return `${symbol}${eodSuffix}`;
+};
 
 const getOpenAIKey = () => {
   const key = Meteor.settings?.private?.openaiKey;
-  if (!key) {
-    throw new Meteor.Error('openai-key-missing', 'OpenAI API key not configured');
-  }
+  if (!key) throw new Meteor.Error('openai-key-missing', 'OpenAI API key not configured');
   return key;
+};
+
+const findClosestIssuer = (name) => {
+  const issuers = Issuers.find({}, { fields: { name: 1 } }).fetch();
+  let bestMatch = null;
+  let highestSimilarity = 0;
+
+  const normalize = str => str.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const normalizedInput = normalize(name);
+
+  issuers.forEach(issuer => {
+    const normalizedIssuer = normalize(issuer.name);
+    
+    // Simple contains check
+    if (normalizedInput.includes(normalizedIssuer) || 
+        normalizedIssuer.includes(normalizedInput)) {
+      if (normalizedIssuer.length > highestSimilarity) {
+        highestSimilarity = normalizedIssuer.length;
+        bestMatch = issuer.name;
+      }
+    }
+  });
+
+  return bestMatch || name;
+};
+
+const getKnownIssuers = () => {
+  return Issuers.find({}, { fields: { name: 1 } })
+    .fetch()
+    .map(i => i.name)
+    .join(', ');
 };
 
 Meteor.methods({
   async processPdfWithAI(fileData) {
     try {
-      console.log('Starting PDF processing...');
-      
-      // Extract text from PDF
       const pdfData = await pdfParse(fileData);
-      const pdfText = pdfData.text;
-
-      const prompt = `You are a financial document parser specialized in structured products. 
-      Parse this term sheet and return a JSON object with EXACTLY this structure:
-      {
-        "status": "pending",
-        "genericData": {
-          "ISINCode": "string",
-          "currency": "string",
-          "issuer": "string", //keep only the name of the bank
-          "settlementType": "string", //physical or cash settlement, it will generally be in the final redemption section
-          "settlementTx": "string", //here it is the number of days between trade date and settlement date
-          "tradeDate": "YYYY-MM-DD",
-          "paymentDate": "YYYY-MM-DD",
-          "finalObservation": "YYYY-MM-DD",
-          "maturityDate": "YYYY-MM-DD",
-          "template": "phoenix",
-          "name": "string"
-        },
-        "features": {
-          "memoryCoupon": boolean, //generally the document will mention memory coupon, or include something like N x 4.1250% x (1 + T) Where: T is the number of Coupon Payment Dates since the last Coupon Payment Date on which aCoupon was paid
-          "memoryAutocall": boolean, // generally it is true when there is this kind of wording: the official closing price of such Underlying Share on that Automatic Early Redemption Valuation Daten or any of the Automatic Early Redemption Valuation Daten which precede that Automatic Early Redemption Valuation Daten is greater than or equal to
-          "oneStar": boolean,
-          "lowStrike": boolean, //true when the formula takes into account a percentage of the initial reference level to calculate a loss. another way to spot a low strike is when the formula is something like "100% + 10% x (S/S0 - 1)" where S0 is the initial reference level and S is the final reference level is when a strike level for a stock is indicated lower than 100% or than its initial reference level
-          "autocallStepdown": boolean, //true when Automatic Early Redemption Price goes down every period
-          "jump": boolean,
-          "stepDown": boolean, //true when Automatic Early Redemption Price goes down every period
-          "couponBarrier": number,
-          "capitalProtectionBarrier": number,
-          "couponPerPeriod": number
-        },
-        "underlyings": [
-          {
-            "name": "string",
-            "ticker": "string",
-            "exchange": "string",
-            "country": "string", 
-            "currency": "string",
-            "initialReferenceLevel": number,
-            "eodTicker": "string",
-            "lastPriceInfo": {}
-          }
-        ],
-        "observationDates": [
-          {
-            "observationDate": "YYYY-MM-DD",
-            "paymentDate": "YYYY-MM-DD",
-            "couponBarrierLevel": number,
-            "autocallLevel": number or null, //leave null if there is no autocall info for that date
-            "couponPerPeriod": number
-          } //make sure the last observation date is the Final Valuation Date and that its payment date is the Maturity Date
-        ]
-      }
-
-      Important rules:
-      1. The structure must match EXACTLY - no additional or missing fields
-      2. All dates must be in YYYY-MM-DD format
-      3. All percentages should be numbers (e.g., 70 instead of "70%")
-      4. For missing fields, use null
-      5. For underlyings, create the eodTicker by combining ticker and exchange (e.g., "AAPL.US")
-      6. lastPriceInfo should be an empty object
-      7. The name field should be "Phoenix on " followed by the tickers joined with " / "`;
-
-      console.log('Sending request to OpenAI API...');
+      const knownIssuers = getKnownIssuers();
       
+      const prompt = `You are a financial document parser specialized in structured products. Extract data from this termsheet and return a JSON object with this EXACT structure:
+
+{
+  "status": "pending",
+  "genericData": {
+    "ISINCode": "string",
+    "currency": "string",
+    "issuer": "string", // IMPORTANT: Match issuer name with one of these known issuers: ${knownIssuers}. Return the closest match.
+    "settlementType": "string", // IMPORTANT: Must be either "Cash" or "Physical". Look in final redemption section - indicates if investor receives cash or shares in case of capital loss
+    "settlementTx": "string", // IMPORTANT: Number of days between trade date and settlement date (e.g., if trade date is 2024-01-01 and settlement date is 2024-01-07, then settlementTx is "7")
+    "tradeDate": "YYYY-MM-DD",
+    "paymentDate": "YYYY-MM-DD", 
+    "finalObservation": "YYYY-MM-DD",
+    "maturityDate": "YYYY-MM-DD",
+    "template": "phoenix",
+    "name": "string", // "Phoenix on " + EOD tickers joined by " / "
+    "nonCallPeriods": number // Count of non-call periods at start of product
+  },
+  "features": {
+    "memoryCoupon": boolean,
+    "memoryAutocall": boolean, 
+    "oneStar": boolean,
+    "lowStrike": boolean, // True if using % of initial level
+    "autocallStepdown": boolean,
+    "jump": boolean,
+    "stepDown": boolean,
+    "couponBarrier": number,
+    "capitalProtectionBarrier": number,
+    "couponPerPeriod": number
+  },
+  "underlyings": [{
+    "name": "string",
+    "ticker": "string", // Raw ticker
+    "exchange": "string",
+    "country": "string",
+    "currency": "string", 
+    "initialReferenceLevel": number,
+    "eodTicker": "string", // Standardized EOD format
+    "lastPriceInfo": {}
+  }],
+  "observationDates": [{
+    "observationDate": "YYYY-MM-DD",
+    "paymentDate": "YYYY-MM-DD",
+    "couponBarrierLevel": number,
+    "autocallLevel": number or null, // IMPORTANT: null means this is a non-call date
+    "couponPerPeriod": number
+  }]
+}
+
+Rules:
+1. All dates in YYYY-MM-DD
+2. Percentages as numbers (70 not "70%")
+3. Missing fields as null
+4. Map tickers to EOD format (AAPL.US)
+5. Empty lastPriceInfo object
+6. Name as "Phoenix on " + tickers
+7. For issuer, ONLY use one of these exact names: ${knownIssuers}. Match to the closest one
+8. For non-call periods:
+   - Compare coupon observation dates with autocall dates
+   - If a date appears only in coupon table, it's a non-call date (set autocallLevel: null)
+   - Count consecutive non-call dates from start as nonCallPeriods
+9. For settlementType:
+   - Must be either "Cash" or "Physical"
+   - Check final redemption section
+   - "Physical" if investor receives shares when barrier is breached
+   - "Cash" if investor always receives cash even in loss scenario
+10. For settlementTx:
+    - Calculate days between trade date and settlement date
+    - Return as string number (e.g., "7")
+    - Look for "Settlement Date" or similar terms in document
+11. For German stocks (GY suffix):
+    - Map to .XETRA suffix
+    - Example: "RWE GY" should become "RWE.XETRA"
+    - This applies to all stocks traded on Deutsche Börse/Xetra`;
+
       const response = await HTTP.call('POST', 'https://api.openai.com/v1/chat/completions', {
         headers: {
           'Authorization': `Bearer ${getOpenAIKey()}`,
@@ -90,59 +171,41 @@ Meteor.methods({
         },
         data: {
           model: "gpt-4-1106-preview",
-          messages: [
-            {
-              role: "user", 
-              content: [
-                {
-                  type: "text",
-                  text: prompt + "\n\nHere is the PDF content:\n" + pdfText.substring(0, 12000)
-                }
-              ]
-            }
-          ],
+          messages: [{
+            role: "user",
+            content: prompt + "\n\nPDF content:\n" + pdfData.text.substring(0, 12000)
+          }],
           temperature: 0.1,
           response_format: { type: "json_object" }
         }
       });
 
-      console.log('Full API response:', JSON.stringify(response, null, 2));
-      console.log('Response data type:', typeof response.data);
-      console.log('Response content:', response.data.choices?.[0]?.message?.content);
+      let parsedData = JSON.parse(response.data.choices[0].message.content);
 
-      // Extract the message content directly from response
-      let messageContent = response.data.choices[0].message.content;
-      console.log('Raw message content:', messageContent);
+      // Match issuer name
+      parsedData.genericData.issuer = findClosestIssuer(parsedData.genericData.issuer);
 
-      // Find the start of the JSON object (first '{')
-      const jsonStartIndex = messageContent.indexOf('{');
-      if (jsonStartIndex === -1) {
-        console.error('No JSON object found in response');
-        throw new Meteor.Error('parsing-error', 'No JSON object found in response');
-      }
+      // Map tickers to EOD format
+      parsedData.underlyings = parsedData.underlyings.map(underlying => ({
+        ...underlying,
+        eodTicker: mapToEODTicker(underlying.ticker)
+      }));
 
-      // Extract only the JSON part
-      messageContent = messageContent.substring(jsonStartIndex);
-      console.log('Cleaned message content:', messageContent);
+      // Update product name with EOD tickers
+      parsedData.genericData.name = "Phoenix on " + parsedData.underlyings
+        .map(u => u.eodTicker)
+        .join(" / ");
 
-      // Attempt to parse the JSON content
-      try {
-        const parsedData = JSON.parse(messageContent);
-        console.log('Successfully parsed JSON:', parsedData);
-        const productId = Products.insert(parsedData);
+      const productId = Products.insert(parsedData);
 
-        return {
-          success: true,
-          isin: parsedData.genericData.ISINCode,
-          productId: productId
-        };
-      } catch (parseError) {
-        console.error('Error parsing JSON:', parseError);
-        throw new Meteor.Error('json-parsing-error', 'Failed to parse JSON from API response');
-      }
+      return {
+        success: true,
+        isin: parsedData.genericData.ISINCode,
+        productId
+      };
 
     } catch (error) {
-      console.error('Error processing PDF:', error);
+      console.error('PDF processing error:', error);
       throw new Meteor.Error('processing-error', error.message);
     }
   }

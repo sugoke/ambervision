@@ -35,7 +35,7 @@ Template.underlyingRow.onRendered(function() {
               response([]);
             } else {
               const data = result.map(item => ({
-                label: `${item.Name} (${item.Code}.${item.Exchange})`,
+                label: `${item.Code}.${item.Exchange} | ${item.Name} | ${item.Type} | ${item.Currency} ${item.Country} | ${item.previousClose} (${item.previousCloseDate})`,
                 value: item.Name,
                 data: item
               }));
@@ -49,6 +49,7 @@ Template.underlyingRow.onRendered(function() {
           console.log('DEBUG: ui.item:', ui.item);
           const selectedData = ui.item.data;
           const rowId = inputElement.closest('tr').data('row-id');
+          const tradeDate = $('#tradeDate').val();
 
           // Update fields
           $(`#fullNameInput-${rowId}`).val(selectedData.Name);
@@ -57,17 +58,42 @@ Template.underlyingRow.onRendered(function() {
           $(`#countryInput-${rowId}`).val(selectedData.Country);
           $(`#currencyInput-${rowId}`).val(selectedData.Currency);
 
-          // Fetch last price
-          console.log(`Fetching price for ${selectedData.Code}.${selectedData.Exchange}`);
-          Meteor.call('getTickerLastPrice', `${selectedData.Code}.${selectedData.Exchange}`, (err, result) => {
-            if (err) {
-              console.error('Error fetching price:', err);
-            } else {
-              console.log('Price data received:', result);
-              const formattedDate = moment.unix(result.date).format('DD/MM/YYYY HH:mm');
-              $(`#closeText-${rowId}`).text(`${result.close} (${formattedDate})`);
-            }
-          });
+          // Set the latest close price from autocomplete data
+          $(`#closeText-${rowId}`).text(`${selectedData.previousClose} (${selectedData.previousCloseDate})`);
+
+          // If trade date is set, fetch historical price for strike
+          if (tradeDate) {
+            const ticker = `${selectedData.Code}.${selectedData.Exchange}`;
+            console.log(`Fetching historical price for ${ticker} on trade date: ${tradeDate}`);
+            
+            toggleStrikeLoading(rowId, true);
+            
+            Meteor.call('getTickerInfo', ticker, tradeDate, (err, result) => {
+              toggleStrikeLoading(rowId, false);
+              if (err) {
+                console.error('Error fetching historical price:', err);
+              } else {
+                console.log('Historical price data received:', result);
+                if (result.lastPrice) {
+                  $(`#strikeInput-${rowId}`).val(result.lastPrice);
+                  console.log(`Strike price set to ${result.lastPrice} for trade date ${result.date}`);
+                } else {
+                  console.warn(`No historical price found for ${ticker} on ${tradeDate}`);
+                }
+              }
+            });
+          } else {
+            console.warn('No trade date selected, cannot fetch historical price for strike');
+          }
+        },
+        html: true,
+        classes: {
+          "ui-autocomplete": "highlight"
+        },
+        position: {
+          my: "left top+2",
+          at: "left bottom",
+          collision: "flip"
         }
       });
     });
@@ -107,6 +133,36 @@ const eventMap = {
     // Populate fields here with doc data if needed, e.g.:
     // instance.$('#fullNameInput-' + instance.data.id).val(doc.fullName);
     // instance.$('#exchangeInput-' + instance.data.id).val(doc.exchange);
+  },
+  
+  'change #tradeDate'(event) {
+    const newTradeDate = event.target.value;
+    console.log('Trade date changed to:', newTradeDate);
+    
+    $('#underlyingRowsContainer tr').each(function() {
+      const rowId = $(this).data('row-id');
+      const ticker = $(`#tickerInput-${rowId}`).val();
+      const exchange = $(`#exchangeInput-${rowId}`).val();
+      
+      if (ticker && exchange) {
+        console.log(`Updating strike price for ${ticker}.${exchange} on new trade date: ${newTradeDate}`);
+        
+        toggleStrikeLoading(rowId, true);
+        
+        Meteor.call('getTickerInfo', `${ticker}.${exchange}`, newTradeDate, (err, result) => {
+          toggleStrikeLoading(rowId, false);
+          if (err) {
+            console.error('Error fetching historical price:', err);
+          } else {
+            console.log('Historical price data received:', result);
+            if (result.lastPrice) {
+              $(`#strikeInput-${rowId}`).val(result.lastPrice);
+              console.log(`Updated strike price to ${result.lastPrice} for trade date ${result.date}`);
+            }
+          }
+        });
+      }
+    });
   }
 };
 
@@ -126,4 +182,19 @@ Template.underlyingRow.helpers({
       'data-row-id': Template.currentData().id
     };
   }
-}); 
+});
+
+// Helper function to toggle loading state
+function toggleStrikeLoading(rowId, isLoading) {
+  const strikeInput = $(`#strikeInput-${rowId}`);
+  if (isLoading) {
+    strikeInput.prop('disabled', true);
+    strikeInput.css('background-image', 'url("/images/spinner.gif")');
+    strikeInput.css('background-repeat', 'no-repeat');
+    strikeInput.css('background-position', 'right 8px center');
+    strikeInput.css('background-size', '16px');
+  } else {
+    strikeInput.prop('disabled', false);
+    strikeInput.css('background-image', '');
+  }
+} 

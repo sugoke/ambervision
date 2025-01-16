@@ -173,4 +173,183 @@
   .card-body .d-flex.fw-bold.small.mb-3.align-items-center {
     min-height: 40px !important;
   }
+}
+
+/* Loading Backdrop */
+.loading-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 9999;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.loading-backdrop .spinner-border {
+  width: 3rem;
+  height: 3rem;
+}
+
+/* Ticker Search Styling */
+.ticker-search-results {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  width: 100%;
+  z-index: 1050;
+  background: #1a1f24;  /* Darker background */
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.ticker-result-item {
+  padding: 10px 15px;
+  cursor: pointer;
+  color: #fff;
+  transition: background-color 0.2s;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.ticker-result-item:not(:last-child) {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.ticker-result-item:hover {
+  background: #2d353c;
+}
+
+/* Remove the separate name and details spans, make it simpler */
+.ticker-result-item {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Scrollbar styling */
+.ticker-search-results::-webkit-scrollbar {
+  width: 8px;
+}
+
+.ticker-search-results::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.ticker-search-results::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+
+.ticker-search-results::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Input styling */
+.ticker-search {
+  background: #1a1f24 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  color: #fff !important;
+}
+
+.ticker-search:focus {
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  box-shadow: none !important;
+}
+
+/* jQuery UI Autocomplete Styling */
+.ui-autocomplete {
+  max-height: 300px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  width: 100% !important;
+  background: #2d353c !important;  /* Dark background */
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 1050;
+  position: absolute;
+  padding: 4px 0;
+}
+
+/* Menu items */
+.ui-menu-item {
+  padding: 0 !important;
+  margin: 0 !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.ui-menu-item-wrapper {
+  padding: 8px 12px !important;
+  color: rgba(255, 255, 255, 0.85) !important;  /* Light text */
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+/* Hover and focus states */
+.ui-menu-item-wrapper.ui-state-active,
+.ui-menu-item:hover .ui-menu-item-wrapper {
+  background: #3a4550 !important;  /* Slightly lighter on hover */
+  border: none !important;
+  margin: 0 !important;
+  color: #fff !important;
+}
+
+/* Hide helper text */
+.ui-helper-hidden-accessible {
+  display: none;
+}
+
+/* Scrollbar styling */
+.ui-autocomplete::-webkit-scrollbar {
+  width: 8px;
+}
+
+.ui-autocomplete::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.ui-autocomplete::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+
+.ui-autocomplete::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Add to your existing styles */
+.strike-loading {
+  background-color: rgba(255, 255, 255, 0.1);
+  position: relative;
+}
+
+/* Small spinner animation */
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.strike-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255,255,255,0.1);
+  border-top: 2px solid #fff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
 } 

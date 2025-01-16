@@ -124,25 +124,56 @@
                       </div>
                     </div>
     
-                    <table class="table table-bordered" id="underlyings">
-                      <thead>
-                        <tr>
-                          <th>Name</th>
-                          <th>Ticker</th>
-                          <th>Exchange</th>
-                          <th>Country</th>
-                          <th>Currency</th>
-                          <th>Close</th>
-                          <th>Strike</th>
-                          <th></th>
-                        </tr>
-                      </thead>
-                      <tbody id="underlyingRowsContainer">
-                        {{#each tickers}}
-                          {{> underlyingRow}}
-                        {{/each}}
-                      </tbody>
-                    </table>
+                    <div class="position-relative">
+                      <table class="table table-bordered" id="underlyings">
+                        <thead>
+                          <tr>
+                            <th>Name</th>
+                            <th>Ticker</th>
+                            <th>Exchange</th>
+                            <th>Country</th>
+                            <th>Currency</th>
+                            <th>Close</th>
+                            <th>Strike</th>
+                            <th></th>
+                          </tr>
+                        </thead>
+                        <tbody id="underlyingRowsContainer">
+                          {{#each tickers}}
+                            <tr>
+                              <td>
+                                <div class="position-relative">
+                                  <input type="text" 
+                                         class="form-control form-control-sm bg-dark text-white fullName-autocomplete" 
+                                         value="{{fullName}}"
+                                         placeholder="Enter name"
+                                         autocomplete="off">
+                                  <i class="bi bi-search position-absolute top-50 end-0 translate-middle-y me-2 text-muted"></i>
+                                  <div id="searchResults" class="position-absolute w-100 mt-1 d-none">
+                                    <div class="card">
+                                      <div class="list-group list-group-flush" id="searchResultsList">
+                                        <!-- Results will be dynamically added here -->
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </td>
+                              <td>{{ticker}}</td>
+                              <td>{{exchange}}</td>
+                              <td>{{country}}</td>
+                              <td>{{currency}}</td>
+                              <td>{{close}}</td>
+                              <td>{{strike}}</td>
+                              <td>
+                                <button class="btn btn-danger btn-sm remove-ticker">
+                                  <i class="fas fa-times"></i>
+                                </button>
+                              </td>
+                            </tr>
+                          {{/each}}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -443,6 +474,22 @@
           <div class="card-arrow-bottom-left"></div>
           <div class="card-arrow-bottom-right"></div>
         </div>
+    </div>
+
+    <!-- Move modal here, outside the card but still inside the template -->
+    <div class="modal fade" id="alertModal" tabindex="-1" aria-hidden="true" style="z-index: 1060;">
+      <div class="modal-dialog modal-dialog-centered" style="z-index: 1070; max-width: 400px; margin: 1.75rem auto;">
+        <div class="modal-content bg-dark text-white">
+          <div class="modal-header border-secondary">
+            <h5 class="modal-title"></h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body"></div>
+          <div class="modal-footer border-secondary">
+            <button type="button" class="btn btn-outline-theme" data-bs-dismiss="modal">OK</button>
+          </div>
+        </div>
       </div>
+    </div>
 </template>
 

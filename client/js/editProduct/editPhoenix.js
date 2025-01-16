@@ -377,6 +377,43 @@ export function populatePhoenixFormFields(product) {
   updateSummary();
 }
 
+// Add this helper function at the top level
+function showModal(title, message, callback) {
+  const modal = new bootstrap.Modal(document.getElementById('alertModal'));
+  const modalElement = document.getElementById('alertModal');
+  
+  modalElement.querySelector('.modal-title').textContent = title;
+  modalElement.querySelector('.modal-body').textContent = message;
+  
+  if (callback) {
+    modalElement.addEventListener('hidden.bs.modal', callback, { once: true });
+  }
+  
+  modal.show();
+}
+
+// Add these helper functions at the top level
+function isWeekend(date) {
+  const day = date.day();
+  return day === 0 || day === 6; // 0 is Sunday, 6 is Saturday
+}
+
+function getNextBusinessDay(date, holidays = []) {
+  let nextDay = moment(date);
+  
+  // Convert holidays to moment objects if they're strings
+  const holidayMoments = holidays.map(h => moment(h));
+  
+  do {
+    nextDay.add(1, 'days');
+  } while (
+    isWeekend(nextDay) || 
+    holidayMoments.some(holiday => holiday.isSame(nextDay, 'day'))
+  );
+  
+  return nextDay;
+}
+
 Template.phoenixTemplate.events({
   'click #add_ticker'(event, template) {
     event.preventDefault();
@@ -420,7 +457,7 @@ Template.phoenixTemplate.events({
     const finalObservation = $('#finalObservation').val();
     
     if (!tradeDate || !finalObservation) {
-      alert('Please enter Trade Date and Final Observation Date first');
+      showModal('Warning', 'Please enter Trade Date and Final Observation Date first');
       return;
     }
 
@@ -443,43 +480,60 @@ Template.phoenixTemplate.events({
     const couponBarrier = $('#phoenix_coupon_barrier').val() || '';
     const couponPerPeriod = $('#phoenix_coupon_per_period').val() || '';
 
-    for (let i = 1; i <= observationsCount; i++) {
-      const observationDate = moment(tradeDate).add(i * 3, 'months');
-      const paymentDate = moment(observationDate).add(5, 'business days');
-      
-      // Calculate autocall barrier
-      let currentAutocallBarrier = '';
-      if (i > nonCallPeriods) {
-        // Only apply autocall and step down after non-call period
-        currentAutocallBarrier = autocallLevel;
-        if (stepDownEnabled) {
-          // Apply step down for each period after non-call period
-          const stepsApplied = i - nonCallPeriods - 1;
-          if (stepsApplied > 0) {
-            currentAutocallBarrier = (autocallLevel - (stepsApplied * stepDownSize)).toFixed(2);
-          }
-        }
+    // Get market holidays (you'll need to implement this)
+    Meteor.call('getMarketHolidays', (error, holidays) => {
+      if (error) {
+        console.error('Error getting market holidays:', error);
+        holidays = [];
       }
 
-      scheduleContainer.append(`
-        <tr>
-          <td>${i}</td>
-          <td><input type="date" class="form-control observation-date" value="${observationDate.format('YYYY-MM-DD')}"></td>
-          <td><input type="date" class="form-control payment-date" value="${paymentDate.format('YYYY-MM-DD')}"></td>
-          <td><input type="text" class="form-control coupon-barrier" value="${couponBarrier}"></td>
-          <td><input type="text" class="form-control autocall-barrier" value="${currentAutocallBarrier}"></td>
-          <td><input type="text" class="form-control coupon-per-period" value="${couponPerPeriod}"></td>
-        </tr>
-      `);
-    }
+      for (let i = 1; i <= observationsCount; i++) {
+        let observationDate = moment(tradeDate).add(i * 3, 'months');
+        
+        // Adjust observation date if it falls on weekend or holiday
+        while (isWeekend(observationDate) || 
+               holidays.some(h => moment(h).isSame(observationDate, 'day'))) {
+          observationDate = getNextBusinessDay(observationDate, holidays);
+        }
 
-    updateSummary();
+        // Payment date is 5 business days after observation date
+        let paymentDate = moment(observationDate);
+        for (let j = 0; j < 5; j++) {
+          paymentDate = getNextBusinessDay(paymentDate, holidays);
+        }
+        
+        // Calculate autocall barrier
+        let currentAutocallBarrier = '';
+        if (i > nonCallPeriods) {
+          currentAutocallBarrier = autocallLevel;
+          if (stepDownEnabled) {
+            const stepsApplied = i - nonCallPeriods - 1;
+            if (stepsApplied > 0) {
+              currentAutocallBarrier = (autocallLevel - (stepsApplied * stepDownSize)).toFixed(2);
+            }
+          }
+        }
+
+        scheduleContainer.append(`
+          <tr>
+            <td>${i}</td>
+            <td><input type="date" class="form-control observation-date" value="${observationDate.format('YYYY-MM-DD')}"></td>
+            <td><input type="date" class="form-control payment-date" value="${paymentDate.format('YYYY-MM-DD')}"></td>
+            <td><input type="text" class="form-control coupon-barrier" value="${couponBarrier}"></td>
+            <td><input type="text" class="form-control autocall-barrier" value="${currentAutocallBarrier}"></td>
+            <td><input type="text" class="form-control coupon-per-period" value="${couponPerPeriod}"></td>
+          </tr>
+        `);
+      }
+
+      updateSummary();
+    });
   },
 
   'click #submitProduct'(event, template) {
     event.preventDefault();
     
-    if (template.isSubmitting.get()) return; // Prevent double submission
+    if (template.isSubmitting.get()) return;
     template.isSubmitting.set(true);
 
     try {
@@ -487,44 +541,43 @@ Template.phoenixTemplate.events({
       const isin = $('#isin_code').val();
       
       if (!isin) {
-        alert('ISIN code is required');
+        showModal('Warning', 'ISIN code is required');
         template.isSubmitting.set(false);
         return;
       }
 
-      // Get the existing product ID if in edit mode
       const queryParams = Router.current().params.query;
       const isEditMode = queryParams.mode === 'editProduct';
       
       if (isEditMode) {
-        // Update existing product
         Meteor.call('updateProduct', productData._id, productData, (error, result) => {
           template.isSubmitting.set(false);
           if (error) {
             console.error('Error updating product:', error);
-            alert('Error updating product: ' + error.reason);
+            showModal('Error', 'Error updating product: ' + error.reason);
           } else {
-            alert('Product updated successfully');
-            Router.go('products');
+            showModal('Success', 'Product updated successfully', () => {
+              Router.go('products');
+            });
           }
         });
       } else {
-        // Insert new product
         Meteor.call('insertProduct', productData, (error, result) => {
           template.isSubmitting.set(false);
           if (error) {
             console.error('Error inserting product:', error);
-            alert('Error inserting product: ' + error.reason);
+            showModal('Error', 'Error inserting product: ' + error.reason);
           } else {
-            alert('Product inserted successfully');
-            Router.go('products');
+            showModal('Success', 'Product inserted successfully', () => {
+              Router.go('products');
+            });
           }
         });
       }
     } catch (error) {
       template.isSubmitting.set(false);
       console.error('Error gathering product data:', error);
-      alert('Error gathering product data: ' + error.message);
+      showModal('Error', 'Error gathering product data: ' + error.message);
     }
   },
 
@@ -548,7 +601,7 @@ Template.phoenixTemplate.events({
       Meteor.call('processPdfWithAI', fileData, (error, result) => {
         if (error) {
           console.error('Error processing PDF:', error);
-          alert('Error processing PDF: ' + error.reason);
+          showModal('Error', 'Error processing PDF: ' + error.reason);
         } else {
           console.log('PDF processed successfully:', result);
           const url = new URL('editProduct', window.location.origin);
@@ -559,13 +612,149 @@ Template.phoenixTemplate.events({
       });
     };
     reader.readAsArrayBuffer(file);
+  },
+
+  'input .ticker-search'(event, template) {
+    const searchTerm = event.target.value.trim();
+    const resultsContainer = event.target.parentElement.querySelector('.ticker-search-results');
+    
+    if (searchTerm.length < 2) {
+      resultsContainer.classList.add('d-none');
+      return;
+    }
+
+    Meteor.call('searchTickers', searchTerm, (error, results) => {
+      if (error) {
+        console.error('Error searching tickers:', error);
+        return;
+      }
+      
+      // Clear previous results
+      resultsContainer.innerHTML = '';
+      
+      // Add new results
+      results.forEach(result => {
+        const resultItem = document.createElement('div');
+        resultItem.className = 'ticker-result-item';
+        resultItem.textContent = `${result.name} (${result.ticker})`;
+        resultsContainer.appendChild(resultItem);
+      });
+      
+      resultsContainer.classList.remove('d-none');
+    });
+  },
+
+  'click .ticker-result-item'(event, template) {
+    const selectedText = event.target.textContent;
+    const row = event.target.closest('tr');
+    const inputField = row.querySelector('.ticker-search');
+    inputField.value = selectedText;
+    
+    // Parse the selected text to get ticker info
+    const match = selectedText.match(/(.*?)\s*\((.*?)\)/);
+    if (match) {
+      const [_, name, ticker] = match;
+      const [symbol, exchange] = ticker.split('.');
+      
+      // Update other fields in the row
+      row.querySelector('[id^=tickerInput]').value = symbol;
+      row.querySelector('[id^=exchangeInput]').value = exchange;
+      
+      // Get additional info for the ticker
+      Meteor.call('getTickerInfo', ticker, (error, result) => {
+        if (!error && result) {
+          row.querySelector('[id^=countryInput]').value = result.country || '';
+          row.querySelector('[id^=currencyInput]').value = result.currency || '';
+          if (result.lastPrice) {
+            row.querySelector('[id^=closeText]').textContent = result.lastPrice;
+          }
+        }
+      });
+    }
+    
+    // Hide results
+    event.target.closest('.ticker-search-results').classList.add('d-none');
+  },
+
+  'blur .ticker-search'(event) {
+    // Delay hiding to allow click event to fire
+    setTimeout(() => {
+      event.target.parentElement.querySelector('.ticker-search-results').classList.add('d-none');
+    }, 200);
+  },
+
+  'input .fullName-autocomplete'(event, template) {
+    const searchTerm = event.target.value.trim();
+    const resultsContainer = event.target.parentElement.querySelector('#searchResultsList');
+    const searchResultsDiv = event.target.parentElement.querySelector('#searchResults');
+    
+    if (searchTerm.length < 2) {
+      searchResultsDiv.classList.add('d-none');
+      return;
+    }
+
+    Meteor.call('searchTickers', searchTerm, (error, results) => {
+      if (error) {
+        console.error('Error searching tickers:', error);
+        return;
+      }
+      
+      // Clear previous results
+      resultsContainer.innerHTML = '';
+      
+      // Add new results
+      results.forEach(result => {
+        const item = document.createElement('div');
+        item.className = 'list-group-item list-group-item-action bg-dark text-white border-secondary';
+        item.textContent = `${result.name} (${result.ticker})`;
+        resultsContainer.appendChild(item);
+      });
+      
+      searchResultsDiv.classList.remove('d-none');
+    });
+  },
+
+  'click .list-group-item'(event, template) {
+    const selectedText = event.target.textContent;
+    const row = event.target.closest('tr');
+    const inputField = row.querySelector('.fullName-autocomplete');
+    inputField.value = selectedText;
+    
+    // Parse the selected text to get ticker info
+    const match = selectedText.match(/(.*?)\s*\((.*?)\)/);
+    if (match) {
+      const [_, name, ticker] = match;
+      const [symbol, exchange] = ticker.split('.');
+      
+      // Update other fields in the row
+      row.querySelector('[id^=tickerInput]').value = symbol;
+      row.querySelector('[id^=exchangeInput]').value = exchange;
+      
+      // Get additional info for the ticker and closing price
+      const tradeDate = $('#tradeDate').val(); // Get trade date from the form
+      
+      Meteor.call('getTickerInfo', ticker, tradeDate, (error, result) => {
+        if (!error && result) {
+          row.querySelector('[id^=countryInput]').value = result.country || '';
+          row.querySelector('[id^=currencyInput]').value = result.currency || '';
+          if (result.lastPrice) {
+            row.querySelector('[id^=closeText]').textContent = result.lastPrice;
+            // Set the strike input to the closing price
+            row.querySelector('[id^=strikeInput]').value = result.lastPrice;
+          }
+        }
+      });
+    }
+    
+    // Hide results
+    event.target.closest('#searchResults').classList.add('d-none');
   }
 });
 // Make sure Template.phoenixTemplate.onCreated is defined
 Template.phoenixTemplate.onCreated(function() {
-  // Add this line to create a reactive variable for submission state
-  this.isSubmitting = new ReactiveVar(false);
+  this.searchResults = new ReactiveVar([]);
   this.subscribe('issuers');
+  this.isSubmitting = new ReactiveVar(false);
 });
 
 // Make sure Template.phoenixTemplate.onRendered is defined
@@ -582,6 +771,10 @@ Template.phoenixTemplate.helpers({
     const product = Template.currentData();
     const currentIssuer = product?.genericData?.issuer || product?.productDetails?.genericInformation?.issuer;
     return name === currentIssuer ? 'selected' : '';
+  },
+
+  searchResults() {
+    return Template.instance().searchResults.get();
   }
 });
 

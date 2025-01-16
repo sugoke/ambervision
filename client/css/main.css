@@ -29,3 +29,57 @@
     color: #981b1b !important;
   }
 } 
+
+.menu-search-results {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: #2d353c;
+  border: 1px solid rgba(255,255,255,.15);
+  border-radius: 4px;
+  margin-top: 4px;
+  max-height: 400px;
+  overflow-y: auto;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0,0,0,.2);
+}
+
+.search-result-item {
+  padding: 10px 15px;
+  border-bottom: 1px solid rgba(255,255,255,.1);
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.search-result-item:hover {
+  background: rgba(255,255,255,.15);
+}
+
+.search-result-item .result-title {
+  color: #fff;
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.search-result-item .result-details {
+  font-size: 12px;
+  color: rgba(255,255,255,.5);
+}
+
+.search-result-item .badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  margin-right: 8px;
+}
+
+/* Remove focus outline from search results */
+.search-result-item:focus {
+  outline: none;
+} 
+
+.profile-image {
+  background-image: url('https://amberlakepartners.com/assets/logos/Icon%201.png');
+  background-size: cover;
+  background-position: center;
+} 

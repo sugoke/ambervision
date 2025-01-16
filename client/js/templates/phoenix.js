@@ -1064,40 +1064,36 @@ Template.phoenix.events({
             </thead>
             <tbody>
               ${(product.observationDates || []).map((obs, index) => {
-                // Get the data from the screenshot
-                const obsData = {
-                  1: { worstStock: 'RI', performance: '-4.43', coupon: '2.89', newlyLocked: '', allLocked: '' },
-                  2: { worstStock: 'RI', performance: '-11.91', coupon: '2.89', newlyLocked: 'SIE', allLocked: 'SIE' },
-                  3: { worstStock: 'RI', performance: '-12.98', coupon: '2.89', newlyLocked: '', allLocked: 'SIE' },
-                  4: { worstStock: 'RI', performance: '-26.14', coupon: '2.89', newlyLocked: '', allLocked: 'SIE' }
-                };
+                // Get observation data from observationsTable
+                const obsResult = product.observationsTable?.[index] || {};
                 
-                const currentObs = obsData[index + 1] || {};
+                // Safely get values with defaults and ensure numbers
+                const autocallLevel = obs.autocallLevel ? Number(obs.autocallLevel) : null;
+                const couponBarrierLevel = obs.couponBarrierLevel ? Number(obs.couponBarrierLevel) : 70.00;
+                const worstPerformance = obsResult.worstPerformance ? Number(obsResult.worstPerformance) : null;
+                const couponPerPeriod = obsResult.couponPerPeriod ? Number(obsResult.couponPerPeriod) : null;
                 
                 return `
                 <tr>
                   <td>${index + 1}</td>
                   <td>${new Date(obs.observationDate).toLocaleDateString()}</td>
                   <td>${new Date(obs.paymentDate).toLocaleDateString()}</td>
-                  <td>${obs.couponBarrierLevel || '70.00'}%</td>
-                  <td>${index === 0 ? '-' : 
-                        index === 1 ? '100.00' :
-                        index === 2 ? '95.00' :
-                        index === 3 ? '90.00' :
-                        index === 4 ? '85.00' :
-                        index === 5 ? '80.00' :
-                        index === 6 ? '75.00' :
-                        '70.00'}%</td>
-                  <td>${currentObs.worstStock || '-'}</td>
-                  <td>${currentObs.performance ? 
-                    `<span style="color: #721c24">${currentObs.performance}%</span>` : 
+                  <td>${couponBarrierLevel.toFixed(2)}%</td>
+                  <td>${autocallLevel ? autocallLevel.toFixed(2) + '%' : '-'}</td>
+                  <td>${obsResult.worstPerformingUnderlying || '-'}</td>
+                  <td>${worstPerformance !== null && !isNaN(worstPerformance) ? 
+                    `<span style="color: ${worstPerformance >= 0 ? '#155724' : '#721c24'}">
+                      ${worstPerformance.toFixed(2)}%
+                    </span>` : 
                     '-'}</td>
-                  <td>${currentObs.coupon ? 
-                    `<span class="badge badge-success">${currentObs.coupon}%</span>` : 
+                  <td>${obsResult.couponPaid && couponPerPeriod !== null && !isNaN(couponPerPeriod) ? 
+                    `<span class="badge badge-success">${couponPerPeriod.toFixed(2)}%</span>` : 
                     '-'}</td>
-                  <td><span class="badge badge-danger">No</span></td>
-                  <td>${currentObs.newlyLocked || '-'}</td>
-                  <td>${currentObs.allLocked || '-'}</td>
+                  <td>${obsResult.autocalled ? 
+                    `<span class="badge badge-success">Yes</span>` : 
+                    `<span class="badge badge-danger">No</span>`}</td>
+                  <td>${obsResult.newlyLockedStocks?.join(', ') || '-'}</td>
+                  <td>${obsResult.allLockedStocks?.join(', ') || '-'}</td>
                 </tr>
                 `;
               }).join('')}
@@ -1143,5 +1139,60 @@ Template.phoenix.events({
       } finally {
         template.pdfLoading.set(false);
       }
+  }
+});
+
+Template.phoenixTemplate.onCreated(function() {
+  this.searchResults = new ReactiveVar([]);
+});
+
+Template.phoenixTemplate.events({
+  'input .ticker-search'(event, template) {
+    const searchTerm = event.target.value.trim();
+    const resultsContainer = event.target.parentElement.querySelector('.ticker-search-results');
+    
+    if (searchTerm.length < 2) {
+      resultsContainer.classList.add('d-none');
+      template.searchResults.set([]);
+      return;
+    }
+
+    Meteor.call('searchTickers', searchTerm, (error, results) => {
+      if (error) {
+        console.error('Error searching tickers:', error);
+        return;
+      }
+      
+      template.searchResults.set(results);
+      resultsContainer.classList.remove('d-none');
+    });
+  },
+
+  'click .ticker-result-item'(event, template) {
+    const selectedText = event.target.textContent;
+    const row = event.target.closest('tr');
+    const inputField = row.querySelector('.ticker-search');
+    inputField.value = selectedText;
+    
+    // Update other fields in the row based on selected ticker
+    // ...
+
+    // Hide results
+    event.target.closest('.ticker-search-results').classList.add('d-none');
+    template.searchResults.set([]);
+  },
+
+  'blur .ticker-search'(event, template) {
+    // Delay hiding to allow click event to fire
+    setTimeout(() => {
+      event.target.parentElement.querySelector('.ticker-search-results').classList.add('d-none');
+      template.searchResults.set([]);
+    }, 200);
+  }
+});
+
+Template.phoenixTemplate.helpers({
+  searchResults() {
+    return Template.instance().searchResults.get();
   }
 });

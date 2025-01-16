@@ -3,6 +3,11 @@
 
     <!-- BEGIN #app -->
   <div id="app" class="app">
+    <div id="loadingBackdrop" class="loading-backdrop d-none">
+      <div class="spinner-border text-light" role="status">
+        <span class="visually-hidden">Loading...</span>
+      </div>
+    </div>
     <!-- BEGIN #header -->
     <div id="header" class="app-header">
 
@@ -120,12 +125,14 @@
           <div class="menu-item dropdown">
             <a href="#" data-bs-toggle="dropdown" data-display="static" class="menu-link">
               <div class="menu-img online">
-                <img src="/assets/img/user/profile.jpg" alt="Profile" height="60" />
+                <img src="https://amberlakepartners.com/assets/logos/Icon%201.png" 
+                     alt="Profile" 
+                     style="width: 60px; height: 60px; object-fit: contain;" />
               </div>
               <div class="menu-text d-sm-block d-none">{{currentUser.username}}</div>
             </a>
             <div class="dropdown-menu dropdown-menu-end me-lg-3 fs-11px mt-1">
-              <a class="dropdown-item d-flex align-items-center" href="/profile">PROFILE <i class="bi bi-person-circle ms-auto text-theme fs-16px my-n1"></i></a>
+              <a class="dropdown-item d-flex align-items-center" href="/profile/{{currentUser._id}}">PROFILE <i class="bi bi-person-circle ms-auto text-theme fs-16px my-n1"></i></a>
               <a class="dropdown-item d-flex align-items-center" href="#">INBOX <i class="bi bi-envelope ms-auto text-theme fs-16px my-n1"></i></a>
               <a class="dropdown-item d-flex align-items-center" href="#">CALENDAR <i class="bi bi-calendar ms-auto text-theme fs-16px my-n1"></i></a>
               <a class="dropdown-item d-flex align-items-center" href="#">SETTINGS <i class="bi bi-gear ms-auto text-theme fs-16px my-n1"></i></a>
@@ -144,14 +151,44 @@
       <!-- END menu -->
 
       <!-- BEGIN menu-search -->
-      <form class="menu-search" method="POST" name="header_search_form">
+      <form class="menu-search" onsubmit="return false;" autocomplete="off">
         <div class="menu-search-container">
           <div class="menu-search-icon"><i class="bi bi-search"></i></div>
           <div class="menu-search-input">
-            <input type="text" class="form-control form-control-lg" placeholder="Search menu...">
+            <input type="text" 
+                   class="form-control form-control-lg" 
+                   placeholder="Search products..."
+                   autocomplete="off">
+            {{#if searchResults}}
+              <div class="menu-search-results">
+                {{#each result in searchResults}}
+                  <div class="search-result-item" 
+                       data-id="{{result._id}}" 
+                       data-isin="{{result.ISINCode}}">
+                    <div class="result-title">{{result.genericData.name}}</div>
+                    <div class="result-details">
+                      <span class="badge bg-primary">{{result.matchedField}}</span>
+                      {{result.ISINCode}}
+                      {{#if result.genericData.currency}}
+                        <span class="badge bg-secondary">{{result.genericData.currency}}</span>
+                      {{/if}}
+                      {{#if result.underlyings}}
+                        <div class="small text-muted">
+                          {{#each underlying in result.underlyings}}
+                            <span class="me-2">{{underlying.ticker}}</span>
+                          {{/each}}
+                        </div>
+                      {{/if}}
+                    </div>
+                  </div>
+                {{/each}}
+              </div>
+            {{/if}}
           </div>
           <div class="menu-search-icon">
-            <a href="#" data-toggle-class="app-header-menu-search-toggled" data-toggle-target=".app"><i class="bi bi-x-lg"></i></a>
+            <a href="#" data-toggle-class="app-header-menu-search-toggled" data-toggle-target=".app">
+              <i class="bi bi-x-lg"></i>
+            </a>
           </div>
         </div>
       </form>
