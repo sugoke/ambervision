@@ -5,6 +5,7 @@ import 'datatables.net-bs/css/dataTables.bootstrap.css';
 import 'datatables.net-buttons';
 import 'datatables.net-buttons/js/buttons.colVis.js';
 import 'datatables.net-buttons-dt/css/buttons.dataTables.css';
+import { Modal } from 'bootstrap';
 dataTablesBootstrap(window, $);
 
 import { Holdings, Products } from '/imports/api/products/products.js';
@@ -17,6 +18,7 @@ import { ReactiveVar } from 'meteor/reactive-var';
 Template.products.onCreated(function () {
   const instance = this;
   instance.selectedClientId = new ReactiveVar(null);
+  instance.productToDelete = new ReactiveVar(null);
   
   const parentData = Template.parentData();
   if (parentData && parentData.selectedClientId) {
@@ -91,86 +93,102 @@ Template.products.onRendered(function () {
     if (products.length > 0) {
       console.log('Preparing to initialize DataTable with products:', products);
 
-      $('#productsTable').DataTable({
-        data: products,
-        columns: [
-          { 
-            data: 'genericData.ISINCode',
-            title: 'ISIN',
-            render: function(data, type, row) {
-              if (type === 'display' && data) {
-                const path = Router.path('productDetails', {}, { query: `isin=${data}` });
-                return `<a href="${path}" class="btn btn-outline-warning btn-sm isin-btn">${data}</a>`;
-              }
-              return data || '';
+      const columns = [
+        { 
+          data: 'genericData.ISINCode',
+          title: 'ISIN',
+          render: function(data, type, row) {
+            if (type === 'display' && data) {
+              const path = Router.path('productDetails', {}, { query: `isin=${data}` });
+              return `<a href="${path}" class="btn btn-outline-warning btn-sm isin-btn">${data}</a>`;
             }
-          },
-          { 
-            data: 'genericData.name',
-            title: 'Product Name'
-          },
-          { 
-            data: 'genericData.currency',
-            title: 'Currency',
-            className: 'text-center'
-          },
-          { 
-            data: 'genericData.issuer',
-            title: 'Issuer'
-          },
-          { 
-            data: 'status',
-            title: 'Status',
-            className: 'text-center',
-            render: function(data, type, row) {
-              if (type === 'display') {
-                let badgeClass = '';
-                let displayText = data || 'Unknown';
-                
-                switch(data?.toLowerCase()) {
-                  case 'live':
-                    badgeClass = 'bg-success';
-                    break;
-                  case 'pending':
-                    badgeClass = 'bg-warning';
-                    break;
-                  case 'active':
-                    badgeClass = 'bg-primary';
-                    break;
-                  case 'autocalled':
-                    badgeClass = 'bg-danger';
-                    displayText = 'Auto-Called';
-                    break;
-                  default:
-                    badgeClass = 'bg-secondary';
-                }
-                
-                return `<span class="badge ${badgeClass}">${displayText}</span>`;
+            return data || '';
+          }
+        },
+        { 
+          data: 'genericData.name',
+          title: 'Product Name'
+        },
+        { 
+          data: 'genericData.currency',
+          title: 'Currency',
+          className: 'text-center'
+        },
+        { 
+          data: 'genericData.issuer',
+          title: 'Issuer'
+        },
+        { 
+          data: 'status',
+          title: 'Status',
+          className: 'text-center',
+          render: function(data, type, row) {
+            if (type === 'display') {
+              let badgeClass = '';
+              let displayText = data || 'Unknown';
+              
+              switch(data?.toLowerCase()) {
+                case 'live':
+                  badgeClass = 'bg-success';
+                  break;
+                case 'pending':
+                  badgeClass = 'bg-warning';
+                  break;
+                case 'active':
+                  badgeClass = 'bg-primary';
+                  break;
+                case 'autocalled':
+                  badgeClass = 'bg-danger';
+                  displayText = 'Auto-Called';
+                  break;
+                default:
+                  badgeClass = 'bg-secondary';
               }
-              return data || '';
+              
+              return `<span class="badge ${badgeClass}">${displayText}</span>`;
             }
-          },
-          { 
-            data: null,
-            title: isSuperAdmin ? 'Total Nominal' : 'Nominal Invested',
-            className: 'text-end',
-            render: function(data, type, row) {
-              if (isSuperAdmin) {
-                const holdings = Holdings.find({ 
-                  isin: row.genericData.ISINCode 
-                }).fetch();
-                const total = holdings.reduce((sum, holding) => sum + (holding.quantity || 0), 0);
-                return total ? total.toLocaleString() : '0';
-              } else {
-                const holding = Holdings.findOne({ 
-                  userId: Meteor.userId(), 
-                  isin: row.genericData.ISINCode 
-                });
-                return holding ? holding.quantity.toLocaleString() : '0';
-              }
+            return data || '';
+          }
+        },
+        { 
+          data: null,
+          title: isSuperAdmin ? 'Total Nominal' : 'Nominal Invested',
+          className: 'text-end',
+          render: function(data, type, row) {
+            if (isSuperAdmin) {
+              const holdings = Holdings.find({ 
+                isin: row.genericData.ISINCode 
+              }).fetch();
+              const total = holdings.reduce((sum, holding) => sum + (holding.quantity || 0), 0);
+              return total ? total.toLocaleString() : '0';
+            } else {
+              const holding = Holdings.findOne({ 
+                userId: Meteor.userId(), 
+                isin: row.genericData.ISINCode 
+              });
+              return holding ? holding.quantity.toLocaleString() : '0';
             }
           }
-        ],
+        }
+      ];
+
+      if (isSuperAdmin) {
+        columns.push({
+          data: null,
+          title: 'Actions',
+          orderable: false,
+          className: 'text-center',
+          render: function(data, type, row) {
+            return `<button class="btn btn-danger btn-sm delete-product" data-id="${row._id}">
+              <i class="fas fa-trash"></i>
+            </button>`;
+          }
+        });
+      }
+
+      $('#productsTable').DataTable({
+        data: products,
+        columns: columns,
         order: [[1, 'asc']],
         pageLength: 25,
         responsive: true,
@@ -187,6 +205,30 @@ Template.products.onRendered(function () {
       console.log('No products to display.');
     }
   });
+});
+
+Template.products.events({
+  'click .delete-product'(event, template) {
+    event.preventDefault();
+    const productId = event.currentTarget.getAttribute('data-id');
+    template.productToDelete.set(productId);
+    
+    const modal = new Modal(document.getElementById('deleteProductModal'));
+    modal.show();
+  },
+
+  'click #confirmDelete'(event, template) {
+    const productId = template.productToDelete.get();
+    
+    Meteor.call('deleteProduct', productId, (error) => {
+      const modal = Modal.getInstance(document.getElementById('deleteProductModal'));
+      modal.hide();
+      
+      if (error) {
+        alert('Error deleting product: ' + error.reason);
+      }
+    });
+  }
 });
 
 Template.products.onDestroyed(function () {

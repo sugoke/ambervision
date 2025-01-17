@@ -93,8 +93,8 @@ Meteor.methods({
       const knownIssuers = getKnownIssuers();
       console.log('Known issuers retrieved');
       
-      // First check if ISIN already exists before processing
-      const response = await HTTP.call('POST', 'https://api.openai.com/v1/chat/completions', {
+      // Improve ISIN extraction prompt
+      const isinResponse = await HTTP.call('POST', 'https://api.openai.com/v1/chat/completions', {
         headers: {
           'Authorization': `Bearer ${getOpenAIKey()}`,
           'Content-Type': 'application/json',
@@ -103,14 +103,25 @@ Meteor.methods({
           model: "gpt-4-1106-preview",
           messages: [{
             role: "user",
-            content: "Extract only the ISIN code from this text, return just the ISIN code with no other text:\n\n" + pdfData.text.substring(0, 1000)
+            content: `Find and return ONLY the ISIN code from this text. An ISIN is a 12-character code starting with 2 letters (usually CH for Swiss products) followed by 10 alphanumeric characters. Return only the ISIN, nothing else. If no ISIN is found, return "NONE".\n\nText:\n${pdfData.text}`
           }],
-          temperature: 0.1
+          temperature: 0
         }
       });
 
-      const isin = response.data.choices[0].message.content.trim();
+      const isin = isinResponse.data.choices[0].message.content.trim();
       console.log('Extracted ISIN:', isin);
+
+      if (isin === 'NONE') {
+        console.error('No ISIN found in document');
+        throw new Meteor.Error('processing-error', 'No ISIN code found in document');
+      }
+
+      // Validate ISIN format
+      if (!/^[A-Z]{2}[A-Z0-9]{10}$/.test(isin)) {
+        console.error('Invalid ISIN format:', isin);
+        throw new Meteor.Error('processing-error', 'Invalid ISIN format detected');
+      }
 
       // Check for existing product with this ISIN
       const existingProduct = Products.findOne({
@@ -212,15 +223,31 @@ Rules:
           model: "gpt-4-1106-preview",
           messages: [{
             role: "user",
-            content: prompt + "\n\nPDF content:\n" + pdfData.text.substring(0, 12000)
+            content: prompt + "\n\nPDF content:\n" + pdfData.text
           }],
           temperature: 0.1,
           response_format: { type: "json_object" }
         }
       });
 
-      let parsedData = JSON.parse(fullResponse.data.choices[0].message.content);
-      console.log('Parsed data successfully');
+      let parsedData;
+      try {
+        parsedData = JSON.parse(fullResponse.data.choices[0].message.content);
+        console.log('Parsed data successfully');
+      } catch (parseError) {
+        console.error('JSON parse error:', parseError);
+        console.log('Raw response:', fullResponse.data.choices[0].message.content);
+        throw new Meteor.Error('processing-error', 'Failed to parse product data');
+      }
+
+      // Validate ISIN matches
+      if (parsedData.genericData.ISINCode !== isin) {
+        console.error('ISIN mismatch:', {
+          extracted: isin,
+          parsed: parsedData.genericData.ISINCode
+        });
+        throw new Meteor.Error('processing-error', 'ISIN code mismatch in parsed data');
+      }
 
       // Match issuer name
       parsedData.genericData.issuer = findClosestIssuer(parsedData.genericData.issuer);
@@ -236,21 +263,35 @@ Rules:
         .map(u => u.eodTicker)
         .join(" / ");
 
-      console.log('Inserting product into database...');
-      const productId = Products.insert(parsedData);
-      console.log('Product inserted successfully, ID:', productId);
-
-      return {
-        success: true,
+      console.log('Inserting product into database...', {
         isin: parsedData.genericData.ISINCode,
-        productId
-      };
+        name: parsedData.genericData.name
+      });
+
+      try {
+        const productId = Products.insert(parsedData);
+        console.log('Product inserted successfully, ID:', productId);
+        return {
+          success: true,
+          isin: parsedData.genericData.ISINCode,
+          productId
+        };
+      } catch (dbError) {
+        console.error('Database error:', dbError);
+        if (dbError.code === 11000) {
+          throw new Meteor.Error('duplicate-isin', 
+            'A product with this ISIN already exists. Please edit the existing product instead.');
+        }
+        throw new Meteor.Error('processing-error', 'Failed to save product to database');
+      }
 
     } catch (error) {
       console.error('PDF processing error:', error);
-      // Improve error message for client
-      throw new Meteor.Error('processing-error', 
-        error.error === 'duplicate-isin' ? error.reason : 'Error processing PDF. Please try again.');
+      throw new Meteor.Error(
+        'processing-error',
+        error.error === 'duplicate-isin' ? error.reason : 
+        'Error processing PDF: ' + (error.reason || error.message || 'Unknown error')
+      );
     }
   }
 });

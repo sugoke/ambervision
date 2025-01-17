@@ -118,5 +118,21 @@ Meteor.methods({
       subject: "Reset Your Password",
       text: `Click this link to reset your password: ${url}`
     });
+  },
+
+  'deleteProduct'(productId) {
+    check(productId, String);
+    
+    if (!this.userId) {
+      throw new Meteor.Error('not-authorized');
+    }
+
+    const user = Meteor.users.findOne(this.userId);
+    if (user?.profile?.role !== 'superAdmin') {
+      throw new Meteor.Error('not-authorized', 'Only super admins can delete products');
+    }
+
+    Products.remove(productId);
+    Holdings.remove({ productId: productId });
   }
 }); 

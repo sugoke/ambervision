@@ -414,6 +414,167 @@ function getNextBusinessDay(date, holidays = []) {
   return nextDay;
 }
 
+// Add these validation functions at the top level
+const ValidationRules = {
+  isin: {
+    pattern: /^[A-Z]{2}[A-Z0-9]{10}$/,
+    message: 'ISIN must be 12 characters: 2 letters followed by 10 alphanumeric characters'
+  },
+  currency: {
+    pattern: /^(USD|EUR|GBP|CHF)$/,
+    message: 'Please select a valid currency'
+  },
+  issuer: {
+    required: true,
+    message: 'Please select an issuer'
+  },
+  settlementType: {
+    pattern: /^(Cash|Physical)$/,
+    message: 'Settlement type must be either Cash or Physical'
+  },
+  settlementTx: {
+    pattern: /^[0-9]{1,2}$/,
+    message: 'Settlement T+x must be a number between 0 and 99'
+  },
+  dates: {
+    required: true,
+    message: 'This date is required'
+  },
+  barrier: {
+    pattern: /^[0-9]{1,3}(\.[0-9]{1,2})?$/,
+    min: 0,
+    max: 100,
+    message: 'Barrier must be a percentage between 0 and 100'
+  },
+  coupon: {
+    pattern: /^[0-9]{1,3}(\.[0-9]{1,4})?$/,
+    min: 0,
+    max: 100,
+    message: 'Coupon must be a percentage between 0 and 100'
+  }
+};
+
+function validateField(value, rule) {
+  if (!value && rule.required) {
+    return rule.message;
+  }
+  if (rule.pattern && !rule.pattern.test(value)) {
+    return rule.message;
+  }
+  if (typeof rule.min === 'number' && parseFloat(value) < rule.min) {
+    return `Value must be at least ${rule.min}`;
+  }
+  if (typeof rule.max === 'number' && parseFloat(value) > rule.max) {
+    return `Value must not exceed ${rule.max}`;
+  }
+  return null;
+}
+
+function showFieldError($field, message) {
+  $field.addClass('is-invalid');
+  const $feedback = $field.siblings('.invalid-feedback');
+  if ($feedback.length) {
+    $feedback.text(message);
+  } else {
+    $field.after(`<div class="invalid-feedback">${message}</div>`);
+  }
+}
+
+function clearFieldError($field) {
+  $field.removeClass('is-invalid');
+  $field.siblings('.invalid-feedback').remove();
+}
+
+function validateForm() {
+  let isValid = true;
+  
+  // Clear all previous errors
+  $('.is-invalid').removeClass('is-invalid');
+  $('.invalid-feedback').remove();
+
+  // Validate ISIN
+  const $isin = $('#isin_code');
+  const isinError = validateField($isin.val(), ValidationRules.isin);
+  if (isinError) {
+    showFieldError($isin, isinError);
+    isValid = false;
+  }
+
+  // Validate Currency
+  const $currency = $('#currency');
+  const currencyError = validateField($currency.val(), ValidationRules.currency);
+  if (currencyError) {
+    showFieldError($currency, currencyError);
+    isValid = false;
+  }
+
+  // Validate Issuer
+  const $issuer = $('#issuer');
+  const issuerError = validateField($issuer.val(), ValidationRules.issuer);
+  if (issuerError) {
+    showFieldError($issuer, issuerError);
+    isValid = false;
+  }
+
+  // Validate Settlement Type
+  const $settlementType = $('#settlement_type');
+  const settlementTypeError = validateField($settlementType.val(), ValidationRules.settlementType);
+  if (settlementTypeError) {
+    showFieldError($settlementType, settlementTypeError);
+    isValid = false;
+  }
+
+  // Validate Settlement T+x
+  const $settlementTx = $('#settlement_tx');
+  const settlementTxError = validateField($settlementTx.val(), ValidationRules.settlementTx);
+  if (settlementTxError) {
+    showFieldError($settlementTx, settlementTxError);
+    isValid = false;
+  }
+
+  // Validate Required Dates
+  ['#tradeDate', '#paymentDate', '#finalObservation', '#maturityDate'].forEach(dateId => {
+    const $date = $(dateId);
+    const dateError = validateField($date.val(), ValidationRules.dates);
+    if (dateError) {
+      showFieldError($date, dateError);
+      isValid = false;
+    }
+  });
+
+  // Validate Barriers
+  const $couponBarrier = $('#phoenix_coupon_barrier');
+  const couponBarrierError = validateField($couponBarrier.val(), ValidationRules.barrier);
+  if (couponBarrierError) {
+    showFieldError($couponBarrier, couponBarrierError);
+    isValid = false;
+  }
+
+  const $capitalProtectionBarrier = $('#phoenix_capital_protection_barrier');
+  const capitalProtectionBarrierError = validateField($capitalProtectionBarrier.val(), ValidationRules.barrier);
+  if (capitalProtectionBarrierError) {
+    showFieldError($capitalProtectionBarrier, capitalProtectionBarrierError);
+    isValid = false;
+  }
+
+  // Validate Coupon
+  const $couponPerPeriod = $('#phoenix_coupon_per_period');
+  const couponError = validateField($couponPerPeriod.val(), ValidationRules.coupon);
+  if (couponError) {
+    showFieldError($couponPerPeriod, couponError);
+    isValid = false;
+  }
+
+  // Validate Underlyings
+  const $underlyings = $('#underlyingRowsContainer tr');
+  if ($underlyings.length === 0) {
+    showModal('Validation Error', 'At least one underlying is required');
+    isValid = false;
+  }
+
+  return isValid;
+}
+
 Template.phoenixTemplate.events({
   'click #add_ticker'(event, template) {
     event.preventDefault();
@@ -534,6 +695,12 @@ Template.phoenixTemplate.events({
     event.preventDefault();
     
     if (template.isSubmitting.get()) return;
+    
+    if (!validateForm()) {
+      showModal('Validation Error', 'Please correct the errors in the form');
+      return;
+    }
+
     template.isSubmitting.set(true);
 
     try {
@@ -772,6 +939,58 @@ Template.phoenixTemplate.events({
     
     // Hide results
     event.target.closest('#searchResults').classList.add('d-none');
+  },
+
+  'blur #isin_code'(event) {
+    const $field = $(event.target);
+    const error = validateField($field.val(), ValidationRules.isin);
+    if (error) {
+      showFieldError($field, error);
+    } else {
+      clearFieldError($field);
+    }
+    // Auto uppercase ISIN
+    $field.val($field.val().toUpperCase());
+  },
+
+  'input #isin_code'(event) {
+    const $field = $(event.target);
+    $field.val($field.val().toUpperCase());
+  },
+
+  'blur .form-control'(event) {
+    const $field = $(event.target);
+    const fieldId = $field.attr('id');
+    let rule;
+
+    switch(fieldId) {
+      case 'currency':
+        rule = ValidationRules.currency;
+        break;
+      case 'settlement_type':
+        rule = ValidationRules.settlementType;
+        break;
+      case 'settlement_tx':
+        rule = ValidationRules.settlementTx;
+        break;
+      case 'phoenix_coupon_barrier':
+      case 'phoenix_capital_protection_barrier':
+        rule = ValidationRules.barrier;
+        break;
+      case 'phoenix_coupon_per_period':
+        rule = ValidationRules.coupon;
+        break;
+      // Add more cases as needed
+    }
+
+    if (rule) {
+      const error = validateField($field.val(), rule);
+      if (error) {
+        showFieldError($field, error);
+      } else {
+        clearFieldError($field);
+      }
+    }
   }
 });
 // Make sure Template.phoenixTemplate.onCreated is defined
