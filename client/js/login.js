@@ -13,10 +13,23 @@ Template.login.events({
     button.querySelector('.login-text').classList.add('d-none');
     button.querySelector('.spinner-border').classList.remove('d-none');
 
-    const email = template.find('#login-username').value;
+    const email = template.find('#login-username').value.trim();
     const password = template.find('#login-password').value;
 
-    Meteor.loginWithPassword({ email }, password, (error) => {
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      button.disabled = false;
+      button.querySelector('.login-text').classList.remove('d-none');
+      button.querySelector('.spinner-border').classList.add('d-none');
+      
+      const errorModal = new Modal(document.getElementById('errorModal'));
+      document.getElementById('errorMessage').textContent = 'Please enter a valid email address';
+      errorModal.show();
+      return;
+    }
+
+    Meteor.loginWithPassword(email, password, (error) => {
       button.disabled = false;
       button.querySelector('.login-text').classList.remove('d-none');
       button.querySelector('.spinner-border').classList.add('d-none');

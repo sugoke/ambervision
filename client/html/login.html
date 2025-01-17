@@ -1,91 +1,80 @@
 <template name="login">
-
-      <div class="login">
-        <div class="login-content">
-          <div class="card mt-4 shadow animate__animated animate__flipInX">
-            <div class="card-header d-flex align-items-center bg-white bg-opacity-15">
-              <span class="flex-grow-1 fw-400">Ambervision</span>
-            </div>
-            <div class="card-body">
-
-
-              <h3 class="text-center mb-4">Login</h3>
-
-                <div class="form-group mb-3">
-                  <label for="login-username">Email</label>
-                  <input type="email" id="login-username" name="username" class="form-control" placeholder="Email" required>
-                </div>
-                <div class="form-group mb-4">
-                  <label for="login-password">Password</label>
-                  <input type="password" id="login-password" name="password" class="form-control" placeholder="Password" required>
-                </div>
-                <div class="text-center">
-                   <button type="button" class="btn btn-secondary btn-block" id="register-button">
-                     <span class="register-text">Register</span>
-                     <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
-                   </button>
-                  <button type="button" class="btn btn-primary btn-block" id="login-button">
-                    <span class="login-text">Login</span>
-                    <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
-                  </button>
-                </div>
-
-              <div class="text-center mt-3">
-
-                <a href="/forgot-password">Forgot Password?</a>
-              </div>
-
-
-
-
-
-            </div>
-
-            <div class="card-arrow">
-              <div class="card-arrow-top-left"></div>
-              <div class="card-arrow-top-right"></div>
-              <div class="card-arrow-bottom-left"></div>
-              <div class="card-arrow-bottom-right"></div>
-            </div>
+  <div class="login">
+    <div class="login-content">
+      <div class="card mt-4 shadow animate__animated animate__flipInX">
+        <div class="card-header d-flex align-items-center bg-white bg-opacity-15">
+          <span class="flex-grow-1 fw-400">Ambervision</span>
+        </div>
+        <div class="card-body">
+          <h3 class="text-center mb-4">Login</h3>
+          <div class="form-group mb-3">
+            <label for="login-username">Email</label>
+            <input type="email" id="login-username" name="username" class="form-control" placeholder="Email" required>
           </div>
+          <div class="form-group mb-4">
+            <label for="login-password">Password</label>
+            <input type="password" id="login-password" name="password" class="form-control" placeholder="Password" required>
+          </div>
+          <div class="text-center">
+            <button type="button" class="btn btn-secondary btn-block" id="register-button">
+              <span class="register-text">Register</span>
+              <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+            </button>
+            <button type="button" class="btn btn-primary btn-block" id="login-button">
+              <span class="login-text">Login</span>
+              <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+            </button>
+          </div>
+          <div class="text-center mt-3">
+            <a href="/forgot-password">Forgot Password?</a>
+          </div>
+          <div class="text-center mt-3">
+            <small class="text-muted">v0.1 Beta</small>
+          </div>
+        </div>
+        <div class="card-arrow">
+          <div class="card-arrow-top-left"></div>
+          <div class="card-arrow-top-right"></div>
+          <div class="card-arrow-bottom-left"></div>
+          <div class="card-arrow-bottom-right"></div>
         </div>
       </div>
+    </div>
+  </div>
 
-  		<!-- END login -->
-      <!-- Bootstrap Modal for Error Messages -->
-        <div class="modal" id="errorModal" tabindex="-1" role="dialog">
-          <div class="modal-dialog" role="document">
-            <div class="modal-content">
-              <div class="modal-header">
-                <h5 class="modal-title">Registration Error</h5>
-
-              </div>
-              <div class="modal-body">
-                <p id="errorMessage"></p>
-              </div>
-              <div class="modal-footer">
-
-
-              </div>
-            </div>
-          </div>
+  <!-- Bootstrap Modal for Error Messages -->
+  <div class="modal" id="errorModal" tabindex="-1" role="dialog" aria-labelledby="errorModalLabel">
+    <div class="modal-dialog" role="document">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="errorModalLabel">Registration Error</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
-
-        <!-- Add this after the error modal -->
-        <div class="modal" id="successModal" tabindex="-1">
-          <div class="modal-dialog">
-            <div class="modal-content">
-              <div class="modal-header">
-                <h5 class="modal-title">Success</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-              </div>
-              <div class="modal-body">
-                <p id="successMessage"></p>
-              </div>
-              <div class="modal-footer">
-                <button type="button" class="btn btn-primary" data-bs-dismiss="modal">OK</button>
-              </div>
-            </div>
-          </div>
+        <div class="modal-body">
+          <p id="errorMessage"></p>
         </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Success Modal -->
+  <div class="modal" id="successModal" tabindex="-1" role="dialog" aria-labelledby="successModalLabel">
+    <div class="modal-dialog" role="document">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="successModalLabel">Success</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p id="successMessage"></p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-primary" data-bs-dismiss="modal">OK</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </template>

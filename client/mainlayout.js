@@ -1,8 +1,12 @@
 import { Template } from 'meteor/templating';
 import { Router } from 'meteor/iron:router';
 import { Products } from '/imports/api/products/products.js';
+import { ReactiveVar } from 'meteor/reactive-var';
 
 import './mainlayout.html';
+
+// Global loading state
+export const globalLoading = new ReactiveVar(true);
 
 // Add this debounce function
 function debounce(func, wait) {
@@ -40,6 +44,15 @@ Template.mainLayout.onCreated(function() {
       this.subscribe('searchProducts', query);
     }
   });
+  
+  // Track loading state - remove FlowRouter reference
+  this.autorun(() => {
+    const subsReady = Iron.controller()?.ready() ?? false;
+    const userReady = this.userReady.get();
+    const allDataLoaded = subsReady && userReady;
+    
+    globalLoading.set(!allDataLoaded);
+  });
 });
 
 Template.mainLayout.helpers({
@@ -74,6 +87,9 @@ Template.mainLayout.helpers({
         (product.underlyings?.some(u => u.ticker?.match(regex))) ? 'Ticker' :
         'Underlying'
     }));
+  },
+  isLoading() {
+    return globalLoading.get();
   }
 });
 
@@ -474,4 +490,22 @@ Template.mainLayout.onRendered(function() {
       toggleBodyScroll(false);
     }
   });
+});
+
+// Add these Iron Router hooks
+Router.configure({
+  onBeforeAction: function() {
+    globalLoading.set(true);
+    this.next();
+  },
+  onAfterAction: function() {
+    Tracker.afterFlush(() => {
+      const subsReady = this.ready();
+      if (subsReady) {
+        Meteor.setTimeout(() => {
+          globalLoading.set(false);
+        }, 100);
+      }
+    });
+  }
 });

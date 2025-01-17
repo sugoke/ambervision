@@ -86,8 +86,47 @@ const getKnownIssuers = () => {
 Meteor.methods({
   async processPdfWithAI(fileData) {
     try {
+      console.log('Starting PDF processing...');
       const pdfData = await pdfParse(fileData);
+      console.log('PDF parsed successfully, text length:', pdfData.text.length);
+      
       const knownIssuers = getKnownIssuers();
+      console.log('Known issuers retrieved');
+      
+      // First check if ISIN already exists before processing
+      const response = await HTTP.call('POST', 'https://api.openai.com/v1/chat/completions', {
+        headers: {
+          'Authorization': `Bearer ${getOpenAIKey()}`,
+          'Content-Type': 'application/json',
+        },
+        data: {
+          model: "gpt-4-1106-preview",
+          messages: [{
+            role: "user",
+            content: "Extract only the ISIN code from this text, return just the ISIN code with no other text:\n\n" + pdfData.text.substring(0, 1000)
+          }],
+          temperature: 0.1
+        }
+      });
+
+      const isin = response.data.choices[0].message.content.trim();
+      console.log('Extracted ISIN:', isin);
+
+      // Check for existing product with this ISIN
+      const existingProduct = Products.findOne({
+        $or: [
+          { "genericData.ISINCode": isin },
+          { "ISINCode": isin }
+        ]
+      });
+
+      if (existingProduct) {
+        console.log('Found existing product with ISIN:', isin);
+        throw new Meteor.Error('duplicate-isin', 
+          'A product with this ISIN already exists. Please edit the existing product instead.');
+      }
+
+      console.log('No duplicate ISIN found, proceeding with full processing...');
       
       const prompt = `You are a financial document parser specialized in structured products. Extract data from this termsheet and return a JSON object with this EXACT structure:
 
@@ -164,7 +203,7 @@ Rules:
     - Example: "RWE GY" should become "RWE.XETRA"
     - This applies to all stocks traded on Deutsche Börse/Xetra`;
 
-      const response = await HTTP.call('POST', 'https://api.openai.com/v1/chat/completions', {
+      const fullResponse = await HTTP.call('POST', 'https://api.openai.com/v1/chat/completions', {
         headers: {
           'Authorization': `Bearer ${getOpenAIKey()}`,
           'Content-Type': 'application/json',
@@ -180,7 +219,8 @@ Rules:
         }
       });
 
-      let parsedData = JSON.parse(response.data.choices[0].message.content);
+      let parsedData = JSON.parse(fullResponse.data.choices[0].message.content);
+      console.log('Parsed data successfully');
 
       // Match issuer name
       parsedData.genericData.issuer = findClosestIssuer(parsedData.genericData.issuer);
@@ -196,7 +236,9 @@ Rules:
         .map(u => u.eodTicker)
         .join(" / ");
 
+      console.log('Inserting product into database...');
       const productId = Products.insert(parsedData);
+      console.log('Product inserted successfully, ID:', productId);
 
       return {
         success: true,
@@ -206,7 +248,9 @@ Rules:
 
     } catch (error) {
       console.error('PDF processing error:', error);
-      throw new Meteor.Error('processing-error', error.message);
+      // Improve error message for client
+      throw new Meteor.Error('processing-error', 
+        error.error === 'duplicate-isin' ? error.reason : 'Error processing PDF. Please try again.');
     }
   }
 });

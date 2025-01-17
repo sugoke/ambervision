@@ -72,26 +72,38 @@ Meteor.startup(() => {
     console.log('MongoDB URL:', sanitizedUrl);
   }
 
-  // SMTP Configuration
-  const smtp = Meteor.settings.private.smtp2go;
+  // Settings check
+  console.log('Settings check:', {
+    hasSettings: !!Meteor.settings,
+    hasPrivate: !!Meteor.settings?.private,
+    hasSmtp: !!(Meteor.settings?.private?.smtp2go || Meteor.settings?.smtp2go),
+    smtpSettings: Meteor.settings?.private?.smtp2go || Meteor.settings?.smtp2go
+  });
+
+  // SMTP Configuration - check both locations
+  const smtpSettings = Meteor.settings?.private?.smtp2go || Meteor.settings?.smtp2go;
+  if (!smtpSettings) {
+    console.error('SMTP settings not found in either Meteor.settings.private.smtp2go or Meteor.settings.smtp2go');
+    return;
+  }
   
   // Using direct SMTP settings
-  const mailUrl = `smtps://${smtp.apiKey}:${smtp.apiKey}@send.smtp2go.com:465`;
+  const mailUrl = `smtps://${smtpSettings.apiKey}:${smtpSettings.apiKey}@send.smtp2go.com:465`;
   process.env.MAIL_URL = mailUrl;
   
   console.log('SMTP Config:', {
-    mailUrl: mailUrl.replace(smtp.apiKey, '***'),
-    from: smtp.from
+    mailUrl: mailUrl.replace(smtpSettings.apiKey, '***'),
+    from: smtpSettings.from
   });
 
-  Accounts.emailTemplates.from = smtp.from;
+  Accounts.emailTemplates.from = smtpSettings.from;
   Accounts.emailTemplates.resetPassword.subject = () => "Reset Your Password";
   Accounts.emailTemplates.resetPassword.text = (user, url) => {
     return `Click this link to reset your password: ${url}`;
   };
 
   // Override default email sending
-  Accounts.emailTemplates.from = smtp.from;
+  Accounts.emailTemplates.from = smtpSettings.from;
   
   // Override the default password reset email
   Accounts.sendResetPasswordEmail = function(userId, email) {

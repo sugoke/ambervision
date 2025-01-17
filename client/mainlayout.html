@@ -3,7 +3,7 @@
 
     <!-- BEGIN #app -->
   <div id="app" class="app">
-    <div id="loadingBackdrop" class="loading-backdrop d-none">
+    <div id="loadingBackdrop" class="loading-backdrop {{#unless isLoading}}d-none{{/unless}}">
       <div class="spinner-border text-light" role="status">
         <span class="visually-hidden">Loading...</span>
       </div>

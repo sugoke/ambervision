@@ -591,17 +591,39 @@ Template.phoenixTemplate.events({
 
   'click .send-file'(event) {
     event.preventDefault();
+    console.log('Send file clicked');
+    
     const file = $('#pdfInput')[0].files[0];
-    if (!file) return;
+    if (!file) {
+      console.log('No file selected');
+      return;
+    }
+    
+    console.log('File details:', {
+      name: file.name,
+      size: file.size,
+      type: file.type
+    });
 
     const reader = new FileReader();
+    
+    reader.onerror = function(error) {
+      console.error('FileReader error:', error);
+      showModal('Error', 'Error reading file: ' + error.message);
+    };
+
     reader.onload = function(e) {
+      console.log('File read complete, size:', e.target.result.byteLength);
       const fileData = new Uint8Array(e.target.result);
       
+      console.log('Calling processPdfWithAI method...');
       Meteor.call('processPdfWithAI', fileData, (error, result) => {
         if (error) {
-          console.error('Error processing PDF:', error);
-          showModal('Error', 'Error processing PDF: ' + error.reason);
+          console.error('Error from processPdfWithAI:', error);
+          const errorMessage = error.error === 'duplicate-isin' 
+            ? error.reason 
+            : 'Error processing PDF. Please try again or contact support.';
+          showModal('Error', errorMessage);
         } else {
           console.log('PDF processed successfully:', result);
           const url = new URL('editProduct', window.location.origin);
@@ -611,6 +633,8 @@ Template.phoenixTemplate.events({
         }
       });
     };
+
+    console.log('Starting file read...');
     reader.readAsArrayBuffer(file);
   },
 
