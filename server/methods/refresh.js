@@ -7,7 +7,7 @@ import { processTwinWinProduct } from './templates/twinWin.js';
 Meteor.methods({
   process() {
     console.log('Starting product processing');
-    const allProducts = Products.find({ 'genericData.ISINCode': "XS2628841475"  }).fetch();
+    const allProducts = Products.find({ 'genericData.ISINCode': "CH1279850411"  }).fetch();
     console.log(`Found ${allProducts.length} products to process`);
 
     let processedProducts = [];

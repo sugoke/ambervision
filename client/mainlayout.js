@@ -2,6 +2,7 @@ import { Template } from 'meteor/templating';
 import { Router } from 'meteor/iron:router';
 import { Products } from '/imports/api/products/products.js';
 import { ReactiveVar } from 'meteor/reactive-var';
+import { _ } from 'meteor/underscore';
 
 import './mainlayout.html';
 
@@ -53,6 +54,8 @@ Template.mainLayout.onCreated(function() {
     
     globalLoading.set(!allDataLoaded);
   });
+
+  this.searchResults = new ReactiveVar([]);
 });
 
 Template.mainLayout.helpers({
@@ -68,25 +71,7 @@ Template.mainLayout.helpers({
     return Session.get('selectedClientName');
   },
   searchResults() {
-    const query = Template.instance().searchQuery.get();
-    if (!query || query.length < 2) return [];
-    
-    const regex = new RegExp(query, 'i');
-    return Products.find({
-      $or: [
-        { ISINCode: regex },
-        { 'genericData.name': regex },
-        { 'underlyings.ticker': regex },
-        { 'underlyings.name': regex }
-      ]
-    }, { limit: 10 }).map(product => ({
-      ...product,
-      matchedField: 
-        (product.ISINCode && product.ISINCode.match(regex)) ? 'ISIN' :
-        (product.genericData?.name && product.genericData.name.match(regex)) ? 'Name' :
-        (product.underlyings?.some(u => u.ticker?.match(regex))) ? 'Ticker' :
-        'Underlying'
-    }));
+    return Template.instance().searchResults.get();
   },
   isLoading() {
     return globalLoading.get();
@@ -361,46 +346,44 @@ Template.mainLayout.events({
 
   'input .menu-search input': debounce(function(event, template) {
     const query = event.target.value.trim();
-    template.searchQuery.set(query.length >= 2 ? query : '');
+    
+    if (query.length < 2) {
+      template.searchResults.set([]);
+      return;
+    }
+
+    Meteor.call('searchProducts', query, (error, results) => {
+      if (error) {
+        console.error('Search error:', error);
+        return;
+      }
+      template.searchResults.set(results);
+    });
   }, 300),
 
-  'click .search-result-item'(event) {
+  'click .search-result-item'(event, template) {
     const isin = event.currentTarget.dataset.isin;
     if (isin) {
-      // Close the search dropdown
-      const app = document.querySelector('.app');
-      app.classList.remove('app-header-menu-search-toggled');
+      // Clear search
+      template.searchResults.set([]);
+      $('.menu-search input').val('');
       
-      // Clear search and hide results
-      const searchInput = document.querySelector('.menu-search input');
-      if (searchInput) {
-        searchInput.value = '';
-        Template.instance().searchQuery.set('');
-      }
+      // Close search dropdown
+      $('.app').removeClass('app-header-menu-search-toggled');
       
+      // Navigate to product
       Router.go(`/productDetails?isin=${isin}`);
     }
   },
 
-  'keydown .menu-search input'(event) {
+  'keydown .menu-search input'(event, template) {
     if (event.key === 'Escape') {
       event.preventDefault();
-      const searchInput = event.target;
-      searchInput.value = '';
-      Template.instance().searchQuery.set('');
-      searchInput.blur();
+      template.searchResults.set([]);
+      event.target.value = '';
+      event.target.blur();
+      $('.app').removeClass('app-header-menu-search-toggled');
     }
-    // Prevent form submission
-    if (event.key === 'Enter') {
-      event.preventDefault();
-    }
-  },
-
-  'blur .menu-search input'(event, template) {
-    // Delay hiding results slightly to allow click events to register
-    Meteor.setTimeout(() => {
-      template.searchQuery.set('');
-    }, 200);
   }
 });
 

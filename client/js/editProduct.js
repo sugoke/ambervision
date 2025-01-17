@@ -128,6 +128,14 @@ isChecked(value) {
   showUploadCard() {
     const queryParams = Router.current().params.query;
     return !(queryParams.mode === 'editProduct' && queryParams.isin);
+  },
+
+  uploadProgress() {
+    return Template.instance().uploadProgress.get();
+  },
+
+  uploadStatus() {
+    return Template.instance().uploadStatus.get();
   }
 });
 
@@ -142,6 +150,8 @@ Template.editProduct.onCreated(function() {
   this.tickers = new ReactiveVar([]);
   this.observations = new ReactiveVar([]);
   this.uploadedFile = new ReactiveVar(null);
+  this.uploadProgress = new ReactiveVar(0);
+  this.uploadStatus = new ReactiveVar('');
 
   const queryParams = Router.current().params.query;
   console.log("Query params:", queryParams);
@@ -357,39 +367,50 @@ Template.editProduct.events({
     $button.prop('disabled', true)
            .html('<i class="fas fa-spinner fa-spin me-2"></i>Uploading...');
 
-    // Read file as ArrayBuffer
+    template.uploadProgress.set(10);
+    template.uploadStatus.set('Reading file...');
+
     const reader = new FileReader();
     reader.onload = function(e) {
+      template.uploadProgress.set(30);
+      template.uploadStatus.set('Processing PDF...');
+      
       const arrayBuffer = e.target.result;
       const fileData = new Uint8Array(arrayBuffer);
 
       Meteor.call('processPdfWithAI', fileData, (error, result) => {
-        $button.prop('disabled', false).html(originalText);
-        
         if (error) {
+          template.uploadProgress.set(0);
+          template.uploadStatus.set('');
+          $button.prop('disabled', false).html(originalText);
           console.error('Upload failed:', error);
           $('#warningModal').find('.modal-body').text('Failed to process term sheet: ' + error.reason);
           $('#warningModal').modal('show');
         } else {
+          template.uploadProgress.set(100);
+          template.uploadStatus.set('Success!');
           console.log('Upload successful:', result);
-          $('#successModal').find('.modal-body').text('Term sheet processed successfully');
-          $('#successModal').modal('show');
           
-          // Clear the upload form
-          template.uploadedFile.set(null);
-          $('#pdfInput').val('');
-          
-          // Redirect using window.location.href
-          if (result.isin) {
-            window.location.href = `/editProduct?isin=${result.isin}&mode=editProduct`;
-          }
+          // Clear the upload form after a short delay
+          setTimeout(() => {
+            template.uploadedFile.set(null);
+            template.uploadProgress.set(0);
+            template.uploadStatus.set('');
+            $('#pdfInput').val('');
+            
+            if (result.isin) {
+              window.location.href = `/editProduct?isin=${result.isin}&mode=editProduct`;
+            }
+          }, 1000);
         }
       });
     };
 
     reader.onerror = function(error) {
-      console.error('Error reading file:', error);
+      template.uploadProgress.set(0);
+      template.uploadStatus.set('');
       $button.prop('disabled', false).html(originalText);
+      console.error('Error reading file:', error);
       $('#warningModal').find('.modal-body').text('Error reading file');
       $('#warningModal').modal('show');
     };

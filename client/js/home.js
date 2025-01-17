@@ -3,6 +3,7 @@ import { Products, Holdings, Risk, Schedules } from '/imports/api/products/produ
 import moment from 'moment';
 import '../html/home.html';
 import { renderBubbleChart } from './modular/bubbleChartHome.js';
+import Chart from 'chart.js/auto';
 
 
 Template.home.onCreated(function() {
@@ -157,13 +158,83 @@ Template.home.helpers({
 });
 
 Template.home.onRendered(function() {
+  let bubbleChart;
+  let issuerChart;
+  const template = this;
+
+  // First autorun for risk bubble chart
   this.autorun(() => {
     const riskData = Risk.find().fetch();
     if (!riskData || !riskData.length) return;
 
-    // Wait for DOM to be ready
     Tracker.afterFlush(() => {
-      renderBubbleChart(riskData, 'riskBubbleChart');
+      if (bubbleChart) {
+        bubbleChart.destroy();
+      }
+      bubbleChart = renderBubbleChart(riskData, 'riskBubbleChart');
+    });
+  });
+
+  // Second autorun for issuer pie chart
+  this.autorun(() => {
+    const user = Meteor.user();
+    if (!user) return;
+
+    let productsQuery = {};
+    if (user.profile?.role !== 'superAdmin') {
+      const holdings = Holdings.find({ userId: user._id }).fetch();
+      const isins = holdings.map(h => h.isin);
+      productsQuery = { 'genericData.ISINCode': { $in: isins } };
+    }
+
+    const products = Products.find(productsQuery).fetch();
+    const issuerCounts = {};
+    
+    products.forEach(product => {
+      const issuer = product.genericData?.issuer || 'Unknown';
+      issuerCounts[issuer] = (issuerCounts[issuer] || 0) + 1;
+    });
+
+    const issuerData = {
+      labels: Object.keys(issuerCounts),
+      data: Object.values(issuerCounts)
+    };
+
+    if (!issuerData.labels.length) return;
+
+    Tracker.afterFlush(() => {
+      const ctx = document.getElementById('issuerPieChart')?.getContext('2d');
+      if (!ctx) return;
+
+      if (issuerChart) {
+        issuerChart.destroy();
+      }
+
+      issuerChart = new Chart(ctx, {
+        type: 'pie',
+        data: {
+          labels: issuerData.labels,
+          datasets: [{
+            data: issuerData.data,
+            backgroundColor: [
+              '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEEAD',
+              '#D4A5A5', '#9A8194', '#392F5A', '#31A9B8', '#258039'
+            ]
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              position: 'right',
+              labels: {
+                color: '#fff'
+              }
+            }
+          }
+        }
+      });
     });
   });
 
@@ -188,8 +259,11 @@ Template.home.onRendered(function() {
 });
 
 Template.home.onDestroyed(function() {
-  if (this.chart) {
-    this.chart.destroy();
+  if (this.bubbleChart) {
+    this.bubbleChart.destroy();
+  }
+  if (this.issuerChart) {
+    this.issuerChart.destroy();
   }
 });
 

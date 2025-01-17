@@ -24,16 +24,16 @@ TabularTables.Products = new Tabular.Table({
       }
     },
     { 
-      data: "genericData.name",
+      data: "name",
       title: "Product Name"
     },
     { 
-      data: "genericData.currency",
+      data: "currency",
       title: "Currency",
       className: 'text-center'
     },
     { 
-      data: "genericData.issuer",
+      data: "issuer",
       title: "Issuer"
     },
     { 

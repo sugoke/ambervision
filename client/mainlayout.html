@@ -162,24 +162,26 @@
             {{#if searchResults}}
               <div class="menu-search-results">
                 {{#each result in searchResults}}
-                  <div class="search-result-item" 
-                       data-id="{{result._id}}" 
-                       data-isin="{{result.ISINCode}}">
+                  <div class="search-result-item" data-isin="{{result.genericData.ISINCode}}">
                     <div class="result-title">{{result.genericData.name}}</div>
                     <div class="result-details">
-                      <span class="badge bg-primary">{{result.matchedField}}</span>
-                      {{result.ISINCode}}
+                      <span class="badge bg-primary">{{result.genericData.productType}}</span>
+                      <span class="text-white-50">{{result.genericData.ISINCode}}</span>
                       {{#if result.genericData.currency}}
                         <span class="badge bg-secondary">{{result.genericData.currency}}</span>
                       {{/if}}
                       {{#if result.underlyings}}
-                        <div class="small text-muted">
+                        <div class="small text-white-50">
                           {{#each underlying in result.underlyings}}
                             <span class="me-2">{{underlying.ticker}}</span>
                           {{/each}}
                         </div>
                       {{/if}}
                     </div>
+                  </div>
+                {{else}}
+                  <div class="search-result-item">
+                    <div class="text-white-50">No results found</div>
                   </div>
                 {{/each}}
               </div>

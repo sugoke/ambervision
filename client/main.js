@@ -48,8 +48,7 @@ import './html/admin.html';
 import PerfectScrollbar from 'perfect-scrollbar';
 
 import './js/login.js';
-import './js/reset-password.js';
-import './html/reset-password.html';
+
 
 Template.registerHelper('isSuperAdmin', function() {
   const user = Meteor.user();
