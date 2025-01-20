@@ -191,9 +191,11 @@ Template.home.onRendered(function() {
     holdings.forEach(holding => {
       const product = Products.findOne({ 'genericData.ISINCode': holding.isin });
       if (product?.genericData?.issuer) {
-        const issuer = product.genericData.issuer;
+        // Get issuer name from product data
+        const issuerId = product.genericData.issuer;
+        const issuerName = product.genericData.issuerName || issuerId;
         const nominal = holding.quantity || 0;
-        issuerTotals[issuer] = (issuerTotals[issuer] || 0) + nominal;
+        issuerTotals[issuerName] = (issuerTotals[issuerName] || 0) + nominal;
       }
     });
 

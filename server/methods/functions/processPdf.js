@@ -160,7 +160,14 @@ Meteor.methods({
   },
   "features": {
     "memoryCoupon": boolean,
-    "memoryAutocall": boolean, 
+    "memoryAutocall": boolean, // For memory autocall, you will find it often in Automatic early redemption section. It will look like this: If, on any Automatic Early Redemption Valuation Daten, in respect of each Underlying Share in
+the Basket, the official closing price of such Underlying Share on that Automatic Early
+Redemption Valuation Daten or any of the Automatic Early Redemption Valuation Daten which
+precede that Automatic Early Redemption Valuation Daten is greater than or equal to its
+Automatic Early Redemption Pricei
+n, then the Issuer shall redeem each Certificate on the
+relevant Automatic Early Redemption Daten at the Automatic Early Redemption Amount
+calculated. What you have to pay attention to is the sentence that says 'or any of the Automatic Early Redemption Valuation Date' which shows that the product is autocalled when all underlyings have been observed above the autocall level even on different dates.
     "oneStar": boolean,
     "lowStrike": boolean, // True if using % of initial level
     "autocallStepdown": boolean,
@@ -213,7 +220,24 @@ Rules:
 11. For German stocks (GY suffix):
     - Map to .XETRA suffix
     - Example: "RWE GY" should become "RWE.XETRA"
-    - This applies to all stocks traded on Deutsche Börse/Xetra`;
+    - This applies to all stocks traded on Deutsche Börse/Xetra
+
+Rules for tickers:
+- Return raw ticker as "symbol exchange" format (e.g., "AAPL UW" for NASDAQ, "SAN FP" for Paris)
+- Common exchange codes:
+  * UW or UN for US stocks (NASDAQ/NYSE)
+  * FP for Euronext Paris
+  * SE for SIX Swiss Exchange
+  * LN for London
+  * GY for German stocks (Deutsche Börse/XETRA)
+  * IM for Italian stocks
+  * NA for Amsterdam
+  * SM for Madrid
+  * T for Tokyo
+  * HK for Hong Kong
+`;
+
+    
 
       const fullResponse = await HTTP.call('POST', 'https://api.openai.com/v1/chat/completions', {
         headers: {
