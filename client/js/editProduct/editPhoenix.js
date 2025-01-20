@@ -996,8 +996,10 @@ Template.phoenixTemplate.events({
 // Make sure Template.phoenixTemplate.onCreated is defined
 Template.phoenixTemplate.onCreated(function() {
   this.searchResults = new ReactiveVar([]);
-  this.subscribe('issuers');
   this.isSubmitting = new ReactiveVar(false);
+  
+  // Add subscription handle
+  this.issuersHandle = this.subscribe('issuers');
 });
 
 // Make sure Template.phoenixTemplate.onRendered is defined
@@ -1006,14 +1008,22 @@ Template.phoenixTemplate.onRendered(function() {
 });
 
 Template.phoenixTemplate.helpers({
-  availableIssuers() {
-    return Issuers.find({}, { sort: { name: 1 } });
+  issuersReady() {
+    const ready = Template.instance().issuersHandle.ready();
+    console.log('Issuers subscription ready:', ready);
+    return ready;
   },
   
-  selected(name) {
+  availableIssuers() {
+    const issuers = Issuers.find({}, { sort: { name: 1 } }).fetch();
+    console.log('Available issuers:', issuers);
+    return issuers;
+  },
+  
+  selected(issuerId) {
     const product = Template.currentData();
     const currentIssuer = product?.genericData?.issuer || product?.productDetails?.genericInformation?.issuer;
-    return name === currentIssuer ? 'selected' : '';
+    return issuerId === currentIssuer ? 'selected' : '';
   },
 
   searchResults() {

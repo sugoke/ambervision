@@ -123,18 +123,19 @@ Meteor.methods({
         throw new Meteor.Error('processing-error', 'Invalid ISIN format detected');
       }
 
-      // Check for existing product with this ISIN
+      // Check for existing product with this ISIN - Improve check
       const existingProduct = Products.findOne({
         $or: [
-          { "genericData.ISINCode": isin },
-          { "ISINCode": isin }
+          { "genericData.ISINCode": { $regex: new RegExp(isin, 'i') } },
+          { "ISINCode": { $regex: new RegExp(isin, 'i') } }
         ]
-      });
+      }, { fields: { _id: 1 } });
 
       if (existingProduct) {
-        console.log('Found existing product with ISIN:', isin);
+        console.log('Found existing product with ISIN:', isin, 'ID:', existingProduct._id);
         throw new Meteor.Error('duplicate-isin', 
-          'A product with this ISIN already exists. Please edit the existing product instead.');
+          'A product with ISIN ' + isin + ' already exists. Please edit the existing product instead.',
+          { existingId: existingProduct._id });
       }
 
       console.log('No duplicate ISIN found, proceeding with full processing...');
@@ -269,6 +270,10 @@ Rules:
       });
 
       try {
+        // Add unique index if not exists
+        Products.rawCollection().createIndex({ "genericData.ISINCode": 1 }, { unique: true });
+        Products.rawCollection().createIndex({ "ISINCode": 1 }, { unique: true });
+        
         const productId = Products.insert(parsedData);
         console.log('Product inserted successfully, ID:', productId);
         return {
@@ -279,8 +284,17 @@ Rules:
       } catch (dbError) {
         console.error('Database error:', dbError);
         if (dbError.code === 11000) {
+          // Get existing product ID for redirect
+          const existing = Products.findOne({
+            $or: [
+              { "genericData.ISINCode": isin },
+              { "ISINCode": isin }
+            ]
+          }, { fields: { _id: 1 } });
+          
           throw new Meteor.Error('duplicate-isin', 
-            'A product with this ISIN already exists. Please edit the existing product instead.');
+            'A product with ISIN ' + isin + ' already exists. Please edit the existing product instead.',
+            { existingId: existing?._id });
         }
         throw new Meteor.Error('processing-error', 'Failed to save product to database');
       }

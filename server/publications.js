@@ -1,4 +1,5 @@
 import { Products } from '/imports/api/products/products.js';
+import { Issuers } from '/imports/api/issuers/issuers.js';
 
 Meteor.publish('searchProducts', function(query) {
   check(query, String);
@@ -23,4 +24,8 @@ Meteor.publish('searchProducts', function(query) {
       'genericData.currency': 1
     }
   });
+});
+
+Meteor.publish('issuers', function() {
+  return Issuers.find({});
 }); 
