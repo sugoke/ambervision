@@ -193,4 +193,105 @@
 
 .menu-search-results::-webkit-scrollbar-thumb:hover {
   background: rgba(255,255,255,0.3);
+}
+
+/* Generic Data and Features styling */
+.generic-data-grid,
+.features-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.data-item {
+  flex: 1 1 auto;
+  min-width: 200px;
+  background: rgba(52, 65, 84, 0.4);
+  padding: 0.5rem 1rem;
+  border-radius: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  transition: all 0.2s;
+  border: 1px solid rgba(59, 130, 246, 0.15);
+}
+
+.data-item:hover {
+  background: rgba(59, 130, 246, 0.15);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.1);
+}
+
+.data-label {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.data-label i {
+  color: rgba(59, 130, 246, 0.9);
+}
+
+.data-value {
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.feature-value {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .data-item {
+    min-width: 100%;
+  }
+  
+  .generic-data-grid,
+  .features-grid {
+    gap: 0.5rem;
+  }
+}
+
+/* Company logo styling */
+.company-logo-container {
+  width: 64px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.company-logo {
+  max-width: 56px;
+  max-height: 56px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+/* Fallback icon styling */
+.company-logo-container .fas.fa-building {
+  font-size: 2.4rem;
+  opacity: 0.5;
+}
+
+/* Adjust card header alignment */
+.card .d-flex.fw-bold.small.mb-3 {
+  min-height: 64px;
+  align-items: center;
+}
+
+/* Ensure consistent spacing */
+.company-logo-container + * {
+  margin-left: 0.5rem;
 } 

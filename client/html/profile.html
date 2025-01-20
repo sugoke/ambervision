@@ -170,8 +170,12 @@
                 {{/if}}
                 <div class="form-group">
                   <label for="ISINCode">ISIN Code</label>
-                  <input type="text" class="form-control" id="ISINCode" name="ISINCode" required>
-                  <div id="isinSuggestions" style="display: none;"></div>
+                  <div class="menu-search-container">
+                    <input type="text" class="form-control" id="ISINCode" name="ISINCode" required>
+                    <div id="isinSuggestions" class="menu-search-results" style="display: none;">
+                      <!-- Suggestions will be inserted here by JS -->
+                    </div>
+                  </div>
                 </div>
                 <input type="hidden" id="productId" name="productId">
                 <div class="mb-3">

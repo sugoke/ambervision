@@ -77,48 +77,6 @@ Template.profile.onRendered(function() {
       console.log('User not logged in');
     }
   });
-
-  // Simple input event listener for ISIN autocomplete
-  const isinInput = this.$('#ISINCode');
-  const productIdInput = this.$('#productId');
-  
-  isinInput.on('input', function() {
-    const searchTerm = this.value.trim();
-    console.log('Search term:', searchTerm);
-    
-    if (searchTerm.length >= 2) {
-      console.log('Calling searchProducts method');
-      Meteor.call('searchProducts', searchTerm, (error, results) => {
-        if (error) {
-          console.error("Error in autocomplete:", error);
-        } else {
-          console.log('Received results:', results);
-          const suggestionsList = results.map(item => `
-            <li data-isin="${item.genericData.ISINCode}" data-product-id="${item._id}" data-currency="${item.genericData.currency}">
-              <strong>${item.genericData.ISINCode}</strong> - ${item.genericData.name}<br>
-              <small>${item.genericData.issuer} | ${item.genericData.currency}</small>
-            </li>
-          `).join('');
-          
-          console.log('Suggestions list:', suggestionsList);
-          $('#isinSuggestions').html(`<ul>${suggestionsList}</ul>`);
-          $('#isinSuggestions').show();
-        }
-      });
-    } else {
-      $('#isinSuggestions').hide();
-    }
-  });
-
-  $(document).on('click', '#isinSuggestions li', function() {
-    const selectedIsin = $(this).data('isin');
-    const selectedProductId = $(this).data('product-id');
-    const selectedCurrency = $(this).data('currency'); // Add this line
-    isinInput.val(selectedIsin);
-    productIdInput.val(selectedProductId);
-    $('#currency').val(selectedCurrency); // Add this line to set the currency
-    $('#isinSuggestions').hide();
-  });
 });
 
 Template.profile.helpers({
@@ -204,73 +162,50 @@ Template.profile.helpers({
 });
 
 Template.profile.events({
-  'input #isin'(event, template) {
-    const input = event.target.value.trim();
+  'input #ISINCode'(event) {
+    const searchTerm = event.target.value.trim();
     
-    console.log('Input value:', input);
-    
-    if (input.length > 2) {
-      template.showSuggestions.set(true);
-      console.log('Searching products for:', input);
-      Meteor.call('searchProducts', input, (error, results) => {
+    if (searchTerm.length >= 2) {
+      Meteor.call('searchProducts', searchTerm, (error, results) => {
         if (error) {
-          console.error('Error searching products:', error);
+          console.error("Error in autocomplete:", error);
         } else {
-          console.log('Received suggestions:', results);
-          if (results.length === 0) {
-            console.log('No suggestions found in the database');
-          } else {
-            console.log('Suggestion details:', results.map(r => ({
-              ISIN: r.genericData.ISINCode,
-              Name: r.genericData.name,
-              Currency: r.genericData.currency
-            })));
-          }
-          template.isinSuggestions.set(results);
+          const suggestionsList = results.map(item => `
+            <div class="search-result-item" data-isin="${item.genericData.ISINCode}" 
+                 data-product-id="${item._id}" data-currency="${item.genericData.currency}">
+              <div class="result-title">${item.genericData.name}</div>
+              <div class="result-details">
+                <span class="badge bg-primary">${item.genericData.productType}</span>
+                <span class="text-white-50">${item.genericData.ISINCode}</span>
+                ${item.genericData.currency ? 
+                  `<span class="badge bg-secondary">${item.genericData.currency}</span>` : ''}
+              </div>
+            </div>
+          `).join('');
+          
+          $('#isinSuggestions').html(suggestionsList).show();
         }
       });
     } else {
-      template.isinSuggestions.set([]);
-      template.showSuggestions.set(false);
+      $('#isinSuggestions').hide();
     }
   },
-  
-  'click .autocomplete-suggestion'(event, template) {
-    const selectedIsin = event.target.dataset.isin;
-    const selectedCurrency = event.target.dataset.currency;
-    console.log('Suggestion clicked:', selectedIsin, 'Currency:', selectedCurrency);
-    template.$('#isin').val(selectedIsin);
-    template.$('#currency').val(selectedCurrency);
-    template.$('#isinSuggestions').hide();
-  },
-  
-  'click .isin-suggestion': function(event, template) {
-    const selectedIsin = event.currentTarget.getAttribute('data-isin');
-    const selectedCurrency = event.currentTarget.getAttribute('data-currency');
+
+  'click .search-result-item'(event, template) {
+    event.preventDefault(); // Prevent any default navigation
+    event.stopPropagation(); // Stop event bubbling
     
-    // Set the ISIN input value
-    template.find('#ISINCode').value = selectedIsin;
+    const selectedIsin = $(event.currentTarget).data('isin');
+    const selectedProductId = $(event.currentTarget).data('product-id');
+    const selectedCurrency = $(event.currentTarget).data('currency');
     
-    // Set the currency input value
-    template.find('#currency').value = selectedCurrency;
+    // Fill in the form fields
+    $('#ISINCode').val(selectedIsin);
+    $('#productId').val(selectedProductId);
+    $('#currency').val(selectedCurrency);
     
-    // Hide the suggestions
-    template.$('#isinSuggestions').hide();
-  },
-  
-  'blur #isin'(event, template) {
-    // Hide suggestions when the input loses focus
-    Meteor.setTimeout(() => {
-      template.showSuggestions.set(false);
-    }, 200);
-  },
-  
-  'focus #isin'(event, template) {
-    // Show suggestions if there's content and length > 2
-    const input = event.target.value.trim();
-    if (input.length > 2) {
-      template.showSuggestions.set(true);
-    }
+    // Hide suggestions
+    $('#isinSuggestions').hide();
   },
   
   'input #amount'(event) {

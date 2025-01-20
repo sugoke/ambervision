@@ -36,11 +36,15 @@
                   <div class="col-3">
                     <div class="form-group mb-3">
                       <label for="issuer" class="form-label">Issuer</label>
-                      <select class="form-select" id="issuer" tabindex="3" required>
-                        <option value="">Select</option>
-                        {{#each availableIssuers}}
-                          <option value="{{name}}" {{selected name}}>{{name}}</option>
-                        {{/each}}
+                      <select id="issuer" class="form-select">
+                        <option value="">Select Issuer</option>
+                        {{#if issuersReady}}
+                          {{#each availableIssuers}}
+                            <option value="{{_id}}" {{selected _id}}>{{name}}</option>
+                          {{/each}}
+                        {{else}}
+                          <option value="" disabled>Loading issuers...</option>
+                        {{/if}}
                       </select>
                     </div>
                   </div>

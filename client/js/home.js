@@ -180,24 +180,26 @@ Template.home.onRendered(function() {
     const user = Meteor.user();
     if (!user) return;
 
-    let productsQuery = {};
+    let holdingsQuery = {};
     if (user.profile?.role !== 'superAdmin') {
-      const holdings = Holdings.find({ userId: user._id }).fetch();
-      const isins = holdings.map(h => h.isin);
-      productsQuery = { 'genericData.ISINCode': { $in: isins } };
+      holdingsQuery = { userId: user._id };
     }
 
-    const products = Products.find(productsQuery).fetch();
-    const issuerCounts = {};
+    const holdings = Holdings.find(holdingsQuery).fetch();
+    const issuerTotals = {};
     
-    products.forEach(product => {
-      const issuer = product.genericData?.issuer || 'Unknown';
-      issuerCounts[issuer] = (issuerCounts[issuer] || 0) + 1;
+    holdings.forEach(holding => {
+      const product = Products.findOne({ 'genericData.ISINCode': holding.isin });
+      if (product?.genericData?.issuer) {
+        const issuer = product.genericData.issuer;
+        const nominal = holding.quantity || 0;
+        issuerTotals[issuer] = (issuerTotals[issuer] || 0) + nominal;
+      }
     });
 
     const issuerData = {
-      labels: Object.keys(issuerCounts),
-      data: Object.values(issuerCounts)
+      labels: Object.keys(issuerTotals),
+      data: Object.values(issuerTotals)
     };
 
     if (!issuerData.labels.length) return;
@@ -230,6 +232,22 @@ Template.home.onRendered(function() {
               position: 'right',
               labels: {
                 color: '#fff'
+              }
+            },
+            tooltip: {
+              callbacks: {
+                label: function(context) {
+                  const value = context.raw;
+                  const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                  const percentage = ((value / total) * 100).toFixed(1);
+                  const formattedValue = value.toLocaleString('en-US', {
+                    style: 'currency',
+                    currency: 'EUR',
+                    minimumFractionDigits: 0,
+                    maximumFractionDigits: 0
+                  });
+                  return `${context.label}: ${formattedValue} (${percentage}%)`;
+                }
               }
             }
           }
