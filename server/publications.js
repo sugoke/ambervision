@@ -28,4 +28,13 @@ Meteor.publish('searchProducts', function(query) {
 
 Meteor.publish('issuers', function() {
   return Issuers.find({});
+});
+
+Meteor.publish('userProcessingStatus', function(userId) {
+  if (!this.userId || this.userId !== userId) return this.ready();
+  
+  return Meteor.users.find(
+    { _id: userId },
+    { fields: { 'processingStatus': 1 } }
+  );
 }); 

@@ -83,17 +83,31 @@ const getKnownIssuers = () => {
     .join(', ');
 };
 
+const updateProgress = (userId, status, percent) => {
+  if (!userId) return;
+  Meteor.users.update(userId, {
+    $set: {
+      'processingStatus': { status, percent }
+    }
+  });
+};
+
 Meteor.methods({
   async processPdfWithAI(fileData) {
     try {
+      const userId = this.userId;
+      updateProgress(userId, 'Starting PDF processing...', 5);
       console.log('Starting PDF processing...');
+
+      updateProgress(userId, 'Parsing PDF content...', 10);
       const pdfData = await pdfParse(fileData);
       console.log('PDF parsed successfully, text length:', pdfData.text.length);
       
+      updateProgress(userId, 'Retrieving known issuers...', 20);
       const knownIssuers = getKnownIssuers();
       console.log('Known issuers retrieved');
       
-      // Improve ISIN extraction prompt
+      updateProgress(userId, 'Extracting ISIN code...', 30);
       const isinResponse = await HTTP.call('POST', 'https://api.openai.com/v1/chat/completions', {
         headers: {
           'Authorization': `Bearer ${getOpenAIKey()}`,
@@ -112,18 +126,18 @@ Meteor.methods({
       const isin = isinResponse.data.choices[0].message.content.trim();
       console.log('Extracted ISIN:', isin);
 
+      updateProgress(userId, 'Validating ISIN format...', 40);
       if (isin === 'NONE') {
         console.error('No ISIN found in document');
         throw new Meteor.Error('processing-error', 'No ISIN code found in document');
       }
 
-      // Validate ISIN format
       if (!/^[A-Z]{2}[A-Z0-9]{10}$/.test(isin)) {
         console.error('Invalid ISIN format:', isin);
         throw new Meteor.Error('processing-error', 'Invalid ISIN format detected');
       }
 
-      // Check for existing product with this ISIN - Improve check
+      updateProgress(userId, 'Checking for existing product...', 50);
       const existingProduct = Products.findOne({
         $or: [
           { "genericData.ISINCode": { $regex: new RegExp(isin, 'i') } },
@@ -140,6 +154,7 @@ Meteor.methods({
 
       console.log('No duplicate ISIN found, proceeding with full processing...');
       
+      updateProgress(userId, 'Processing term sheet with AI...', 60);
       const prompt = `You are a financial document parser specialized in structured products. Extract data from this termsheet and return a JSON object with this EXACT structure:
 
 {
@@ -255,6 +270,7 @@ Rules for tickers:
         }
       });
 
+      updateProgress(userId, 'Parsing AI response...', 70);
       let parsedData;
       try {
         parsedData = JSON.parse(fullResponse.data.choices[0].message.content);
@@ -265,6 +281,7 @@ Rules for tickers:
         throw new Meteor.Error('processing-error', 'Failed to parse product data');
       }
 
+      updateProgress(userId, 'Validating parsed data...', 80);
       // Validate ISIN matches
       if (parsedData.genericData.ISINCode !== isin) {
         console.error('ISIN mismatch:', {
@@ -293,6 +310,7 @@ Rules for tickers:
         name: parsedData.genericData.name
       });
 
+      updateProgress(userId, 'Preparing database insertion...', 90);
       try {
         // Add unique index if not exists
         Products.rawCollection().createIndex({ "genericData.ISINCode": 1 }, { unique: true });
@@ -300,6 +318,7 @@ Rules for tickers:
         
         const productId = Products.insert(parsedData);
         console.log('Product inserted successfully, ID:', productId);
+        updateProgress(userId, 'Product saved successfully!', 100);
         return {
           success: true,
           isin: parsedData.genericData.ISINCode,
@@ -324,6 +343,7 @@ Rules for tickers:
       }
 
     } catch (error) {
+      updateProgress(this.userId, `Error: ${error.reason || error.message}`, 0);
       console.error('PDF processing error:', error);
       throw new Meteor.Error(
         'processing-error',

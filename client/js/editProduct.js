@@ -131,11 +131,13 @@ isChecked(value) {
   },
 
   uploadProgress() {
-    return Template.instance().uploadProgress.get();
+    const user = Meteor.user();
+    return user?.processingStatus?.percent || Template.instance().uploadProgress.get() || 0;
   },
 
   uploadStatus() {
-    return Template.instance().uploadStatus.get();
+    const user = Meteor.user();
+    return user?.processingStatus?.status || Template.instance().uploadStatus.get() || '';
   }
 });
 
@@ -153,6 +155,13 @@ Template.editProduct.onCreated(function() {
   this.uploadProgress = new ReactiveVar(0);
   this.uploadStatus = new ReactiveVar('');
 
+  // Add subscription to user processing status
+  this.autorun(() => {
+    if (Meteor.userId()) {
+      this.subscribe('userProcessingStatus', Meteor.userId());
+    }
+  });
+  
   const queryParams = Router.current().params.query;
   console.log("Query params:", queryParams);
 
@@ -365,16 +374,10 @@ Template.editProduct.events({
     const $button = $(event.currentTarget);
     const originalText = $button.html();
     $button.prop('disabled', true)
-           .html('<i class="fas fa-spinner fa-spin me-2"></i>Uploading...');
-
-    template.uploadProgress.set(10);
-    template.uploadStatus.set('Reading file...');
+           .html('<i class="fas fa-spinner fa-spin me-2"></i>Processing...');
 
     const reader = new FileReader();
     reader.onload = function(e) {
-      template.uploadProgress.set(30);
-      template.uploadStatus.set('Processing PDF...');
-      
       const arrayBuffer = e.target.result;
       const fileData = new Uint8Array(arrayBuffer);
 
@@ -383,15 +386,10 @@ Template.editProduct.events({
           template.uploadProgress.set(0);
           template.uploadStatus.set('');
           $button.prop('disabled', false).html(originalText);
-          console.error('Upload failed:', error);
           $('#warningModal').find('.modal-body').text('Failed to process term sheet: ' + error.reason);
           $('#warningModal').modal('show');
         } else {
-          template.uploadProgress.set(100);
-          template.uploadStatus.set('Success!');
-          console.log('Upload successful:', result);
-          
-          // Clear the upload form after a short delay
+          // Success handling
           setTimeout(() => {
             template.uploadedFile.set(null);
             template.uploadProgress.set(0);
