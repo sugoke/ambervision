@@ -26,6 +26,7 @@ import './methods/functions/insertProduct.js';
 import './methods/functions/debugProductsCollection.js';
 import './methods/functions/searchClient.js';
 import './methods/functions/processPdf.js';
+import './methods/aiCommentary.js';
 
 import { 
   Products, 
@@ -46,6 +47,7 @@ import './methods/eod.js';
 import './methods/prices.js';
 import { Accounts } from 'meteor/accounts-base';
 import { Random } from 'meteor/random';
+import './methods/news.js';
 
 Meteor.startup(() => {
   // Enhanced environment and connection logging

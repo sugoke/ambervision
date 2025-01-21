@@ -143,15 +143,54 @@ Template.phoenix.helpers({
   },
 
   newsLoading() {
-    return false;
+    return Template.instance().newsLoading.get();
   },
 
   underlyingNews() {
-    return [];
+    const news = Template.instance().underlyingNews.get();
+    return news?.map(item => {
+      // Parse date handling both ISO and UTC formats
+      let date;
+      try {
+        // Try parsing the date string directly
+        date = item.date ? new Date(item.date) : null;
+        
+        // If date is invalid, try parsing UTC timestamp
+        if (isNaN(date)) {
+          date = item.date ? new Date(item.date.replace(' ', 'T') + 'Z') : null;
+        }
+      } catch (e) {
+        console.error('Date parsing error:', e);
+        date = null;
+      }
+
+      return {
+        ticker: item.ticker?.split('.')?.[0] || '',
+        date: date ? date.toLocaleString('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          timeZone: 'UTC'
+        }) : 'N/A',
+        title: item.title,
+        text: item.content,
+        source: 'EOD Historical Data',
+        link: item.link
+      };
+    }) || [];
   },
 
-  truncateText(text, lines) {
-    return '';
+  truncateText(text, lines = 2) {
+    if (!text) return '';
+    const words = text.split(' ');
+    const avgWordsPerLine = 12;
+    const maxWords = lines * avgWordsPerLine;
+    if (words.length > maxWords) {
+      return words.slice(0, maxWords).join(' ') + '...';
+    }
+    return text;
   },
 
   isPdfLoading() {
@@ -175,6 +214,14 @@ Template.phoenix.helpers({
       return '-';
     }
     return num.toFixed(2);
+  },
+
+  aiCommentary() {
+    return Template.instance().aiCommentary.get();
+  },
+
+  isAiCommentaryLoading() {
+    return Template.instance().isAiCommentaryLoading.get();
   }
 });
 
@@ -623,129 +670,76 @@ datasets.forEach(dataset => {
     });
   });
 
-  /* Comment out news fetching
+  // Fetch news when template is rendered
   this.autorun(() => {
     const product = Template.currentData();
-    if (!product || !product.underlyings) return;
+    if (product?.underlyings) {
+      this.newsLoading.set(true);
+      
+      // Get tickers directly from underlyings
+      const tickers = product.underlyings
+        .map(u => u.eodTicker)
+        .filter(t => t && t.length > 0);
 
-    const tickers = product.underlyings
-      .filter(u => u && u.ticker)
-      .map(u => u.eodTicker || u.ticker);
-    if (!tickers.length) return;
-
-    console.log('Fetching news for tickers:', tickers);
-    this.newsLoading.set(true);
-
-    Meteor.call('getUnderlyingNews', tickers, (error, result) => {
-      this.newsLoading.set(false);
-      if (error) {
-        console.error('Error fetching news:', error);
-        this.underlyingNews.set([]);
+      if (tickers.length > 0) {
+        console.log('Fetching news for tickers:', tickers);
+        
+        Meteor.call('getUnderlyingNews', tickers, (error, result) => {
+          this.newsLoading.set(false);
+          if (error) {
+            console.error('Error fetching news:', error);
+          } else {
+            console.log('Received news:', result);
+            this.underlyingNews.set(result);
+          }
+        });
       } else {
-        const sortedNews = (result || []).sort((a, b) => 
-          new Date(b.publishedAt) - new Date(a.publishedAt)
-        ).map(news => ({
-          ...news,
-          url: news.url || '#',
-          linkText: news.url ? (news.url.includes('twitter.com') ? 'View Tweet' : 'Read More') : 'No Link'
-        }));
-        this.underlyingNews.set(sortedNews);
+        this.newsLoading.set(false);
+        this.underlyingNews.set([]);
       }
-    });
+    }
   });
-  */
+
+  // Generate initial AI commentary
+  generateAiCommentary(this);
 });
 
 Template.phoenix.onCreated(function() {
-  // Initialize only the pdfLoading ReactiveVar
   this.pdfLoading = new ReactiveVar(false);
-});
+  this.newsLoading = new ReactiveVar(false);
+  this.underlyingNews = new ReactiveVar([]);
+  this.aiCommentary = new ReactiveVar('');
+  this.isAiCommentaryLoading = new ReactiveVar(false);
 
-Template.phoenix.helpers({
-  // Remove news-related helpers or return null/empty values
-  newsLoading() {
-    return false;  // Or remove this helper entirely
-  },
+  this.autorun(() => {
+    const data = Template.currentData();
+    if (data?.underlyings) {
+      this.newsLoading.set(true);
+      
+      // Get tickers directly from underlyings
+      const tickers = data.underlyings
+        .map(u => u.eodTicker)
+        .filter(t => t && t.length > 0);
 
-  underlyingNews() {
-    return [];  // Or remove this helper entirely
-  },
-
-  truncateText(text, lines) {
-    return '';  // Or remove this helper entirely
-  },
-
-  // Keep other helpers
-  isPdfLoading() {
-    return Template.instance().pdfLoading.get();
-  },
-
-  gt(a, b) {
-    return a > b;
-  },
-
-  or(a, b) {
-    return a || b;
-  },
-
-  formatPercentage(value) {
-    if (value === null || value === undefined || value === '-') {
-      return '-';
-    }
-    const num = Number(value);
-    if (isNaN(num)) {
-      return '-';
-    }
-    return num.toFixed(2);
-  }
-});
-
-Template.phoenix.onDestroyed(function() {
-  if (chartInstance) {
-    chartInstance.destroy();
-    chartInstance = null;
-  }
-});
-
-// Function to fetch or calculate values for a specific date
-function fetchValuesForDate(dateString, underlyings) {
-  const values = {};
-  underlyings.forEach(underlying => {
-    // Fetch the closing price for the underlying on the given date
-    const closingPrice = getClosingPriceForDate(underlying.eodTicker, dateString);
-    if (closingPrice !== undefined) {
-      values[underlying.ticker] = closingPrice;
-    } else {
-      console.warn(`No closing price found for ${underlying.ticker} on ${dateString}`);
-      values[underlying.ticker] = null;
+      if (tickers.length > 0) {
+        console.log('Fetching news for tickers:', tickers);
+        
+        Meteor.call('getUnderlyingNews', tickers, (error, result) => {
+          this.newsLoading.set(false);
+          if (error) {
+            console.error('Error fetching news:', error);
+          } else {
+            console.log('Received news:', result);
+            this.underlyingNews.set(result);
+          }
+        });
+      } else {
+        this.newsLoading.set(false);
+        this.underlyingNews.set([]);
+      }
     }
   });
-
-  // Calculate the worstOf value
-  const validValues = Object.values(values).filter(v => v !== null);
-  values.worstOf = validValues.length > 0 ? Math.min(...validValues) : null;
-
-  return values;
-}
-
-// Example function to get closing price for a specific date
-function getClosingPriceForDate(eodTicker, dateString) {
-  // Implement the logic to fetch the closing price from your data source
-  // This could be a database query, API call, etc.
-  // For example:
-  const historicalData = Historical.findOne({ eodTicker });
-  if (!historicalData || !historicalData.data) {
-    console.warn(`No historical data found for ${eodTicker}`);
-    return undefined;
-  }
-
-  const dataPoint = historicalData.data.find(d => {
-    const dataDate = new Date(d.date);
-    return dataDate.toISOString().split('T')[0] === dateString;
-  });
-
-  return dataPoint ? dataPoint.close : undefined;
-}
+});
 
 Template.phoenix.events({
   'click #exportPDF': async function(event, template) {
@@ -1139,8 +1133,44 @@ Template.phoenix.events({
       } finally {
         template.pdfLoading.set(false);
       }
+  },
+
+  'click #refreshAiCommentary'(event, template) {
+    event.preventDefault();
+    generateAiCommentary(template);
   }
 });
+
+function generateAiCommentary(template) {
+  const product = Template.currentData();
+  if (!product) return;
+
+  template.isAiCommentaryLoading.set(true);
+
+  const productData = {
+    isin: product.genericData.ISINCode,
+    name: product.genericData.name,
+    status: product.status,
+    underlyings: product.underlyings,
+    features: product.features,
+    observationsTable: product.observationsTable,
+    totalCouponPaid: product.totalCouponPaid,
+    maturityDate: product.genericData.maturityDate,
+    news: template.underlyingNews.get()
+  };
+
+  const prompt = `Make a client friendly summary using all available information, with underlyings levels, explanation if related to some news, level compared to different barriers, time left till the end. Keep a positive vibe and don't blame the choice of underlyings. comment on the coupons paid.`;
+
+  Meteor.call('getAiCommentary', productData, prompt, (error, result) => {
+    template.isAiCommentaryLoading.set(false);
+    if (error) {
+      console.error('Error getting AI commentary:', error);
+      template.aiCommentary.set('Unable to generate commentary at this time.');
+    } else {
+      template.aiCommentary.set(result);
+    }
+  });
+}
 
 Template.phoenixTemplate.onCreated(function() {
   this.searchResults = new ReactiveVar([]);

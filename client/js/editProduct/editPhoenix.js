@@ -115,7 +115,6 @@ export function gatherPhoenixData() {
   // Transform ISIN to uppercase
   productData.genericData.ISINCode = $('#isin_code').val().toUpperCase();
   productData.genericData.currency = $('#currency').val();
-  productData.genericData.issuer = $('#issuer').val();
   productData.genericData.settlementType = $('#settlement_type').val();
   productData.genericData.settlementTx = $('#settlement_tx').val();
   productData.genericData.tradeDate = $('#tradeDate').val();
@@ -123,6 +122,11 @@ export function gatherPhoenixData() {
   productData.genericData.finalObservation = $('#finalObservation').val();
   productData.genericData.maturityDate = $('#maturityDate').val();
   productData.genericData.template = $('#product_type').val();
+
+  // Get issuer ID from select and convert to name
+  const issuerId = $('#issuer').val();
+  const issuer = Issuers.findOne(issuerId);
+  productData.genericData.issuer = issuer ? issuer.name : null;
 
   // Generate product name
   const underlyings = getPhoenixUnderlyings();
@@ -277,23 +281,23 @@ export function populatePhoenixFormFields(product) {
   $('#isin_code').val(product.genericData.ISINCode);
   $('#currency').val(product.genericData.currency);
   
-  // Fix issuer population - handle both ID and name cases
-  const issuerValue = product.genericData.issuer;
+  // Handle issuer population
+  const issuerValue = product.genericData?.issuer;
   if (issuerValue) {
     Tracker.autorun((computation) => {
       if (Meteor.subscribe('issuers').ready()) {
-        // Try to find issuer by ID first
-        let issuer = Issuers.findOne(issuerValue);
+        // Try to find issuer by name first (since that's how it's stored)
+        let issuer = Issuers.findOne({ name: issuerValue });
         
-        // If not found by ID, try to find by name
-        if (!issuer) {
-          issuer = Issuers.findOne({ name: issuerValue });
+        // If not found by name, try by ID (fallback)
+        if (!issuer && Mongo.ObjectID.isValid(issuerValue)) {
+          issuer = Issuers.findOne(issuerValue);
         }
         
         if (issuer) {
           $('#issuer').val(issuer._id);
+          computation.stop();
         }
-        computation.stop();
       }
     });
   }
@@ -1038,18 +1042,15 @@ Template.phoenixTemplate.helpers({
   },
   
   selected(issuerId) {
-    const currentData = Template.currentData();
-    const issuerValue = currentData?.genericData?.issuer || 
-                       currentData?.productDetails?.genericInformation?.issuer;
+    const currentIssuer = Template.currentData()?.genericData?.issuer;
+    if (!currentIssuer) return '';
     
-    if (!issuerValue) return '';
+    // If currentIssuer matches the ID directly
+    if (issuerId === currentIssuer) return 'selected';
     
-    // If issuerValue matches the current ID directly
-    if (issuerId === issuerValue) return 'selected';
-    
-    // If issuerValue is a name, check if it matches the current issuer's name
-    const currentIssuer = Issuers.findOne(issuerId);
-    return currentIssuer && currentIssuer.name === issuerValue ? 'selected' : '';
+    // If currentIssuer is a name, check if it matches this issuer's name
+    const issuer = Issuers.findOne(issuerId);
+    return issuer && issuer.name === currentIssuer ? 'selected' : '';
   },
 
   searchResults() {
