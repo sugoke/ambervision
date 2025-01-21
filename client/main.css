@@ -294,4 +294,144 @@
 /* Ensure consistent spacing */
 .company-logo-container + * {
   margin-left: 0.5rem;
+}
+
+/* Enhanced Autocomplete styling */
+.ui-autocomplete {
+  background: var(--bs-dark);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  padding: 8px;
+  max-height: 400px;
+  overflow-y: auto;
+  z-index: 1050;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+}
+
+.ui-autocomplete .ui-menu-item {
+  padding: 8px;
+  margin: 2px 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.ui-autocomplete .ui-menu-item:hover,
+.ui-autocomplete .ui-menu-item.ui-state-focus {
+  background: rgba(59, 130, 246, 0.15);
+}
+
+.autocomplete-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255,255,255,0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.autocomplete-item .ticker-code {
+  font-weight: 600;
+  color: #3b82f6;
+  min-width: 100px;
+}
+
+.autocomplete-item .company-name {
+  font-weight: 500;
+  color: #fff;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.autocomplete-item .exchange-info {
+  font-size: 0.85em;
+  color: rgba(255,255,255,0.6);
+  min-width: 80px;
+  text-align: right;
+}
+
+.autocomplete-item .price-info {
+  font-size: 0.85em;
+  color: #10b981;
+  min-width: 70px;
+  text-align: right;
+}
+
+.ui-helper-hidden-accessible {
+  display: none;
+}
+
+/* Autocomplete scrollbar */
+.ui-autocomplete::-webkit-scrollbar {
+  width: 8px;
+}
+
+.ui-autocomplete::-webkit-scrollbar-track {
+  background: rgba(255,255,255,0.05);
+  border-radius: 4px;
+}
+
+.ui-autocomplete::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.2);
+  border-radius: 4px;
+}
+
+.ui-autocomplete::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.3);
+}
+
+/* Ensure autocomplete is above other elements */
+.ui-autocomplete.ui-front {
+  z-index: 9999;
+}
+
+/* Force dark theme on autocomplete */
+.ui-autocomplete.bg-dark {
+  background-color: var(--bs-dark) !important;
+  color: #fff !important;
+  border: 1px solid rgba(255,255,255,0.1) !important;
+}
+
+.ui-autocomplete .ui-menu-item {
+  padding: 4px 8px !important;
+  border: none !important;
+}
+
+.ui-autocomplete .ui-menu-item:hover,
+.ui-autocomplete .ui-menu-item .ui-state-active {
+  background-color: rgba(59, 130, 246, 0.15) !important;
+  border: none !important;
+  margin: 0 !important;
+}
+
+/* Ensure autocomplete item styles are applied */
+.autocomplete-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 4px !important;
+}
+
+.autocomplete-item .ticker-code {
+  font-weight: 600 !important;
+  color: #3b82f6 !important;
+  min-width: 100px !important;
+}
+
+.autocomplete-item .company-name {
+  font-weight: 500 !important;
+  color: #fff !important;
+  flex: 1 !important;
+}
+
+.autocomplete-item .exchange-info {
+  color: rgba(255,255,255,0.6) !important;
+  min-width: 80px !important;
+}
+
+.autocomplete-item .price-info {
+  color: #10b981 !important;
+  min-width: 70px !important;
 } 

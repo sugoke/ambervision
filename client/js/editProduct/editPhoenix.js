@@ -1,4 +1,3 @@
-import { Products } from '/imports/api/products/products.js';
 import { Router } from 'meteor/iron:router';
 import { Template } from 'meteor/templating';
 import moment from 'moment';
@@ -44,15 +43,13 @@ export function updateSummary() {
           const fullName = $(this).find('[id^=fullNameInput-]').val() || '';
           const ticker = $(this).find('[id^=tickerInput-]').val() || '';
           const strike = $(this).find('[id^=strikeInput-]').val() || '';
-          const exchange = $(this).find('[id^=exchangeInput-]').val() || '';
-          const eodTicker = ticker ? `${ticker}.${exchange}` : '';
 
           const row = tbody.insertRow();
           row.innerHTML = `
             <td>${fullName}</td>
             <td>${ticker}</td>
             <td>${strike}</td>
-            <td>${eodTicker}</td>
+            <td>${ticker}</td>
           `;
         });
       }
@@ -174,19 +171,20 @@ export function getPhoenixUnderlyings() {
   $('#underlyingRowsContainer tr').each(function() {
     const ticker = $(this).find('[id^=tickerInput]').val();
     const exchange = $(this).find('[id^=exchangeInput]').val();
+    
     const underlying = {
       name: $(this).find('.fullName-autocomplete').val(),
-      ticker: ticker,
+      ticker: ticker, // Store the full ticker (e.g., "ADS.XETRA")
       exchange: exchange,
       country: $(this).find('[id^=countryInput]').val(),
       currency: $(this).find('[id^=currencyInput]').val(),
       initialReferenceLevel: parseFloat($(this).find('[id^=strikeInput]').val()),
-      eodTicker: `${ticker}.${exchange}`,
+      eodTicker: ticker, // Store the full ticker here too
       lastPriceInfo: {
         price: parseFloat($(this).find('[id^=closeText]').text()) || null,
         performance: null,
         distanceToBarrier: null,
-        date: $(this).find('[id^=closeDateText]').text().replace(/[()]/g, '') || null,
+        date: $(this).find('[id^=closeDateText]').text() || null,
         isWorstOf: false
       }
     };
@@ -216,23 +214,17 @@ function populatePhoenixUnderlyings(underlyings) {
     const templateData = {
       id: index + 1,
       fullName: underlying.name || '',
-      ticker: underlying.ticker || '',
+      ticker: underlying.eodTicker || '',  // Use full eodTicker
       exchange: underlying.exchange || '',
       country: underlying.country || '',
       currency: underlying.currency || '',
-      strike: underlying.initialReferenceLevel || ''
+      strike: underlying.initialReferenceLevel || '',
+      close: underlying.lastPriceInfo?.price || '',
+      closeDate: underlying.lastPriceInfo?.date || ''  // Add the close date
     };
 
     const renderedTemplate = Blaze.toHTMLWithData(Template.underlyingRow, templateData);
     underlyingsContainer.append(renderedTemplate);
-
-    // Update the last price info if available
-    if (underlying.lastPriceInfo) {
-      $(`#closeText-${index + 1}`).text(underlying.lastPriceInfo.price || '');
-      $(`#closeDateText-${index + 1}`).text(
-        underlying.lastPriceInfo.date ? `(${formatDate(underlying.lastPriceInfo.date)})` : ''
-      );
-    }
   });
 }
 
@@ -284,7 +276,28 @@ export function populatePhoenixFormFields(product) {
   // Generic Data
   $('#isin_code').val(product.genericData.ISINCode);
   $('#currency').val(product.genericData.currency);
-  $('#issuer').val(product.genericData.issuer);
+  
+  // Fix issuer population - handle both ID and name cases
+  const issuerValue = product.genericData.issuer;
+  if (issuerValue) {
+    Tracker.autorun((computation) => {
+      if (Meteor.subscribe('issuers').ready()) {
+        // Try to find issuer by ID first
+        let issuer = Issuers.findOne(issuerValue);
+        
+        // If not found by ID, try to find by name
+        if (!issuer) {
+          issuer = Issuers.findOne({ name: issuerValue });
+        }
+        
+        if (issuer) {
+          $('#issuer').val(issuer._id);
+        }
+        computation.stop();
+      }
+    });
+  }
+
   $('#settlement_type').val(product.genericData.settlementType);
   $('#settlement_tx').val(product.genericData.settlementTx);
   
@@ -319,17 +332,17 @@ export function populatePhoenixFormFields(product) {
   
   if (product.underlyings && product.underlyings.length) {
     product.underlyings.forEach((underlying, index) => {
-      // First render with existing data
-      const renderRow = (lastPrice) => {
+      const renderRow = (lastPrice, lastPriceDate) => {
         const templateData = {
           id: index + 1,
           fullName: underlying.name,
-          ticker: underlying.ticker,
-          exchange: underlying.exchange,
+          ticker: underlying.eodTicker || '',  // Use full eodTicker (e.g., "ADS.XETRA")
+          exchange: underlying.exchange || '',
           country: underlying.country,
           currency: underlying.currency,
           strike: underlying.initialReferenceLevel,
-          close: lastPrice || underlying.lastPriceInfo?.lastPrice || ''
+          close: lastPrice || underlying.lastPriceInfo?.price || '',
+          closeDate: lastPriceDate || underlying.lastPriceInfo?.date || ''  // Add the close date
         };
 
         // Remove existing row if it exists
@@ -340,18 +353,22 @@ export function populatePhoenixFormFields(product) {
       };
 
       // Initial render with existing data
-      renderRow(underlying.lastPriceInfo?.lastPrice);
+      renderRow(
+        underlying.lastPriceInfo?.price,
+        underlying.lastPriceInfo?.date  // Pass the existing date
+      );
 
       // Try to get updated price
-      Meteor.call('getLastPrice', underlying.eodTicker, (error, result) => {
-        if (error) {
-          console.error('Error getting last price:', error);
-          // No need to re-render as we already have the initial data displayed
-        } else {
-          // Update with new price data
-          renderRow(result?.lastPrice);
-        }
-      });
+      if (underlying.eodTicker) {
+        Meteor.call('getLastPrice', underlying.eodTicker, (error, result) => {
+          if (error) {
+            console.error('Error getting last price:', error);
+          } else {
+            // Update with new price data and date
+            renderRow(result?.lastPrice, result?.date);  // Pass both price and date from result
+          }
+        });
+      }
     });
   }
 
@@ -915,13 +932,13 @@ Template.phoenixTemplate.events({
     const match = selectedText.match(/(.*?)\s*\((.*?)\)/);
     if (match) {
       const [_, name, ticker] = match;
-      const [symbol, exchange] = ticker.split('.');
       
       // Update other fields in the row
-      row.querySelector('[id^=tickerInput]').value = symbol;
-      row.querySelector('[id^=exchangeInput]').value = exchange;
+      row.querySelector('[id^=tickerInput]').value = ticker;  // Use full ticker
+      row.querySelector('[id^=exchangeInput]').value = ticker.split('.')[1] || '';
       
       // Get additional info for the ticker and closing price
+      row.querySelector('[id^=exchangeInput]').value = ticker.split('.')[1] || '';
       const tradeDate = $('#tradeDate').val(); // Get trade date from the form
       
       Meteor.call('getTickerInfo', ticker, tradeDate, (error, result) => {
@@ -930,6 +947,9 @@ Template.phoenixTemplate.events({
           row.querySelector('[id^=currencyInput]').value = result.currency || '';
           if (result.lastPrice) {
             row.querySelector('[id^=closeText]').textContent = result.lastPrice;
+            row.querySelector('[id^=closeDateText]').textContent = result.date ? `(${result.date})` : '';
+      
+      // Get additional info for the ticker and closing price
             // Set the strike input to the closing price
             row.querySelector('[id^=strikeInput]').value = result.lastPrice;
           }
@@ -998,7 +1018,7 @@ Template.phoenixTemplate.onCreated(function() {
   this.searchResults = new ReactiveVar([]);
   this.isSubmitting = new ReactiveVar(false);
   
-  // Add subscription handle
+  // Make sure we have a subscription handle
   this.issuersHandle = this.subscribe('issuers');
 });
 
@@ -1009,21 +1029,27 @@ Template.phoenixTemplate.onRendered(function() {
 
 Template.phoenixTemplate.helpers({
   issuersReady() {
-    const ready = Template.instance().issuersHandle.ready();
-    console.log('Issuers subscription ready:', ready);
-    return ready;
+    const instance = Template.instance();
+    return instance.issuersHandle && instance.issuersHandle.ready();
   },
   
   availableIssuers() {
-    const issuers = Issuers.find({}, { sort: { name: 1 } }).fetch();
-    console.log('Available issuers:', issuers);
-    return issuers;
+    return Issuers.find({}, { sort: { name: 1 } }).fetch();
   },
   
   selected(issuerId) {
-    const product = Template.currentData();
-    const currentIssuer = product?.genericData?.issuer || product?.productDetails?.genericInformation?.issuer;
-    return issuerId === currentIssuer ? 'selected' : '';
+    const currentData = Template.currentData();
+    const issuerValue = currentData?.genericData?.issuer || 
+                       currentData?.productDetails?.genericInformation?.issuer;
+    
+    if (!issuerValue) return '';
+    
+    // If issuerValue matches the current ID directly
+    if (issuerId === issuerValue) return 'selected';
+    
+    // If issuerValue is a name, check if it matches the current issuer's name
+    const currentIssuer = Issuers.findOne(issuerId);
+    return currentIssuer && currentIssuer.name === issuerValue ? 'selected' : '';
   },
 
   searchResults() {

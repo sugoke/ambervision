@@ -12,7 +12,6 @@ export const Schedules = new Mongo.Collection('schedules');
 
 // Allow/deny rules if needed
 if (Meteor.isServer) {
-  Products._ensureIndex({ "genericData.ISINCode": 1 }, { unique: true, sparse: true });
   Products._ensureIndex({ "ISINCode": 1 }, { unique: true, sparse: true });
   
   Tickers._ensureIndex({ "symbol": 1 }, { unique: true });

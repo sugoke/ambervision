@@ -138,6 +138,21 @@ isChecked(value) {
   uploadStatus() {
     const user = Meteor.user();
     return user?.processingStatus?.status || Template.instance().uploadStatus.get() || '';
+  },
+
+  isLessThan(a, b) {
+    return a < b;
+  },
+  equals(a, b) {
+    return a === b;
+  },
+  showCard(type) {
+    const processing = !!Meteor.user()?.processingStatus;
+    return type === 'processing' ? processing : !processing;
+  },
+  progressPercent() {
+    const user = Meteor.user();
+    return user?.processingStatus?.percent || 0;
   }
 });
 
@@ -155,10 +170,10 @@ Template.editProduct.onCreated(function() {
   this.uploadProgress = new ReactiveVar(0);
   this.uploadStatus = new ReactiveVar('');
 
-  // Add subscription to user processing status
+  // Subscribe to processing status updates
   this.autorun(() => {
     if (Meteor.userId()) {
-      this.subscribe('userProcessingStatus', Meteor.userId());
+      this.subscribe('userProcessingStatus');
     }
   });
   
@@ -210,6 +225,9 @@ Template.editProduct.onCreated(function() {
     console.log("New product mode detected");
     this.isNewProduct = new ReactiveVar(true);
   }
+
+  // Clear any existing processing status
+  Meteor.call('clearProcessingStatus');
 });
 
 Template.editProduct.onRendered(function() {
@@ -339,6 +357,7 @@ Template.editProduct.events({
 
     const file = event.originalEvent.dataTransfer.files[0];
     if (file && file.type === 'application/pdf') {
+      Meteor.call('clearProcessingStatus');
       template.uploadedFile.set(file);
     }
   },
@@ -351,12 +370,14 @@ Template.editProduct.events({
   'change #pdfInput'(event, template) {
     const file = event.target.files[0];
     if (file && file.type === 'application/pdf') {
+      Meteor.call('clearProcessingStatus');
       template.uploadedFile.set(file);
     }
   },
 
   'click .remove-file'(event, template) {
     event.preventDefault();
+    Meteor.call('clearProcessingStatus');
     template.uploadedFile.set(null);
     $('#pdfInput').val('');
   },

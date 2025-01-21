@@ -4,7 +4,7 @@
       <input type="text" class="form-control fullName-autocomplete" id="fullNameInput-{{id}}" value="{{fullName}}" autocomplete="off" data-row-id="{{id}}">
     </td>
     <td>
-      <input type="text" class="form-control ticker-autocomplete" id="tickerInput-{{id}}" value="{{ticker}}" style="text-transform: uppercase;" autocomplete="off">
+      <input type="text" class="form-control" id="tickerInput-{{id}}" value="{{ticker}}" style="text-transform: uppercase;" autocomplete="off">
     </td>
     <td>
       <input type="text" class="form-control" id="exchangeInput-{{id}}" value="{{exchange}}">
@@ -17,6 +17,9 @@
     </td>
     <td>
       <span id="closeText-{{id}}">{{close}}</span>
+      {{#if closeDate}}
+        <span id="closeDateText-{{id}}">({{closeDate}})</span>
+      {{/if}}
     </td>
     <td>
       <input type="number" class="form-control" id="strikeInput-{{id}}" value="{{strike}}" step="0.01">

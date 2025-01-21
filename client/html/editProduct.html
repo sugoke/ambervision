@@ -42,6 +42,7 @@
       {{#if currentTemplate}}
 
       {{#unless isEditMode}}
+        
         <!-- Upload Term Sheet module -->
         <div class="card bg-transparent text-white mb-4 border border-secondary">
           <div class="card-header border-secondary">
@@ -65,21 +66,25 @@
                 <span class="text-white">{{uploadedFile.name}}</span>
                 <button class="btn btn-sm btn-danger remove-file ms-2">×</button>
               </div>
-              {{#if uploadProgress}}
-                <div class="progress mt-3 bg-dark">
-                  <div class="progress-bar progress-bar-striped progress-bar-animated bg-warning" 
-                       role="progressbar" 
-                       style="width: {{uploadProgress}}%" 
-                       aria-valuenow="{{uploadProgress}}" 
-                       aria-valuemin="0" 
-                       aria-valuemax="100">
-                    {{uploadStatus}}
-                  </div>
+              <div class="progress mt-3" style="height: 4px; background: rgba(255,255,255,0.1);">
+                <div class="progress-bar bg-warning" role="progressbar" 
+                     style="width: {{progressPercent}}%" 
+                     aria-valuenow="{{currentUser.processingStatus.percent}}" 
+                     aria-valuemin="0" 
+                     aria-valuemax="100">
                 </div>
+              </div>
+              {{#if currentUser.processingStatus}}
+              <span class="badge bg-dark border border-warning text-warning mt-2 d-inline-block">
+                <i class="fas fa-sync-alt fa-spin me-1"></i>
+                {{currentUser.processingStatus.status}}
+              </span>
               {{/if}}
-              <button class="btn btn-outline-warning mt-3 send-file">
-                <i class="fas fa-paper-plane me-2"></i>Send Term Sheet
-              </button>
+              <div class="d-flex align-items-center mt-3 gap-3">
+                <button class="btn btn-warning px-4 send-file">
+                  <i class="fas fa-robot me-2"></i>Process with AI
+                </button>
+              </div>
             {{/if}}
           </div>
         </div>

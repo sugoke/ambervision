@@ -20,11 +20,14 @@ Template.underlyingRow.onRendered(function() {
     const row = templateInstance.$('tr');
     console.log('Row found:', row.length > 0);
     
-    const inputs = row.find('input.fullName-autocomplete, input.ticker-autocomplete');
+    const inputs = row.find('input.fullName-autocomplete');
     console.log('Inputs found:', inputs.length);
     
     inputs.each(function() {
       const inputElement = $(this);
+      
+      // Set autofocus
+      inputElement.focus();
 
       // Initialize autocomplete
       inputElement.autocomplete({
@@ -34,7 +37,41 @@ Template.underlyingRow.onRendered(function() {
               console.log('Autocomplete error:', err);
               response([]);
             } else {
-              const data = result.map(item => ({
+              // Sort results to prioritize main exchanges
+              const sortedResults = result.sort((a, b) => {
+                // Define main exchanges by region
+                const mainExchanges = {
+                  US: ['US', 'NYSE', 'NASDAQ'],
+                  EU: ['XETRA', 'PAR', 'AMS', 'LSE', 'SWX'],
+                  ASIA: ['TSE', 'HKG', 'SSE']
+                };
+
+                // Check if exchanges are main ones
+                const aExchange = a.Exchange;
+                const bExchange = b.Exchange;
+                
+                // Check US exchanges first
+                const aIsUS = mainExchanges.US.includes(aExchange);
+                const bIsUS = mainExchanges.US.includes(bExchange);
+                if (aIsUS && !bIsUS) return -1;
+                if (!aIsUS && bIsUS) return 1;
+
+                // Then check EU exchanges
+                const aIsEU = mainExchanges.EU.includes(aExchange);
+                const bIsEU = mainExchanges.EU.includes(bExchange);
+                if (aIsEU && !bIsEU) return -1;
+                if (!aIsEU && bIsEU) return 1;
+
+                // Then check Asian exchanges
+                const aIsAsia = mainExchanges.ASIA.includes(aExchange);
+                const bIsAsia = mainExchanges.ASIA.includes(bExchange);
+                if (aIsAsia && !bIsAsia) return -1;
+                if (!aIsAsia && bIsAsia) return 1;
+
+                return 0;
+              });
+
+              const data = sortedResults.map(item => ({
                 label: `${item.Code}.${item.Exchange} | ${item.Name} | ${item.Type} | ${item.Currency} ${item.Country} | ${item.previousClose} (${item.previousCloseDate})`,
                 value: item.Name,
                 data: item
@@ -51,9 +88,12 @@ Template.underlyingRow.onRendered(function() {
           const rowId = inputElement.closest('tr').data('row-id');
           const tradeDate = $('#tradeDate').val();
 
-          // Update fields
+          // Create EOD ticker format
+          const eodTicker = `${selectedData.Code}.${selectedData.Exchange}`;
+
+          // Update fields with correct EOD format
           $(`#fullNameInput-${rowId}`).val(selectedData.Name);
-          $(`#tickerInput-${rowId}`).val(selectedData.Code);
+          $(`#tickerInput-${rowId}`).val(eodTicker);  // Store full EOD ticker
           $(`#exchangeInput-${rowId}`).val(selectedData.Exchange);
           $(`#countryInput-${rowId}`).val(selectedData.Country);
           $(`#currencyInput-${rowId}`).val(selectedData.Currency);
@@ -63,12 +103,11 @@ Template.underlyingRow.onRendered(function() {
 
           // If trade date is set, fetch historical price for strike
           if (tradeDate) {
-            const ticker = `${selectedData.Code}.${selectedData.Exchange}`;
-            console.log(`Fetching historical price for ${ticker} on trade date: ${tradeDate}`);
+            console.log(`Fetching historical price for ${eodTicker} on trade date: ${tradeDate}`);
             
             toggleStrikeLoading(rowId, true);
             
-            Meteor.call('getTickerInfo', ticker, tradeDate, (err, result) => {
+            Meteor.call('getTickerInfo', eodTicker, tradeDate, (err, result) => {
               toggleStrikeLoading(rowId, false);
               if (err) {
                 console.error('Error fetching historical price:', err);
@@ -78,7 +117,7 @@ Template.underlyingRow.onRendered(function() {
                   $(`#strikeInput-${rowId}`).val(result.lastPrice);
                   console.log(`Strike price set to ${result.lastPrice} for trade date ${result.date}`);
                 } else {
-                  console.warn(`No historical price found for ${ticker} on ${tradeDate}`);
+                  console.warn(`No historical price found for ${eodTicker} on ${tradeDate}`);
                 }
               }
             });
@@ -86,16 +125,26 @@ Template.underlyingRow.onRendered(function() {
             console.warn('No trade date selected, cannot fetch historical price for strike');
           }
         },
-        html: true,
-        classes: {
-          "ui-autocomplete": "highlight"
-        },
-        position: {
-          my: "left top+2",
-          at: "left bottom",
-          collision: "flip"
+        open: function() {
+          $(this).autocomplete('widget')
+            .addClass('ui-autocomplete bg-dark border-secondary');
         }
-      });
+      }).data('ui-autocomplete')._renderItem = function(ul, item) {
+        const $li = $("<li>")
+          .addClass("ui-menu-item")
+          .attr("data-value", item.value);
+        
+        const $div = $("<div>")
+          .addClass("autocomplete-item")
+          .html(`
+            <span class="ticker-code">${item.data.Code}.${item.data.Exchange}</span>
+            <span class="company-name">${item.data.Name}</span>
+            <span class="exchange-info">${item.data.Country} (${item.data.Currency})</span>
+            <span class="price-info">${item.data.previousClose}</span>
+          `);
+        
+        return $li.append($div).appendTo(ul);
+      };
     });
   });
 });

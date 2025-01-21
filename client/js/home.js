@@ -1,5 +1,5 @@
 import { Template } from 'meteor/templating';
-import { Products, Holdings, Risk, Schedules } from '/imports/api/products/products.js';
+import { Products, Holdings, Risk, Schedules, Issuers } from '/imports/api/products/products.js';
 import moment from 'moment';
 import '../html/home.html';
 import { renderBubbleChart } from './modular/bubbleChartHome.js';
@@ -191,10 +191,17 @@ Template.home.onRendered(function() {
     holdings.forEach(holding => {
       const product = Products.findOne({ 'genericData.ISINCode': holding.isin });
       if (product?.genericData?.issuer) {
-        // Get issuer name from product data
-        const issuerId = product.genericData.issuer;
-        const issuerName = product.genericData.issuerName || issuerId;
-        const nominal = holding.quantity || 0;
+        // Handle both ID and direct name cases
+        let issuerName;
+        if (product.genericData.issuer.match(/^[a-zA-Z0-9]{17}$/)) {
+          // If issuer looks like an ID, try to get name from Issuers collection
+          const issuerDoc = Issuers.findOne(product.genericData.issuer);
+          issuerName = issuerDoc?.name || product.genericData.issuer;
+        } else {
+          // If not an ID, use directly
+          issuerName = product.genericData.issuer;
+        }
+        const nominal = parseInt(product.genericData.nominalAmount) || 0;
         issuerTotals[issuerName] = (issuerTotals[issuerName] || 0) + nominal;
       }
     });
@@ -223,7 +230,9 @@ Template.home.onRendered(function() {
             backgroundColor: [
               '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEEAD',
               '#D4A5A5', '#9A8194', '#392F5A', '#31A9B8', '#258039'
-            ]
+            ],
+            borderWidth: 1,
+            borderColor: '#fff'
           }]
         },
         options: {
@@ -233,7 +242,11 @@ Template.home.onRendered(function() {
             legend: {
               position: 'right',
               labels: {
-                color: '#fff'
+                color: '#fff',
+                padding: 10,
+                font: {
+                  size: 12
+                }
               }
             },
             tooltip: {
@@ -242,13 +255,7 @@ Template.home.onRendered(function() {
                   const value = context.raw;
                   const total = context.dataset.data.reduce((a, b) => a + b, 0);
                   const percentage = ((value / total) * 100).toFixed(1);
-                  const formattedValue = value.toLocaleString('en-US', {
-                    style: 'currency',
-                    currency: 'EUR',
-                    minimumFractionDigits: 0,
-                    maximumFractionDigits: 0
-                  });
-                  return `${context.label}: ${formattedValue} (${percentage}%)`;
+                  return `${context.label}: ${value.toLocaleString()} (${percentage}%)`;
                 }
               }
             }
