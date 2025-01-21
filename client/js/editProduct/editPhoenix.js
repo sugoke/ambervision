@@ -3,6 +3,7 @@ import { Template } from 'meteor/templating';
 import moment from 'moment';
 import '/client/html/templates/underlyingRow.html';
 import { Issuers } from '/imports/api/issuers/issuers.js';
+import { Products } from '/imports/api/products/products.js';
 
 // Make sure updateSummary is also defined at the top level
 export function updateSummary() {
@@ -101,14 +102,25 @@ export function gatherPhoenixData() {
   // Add product ID if in edit mode
   const queryParams = Router.current().params.query;
   if (queryParams.mode === 'editProduct' && queryParams.isin) {
-    const existingProduct = Products.findOne({
-      $or: [
-        { "genericData.ISINCode": queryParams.isin },
-        { "ISINCode": queryParams.isin }
-      ]
-    });
-    if (existingProduct) {
-      productData._id = existingProduct._id;
+    try {
+      // Check if subscription is ready
+      const instance = Template.instance();
+      if (!instance.productsHandle.ready()) {
+        throw new Error('Products data is still loading. Please try again.');
+      }
+
+      const existingProduct = Products.findOne({
+        $or: [
+          { "genericData.ISINCode": queryParams.isin },
+          { "ISINCode": queryParams.isin }
+        ]
+      });
+      if (existingProduct) {
+        productData._id = existingProduct._id;
+      }
+    } catch (err) {
+      console.error('Error querying Products collection:', err);
+      throw new Error(err.message || 'Unable to access Products collection. Please try again.');
     }
   }
 
@@ -1024,6 +1036,8 @@ Template.phoenixTemplate.onCreated(function() {
   
   // Make sure we have a subscription handle
   this.issuersHandle = this.subscribe('issuers');
+  // Add Products subscription
+  this.productsHandle = this.subscribe('products');
 });
 
 // Make sure Template.phoenixTemplate.onRendered is defined
