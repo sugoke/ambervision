@@ -57,26 +57,85 @@ const mapToEODTicker = (rawTicker) => {
   return validateEodTicker(eodTicker);
 };
 
+const getDeepseekKey = () => {
+  const key = Meteor.settings?.private?.deepseekKey;
+  if (!key) throw new Meteor.Error('deepseek-key-missing', 'Deepseek API key not configured');
+  return key;
+};
+
 const getOpenAIKey = () => {
   const key = Meteor.settings?.private?.openaiKey;
   if (!key) throw new Meteor.Error('openai-key-missing', 'OpenAI API key not configured');
   return key;
 };
 
+const callLLMApi = async (messages, temperature = 0) => {
+  try {
+    console.log('Calling Deepseek API...');
+    return await HTTP.call('POST', 'https://api.deepseek.com/v1/chat/completions', {
+      headers: {
+        'Authorization': `Bearer ${getDeepseekKey()}`,
+        'Content-Type': 'application/json',
+      },
+      data: {
+        model: "deepseek-chat",  // DeepSeek chat model
+        messages: [
+          {
+            role: "system",
+            content: "You are a financial document parser specialized in structured products."
+          },
+          ...messages
+        ],
+        temperature,
+        max_tokens: 4000
+      }
+    });
+  } catch (error) {
+    console.warn('Deepseek API error:', error.message);
+    console.log('Falling back to OpenAI...');
+    return await HTTP.call('POST', 'https://api.openai.com/v1/chat/completions', {
+      headers: {
+        'Authorization': `Bearer ${getOpenAIKey()}`,
+        'Content-Type': 'application/json',
+      },
+      data: {
+        model: "gpt-3.5-turbo",
+        messages: [
+          {
+            role: "system",
+            content: "You are a financial document parser specialized in structured products."
+          },
+          ...messages.slice(1)  // Skip the system message from Deepseek
+        ],
+        temperature
+      }
+    });
+  }
+};
+
 const findClosestIssuer = (name) => {
   const issuers = Issuers.find({}, { fields: { name: 1 } }).fetch();
-  let bestMatch = null;
-  let highestSimilarity = 0;
 
   const normalize = str => str.toLowerCase().replace(/[^a-z0-9]/g, '');
   const normalizedInput = normalize(name);
 
+  // First try exact match
+  const exactMatch = issuers.find(i => i.name === name);
+  if (exactMatch) return exactMatch.name;
+
+  // Then try case-insensitive match
+  const caseInsensitiveMatch = issuers.find(i => i.name.toLowerCase() === name.toLowerCase());
+  if (caseInsensitiveMatch) return caseInsensitiveMatch.name;
+
+  let bestMatch = null;
+  let highestSimilarity = 0;
+
   issuers.forEach(issuer => {
     const normalizedIssuer = normalize(issuer.name);
     
-    // Simple contains check
-    if (normalizedInput.includes(normalizedIssuer) || 
-        normalizedIssuer.includes(normalizedInput)) {
+    // Check if the normalized strings are very similar
+    if (normalizedInput === normalizedIssuer || 
+        normalizedInput.includes(normalizedIssuer)) {
       if (normalizedIssuer.length > highestSimilarity) {
         highestSimilarity = normalizedIssuer.length;
         bestMatch = issuer.name;
@@ -84,6 +143,7 @@ const findClosestIssuer = (name) => {
     }
   });
 
+  console.log('Issuer matching:', { input: name, matched: bestMatch || name });
   return bestMatch || name;
 };
 
@@ -99,9 +159,11 @@ const PROCESSING_STEPS = [
   { percent: 20, status: 'Parsing PDF content...' },
   { percent: 30, status: 'Extracting ISIN code...' },
   { percent: 40, status: 'Validating document...' },
-  { percent: 60, status: 'Processing with AI...' },
-  { percent: 70, status: 'Parsing product data...' },
-  { percent: 80, status: 'Validating product data...' },
+  { percent: 50, status: 'Processing with AI...' },
+  { percent: 60, status: 'Parsing product data...' },
+  { percent: 70, status: 'Validating product data...' },
+  { percent: 75, status: 'Processing underlyings...' },
+  { percent: 80, status: 'Preparing database...' },
   { percent: 90, status: 'Saving to database...' },
   { percent: 100, status: 'Product saved successfully!' }
 ];
@@ -160,20 +222,16 @@ Meteor.methods({
       console.log('Known issuers retrieved:', knownIssuers);
       
       updateProgress(userId, 'Extracting ISIN code...');
-      const isinResponse = await HTTP.call('POST', 'https://api.openai.com/v1/chat/completions', {
-        headers: {
-          'Authorization': `Bearer ${getOpenAIKey()}`,
-          'Content-Type': 'application/json',
+      const isinResponse = await callLLMApi([
+        {
+          role: "system",
+          content: "You are a financial document parser specialized in extracting ISIN codes."
         },
-        data: {
-          model: "gpt-3.5-turbo",
-          messages: [{
-            role: "user",
-            content: `Find and return ONLY the ISIN code from this text. An ISIN is a 12-character code starting with 2 letters (usually CH for Swiss products) followed by 10 alphanumeric characters. Return only the ISIN, nothing else. If no ISIN is found, return "NONE".\n\nText:\n${pdfData.text}`
-          }],
-          temperature: 0
+        {
+          role: "user",
+          content: `Find and return ONLY the ISIN code from this text. An ISIN is a 12-character code starting with 2 letters (usually CH for Swiss products) followed by 10 alphanumeric characters. Return only the ISIN, nothing else. If no ISIN is found, return "NONE".\n\nText:\n${pdfData.text}`
         }
-      });
+      ]);
 
       const isin = isinResponse.data.choices[0].message.content.trim();
       console.log('Extracted ISIN:', isin);
@@ -206,17 +264,19 @@ Meteor.methods({
 
       console.log('No duplicate ISIN found, proceeding with full processing...');
       
-      updateProgress(userId, 'Processing term sheet with AI...');
+      updateProgress(userId, 'Processing with AI...');
+      console.log('Preparing AI request...');
       const prompt = `You are a financial document parser specialized in structured products. Extract data from this termsheet and return a JSON object with this EXACT structure:
 
 {
   "status": "pending",
   "genericData": {
-    "ISINCode": "string",
+    "ISINCode": "${isin}",  // IMPORTANT: Use this exact ISIN, do not change it
     "currency": "string",
-    "issuer": "string", // IMPORTANT: Match issuer name EXACTLY with one of these known issuers (case-sensitive): ${knownIssuers}
-    "settlementType": "string", // IMPORTANT: Must be either "Cash" or "Physical". Look in final redemption section - indicates if investor receives cash or shares in case of capital loss
-    "settlementTx": "string", // IMPORTANT: Number of days between trade date and settlement date (e.g., if trade date is 2024-01-01 and settlement date is 2024-01-07, then settlementTx is "7")
+    "issuer": "string", // CRITICAL: The issuer MUST be one of these exact values (nothing else is accepted): ${knownIssuers}. Look for mentions of 'issuer', 'issued by', 'emittent', 'guarantor'
+     etc.
+    "settlementType": "string",
+    "settlementTx": "string",
     "tradeDate": "YYYY-MM-DD",
     "paymentDate": "YYYY-MM-DD", 
     "finalObservation": "YYYY-MM-DD",
@@ -311,27 +371,23 @@ Examples:
 IMPORTANT: Always verify eodTicker follows symbol.exchange format exactly. Never return invalid formats like "name.exchange.other" or missing dots.
 `;
 
-    
-
-      const fullResponse = await HTTP.call('POST', 'https://api.openai.com/v1/chat/completions', {
-        headers: {
-          'Authorization': `Bearer ${getOpenAIKey()}`,
-          'Content-Type': 'application/json',
+      console.log('Sending request to AI...');
+      const fullResponse = await callLLMApi([
+        {
+          role: "system",
+          content: "You are a financial document parser specialized in structured products."
         },
-        data: {
-          model: "gpt-3.5-turbo-16k",
-          messages: [{
-            role: "user",
-            content: prompt + "\n\nPDF content:\n" + pdfData.text + "\n\nIMPORTANT: Return ONLY a valid JSON object, nothing else."
-          }],
-          temperature: 0.1
+        {
+          role: "user",
+          content: prompt + "\n\nPDF content:\n" + pdfData.text
         }
-      });
+      ], 0.1);
+      console.log('Received AI response');
 
-      updateProgress(userId, 'Parsing AI response...');
+      updateProgress(userId, 'Parsing product data...');
+      console.log('Starting to parse AI response...');
       let parsedData;
       try {
-        // Extract just the JSON part from the response
         const responseText = fullResponse.data.choices[0].message.content.trim();
         const jsonStart = responseText.indexOf('{');
         const jsonEnd = responseText.lastIndexOf('}') + 1;
@@ -339,25 +395,26 @@ IMPORTANT: Always verify eodTicker follows symbol.exchange format exactly. Never
         
         parsedData = JSON.parse(jsonStr);
         console.log('Parsed data successfully');
+
+        // Ensure ISIN is set correctly
+        if (!parsedData.genericData?.ISINCode || parsedData.genericData.ISINCode !== isin) {
+          console.log('Setting correct ISIN:', isin);
+          if (!parsedData.genericData) parsedData.genericData = {};
+          parsedData.genericData.ISINCode = isin;
+        }
+
       } catch (parseError) {
         console.error('JSON parse error:', parseError);
         console.log('Raw response:', fullResponse.data.choices[0].message.content);
         throw new Meteor.Error('processing-error', 'Failed to parse product data');
       }
 
-      updateProgress(userId, 'Validating parsed data...');
-      // Validate ISIN matches
-      if (parsedData.genericData.ISINCode !== isin) {
-        console.error('ISIN mismatch:', {
-          extracted: isin,
-          parsed: parsedData.genericData.ISINCode
-        });
-        throw new Meteor.Error('processing-error', 'ISIN code mismatch in parsed data');
-      }
-
+      updateProgress(userId, 'Validating product data...');
+      
       // Match issuer name
       parsedData.genericData.issuer = findClosestIssuer(parsedData.genericData.issuer);
 
+      updateProgress(userId, 'Processing underlyings...');
       // Map tickers to EOD format
       parsedData.underlyings = parsedData.underlyings.map(underlying => {
         const eodTicker = mapToEODTicker(underlying.ticker);
@@ -372,12 +429,12 @@ IMPORTANT: Always verify eodTicker follows symbol.exchange format exactly. Never
         .map(u => u.eodTicker)
         .join(" / ");
 
+      updateProgress(userId, 'Preparing database...');
       console.log('Inserting product into database...', {
         isin: parsedData.genericData.ISINCode,
         name: parsedData.genericData.name
       });
 
-      updateProgress(userId, 'Preparing database insertion...');
       try {
         // Create indexes if they don't exist
         await Products.rawCollection().createIndexes([
@@ -390,6 +447,7 @@ IMPORTANT: Always verify eodTicker follows symbol.exchange format exactly. Never
           }
         });
         
+        updateProgress(userId, 'Saving to database...');
         const productId = Products.insert(parsedData);
         console.log('Product inserted successfully, ID:', productId);
         updateProgress(userId, 'Product saved successfully!');
