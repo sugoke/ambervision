@@ -676,20 +676,16 @@ datasets.forEach(dataset => {
     if (product?.underlyings) {
       this.newsLoading.set(true);
       
-      // Get tickers directly from underlyings
       const tickers = product.underlyings
         .map(u => u.eodTicker)
         .filter(t => t && t.length > 0);
 
       if (tickers.length > 0) {
-     //   console.log('Fetching news for tickers:', tickers);
-        
         Meteor.call('getUnderlyingNews', tickers, (error, result) => {
           this.newsLoading.set(false);
           if (error) {
             console.error('Error fetching news:', error);
           } else {
-          //  console.log('Received news:', result);
             this.underlyingNews.set(result);
           }
         });
@@ -716,20 +712,16 @@ Template.phoenix.onCreated(function() {
     if (data?.underlyings) {
       this.newsLoading.set(true);
       
-      // Get tickers directly from underlyings
       const tickers = data.underlyings
         .map(u => u.eodTicker)
         .filter(t => t && t.length > 0);
 
       if (tickers.length > 0) {
-        console.log('Fetching news for tickers:', tickers);
-        
         Meteor.call('getUnderlyingNews', tickers, (error, result) => {
           this.newsLoading.set(false);
           if (error) {
             console.error('Error fetching news:', error);
           } else {
-            console.log('Received news:', result);
             this.underlyingNews.set(result);
           }
         });

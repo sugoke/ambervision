@@ -118,7 +118,7 @@
                     </td>
                     <td>
                       {{#if ISINCode}}
-                        <a href="/productDetails?isin={{ISINCode}}" class="btn btn-outline-warning btn-sm isin-btn">
+                        <a href="/productDetails?isin={{ISINCode}}" class="btn btn-outline-warning btn-sm isin-btn" style="width: 120px;">
                           {{ISINCode}}
                         </a>
                       {{else}}
@@ -190,7 +190,7 @@
                   {{#each filteredRiskData}}
                     <tr class="risk-row" data-days-left="{{daysLeft}}" {{riskRowAttributes}}>
                       <td>
-                        <a href="/productDetails?isin={{ISINCode}}" class="btn btn-outline-warning btn-sm isin-btn">
+                        <a href="/productDetails?isin={{ISINCode}}" class="btn btn-outline-warning btn-sm isin-btn" style="width: 120px;">
                           {{ISINCode}}
                         </a>
                       </td>

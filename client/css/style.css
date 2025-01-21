@@ -1,0 +1,7 @@
+.isin-btn {
+  width: 120px !important;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+} 
