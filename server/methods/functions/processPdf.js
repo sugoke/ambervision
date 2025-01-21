@@ -273,7 +273,7 @@ Meteor.methods({
   "genericData": {
     "ISINCode": "${isin}",  // IMPORTANT: Use this exact ISIN, do not change it
     "currency": "string",
-    "issuer": "string", // CRITICAL: The issuer MUST be one of these exact values (nothing else is accepted): ${knownIssuers}. Look for mentions of 'issuer', 'issued by', 'emittent', 'guarantor'
+    "issuer": "string", // CRITICAL: The issuer MUST be one of these exact values (nothing else is accepted): ${knownIssuers}. Look for mentions of 'issuer', 'issued by', 'emittent', 'guarantor'. choose the closest match.
      etc.
     "settlementType": "string",
     "settlementTx": "string",
@@ -436,12 +436,19 @@ IMPORTANT: Always verify eodTicker follows symbol.exchange format exactly. Never
       });
 
       try {
-        // Create indexes if they don't exist
-        await Products.rawCollection().createIndexes([
-          { key: { "genericData.ISINCode": 1 }, unique: true, background: true },
-          { key: { "ISINCode": 1 }, unique: true, background: true }
-        ]).catch(err => {
-          // Ignore index exists errors
+        // Create single compound index for both ISIN fields
+        await Products.rawCollection().createIndex(
+          { 
+            "genericData.ISINCode": 1,
+            "ISINCode": 1
+          },
+          { 
+            unique: true, 
+            sparse: true,
+            background: true,
+            name: "isin_compound_index"
+          }
+        ).catch(err => {
           if (!err.message.includes('existing index')) {
             throw err;
           }
