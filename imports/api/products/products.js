@@ -12,7 +12,10 @@ export const Schedules = new Mongo.Collection('schedules');
 
 // Allow/deny rules if needed
 if (Meteor.isServer) {
-  Products._ensureIndex({ "ISINCode": 1 }, { unique: true, sparse: true });
+  Products.rawCollection().createIndex(
+    { "genericData.ISINCode": 1 },
+    { unique: true }
+  );
   
   Tickers._ensureIndex({ "symbol": 1 }, { unique: true });
 }
@@ -27,4 +30,13 @@ export const Collections = {
   Risk,
   Schedules
 };
+
+try {
+  Products.insert(productData);
+} catch (error) {
+  if (error.code === 11000) {
+    throw new Meteor.Error('duplicate-isin', 'Product with this ISIN already exists');
+  }
+  throw error;
+}
 
