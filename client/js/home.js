@@ -181,7 +181,13 @@ Template.home.onRendered(function() {
     if (!user) return;
 
     let holdingsQuery = {};
-    if (user.profile?.role !== 'superAdmin') {
+    const selectedUserId = Session.get('selectedClientId');
+    
+    if (user.profile?.role === 'superAdmin' && !selectedUserId) {
+      // Keep empty query for all holdings
+    } else if (selectedUserId) {
+      holdingsQuery = { userId: selectedUserId };
+    } else {
       holdingsQuery = { userId: user._id };
     }
 
@@ -191,77 +197,71 @@ Template.home.onRendered(function() {
     holdings.forEach(holding => {
       const product = Products.findOne({ 'genericData.ISINCode': holding.isin });
       if (product?.genericData?.issuer) {
-        // Handle both ID and direct name cases
-        let issuerName;
-        if (product.genericData.issuer.match(/^[a-zA-Z0-9]{17}$/)) {
-          // If issuer looks like an ID, try to get name from Issuers collection
-          const issuerDoc = Issuers.findOne(product.genericData.issuer);
-          issuerName = issuerDoc?.name || product.genericData.issuer;
-        } else {
-          // If not an ID, use directly
-          issuerName = product.genericData.issuer;
-        }
-        const nominal = parseInt(product.genericData.nominalAmount) || 0;
+        const issuerName = product.genericData.issuer;
+        const nominal = holding.quantity || 0;
         issuerTotals[issuerName] = (issuerTotals[issuerName] || 0) + nominal;
       }
     });
 
-    const issuerData = {
-      labels: Object.keys(issuerTotals),
-      data: Object.values(issuerTotals)
-    };
+    console.log('Holdings:', holdings); // Debug log
+    console.log('Issuer totals:', issuerTotals); // Debug log
 
-    if (!issuerData.labels.length) return;
+    const ctx = document.getElementById('issuerPieChart')?.getContext('2d');
+    if (!ctx) {
+      console.log('Canvas context not found'); // Debug log
+      return;
+    }
 
-    Tracker.afterFlush(() => {
-      const ctx = document.getElementById('issuerPieChart')?.getContext('2d');
-      if (!ctx) return;
+    if (issuerChart) {
+      issuerChart.destroy();
+    }
 
-      if (issuerChart) {
-        issuerChart.destroy();
-      }
+    const labels = Object.keys(issuerTotals);
+    const data = Object.values(issuerTotals);
 
-      issuerChart = new Chart(ctx, {
-        type: 'pie',
-        data: {
-          labels: issuerData.labels,
-          datasets: [{
-            data: issuerData.data,
-            backgroundColor: [
-              '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEEAD',
-              '#D4A5A5', '#9A8194', '#392F5A', '#31A9B8', '#258039'
-            ],
-            borderWidth: 1,
-            borderColor: '#fff'
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: {
-              position: 'right',
-              labels: {
-                color: '#fff',
-                padding: 10,
-                font: {
-                  size: 12
-                }
+    if (!labels.length) {
+      console.log('No data to display'); // Debug log
+      return;
+    }
+
+    issuerChart = new Chart(ctx, {
+      type: 'pie',
+      data: {
+        labels: labels,
+        datasets: [{
+          data: data,
+          backgroundColor: [
+            '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEEAD',
+            '#D4A5A5', '#9A8194', '#392F5A', '#31A9B8', '#258039'
+          ]
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            display: true,
+            position: 'right',
+            labels: {
+              color: '#fff',
+              font: {
+                size: 12
               }
-            },
-            tooltip: {
-              callbacks: {
-                label: function(context) {
-                  const value = context.raw;
-                  const total = context.dataset.data.reduce((a, b) => a + b, 0);
-                  const percentage = ((value / total) * 100).toFixed(1);
-                  return `${context.label}: ${value.toLocaleString()} (${percentage}%)`;
-                }
+            }
+          },
+          tooltip: {
+            callbacks: {
+              label: function(context) {
+                const value = context.raw;
+                const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                const percentage = ((value / total) * 100).toFixed(1);
+                return `${context.label}: ${value.toLocaleString()} (${percentage}%)`;
               }
             }
           }
         }
-      });
+      }
     });
   });
 

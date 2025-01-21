@@ -682,14 +682,14 @@ datasets.forEach(dataset => {
         .filter(t => t && t.length > 0);
 
       if (tickers.length > 0) {
-        console.log('Fetching news for tickers:', tickers);
+     //   console.log('Fetching news for tickers:', tickers);
         
         Meteor.call('getUnderlyingNews', tickers, (error, result) => {
           this.newsLoading.set(false);
           if (error) {
             console.error('Error fetching news:', error);
           } else {
-            console.log('Received news:', result);
+          //  console.log('Received news:', result);
             this.underlyingNews.set(result);
           }
         });
