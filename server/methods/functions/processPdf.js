@@ -317,7 +317,7 @@ calculated. What you have to pay attention to is the sentence that says 'or any 
     "observationDate": "YYYY-MM-DD",
     "paymentDate": "YYYY-MM-DD",
     "couponBarrierLevel": number,
-    "autocallLevel": number or null, // IMPORTANT: null means this is a non-call date. This level is sometimes called Autocall Trigger Level.
+    "autocallLevel": number or null, // IMPORTANT: null means this is a non-call date. This level is sometimes called Autocall Trigger Level. 
     "couponPerPeriod": number
   }]
 }
@@ -436,23 +436,19 @@ IMPORTANT: Always verify eodTicker follows symbol.exchange format exactly. Never
       });
 
       try {
-        // Create single compound index for both ISIN fields
-        await Products.rawCollection().createIndex(
-          { 
-            "genericData.ISINCode": 1,
-            "ISINCode": 1
-          },
-          { 
-            unique: true, 
-            sparse: true,
-            background: true,
-            name: "isin_compound_index"
-          }
-        ).catch(err => {
-          if (!err.message.includes('existing index')) {
-            throw err;
-          }
-        });
+        // Simplified duplicate check
+        const existing = Products.findOne({
+          $or: [
+            { "genericData.ISINCode": isin },
+            { "ISINCode": isin }
+          ]
+        }, { fields: { _id: 1 } });
+
+        if (existing) {
+          throw new Meteor.Error('duplicate-isin', 
+            'A product with ISIN ' + isin + ' already exists. Please edit the existing product instead.',
+            { existingId: existing._id });
+        }
         
         updateProgress(userId, 'Saving to database...');
         const productId = Products.insert(parsedData);
