@@ -436,21 +436,6 @@ IMPORTANT: Always verify eodTicker follows symbol.exchange format exactly. Never
       });
 
       try {
-        // Simplified duplicate check
-        const existing = Products.findOne({
-          $or: [
-            { "genericData.ISINCode": isin },
-            { "ISINCode": isin }
-          ]
-        }, { fields: { _id: 1 } });
-
-        if (existing) {
-          throw new Meteor.Error('duplicate-isin', 
-            'A product with ISIN ' + isin + ' already exists. Please edit the existing product instead.',
-            { existingId: existing._id });
-        }
-        
-        updateProgress(userId, 'Saving to database...');
         const productId = Products.insert(parsedData);
         console.log('Product inserted successfully, ID:', productId);
         updateProgress(userId, 'Product saved successfully!');

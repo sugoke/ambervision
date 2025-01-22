@@ -150,12 +150,12 @@ Meteor.methods({
       for (const ticker of tickers) {
         const eodTicker = ticker.includes('.') ? ticker : `${ticker}.US`;
         const url = `https://eodhistoricaldata.com/api/news?s=${eodTicker}&api_token=${EOD_API_KEY}&limit=2&fmt=json`;
-        console.log('Fetching news for:', eodTicker);
+       // console.log('Fetching news for:', eodTicker);
         
         const response = HTTP.get(url);
         if (response.data && Array.isArray(response.data)) {
-          console.log(`Found ${response.data.length} news items for ${eodTicker}`);
-          console.log('Full news data:', JSON.stringify(response.data, null, 2));
+       //   console.log(`Found ${response.data.length} news items for ${eodTicker}`);
+       //   console.log('Full news data:', JSON.stringify(response.data, null, 2));
           news.push(...response.data.map(item => ({
             ...item,
             date: new Date(item.date || item.publishedAt).toLocaleDateString(),

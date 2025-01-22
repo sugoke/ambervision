@@ -12,7 +12,7 @@ if (!Meteor.server.method_handlers['getUnderlyingNews']) {
         const results = [];
         
         for (const ticker of tickers) {
-          console.log('Fetching news for:', ticker);
+         // console.log('Fetching news for:', ticker);
           
           const response = HTTP.get(`https://eodhistoricaldata.com/api/news`, {
             params: {

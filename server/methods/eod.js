@@ -17,7 +17,7 @@ Meteor.methods({
         const formattedTicker = ticker.includes('.') ? ticker : `${ticker}.US`;
         const url = `https://eodhistoricaldata.com/api/news?api_token=${apiKey}&s=${formattedTicker}&offset=0&limit=10`;
         
-        console.log(`Fetching news for ${formattedTicker}`);
+       // console.log(`Fetching news for ${formattedTicker}`);
         const result = await HTTP.get(url);
         
         if (result.statusCode === 200 && Array.isArray(result.data)) {

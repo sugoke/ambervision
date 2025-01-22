@@ -89,10 +89,15 @@ export function updateSummarySchedule() {
 }
 
 // Function declarations without inline exports
-export function gatherPhoenixData() {
-  showLoading(); // Show loading when gathering data
+export function gatherPhoenixData(template) {
+  showLoading();
   
   try {
+    // Check if Products subscription is ready using passed template
+    if (!template?.productsHandle?.ready()) {
+      throw new Error('Products data is still loading. Please try again.');
+    }
+
     const productData = {
       status: "pending",
       genericData: {},
@@ -105,16 +110,15 @@ export function gatherPhoenixData() {
     // Add product ID if in edit mode
     const queryParams = Router.current().params.query;
     if (queryParams.mode === 'editProduct' && queryParams.isin) {
-      if (Products && Products.findOne) {
-        const existingProduct = Products.findOne({
-          $or: [
-            { "genericData.ISINCode": queryParams.isin },
-            { "ISINCode": queryParams.isin }
-          ]
-        });
-        if (existingProduct) {
-          productData._id = existingProduct._id;
-        }
+      const existingProduct = Products.findOne({
+        $or: [
+          { "genericData.ISINCode": queryParams.isin },
+          { "ISINCode": queryParams.isin }
+        ]
+      });
+      
+      if (existingProduct) {
+        productData._id = existingProduct._id;
       }
     }
 
@@ -172,10 +176,10 @@ export function gatherPhoenixData() {
     });
 
     console.log('Gathered Phoenix product data:', productData);
-    hideLoading(); // Hide loading when done
+    hideLoading();
     return productData;
   } catch (error) {
-    hideLoading(); // Hide loading on error
+    hideLoading();
     throw error;
   }
 }
@@ -730,18 +734,27 @@ Template.phoenixTemplate.events({
     
     if (template.isSubmitting.get()) return;
     
+    // Check if subscriptions are ready
+    if (!template.productsHandle?.ready() || !template.issuersHandle?.ready()) {
+      showModal('Loading', 'Please wait while data is being loaded...');
+      return;
+    }
+    
     if (!validateForm()) {
       showModal('Validation Error', 'Please correct the errors in the form');
       return;
     }
 
     template.isSubmitting.set(true);
+    showLoading();
 
     try {
-      const productData = gatherPhoenixData();
+      // Pass template instance to gatherPhoenixData
+      const productData = gatherPhoenixData(template);
       const isin = $('#isin_code').val();
       
       if (!isin) {
+        hideLoading();
         showModal('Warning', 'ISIN code is required');
         template.isSubmitting.set(false);
         return;
@@ -750,32 +763,25 @@ Template.phoenixTemplate.events({
       const queryParams = Router.current().params.query;
       const isEditMode = queryParams.mode === 'editProduct';
       
-      if (isEditMode) {
-        Meteor.call('updateProduct', productData._id, productData, (error, result) => {
-          template.isSubmitting.set(false);
-          if (error) {
-            console.error('Error updating product:', error);
-            showModal('Error', 'Error updating product: ' + error.reason);
-          } else {
-            showModal('Success', 'Product updated successfully', () => {
-              Router.go('products');
-            });
-          }
+      const methodCall = isEditMode ? 
+        Meteor.call('updateProduct', productData._id, productData) :
+        Meteor.call('insertProduct', productData);
+
+      methodCall.then(() => {
+        hideLoading();
+        showModal('Success', `Product ${isEditMode ? 'updated' : 'inserted'} successfully`, () => {
+          Router.go('products');
         });
-      } else {
-        Meteor.call('insertProduct', productData, (error, result) => {
-          template.isSubmitting.set(false);
-          if (error) {
-            console.error('Error inserting product:', error);
-            showModal('Error', 'Error inserting product: ' + error.reason);
-          } else {
-            showModal('Success', 'Product inserted successfully', () => {
-              Router.go('products');
-            });
-          }
-        });
-      }
+      }).catch(error => {
+        hideLoading();
+        console.error(`Error ${isEditMode ? 'updating' : 'inserting'} product:`, error);
+        showModal('Error', `Error ${isEditMode ? 'updating' : 'inserting'} product: ${error.reason}`);
+      }).finally(() => {
+        template.isSubmitting.set(false);
+      });
+
     } catch (error) {
+      hideLoading();
       template.isSubmitting.set(false);
       console.error('Error gathering product data:', error);
       showModal('Error', 'Error gathering product data: ' + error.message);
@@ -1035,10 +1041,9 @@ Template.phoenixTemplate.onCreated(function() {
   this.searchResults = new ReactiveVar([]);
   this.isSubmitting = new ReactiveVar(false);
   
-  // Make sure we have a subscription handle
-  this.issuersHandle = this.subscribe('issuers');
-  // Add Products subscription
+  // Make sure we have subscription handles
   this.productsHandle = this.subscribe('products');
+  this.issuersHandle = this.subscribe('issuers');
 
   // Show loading initially
   showLoading();
