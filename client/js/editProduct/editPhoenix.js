@@ -90,95 +90,94 @@ export function updateSummarySchedule() {
 
 // Function declarations without inline exports
 export function gatherPhoenixData() {
-  const productData = {
-    status: "pending",
-    genericData: {},
-    features: {},
-    underlyings: [],
-    observationDates: [],
-    observationsTable: []
-  };
-
-  // Add product ID if in edit mode
-  const queryParams = Router.current().params.query;
-  if (queryParams.mode === 'editProduct' && queryParams.isin) {
-    try {
-      // Check if subscription is ready
-      const instance = Template.instance();
-      if (!instance.productsHandle.ready()) {
-        throw new Error('Products data is still loading. Please try again.');
-      }
-
-      const existingProduct = Products.findOne({
-        $or: [
-          { "genericData.ISINCode": queryParams.isin },
-          { "ISINCode": queryParams.isin }
-        ]
-      });
-      if (existingProduct) {
-        productData._id = existingProduct._id;
-      }
-    } catch (err) {
-      console.error('Error querying Products collection:', err);
-      throw new Error(err.message || 'Unable to access Products collection. Please try again.');
-    }
-  }
-
-  // Transform ISIN to uppercase
-  productData.genericData.ISINCode = $('#isin_code').val().toUpperCase();
-  productData.genericData.currency = $('#currency').val();
-  productData.genericData.settlementType = $('#settlement_type').val();
-  productData.genericData.settlementTx = $('#settlement_tx').val();
-  productData.genericData.tradeDate = $('#tradeDate').val();
-  productData.genericData.paymentDate = $('#paymentDate').val();
-  productData.genericData.finalObservation = $('#finalObservation').val();
-  productData.genericData.maturityDate = $('#maturityDate').val();
-  productData.genericData.template = $('#product_type').val();
-
-  // Get issuer ID from select and convert to name
-  const issuerId = $('#issuer').val();
-  const issuer = Issuers.findOne(issuerId);
-  productData.genericData.issuer = issuer ? issuer.name : null;
-
-  // Generate product name
-  const underlyings = getPhoenixUnderlyings();
-  const underlyingNames = underlyings.map(u => u.ticker).join('/');
-  const couponPerPeriod = parseFloat($('#phoenix_coupon_per_period').val());
-  const maturityDate = $('#maturityDate').val();
-  const maturityYear = maturityDate ? new Date(maturityDate).getFullYear() : '';
+  showLoading(); // Show loading when gathering data
   
-  productData.genericData.name = `Phoenix on ${underlyingNames} ${couponPerPeriod}% ${maturityYear}`;
+  try {
+    const productData = {
+      status: "pending",
+      genericData: {},
+      features: {},
+      underlyings: [],
+      observationDates: [],
+      observationsTable: []
+    };
 
-  // Gather features specific to Phoenix
-  productData.features.memoryCoupon = $('#memoryCoupon').is(':checked');
-  productData.features.memoryAutocall = $('#memoryAutocall').is(':checked');
-  productData.features.oneStar = $('#oneStar').is(':checked');
-  productData.features.lowStrike = $('#lowStrike').is(':checked');
-  productData.features.autocallStepdown = $('#autocallStepdown').is(':checked');
-  productData.features.jump = $('#jump').is(':checked');
-  productData.features.stepDown = $('#step_down').is(':checked');
-  productData.features.stepDownSize = $('#step_down_step').val();
-  productData.features.couponBarrier = parseFloat($('#phoenix_coupon_barrier').val());
-  productData.features.capitalProtectionBarrier = parseFloat($('#phoenix_capital_protection_barrier').val());
-  productData.features.couponPerPeriod = parseFloat($('#phoenix_coupon_per_period').val());
+    // Add product ID if in edit mode
+    const queryParams = Router.current().params.query;
+    if (queryParams.mode === 'editProduct' && queryParams.isin) {
+      if (Products && Products.findOne) {
+        const existingProduct = Products.findOne({
+          $or: [
+            { "genericData.ISINCode": queryParams.isin },
+            { "ISINCode": queryParams.isin }
+          ]
+        });
+        if (existingProduct) {
+          productData._id = existingProduct._id;
+        }
+      }
+    }
 
-  // Gather underlyings using the helper function
-  productData.underlyings = getPhoenixUnderlyings();
+    // Transform ISIN to uppercase
+    productData.genericData.ISINCode = $('#isin_code').val().toUpperCase();
+    productData.genericData.currency = $('#currency').val();
+    productData.genericData.settlementType = $('#settlement_type').val();
+    productData.genericData.settlementTx = $('#settlement_tx').val();
+    productData.genericData.tradeDate = $('#tradeDate').val();
+    productData.genericData.paymentDate = $('#paymentDate').val();
+    productData.genericData.finalObservation = $('#finalObservation').val();
+    productData.genericData.maturityDate = $('#maturityDate').val();
+    productData.genericData.template = $('#product_type').val();
 
-  // Gather observation dates
-  $('#scheduleTable tbody tr').each(function() {
-    const $row = $(this);
-    productData.observationDates.push({
-      observationDate: $row.find('.observation-date').val(),
-      paymentDate: $row.find('.payment-date').val(),
-      couponBarrierLevel: parseFloat($row.find('.coupon-barrier').val()) || null,
-      autocallLevel: parseFloat($row.find('.autocall-barrier').val()) || null,
-      couponPerPeriod: parseFloat($row.find('.coupon-per-period').val()) || null
+    // Get issuer ID from select and convert to name
+    const issuerId = $('#issuer').val();
+    const issuer = Issuers.findOne(issuerId);
+    productData.genericData.issuer = issuer ? issuer.name : null;
+
+    // Generate product name
+    const underlyings = getPhoenixUnderlyings();
+    const underlyingNames = underlyings.map(u => u.ticker).join('/');
+    const couponPerPeriod = parseFloat($('#phoenix_coupon_per_period').val());
+    const maturityDate = $('#maturityDate').val();
+    const maturityYear = maturityDate ? new Date(maturityDate).getFullYear() : '';
+    
+    productData.genericData.name = `Phoenix on ${underlyingNames} ${couponPerPeriod}% ${maturityYear}`;
+
+    // Gather features specific to Phoenix
+    productData.features.memoryCoupon = $('#memoryCoupon').is(':checked');
+    productData.features.memoryAutocall = $('#memoryAutocall').is(':checked');
+    productData.features.oneStar = $('#oneStar').is(':checked');
+    productData.features.lowStrike = $('#lowStrike').is(':checked');
+    productData.features.autocallStepdown = $('#autocallStepdown').is(':checked');
+    productData.features.jump = $('#jump').is(':checked');
+    productData.features.stepDown = $('#step_down').is(':checked');
+    productData.features.stepDownSize = $('#step_down_step').val();
+    productData.features.couponBarrier = parseFloat($('#phoenix_coupon_barrier').val());
+    productData.features.capitalProtectionBarrier = parseFloat($('#phoenix_capital_protection_barrier').val());
+    productData.features.couponPerPeriod = parseFloat($('#phoenix_coupon_per_period').val());
+
+    // Gather underlyings using the helper function
+    productData.underlyings = getPhoenixUnderlyings();
+
+    // Gather observation dates
+    $('#scheduleTable tbody tr').each(function() {
+      const $row = $(this);
+      productData.observationDates.push({
+        observationDate: $row.find('.observation-date').val(),
+        paymentDate: $row.find('.payment-date').val(),
+        couponBarrierLevel: parseFloat($row.find('.coupon-barrier').val()) || null,
+        autocallLevel: parseFloat($row.find('.autocall-barrier').val()) || null,
+        couponPerPeriod: parseFloat($row.find('.coupon-per-period').val()) || null
+      });
     });
-  });
 
-  console.log('Gathered Phoenix product data:', productData);
-  return productData;
+    console.log('Gathered Phoenix product data:', productData);
+    hideLoading(); // Hide loading when done
+    return productData;
+  } catch (error) {
+    hideLoading(); // Hide loading on error
+    throw error;
+  }
 }
 
 // Helper function to get underlyings specific to Phoenix
@@ -288,6 +287,7 @@ function formatDate(dateString) {
 // Export the main population functions
 export function populatePhoenixFormFields(product) {
   console.log("Populating Phoenix form with data:", product);
+  showLoading(); // Show loading when starting to populate
 
   // Generic Data
   $('#isin_code').val(product.genericData.ISINCode);
@@ -309,6 +309,7 @@ export function populatePhoenixFormFields(product) {
         if (issuer) {
           $('#issuer').val(issuer._id);
           computation.stop();
+          hideLoading(); // Hide loading when issuer is found
         }
       }
     });
@@ -1038,6 +1039,19 @@ Template.phoenixTemplate.onCreated(function() {
   this.issuersHandle = this.subscribe('issuers');
   // Add Products subscription
   this.productsHandle = this.subscribe('products');
+
+  // Show loading initially
+  showLoading();
+
+  // Handle subscriptions
+  this.autorun(() => {
+    const issuersReady = this.issuersHandle.ready();
+    const productsReady = this.productsHandle.ready();
+    
+    if (issuersReady && productsReady) {
+      hideLoading();
+    }
+  });
 });
 
 // Make sure Template.phoenixTemplate.onRendered is defined
@@ -1071,4 +1085,28 @@ Template.phoenixTemplate.helpers({
     return Template.instance().searchResults.get();
   }
 });
+
+// Add these helper functions at the top level
+function showLoading() {
+  $('#loadingBackdrop').show().addClass('show');
+}
+
+function hideLoading() {
+  $('#loadingBackdrop').removeClass('show').hide();
+}
+
+// Add CSS styles for the backdrop
+const style = document.createElement('style');
+style.textContent = `
+  #loadingBackdrop {
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 1050;
+  }
+  
+  #loadingBackdrop .spinner-border {
+    width: 3rem;
+    height: 3rem;
+  }
+`;
+document.head.appendChild(style);
 
