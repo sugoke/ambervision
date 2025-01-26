@@ -38,12 +38,10 @@
                       <label for="issuer" class="form-label">Issuer</label>
                       <select id="issuer" class="form-select">
                         <option value="">Select Issuer</option>
-                        {{#if issuersReady}}
+                        {{#if Template.subscriptionsReady}}
                           {{#each availableIssuers}}
-                            <option value="{{_id}}" {{selected _id}}>{{name}}</option>
+                            <option value="{{_id}}" {{selectedIssuer _id}}>{{name}}</option>
                           {{/each}}
-                        {{else}}
-                          <option value="" disabled>Loading issuers...</option>
                         {{/if}}
                       </select>
                     </div>
@@ -480,23 +478,22 @@
         </div>
     </div>
 
-    <!-- Move modal here, outside the card but still inside the template -->
-    <div class="modal fade" id="alertModal" tabindex="-1" aria-hidden="true" style="z-index: 1060;">
-      <div class="modal-dialog modal-dialog-centered" style="z-index: 1070; max-width: 400px; margin: 1.75rem auto;">
-        <div class="modal-content bg-dark text-white">
-          <div class="modal-header border-secondary">
+    <!-- Move modals outside the card but inside the template -->
+    <div class="modal fade" id="alertModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
             <h5 class="modal-title"></h5>
-            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body"></div>
-          <div class="modal-footer border-secondary">
-            <button type="button" class="btn btn-outline-theme" data-bs-dismiss="modal">OK</button>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Add this right before the closing </template> tag -->
     <div id="loadingBackdrop" class="modal-backdrop fade" style="display: none;">
       <div class="d-flex justify-content-center align-items-center h-100">
         <div class="spinner-border text-light" role="status">
@@ -504,5 +501,13 @@
         </div>
       </div>
     </div>
+</template>
+
+<template name="editPhoenix">
+  {{#if isLoading}}
+    <div class="loading-spinner">Loading...</div>
+  {{else}}
+    {{> phoenixTemplate product=currentProduct}}
+  {{/if}}
 </template>
 

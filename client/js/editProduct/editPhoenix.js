@@ -4,6 +4,7 @@ import moment from 'moment';
 import '/client/html/templates/underlyingRow.html';
 import { Issuers } from '/imports/api/issuers/issuers.js';
 import { Products } from '/imports/api/products/products.js';
+import { ReactiveVar } from 'meteor/reactive-var';
 
 // Make sure updateSummary is also defined at the top level
 export function updateSummary() {
@@ -90,98 +91,122 @@ export function updateSummarySchedule() {
 
 // Function declarations without inline exports
 export function gatherPhoenixData(template) {
-  showLoading();
-  
-  try {
-    // Check if Products subscription is ready using passed template
-    if (!template?.productsHandle?.ready()) {
-      throw new Error('Products data is still loading. Please try again.');
-    }
+  const productData = {
+    _id: null,
+    status: "live",
+    genericData: {},
+    features: {},
+    underlyings: [],
+    observationDates: [],
+    observationsTable: [],
+    totalCouponPaid: 0
+  };
 
-    const productData = {
-      status: "pending",
-      genericData: {},
-      features: {},
-      underlyings: [],
-      observationDates: [],
-      observationsTable: []
-    };
+  const currentProduct = template.product.get();
+  if (!currentProduct?._id) {
+    throw new Error('No product loaded');
+  }
 
-    // Add product ID if in edit mode
-    const queryParams = Router.current().params.query;
-    if (queryParams.mode === 'editProduct' && queryParams.isin) {
-      const existingProduct = Products.findOne({
-        $or: [
-          { "genericData.ISINCode": queryParams.isin },
-          { "ISINCode": queryParams.isin }
-        ]
-      });
-      
-      if (existingProduct) {
-        productData._id = existingProduct._id;
-      }
-    }
+  productData._id = currentProduct._id;
 
-    // Transform ISIN to uppercase
-    productData.genericData.ISINCode = $('#isin_code').val().toUpperCase();
-    productData.genericData.currency = $('#currency').val();
-    productData.genericData.settlementType = $('#settlement_type').val();
-    productData.genericData.settlementTx = $('#settlement_tx').val();
-    productData.genericData.tradeDate = $('#tradeDate').val();
-    productData.genericData.paymentDate = $('#paymentDate').val();
-    productData.genericData.finalObservation = $('#finalObservation').val();
-    productData.genericData.maturityDate = $('#maturityDate').val();
-    productData.genericData.template = $('#product_type').val();
+  // Generic Data
+  productData.genericData = {
+    ISINCode: $('#isin_code').val()?.toUpperCase(),
+    currency: $('#currency').val(),
+    settlementType: $('#settlement_type').val(),
+    settlementTx: $('#settlement_tx').val(),
+    tradeDate: $('#tradeDate').val(),
+    paymentDate: $('#paymentDate').val(),
+    finalObservation: $('#finalObservation').val(),
+    maturityDate: $('#maturityDate').val(),
+    template: 'phoenix',
+    nonCallPeriods: parseInt($('#phoenix_non_call_periods').val()) || 0,
+    valoren: $('#valoren').val()
+  };
 
-    // Get issuer ID from select and convert to name
-    const issuerId = $('#issuer').val();
-    const issuer = Issuers.findOne(issuerId);
-    productData.genericData.issuer = issuer ? issuer.name : null;
+  // Get issuer name from selected ID
+  const issuerId = $('#issuer').val();
+  const issuer = Issuers.findOne(issuerId);
+  productData.genericData.issuer = issuer ? issuer.name : null;
 
-    // Generate product name
-    const underlyings = getPhoenixUnderlyings();
-    const underlyingNames = underlyings.map(u => u.ticker).join('/');
-    const couponPerPeriod = parseFloat($('#phoenix_coupon_per_period').val());
-    const maturityDate = $('#maturityDate').val();
-    const maturityYear = maturityDate ? new Date(maturityDate).getFullYear() : '';
-    
-    productData.genericData.name = `Phoenix on ${underlyingNames} ${couponPerPeriod}% ${maturityYear}`;
+  // Generate product name from underlyings
+  const underlyings = getPhoenixUnderlyings();
+  const underlyingNames = underlyings.map(u => u.ticker).join(' / ');
+  const couponPerPeriod = parseFloat($('#phoenix_coupon_per_period').val());
+  const maturityYear = moment(productData.genericData.maturityDate).year();
+  productData.genericData.name = `Phoenix on ${underlyingNames} ${couponPerPeriod}% ${maturityYear}`;
 
-    // Gather features specific to Phoenix
-    productData.features.memoryCoupon = $('#memoryCoupon').is(':checked');
-    productData.features.memoryAutocall = $('#memoryAutocall').is(':checked');
-    productData.features.oneStar = $('#oneStar').is(':checked');
-    productData.features.lowStrike = $('#lowStrike').is(':checked');
-    productData.features.autocallStepdown = $('#autocallStepdown').is(':checked');
-    productData.features.jump = $('#jump').is(':checked');
-    productData.features.stepDown = $('#step_down').is(':checked');
-    productData.features.stepDownSize = $('#step_down_step').val();
-    productData.features.couponBarrier = parseFloat($('#phoenix_coupon_barrier').val());
-    productData.features.capitalProtectionBarrier = parseFloat($('#phoenix_capital_protection_barrier').val());
-    productData.features.couponPerPeriod = parseFloat($('#phoenix_coupon_per_period').val());
+  // Features
+  productData.features = {
+    memoryCoupon: $('#memoryCoupon').is(':checked'),
+    memoryAutocall: $('#memoryAutocall').is(':checked'),
+    oneStar: $('#oneStar').is(':checked'),
+    lowStrike: $('#lowStrike').is(':checked'),
+    autocallStepdown: $('#autocallStepdown').is(':checked'),
+    jump: $('#jump').is(':checked'),
+    stepDown: $('#phoenix_step_down').is(':checked'),
+    stepDownSize: $('#phoenix_step_size').val(),
+    couponBarrier: parseFloat($('#phoenix_coupon_barrier').val()),
+    capitalProtectionBarrier: parseFloat($('#phoenix_capital_protection_barrier').val()),
+    couponPerPeriod: parseFloat($('#phoenix_coupon_per_period').val()),
+    observationFrequency: $('#phoenix_observation_frequency').val()
+  };
 
-    // Gather underlyings using the helper function
-    productData.underlyings = getPhoenixUnderlyings();
+  // Underlyings
+  productData.underlyings = getPhoenixUnderlyings();
 
-    // Gather observation dates
-    $('#scheduleTable tbody tr').each(function() {
-      const $row = $(this);
-      productData.observationDates.push({
-        observationDate: $row.find('.observation-date').val(),
-        paymentDate: $row.find('.payment-date').val(),
-        couponBarrierLevel: parseFloat($row.find('.coupon-barrier').val()) || null,
-        autocallLevel: parseFloat($row.find('.autocall-barrier').val()) || null,
-        couponPerPeriod: parseFloat($row.find('.coupon-per-period').val()) || null
-      });
+  // Observation Dates and Table
+  const observationRows = $('#scheduleTable tbody tr');
+  let totalCouponPaid = 0;
+
+  productData.observationDates = [];
+  productData.observationsTable = [];
+
+  observationRows.each(function(index) {
+    const $row = $(this);
+    const observationDate = $row.find('.observation-date').val();
+    const paymentDate = $row.find('.payment-date').val();
+    const couponBarrier = parseFloat($row.find('.coupon-barrier').val());
+    const autocallLevel = parseFloat($row.find('.autocall-barrier').val());
+    const couponPerPeriod = parseFloat($row.find('.coupon-per-period').val());
+
+    productData.observationDates.push({
+      observationDate,
+      paymentDate,
+      couponBarrierLevel: couponBarrier,
+      autocallLevel,
+      couponPerPeriod
     });
 
-    console.log('Gathered Phoenix product data:', productData);
-    hideLoading();
-    return productData;
-  } catch (error) {
-    hideLoading();
-    throw error;
+    productData.observationsTable.push({
+      n: index + 1,
+      observationDate,
+      paymentDate,
+      couponPaid: couponPerPeriod,
+      autocallLevel,
+      couponBarrier,
+      worstOfLevel: null,
+      worstOfTicker: null
+    });
+
+    totalCouponPaid += couponPerPeriod || 0;
+  });
+
+  productData.totalCouponPaid = totalCouponPaid;
+
+  // Preserve existing fields
+  if (currentProduct) {
+    productData.chart100 = currentProduct.chart100 || [];
+    productData.chartOptions = currentProduct.chartOptions || {};
+    productData.pnl = currentProduct.pnl;
+    productData.redemptionIfToday = currentProduct.redemptionIfToday || 100;
+    productData.autocallDate = currentProduct.autocallDate;
+    productData.autocalled = currentProduct.autocalled || false;
+    productData.capitalRedemption = currentProduct.capitalRedemption;
   }
+
+  console.log('Gathered product data:', productData);
+  return productData;
 }
 
 // Helper function to get underlyings specific to Phoenix
@@ -215,68 +240,14 @@ export function getPhoenixUnderlyings() {
 // Function to populate underlyings for Phoenix
 function populatePhoenixUnderlyings(underlyings) {
   console.log("Populating Phoenix underlyings:", underlyings);
-  const underlyingsContainer = $('#underlyingRowsContainer');
-  underlyingsContainer.empty();
-
-  if (!Array.isArray(underlyings)) {
-    console.error("underlyings is not an array:", underlyings);
-    return;
-  }
-
-  underlyings.forEach((underlying, index) => {
-    if (!underlying) {
-      console.error(`Underlying at index ${index} is undefined`);
-      return;
-    }
-
-    // Use the underlyingRow template
-    const templateData = {
-      id: index + 1,
-      fullName: underlying.name || '',
-      ticker: underlying.eodTicker || '',  // Use full eodTicker
-      exchange: underlying.exchange || '',
-      country: underlying.country || '',
-      currency: underlying.currency || '',
-      strike: underlying.initialReferenceLevel || '',
-      close: underlying.lastPriceInfo?.price || '',
-      closeDate: underlying.lastPriceInfo?.date || ''  // Add the close date
-    };
-
-    const renderedTemplate = Blaze.toHTMLWithData(Template.underlyingRow, templateData);
-    underlyingsContainer.append(renderedTemplate);
-  });
+  const underlyingsContainer = getCachedSelector('#underlyingRowsContainer');
+  populateTableRows(underlyingsContainer, underlyings, Template.underlyingRow);
 }
 
 function populatePhoenixObservations(observations) {
   console.log("Populating Phoenix observations:", observations);
-  const scheduleContainer = $('#scheduleTable tbody');
-  scheduleContainer.empty();
-
-  if (!Array.isArray(observations)) {
-    console.error("observations is not an array:", observations);
-    return;
-  }
-
-  observations.forEach((observation, index) => {
-    if (!observation) {
-      console.error(`Observation at index ${index} is undefined`);
-      return;
-    }
-
-    // Use the observationRow template
-    const templateData = {
-      n: index + 1,
-      observationDate: observation.observationDate || '',
-      paymentDate: observation.paymentDate || '',
-      couponBarrier: observation.couponBarrierLevel || '',
-      autocallBarrier: observation.autocallLevel || '',
-      couponPerPeriod: observation.couponPerPeriod || '',
-      disabledAttribute: '' // Add any disabled logic if needed
-    };
-
-    const renderedTemplate = Blaze.toHTMLWithData(Template.observationRow, templateData);
-    scheduleContainer.append(renderedTemplate);
-  });
+  const scheduleContainer = getCachedSelector('#scheduleTable tbody');
+  populateTableRows(scheduleContainer, observations, Template.observationRow);
 }
 
 // Helper function to format date
@@ -291,34 +262,11 @@ function formatDate(dateString) {
 // Export the main population functions
 export function populatePhoenixFormFields(product) {
   console.log("Populating Phoenix form with data:", product);
-  showLoading(); // Show loading when starting to populate
+  showLoading();
 
   // Generic Data
   $('#isin_code').val(product.genericData.ISINCode);
   $('#currency').val(product.genericData.currency);
-  
-  // Handle issuer population
-  const issuerValue = product.genericData?.issuer;
-  if (issuerValue) {
-    Tracker.autorun((computation) => {
-      if (Meteor.subscribe('issuers').ready()) {
-        // Try to find issuer by name first (since that's how it's stored)
-        let issuer = Issuers.findOne({ name: issuerValue });
-        
-        // If not found by name, try by ID (fallback)
-        if (!issuer && Mongo.ObjectID.isValid(issuerValue)) {
-          issuer = Issuers.findOne(issuerValue);
-        }
-        
-        if (issuer) {
-          $('#issuer').val(issuer._id);
-          computation.stop();
-          hideLoading(); // Hide loading when issuer is found
-        }
-      }
-    });
-  }
-
   $('#settlement_type').val(product.genericData.settlementType);
   $('#settlement_tx').val(product.genericData.settlementTx);
   
@@ -347,87 +295,53 @@ export function populatePhoenixFormFields(product) {
     $('#phoenix_step_size').val(product.features.stepDownSize);
   }
 
-  // Populate underlyings
-  const underlyingsContainer = $('#underlyingRowsContainer');
-  underlyingsContainer.empty();
-  
-  if (product.underlyings && product.underlyings.length) {
-    product.underlyings.forEach((underlying, index) => {
-      const renderRow = (lastPrice, lastPriceDate) => {
-        const templateData = {
-          id: index + 1,
-          fullName: underlying.name,
-          ticker: underlying.eodTicker || '',  // Use full eodTicker (e.g., "ADS.XETRA")
-          exchange: underlying.exchange || '',
-          country: underlying.country,
-          currency: underlying.currency,
-          strike: underlying.initialReferenceLevel,
-          close: lastPrice || underlying.lastPriceInfo?.price || '',
-          closeDate: lastPriceDate || underlying.lastPriceInfo?.date || ''  // Add the close date
-        };
+  // Populate underlyings and observations
+  if (product.underlyings?.length) populatePhoenixUnderlyings(product.underlyings);
+  if (product.observationDates?.length) populatePhoenixObservations(product.observationDates);
 
-        // Remove existing row if it exists
-        $(`#tickerRow-${index + 1}`).remove();
-        
-        // Render new row
-        Blaze.renderWithData(Template.underlyingRow, templateData, underlyingsContainer[0]);
-      };
-
-      // Initial render with existing data
-      renderRow(
-        underlying.lastPriceInfo?.price,
-        underlying.lastPriceInfo?.date  // Pass the existing date
-      );
-
-      // Try to get updated price
-      if (underlying.eodTicker) {
-        Meteor.call('getLastPrice', underlying.eodTicker, (error, result) => {
-          if (error) {
-            console.error('Error getting last price:', error);
-          } else {
-            // Update with new price data and date
-            renderRow(result?.lastPrice, result?.date);  // Pass both price and date from result
-          }
-        });
-      }
-    });
-  }
-
-  // Populate observation dates
-  const scheduleContainer = $('#scheduleTable tbody');
-  scheduleContainer.empty();
-  
-  if (product.observationDates && product.observationDates.length) {
-    product.observationDates.forEach((observation, index) => {
-      const templateData = {
-        n: index + 1,
-        observationDate: moment(observation.observationDate).format('YYYY-MM-DD'),
-        paymentDate: moment(observation.paymentDate).format('YYYY-MM-DD'),
-        couponBarrier: observation.couponBarrierLevel,
-        autocallBarrier: observation.autocallLevel || '',
-        couponPerPeriod: observation.couponPerPeriod
-      };
-      Blaze.renderWithData(Template.observationRow, templateData, scheduleContainer[0]);
-    });
-  }
-
-  // Update summary after populating all fields
   updateSummary();
+  hideLoading();
 }
 
-// Add this helper function at the top level
+// Utility function to cache jQuery selectors
+function getCachedSelector(selector) {
+    if (!getCachedSelector.cache) {
+        getCachedSelector.cache = {};
+    }
+    if (!getCachedSelector.cache[selector]) {
+        getCachedSelector.cache[selector] = $(selector);
+    }
+    return getCachedSelector.cache[selector];
+}
+
+// Utility function for date handling
+function adjustDateForBusinessDay(date, holidays = []) {
+    let adjustedDate = moment(date);
+    while (isWeekend(adjustedDate) || holidays.some(h => moment(h).isSame(adjustedDate, 'day'))) {
+        adjustedDate = getNextBusinessDay(adjustedDate, holidays);
+    }
+    return adjustedDate;
+}
+
+// Utility function for populating table rows
+function populateTableRows(container, data, template) {
+    container.empty();
+    data.forEach((item, index) => {
+        const renderedTemplate = Blaze.toHTMLWithData(template, { ...item, index: index + 1 });
+        container.append(renderedTemplate);
+    });
+}
+
+// Utility function for showing modals
 function showModal(title, message, callback) {
-  const modal = new bootstrap.Modal(document.getElementById('alertModal'));
-  const modalElement = document.getElementById('alertModal');
-  
-  modalElement.querySelector('.modal-title').textContent = title;
-  modalElement.querySelector('.modal-body').textContent = message;
-  
-  if (callback) {
-    modalElement.addEventListener('hidden.bs.modal', callback, { once: true });
-  }
-  
-  modal.show();
+    const modal = new bootstrap.Modal(document.getElementById('alertModal'));
+    const modalElement = document.getElementById('alertModal');
+    modalElement.querySelector('.modal-title').textContent = title;
+    modalElement.querySelector('.modal-body').textContent = message;
+    if (callback) {
+        modalElement.addEventListener('hidden.bs.modal', callback, { once: true });
+    }
+    modal.show();
 }
 
 // Add these helper functions at the top level
@@ -729,65 +643,6 @@ Template.phoenixTemplate.events({
     });
   },
 
-  'click #submitProduct'(event, template) {
-    event.preventDefault();
-    
-    if (template.isSubmitting.get()) return;
-    
-    // Check if subscriptions are ready
-    if (!template.productsHandle?.ready() || !template.issuersHandle?.ready()) {
-      showModal('Loading', 'Please wait while data is being loaded...');
-      return;
-    }
-    
-    if (!validateForm()) {
-      showModal('Validation Error', 'Please correct the errors in the form');
-      return;
-    }
-
-    template.isSubmitting.set(true);
-    showLoading();
-
-    try {
-      // Pass template instance to gatherPhoenixData
-      const productData = gatherPhoenixData(template);
-      const isin = $('#isin_code').val();
-      
-      if (!isin) {
-        hideLoading();
-        showModal('Warning', 'ISIN code is required');
-        template.isSubmitting.set(false);
-        return;
-      }
-
-      const queryParams = Router.current().params.query;
-      const isEditMode = queryParams.mode === 'editProduct';
-      
-      const methodCall = isEditMode ? 
-        Meteor.call('updateProduct', productData._id, productData) :
-        Meteor.call('insertProduct', productData);
-
-      methodCall.then(() => {
-        hideLoading();
-        showModal('Success', `Product ${isEditMode ? 'updated' : 'inserted'} successfully`, () => {
-          Router.go('products');
-        });
-      }).catch(error => {
-        hideLoading();
-        console.error(`Error ${isEditMode ? 'updating' : 'inserting'} product:`, error);
-        showModal('Error', `Error ${isEditMode ? 'updating' : 'inserting'} product: ${error.reason}`);
-      }).finally(() => {
-        template.isSubmitting.set(false);
-      });
-
-    } catch (error) {
-      hideLoading();
-      template.isSubmitting.set(false);
-      console.error('Error gathering product data:', error);
-      showModal('Error', 'Error gathering product data: ' + error.message);
-    }
-  },
-
   'input #phoenix_capital_protection_barrier'(event) {
     updateSummary();
   },
@@ -1034,61 +889,178 @@ Template.phoenixTemplate.events({
         clearFieldError($field);
       }
     }
+  },
+
+  'click #submitProduct'(event, template) {
+    event.preventDefault();
+    
+    // Show loading state
+    showLoading();
+    
+    try {
+      // Validate form first
+      if (!validateForm()) {
+        hideLoading();
+        showModal('Validation Error', 'Please check all required fields');
+        return;
+      }
+
+      // Gather product data
+      const productData = {
+        genericData: {
+          ISINCode: $('#isin_code').val()?.toUpperCase(),
+          currency: $('#currency').val(),
+          issuer: $('#issuer option:selected').text(),
+          settlementType: $('#settlement_type').val(),
+          settlementTx: parseInt($('#settlement_tx').val()),
+          tradeDate: $('#tradeDate').val(),
+          paymentDate: $('#paymentDate').val(),
+          finalObservation: $('#finalObservation').val(),
+          maturityDate: $('#maturityDate').val(),
+          valoren: $('#valoren').val(),
+          template: 'phoenix'
+        },
+        features: {
+          memoryCoupon: $('#memoryCoupon').is(':checked'),
+          memoryAutocall: $('#memoryAutocall').is(':checked'),
+          oneStar: $('#oneStar').is(':checked'),
+          lowStrike: $('#lowStrike').is(':checked'),
+          autocallStepdown: $('#autocallStepdown').is(':checked'),
+          jump: $('#jump').is(':checked'),
+          stepDown: $('#phoenix_step_down').is(':checked'),
+          stepDownSize: parseFloat($('#phoenix_step_size').val()),
+          couponBarrier: parseFloat($('#phoenix_coupon_barrier').val()),
+          capitalProtectionBarrier: parseFloat($('#phoenix_capital_protection_barrier').val()),
+          couponPerPeriod: parseFloat($('#phoenix_coupon_per_period').val())
+        },
+        underlyings: [],
+        observationDates: []
+      };
+
+      // Gather underlyings data first
+      $('#underlyingRowsContainer tr').each(function() {
+        const underlying = {
+          name: $(this).find('.fullName-autocomplete').val(),
+          ticker: $(this).find('[id^=tickerInput]').val(),
+          exchange: $(this).find('[id^=exchangeInput]').val(),
+          country: $(this).find('[id^=countryInput]').val(),
+          currency: $(this).find('[id^=currencyInput]').val(),
+          initialReferenceLevel: parseFloat($(this).find('[id^=strikeInput]').val()),
+          eodTicker: $(this).find('[id^=tickerInput]').val()
+        };
+        productData.underlyings.push(underlying);
+      });
+
+      // Generate product name
+      const underlyingTickers = productData.underlyings.map(u => u.ticker).join(' / ');
+      const maturityYear = moment(productData.genericData.maturityDate).format('YYYY');
+      const couponPerPeriod = productData.features.couponPerPeriod;
+      productData.genericData.name = `Phoenix on ${underlyingTickers} ${couponPerPeriod}% ${maturityYear}`;
+
+      // Gather observation dates
+      $('#scheduleTable tbody tr').each(function() {
+        const observation = {
+          observationDate: $(this).find('.observation-date').val(),
+          paymentDate: $(this).find('.payment-date').val(),
+          couponBarrierLevel: parseFloat($(this).find('.coupon-barrier').val()),
+          autocallLevel: parseFloat($(this).find('.autocall-barrier').val()),
+          couponPerPeriod: parseFloat($(this).find('.coupon-per-period').val())
+        };
+        productData.observationDates.push(observation);
+      });
+
+      // Call the server method
+      Meteor.call('insertProduct', productData, (error, result) => {
+        hideLoading();
+        
+        if (error) {
+          console.error('Error inserting product:', error);
+          showModal('Error', error.reason || 'Failed to insert product');
+          return;
+        }
+
+        // Show success message and redirect with page reload
+        showModal('Success', 'Product inserted successfully', () => {
+          window.location.href = '/products'; // Full page reload to products page
+        });
+      });
+
+    } catch (error) {
+      hideLoading();
+      console.error('Error gathering product data:', error);
+      showModal('Error', 'Failed to gather product data');
+    }
   }
 });
-// Make sure Template.phoenixTemplate.onCreated is defined
+
 Template.phoenixTemplate.onCreated(function() {
-  this.searchResults = new ReactiveVar([]);
-  this.isSubmitting = new ReactiveVar(false);
+  console.log('Phoenix template created');
   
-  // Make sure we have subscription handles
-  this.productsHandle = this.subscribe('products');
-  this.issuersHandle = this.subscribe('issuers');
-
-  // Show loading initially
-  showLoading();
-
-  // Handle subscriptions
+  // Initialize ReactiveVars
+  this.product = new ReactiveVar({}); // Initialize with empty object for new products
+  this.issuerName = new ReactiveVar(null);
+  
+  // Track changes to the product data context
   this.autorun(() => {
-    const issuersReady = this.issuersHandle.ready();
-    const productsReady = this.productsHandle.ready();
+    const data = Template.currentData();
+    console.log('Phoenix template data context:', data);
     
-    if (issuersReady && productsReady) {
-      hideLoading();
+    if (data?.product) {
+      console.log('Setting product in template:', data.product);
+      this.product.set(data.product);
+      
+      // Set issuer name from product
+      if (data.product.genericData?.issuer) {
+        this.issuerName.set(data.product.genericData.issuer);
+      }
     }
   });
-});
 
-// Make sure Template.phoenixTemplate.onRendered is defined
-Template.phoenixTemplate.onRendered(function() {
-  // Any render-time initialization if needed
+  // Subscribe to issuers collection
+  this.subscribe('issuers');
 });
 
 Template.phoenixTemplate.helpers({
-  issuersReady() {
-    const instance = Template.instance();
-    return instance.issuersHandle && instance.issuersHandle.ready();
-  },
-  
   availableIssuers() {
     return Issuers.find({}, { sort: { name: 1 } }).fetch();
   },
   
-  selected(issuerId) {
-    const currentIssuer = Template.currentData()?.genericData?.issuer;
-    if (!currentIssuer) return '';
+  selectedIssuer(issuerId) {
+    const instance = Template.instance();
+    const issuerName = instance.issuerName.get();
+    if (!issuerName) return '';
     
-    // If currentIssuer matches the ID directly
-    if (issuerId === currentIssuer) return 'selected';
-    
-    // If currentIssuer is a name, check if it matches this issuer's name
-    const issuer = Issuers.findOne(issuerId);
-    return issuer && issuer.name === currentIssuer ? 'selected' : '';
-  },
-
-  searchResults() {
-    return Template.instance().searchResults.get();
+    const issuer = Issuers.findOne({ _id: issuerId });
+    return issuer?.name === issuerName ? 'selected' : '';
   }
+});
+
+Template.phoenixTemplate.onRendered(function() {
+  console.time('phoenixTemplate-rendered');
+  console.log('Phoenix template rendering...');
+
+  // Set initial issuer value once data is ready
+  this.autorun(() => {
+    const issuerName = this.issuerName.get();
+    if (issuerName && this.subscriptionsReady()) {
+      Tracker.afterFlush(() => {
+        const issuer = Issuers.findOne({ name: issuerName });
+        if (issuer) {
+          const $select = $('#issuer');
+          if ($select.find('option').length > 1) {
+            $select.val(issuer._id);
+          } else {
+            // Retry if options aren't loaded yet
+            Meteor.setTimeout(() => {
+              $select.val(issuer._id);
+            }, 100);
+          }
+        }
+      });
+    }
+  });
+
+  console.timeEnd('phoenixTemplate-rendered');
 });
 
 // Add these helper functions at the top level
@@ -1114,4 +1086,53 @@ style.textContent = `
   }
 `;
 document.head.appendChild(style);
+
+Template.editPhoenix.onCreated(function() {
+  this.currentProduct = new ReactiveVar(null);
+  this.productReady = new ReactiveVar(false);
+  this.issuerReady = new ReactiveVar(false);
+
+  // Subscribe to issuers first
+  this.autorun(() => {
+    const issuerSub = Meteor.subscribe('issuers');
+    this.issuerReady.set(issuerSub.ready());
+  });
+
+  // Get ISIN from URL params
+  const isin = Router.current().params.query.isin;
+  if (isin) {
+    console.log('Loading product for ISIN:', isin);
+    
+    // Subscribe to product details
+    this.subscribe('productDetails', isin, {
+      onReady: () => {
+        const product = Products.findOne({
+          $or: [
+            { "genericData.ISINCode": isin },
+            { "ISINCode": isin }
+          ]
+        });
+        
+        console.log('Product loaded:', product);
+        if (product) {
+          this.currentProduct.set(product);
+        }
+        this.productReady.set(true);
+      }
+    });
+  } else {
+    this.productReady.set(true);
+  }
+});
+
+Template.editPhoenix.helpers({
+  isLoading() {
+    const instance = Template.instance();
+    return !instance.productReady.get() || !instance.issuerReady.get();
+  },
+  currentProduct() {
+    // Return the actual product object, not the ReactiveVar
+    return Template.instance().currentProduct.get();
+  }
+});
 

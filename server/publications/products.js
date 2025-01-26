@@ -1,0 +1,1 @@
+// We can remove this publication since we're getting the data through Iron Router 

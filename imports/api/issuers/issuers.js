@@ -3,7 +3,10 @@ import { Meteor } from 'meteor/meteor';
 
 export const Issuers = new Mongo.Collection('issuers');
 
+// Ensure index on name field
 if (Meteor.isServer) {
+  Issuers._ensureIndex({ name: 1 });
+
   Issuers.allow({
     insert(userId, doc) {
       const user = Meteor.users.findOne(userId);

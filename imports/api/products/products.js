@@ -38,6 +38,17 @@ Meteor.startup(() => {
 // Allow/deny rules if needed
 if (Meteor.isServer) {
   Tickers._ensureIndex({ "symbol": 1 }, { unique: true });
+  Products._ensureIndex({ 'genericData.ISINCode': 1 });
+  Products._ensureIndex({ 'ISINCode': 1 });
+  Products._ensureIndex({ 'status': 1 });
+  Products._ensureIndex({ 'genericData.ISINCode': 1, 'status': 1 });
+  
+  // Compound index for common queries
+  Products._ensureIndex({
+    'genericData.ISINCode': 1,
+    'status': 1,
+    'genericData.template': 1
+  });
 }
 
 // Export collections object for convenience

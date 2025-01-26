@@ -26,10 +26,6 @@ Meteor.publish('searchProducts', function(query) {
   });
 });
 
-Meteor.publish('issuers', function() {
-  return Issuers.find({});
-});
-
 Meteor.publish('userProcessingStatus', function(userId) {
   if (!this.userId || this.userId !== userId) return this.ready();
   
@@ -37,4 +33,59 @@ Meteor.publish('userProcessingStatus', function(userId) {
     { _id: userId },
     { fields: { 'processingStatus': 1 } }
   );
+});
+
+Meteor.publish('products', function() {
+  console.time('products-publication');
+  console.log('Products publication starting...');
+  
+  const cursor = Products.find({});
+  console.log('Products cursor created, count:', cursor.count());
+  
+  console.timeEnd('products-publication');
+  return cursor;
+});
+
+Meteor.publish('productDetails', function(isin) {
+  check(isin, String);
+  return Products.find({
+    $or: [
+      { "genericData.ISINCode": isin },
+      { "ISINCode": isin }
+    ]
+  });
+});
+
+Meteor.publish('issuers', function() {
+  return Issuers.find({});
+});
+
+Meteor.publish('singleProduct', function(productId) {
+  check(productId, String);
+  
+  const product = Products.find(productId);
+  if (!product) {
+    this.ready();
+    return;
+  }
+  return product;
+});
+
+Meteor.publish('singleIssuer', function(issuerId) {
+  check(issuerId, String);
+  
+  const issuer = Issuers.find(issuerId);
+  if (!issuer) {
+    this.ready();
+    return;
+  }
+  return issuer;
+});
+
+Meteor.publish('productByISIN', function(isin) {
+  check(isin, String);
+  
+  return Products.find({
+    'genericData.ISINCode': isin
+  });
 }); 

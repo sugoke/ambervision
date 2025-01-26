@@ -49,6 +49,9 @@ import { Accounts } from 'meteor/accounts-base';
 import { Random } from 'meteor/random';
 import './methods/news.js';
 
+// Import all publications
+import './publications/products.js';
+
 Meteor.startup(() => {
   // Enhanced environment and connection logging
   console.log('=== DATABASE CONNECTION INFO ===');
