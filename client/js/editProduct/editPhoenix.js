@@ -41,17 +41,14 @@ export function updateSummary() {
       if (tbody) {
         tbody.innerHTML = ''; // Clear existing rows
 
-        $('#underlyingRowsContainer tr').each(function(index) {
-          const fullName = $(this).find('[id^=fullNameInput-]').val() || '';
-          const ticker = $(this).find('[id^=tickerInput-]').val() || '';
-          const strike = $(this).find('[id^=strikeInput-]').val() || '';
-
+        const underlyings = getPhoenixUnderlyings();
+        underlyings.forEach(underlying => {
           const row = tbody.insertRow();
           row.innerHTML = `
-            <td>${fullName}</td>
-            <td>${ticker}</td>
-            <td>${strike}</td>
-            <td>${ticker}</td>
+            <td>${underlying.name || ''}</td>
+            <td>${underlying.ticker || ''}</td>
+            <td>${underlying.initialReferenceLevel || ''}</td>
+            <td>${underlying.ticker || ''}</td>
           `;
         });
       }
@@ -209,21 +206,38 @@ export function gatherPhoenixData(template) {
   return productData;
 }
 
-// Helper function to get underlyings specific to Phoenix
+// Helper function to format exchange code
+function formatExchangeCode(exchange) {
+  const exchangeMap = {
+    'Euronext Amsterdam': 'NA',
+    'London Stock Exchange': 'LN',
+    'XETRA': 'GY',
+    'SIX Swiss Exchange': 'SE',
+    'Euronext Paris': 'FP',
+    // Add more mappings as needed
+  };
+  return exchangeMap[exchange] || exchange;
+}
+
+// Update getPhoenixUnderlyings function
 export function getPhoenixUnderlyings() {
   const underlyings = [];
   $('#underlyingRowsContainer tr').each(function() {
+    const fullName = $(this).find('[id^=fullNameInput]').val();
     const ticker = $(this).find('[id^=tickerInput]').val();
     const exchange = $(this).find('[id^=exchangeInput]').val();
+    const strike = $(this).find('[id^=strikeInput]').val();
+    const exchangeCode = formatExchangeCode(exchange);
+    const eodTicker = ticker && exchangeCode ? `${ticker}.${exchangeCode}` : ticker;
     
     const underlying = {
-      name: $(this).find('.fullName-autocomplete').val(),
-      ticker: ticker, // Store the full ticker (e.g., "ADS.XETRA")
+      name: fullName,
+      ticker: ticker,
       exchange: exchange,
       country: $(this).find('[id^=countryInput]').val(),
       currency: $(this).find('[id^=currencyInput]').val(),
-      initialReferenceLevel: parseFloat($(this).find('[id^=strikeInput]').val()),
-      eodTicker: ticker, // Store the full ticker here too
+      initialReferenceLevel: parseFloat(strike),
+      eodTicker: eodTicker,
       lastPriceInfo: {
         price: parseFloat($(this).find('[id^=closeText]').text()) || null,
         performance: null,
@@ -240,14 +254,67 @@ export function getPhoenixUnderlyings() {
 // Function to populate underlyings for Phoenix
 function populatePhoenixUnderlyings(underlyings) {
   console.log("Populating Phoenix underlyings:", underlyings);
-  const underlyingsContainer = getCachedSelector('#underlyingRowsContainer');
-  populateTableRows(underlyingsContainer, underlyings, Template.underlyingRow);
+  const underlyingsContainer = $('#underlyingRowsContainer');
+  underlyingsContainer.empty();
+
+  underlyings.forEach((underlying, index) => {
+    const templateData = {
+      id: index + 1,
+      name: underlying.name,
+      ticker: underlying.ticker,
+      exchange: underlying.exchange,
+      country: underlying.country,
+      currency: underlying.currency,
+      initialReferenceLevel: underlying.initialReferenceLevel,
+      eodTicker: underlying.eodTicker
+    };
+
+    console.log("Creating underlying row with data:", templateData);
+    
+    // Add this debug check
+    Tracker.afterFlush(() => {
+      const row = $(`#tickerRow-${templateData.id}`);
+      // Force set the value after render
+      row.find(`#strikeInput-${templateData.id}`).val(templateData.initialReferenceLevel);
+      console.log(`Row ${templateData.id} values:`, {
+        name: row.find(`#fullNameInput-${templateData.id}`).val(),
+        ticker: row.find(`#tickerInput-${templateData.id}`).val(),
+        exchange: row.find(`#exchangeInput-${templateData.id}`).val(),
+        strike: row.find(`#strikeInput-${templateData.id}`).val()
+      });
+    });
+
+    Blaze.renderWithData(Template.underlyingRow, templateData, underlyingsContainer[0]);
+  });
 }
 
+// Add this helper function at the top level
+function getDisabledAttribute() {
+  return Template.instance()?.isEditMode?.get() ? 'disabled' : '';
+}
+
+// Then modify the populatePhoenixObservations function
 function populatePhoenixObservations(observations) {
   console.log("Populating Phoenix observations:", observations);
   const scheduleContainer = getCachedSelector('#scheduleTable tbody');
-  populateTableRows(scheduleContainer, observations, Template.observationRow);
+  scheduleContainer.empty();
+
+  const disabledAttribute = getDisabledAttribute();
+
+  observations.forEach((observation, index) => {
+    const n = index === 0 ? 'Initial' : index;
+    const row = `
+      <tr>
+        <td>${n}</td>
+        <td><input type="date" class="form-control observation-date" value="${observation.observationDate}" ${disabledAttribute}></td>
+        <td><input type="date" class="form-control payment-date" value="${observation.paymentDate}" ${disabledAttribute}></td>
+        <td><input type="text" class="form-control coupon-barrier" value="${observation.couponBarrierLevel}" ${disabledAttribute}></td>
+        <td><input type="text" class="form-control autocall-barrier" value="${observation.autocallLevel}" ${disabledAttribute}></td>
+        <td><input type="text" class="form-control coupon-per-period" value="${observation.couponPerPeriod}" ${disabledAttribute}></td>
+      </tr>
+    `;
+    scheduleContainer.append(row);
+  });
 }
 
 // Helper function to format date
@@ -298,6 +365,11 @@ export function populatePhoenixFormFields(product) {
   // Populate underlyings and observations
   if (product.underlyings?.length) populatePhoenixUnderlyings(product.underlyings);
   if (product.observationDates?.length) populatePhoenixObservations(product.observationDates);
+
+  // Show schedule table headers if there are observations
+  if (product.observationDates?.length) {
+    $('#scheduleTable thead').show();
+  }
 
   updateSummary();
   hideLoading();
@@ -574,7 +646,7 @@ Template.phoenixTemplate.events({
       return;
     }
 
-    // Show the table header
+    // Always show the table header when generating schedule
     $('#scheduleTable thead').show();
 
     const scheduleContainer = $('#scheduleTable tbody');
@@ -600,6 +672,21 @@ Template.phoenixTemplate.events({
         holidays = [];
       }
 
+      const disabledAttribute = getDisabledAttribute();
+
+      // Add initial observation (trade date)
+      scheduleContainer.append(`
+        <tr>
+          <td>Initial</td>
+          <td><input type="date" class="form-control observation-date" value="${start.format('YYYY-MM-DD')}" ${disabledAttribute}></td>
+          <td><input type="date" class="form-control payment-date" value="${start.format('YYYY-MM-DD')}" ${disabledAttribute}></td>
+          <td><input type="text" class="form-control coupon-barrier" value="" ${disabledAttribute}></td>
+          <td><input type="text" class="form-control autocall-barrier" value="" ${disabledAttribute}></td>
+          <td><input type="text" class="form-control coupon-per-period" value="" ${disabledAttribute}></td>
+        </tr>
+      `);
+
+      // Add subsequent observations
       for (let i = 1; i <= observationsCount; i++) {
         let observationDate = moment(tradeDate).add(i * 3, 'months');
         
@@ -630,11 +717,11 @@ Template.phoenixTemplate.events({
         scheduleContainer.append(`
           <tr>
             <td>${i}</td>
-            <td><input type="date" class="form-control observation-date" value="${observationDate.format('YYYY-MM-DD')}"></td>
-            <td><input type="date" class="form-control payment-date" value="${paymentDate.format('YYYY-MM-DD')}"></td>
-            <td><input type="text" class="form-control coupon-barrier" value="${couponBarrier}"></td>
-            <td><input type="text" class="form-control autocall-barrier" value="${currentAutocallBarrier}"></td>
-            <td><input type="text" class="form-control coupon-per-period" value="${couponPerPeriod}"></td>
+            <td><input type="date" class="form-control observation-date" value="${observationDate.format('YYYY-MM-DD')}" ${disabledAttribute}></td>
+            <td><input type="date" class="form-control payment-date" value="${paymentDate.format('YYYY-MM-DD')}" ${disabledAttribute}></td>
+            <td><input type="text" class="form-control coupon-barrier" value="${couponBarrier}" ${disabledAttribute}></td>
+            <td><input type="text" class="form-control autocall-barrier" value="${currentAutocallBarrier}" ${disabledAttribute}></td>
+            <td><input type="text" class="form-control coupon-per-period" value="${couponPerPeriod}" ${disabledAttribute}></td>
           </tr>
         `);
       }
@@ -993,45 +1080,65 @@ Template.phoenixTemplate.events({
   }
 });
 
+// Add this function at the top level
+function populateIssuerDropdown() {
+  Meteor.call('getIssuers', (error, issuers) => {
+    if (error) {
+      console.error('Error fetching issuers:', error);
+      return;
+    }
+
+    const $select = $('#issuer');
+    $select.empty();
+    $select.append('<option value="">Select Issuer</option>');
+    
+    // Sort issuers by name
+    issuers.sort((a, b) => a.name.localeCompare(b.name));
+    
+    issuers.forEach(issuer => {
+      $select.append(`<option value="${issuer._id}">${issuer.name}</option>`);
+    });
+  });
+}
+
+// Modify Template.phoenixTemplate.onCreated
 Template.phoenixTemplate.onCreated(function() {
   console.log('Phoenix template created');
   
   // Initialize ReactiveVars
-  this.product = new ReactiveVar({}); // Initialize with empty object for new products
+  this.product = new ReactiveVar({}); 
   this.issuerName = new ReactiveVar(null);
+  
+  // Immediately populate issuer dropdown
+  populateIssuerDropdown();
   
   // Track changes to the product data context
   this.autorun(() => {
     const data = Template.currentData();
-    console.log('Phoenix template data context:', data);
-    
     if (data?.product) {
-      console.log('Setting product in template:', data.product);
       this.product.set(data.product);
       
       // Set issuer name from product
       if (data.product.genericData?.issuer) {
         this.issuerName.set(data.product.genericData.issuer);
+        
+        // Select the correct issuer in dropdown
+        Tracker.afterFlush(() => {
+          const $select = $('#issuer');
+          const option = $select.find(`option:contains("${data.product.genericData.issuer}")`);
+          if (option.length) {
+            $select.val(option.val());
+          }
+        });
       }
     }
   });
-
-  // Subscribe to issuers collection
-  this.subscribe('issuers');
 });
 
+// Remove the subscription and related helpers since we're not using them anymore
 Template.phoenixTemplate.helpers({
-  availableIssuers() {
-    return Issuers.find({}, { sort: { name: 1 } }).fetch();
-  },
-  
-  selectedIssuer(issuerId) {
-    const instance = Template.instance();
-    const issuerName = instance.issuerName.get();
-    if (!issuerName) return '';
-    
-    const issuer = Issuers.findOne({ _id: issuerId });
-    return issuer?.name === issuerName ? 'selected' : '';
+  isEditMode() {
+    return Template.instance()?.view?.parentView?.templateInstance?.()?.isEditMode?.get() || false;
   }
 });
 

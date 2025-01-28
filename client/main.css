@@ -435,3 +435,11 @@
   color: #10b981 !important;
   min-width: 70px !important;
 } 
+
+.isin-btn {
+  width: 120px !important;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+} 

@@ -15,6 +15,31 @@ Template.underlyingRow.onRendered(function() {
   console.log('underlyingRow template rendered');
   const templateInstance = this;
   
+  // Initialize with existing data if available
+  const data = Template.currentData();
+  if (data) {
+    const rowId = data.id;
+    // Populate fields with correct data
+    $(`#fullNameInput-${rowId}`).val(data.name || '');
+    $(`#tickerInput-${rowId}`).val(data.eodTicker || '');
+    $(`#exchangeInput-${rowId}`).val(data.exchange || '');
+    $(`#countryInput-${rowId}`).val(data.country || '');
+    $(`#currencyInput-${rowId}`).val(data.currency || '');
+    $(`#strikeInput-${rowId}`).val(data.initialReferenceLevel || '');
+
+    // Get last available price from Historical collection
+    if (data.eodTicker) {
+      Meteor.call('getLastHistoricalPrice', data.eodTicker, (err, result) => {
+        if (!err && result) {
+          $(`#closeText-${rowId}`).text(result.price || '');
+          if (result.date) {
+            $(`#closeDateText-${rowId}`).text(`(${result.date})`);
+          }
+        }
+      });
+    }
+  }
+
   // Use Tracker.afterFlush to ensure DOM is ready
   Tracker.afterFlush(() => {
     const row = templateInstance.$('tr');
@@ -91,39 +116,56 @@ Template.underlyingRow.onRendered(function() {
           // Create EOD ticker format
           const eodTicker = `${selectedData.Code}.${selectedData.Exchange}`;
 
-          // Update fields with correct EOD format
+          // Update fields
           $(`#fullNameInput-${rowId}`).val(selectedData.Name);
-          $(`#tickerInput-${rowId}`).val(eodTicker);  // Store full EOD ticker
+          $(`#tickerInput-${rowId}`).val(eodTicker);
           $(`#exchangeInput-${rowId}`).val(selectedData.Exchange);
           $(`#countryInput-${rowId}`).val(selectedData.Country);
           $(`#currencyInput-${rowId}`).val(selectedData.Currency);
 
-          // Set the latest close price from autocomplete data
-          $(`#closeText-${rowId}`).text(`${selectedData.previousClose} (${selectedData.previousCloseDate})`);
-
-          // If trade date is set, fetch historical price for strike
-          if (tradeDate) {
-            console.log(`Fetching historical price for ${eodTicker} on trade date: ${tradeDate}`);
-            
-            toggleStrikeLoading(rowId, true);
-            
-            Meteor.call('getTickerInfo', eodTicker, tradeDate, (err, result) => {
-              toggleStrikeLoading(rowId, false);
-              if (err) {
-                console.error('Error fetching historical price:', err);
-              } else {
-                console.log('Historical price data received:', result);
-                if (result.lastPrice) {
-                  $(`#strikeInput-${rowId}`).val(result.lastPrice);
-                  console.log(`Strike price set to ${result.lastPrice} for trade date ${result.date}`);
-                } else {
-                  console.warn(`No historical price found for ${eodTicker} on ${tradeDate}`);
-                }
-              }
-            });
-          } else {
-            console.warn('No trade date selected, cannot fetch historical price for strike');
+          // Set the latest close price immediately from the autocomplete data
+          if (selectedData.previousClose) {
+            $(`#closeText-${rowId}`).text(selectedData.previousClose);
+            if (selectedData.previousCloseDate) {
+              $(`#closeDateText-${rowId}`).text(`(${selectedData.previousCloseDate})`);
+            }
           }
+
+          // Set the latest close price
+          toggleStrikeLoading(rowId, true);
+          
+          // First get latest close
+          Meteor.call('getTickerInfo', eodTicker, null, (err, result) => {
+            if (!err && result) {
+              $(`#closeText-${rowId}`).text(result.lastPrice || '');
+              if (result.date) {
+                $(`#closeDateText-${rowId}`).text(`(${result.date})`);
+              }
+            }
+            
+            // Then get historical price for strike if trade date is set
+            if (tradeDate) {
+              console.log(`Fetching historical price for ${eodTicker} on trade date: ${tradeDate}`);
+              
+              Meteor.call('getTickerInfo', eodTicker, tradeDate, (err, result) => {
+                toggleStrikeLoading(rowId, false);
+                if (err) {
+                  console.error('Error fetching historical price:', err);
+                } else {
+                  console.log('Historical price data received:', result);
+                  if (result.lastPrice) {
+                    $(`#strikeInput-${rowId}`).val(result.lastPrice);
+                    console.log(`Strike price set to ${result.lastPrice} for trade date ${result.date}`);
+                  } else {
+                    console.warn(`No historical price found for ${eodTicker} on ${tradeDate}`);
+                  }
+                }
+              });
+            } else {
+              toggleStrikeLoading(rowId, false);
+              console.warn('No trade date selected, cannot fetch historical price for strike');
+            }
+          });
         },
         open: function() {
           $(this).autocomplete('widget')
@@ -147,15 +189,57 @@ Template.underlyingRow.onRendered(function() {
       };
     });
   });
+
+  // Add CSS for loading spinner
+  const style = document.createElement('style');
+  style.textContent = `
+    .input-loading {
+      background-image: url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGNsYXNzPSJmZWF0aGVyIGZlYXRoZXItbG9hZGVyIj48bGluZSB4MT0iMTIiIHkxPSIyIiB4Mj0iMTIiIHkyPSI2Ij48L2xpbmU+PGxpbmUgeDE9IjEyIiB5MT0iMTgiIHgyPSIxMiIgeTI9IjIyIj48L2xpbmU+PGxpbmUgeDE9IjQuOTMiIHkxPSI0LjkzIiB4Mj0iNy43NiIgeTI9IjcuNzYiPjwvbGluZT48bGluZSB4MT0iMTYuMjQiIHkxPSIxNi4yNCIgeDI9IjE5LjA3IiB5Mj0iMTkuMDciPjwvbGluZT48bGluZSB4MT0iMiIgeTE9IjEyIiB4Mj0iNiIgeTI9IjEyIj48L2xpbmU+PGxpbmUgeDE9IjE4IiB5MT0iMTIiIHgyPSIyMiIgeTI9IjEyIj48L2xpbmU+PGxpbmUgeDE9IjQuOTMiIHkxPSIxOS4wNyIgeDI9IjcuNzYiIHkyPSIxNi4yNCI+PC9saW5lPjxsaW5lIHgxPSIxNi4yNCIgeTE9IjcuNzYiIHgyPSIxOS4wNyIgeTI9IjQuOTMiPjwvbGluZT48L3N2Zz4=') !important;
+      background-position: right 8px center !important;
+      background-repeat: no-repeat !important;
+      background-size: 16px !important;
+      padding-right: 32px !important;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+  `;
+  document.head.appendChild(style);
+
+  if (data && data.initialReferenceLevel) {
+    this.$(`#strikeInput-${data.id}`).val(data.initialReferenceLevel);
+  }
 });
 
 // Separate event map for clarity
 const eventMap = {
   'input .fullName-autocomplete'(event, template) {
-    const value = event.target.value;
-    const rowId = $(event.target).data('row-id');
-    console.log('Fullname input event - Value:', value, 'Row ID:', rowId, 'Element:', event.target);
-    event.stopPropagation();
+    const value = event.target.value.trim();
+    const rowId = $(event.target).closest('tr').data('row-id');
+    
+    // Only proceed if we have at least 2 characters
+    if (value.length < 2) return;
+
+    // Clear previous values
+    $(`#closeText-${rowId}`).text('');
+    $(`#closeDateText-${rowId}`).text('');
+
+    // Call server method to get last close
+    Meteor.call('getLastPrice', value, (error, result) => {
+      if (error) {
+        console.error('Error fetching last price:', error);
+        return;
+      }
+      
+      if (result) {
+        $(`#closeText-${rowId}`).text(result.price || '');
+        if (result.date) {
+          $(`#closeDateText-${rowId}`).text(`(${result.date})`);
+        }
+      }
+    });
   },
   
   'input .ticker-autocomplete'(event, template) {
@@ -230,6 +314,10 @@ Template.underlyingRow.helpers({
       autocomplete: 'off',
       'data-row-id': Template.currentData().id
     };
+  },
+  
+  showCloseColumn() {
+    return !isEditMode();
   }
 });
 
@@ -238,12 +326,14 @@ function toggleStrikeLoading(rowId, isLoading) {
   const strikeInput = $(`#strikeInput-${rowId}`);
   if (isLoading) {
     strikeInput.prop('disabled', true);
-    strikeInput.css('background-image', 'url("/images/spinner.gif")');
-    strikeInput.css('background-repeat', 'no-repeat');
-    strikeInput.css('background-position', 'right 8px center');
-    strikeInput.css('background-size', '16px');
+    strikeInput.addClass('input-loading');
   } else {
     strikeInput.prop('disabled', false);
-    strikeInput.css('background-image', '');
+    strikeInput.removeClass('input-loading');
   }
+}
+
+// Add this helper function at the top level
+function isEditMode() {
+  return Template.instance()?.view?.parentView?.parentView?.templateInstance?.()?.isEditMode?.get() || false;
 } 

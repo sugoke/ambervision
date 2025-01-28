@@ -70,47 +70,24 @@ const getOpenAIKey = () => {
 };
 
 const callLLMApi = async (messages, temperature = 0) => {
-  try {
-    console.log('Calling Deepseek API...');
-    return await HTTP.call('POST', 'https://api.deepseek.com/v1/chat/completions', {
-      headers: {
-        'Authorization': `Bearer ${getDeepseekKey()}`,
-        'Content-Type': 'application/json',
-      },
-      data: {
-        model: "deepseek-chat",  // DeepSeek chat model
-        messages: [
-          {
-            role: "system",
-            content: "You are a financial document parser specialized in structured products."
-          },
-          ...messages
-        ],
-        temperature,
-        max_tokens: 4000
-      }
-    });
-  } catch (error) {
-    console.warn('Deepseek API error:', error.message);
-    console.log('Falling back to OpenAI...');
-    return await HTTP.call('POST', 'https://api.openai.com/v1/chat/completions', {
-      headers: {
-        'Authorization': `Bearer ${getOpenAIKey()}`,
-        'Content-Type': 'application/json',
-      },
-      data: {
-        model: "gpt-3.5-turbo",
-        messages: [
-          {
-            role: "system",
-            content: "You are a financial document parser specialized in structured products."
-          },
-          ...messages.slice(1)  // Skip the system message from Deepseek
-        ],
-        temperature
-      }
-    });
-  }
+  console.log('Calling OpenAI API...');
+  return await HTTP.call('POST', 'https://api.openai.com/v1/chat/completions', {
+    headers: {
+      'Authorization': `Bearer ${getOpenAIKey()}`,
+      'Content-Type': 'application/json',
+    },
+    data: {
+      model: "gpt-3.5-turbo",
+      messages: [
+        {
+          role: "system",
+          content: "You are a financial document parser specialized in structured products."
+        },
+        ...messages.slice(1)
+      ],
+      temperature
+    }
+  });
 };
 
 const findClosestIssuer = (name) => {
@@ -314,10 +291,10 @@ calculated. What you have to pay attention to is the sentence that says 'or any 
     "lastPriceInfo": {}
   }],
   "observationDates": [{
-    "observationDate": "YYYY-MM-DD",
-    "paymentDate": "YYYY-MM-DD",
-    "couponBarrierLevel": number,
-    "autocallLevel": number or null, // IMPORTANT: null means this is a non-call date. This level is sometimes called Autocall Trigger Level. 
+    "observationDate": "YYYY-MM-DD", //look for "Observation Date", or "Valuation Date(i)". the first one is usually the same as the trade date
+    "paymentDate": "YYYY-MM-DD", //look for "Payment Date(i)" or Interest Payment Date
+    "couponBarrierLevel": number, // sometimes in Conditional Coupon section. If the number is negative, do 1 minus this number. For example if the coupon is paid until -60% it means the barrier is 40% below the initial level.
+    "autocallLevel": number or null, // IMPORTANT: null means this is a non-call date. This level is sometimes called Autocall Trigger Level. Or sometimes you find it in Knock-In threshold section.
     "couponPerPeriod": number
   }]
 }

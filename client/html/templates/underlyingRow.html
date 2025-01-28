@@ -1,31 +1,36 @@
 <template name="underlyingRow">
-  <tr id="tickerRow-{{id}}" data-row-id="{{id}}">
+  <tr data-row-id="{{id}}" id="tickerRow-{{id}}">
     <td>
-      <input type="text" class="form-control fullName-autocomplete" id="fullNameInput-{{id}}" value="{{fullName}}" autocomplete="off" data-row-id="{{id}}">
+      <div class="position-relative">
+        <input type="text" 
+               class="form-control form-control-sm bg-dark text-white fullName-autocomplete" 
+               id="fullNameInput-{{id}}"
+               value="{{name}}"
+               placeholder="Enter name"
+               autocomplete="off">
+        <i class="bi bi-search position-absolute top-50 end-0 translate-middle-y me-2 text-muted"></i>
+        <div id="searchResults" class="position-absolute w-100 mt-1 d-none">
+          <div class="card">
+            <div class="list-group list-group-flush" id="searchResultsList">
+              <!-- Results will be dynamically added here -->
+            </div>
+          </div>
+        </div>
+      </div>
+    </td>
+    <td><input type="text" class="form-control form-control-sm bg-dark text-white" id="tickerInput-{{id}}" value="{{ticker}}" readonly></td>
+    <td><input type="text" class="form-control form-control-sm bg-dark text-white" id="exchangeInput-{{id}}" value="{{exchange}}" readonly></td>
+    <td><input type="text" class="form-control form-control-sm bg-dark text-white" id="countryInput-{{id}}" value="{{country}}" readonly></td>
+    <td><input type="text" class="form-control form-control-sm bg-dark text-white" id="currencyInput-{{id}}" value="{{currency}}" readonly></td>
+    <td>
+      <input type="number" 
+             class="form-control form-control-sm bg-dark text-white" 
+             id="strikeInput-{{id}}" 
+             value="{{initialReferenceLevel}}"
+             step="0.01">
     </td>
     <td>
-      <input type="text" class="form-control" id="tickerInput-{{id}}" value="{{ticker}}" style="text-transform: uppercase;" autocomplete="off">
-    </td>
-    <td>
-      <input type="text" class="form-control" id="exchangeInput-{{id}}" value="{{exchange}}">
-    </td>
-    <td>
-      <input type="text" class="form-control" id="countryInput-{{id}}" value="{{country}}">
-    </td>
-    <td>
-      <input type="text" class="form-control" id="currencyInput-{{id}}" value="{{currency}}">
-    </td>
-    <td>
-      <span id="closeText-{{id}}">{{close}}</span>
-      {{#if closeDate}}
-        <span id="closeDateText-{{id}}">({{closeDate}})</span>
-      {{/if}}
-    </td>
-    <td>
-      <input type="number" class="form-control" id="strikeInput-{{id}}" value="{{strike}}" step="0.01">
-    </td>
-    <td>
-      <button class="btn btn-outline-danger btn-sm remove_ticker" data-id="{{id}}">
+      <button class="btn btn-danger btn-sm remove-ticker" data-id="{{id}}">
         <i class="fas fa-times"></i>
       </button>
     </td>

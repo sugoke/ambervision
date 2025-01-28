@@ -70,17 +70,25 @@ Meteor.methods({
       }
 
       // Log incoming data
-      console.log('Attempting to insert product with ISIN:', productData.genericData?.ISINCode);
+      console.log('Attempting to insert/update product with ISIN:', productData.genericData?.ISINCode);
 
       // Validate ISIN
       const validationResult = Meteor.call('validateProductForm', {
         isin: productData.genericData?.ISINCode || productData.ISINCode,
-        mode: 'newProduct'
+        mode: 'editProduct' // Changed to always allow the ISIN (for updates)
       });
 
       if (!validationResult.isValid) {
         throw new Meteor.Error('validation-error', validationResult.errors[0].message);
       }
+
+      // Check if product exists
+      const existingProduct = Products.findOne({
+        $or: [
+          { "genericData.ISINCode": productData.genericData.ISINCode },
+          { "ISINCode": productData.genericData.ISINCode }
+        ]
+      });
 
       // Ensure required structures exist
       productData.status = productData.status || 'pending';
@@ -125,7 +133,7 @@ Meteor.methods({
 
       console.log('Cleaned product data:', JSON.stringify(productData, null, 2));
 
-      // Create the final product object with processed underlyings
+      // Create the final product object
       const product = {
         ISINCode: productData.genericData.ISINCode,
         status: productData.status || 'pending',
@@ -160,7 +168,7 @@ Meteor.methods({
             initialReferenceLevel: initialRef,
             adjustedInitialReferenceLevel: adjustedInitialRef,
             eodTicker: underlying.eodTicker || '',
-            lastPriceInfo: {
+            lastPriceInfo: underlying.lastPriceInfo || {
               price: null,
               adjustedPrice: null,
               performance: null,
@@ -170,35 +178,39 @@ Meteor.methods({
             }
           };
         }),
-        observationDates: productData.observationDates.map(obs => ({
-          observationDate: obs.observationDate || null,
-          paymentDate: obs.paymentDate || null,
-          couponBarrierLevel: parseFloat(obs.couponBarrierLevel) || null,
-          autocallLevel: parseFloat(obs.autocallLevel) || null,
-          couponPerPeriod: parseFloat(obs.couponPerPeriod) || null
-        })),
+        observationDates: productData.observationDates,
         observationsTable: [],
         capitalRedemption: null,
-        chart100: [],
-        chartOptions: {},
-        redemptionIfToday: null,
-        autocallDate: null,
-        autocalled: false,
-        totalCouponPaid: 0
+        chart100: existingProduct?.chart100 || [],
+        chartOptions: existingProduct?.chartOptions || {},
+        redemptionIfToday: existingProduct?.redemptionIfToday || null,
+        autocallDate: existingProduct?.autocallDate || null,
+        autocalled: existingProduct?.autocalled || false,
+        totalCouponPaid: productData.totalCouponPaid || 0
       };
 
-      console.log('Product underlyings before insert:', JSON.stringify(product.underlyings, null, 2));
-
-      // Insert the product
-      const productId = Products.insert(product);
-      console.log('Product inserted successfully with ID:', productId);
-      return productId;
+      let productId;
+      
+      if (existingProduct) {
+        // Update existing product
+        productId = Products.update(
+          { _id: existingProduct._id },
+          { $set: product }
+        );
+        console.log('Product updated successfully with ID:', existingProduct._id);
+        return existingProduct._id;
+      } else {
+        // Insert new product
+        productId = Products.insert(product);
+        console.log('Product inserted successfully with ID:', productId);
+        return productId;
+      }
 
     } catch (error) {
-      console.error('Product insertion error:', error);
+      console.error('Product insertion/update error:', error);
       throw new Meteor.Error(
         error.error || 'insert-failed',
-        error.reason || 'Failed to insert product',
+        error.reason || 'Failed to insert/update product',
         error.details
       );
     }
@@ -230,5 +242,26 @@ Meteor.methods({
     } catch (error) {
       throw new Meteor.Error('db-error', error.message);
     }
+  },
+
+  'getLastHistoricalPrice'(eodTicker) {
+    check(eodTicker, String);
+    
+    const historicalData = Historical.findOne(
+      { eodTicker: eodTicker },  // No need to encode - this is a value, not a field name
+      { 
+        fields: { 'data': { $slice: -1 } }
+      }
+    );
+
+    if (historicalData?.data?.[0]) {
+      const lastEntry = historicalData.data[0];
+      return {
+        price: lastEntry.close,
+        date: lastEntry.date
+      };
+    }
+    
+    return null;
   }
 });
