@@ -17,8 +17,7 @@ TabularTables.Products = new Tabular.Table({
       title: "ISIN",
       render: function(val, type, doc) {
         if (type === 'display') {
-          const sanitizedIsin = val.replace('_', '.'); // Convert back for display
-          return `<a href="#" onclick="event.preventDefault(); Router.go('productDetails', {}, {query: {isin: '${sanitizedIsin}'}}); return false;" class="btn btn-outline-theme btn-sm isin-btn">${sanitizedIsin}</a>`;
+          return `<a href="#" onclick="event.preventDefault(); Router.go('productDetails', {}, {query: {isin: '${val}'}}); return false;" class="btn btn-outline-theme btn-sm isin-btn">${val}</a>`;
         }
         return val;
       }

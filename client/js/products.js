@@ -80,7 +80,7 @@ Template.products.onRendered(function () {
     
     if (!isSuperAdmin) {
       const userHoldings = Holdings.find({ userId: Meteor.userId() }).fetch();
-      const userIsins = userHoldings.map(h => h.isin.replace('.', '_'));
+      const userIsins = userHoldings.map(h => h.isin);
       query['genericData.ISINCode'] = { $in: userIsins };
       console.log('Query for User:', query);
     } else {
@@ -189,7 +189,17 @@ Template.products.onRendered(function () {
 
         $('#productsTable').DataTable({
           data: products.map(product => {
-            // Only pass the fields we need for display
+            // Transform chart100 data to avoid using tickers as keys
+            if (product.chart100) {
+              product.chart100 = product.chart100.map(point => ({
+                ...point,
+                values: Object.entries(point.values).map(([ticker, value]) => ({
+                  ticker,
+                  value
+                }))
+              }));
+            }
+            
             return {
               _id: product._id,
               genericData: {
@@ -198,7 +208,8 @@ Template.products.onRendered(function () {
                 currency: product.genericData.currency,
                 issuer: product.genericData.issuer
               },
-              status: product.status
+              status: product.status,
+              chart100: product.chart100
             };
           }),
           columns: columns,
