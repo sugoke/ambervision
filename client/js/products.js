@@ -88,132 +88,138 @@ Template.products.onRendered(function () {
     }
 
     const products = Products.find(query).fetch();
-    console.log('Raw product data:', JSON.stringify(products, null, 2));
+    console.log('Products before DataTable:', products);
+    
+    try {
+      if (products.length > 0) {
+        console.log('Preparing to initialize DataTable with products:', products);
 
-    if (products.length > 0) {
-      console.log('Preparing to initialize DataTable with products:', products);
-
-      const columns = [
-        { 
-          data: 'genericData.ISINCode',
-          title: 'ISIN',
-          render: function(data, type, row) {
-            if (type === 'display' && data) {
-              const path = Router.path('productDetails', {}, { query: `isin=${data}` });
-              return `<a href="${path}" class="btn btn-outline-warning btn-sm isin-btn">${data}</a>`;
-            }
-            return data || '';
-          }
-        },
-        { 
-          data: 'genericData.name',
-          title: 'Product Name'
-        },
-        { 
-          data: 'genericData.currency',
-          title: 'Currency',
-          className: 'text-center'
-        },
-        { 
-          data: 'genericData.issuer',
-          title: 'Issuer'
-        },
-        { 
-          data: 'status',
-          title: 'Status',
-          className: 'text-center',
-          render: function(data, type, row) {
-            if (type === 'display') {
-              let badgeClass = '';
-              let displayText = data || 'Unknown';
-              
-              switch(data?.toLowerCase()) {
-                case 'live':
-                  badgeClass = 'bg-success';
-                  break;
-                case 'pending':
-                  badgeClass = 'bg-warning';
-                  break;
-                case 'active':
-                  badgeClass = 'bg-primary';
-                  break;
-                case 'autocalled':
-                  badgeClass = 'bg-danger';
-                  displayText = 'Auto-Called';
-                  break;
-                default:
-                  badgeClass = 'bg-secondary';
+        const columns = [
+          { 
+            data: 'genericData.ISINCode',
+            title: 'ISIN',
+            render: function(data, type, row) {
+              if (type === 'display' && data) {
+                const path = Router.path('productDetails', {}, { query: `isin=${data}` });
+                return `<a href="${path}" class="btn btn-outline-warning btn-sm isin-btn">${data}</a>`;
               }
-              
-              return `<span class="badge ${badgeClass}">${displayText}</span>`;
+              return data || '';
             }
-            return data || '';
-          }
-        },
-        { 
-          data: null,
-          title: isSuperAdmin ? 'Total Nominal' : 'Nominal Invested',
-          className: 'text-end',
-          render: function(data, type, row) {
-            if (isSuperAdmin) {
-              const holdings = Holdings.find({ 
-                isin: row.genericData.ISINCode 
-              }).fetch();
-              const total = holdings.reduce((sum, holding) => sum + (holding.quantity || 0), 0);
-              return total ? total.toLocaleString() : '0';
-            } else {
-              const holding = Holdings.findOne({ 
-                userId: Meteor.userId(), 
-                isin: row.genericData.ISINCode 
-              });
-              return holding ? holding.quantity.toLocaleString() : '0';
+          },
+          { 
+            data: 'genericData.name',
+            title: 'Product Name'
+          },
+          { 
+            data: 'genericData.currency',
+            title: 'Currency',
+            className: 'text-center'
+          },
+          { 
+            data: 'genericData.issuer',
+            title: 'Issuer'
+          },
+          { 
+            data: 'status',
+            title: 'Status',
+            className: 'text-center',
+            render: function(data, type, row) {
+              if (type === 'display') {
+                let badgeClass = '';
+                let displayText = data || 'Unknown';
+                
+                switch(data?.toLowerCase()) {
+                  case 'live':
+                    badgeClass = 'bg-success';
+                    break;
+                  case 'pending':
+                    badgeClass = 'bg-warning';
+                    break;
+                  case 'active':
+                    badgeClass = 'bg-primary';
+                    break;
+                  case 'autocalled':
+                    badgeClass = 'bg-danger';
+                    displayText = 'Auto-Called';
+                    break;
+                  default:
+                    badgeClass = 'bg-secondary';
+                }
+                
+                return `<span class="badge ${badgeClass}">${displayText}</span>`;
+              }
+              return data || '';
+            }
+          },
+          { 
+            data: null,
+            title: isSuperAdmin ? 'Total Nominal' : 'Nominal Invested',
+            className: 'text-end',
+            render: function(data, type, row) {
+              if (isSuperAdmin) {
+                const holdings = Holdings.find({ 
+                  isin: row.genericData.ISINCode 
+                }).fetch();
+                const total = holdings.reduce((sum, holding) => sum + (holding.quantity || 0), 0);
+                return total ? total.toLocaleString() : '0';
+              } else {
+                const holding = Holdings.findOne({ 
+                  userId: Meteor.userId(), 
+                  isin: row.genericData.ISINCode 
+                });
+                return holding ? holding.quantity.toLocaleString() : '0';
+              }
             }
           }
-        }
-      ];
+        ];
 
-      if (isSuperAdmin) {
-        columns.push({
-          data: null,
-          title: 'Actions',
-          orderable: false,
-          className: 'text-center',
-          render: function(data, type, row) {
-            return `<button class="btn btn-danger btn-sm delete-product" data-id="${row._id}">
-              <i class="fas fa-trash"></i>
-            </button>`;
+        if (isSuperAdmin) {
+          columns.push({
+            data: null,
+            title: 'Actions',
+            orderable: false,
+            className: 'text-center',
+            render: function(data, type, row) {
+              return `<button class="btn btn-danger btn-sm delete-product" data-id="${row._id}">
+                <i class="fas fa-trash"></i>
+              </button>`;
+            }
+          });
+        }
+
+        $('#productsTable').DataTable({
+          data: products.map(product => {
+            // Only pass the fields we need for display
+            return {
+              _id: product._id,
+              genericData: {
+                ISINCode: product.genericData.ISINCode,
+                name: product.genericData.name,
+                currency: product.genericData.currency,
+                issuer: product.genericData.issuer
+              },
+              status: product.status
+            };
+          }),
+          columns: columns,
+          order: [[1, 'asc']],
+          pageLength: 25,
+          responsive: true,
+          dom: "<'row mb-3'<'col-sm-12 col-md-6'f><'col-sm-12 col-md-6 text-end'B>>" +
+               "<'row mt-3'<'col-sm-12'tr>>" +
+               "<'row mt-3'<'col-sm-12 col-md-5'i><'col-sm-12 col-md-7'p>>",
+          buttons: ['copy', 'csv', 'excel', 'pdf', 'print'],
+          initComplete: function(settings, json) {
+            console.log('DataTable initComplete. Settings:', settings);
+            console.log('Data returned:', json);
           }
         });
+      } else {
+        console.log('No products to display.');
       }
-
-      $('#productsTable').DataTable({
-        data: products.map(product => {
-          return {
-            _id: product._id,
-            genericData: {
-              ISINCode: product.genericData.ISINCode,
-              name: product.genericData.name,
-              currency: product.genericData.currency,
-              issuer: product.genericData.issuer
-            },
-            status: product.status,
-          };
-        }),
-        columns: columns,
-        order: [[1, 'asc']],
-        pageLength: 25,
-        responsive: true,
-        dom: "<'row mb-3'<'col-sm-12 col-md-6'f><'col-sm-12 col-md-6 text-end'B>>" +
-             "<'row mt-3'<'col-sm-12'tr>>" +
-             "<'row mt-3'<'col-sm-12 col-md-5'i><'col-sm-12 col-md-7'p>>",
-        buttons: ['copy', 'csv', 'excel', 'pdf', 'print'],
-        initComplete: function(settings, json) {
-          console.log('DataTable initComplete. Settings:', settings);
-          console.log('Data returned:', json);
-        }
-      });
-    } else {
-      console.log('No products to display.');
+    } catch (error) {
+      console.error('DataTable error:', error);
+      console.log('Products causing error:', products);
     }
   });
 });
