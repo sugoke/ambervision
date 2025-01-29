@@ -80,7 +80,7 @@ Template.products.onRendered(function () {
     
     if (!isSuperAdmin) {
       const userHoldings = Holdings.find({ userId: Meteor.userId() }).fetch();
-      const userIsins = userHoldings.map(h => h.isin);
+      const userIsins = userHoldings.map(h => h.isin.replace('.', '_'));
       query['genericData.ISINCode'] = { $in: userIsins };
       console.log('Query for User:', query);
     } else {
@@ -88,7 +88,7 @@ Template.products.onRendered(function () {
     }
 
     const products = Products.find(query).fetch();
-    console.log('Fetched Products:', products);
+    console.log('Raw product data:', JSON.stringify(products, null, 2));
 
     if (products.length > 0) {
       console.log('Preparing to initialize DataTable with products:', products);
@@ -187,7 +187,18 @@ Template.products.onRendered(function () {
       }
 
       $('#productsTable').DataTable({
-        data: products,
+        data: products.map(product => {
+          return {
+            _id: product._id,
+            genericData: {
+              ISINCode: product.genericData.ISINCode,
+              name: product.genericData.name,
+              currency: product.genericData.currency,
+              issuer: product.genericData.issuer
+            },
+            status: product.status,
+          };
+        }),
         columns: columns,
         order: [[1, 'asc']],
         pageLength: 25,
