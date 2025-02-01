@@ -90,7 +90,7 @@
         </div>
 
         {{/unless}}
-        {{> Template.dynamic template=currentTemplate}}
+        {{> Template.dynamic template=currentTemplate data=currentProduct}}
       {{else}}
         <p class="text-white">Please select a product type</p>
       {{/if}}

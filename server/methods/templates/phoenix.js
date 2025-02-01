@@ -301,10 +301,8 @@ function calculateUnderlyingPerformances(product, lastPriceDate) {
     currentDate: formatDate(currentDate)
   });
 
-  // Initialize chart data structure
+  // Initialize chart data structure with array for values instead of object
   const dateMap = new Map();
-
-  // Create array of all dates between trade date and final observation
   let iterDate = new Date(tradeDate);
   while (iterDate <= finalObservation) {
     const dateStr = formatDate(iterDate);
@@ -312,7 +310,7 @@ function calculateUnderlyingPerformances(product, lastPriceDate) {
       date: dateStr,
       couponBarrier: product.features.couponBarrier,
       autocallLevel: null,
-      values: {}
+      values: [] // Array instead of object
     });
     iterDate.setDate(iterDate.getDate() + 1);
   }
@@ -348,38 +346,41 @@ function calculateUnderlyingPerformances(product, lastPriceDate) {
     for (const [dateStr, dayData] of dateMap) {
       const date = parseAndNormalizeDate(dateStr);
       
-      // For future dates, set null values for performances only
       if (date > currentDate) {
-        dayData.values[underlying.ticker] = null;
-        // Don't continue here, let it process autocall levels
+        dayData.values.push({
+          underlying: underlying.ticker,
+          value: null
+        });
+        continue;
       }
       
       // Find exact price data or closest previous/next data points
       const exactData = priceData.find(p => formatDate(p.date) === dateStr);
       const nextData = !exactData ? priceData.find(p => p.date > date) : null;
       
-      // Only calculate performance for non-future dates
-      if (date <= currentDate) {
-        let performance;
-        if (exactData) {
-          performance = (exactData.adjusted_close / underlying.adjustedInitialReferenceLevel) * 100;
-          prevData = exactData;
-        } else if (prevData && nextData) {
-          // Linear interpolation between prev and next data points
-          const totalDays = (nextData.date - prevData.date) / (1000 * 60 * 60 * 24);
-          const daysSincePrev = (date - prevData.date) / (1000 * 60 * 60 * 24);
-          const prevPerf = (prevData.adjusted_close / underlying.adjustedInitialReferenceLevel) * 100;
-          const nextPerf = (nextData.adjusted_close / underlying.adjustedInitialReferenceLevel) * 100;
-          performance = prevPerf + (nextPerf - prevPerf) * (daysSincePrev / totalDays);
-        } else if (prevData) {
-          // Use last known value
-          performance = (prevData.adjusted_close / underlying.adjustedInitialReferenceLevel) * 100;
-        } else {
-          // Initial value
-          performance = 100;
-        }
-        dayData.values[underlying.ticker] = performance;
+      // Calculate performance as before
+      let performance;
+      if (exactData) {
+        performance = (exactData.adjusted_close / underlying.adjustedInitialReferenceLevel) * 100;
+        prevData = exactData;
+      } else if (prevData && nextData) {
+        // Linear interpolation between prev and next data points
+        const totalDays = (nextData.date - prevData.date) / (1000 * 60 * 60 * 24);
+        const daysSincePrev = (date - prevData.date) / (1000 * 60 * 60 * 24);
+        const prevPerf = (prevData.adjusted_close / underlying.adjustedInitialReferenceLevel) * 100;
+        const nextPerf = (nextData.adjusted_close / underlying.adjustedInitialReferenceLevel) * 100;
+        performance = prevPerf + (nextPerf - prevPerf) * (daysSincePrev / totalDays);
+      } else if (prevData) {
+        performance = (prevData.adjusted_close / underlying.adjustedInitialReferenceLevel) * 100;
+      } else {
+        performance = 100;
       }
+
+      // Store performance in array format
+      dayData.values.push({
+        underlying: underlying.ticker,
+        value: performance
+      });
 
       // Set autocall level for all dates (including future)
       if (observationLevels.has(dateStr)) {
@@ -397,27 +398,33 @@ function calculateUnderlyingPerformances(product, lastPriceDate) {
     }
   });
 
-  // Convert map to sorted array and calculate worst performing
-  const sortedDates = Array.from(dateMap.keys()).sort();
-  const chart100 = sortedDates.map(dateStr => {
-    const dayData = dateMap.get(dateStr);
-    const date = parseAndNormalizeDate(dateStr);
+  // Calculate worst performing
+  const chart100 = Array.from(dateMap.values()).map(dayData => {
+    const date = parseAndNormalizeDate(dayData.date);
     
-    // For future dates or when all values are null
-    if (date > currentDate || Object.values(dayData.values).every(v => v === null)) {
-      dayData.values.worstOf = null;
-      return dayData;
+    if (date > currentDate || dayData.values.every(v => v.value === null)) {
+      return {
+        ...dayData,
+        values: [
+          ...dayData.values,
+          { underlying: 'worstOf', value: null }
+        ]
+      };
     }
     
-    // Calculate worst performing only for past dates with valid values
-    const performances = Object.values(dayData.values)
+    const validValues = dayData.values
+      .map(v => v.value)
       .filter(v => v !== null && !isNaN(v));
-    if (performances.length > 0) {
-      dayData.values.worstOf = Math.min(...performances);
-    } else {
-      dayData.values.worstOf = null;
-    }
-    return dayData;
+      
+    const worstOf = validValues.length > 0 ? Math.min(...validValues) : null;
+    
+    return {
+      ...dayData,
+      values: [
+        ...dayData.values,
+        { underlying: 'worstOf', value: worstOf }
+      ]
+    };
   });
 
   console.log('Chart data sample:', {
@@ -467,15 +474,23 @@ function updateUnderlyingsWithPerformance(underlyings, performanceData) {
     chart100.forEach(point => {
       if (point.values) {
         // Only calculate worstOf for points where we have numeric values
-        const underlyingValues = Object.values(point.values)
-          .filter(value => typeof value === 'number' && value !== null);
+        const underlyingValues = point.values
+          .filter(v => typeof v.value === 'number' && v.value !== null);
 
-        // If no valid values found, keep the existing worstOf value (which should be null for future dates)
+        // If no valid values found, keep the existing worstOf value
         if (underlyingValues.length === 0) {
           return;
         }
 
-        point.values.worstOf = Math.min(...underlyingValues);
+        // Find and update worstOf entry
+        const worstOfIndex = point.values.findIndex(v => v.underlying === 'worstOf');
+        const worstOfValue = Math.min(...underlyingValues.map(v => v.value));
+        
+        if (worstOfIndex >= 0) {
+          point.values[worstOfIndex].value = worstOfValue;
+        } else {
+          point.values.push({ underlying: 'worstOf', value: worstOfValue });
+        }
       }
     });
   }

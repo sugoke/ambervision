@@ -288,121 +288,142 @@ Template.phoenix.onRendered(function() {
     const finalDate = normalizeDate(product.genericData.finalDate);
     let currentDate = new Date(tradeDate);
 
-    const underlyingKeys = Object.keys(chart100[0].values).filter(key => key !== 'worstOf');
-
-
-
     // Sort the chart100 data by date
     chart100.sort((a, b) => normalizeDate(a.date) - normalizeDate(b.date));
 
     // Extract datasets for each underlying
-    
-    const datasets = underlyingKeys.map((key, index) => ({
-      label: key,
-      data: chart100.map(item => ({ x: new Date(item.date), y: item.values[key] })),
-      borderColor: pastelColors[index % pastelColors.length],
-      backgroundColor: pastelColors[index % pastelColors.length],
-      fill: false,
-      pointRadius: 0,
-      borderWidth: 2,
-      borderColor: pastelColors[index % pastelColors.length],  // Keep original transparency
-      backgroundColor: pastelColors[index % pastelColors.length]  // Keep original transparency
-    }));
+    const datasets = [];
+
+    // Get unique underlyings from first data point
+    const firstPoint = chart100[0];
+    const underlyings = Object.keys(firstPoint.values.reduce((acc, val) => {
+      if (val.underlying !== 'worstOf') {
+        acc[val.underlying] = true;
+      }
+      return acc;
+    }, {}));
+
+    // Create dataset for each underlying
+    underlyings.forEach((underlying, index) => {
+      datasets.push({
+        label: underlying,
+        data: chart100.map(item => ({
+          x: new Date(item.date),
+          y: item.values.find(v => v.underlying === underlying)?.value || null
+        })),
+        borderColor: pastelColors[index % pastelColors.length],
+        backgroundColor: pastelColors[index % pastelColors.length],
+        fill: false,
+        pointRadius: 0,
+        borderWidth: 2
+      });
+    });
 
     // Add dataset for worstOf
     datasets.unshift({
       label: 'Worst Performing',
-      data: chart100.map(item => ({ x: new Date(item.date), y: item.values.worstOf })),
-      borderColor: 'rgba(255, 255, 0, 1)', // Yellow color
-      backgroundColor: 'rgba(255, 255, 0, 0.2)', // Light yellow for background
+      data: chart100.map(item => ({
+        x: new Date(item.date),
+        y: item.values.find(v => v.underlying === 'worstOf')?.value || null
+      })),
+      borderColor: 'rgba(255, 255, 0, 1)',
+      backgroundColor: 'rgba(255, 255, 0, 0.2)',
       fill: false,
       pointRadius: 0,
-      borderWidth: 1, // Thinner line
-      borderDash: [5, 5], // Dashed line
-      order: -1 // Ensure this dataset is drawn below others
+      borderWidth: 1,
+      borderDash: [5, 5],
+      order: -1
     });
-    
 
     // Add dataset for coupon barrier
     datasets.push({
       label: 'Coupon Barrier',
-      data: chart100.map(item => ({ x: new Date(item.date), y: item.couponBarrier })),
-      borderColor: 'rgba(255, 99, 132, 0.7)',  // Pastel Red
-      backgroundColor: 'rgba(255, 99, 132, 0.2)',  // Semi-transparent red
+      data: chart100.map(item => ({
+        x: new Date(item.date),
+        y: item.couponBarrier || null
+      })),
+      borderColor: 'rgba(255, 99, 132, 0.7)',
+      backgroundColor: 'rgba(255, 99, 132, 0.2)',
       fill: 'start',
       pointRadius: 0,
       borderWidth: 2,
-      borderDash: [5, 5]  // Dashed line
+      borderDash: [5, 5]
     });
-
-
 
     // Add dataset for initial level
     datasets.push({
       label: 'Initial Level',
-      data: chart100.map(item => ({ x: new Date(item.date), y: 100 })),
-      borderColor: 'rgba(255, 165, 0, 0.7)',  // Orange
-      backgroundColor: 'rgba(255, 165, 0, 0.2)',  // Semi-transparent orange
+      data: chart100.map(item => ({ 
+        x: new Date(item.date), 
+        y: 100 
+      })),
+      borderColor: 'rgba(255, 165, 0, 0.7)',
+      backgroundColor: 'rgba(255, 165, 0, 0.2)',
       fill: false,
       pointRadius: 0,
       borderWidth: 2,
-      borderDash: [5, 5]  // Dashed line
+      borderDash: [5, 5]
     });
 
-// Determine the end date
-let endDate;
-if (product.autocallDate) {
-  endDate = new Date(product.autocallDate);
-  endDate.setDate(endDate.getDate() + 7); // One day after autocall date
-} else {
-  endDate = new Date(product.genericData.finalObservation);
-}
+    // Add logging to debug the datasets
+    console.log('Processed datasets:', datasets);
+    console.log('Sample data points:', datasets.map(d => ({
+      label: d.label,
+      points: d.data.slice(0, 5)
+    })));
 
-// Filter chart100 data
-const filteredChart100 = chart100.filter(item => normalizeDate(item.date) <= endDate);
-console.log("Filtered Chart100 data:", filteredChart100);
-
-// Add this logging for the autocall level dataset
-const autocallDataset = {
-  label: 'Autocall Level',
-  data: filteredChart100.map(item => ({ 
-    x: new Date(item.date), 
-    y: item.autocallLevel !== undefined ? item.autocallLevel : null 
-  })),
-  borderColor: 'rgba(255, 215, 0, 0.7)',  // Gold color
-  backgroundColor: 'rgba(255, 215, 0, 0.1)',  // Transparent gold
-  fill: true,
-  pointRadius: 0,
-  borderWidth: 2,
-  borderDash: [5, 5]  // Dashed line
-};
-console.log("Autocall Level dataset:", autocallDataset);
-console.log("Sample of Autocall Level data:", autocallDataset.data.slice(0, 5));
-
-datasets.push(autocallDataset);
-
-datasets.forEach(dataset => {
-  dataset.data = filteredChart100.map(item => {
-    let yValue;
-
-    if (dataset.label === 'Autocall Level') {
-      yValue = item.autocallLevel;
-    } else if (dataset.label === 'Coupon Barrier') {
-      yValue = item.couponBarrier;
-    } else if (dataset.label === 'Initial Level') {
-      yValue = 100; // Assuming the initial level is always 100
-    } else if (dataset.label === 'Worst Performing') {
-      yValue = item.values.worstOf;
+    // Determine the end date
+    let endDate;
+    if (product.autocallDate) {
+      endDate = new Date(product.autocallDate);
+      endDate.setDate(endDate.getDate() + 7); // One day after autocall date
     } else {
-      yValue = item.values[dataset.label] || null;
+      endDate = new Date(product.genericData.finalObservation);
     }
 
-    return {
-      x: new Date(item.date),
-      y: yValue,
+    // Filter chart100 data
+    const filteredChart100 = chart100.filter(item => normalizeDate(item.date) <= endDate);
+    console.log("Filtered Chart100 data:", filteredChart100);
+
+    // Add this logging for the autocall level dataset
+    const autocallDataset = {
+      label: 'Autocall Level',
+      data: filteredChart100.map(item => ({ 
+        x: new Date(item.date), 
+        y: item.autocallLevel !== undefined ? item.autocallLevel : null 
+      })),
+      borderColor: 'rgba(255, 215, 0, 0.7)',  // Gold color
+      backgroundColor: 'rgba(255, 215, 0, 0.1)',  // Transparent gold
+      fill: true,
+      pointRadius: 0,
+      borderWidth: 2,
+      borderDash: [5, 5]  // Dashed line
     };
-  });
-});
+    console.log("Autocall Level dataset:", autocallDataset);
+    console.log("Sample of Autocall Level data:", autocallDataset.data.slice(0, 5));
+
+    datasets.push(autocallDataset);
+
+    datasets.forEach(dataset => {
+      dataset.data = filteredChart100.map(item => {
+        let yValue;
+        if (dataset.label === 'Autocall Level') {
+          yValue = item.autocallLevel;
+        } else if (dataset.label === 'Coupon Barrier') {
+          yValue = item.couponBarrier;
+        } else if (dataset.label === 'Initial Level') {
+          yValue = 100; // Fixed level
+        } else if (dataset.label === 'Worst Performing') {
+          yValue = item.values.find(v => v.underlying === 'worstOf')?.value || null;
+        } else {
+          yValue = item.values.find(v => v.underlying === dataset.label)?.value || null;
+        }
+        return {
+          x: new Date(item.date),
+          y: yValue,
+        };
+      });
+    });
 
     // Create annotations
     const annotations = {
@@ -510,7 +531,7 @@ datasets.forEach(dataset => {
       });
     }
 
-    // Chart options with custom plugin
+    // Create chart options
     const chartOptions = {
       maintainAspectRatio: false,
       responsive: true,
@@ -523,137 +544,35 @@ datasets.forEach(dataset => {
               day: 'MMM d'
             }
           },
-          min: new Date(product.genericData.tradeDate),
+          min: tradeDate,
           max: endDate,
-          ticks: {
-            color: '#ffffff',
-            callback: function(value) {
-              const date = new Date(value);
-              const dateStr = formatDate(date);
-              
-              // Show trade date
-              if (dateStr === product.genericData.tradeDate) {
-                return 'Trade';
-              }
-              
-              // Show observation dates
-              const obsIndex = product.observationDates.findIndex(
-                obs => formatDate(new Date(obs.observationDate)) === dateStr
-              );
-              
-              if (obsIndex !== -1) {
-                return `Obs ${obsIndex + 1}`;
-              }
-              
-              // Hide all other dates
-              return '';
-            },
-            // Force show all observation dates
-            source: 'data',
-            autoSkip: false,
-            major: {
-              enabled: true
-            },
-            // Include all observation dates in the ticks
-            include: [
-              new Date(product.genericData.tradeDate),
-              ...product.observationDates.map(obs => new Date(obs.observationDate))
-            ]
-          },
           grid: {
             display: false
           }
         },
         y: {
-          ticks: {
-            color: '#ffffff'
-          },
+          min: 40,
+          max: 140,
           grid: {
             display: false
-          },
-          // Fix the scale to show all data points clearly
-          min: Math.min(
-            60,  // Minimum value to always show
-            Math.floor(Math.min(...datasets.flatMap(dataset => 
-              dataset.data.map(point => point.y)
-                .filter(y => y !== null && y !== undefined)
-            )) * 0.95)
-          ),
-          max: Math.max(
-            140,  // Maximum value to always show
-            Math.ceil(Math.max(...datasets.flatMap(dataset => 
-              dataset.data.map(point => point.y)
-                .filter(y => y !== null && y !== undefined)
-            )) * 1.05)
-          )
+          }
+        }
+      },
+      elements: {
+        line: {
+          tension: 0.4 // Makes lines smoother
         }
       },
       plugins: {
-        tooltip: {
-          enabled: true,
-          mode: 'nearest',
-          intersect: true,
-          callbacks: {
-            label: function(context) {
-              if (context.dataset.label === 'Coupons') {
-                const observation = product.observationsTable
-                  .find(obs => {
-                    if (!obs.couponPaid || obs.couponPaid <= 0) return false;
-                    const obsDate = new Date(obs.observationDate);
-                    const contextDate = new Date(context.parsed.x);
-                    return obsDate.getTime() === contextDate.getTime();
-                  });
-
-                if (observation) {
-                  return [
-                    `Coupon Payment: ${observation.couponPaid}%`,
-                    `Date: ${new Date(observation.observationDate).toLocaleDateString()}`,
-                    `Payment Date: ${new Date(observation.paymentDate).toLocaleDateString()}`
-                  ];
-                }
-              }
-              // For other datasets
-              const value = typeof context.parsed.y === 'number' ? 
-                context.parsed.y.toFixed(2) : context.parsed.y;
-              return `${context.dataset.label}: ${value}`;
-            }
+        legend: {
+          display: true,
+          position: 'top',
+          labels: {
+            color: '#ffffff'
           }
         },
         annotation: {
-          annotations: {
-            line1: {
-              type: 'line',
-              mode: 'vertical',
-              scaleID: 'x',
-              value: new Date(product.genericData.tradeDate),
-              borderColor: 'rgba(255, 255, 255, 0.7)',
-              borderWidth: 1,
-              label: {
-                content: 'Initial',
-                enabled: true,
-                position: 'top'
-              }
-            },
-            // Add observation date lines
-            ...product.observationDates
-              .filter(obs => new Date(obs.observationDate) <= endDate)
-              .reduce((acc, obs, index) => ({
-                ...acc,
-                [`obs${index}`]: {
-                  type: 'line',
-                  mode: 'vertical',
-                  scaleID: 'x',
-                  value: new Date(obs.observationDate),
-                  borderColor: 'rgba(255, 255, 255, 0.7)',
-                  borderWidth: 1,
-                  label: {
-                    content: `Obs ${index + 1}`,
-                    enabled: true,
-                    position: 'top'
-                  }
-                }
-              }), {})
-          }
+          annotations: annotations
         }
       }
     };
@@ -662,12 +581,33 @@ datasets.forEach(dataset => {
     if (chartInstance) {
       chartInstance.destroy();
     }
+
+    // Log the final data before creating chart
+    console.log('Final datasets for chart:', {
+      labels: datasets.map(d => d.label),
+      dataPoints: datasets.map(d => d.data.length),
+      sampleData: datasets.map(d => d.data.slice(0, 3))
+    });
     
     chartInstance = new Chart(ctx, {
       type: 'line',
-      data: { datasets },
+      data: { 
+        datasets: datasets.map(dataset => ({
+          ...dataset,
+          spanGaps: true, // Connects points across null values
+          parsing: {
+            xAxisKey: 'x',
+            yAxisKey: 'y'
+          }
+        }))
+      },
       options: chartOptions
     });
+
+    // Log any errors
+    chartInstance.options.onError = function(chart, err) {
+      console.error('Chart.js error:', err);
+    };
   });
 
   // Fetch news when template is rendered

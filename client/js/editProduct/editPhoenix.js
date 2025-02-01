@@ -1080,111 +1080,66 @@ Template.phoenixTemplate.events({
   }
 });
 
-// Modify the populateIssuerDropdown function
+// Modify the populateIssuerDropdown function to include more detailed logging
 function populateIssuerDropdown() {
-  // Get the editProduct template instance (2 levels up)
-  const editProductTemplate = Template.instance()?.view?.parentView?.parentView?.parentView?.templateInstance?.();
-  console.log('Edit Product template:', editProductTemplate);
-  
-  // Get edit mode directly from URL params
-  const isEditMode = Router.current().params.query.mode === 'editProduct';
-  console.log('Is edit mode (from URL):', isEditMode);
-  
-  // Get current product from the phoenix template
-  const phoenixTemplate = Template.instance();
-  const currentProduct = phoenixTemplate?.product?.get();
-  console.log('Current product from phoenix template:', currentProduct);
-
-  console.log('Populating issuer dropdown:', {
-    isEditMode,
-    hasProduct: !!currentProduct,
-    currentIssuer: currentProduct?.genericData?.issuer,
-    editProductTemplate: !!editProductTemplate
-  });
-
-  Meteor.call('getIssuers', (error, issuers) => {
-    if (error) {
-      console.error('Error fetching issuers:', error);
-      return;
-    }
-
-    console.log('Received issuers from server:', issuers);
+  // Get the issuer select element
     const $select = $('#issuer');
-    console.log('Select element found:', $select.length > 0);
-    
     if (!$select.length) {
-      console.error('Issuer select element not found');
+    console.error('[populateIssuerDropdown] Issuer select element not found');
       return;
     }
-
     $select.empty();
     $select.append('<option value="">Select Issuer</option>');
-    
-    // Sort issuers by name
-    issuers.sort((a, b) => a.name.localeCompare(b.name));
-    console.log('Sorted issuers:', issuers.map(i => i.name));
-    
-    issuers.forEach(issuer => {
+  console.log('[populateIssuerDropdown] Found issuer select element, proceeding to fetch issuers from local DB.');
+  
+  // Log the query parameters used in Issuers.find
+  const findQuery = {};
+  const sortOptions = { sort: { name: 1 } };
+  console.log('[populateIssuerDropdown] Fetching issuers with query:', findQuery, 'and sort options:', sortOptions);
+  
+  // Use the local Issuers collection (ensure the subscription is ready in your parent template)
+  const issuersList = Issuers.find(findQuery, sortOptions).fetch();
+  console.log('[populateIssuerDropdown] Retrieved issuers from DB, count:', issuersList.length);
+  console.log('[populateIssuerDropdown] Issuers list:', issuersList);
+  if (issuersList.length === 0) {
+    console.warn('[populateIssuerDropdown] No issuers found in the local collection. Check if the "issuers" subscription is ready.');
+  }
+  
+  issuersList.forEach(issuer => {
       $select.append(`<option value="${issuer._id}">${issuer.name}</option>`);
-    });
-    console.log('Options added to select:', $select.find('option').length);
-
-    // If in edit mode and we have a current product, select the correct issuer
-    if (isEditMode && currentProduct?.genericData?.issuer) {
-      const issuerName = currentProduct.genericData.issuer;
-      console.log('Looking for issuer match:', issuerName);
-      // Case-insensitive comparison
-      const matchingIssuer = issuers.find(i => i.name.toLowerCase() === issuerName.toLowerCase());
-      console.log('Found matching issuer:', matchingIssuer);
-      if (matchingIssuer) {
-        console.log('Setting issuer to:', matchingIssuer.name, matchingIssuer._id);
-        $select.val(matchingIssuer._id);
-        console.log('Current select value after set:', $select.val());
-        console.log('Selected option text:', $select.find('option:selected').text());
-      }
-    }
+    console.log('[populateIssuerDropdown] Appended issuer:', issuer.name, 'with _id:', issuer._id);
   });
+  
+  // Get the loaded product data to select the correct issuer if in editProduct mode
+  const currentProduct = Template.instance()?.product?.get();
+  console.log('[populateIssuerDropdown] currentProduct from template:', currentProduct);
+  
+  if (currentProduct && currentProduct.genericData && currentProduct.genericData.issuer) {
+      const issuerName = currentProduct.genericData.issuer;
+    console.log('[populateIssuerDropdown] Current product issuer name:', issuerName);
+    // Match by issuer name (case-insensitive)
+    const matchingIssuer = issuersList.find(i => {
+      const isMatch = i.name.toLowerCase() === issuerName.toLowerCase();
+      console.log(`[populateIssuerDropdown] Comparing issuer "${i.name}" with product issuer "${issuerName}" -> match:`, isMatch);
+      return isMatch;
+    });
+      if (matchingIssuer) {
+        $select.val(matchingIssuer._id);
+      console.log('[populateIssuerDropdown] Setting issuer to:', matchingIssuer.name, matchingIssuer._id);
+    } else {
+      console.log('[populateIssuerDropdown] No matching issuer found for product issuer name:', issuerName);
+      }
+  } else {
+    console.log('[populateIssuerDropdown] No current product genericData.issuer available.');
+    }
 }
 
-// Update Template.phoenixTemplate.onCreated
+// Update Template.phoenixTemplate.onCreated to subscribe to "issuers" and log subscription readiness
 Template.phoenixTemplate.onCreated(function() {
   console.log('Phoenix template created');
-  
-  // Initialize ReactiveVars
-  this.product = new ReactiveVar({}); 
-  this.issuerName = new ReactiveVar(null);
-  
-  console.log('Initial template data:', Template.currentData());
-  
-  // Track changes to the product data context
   this.autorun(() => {
     const data = Template.currentData();
-    const isEditMode = Router.current().params.query.mode === 'editProduct';
-    
-    console.log('Template data context changed:', {
-      hasProduct: !!data?.product,
-      issuer: data?.product?.genericData?.issuer,
-      isEditMode,
-      fullProduct: data?.product
-    });
-    
-    if (data?.product) {
-      this.product.set(data.product);
-      
-      // Set issuer name from product
-      if (data.product.genericData?.issuer) {
-        console.log('Setting issuer name:', data.product.genericData.issuer);
-        this.issuerName.set(data.product.genericData.issuer);
-        
-        // Populate issuer dropdown after data is set
-        Tracker.afterFlush(() => {
-          console.log('Calling populateIssuerDropdown after data set');
-          console.log('Current product data:', this.product.get());
-          console.log('Current issuer name:', this.issuerName.get());
-          populateIssuerDropdown();
-        });
-      }
-    }
+    console.log('[phoenixTemplate] Received data:', data);
   });
 });
 
@@ -1192,6 +1147,35 @@ Template.phoenixTemplate.onCreated(function() {
 Template.phoenixTemplate.helpers({
   isEditMode() {
     return Router.current().params.query.mode === 'editProduct';
+  },
+  availableIssuers() {
+    // Wait for subscription to be ready
+    const instance = Template.instance();
+    const parentInstance = Template.parentData(1);
+    console.log('[availableIssuers] Parent instance:', parentInstance);
+    
+    if (!Meteor.subscribe('issuers').ready()) {
+      console.log('[availableIssuers] Issuers subscription not ready');
+      return [];
+    }
+    
+    const issuers = Issuers.find({}, { sort: { name: 1 } }).fetch();
+    console.log('[availableIssuers] Found issuers:', issuers);
+    return Issuers.find({}, { sort: { name: 1 } });
+  },
+  selectedIssuer(issuerId) {
+    let currentProduct = Template.instance().data;
+    console.log('[selectedIssuer] currentProduct from template data:', currentProduct);
+    
+    if (currentProduct && currentProduct.genericData?.issuer) {
+      const currentIssuerName = currentProduct.genericData.issuer;
+      const issuer = Issuers.findOne({ _id: issuerId });
+      console.log('[selectedIssuer] Comparing issuer:', currentIssuerName, 'with:', issuer?.name);
+      if (issuer && issuer.name.toLowerCase() === currentIssuerName.toLowerCase()) {
+        return "selected";
+      }
+    }
+    return "";
   }
 });
 
@@ -1238,7 +1222,7 @@ Template.editPhoenix.onCreated(function() {
     // Subscribe to product details
     this.subscribe('productDetails', isin, {
       onReady: () => {
-        const product = Products.findOne({
+        let product = Products.findOne({
           $or: [
             { "genericData.ISINCode": isin },
             { "ISINCode": isin }
@@ -1266,5 +1250,11 @@ Template.editPhoenix.helpers({
     // Return the actual product object, not the ReactiveVar
     return Template.instance().currentProduct.get();
   }
+});
+
+// Remove manual population in onRendered.
+// The dropdown is now populated via reactive helpers ("availableIssuers" and "selectedIssuer")
+Template.phoenixTemplate.onRendered(function() {
+  console.log('[phoenixTemplate:onRendered] Relying on reactive helpers for issuer dropdown.');
 });
 

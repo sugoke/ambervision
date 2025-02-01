@@ -153,6 +153,11 @@ isChecked(value) {
   progressPercent() {
     const user = Meteor.user();
     return user?.processingStatus?.percent || 0;
+  },
+  currentProduct() {
+    const instance = Template.instance();
+    console.log('[editProduct helper] Getting currentProduct:', instance.productData?.get());
+    return instance.productData?.get();
   }
 });
 
@@ -164,6 +169,7 @@ Template.editProduct.onCreated(function() {
 
   this.isEditMode = new ReactiveVar(false);
   this.productType = new ReactiveVar(null);
+  this.productData = new ReactiveVar(null);
   this.tickers = new ReactiveVar([]);
   this.observations = new ReactiveVar([]);
   this.uploadedFile = new ReactiveVar(null);
@@ -197,9 +203,9 @@ Template.editProduct.onCreated(function() {
       if (product) {
         console.log('Product fetched successfully:', product);
         
-        // Store product data first
+        // Store product data
         this.productId = new ReactiveVar(product._id);
-        this.productData = new ReactiveVar(product);
+        this.productData.set(product);
         this.tickers = new ReactiveVar(product.underlyings || []);
         this.observations = new ReactiveVar(product.observationDates || []);
         
