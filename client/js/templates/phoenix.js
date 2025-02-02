@@ -226,6 +226,7 @@ Template.phoenix.helpers({
 });
 
 let chartInstance = null;
+let performanceChartInstance = null; // Added for underlyings performance bar chart
 
 const pastelColors = [
   'rgba(255, 159, 64, 0.7)',  // Pastel Orange
@@ -440,8 +441,17 @@ Template.phoenix.onRendered(function() {
           position: 'top'
         }
       },
-      // ... other annotations ...
+      // ... other annotations (e.g., observation lines) ...
     };
+
+    // Extract x-axis values for vertical annotation lines
+    const annotationXValues = Object.values(annotations)
+      .filter(a => a.type === 'line' && a.scaleID === 'x' && a.value)
+      .map(a => {
+          const d = new Date(a.value);
+          d.setHours(0, 0, 0, 0);
+          return d.getTime();
+      });
 
     // Add observation date annotations
     product.observationDates
@@ -494,10 +504,9 @@ Template.phoenix.onRendered(function() {
         .flatMap(obs => {
           const dataPoint = filteredChart100.find(item => item.date === obs.observationDate);
           if (!dataPoint) return [];
-
           return obs.newlyLockedStocks.map(ticker => ({
             x: new Date(obs.observationDate),
-            y: dataPoint.values[ticker],
+            y: dataPoint.values.find(v => v.underlying === ticker)?.value || null,
             lockedStock: ticker,
             allLocked: obs.allLockedStocks || []
           }));
@@ -531,7 +540,27 @@ Template.phoenix.onRendered(function() {
       });
     }
 
-    // Create chart options
+    // Calculate dynamic minimum and maximum y values across all datasets and add a margin of 5
+    let calculatedMax = -Infinity;
+    let calculatedMin = Infinity;
+    datasets.forEach(dataset => {
+      dataset.data.forEach(point => {
+        if (point.y !== null) {
+          if (point.y > calculatedMax) {
+            calculatedMax = point.y;
+          }
+          if (point.y < calculatedMin) {
+            calculatedMin = point.y;
+          }
+        }
+      });
+    });
+    if (calculatedMax === -Infinity) calculatedMax = 0;
+    if (calculatedMin === Infinity) calculatedMin = 0;
+    const dynamicMax = calculatedMax + 5;
+    const dynamicMin = calculatedMin - 5;
+
+    // Create chart options with dynamic y-axis maximum
     const chartOptions = {
       maintainAspectRatio: false,
       responsive: true,
@@ -548,13 +577,27 @@ Template.phoenix.onRendered(function() {
           max: endDate,
           grid: {
             display: false
+          },
+          ticks: {
+            color: '#ffffff',
+            callback: function(value, index, ticks) {
+              // Get the default label for this tick
+              const label = this.getLabelForValue(value);
+              const tickDate = new Date(label);
+              tickDate.setHours(0, 0, 0, 0);
+              // Only display the label if it matches one of our annotation x values
+              return annotationXValues.includes(tickDate.getTime()) ? label : '';
+            }
           }
         },
         y: {
-          min: 40,
-          max: 140,
+          min: dynamicMin,
+          max: dynamicMax,
           grid: {
             display: false
+          },
+          ticks: {
+            color: '#ffffff'
           }
         }
       },
@@ -603,6 +646,111 @@ Template.phoenix.onRendered(function() {
       },
       options: chartOptions
     });
+
+    // Create Performance Bar Chart for Underlyings
+    const performanceCtx = document.getElementById('performanceChart');
+    if (performanceCtx && product && product.underlyings) {
+      const underlyingLabels = product.underlyings.map(u => u.ticker);
+      const performanceData = product.underlyings.map(u => {
+        return (u.lastPriceInfo && typeof u.lastPriceInfo.performance === 'number')
+          ? u.lastPriceInfo.performance
+          : 0;
+      });
+      
+      let minPerf = Math.min(...performanceData);
+      let maxPerf = Math.max(...performanceData);
+      if (minPerf === maxPerf) {
+        minPerf -= 1;
+        maxPerf += 1;
+      }
+      
+      function performanceColor(perf) {
+        let ratio = (perf - minPerf) / (maxPerf - minPerf);
+        const r = Math.round(255 * (1 - ratio));
+        const g = Math.round(255 * ratio);
+        return `rgb(${r}, ${g}, 0)`;
+      }
+      
+      const barColors = performanceData.map(p => performanceColor(p));
+      
+      const performanceChartData = {
+        labels: underlyingLabels,
+        datasets: [{
+          label: 'Performance (%)',
+          data: performanceData,
+          backgroundColor: barColors,
+        }]
+      };
+      
+      const protectionLevel = (product.features && product.features.capitalProtectionBarrier) 
+         ? Number(product.features.capitalProtectionBarrier) - 100 : null;
+      
+      const performanceChartOptions = {
+        responsive: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            ticks: {
+              color: '#ffffff'
+            }
+          },
+          x: {
+            ticks: {
+              color: '#ffffff'
+            }
+          }
+        },
+        plugins: {
+          legend: {
+            labels: {
+              color: '#ffffff'
+            }
+          },
+          annotation: {
+            annotations: {
+              zeroLine: {
+                type: 'line',
+                scaleID: 'y',
+                value: 0,
+                borderColor: 'rgba(255,255,255,0.7)',
+                borderDash: [5, 5],
+                borderWidth: 1,
+                label: {
+                  content: '0',
+                  enabled: true,
+                  position: 'end',
+                  color: '#ffffff'
+                }
+              },
+              protectionLine: protectionLevel !== null ? {
+                type: 'line',
+                scaleID: 'y',
+                value: protectionLevel,
+                borderColor: 'rgba(255,0,0,0.7)',
+                borderDash: [5, 5],
+                borderWidth: 1,
+                label: {
+                  content: 'Protection',
+                  enabled: true,
+                  position: 'end',
+                  color: '#ffffff'
+                }
+              } : undefined
+            }
+          }
+        }
+      };
+      
+      if (performanceChartInstance) {
+        performanceChartInstance.destroy();
+      }
+      
+      performanceChartInstance = new Chart(performanceCtx, {
+        type: 'bar',
+        data: performanceChartData,
+        options: performanceChartOptions
+      });
+    }
 
     // Log any errors
     chartInstance.options.onError = function(chart, err) {
