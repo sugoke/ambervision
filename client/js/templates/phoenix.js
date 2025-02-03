@@ -666,9 +666,14 @@ Template.phoenix.onRendered(function() {
       
       function performanceColor(perf) {
         let ratio = (perf - minPerf) / (maxPerf - minPerf);
-        const r = Math.round(255 * (1 - ratio));
-        const g = Math.round(255 * ratio);
-        return `rgb(${r}, ${g}, 0)`;
+        if (ratio < 0) ratio = 0;
+        if (ratio > 1) ratio = 1;
+        // Interpolate from orange [255, 165, 0] (low performance)
+        // to soft green [144, 238, 144] (high performance)
+        const r = Math.round(255 * (1 - ratio) + 144 * ratio);
+        const g = Math.round(165 * (1 - ratio) + 238 * ratio);
+        const b = Math.round(0 * (1 - ratio) + 144 * ratio);
+        return `rgb(${r}, ${g}, ${b})`;
       }
       
       const barColors = performanceData.map(p => performanceColor(p));
