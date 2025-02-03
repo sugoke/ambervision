@@ -830,29 +830,36 @@ Template.phoenix.events({
   'click #exportPDF': async function(event, template) {
     event.preventDefault();
     template.pdfLoading.set(true);
-
+    
     const product = Template.currentData();
     
-    // Get the chart canvas and temporarily invert colors
+    // Capture main chart image (line chart)
     const chartCanvas = document.getElementById('productChart');
     const ctx = chartCanvas.getContext('2d');
-    
-    // Save the current composite operation
     const originalOperation = ctx.globalCompositeOperation;
-    
-    // Invert colors
     ctx.globalCompositeOperation = 'difference';
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, chartCanvas.width, chartCanvas.height);
-    
-    // Capture the inverted chart
     const chartImage = chartCanvas.toDataURL('image/png');
-    
-    // Restore original colors
     ctx.globalCompositeOperation = originalOperation;
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, chartCanvas.width, chartCanvas.height);
-    chartInstance.draw(); // Redraw the original chart
+    chartInstance.draw();
+  
+    // Capture Underlyings Performance chart image (bar chart)
+    const perfCanvas = document.getElementById('performanceChart');
+    let perfChartImage = '';
+    if (perfCanvas) {
+      const perfCtx = perfCanvas.getContext('2d');
+      const originalPerfOperation = perfCtx.globalCompositeOperation;
+      perfCtx.globalCompositeOperation = 'difference';
+      perfCtx.fillStyle = 'white';
+      perfCtx.fillRect(0, 0, perfCanvas.width, perfCanvas.height);
+      perfChartImage = perfCanvas.toDataURL('image/png');
+      perfCtx.globalCompositeOperation = originalPerfOperation;
+      perfCtx.fillStyle = 'white';
+      perfCtx.fillRect(0, 0, perfCanvas.width, perfCanvas.height);
+    }
 
     const printHTML = `
       <!DOCTYPE html>
@@ -1120,64 +1127,13 @@ Template.phoenix.events({
           </div>
         </div>
 
-        <div class="card page-break-before">
+        <!-- Add Underlyings Performance Bar Chart Card -->
+        <div class="card">
           <div class="heading">
-            <i class="fas fa-calendar-check"></i>
-            Observations
+            <i class="fas fa-chart-bar"></i>
+            Underlyings Performance
           </div>
-          <table>
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Observation Date</th>
-                <th>Payment Date</th>
-                <th>Coupon Barrier</th>
-                <th>Autocall Level</th>
-                <th>Worst Performing</th>
-                <th>Worst-of Performance</th>
-                <th>Coupon Paid</th>
-                <th>Autocalled</th>
-                <th>Newly Locked</th>
-                <th>All Locked</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${(product.observationDates || []).map((obs, index) => {
-                // Get observation data from observationsTable
-                const obsResult = product.observationsTable?.[index] || {};
-                
-                // Safely get values with defaults and ensure numbers
-                const autocallLevel = obs.autocallLevel ? Number(obs.autocallLevel) : null;
-                const couponBarrierLevel = obs.couponBarrierLevel ? Number(obs.couponBarrierLevel) : 70.00;
-                const worstPerformance = obsResult.worstPerformance ? Number(obsResult.worstPerformance) : null;
-                const couponPerPeriod = obsResult.couponPerPeriod ? Number(obsResult.couponPerPeriod) : null;
-                
-                return `
-                <tr>
-                  <td>${index + 1}</td>
-                  <td>${new Date(obs.observationDate).toLocaleDateString()}</td>
-                  <td>${new Date(obs.paymentDate).toLocaleDateString()}</td>
-                  <td>${couponBarrierLevel.toFixed(2)}%</td>
-                  <td>${autocallLevel ? autocallLevel.toFixed(2) + '%' : '-'}</td>
-                  <td>${obsResult.worstPerformingUnderlying || '-'}</td>
-                  <td>${worstPerformance !== null && !isNaN(worstPerformance) ? 
-                    `<span style="color: ${worstPerformance >= 0 ? '#155724' : '#721c24'}">
-                      ${worstPerformance.toFixed(2)}%
-                    </span>` : 
-                    '-'}</td>
-                  <td>${obsResult.couponPaid && couponPerPeriod !== null && !isNaN(couponPerPeriod) ? 
-                    `<span class="badge badge-success">${couponPerPeriod.toFixed(2)}%</span>` : 
-                    '-'}</td>
-                  <td>${obsResult.autocalled ? 
-                    `<span class="badge badge-success">Yes</span>` : 
-                    `<span class="badge badge-danger">No</span>`}</td>
-                  <td>${obsResult.newlyLockedStocks?.join(', ') || '-'}</td>
-                  <td>${obsResult.allLockedStocks?.join(', ') || '-'}</td>
-                </tr>
-                `;
-              }).join('')}
-            </tbody>
-          </table>
+          <img src="${perfChartImage}" class="chart-img" alt="Underlyings Performance Chart">
           <div class="card-arrow">
             <div class="card-arrow-top-left"></div>
             <div class="card-arrow-top-right"></div>
@@ -1186,7 +1142,7 @@ Template.phoenix.events({
           </div>
         </div>
 
-        <div class="card page-break-before">
+        <div class="card">
           <div class="heading">
             <i class="fas fa-chart-area"></i>
             Performance Chart

@@ -77,7 +77,8 @@ const callLLMApi = async (messages, temperature = 0) => {
       'Content-Type': 'application/json',
     },
     data: {
-      model: "gpt-3.5-turbo",
+     // model: "gpt-3.5-turbo",
+      model: "o3-mini",
       messages: [
         {
           role: "system",
