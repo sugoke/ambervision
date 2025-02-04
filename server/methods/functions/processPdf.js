@@ -69,7 +69,7 @@ const getOpenAIKey = () => {
   return key;
 };
 
-const callLLMApi = async (messages, temperature = 0) => {
+const callLLMApi = async (messages) => {
   console.log('Calling OpenAI API...');
   return await HTTP.call('POST', 'https://api.openai.com/v1/chat/completions', {
     headers: {
@@ -77,7 +77,6 @@ const callLLMApi = async (messages, temperature = 0) => {
       'Content-Type': 'application/json',
     },
     data: {
-     // model: "gpt-3.5-turbo",
       model: "o3-mini",
       messages: [
         {
@@ -85,8 +84,7 @@ const callLLMApi = async (messages, temperature = 0) => {
           content: "You are a financial document parser specialized in structured products."
         },
         ...messages.slice(1)
-      ],
-      temperature
+      ]
     }
   });
 };
@@ -359,7 +357,7 @@ IMPORTANT: Always verify eodTicker follows symbol.exchange format exactly. Never
           role: "user",
           content: prompt + "\n\nPDF content:\n" + pdfData.text
         }
-      ], 0.1);
+      ]);
       console.log('Received AI response');
 
       updateProgress(userId, 'Parsing product data...');
