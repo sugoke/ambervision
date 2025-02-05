@@ -39,9 +39,10 @@ Meteor.publish('products', function() {
   console.time('products-publication');
   console.log('Products publication starting...');
   
-  const cursor = Products.find({});
-  console.log('Products cursor created, count:', cursor.count());
+  // Exclude heavy fields (e.g. chart100) not used on the main page.
+  const cursor = Products.find({}, { fields: { chart100: 0 } });
   
+  console.log('Products cursor created, count:', cursor.count());
   console.timeEnd('products-publication');
   return cursor;
 });

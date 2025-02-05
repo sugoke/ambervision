@@ -11,6 +11,13 @@ TabularTables.Products = new Tabular.Table({
   name: "Products",
   collection: Products,
   pub: "clientProducts",
+  fields: {
+    "genericData.ISINCode": 1,
+    "genericData.currency": 1,
+    "genericData.issuer": 1,
+    name: 1,
+    status: 1
+  },
   columns: [
     { 
       data: "genericData.ISINCode",
@@ -27,12 +34,12 @@ TabularTables.Products = new Tabular.Table({
       title: "Product Name"
     },
     { 
-      data: "currency",
+      data: "genericData.currency",
       title: "Currency",
       className: 'text-center'
     },
     { 
-      data: "issuer",
+      data: "genericData.issuer",
       title: "Issuer"
     },
     { 
@@ -90,7 +97,6 @@ TabularTables.Products = new Tabular.Table({
       }
     }
   ],
-  extraFields: ['genericData'],
   responsive: true,
   autoWidth: false,
   order: [[1, 'asc']],  // Sort by Product Name by default

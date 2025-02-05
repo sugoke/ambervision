@@ -7,7 +7,7 @@ Meteor.publish('tabular_products', function() {
   if (!this.userId) {
     return this.ready();
   }
-  return Products.find();
+  return Products.find({}, { fields: { chart100: 0 } });
 });
 
 Meteor.publish('productDetails', function(isin) {
@@ -34,7 +34,6 @@ Meteor.publish('productDetails', function(isin) {
 
 Meteor.publish('clientFilteredProducts', function(userId) {
   check(userId, Match.Maybe(String));
-
   if (!this.userId) return this.ready();
 
   const currentUser = Meteor.users.findOne(this.userId);
@@ -44,7 +43,7 @@ Meteor.publish('clientFilteredProducts', function(userId) {
   if (isSuperAdmin && !userId) {
     return [
       Holdings.find({}),
-      Products.find({}),
+      Products.find({}, { fields: { chart100: 0 } }),
       Schedules.find({}, {
         transform: function(doc) {
           // If no specific events, gather all events from all schedules
@@ -75,7 +74,7 @@ Meteor.publish('clientFilteredProducts', function(userId) {
 
   return [
     holdings,
-    Products.find({ _id: { $in: productIds } }),
+    Products.find({ _id: { $in: productIds }}, { fields: { chart100: 0 } }),
     Schedules.find({ userId: targetUserId }),
     Risk.find({ ISINCode: { $in: holdingIsins } }),
     Historical.find({ ISINCode: { $in: holdingIsins } })
