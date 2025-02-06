@@ -258,9 +258,10 @@ Meteor.methods({
 {
   "status": "pending",
   "genericData": {
-    "ISINCode": "${isin}",
+    "ISINCode": "${isin}",  // IMPORTANT: Use this exact ISIN, do not change it
     "currency": "string",
-    "issuer": "string",
+    "issuer": "string", // CRITICAL: The issuer MUST be one of these exact values (nothing else is accepted): ${knownIssuers}. Look for mentions of 'issuer', 'issued by', 'emittent', 'guarantor'. choose the closest match.
+     etc.
     "settlementType": "string",
     "settlementTx": "string",
     "tradeDate": "YYYY-MM-DD",
@@ -268,36 +269,42 @@ Meteor.methods({
     "finalObservation": "YYYY-MM-DD",
     "maturityDate": "YYYY-MM-DD",
     "template": "phoenix",
-    "name": "string",
-    "nonCallPeriods": number
+    "name": "string", // "Phoenix on " + EOD tickers joined by " / "
+    "nonCallPeriods": number // Count of non-call periods at start of product. number of observation dates that are not autocall dates.
   },
   "features": {
     "memoryCoupon": boolean,
-    "memoryAutocall": boolean,
+    "memoryAutocall": boolean, // For memory autocall, you will find it often in Automatic early redemption section. It will look like this: If, on any Automatic Early Redemption Valuation Daten, in respect of each Underlying Share in
+the Basket, the official closing price of such Underlying Share on that Automatic Early
+Redemption Valuation Daten or any of the Automatic Early Redemption Valuation Daten which
+precede that Automatic Early Redemption Valuation Daten is greater than or equal to its
+Automatic Early Redemption Price in, then the Issuer shall redeem each Certificate on the
+relevant Automatic Early Redemption Daten at the Automatic Early Redemption Amount
+calculated. What you have to pay attention to is the sentence that says 'or any of the Automatic Early Redemption Valuation Date' which shows that the product is autocalled when all underlyings have been observed above the autocall level even on different dates. Assume there is no memory autocall if you cannot find something like this in the document.
     "oneStar": boolean,
-    "lowStrike": boolean,
+    "lowStrike": boolean, // True if using % of initial level. lowStrike is true if the strike is less than 100% of the initial level. It means a potential capital loss will be calculated compared to the strike or protection barrier level, not the initial level.
     "autocallStepdown": boolean,
     "jump": boolean,
-    "stepDown": boolean,
+    "stepDown": boolean, // True if the autocall level goes down after the first autocall date.
     "couponBarrier": number,
-    "capitalProtectionBarrier": number,
+    "capitalProtectionBarrier": number, // this is NOT "bond floor", it is generally the strike level which is usually below the initial level.
     "couponPerPeriod": number
   },
   "underlyings": [{
     "name": "string",
-    "ticker": "string",
+    "ticker": "string", // Raw ticker
     "exchange": "string",
     "country": "string",
     "currency": "string", 
     "initialReferenceLevel": number,
-    "eodTicker": "string",
+    "eodTicker": "string", // IMPORTANT: Standardized EOD format, make sure it is a valid ticker for EOD like AAPL.US (name.exchange)
     "lastPriceInfo": {}
   }],
   "observationDates": [{
-    "observationDate": "YYYY-MM-DD",
-    "paymentDate": "YYYY-MM-DD",
-    "couponBarrierLevel": number,
-    "autocallLevel": number or null,
+    "observationDate": "YYYY-MM-DD", //look for "Observation Date", or "Valuation Date(i)". the first one is usually the same as the trade date
+    "paymentDate": "YYYY-MM-DD", //look for "Payment Date(i)" or Interest Payment Date
+    "couponBarrierLevel": number, // sometimes in Conditional Coupon section. If the number is negative, do 1 minus this number. For example if the coupon is paid until -60% it means the barrier is 40% below the initial level.
+    "autocallLevel": number or null, // IMPORTANT: null means this is a non-call date. This level is sometimes called Autocall Trigger Level. Or sometimes you find it in Knock-In threshold section.
     "couponPerPeriod": number
   }]
 }
@@ -325,20 +332,22 @@ Rules:
     - Look for "Settlement Date" or similar terms in document
 11. For German stocks (GY suffix):
     - Map to .XETRA suffix
+    - Example: "RWE GY" should become "RWE.XETRA"
+    - This applies to all stocks traded on Deutsche Börse/Xetra
 
 Rules for tickers and EOD format:
-1. Raw ticker format: Return as "symbol exchange" (e.g., "AAPL UW")
+1. Raw ticker format: Return as "symbol exchange" (e.g., "AAPL UW", "SAN FP")
 2. EOD ticker format: Must be "symbol.exchange" where exchange is from this mapping:
-   - UW or UN → .US
-   - FP → .PA
-   - SE → .SW
-   - LN → .L
-   - GY → .XETRA
-   - IM → .MI
-   - NA → .AS
-   - SM → .MC
-   - T → .JP
-   - HK → .HK
+   - UW or UN → .US (NASDAQ/NYSE)
+   - FP → .PA (Euronext Paris)
+   - SE → .SW (SIX Swiss Exchange)
+   - LN → .L (London)
+   - GY → .XETRA (Deutsche Börse)
+   - IM → .MI (Italian)
+   - NA → .AS (Amsterdam)
+   - SM → .MC (Madrid)
+   - T → .JP (Tokyo)
+   - HK → .HK (Hong Kong)
 
 Examples:
 - "AAPL UW" → "AAPL.US"

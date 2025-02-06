@@ -299,13 +299,18 @@ function populatePhoenixObservations(observations) {
   const scheduleContainer = getCachedSelector('#scheduleTable tbody');
   scheduleContainer.empty();
 
+  // Show table header if there are observations
+  if (observations?.length) {
+    $('#scheduleTable thead').show();
+  }
+
   const disabledAttribute = getDisabledAttribute();
 
-  observations.forEach((observation, index) => {
-    const n = index === 0 ? 'Initial' : index;
+  // Skip the initial observation (index 0) and populate the rest
+  observations.slice(1).forEach((observation, index) => {
     const row = `
       <tr>
-        <td>${n}</td>
+        <td>${index + 1}</td>
         <td><input type="date" class="form-control observation-date" value="${observation.observationDate}" ${disabledAttribute}></td>
         <td><input type="date" class="form-control payment-date" value="${observation.paymentDate}" ${disabledAttribute}></td>
         <td><input type="text" class="form-control coupon-barrier" value="${observation.couponBarrierLevel}" ${disabledAttribute}></td>
@@ -673,18 +678,6 @@ Template.phoenixTemplate.events({
       }
 
       const disabledAttribute = getDisabledAttribute();
-
-      // Add initial observation (trade date)
-      scheduleContainer.append(`
-        <tr>
-          <td>Initial</td>
-          <td><input type="date" class="form-control observation-date" value="${start.format('YYYY-MM-DD')}" ${disabledAttribute}></td>
-          <td><input type="date" class="form-control payment-date" value="${start.format('YYYY-MM-DD')}" ${disabledAttribute}></td>
-          <td><input type="text" class="form-control coupon-barrier" value="" ${disabledAttribute}></td>
-          <td><input type="text" class="form-control autocall-barrier" value="" ${disabledAttribute}></td>
-          <td><input type="text" class="form-control coupon-per-period" value="" ${disabledAttribute}></td>
-        </tr>
-      `);
 
       // Add subsequent observations
       for (let i = 1; i <= observationsCount; i++) {

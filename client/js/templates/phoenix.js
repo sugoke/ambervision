@@ -55,7 +55,9 @@ Template.phoenix.helpers({
   timelineSteps() {
     const product = Template.instance().data;
     if (!product) return [];
-
+    // Use default arrays if fields are missing
+    const observationDates = product.observationDates || [];
+    const observationsTable = product.observationsTable || [];
     const currentDate = new Date();
     let steps = [{
       date: product.genericData.tradeDate,
@@ -63,26 +65,22 @@ Template.phoenix.helpers({
       status: 'completed'
     }];
 
-    // Function to check if a date is in the past
     const isPastDate = (date) => new Date(date) <= currentDate;
-
-    // Function to check if an observation result is valid (not placeholder data)
     const isValidObservationResult = (result) => {
       return result.worstPerformance !== "-" && result.autocalled !== "-";
     };
 
     let productAutocalled = false;
 
-    // Iterate through all observation dates
-    for (let i = 0; i < product.observationDates.length; i++) {
-      const obs = product.observationDates[i];
+    // Loop through observations using default array
+    for (let i = 0; i < observationDates.length; i++) {
+      const obs = observationDates[i];
       const obsDate = new Date(obs.observationDate);
       
       let label = `Obs ${i + 1}`; // Removed [Coupon: xx%]
       let status = isPastDate(obsDate) ? 'completed' : 'disabled';
 
-      // Check for corresponding entry in observationsTable
-      const observationResult = product.observationsTable[i];
+      const observationResult = observationsTable[i];
       
       if (observationResult && isValidObservationResult(observationResult)) {
         if (observationResult.autocalled) {
@@ -100,13 +98,11 @@ Template.phoenix.helpers({
         status: status
       });
 
-      // If product was autocalled, stop adding future dates
       if (productAutocalled) {
         break;
       }
     }
 
-    // Add maturity date only if the product wasn't autocalled
     if (!productAutocalled) {
       steps.push({
         date: product.genericData.maturityDate,
@@ -453,8 +449,8 @@ Template.phoenix.onRendered(function() {
           return d.getTime();
       });
 
-    // Add observation date annotations
-    product.observationDates
+    // Add observation date annotations using a default array
+    (product.observationDates || [])
       .filter(obs => new Date(obs.observationDate) <= endDate)
       .forEach((obs, index) => {
         annotations[`obs${index}`] = {
@@ -475,7 +471,7 @@ Template.phoenix.onRendered(function() {
     // Create datasets array with coupon payments as a separate dataset
     const couponDataset = {
       label: 'Coupons',
-      data: product.observationsTable
+      data: (product.observationsTable || [])
         .filter(obs => obs.couponPaid && obs.couponPaid > 0)
         .map(obs => ({
           x: new Date(obs.observationDate),
@@ -499,7 +495,7 @@ Template.phoenix.onRendered(function() {
 
     // Add dataset for memory autocall points
     if (product.features.memoryAutocall && product.observationsTable) {
-      const memoryAutocallPoints = product.observationsTable
+      const memoryAutocallPoints = (product.observationsTable || [])
         .filter(obs => obs.newlyLockedStocks && obs.newlyLockedStocks.length > 0)
         .flatMap(obs => {
           const dataPoint = filteredChart100.find(item => item.date === obs.observationDate);

@@ -48,6 +48,7 @@ Meteor.publish('productDetails', function(isin) {
       autocallDate: 1,
       autocalled: 1,
       capitalRedemption: 1,
+      chart100: 1
     },
     transform: function(doc) {
       if (doc.redemptionIfToday === undefined) {
