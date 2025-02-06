@@ -77,7 +77,7 @@ const callLLMApi = async (messages) => {
       'Content-Type': 'application/json',
     },
     data: {
-      model: "o3-mini",
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
