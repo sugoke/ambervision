@@ -324,6 +324,28 @@ function calculateUnderlyingPerformances(product, lastPriceDate) {
     }
   });
 
+  // NEW: Propagate autocall level forward for each date until final observation
+  const sortedObsLevels = Array.from(observationLevels.entries())
+    .map(([obsDate, level]) => [parseAndNormalizeDate(obsDate), level])
+    .sort((a, b) => a[0].getTime() - b[0].getTime());
+  console.log('Sorted observation levels:', sortedObsLevels.map(([d, l]) => ({ date: formatDate(d), level: l })));
+
+  for (const [dateStr, dayData] of dateMap) {
+    const curDate = parseAndNormalizeDate(dateStr);
+    let currentLevel = null;
+    for (const [obsDate, level] of sortedObsLevels) {
+      if (obsDate.getTime() <= curDate.getTime()) {
+        currentLevel = level;
+      } else {
+        break;
+      }
+    }
+    console.log(`Propagate - Date ${dateStr}: computed autocallLevel = ${currentLevel}`);
+    if (currentLevel !== null) {
+      dayData.autocallLevel = currentLevel;
+    }
+  }
+
   // Process each underlying's historical data
   product.underlyings.forEach(underlying => {
     const historicalData = Historical.findOne({ eodTicker: underlying.eodTicker });
@@ -381,20 +403,6 @@ function calculateUnderlyingPerformances(product, lastPriceDate) {
         underlying: underlying.ticker,
         value: performance
       });
-
-      // Set autocall level for all dates (including future)
-      if (observationLevels.has(dateStr)) {
-        dayData.autocallLevel = observationLevels.get(dateStr);
-      } else {
-        // Find the most recent observation date
-        const prevObsDate = Array.from(observationLevels.entries())
-          .filter(([obsDate]) => parseAndNormalizeDate(obsDate) <= date)
-          .sort((a, b) => parseAndNormalizeDate(b[0]) - parseAndNormalizeDate(a[0]))[0];
-        
-        if (prevObsDate) {
-          dayData.autocallLevel = prevObsDate[1];
-        }
-      }
     }
   });
 

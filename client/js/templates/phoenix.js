@@ -440,15 +440,6 @@ Template.phoenix.onRendered(function() {
       // ... other annotations (e.g., observation lines) ...
     };
 
-    // Extract x-axis values for vertical annotation lines
-    const annotationXValues = Object.values(annotations)
-      .filter(a => a.type === 'line' && a.scaleID === 'x' && a.value)
-      .map(a => {
-          const d = new Date(a.value);
-          d.setHours(0, 0, 0, 0);
-          return d.getTime();
-      });
-
     // Add observation date annotations using a default array
     (product.observationDates || [])
       .filter(obs => new Date(obs.observationDate) <= endDate)
@@ -466,6 +457,15 @@ Template.phoenix.onRendered(function() {
             position: 'top'
           }
         };
+      });
+
+    // Extract x-axis values for vertical annotation lines after adding observation annotations
+    const annotationXValues = Object.values(annotations)
+      .filter(a => a.type === 'line' && a.scaleID === 'x' && a.value)
+      .map(a => {
+          const d = new Date(a.value);
+          d.setHours(0, 0, 0, 0);
+          return d.getTime();
       });
 
     // Create datasets array with coupon payments as a separate dataset
@@ -575,15 +575,14 @@ Template.phoenix.onRendered(function() {
             display: false
           },
           ticks: {
+            autoSkip: false,
             color: '#ffffff',
             callback: function(value, index, ticks) {
-              // Get the default label for this tick
-              const label = this.getLabelForValue(value);
-              const tickDate = new Date(label);
-              tickDate.setHours(0, 0, 0, 0);
-              // Only display the label if it matches one of our annotation x values
-              return annotationXValues.includes(tickDate.getTime()) ? label : '';
+              return new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
             }
+          },
+          afterBuildTicks: function(scale) {
+            scale.ticks = annotationXValues.map(val => ({ value: val }));
           }
         },
         y: {
