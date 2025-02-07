@@ -475,7 +475,8 @@ Template.phoenix.onRendered(function() {
         .filter(obs => obs.couponPaid && obs.couponPaid > 0)
         .map(obs => ({
           x: new Date(obs.observationDate),
-          y: 100  // Fixed position at 100
+          y: 100,  // Fixed position at 100
+          coupon: obs.couponPaid  // Added coupon amount here
         })),
       pointStyle: 'circle',  // Changed to circle
       pointRadius: 8,        // Slightly smaller
@@ -487,7 +488,15 @@ Template.phoenix.onRendered(function() {
       pointBorderColor: 'rgba(40, 167, 69, 1)',
       pointBorderWidth: 2,
       showLine: false,
-      order: -1  // To ensure coupons are drawn on top
+      order: -1,  // To ensure coupons are drawn on top
+      tooltip: {  // Added tooltip callback for coupon dataset
+        callbacks: {
+          label: function(context) {
+            const coupon = context.raw.coupon;
+            return `Coupon: ${coupon}%`;
+          }
+        }
+      }
     };
 
     // Add coupon dataset to existing datasets
