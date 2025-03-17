@@ -340,7 +340,7 @@ function calculateUnderlyingPerformances(product, lastPriceDate) {
         break;
       }
     }
-    console.log(`Propagate - Date ${dateStr}: computed autocallLevel = ${currentLevel}`);
+    //console.log(`Propagate - Date ${dateStr}: computed autocallLevel = ${currentLevel}`);
     if (currentLevel !== null) {
       dayData.autocallLevel = currentLevel;
     }
