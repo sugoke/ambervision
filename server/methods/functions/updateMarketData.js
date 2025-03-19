@@ -53,83 +53,122 @@ Meteor.methods({
             console.log(`Processing ticker: ${eodTicker} with earliest date: ${tickerStartDates[eodTicker]}`);
             
             updatePromises.push((async () => {
-                const latestRecord = Historical.findOne(
-                    { eodTicker },
-                    { sort: { 'data.date': -1 }, fields: { 'data.date': 1, 'data': 1 } }
-                );
-                
-                console.log(`Latest record for ${eodTicker}: ${JSON.stringify(latestRecord?.data?.length ? 
-                    {lastDate: latestRecord.data[latestRecord.data.length - 1].date, recordsCount: latestRecord.data.length} : 
-                    {exists: !!latestRecord})}`);
+                try {
+                    const latestRecord = Historical.findOne(
+                        { eodTicker },
+                        { sort: { 'data.date': -1 }, fields: { 'data.date': 1, 'data': 1 } }
+                    );
+                    
+                    console.log(`Latest record for ${eodTicker}: ${JSON.stringify(latestRecord?.data?.length ? 
+                        {lastDate: latestRecord.data[latestRecord.data.length - 1].date, recordsCount: latestRecord.data.length} : 
+                        {exists: !!latestRecord})}`);
 
-                let startDate;
-                if (latestRecord?.data?.length) {
-                    const lastDate = new Date(latestRecord.data[latestRecord.data.length - 1].date);
-                    lastDate.setDate(lastDate.getDate() + 1);
-                    startDate = lastDate.toISOString().split('T')[0];
-                } else {
-                    // Use the earliest date found for this ticker
-                    startDate = tickerStartDates[eodTicker];
-                    console.log(`No historical data for ${eodTicker}, using earliest product tradeDate: ${startDate}`);
-                }
-
-                const currentDate = new Date().toISOString().split('T')[0];
-                console.log(`${eodTicker}: Fetching from ${startDate} to ${currentDate}`);
-
-                if (startDate && new Date(startDate) <= new Date(currentDate)) {
-                    try {
-                        const url = `https://eodhd.com/api/eod/${eodTicker}?api_token=${apiKey}&from=${startDate}&to=${currentDate}&fmt=json`;
-                        console.log(`Request URL: ${url}`);
-                        
-                        const response = await HTTP.get(url);
-                        const newData = response.data;
-
-                        console.log(`${eodTicker}: Received ${newData?.length || 0} raw records, response status: ${response.statusCode}`);
-                        
-                        if (response.statusCode !== 200) {
-                            console.log(`${eodTicker}: API error - ${JSON.stringify(response.data)}`);
-                            return;
-                        }
-
-                        if (!Array.isArray(newData) || newData.length === 0) {
-                            console.log(`${eodTicker}: No data received or invalid format`);
-                            return;
-                        }
-
-                        const processedData = newData
-                            .filter(d => d && d.date && d.close !== undefined)
-                            .map(d => ({
-                                date: d.date,
-                                open: d.open,
-                                high: d.high,
-                                low: d.low,
-                                close: d.close,
-                                adjusted_close: d.adjusted_close,
-                                volume: d.volume
-                            }));
-
-                        console.log(`${eodTicker}: Processed ${processedData.length} records after filtering (${newData.length - processedData.length} removed)`);
-
-                        if (processedData.length > 0) {
-                            await Historical.update(
-                                { eodTicker },
-                                { $push: { data: { $each: processedData } } },
-                                { upsert: true }
-                            );
-                            console.log(`Updated ${eodTicker} with ${processedData.length} records`);
-                        }
-                    } catch (error) {
-                        console.error(`Error fetching ${eodTicker}:`, error);
-                        console.log(`Full error details for ${eodTicker}:`, error.response?.content || JSON.stringify(error));
+                    let startDate;
+                    if (latestRecord?.data?.length) {
+                        const lastDate = new Date(latestRecord.data[latestRecord.data.length - 1].date);
+                        lastDate.setDate(lastDate.getDate() + 1);
+                        startDate = lastDate.toISOString().split('T')[0];
+                    } else {
+                        startDate = tickerStartDates[eodTicker];
+                        console.log(`No historical data for ${eodTicker}, using earliest product tradeDate: ${startDate}`);
                     }
-                } else {
-                    console.log(`${eodTicker}: No update needed, startDate ${startDate} > currentDate ${currentDate}`);
+
+                    const currentDate = new Date().toISOString().split('T')[0];
+                    console.log(`${eodTicker}: Fetching from ${startDate} to ${currentDate}`);
+
+                    if (startDate && new Date(startDate) <= new Date(currentDate)) {
+                        try {
+                            const url = `https://eodhd.com/api/eod/${eodTicker}?api_token=${apiKey}&from=${startDate}&to=${currentDate}&fmt=json`;
+                            console.log(`Request URL: ${url}`);
+                            
+                            const response = await HTTP.get(url);
+                            const newData = response.data;
+
+                            console.log(`${eodTicker}: Received ${newData?.length || 0} raw records, response status: ${response.statusCode}`);
+                            
+                            if (response.statusCode !== 200) {
+                                console.log(`${eodTicker}: API error - ${JSON.stringify(response.data)}`);
+                                return;
+                            }
+
+                            if (!Array.isArray(newData) || newData.length === 0) {
+                                console.log(`${eodTicker}: No data received or invalid format`);
+                                return;
+                            }
+
+                            const processedData = newData
+                                .filter(d => d && d.date && d.close !== undefined)
+                                .map(d => ({
+                                    date: d.date,
+                                    open: d.open,
+                                    high: d.high,
+                                    low: d.low,
+                                    close: d.close,
+                                    adjusted_close: d.adjusted_close,
+                                    volume: d.volume
+                                }));
+
+                            console.log(`${eodTicker}: Processed ${processedData.length} records after filtering (${newData.length - processedData.length} removed)`);
+
+                            if (processedData.length > 0) {
+                                // Handle large datasets by using batched updates
+                                const BATCH_SIZE = 100;
+                                console.log(`${eodTicker}: Starting database update with ${processedData.length} records`);
+                                
+                                if (processedData.length > BATCH_SIZE) {
+                                    console.log(`${eodTicker}: Large dataset, using batched updates`);
+                                    // Process in batches
+                                    for (let i = 0; i < processedData.length; i += BATCH_SIZE) {
+                                        const batch = processedData.slice(i, i + BATCH_SIZE);
+                                        console.log(`${eodTicker}: Updating batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(processedData.length/BATCH_SIZE)} (${batch.length} records)`);
+                                        
+                                        try {
+                                            await Historical.update(
+                                                { eodTicker },
+                                                { $push: { data: { $each: batch } } },
+                                                { upsert: true }
+                                            );
+                                        } catch (dbError) {
+                                            console.error(`Database error updating ${eodTicker} batch ${i}-${i+batch.length}:`, dbError);
+                                            // Continue with next batch
+                                        }
+                                    }
+                                    console.log(`${eodTicker}: Completed all batch updates`);
+                                } else {
+                                    // Small dataset, update all at once
+                                    try {
+                                        await Historical.update(
+                                            { eodTicker },
+                                            { $push: { data: { $each: processedData } } },
+                                            { upsert: true }
+                                        );
+                                    } catch (dbError) {
+                                        console.error(`Database error updating ${eodTicker}:`, dbError);
+                                    }
+                                }
+                                
+                                console.log(`Updated ${eodTicker} with ${processedData.length} records`);
+                            }
+                        } catch (error) {
+                            console.error(`Error fetching ${eodTicker}:`, error);
+                            console.log(`Full error details for ${eodTicker}:`, error.response?.content || JSON.stringify(error));
+                        }
+                    } else {
+                        console.log(`${eodTicker}: No update needed, startDate ${startDate} > currentDate ${currentDate}`);
+                    }
+                } catch (processError) {
+                    console.error(`General error processing ${eodTicker}:`, processError);
                 }
             })());
         }
 
-        await Promise.all(updatePromises);
-        console.log("Market data update completed, processed tickers:", Array.from(allTickers));
-        return "Market data update completed";
+        try {
+            await Promise.all(updatePromises);
+            console.log("Market data update completed, processed tickers:", Array.from(allTickers));
+            return "Market data update completed";
+        } catch (finalError) {
+            console.error("Error in market data update:", finalError);
+            return "Market data update completed with errors";
+        }
     }
 });
