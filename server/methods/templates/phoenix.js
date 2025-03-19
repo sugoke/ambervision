@@ -451,6 +451,8 @@ function calculateUnderlyingPerformances(product, lastPriceDate) {
 
 function updateUnderlyingsWithPerformance(underlyings, performanceData) {
   const { performances, chart100 } = performanceData;
+  
+  console.log('Performance data:', JSON.stringify(performances));
 
   const worstPerforming = performances.reduce((worst, current) => {
     if (current.performance === null) {
@@ -464,12 +466,18 @@ function updateUnderlyingsWithPerformance(underlyings, performanceData) {
 
   const updatedUnderlyings = underlyings.map(underlying => {
     const performance = performances.find(p => p.eodTicker === underlying.eodTicker);
+    console.log(`Processing underlying ${underlying.ticker}:`, 
+      performance ? JSON.stringify(performance) : 'No performance data');
+    
     if (performance) {
+      console.log(`Last price date for ${underlying.ticker}:`, 
+        performance.lastPriceDate ? performance.lastPriceDate : 'NULL');
+      
       underlying.lastPriceInfo = {
         price: performance.lastPrice,
         performance: performance.performance,
         distanceToBarrier: performance.distanceToBarrier,
-        date: parseAndNormalizeDate(performance.lastPriceDate),
+        date: performance.lastPriceDate ? parseAndNormalizeDate(performance.lastPriceDate) : null,
         isWorstOf: worstPerforming && performance.eodTicker === worstPerforming.eodTicker
       };
     } else {
@@ -612,13 +620,24 @@ function updateProductWithObservationsTable(productId, result, totalCouponPaid, 
 }
 
 function parseAndNormalizeDate(dateString) {
+  if (!dateString) {
+    console.error('NULL or undefined date passed to parseAndNormalizeDate');
+    return null;
+  }
+  
   if (DATE_CACHE.has(dateString)) {
     return DATE_CACHE.get(dateString);
   }
-  const [year, month, day] = dateString.split('-').map(Number);
-  const date = new Date(year, month - 1, day);
-  DATE_CACHE.set(dateString, date);
-  return date;
+  
+  try {
+    const [year, month, day] = dateString.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    DATE_CACHE.set(dateString, date);
+    return date;
+  } catch (error) {
+    console.error(`Error parsing date: ${dateString}`, error);
+    return null;
+  }
 }
 
 function normalizeDateToMidnight(date) {
@@ -714,18 +733,24 @@ function calculateFinalRedemption(product, observationDate) {
 }
 
 function calculatePerformances(product, lastPriceDate) {
+  console.log('Calculating performances with lastPriceDate:', formatDate(lastPriceDate));
   const capitalProtectionBarrier = product.features.capitalProtectionBarrier;
 
   return product.underlyings.map(underlying => {
+    console.log(`Getting performance for ${underlying.ticker} (${underlying.eodTicker})`);
+    
     const historicalData = Historical.findOne({ eodTicker: underlying.eodTicker });
-    if (!historicalData?.data?.length) return {
-      ticker: underlying.ticker,
-      eodTicker: underlying.eodTicker,
-      performance: null,
-      distanceToBarrier: null,
-      lastPrice: null,
-      lastPriceDate: null
-    };
+    if (!historicalData?.data?.length) {
+      console.error(`No historical data for ${underlying.ticker}`);
+      return {
+        ticker: underlying.ticker,
+        eodTicker: underlying.eodTicker,
+        performance: null,
+        distanceToBarrier: null,
+        lastPrice: null,
+        lastPriceDate: null
+      };
+    }
 
     // Get initial price data
     const tradeDate = parseAndNormalizeDate(product.genericData.tradeDate);
@@ -733,14 +758,17 @@ function calculatePerformances(product, lastPriceDate) {
       parseAndNormalizeDate(d.date).getTime() === tradeDate.getTime()
     );
 
-    if (!initialData?.adjusted_close) return {
-      ticker: underlying.ticker,
-      eodTicker: underlying.eodTicker,
-      performance: null,
-      distanceToBarrier: null,
-      lastPrice: null,
-      lastPriceDate: null
-    };
+    if (!initialData?.adjusted_close) {
+      console.error(`No initial data for ${underlying.ticker} at trade date ${product.genericData.tradeDate}`);
+      return {
+        ticker: underlying.ticker,
+        eodTicker: underlying.eodTicker,
+        performance: null,
+        distanceToBarrier: null,
+        lastPrice: null,
+        lastPriceDate: null
+      };
+    }
 
     // Get price at last price date
     const sortedData = historicalData.data
@@ -750,15 +778,22 @@ function calculatePerformances(product, lastPriceDate) {
       }))
       .sort((a, b) => b.date - a.date);
 
+    console.log(`Sorted data for ${underlying.ticker}: first date=${formatDate(sortedData[0]?.date)}, last date=${formatDate(sortedData[sortedData.length-1]?.date)}`);
+    
     const lastPriceInfo = sortedData.find(d => d.date <= lastPriceDate);
-    if (!lastPriceInfo) return {
-      ticker: underlying.ticker,
-      eodTicker: underlying.eodTicker,
-      performance: null,
-      distanceToBarrier: null,
-      lastPrice: null,
-      lastPriceDate: null
-    };
+    if (!lastPriceInfo) {
+      console.error(`No price data found for ${underlying.ticker} at or before ${formatDate(lastPriceDate)}`);
+      return {
+        ticker: underlying.ticker,
+        eodTicker: underlying.eodTicker,
+        performance: null,
+        distanceToBarrier: null,
+        lastPrice: null,
+        lastPriceDate: null
+      };
+    }
+
+    console.log(`Found last price for ${underlying.ticker} at ${formatDate(lastPriceInfo.date)}`);
 
     // Calculate performance using adjusted prices
     const performance = ((lastPriceInfo.adjusted_close / underlying.adjustedInitialReferenceLevel) - 1) * 100;
@@ -767,7 +802,7 @@ function calculatePerformances(product, lastPriceDate) {
     const barrierPrice = (capitalProtectionBarrier / 100) * underlying.adjustedInitialReferenceLevel;
     const distanceToBarrier = ((lastPriceInfo.adjusted_close - barrierPrice) / lastPriceInfo.adjusted_close) * 100;
 
-    return {
+    const result = {
       ticker: underlying.ticker,
       eodTicker: underlying.eodTicker,
       performance,
@@ -776,6 +811,9 @@ function calculatePerformances(product, lastPriceDate) {
       lastAdjustedPrice: lastPriceInfo.adjusted_close,
       lastPriceDate: formatDate(lastPriceInfo.date)
     };
+    
+    console.log(`Performance result for ${underlying.ticker}:`, JSON.stringify(result));
+    return result;
   });
 }
 
