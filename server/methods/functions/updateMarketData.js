@@ -17,19 +17,37 @@ Meteor.methods({
         const products = Products.find().fetch();
         const processedTickers = new Set();
         const updatePromises = [];
+        
+        console.log(`Starting update for ${products.length} products`);
 
         products.forEach(product => {
+          console.log(`Processing product: ${product._id}, underlyings: ${product.underlyings?.length || 0}`);
+          
           product.underlyings.forEach(underlying => {
             const eodTicker = underlying.eodTicker;
             
-            if (!eodTicker || processedTickers.has(eodTicker)) return;
+            if (!eodTicker) {
+              console.log(`Skipping underlying without eodTicker for product ${product._id}`);
+              return;
+            }
+            
+            if (processedTickers.has(eodTicker)) {
+              console.log(`Skipping already processed ticker: ${eodTicker}`);
+              return;
+            }
+            
             processedTickers.add(eodTicker);
+            console.log(`Will process ticker: ${eodTicker}`);
 
             updatePromises.push((async () => {
               const latestRecord = Historical.findOne(
                 { eodTicker },
                 { sort: { 'data.date': -1 }, fields: { 'data.date': 1 } }
               );
+              
+              console.log(`Latest record for ${eodTicker}: ${JSON.stringify(latestRecord?.data?.length ? 
+                {lastDate: latestRecord.data[latestRecord.data.length - 1].date, recordsCount: latestRecord.data.length} : 
+                {exists: !!latestRecord})}`);
 
               let startDate;
               if (latestRecord?.data?.length) {
@@ -38,17 +56,26 @@ Meteor.methods({
                 startDate = lastDate.toISOString().split('T')[0];
               } else {
                 startDate = product.genericData?.tradeDate;
+                console.log(`No latest record, using product tradeDate: ${startDate}`);
               }
 
               const currentDate = new Date().toISOString().split('T')[0];
+              console.log(`${eodTicker}: Fetching from ${startDate} to ${currentDate}`);
 
               if (startDate && new Date(startDate) <= new Date(currentDate)) {
                 try {
                   const url = `https://eodhd.com/api/eod/${eodTicker}?api_token=${apiKey}&from=${startDate}&to=${currentDate}&fmt=json`;
+                  console.log(`Request URL: ${url}`);
+                  
                   const response = await HTTP.get(url);
                   const newData = response.data;
 
-                  if (!Array.isArray(newData) || newData.length === 0) return;
+                  console.log(`${eodTicker}: Received ${newData?.length || 0} raw records`);
+
+                  if (!Array.isArray(newData) || newData.length === 0) {
+                    console.log(`${eodTicker}: No data received or invalid format`);
+                    return;
+                  }
 
                   const processedData = newData
                     .filter(d => d && d.date && d.close !== undefined)
@@ -62,6 +89,8 @@ Meteor.methods({
                       volume: d.volume
                     }));
 
+                  console.log(`${eodTicker}: Processed ${processedData.length} records after filtering (${newData.length - processedData.length} removed)`);
+
                   if (processedData.length > 0) {
                     await Historical.update(
                       { eodTicker },
@@ -72,13 +101,17 @@ Meteor.methods({
                   }
                 } catch (error) {
                   console.error(`Error fetching ${eodTicker}:`, error);
+                  console.log(`Full error details for ${eodTicker}:`, JSON.stringify(error));
                 }
+              } else {
+                console.log(`${eodTicker}: No update needed, startDate ${startDate} > currentDate ${currentDate}`);
               }
             })());
           });
         });
 
         await Promise.all(updatePromises);
+        console.log("Market data update completed, processed tickers:", Array.from(processedTickers));
         return "Market data update completed";
     }
 });
