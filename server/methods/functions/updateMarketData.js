@@ -63,14 +63,13 @@ Meteor.methods({
                     if (existingRecord) {
                         console.log(`Found existing record for ${eodTicker}, data array length: ${existingRecord.data?.length || 0}`);
                         
+                        // Always use the earliest product trade date to ensure complete history
+                        startDate = tickerStartDates[eodTicker];
+                        
                         if (existingRecord.data && Array.isArray(existingRecord.data) && existingRecord.data.length > 0) {
-                            // Sort data to ensure we get the latest date
-                            existingData = existingRecord.data.sort((a, b) => new Date(a.date) - new Date(b.date));
-                            const lastDate = new Date(existingData[existingData.length - 1].date);
-                            lastDate.setDate(lastDate.getDate() + 1);
-                            startDate = lastDate.toISOString().split('T')[0];
+                            existingData = existingRecord.data;
+                            console.log(`${eodTicker}: Using data from ${existingRecord.data[0].date} to ${existingRecord.data[existingRecord.data.length-1].date}, forcing fetch from product tradeDate: ${startDate}`);
                         } else {
-                            startDate = tickerStartDates[eodTicker];
                             console.log(`Existing record has no data for ${eodTicker}, using earliest product tradeDate: ${startDate}`);
                         }
                     } else {
@@ -116,13 +115,28 @@ Meteor.methods({
                             console.log(`${eodTicker}: Processed ${processedData.length} records after filtering (${newData.length - processedData.length} removed)`);
 
                             if (processedData.length > 0) {
-                                // Instead of updating, we'll create or replace the document
-                                // This avoids path collision errors
-                                const combinedData = [...existingData, ...processedData];
+                                // Create a map of existing data by date to avoid duplicates
+                                const existingDataMap = new Map();
+                                existingData.forEach(item => {
+                                    existingDataMap.set(item.date, item);
+                                });
+                                
+                                // Add new data only if not already present
+                                const datesToAdd = [];
+                                processedData.forEach(item => {
+                                    if (!existingDataMap.has(item.date)) {
+                                        datesToAdd.push(item);
+                                        existingDataMap.set(item.date, item);
+                                    }
+                                });
+                                
+                                // Combine all data and sort by date
+                                const combinedData = Array.from(existingDataMap.values())
+                                    .sort((a, b) => new Date(a.date) - new Date(b.date));
                                 
                                 try {
                                     if (existingRecord) {
-                                        console.log(`${eodTicker}: Replacing document with ${combinedData.length} total records`);
+                                        console.log(`${eodTicker}: Replacing document with ${combinedData.length} total records (${datesToAdd.length} new)`);
                                         await Historical.remove({ eodTicker });
                                     } else {
                                         console.log(`${eodTicker}: Creating new document with ${combinedData.length} records`);
@@ -133,7 +147,7 @@ Meteor.methods({
                                         data: combinedData
                                     });
                                     
-                                    console.log(`Updated ${eodTicker} with ${processedData.length} new records, total: ${combinedData.length}`);
+                                    console.log(`Updated ${eodTicker} with ${datesToAdd.length} new records, total: ${combinedData.length}`);
                                 } catch (dbError) {
                                     console.error(`Database error for ${eodTicker}: ${dbError.message}`);
                                 }
