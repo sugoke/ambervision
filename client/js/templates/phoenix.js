@@ -792,9 +792,6 @@ Template.phoenix.onRendered(function() {
       }
     }
   });
-
-  // Generate initial AI commentary
-  generateAiCommentary(this);
 });
 
 Template.phoenix.onCreated(function() {

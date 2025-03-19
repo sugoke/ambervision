@@ -54,23 +54,28 @@ Meteor.methods({
             
             updatePromises.push((async () => {
                 try {
-                    const latestRecord = Historical.findOne(
-                        { eodTicker },
-                        { sort: { 'data.date': -1 }, fields: { 'data.date': 1, 'data': 1 } }
-                    );
+                    // Check if ticker already exists in Historical collection
+                    const existingRecord = Historical.findOne({ eodTicker });
                     
-                    console.log(`Latest record for ${eodTicker}: ${JSON.stringify(latestRecord?.data?.length ? 
-                        {lastDate: latestRecord.data[latestRecord.data.length - 1].date, recordsCount: latestRecord.data.length} : 
-                        {exists: !!latestRecord})}`);
-
                     let startDate;
-                    if (latestRecord?.data?.length) {
-                        const lastDate = new Date(latestRecord.data[latestRecord.data.length - 1].date);
-                        lastDate.setDate(lastDate.getDate() + 1);
-                        startDate = lastDate.toISOString().split('T')[0];
+                    let existingData = [];
+                    
+                    if (existingRecord) {
+                        console.log(`Found existing record for ${eodTicker}, data array length: ${existingRecord.data?.length || 0}`);
+                        
+                        if (existingRecord.data && Array.isArray(existingRecord.data) && existingRecord.data.length > 0) {
+                            // Sort data to ensure we get the latest date
+                            existingData = existingRecord.data.sort((a, b) => new Date(a.date) - new Date(b.date));
+                            const lastDate = new Date(existingData[existingData.length - 1].date);
+                            lastDate.setDate(lastDate.getDate() + 1);
+                            startDate = lastDate.toISOString().split('T')[0];
+                        } else {
+                            startDate = tickerStartDates[eodTicker];
+                            console.log(`Existing record has no data for ${eodTicker}, using earliest product tradeDate: ${startDate}`);
+                        }
                     } else {
                         startDate = tickerStartDates[eodTicker];
-                        console.log(`No historical data for ${eodTicker}, using earliest product tradeDate: ${startDate}`);
+                        console.log(`No historical record for ${eodTicker}, using earliest product tradeDate: ${startDate}`);
                     }
 
                     const currentDate = new Date().toISOString().split('T')[0];
@@ -111,43 +116,27 @@ Meteor.methods({
                             console.log(`${eodTicker}: Processed ${processedData.length} records after filtering (${newData.length - processedData.length} removed)`);
 
                             if (processedData.length > 0) {
-                                // Handle large datasets by using batched updates
-                                const BATCH_SIZE = 100;
-                                console.log(`${eodTicker}: Starting database update with ${processedData.length} records`);
+                                // Instead of updating, we'll create or replace the document
+                                // This avoids path collision errors
+                                const combinedData = [...existingData, ...processedData];
                                 
-                                if (processedData.length > BATCH_SIZE) {
-                                    console.log(`${eodTicker}: Large dataset, using batched updates`);
-                                    // Process in batches
-                                    for (let i = 0; i < processedData.length; i += BATCH_SIZE) {
-                                        const batch = processedData.slice(i, i + BATCH_SIZE);
-                                        console.log(`${eodTicker}: Updating batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(processedData.length/BATCH_SIZE)} (${batch.length} records)`);
-                                        
-                                        try {
-                                            await Historical.update(
-                                                { eodTicker },
-                                                { $push: { data: { $each: batch } } },
-                                                { upsert: true }
-                                            );
-                                        } catch (dbError) {
-                                            console.error(`Database error updating ${eodTicker} batch ${i}-${i+batch.length}:`, dbError);
-                                            // Continue with next batch
-                                        }
+                                try {
+                                    if (existingRecord) {
+                                        console.log(`${eodTicker}: Replacing document with ${combinedData.length} total records`);
+                                        await Historical.remove({ eodTicker });
+                                    } else {
+                                        console.log(`${eodTicker}: Creating new document with ${combinedData.length} records`);
                                     }
-                                    console.log(`${eodTicker}: Completed all batch updates`);
-                                } else {
-                                    // Small dataset, update all at once
-                                    try {
-                                        await Historical.update(
-                                            { eodTicker },
-                                            { $push: { data: { $each: processedData } } },
-                                            { upsert: true }
-                                        );
-                                    } catch (dbError) {
-                                        console.error(`Database error updating ${eodTicker}:`, dbError);
-                                    }
+                                    
+                                    await Historical.insert({
+                                        eodTicker,
+                                        data: combinedData
+                                    });
+                                    
+                                    console.log(`Updated ${eodTicker} with ${processedData.length} new records, total: ${combinedData.length}`);
+                                } catch (dbError) {
+                                    console.error(`Database error for ${eodTicker}: ${dbError.message}`);
                                 }
-                                
-                                console.log(`Updated ${eodTicker} with ${processedData.length} records`);
                             }
                         } catch (error) {
                             console.error(`Error fetching ${eodTicker}:`, error);

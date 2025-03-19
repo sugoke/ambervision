@@ -197,7 +197,8 @@
               <div class="d-flex fw-bold small mb-3">
                 <span class="flex-grow-1">AI COMMENTARY</span>
                 <button class="btn btn-sm btn-outline-theme" id="refreshAiCommentary">
-                  <i class="fas fa-sync-alt"></i>
+                  <i class="fas fa-{{#if isAiCommentaryLoading}}spinner fa-spin{{else}}lightbulb{{/if}}"></i>
+                  {{#if aiCommentary}}Refresh{{else}}Generate{{/if}}
                 </button>
               </div>
               {{#if isAiCommentaryLoading}}
@@ -205,9 +206,16 @@
                   <i class="fas fa-spinner fa-spin me-2"></i> Analyzing product data...
                 </div>
               {{else}}
-                <div class="ai-commentary">
-                  {{{aiCommentary}}}
-                </div>
+                {{#if aiCommentary}}
+                  <div class="ai-commentary">
+                    {{{aiCommentary}}}
+                  </div>
+                {{else}}
+                  <div class="text-center py-4 text-muted">
+                    <i class="fas fa-robot mb-2" style="font-size: 2rem;"></i>
+                    <p>Click the button above to generate AI commentary for this product</p>
+                  </div>
+                {{/if}}
               {{/if}}
             </div>
             <div class="card-arrow">
