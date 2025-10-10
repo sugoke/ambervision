@@ -1,0 +1,1607 @@
+const renderPhoenixResults = (results, productId) => {
+  const phoenixParams = results.phoenixStructure || {};
+  const status = results.currentStatus || {};
+  const features = results.features || {};
+  const placeholder = results.placeholderResults || {};
+  const underlyings = results.underlyings || [];
+  
+  return (
+    <div style={{
+      marginTop: '1rem',
+      padding: '1rem',
+      background: 'var(--bg-primary)',
+      borderRadius: '6px'
+    }}>
+      <div style={{
+        fontSize: '0.9rem',
+        fontWeight: '600',
+        color: 'var(--text-primary)',
+        marginBottom: '1rem',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.5rem'
+      }}>
+        🔥 Phoenix Autocallable Evaluation Results
+      </div>
+      
+      {/* Underlying Assets Performance Card */}
+      {underlyings.length > 0 && (
+        <div style={{
+          background: 'var(--bg-secondary)',
+          padding: '1.5rem',
+          borderRadius: '6px',
+          marginBottom: '1.5rem'
+        }}>
+          <h4 style={{
+            margin: '0 0 1rem 0',
+            fontSize: '1rem',
+            color: 'var(--text-primary)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}>
+            📊 Underlying Assets Performance
+          </h4>
+          
+          <div style={{
+            display: 'grid',
+            gap: '1rem'
+          }}>
+            {underlyings.map((underlying, index) => (
+              <div key={underlying.id || index} style={{
+                background: 'var(--bg-tertiary)',
+                padding: '1rem',
+                borderRadius: '6px',
+                border: underlying.isWorstPerforming
+                  ? '2px solid #ef4444'
+                  : `1px solid ${underlying.isPositive ? '#10b981' : '#ef4444'}20`,
+                boxShadow: underlying.isWorstPerforming
+                  ? '0 0 0 1px rgba(239, 68, 68, 0.1)'
+                  : 'none'
+              }}>
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'auto 1fr auto auto auto auto auto',
+                  gap: '1rem',
+                  alignItems: 'center'
+                }}>
+                  {/* Company Info */}
+                  <div style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    minWidth: '120px'
+                  }}>
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      marginBottom: '0.25rem'
+                    }}>
+                      {/* Stock Logo */}
+                      <div style={{
+                        width: '40px',
+                        height: '40px',
+                        borderRadius: '6px',
+                        overflow: 'hidden',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: 'var(--bg-primary)',
+                        border: '1px solid var(--border-color)'
+                      }}>
+                        <img 
+                          src={`https://logo.clearbit.com/${(() => {
+                            const ticker = underlying.ticker?.toLowerCase();
+                            switch(ticker) {
+                              case 'aapl': return 'apple.com';
+                              case 'msft': return 'microsoft.com';
+                              case 'googl': case 'goog': return 'google.com';
+                              case 'amzn': return 'amazon.com';
+                              case 'tsla': return 'tesla.com';
+                              case 'meta': case 'fb': return 'meta.com';
+                              case 'nvda': return 'nvidia.com';
+                              case 'nflx': return 'netflix.com';
+                              case 'dis': return 'disney.com';
+                              case 'ko': return 'coca-cola.com';
+                              case 'jpm': return 'jpmorgan.com';
+                              case 'v': return 'visa.com';
+                              case 'ma': return 'mastercard.com';
+                              case 'pg': return 'pg.com';
+                              case 'jnj': return 'jnj.com';
+                              case 'wmt': return 'walmart.com';
+                              case 'hd': return 'homedepot.com';
+                              case 'bac': return 'bankofamerica.com';
+                              case 'unh': return 'unitedhealthgroup.com';
+                              case 'xom': return 'exxonmobil.com';
+                              default: return `${ticker}.com`;
+                            }
+                          })()}`}
+                          alt={underlying.ticker}
+                          style={{
+                            width: '32px',
+                            height: '32px',
+                            objectFit: 'contain'
+                          }}
+                          onError={(e) => {
+                            e.target.style.display = 'none';
+                            e.target.nextSibling.style.display = 'flex';
+                          }}
+                        />
+                        <div style={{
+                          display: 'none',
+                          width: '32px',
+                          height: '32px',
+                          background: 'var(--accent-color)',
+                          borderRadius: '4px',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '0.8rem',
+                          fontWeight: '600',
+                          color: 'white'
+                        }}>
+                          {underlying.ticker?.substring(0, 2).toUpperCase()}
+                        </div>
+                      </div>
+                      <div style={{
+                        fontSize: '0.9rem',
+                        fontWeight: '600',
+                        color: 'var(--text-primary)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.35rem'
+                      }}>
+                        {underlying.ticker}
+                        {/* Worst Performing Indicator - Now shown by red border on card */}
+                      </div>
+                    </div>
+                    <div style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--text-secondary)',
+                      lineHeight: '1.2'
+                    }}>
+                      {underlying.name}
+                    </div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      color: 'var(--text-muted)',
+                      marginTop: '0.25rem'
+                    }}>
+                      {underlying.exchange} • {underlying.currency}
+                    </div>
+                  </div>
+                  
+                  {/* Initial Level */}
+                  <div style={{
+                    textAlign: 'center'
+                  }}>
+                    <div style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--text-secondary)',
+                      textTransform: 'uppercase',
+                      marginBottom: '0.25rem'
+                    }}>
+                      Initial Level
+                    </div>
+                    <div style={{
+                      fontSize: '1rem',
+                      fontWeight: '600',
+                      color: 'var(--text-primary)',
+                      fontFamily: 'monospace'
+                    }}>
+                      {underlying.initialPriceFormatted}
+                    </div>
+                  </div>
+                  
+                  {/* Current/Redemption Level */}
+                  <div style={{
+                    textAlign: 'center'
+                  }}>
+                    <div style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--text-secondary)',
+                      textTransform: 'uppercase',
+                      marginBottom: '0.25rem'
+                    }}>
+                      {underlying.priceLevelLabel || 'Current Level'}
+                    </div>
+                    <div style={{
+                      fontSize: '1rem',
+                      fontWeight: '600',
+                      color: underlying.hasCurrentData ? 'var(--text-primary)' : 'var(--text-muted)',
+                      fontFamily: 'monospace'
+                    }}>
+                      {underlying.currentPriceFormatted}
+                      {underlying.isRedeemed && underlying.priceSource === 'initial_fallback_error' && (
+                        <span style={{ fontSize: '0.7rem', marginLeft: '0.25rem', color: '#ef4444' }} title="Missing historical data">⚠️</span>
+                      )}
+                    </div>
+                    {underlying.priceDateFormatted && (
+                      <div style={{
+                        fontSize: '0.65rem',
+                        color: 'var(--text-muted)',
+                        marginTop: '0.25rem'
+                      }}>
+                        {underlying.priceDateFormatted}
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Performance */}
+                  <div style={{
+                    textAlign: 'center'
+                  }}>
+                    <div style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--text-secondary)',
+                      textTransform: 'uppercase',
+                      marginBottom: '0.25rem'
+                    }}>
+                      Performance
+                    </div>
+                    <div style={{
+                      fontSize: '1.1rem',
+                      fontWeight: '700',
+                      color: underlying.isPositive ? '#10b981' : '#ef4444',
+                      fontFamily: 'monospace'
+                    }}>
+                      {underlying.performanceFormatted}
+                    </div>
+                  </div>
+                  
+                  {/* Barrier Distance */}
+                  <div style={{
+                    textAlign: 'center'
+                  }}>
+                    <div style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--text-secondary)',
+                      textTransform: 'uppercase',
+                      marginBottom: '0.25rem'
+                    }}>
+                      Barrier Distance
+                    </div>
+                    <div style={{
+                      fontSize: '1rem',
+                      fontWeight: '600',
+                      color: underlying.barrierStatus === 'breached' ? '#ef4444' : 
+                             underlying.barrierStatus === 'near' ? '#f59e0b' : '#10b981',
+                      fontFamily: 'monospace'
+                    }}>
+                      {underlying.distanceToBarrierFormatted}
+                    </div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      color: underlying.barrierStatus === 'breached' ? '#ef4444' : 
+                             underlying.barrierStatus === 'near' ? '#f59e0b' : 'var(--text-muted)',
+                      marginTop: '0.25rem'
+                    }}>
+                      {underlying.barrierStatusText}
+                    </div>
+                  </div>
+                  
+                  {/* Status Indicator */}
+                  <div style={{
+                    width: '8px',
+                    height: '40px',
+                    background: underlying.isPositive ? '#10b981' : '#ef4444',
+                    borderRadius: '4px'
+                  }}></div>
+                </div>
+                
+                {/* ISIN Info */}
+                {underlying.isin && (
+                  <div style={{
+                    marginTop: '0.75rem',
+                    paddingTop: '0.75rem',
+                    borderTop: '1px solid var(--border-color)',
+                    fontSize: '0.7rem',
+                    color: 'var(--text-muted)'
+                  }}>
+                    ISIN: {underlying.isin}
+                  </div>
+                )}
+              </div>
+            ))}
+            
+            {/* Performance vs Protection Barrier Chart - Completely Rebuilt */}
+            {underlyings.length > 0 && (
+              <div style={{
+                background: 'var(--bg-primary)',
+                padding: '1.5rem',
+                borderRadius: '8px',
+                marginTop: '1rem',
+                border: '1px solid var(--border-color)',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.08)'
+              }}>
+                
+                {/* Chart Header */}
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: '1.5rem',
+                  paddingBottom: '0.75rem',
+                  borderBottom: '2px solid var(--accent-color)'
+                }}>
+                  <h5 style={{
+                    margin: '0',
+                    fontSize: '1rem',
+                    color: 'var(--text-primary)',
+                    fontWeight: '700'
+                  }}>
+                    📈 Performance vs Protection Barrier
+                  </h5>
+                  <div style={{
+                    fontSize: '0.75rem',
+                    color: 'var(--text-muted)',
+                    fontStyle: 'italic'
+                  }}>
+                    Performance relative to initial price
+                  </div>
+                </div>
+                
+                {/* Chart Container */}
+                <div style={{
+                  position: 'relative',
+                  width: '100%',
+                  height: '300px',
+                  backgroundColor: 'var(--bg-secondary)',
+                  borderRadius: '8px',
+                  padding: '20px',
+                  border: '1px solid var(--border-color-light)'
+                }}>
+                  
+                  {/* Y-Axis Scale */}
+                  <div style={{
+                    position: 'absolute',
+                    left: '10px',
+                    top: '20px',
+                    bottom: '60px',
+                    width: '45px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-end'
+                  }}>
+                    {/* Y-axis scale from +50% to -50% */}
+                    {[50, 25, 0, -25, -50].map((value) => (
+                      <div key={value} style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        height: '1px',
+                        paddingRight: '8px'
+                      }}>
+                        <span style={{
+                          fontSize: '0.8rem',
+                          color: value === 0 ? 'var(--text-primary)' : 'var(--text-muted)',
+                          fontWeight: value === 0 ? '700' : '500',
+                          minWidth: '35px',
+                          textAlign: 'right'
+                        }}>
+                          {value > 0 ? '+' : ''}{value}%
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  {/* Chart Plotting Area */}
+                  <div style={{
+                    position: 'absolute',
+                    left: '65px',
+                    right: '20px',
+                    top: '20px',
+                    bottom: '60px',
+                    borderLeft: '2px solid var(--border-color)',
+                    borderBottom: '2px solid var(--border-color)'
+                  }}>
+                    
+                    {/* Horizontal Grid Lines */}
+                    {[0, 25, 50, 75, 100].map((position) => (
+                      <div key={position} style={{
+                        position: 'absolute',
+                        left: '0',
+                        right: '0',
+                        top: `${position}%`,
+                        height: position === 50 ? '2px' : '1px',
+                        backgroundColor: position === 50 ? 'var(--text-muted)' : 'var(--border-color-light)',
+                        opacity: position === 50 ? 0.7 : 0.4
+                      }}></div>
+                    ))}
+                    
+                    {/* Protection Barrier Line */}
+                    {results?.basketAnalysis?.barrierChartConfig && (() => {
+                      // Use pre-computed barrier position from processing
+                      const barrierPosition = results.basketAnalysis.barrierChartConfig.position;
+                      
+                      return (
+                        <div style={{
+                          position: 'absolute',
+                          left: '-2px',
+                          right: '0',
+                          top: `${barrierPosition}%`,
+                          height: '3px',
+                          background: 'linear-gradient(90deg, #ef4444, #dc2626)',
+                          borderTop: '2px dashed #ef4444',
+                          borderRadius: '0 2px 2px 0',
+                          zIndex: 10,
+                          boxShadow: '0 1px 3px rgba(239, 68, 68, 0.3)'
+                        }}>
+                          <div style={{
+                            position: 'absolute',
+                            right: '10px',
+                            top: '-30px',
+                            backgroundColor: '#ef4444',
+                            color: 'white',
+                            padding: '6px 10px',
+                            borderRadius: '6px',
+                            fontSize: '0.75rem',
+                            fontWeight: '700',
+                            whiteSpace: 'nowrap',
+                            boxShadow: '0 2px 6px rgba(239, 68, 68, 0.4)'
+                          }}>
+                            🛡️ {results.basketAnalysis.protectionBarrier}% Protection
+                          </div>
+                        </div>
+                      );
+                    })()}
+                    
+                    {/* Performance Bars */}
+                    <div style={{
+                      position: 'absolute',
+                      left: '15px',
+                      right: '15px',
+                      top: '0',
+                      bottom: '0',
+                      display: 'flex',
+                      alignItems: 'flex-end',
+                      justifyContent: 'space-around',
+                      gap: '15px'
+                    }}>
+                      {underlyings.map((underlying, index) => {
+                        // Use pre-computed chart data from processing
+                        const chartData = underlying.chartData || {};
+                        
+                        return (
+                          <div key={underlying.id || index} style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            position: 'relative',
+                            width: chartData.width || '100px',
+                            height: '100%'
+                          }}>
+                            
+                            {/* Performance Bar */}
+                            <div style={{
+                              position: 'absolute',
+                              [chartData.isPositive ? 'bottom' : 'top']: chartData.zeroPoint || '110px',
+                              width: '45px',
+                              height: chartData.barHeight || '0px',
+                              background: chartData.gradient,
+                              borderRadius: chartData.borderRadius,
+                              border: chartData.border,
+                              boxShadow: chartData.boxShadow,
+                              transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
+                              cursor: 'pointer'
+                            }}>
+                              
+                              {/* Performance Value */}
+                              <div style={{
+                                position: 'absolute',
+                                [chartData.isPositive ? 'top' : 'bottom']: '8px',
+                                left: '50%',
+                                transform: 'translateX(-50%)',
+                                color: 'white',
+                                fontSize: '0.8rem',
+                                fontWeight: '800',
+                                textShadow: '0 1px 3px rgba(0,0,0,0.8)',
+                                whiteSpace: 'nowrap'
+                              }}>
+                                {underlying.performanceFormatted}
+                              </div>
+                            </div>
+                            
+                            {/* Stock Ticker */}
+                            <div style={{
+                              position: 'absolute',
+                              bottom: '-45px',
+                              left: '50%',
+                              transform: 'translateX(-50%)',
+                              fontSize: '0.9rem',
+                              fontWeight: '700',
+                              color: 'var(--text-primary)',
+                              textAlign: 'center',
+                              whiteSpace: 'nowrap',
+                              padding: '4px 8px',
+                              backgroundColor: 'var(--bg-primary)',
+                              borderRadius: '4px',
+                              border: '1px solid var(--border-color-light)'
+                            }}>
+                              {underlying.ticker}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+                
+                {/* Enhanced Legend */}
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'center',
+                  gap: '2rem',
+                  marginTop: '1.5rem',
+                  padding: '1rem',
+                  backgroundColor: 'var(--bg-tertiary)',
+                  borderRadius: '8px',
+                  border: '1px solid var(--border-color-light)'
+                }}>
+                  <div style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '0.5rem',
+                    padding: '0.25rem 0.5rem',
+                    borderRadius: '4px',
+                    backgroundColor: 'var(--bg-primary)'
+                  }}>
+                    <div style={{ 
+                      width: '18px', 
+                      height: '18px', 
+                      background: 'linear-gradient(180deg, #10b981, #059669)', 
+                      borderRadius: '4px',
+                      border: '2px solid #059669'
+                    }}></div>
+                    <span style={{ 
+                      color: 'var(--text-primary)', 
+                      fontSize: '0.85rem', 
+                      fontWeight: '600' 
+                    }}>
+                      Gains
+                    </span>
+                  </div>
+                  
+                  <div style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '0.5rem',
+                    padding: '0.25rem 0.5rem',
+                    borderRadius: '4px',
+                    backgroundColor: 'var(--bg-primary)'
+                  }}>
+                    <div style={{ 
+                      width: '18px', 
+                      height: '18px', 
+                      background: 'linear-gradient(0deg, #ef4444, #dc2626)', 
+                      borderRadius: '4px',
+                      border: '2px solid #dc2626'
+                    }}></div>
+                    <span style={{ 
+                      color: 'var(--text-primary)', 
+                      fontSize: '0.85rem', 
+                      fontWeight: '600' 
+                    }}>
+                      Losses
+                    </span>
+                  </div>
+                  
+                  <div style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '0.5rem',
+                    padding: '0.25rem 0.5rem',
+                    borderRadius: '4px',
+                    backgroundColor: 'var(--bg-primary)'
+                  }}>
+                    <div style={{ 
+                      width: '18px', 
+                      height: '3px', 
+                      background: 'linear-gradient(90deg, #ef4444, #dc2626)',
+                      borderTop: '1px dashed #ef4444',
+                      borderRadius: '1px'
+                    }}></div>
+                    <span style={{ 
+                      color: 'var(--text-primary)', 
+                      fontSize: '0.85rem', 
+                      fontWeight: '600' 
+                    }}>
+                      Protection Level
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            {/* Data freshness note */}
+            <div style={{
+              fontSize: '0.7rem',
+              color: 'var(--text-muted)',
+              textAlign: 'center',
+              marginTop: '0.5rem',
+              fontStyle: 'italic'
+            }}>
+              * Indicates estimated data - Live market data integration pending
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Basket Analysis Summary */}
+      {results.basketAnalysis && (
+        <div style={{
+          background: 'var(--bg-secondary)',
+          padding: '1.5rem',
+          borderRadius: '6px',
+          marginBottom: '1.5rem'
+        }}>
+          <h4 style={{
+            margin: '0 0 1rem 0',
+            fontSize: '1rem',
+            color: 'var(--text-primary)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}>
+            🛡️ Capital Protection Analysis
+            <span style={{
+              fontSize: '0.8rem',
+              background: results.basketAnalysis.breachedCount > 0 ? '#ef4444' : 
+                         results.basketAnalysis.nearCount > 0 ? '#f59e0b' : '#10b981',
+              color: 'white',
+              padding: '4px 8px',
+              borderRadius: '4px',
+              fontWeight: '500'
+            }}>
+              {results.basketAnalysis.protectionBarrier}% Barrier
+            </span>
+          </h4>
+          
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+            gap: '1rem',
+            marginBottom: '1rem'
+          }}>
+            <div style={{
+              background: 'var(--bg-tertiary)',
+              padding: '1rem',
+              borderRadius: '6px',
+              textAlign: 'center'
+            }}>
+              <div style={{
+                fontSize: '1.5rem',
+                fontWeight: '700',
+                color: results.basketAnalysis.criticalDistance >= 0 ? '#10b981' : '#ef4444',
+                marginBottom: '0.5rem'
+              }}>
+                {results.basketAnalysis.criticalDistanceFormatted}
+              </div>
+              <div style={{
+                fontSize: '0.8rem',
+                color: 'var(--text-secondary)',
+                textTransform: 'uppercase'
+              }}>
+                Critical Distance
+              </div>
+            </div>
+            
+            <div style={{
+              background: 'var(--bg-tertiary)',
+              padding: '1rem',
+              borderRadius: '6px',
+              textAlign: 'center'
+            }}>
+              <div style={{
+                fontSize: '1.5rem',
+                fontWeight: '700',
+                color: '#10b981',
+                marginBottom: '0.5rem'
+              }}>
+                {results.basketAnalysis.safeCount}
+              </div>
+              <div style={{
+                fontSize: '0.8rem',
+                color: 'var(--text-secondary)',
+                textTransform: 'uppercase'
+              }}>
+                Above Barrier
+              </div>
+            </div>
+            
+            {results.basketAnalysis.nearCount > 0 && (
+              <div style={{
+                background: 'var(--bg-tertiary)',
+                padding: '1rem',
+                borderRadius: '6px',
+                textAlign: 'center'
+              }}>
+                <div style={{
+                  fontSize: '1.5rem',
+                  fontWeight: '700',
+                  color: '#f59e0b',
+                  marginBottom: '0.5rem'
+                }}>
+                  {results.basketAnalysis.nearCount}
+                </div>
+                <div style={{
+                  fontSize: '0.8rem',
+                  color: 'var(--text-secondary)',
+                  textTransform: 'uppercase'
+                }}>
+                  Near Barrier
+                </div>
+              </div>
+            )}
+            
+            {results.basketAnalysis.breachedCount > 0 && (
+              <div style={{
+                background: 'var(--bg-tertiary)',
+                padding: '1rem',
+                borderRadius: '6px',
+                textAlign: 'center'
+              }}>
+                <div style={{
+                  fontSize: '1.5rem',
+                  fontWeight: '700',
+                  color: '#ef4444',
+                  marginBottom: '0.5rem'
+                }}>
+                  {results.basketAnalysis.breachedCount}
+                </div>
+                <div style={{
+                  fontSize: '0.8rem',
+                  color: 'var(--text-secondary)',
+                  textTransform: 'uppercase'
+                }}>
+                  Breached Barrier
+                </div>
+              </div>
+            )}
+          </div>
+          
+          <div style={{
+            fontSize: '0.9rem',
+            color: 'var(--text-primary)',
+            textAlign: 'center',
+            padding: '0.75rem',
+            background: results.basketAnalysis.breachedCount > 0 ? '#fee2e2' : 
+                       results.basketAnalysis.nearCount > 0 ? '#fef3c7' : '#dcfce7',
+            color: results.basketAnalysis.breachedCount > 0 ? '#dc2626' : 
+                   results.basketAnalysis.nearCount > 0 ? '#92400e' : '#166534',
+            borderRadius: '6px',
+            fontWeight: '500'
+          }}>
+            {results.basketAnalysis.overallStatus}
+          </div>
+        </div>
+      )}
+
+      {/* Final Redemption Calculation - Show for matured products (not autocalled) */}
+      {results.maturityEvaluation && results.maturityEvaluation.evaluationNeeded && (
+        <div style={{
+          background: 'var(--bg-secondary)',
+          padding: '1.5rem',
+          borderRadius: '6px',
+          marginBottom: '1.5rem',
+          border: '2px solid var(--accent-color)'
+        }}>
+          {/* Hypothetical Calculation Disclaimer for Live Products */}
+          {status.productStatus === 'live' && (
+            <div style={{
+              background: 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)',
+              border: '1px solid #f59e0b',
+              borderRadius: '8px',
+              padding: '1rem',
+              marginBottom: '1.5rem',
+              display: 'flex',
+              alignItems: 'start',
+              gap: '0.75rem'
+            }}>
+              <div style={{ fontSize: '1.5rem', flexShrink: 0 }}>⚠️</div>
+              <div>
+                <div style={{
+                  fontSize: '0.9rem',
+                  fontWeight: '600',
+                  color: '#92400e',
+                  marginBottom: '0.5rem'
+                }}>
+                  Hypothetical Calculation
+                </div>
+                <div style={{
+                  fontSize: '0.85rem',
+                  color: '#78350f',
+                  lineHeight: '1.5'
+                }}>
+                  This product has not yet matured. The redemption shown below is a <strong>projection based on current market prices</strong>.
+                  If all underlying assets were to remain at their current levels until maturity, this would be the expected redemption amount.
+                </div>
+              </div>
+            </div>
+          )}
+
+          <h4 style={{
+            margin: '0 0 1rem 0',
+            fontSize: '1rem',
+            color: 'var(--text-primary)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}>
+            💰 {status.productStatus === 'live' ? 'Projected' : 'Final'} Redemption Calculation
+            <span style={{
+              fontSize: '0.8rem',
+              background: results.maturityEvaluation.isCapitalProtected ? '#10b981' : '#ef4444',
+              color: 'white',
+              padding: '4px 8px',
+              borderRadius: '4px',
+              fontWeight: '500'
+            }}>
+              {results.maturityEvaluation.isCapitalProtected ? 'Capital Protected' : 'Barrier Breached'}
+            </span>
+          </h4>
+
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+            gap: '1rem',
+            marginBottom: '1rem'
+          }}>
+            <div style={{
+              background: 'var(--bg-tertiary)',
+              padding: '1rem',
+              borderRadius: '6px',
+              textAlign: 'center'
+            }}>
+              <div style={{
+                fontSize: '0.75rem',
+                color: 'var(--text-secondary)',
+                textTransform: 'uppercase',
+                marginBottom: '0.5rem'
+              }}>
+                Basket Performance
+              </div>
+              <div style={{
+                fontSize: '1.5rem',
+                fontWeight: '700',
+                color: results.maturityEvaluation.finalBasketLevel >= 100 ? '#10b981' : '#ef4444'
+              }}>
+                {results.maturityEvaluation.finalBasketPerformanceFormatted}
+              </div>
+              <div style={{
+                fontSize: '0.7rem',
+                color: 'var(--text-secondary)',
+                marginTop: '0.25rem'
+              }}>
+                ({results.maturityEvaluation.referencePerformance})
+              </div>
+            </div>
+
+            <div style={{
+              background: 'var(--bg-tertiary)',
+              padding: '1rem',
+              borderRadius: '6px',
+              textAlign: 'center'
+            }}>
+              <div style={{
+                fontSize: '0.75rem',
+                color: 'var(--text-secondary)',
+                textTransform: 'uppercase',
+                marginBottom: '0.5rem'
+              }}>
+                Total Coupons
+              </div>
+              <div style={{
+                fontSize: '1.5rem',
+                fontWeight: '700',
+                color: 'var(--text-primary)'
+              }}>
+                {results.maturityEvaluation.totalCouponsEarnedFormatted}
+              </div>
+            </div>
+
+            <div style={{
+              background: 'var(--bg-tertiary)',
+              padding: '1rem',
+              borderRadius: '6px',
+              textAlign: 'center'
+            }}>
+              <div style={{
+                fontSize: '0.75rem',
+                color: 'var(--text-secondary)',
+                textTransform: 'uppercase',
+                marginBottom: '0.5rem'
+              }}>
+                Protection Barrier
+              </div>
+              <div style={{
+                fontSize: '1.5rem',
+                fontWeight: '700',
+                color: 'var(--text-primary)'
+              }}>
+                {results.maturityEvaluation.capitalProtectionBarrierFormatted}
+              </div>
+            </div>
+
+            <div style={{
+              background: results.maturityEvaluation.isCapitalProtected ?
+                'linear-gradient(135deg, #10b981 0%, #059669 100%)' :
+                'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
+              padding: '1rem',
+              borderRadius: '6px',
+              textAlign: 'center',
+              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
+            }}>
+              <div style={{
+                fontSize: '0.75rem',
+                color: 'rgba(255, 255, 255, 0.9)',
+                textTransform: 'uppercase',
+                marginBottom: '0.5rem',
+                fontWeight: '600'
+              }}>
+                Final Redemption
+              </div>
+              <div style={{
+                fontSize: '2rem',
+                fontWeight: '700',
+                color: 'white'
+              }}>
+                {results.maturityEvaluation.finalRedemptionFormatted}
+              </div>
+            </div>
+          </div>
+
+          {/* Explanation */}
+          <div style={{
+            background: 'var(--bg-tertiary)',
+            padding: '1rem',
+            borderRadius: '6px',
+            fontSize: '0.9rem',
+            color: 'var(--text-secondary)',
+            lineHeight: '1.6'
+          }}>
+            <strong style={{ color: 'var(--text-primary)' }}>Calculation:</strong> {results.maturityEvaluation.explanation}
+          </div>
+
+          {/* Underlying Details at Maturity */}
+          {results.maturityEvaluation.underlyingDetails && results.maturityEvaluation.underlyingDetails.length > 0 && (
+            <div style={{ marginTop: '1rem' }}>
+              <div style={{
+                fontSize: '0.85rem',
+                fontWeight: '600',
+                color: 'var(--text-primary)',
+                marginBottom: '0.5rem'
+              }}>
+                Individual Underlying Levels at Maturity:
+              </div>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                gap: '0.75rem'
+              }}>
+                {results.maturityEvaluation.underlyingDetails.map((underlying, index) => (
+                  <div key={index} style={{
+                    background: 'var(--bg-tertiary)',
+                    padding: '0.75rem',
+                    borderRadius: '6px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center'
+                  }}>
+                    <span style={{
+                      fontSize: '0.85rem',
+                      fontWeight: '500',
+                      color: 'var(--text-primary)'
+                    }}>
+                      {underlying.ticker}
+                    </span>
+                    <span style={{
+                      fontSize: '0.85rem',
+                      fontWeight: '600',
+                      color: underlying.performance >= 0 ? '#10b981' : '#ef4444'
+                    }}>
+                      {underlying.performanceFormatted}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Observation Schedule */}
+      {results.observationAnalysis && results.observationAnalysis.observations.length > 0 && (
+        <div style={{
+          background: 'var(--bg-secondary)',
+          padding: '1.5rem',
+          borderRadius: '6px',
+          marginBottom: '1.5rem'
+        }}>
+          <h4 style={{
+            margin: '0 0 1rem 0',
+            fontSize: '1rem',
+            color: 'var(--text-primary)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}>
+            📅 Observation Schedule
+            {results.observationAnalysis.isEarlyAutocall && (
+              <span style={{
+                fontSize: '0.8rem',
+                background: '#10b981',
+                color: 'white',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                fontWeight: '500'
+              }}>
+                Called {results.observationAnalysis.callDateFormatted}
+              </span>
+            )}
+            {results.observationAnalysis.isMaturedAtFinal && (
+              <span style={{
+                fontSize: '0.8rem',
+                background: '#6366f1',
+                color: 'white',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                fontWeight: '500'
+              }}>
+                Matured
+              </span>
+            )}
+            {results.observationAnalysis.hasMemoryAutocall && (
+              <span style={{
+                fontSize: '0.8rem',
+                background: '#6366f1',
+                color: 'white',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                fontWeight: '500'
+              }}>
+                Memory Autocall
+              </span>
+            )}
+            {results.observationAnalysis.hasMemoryCoupon && (
+              <span style={{
+                fontSize: '0.8rem',
+                background: '#f59e0b',
+                color: 'white',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                fontWeight: '500'
+              }}>
+                Memory Coupon
+              </span>
+            )}
+          </h4>
+          
+          {/* Summary Stats */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+            gap: '1rem',
+            marginBottom: '1.5rem'
+          }}>
+            <div style={{
+              background: 'var(--bg-tertiary)',
+              padding: '1rem',
+              borderRadius: '6px',
+              textAlign: 'center'
+            }}>
+              <div style={{
+                fontSize: '1.2rem',
+                fontWeight: '700',
+                color: 'var(--text-primary)',
+                marginBottom: '0.5rem'
+              }}>
+                {results.observationAnalysis.totalCouponsEarnedFormatted}
+              </div>
+              <div style={{
+                fontSize: '0.8rem',
+                color: 'var(--text-secondary)',
+                textTransform: 'uppercase'
+              }}>
+                Total Coupons Earned
+              </div>
+            </div>
+            
+            <div style={{
+              background: 'var(--bg-tertiary)',
+              padding: '1rem',
+              borderRadius: '6px',
+              textAlign: 'center'
+            }}>
+              <div style={{
+                fontSize: '1.2rem',
+                fontWeight: '700',
+                color: results.observationAnalysis.totalMemoryCoupons > 0 ? '#f59e0b' : 'var(--text-muted)',
+                marginBottom: '0.5rem'
+              }}>
+                {results.observationAnalysis.totalMemoryCouponsFormatted}
+              </div>
+              <div style={{
+                fontSize: '0.8rem',
+                color: 'var(--text-secondary)',
+                textTransform: 'uppercase'
+              }}>
+                In Memory
+              </div>
+            </div>
+            
+            <div style={{
+              background: 'var(--bg-tertiary)',
+              padding: '1rem',
+              borderRadius: '6px',
+              textAlign: 'center'
+            }}>
+              <div style={{
+                fontSize: '1.2rem',
+                fontWeight: '700',
+                color: 'var(--text-primary)',
+                marginBottom: '0.5rem'
+              }}>
+                {results.observationAnalysis.totalObservations}
+              </div>
+              <div style={{
+                fontSize: '0.8rem',
+                color: 'var(--text-secondary)',
+                textTransform: 'uppercase'
+              }}>
+                Total Observations
+              </div>
+            </div>
+            
+            <div style={{
+              background: 'var(--bg-tertiary)',
+              padding: '1rem',
+              borderRadius: '6px',
+              textAlign: 'center'
+            }}>
+              <div style={{
+                fontSize: '1.2rem',
+                fontWeight: '700',
+                color: results.observationAnalysis.remainingObservations > 0 ? 'var(--accent-color)' : 'var(--text-muted)',
+                marginBottom: '0.5rem'
+              }}>
+                {results.observationAnalysis.remainingObservations}
+              </div>
+              <div style={{
+                fontSize: '0.8rem',
+                color: 'var(--text-secondary)',
+                textTransform: 'uppercase'
+              }}>
+                Remaining
+              </div>
+            </div>
+          </div>
+          
+          {/* Observation Table - Elegant Design */}
+          <div style={{
+            background: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
+            borderRadius: '12px',
+            padding: '1px',
+            boxShadow: '0 10px 40px rgba(51, 65, 85, 0.2)'
+          }}>
+            <div style={{
+              background: 'var(--bg-secondary)',
+              borderRadius: '11px',
+              overflow: 'hidden'
+            }}>
+              {/* Scrollable wrapper for the table */}
+              <div style={{
+                overflowX: 'auto',
+                overflowY: 'hidden',
+                maxWidth: '100%'
+              }}>
+                {/* Table with minimum width to ensure proper display */}
+                <div style={{
+                  minWidth: '750px'
+                }}>
+                  {/* Table Header - Sleek Dark Header */}
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr',
+                    gap: '0.75rem',
+                    padding: '1.25rem 1.5rem',
+                    background: 'linear-gradient(135deg, #1e293b 0%, #334155 100%)',
+                    borderBottom: '2px solid rgba(148, 163, 184, 0.2)'
+                  }}>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      fontWeight: '700',
+                      color: '#e2e8f0',
+                      textTransform: 'uppercase',
+                      letterSpacing: '1px'
+                    }}>
+                      📅 Observation
+                    </div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      fontWeight: '700',
+                      color: '#e2e8f0',
+                      textTransform: 'uppercase',
+                      letterSpacing: '1px'
+                    }}>
+                      💰 Payment
+                    </div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      fontWeight: '700',
+                      color: '#e2e8f0',
+                      textTransform: 'uppercase',
+                      letterSpacing: '1px'
+                    }}>
+                      🏷️ Type
+                    </div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      fontWeight: '700',
+                      color: '#e2e8f0',
+                      textTransform: 'uppercase',
+                      textAlign: 'center',
+                      letterSpacing: '1px'
+                    }}>
+                      🎯 Trigger
+                    </div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      fontWeight: '700',
+                      color: '#e2e8f0',
+                      textTransform: 'uppercase',
+                      textAlign: 'center',
+                      letterSpacing: '1px'
+                    }}>
+                      ✅ Status
+                    </div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      fontWeight: '700',
+                      color: '#e2e8f0',
+                      textTransform: 'uppercase',
+                      textAlign: 'center',
+                      letterSpacing: '1px'
+                    }}>
+                      💵 Coupon
+                    </div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      fontWeight: '700',
+                      color: '#e2e8f0',
+                      textTransform: 'uppercase',
+                      textAlign: 'center',
+                      letterSpacing: '1px'
+                    }}>
+                      🧠 Memory
+                    </div>
+                  </div>
+
+                  {/* Table Rows - Enhanced Visual Hierarchy */}
+                  {results.observationAnalysis.observations.map((obs, index) => {
+                    // Find the first redemption date: either the first observation where product was called, or maturity if never called
+                    const firstCallIndex = results.observationAnalysis.observations.findIndex(o => o.productCalled && o.hasOccurred);
+                    const finalIndex = results.observationAnalysis.observations.length - 1;
+
+                    const redemptionIndex = firstCallIndex !== -1 ? firstCallIndex :
+                      (results.observationAnalysis.observations[finalIndex].hasOccurred ? finalIndex : -1);
+
+                    const isRedemptionRow = index === redemptionIndex;
+                    const isFutureRow = !obs.hasOccurred;
+                    const isFinalObservation = index === finalIndex;
+
+                    // Find the last observation that has occurred (most recent)
+                    const lastOccurredIndex = results.observationAnalysis.observations.reduce((lastIdx, observation, idx) => {
+                      return observation.hasOccurred ? idx : lastIdx;
+                    }, -1);
+                    const isMostRecentObservation = index === lastOccurredIndex && lastOccurredIndex !== -1;
+
+                    return (
+                    <div key={index} style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr',
+                      gap: '0.75rem',
+                      padding: '1rem 1.5rem',
+                      borderBottom: index < results.observationAnalysis.observations.length - 1 ?
+                        '1px solid rgba(148, 163, 184, 0.15)' : 'none',
+                      background: isRedemptionRow
+                        ? 'linear-gradient(135deg, #059669 0%, #047857 100%)'
+                        : isMostRecentObservation
+                          ? 'linear-gradient(135deg, rgba(59, 130, 246, 0.15) 0%, rgba(96, 165, 250, 0.15) 100%)'
+                          : isFutureRow
+                            ? 'rgba(148, 163, 184, 0.05)'
+                            : 'transparent',
+                      borderLeft: isMostRecentObservation
+                        ? '4px solid #3b82f6'
+                        : isRedemptionRow
+                          ? '4px solid #059669'
+                          : isFinalObservation
+                            ? '4px solid #ea580c'
+                            : 'none',
+                      transition: 'all 0.15s ease',
+                      position: 'relative'
+                    }}>
+                      {/* Status Badge Overlay for Redemption Row */}
+                      {isRedemptionRow && (
+                        <div style={{
+                          position: 'absolute',
+                          top: '0.75rem',
+                          right: '1.5rem',
+                          background: 'rgba(255, 255, 255, 0.95)',
+                          padding: '0.35rem 0.85rem',
+                          borderRadius: '20px',
+                          fontSize: '0.65rem',
+                          fontWeight: '700',
+                          color: '#047857',
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.8px',
+                          boxShadow: '0 4px 12px rgba(5, 150, 105, 0.25)'
+                        }}>
+                          🎊 Redeemed
+                        </div>
+                      )}
+
+                      {/* Observation Date */}
+                      <div style={{
+                        fontSize: '0.875rem',
+                        color: isRedemptionRow
+                          ? '#ffffff'
+                          : isFutureRow
+                            ? '#94a3b8'
+                            : 'var(--text-primary)',
+                        fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
+                        fontWeight: isMostRecentObservation ? '700' : '600',
+                        display: 'flex',
+                        alignItems: 'center'
+                      }}>
+                        {isMostRecentObservation && (
+                          <span style={{
+                            marginRight: '0.5rem',
+                            fontSize: '1rem'
+                          }}>
+                            ⏰
+                          </span>
+                        )}
+                        {obs.observationDateFormatted}
+                      </div>
+
+                      {/* Payment Date */}
+                      <div style={{
+                        fontSize: '0.875rem',
+                        color: isRedemptionRow
+                          ? '#ffffff'
+                          : isFutureRow
+                            ? '#94a3b8'
+                            : 'var(--text-primary)',
+                        fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
+                        fontWeight: isMostRecentObservation ? '700' : '600'
+                      }}>
+                        {obs.paymentDateFormatted}
+                      </div>
+
+                      {/* Observation Type - Badge Style */}
+                      <div style={{
+                        fontSize: '0.75rem',
+                        display: 'inline-flex',
+                        alignItems: 'center'
+                      }}>
+                        <span style={{
+                          background: isRedemptionRow
+                            ? 'rgba(255, 255, 255, 0.3)'
+                            : isFinalObservation
+                              ? 'linear-gradient(135deg, #ea580c 0%, #c2410c 100%)'
+                              : isFutureRow
+                                ? 'rgba(148, 163, 184, 0.2)'
+                                : 'linear-gradient(135deg, #1e293b 0%, #334155 100%)',
+                          color: isRedemptionRow || isFinalObservation
+                            ? '#ffffff'
+                            : isFutureRow
+                              ? '#64748b'
+                              : '#ffffff',
+                          padding: '0.4rem 0.85rem',
+                          borderRadius: '8px',
+                          fontWeight: '700',
+                          whiteSpace: 'nowrap',
+                          boxShadow: isFutureRow
+                            ? 'none'
+                            : '0 2px 12px rgba(30, 41, 59, 0.2)',
+                          letterSpacing: '0.3px'
+                        }}>
+                          {obs.observationType}
+                        </span>
+                      </div>
+
+                      {/* Autocall Level */}
+                      <div style={{
+                        fontSize: '0.875rem',
+                        color: isRedemptionRow
+                          ? '#ffffff'
+                          : !obs.isCallable
+                            ? '#cbd5e1'
+                            : isFutureRow
+                              ? '#94a3b8'
+                              : 'var(--text-primary)',
+                        fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
+                        textAlign: 'center',
+                        fontWeight: '700'
+                      }}>
+                        {obs.autocallLevelFormatted}
+                      </div>
+
+                      {/* Product Called - Enhanced Visual */}
+                      <div style={{
+                        fontSize: '0.875rem',
+                        textAlign: 'center',
+                        display: 'flex',
+                        justifyContent: 'center',
+                        alignItems: 'center'
+                      }}>
+                        {obs.productCalled === null ? (
+                          <span style={{
+                            color: '#94a3b8',
+                            fontStyle: 'italic',
+                            fontSize: '0.8rem',
+                            fontWeight: '500'
+                          }}>
+                            ⏳ TBD
+                          </span>
+                        ) : obs.productCalled ? (
+                          <span style={{
+                            background: isRedemptionRow
+                              ? 'rgba(255, 255, 255, 0.3)'
+                              : 'linear-gradient(135deg, #059669 0%, #047857 100%)',
+                            color: '#ffffff',
+                            padding: '0.4rem 0.85rem',
+                            borderRadius: '8px',
+                            fontWeight: '700',
+                            fontSize: '0.75rem',
+                            boxShadow: isRedemptionRow ? 'none' : '0 2px 12px rgba(5, 150, 105, 0.3)',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.3rem',
+                            letterSpacing: '0.3px'
+                          }}>
+                            ✓ YES
+                          </span>
+                        ) : (
+                          <span style={{
+                            color: isRedemptionRow ? 'rgba(255, 255, 255, 0.7)' : '#cbd5e1',
+                            fontSize: '0.8rem',
+                            fontWeight: '600'
+                          }}>
+                            ✗ NO
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Coupon Paid */}
+                      <div style={{
+                        fontSize: '0.875rem',
+                        fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
+                        textAlign: 'center',
+                        fontWeight: '700'
+                      }}>
+                        {obs.couponPaid > 0 ? (
+                          <span style={{
+                            color: isRedemptionRow ? '#ffffff' : '#059669',
+                            background: isRedemptionRow
+                              ? 'rgba(255, 255, 255, 0.2)'
+                              : '#d1fae5',
+                            padding: '0.35rem 0.75rem',
+                            borderRadius: '8px',
+                            display: 'inline-block',
+                            boxShadow: isRedemptionRow ? 'none' : '0 1px 3px rgba(5, 150, 105, 0.1)'
+                          }}>
+                            {obs.couponPaidFormatted}
+                          </span>
+                        ) : (
+                          <span style={{
+                            color: isRedemptionRow ? 'rgba(255, 255, 255, 0.5)' : '#e2e8f0',
+                            fontWeight: '400'
+                          }}>
+                            —
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Memory Coupon */}
+                      <div style={{
+                        fontSize: '0.875rem',
+                        fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
+                        textAlign: 'center',
+                        fontWeight: '700'
+                      }}>
+                        {obs.couponInMemory > 0 ? (
+                          <span style={{
+                            color: isRedemptionRow ? '#ffffff' : '#c2410c',
+                            background: isRedemptionRow
+                              ? 'rgba(255, 255, 255, 0.2)'
+                              : '#fed7aa',
+                            padding: '0.35rem 0.75rem',
+                            borderRadius: '8px',
+                            display: 'inline-block',
+                            boxShadow: isRedemptionRow ? 'none' : '0 1px 3px rgba(234, 88, 12, 0.1)'
+                          }}>
+                            {obs.couponInMemoryFormatted}
+                          </span>
+                        ) : (
+                          <span style={{
+                            color: isRedemptionRow ? 'rgba(255, 255, 255, 0.5)' : '#e2e8f0',
+                            fontWeight: '400'
+                          }}>
+                            —
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          {/* Legend */}
+          <div style={{
+            marginTop: '1rem',
+            fontSize: '0.75rem',
+            color: 'var(--text-muted)',
+            textAlign: 'center'
+          }}>
+            <div style={{ marginBottom: '0.25rem' }}>
+              <strong>Legend:</strong> Future observations shown with lighter background
+            </div>
+            <div style={{ marginBottom: '0.25rem' }}>
+              <span style={{ 
+                backgroundColor: '#374151', 
+                border: '1px solid #1f2937', 
+                borderRadius: '2px', 
+                padding: '2px 4px',
+                color: 'white'
+              }}>
+                Highlighted
+              </span> = Product redemption date
+            </div>
+            <div>
+              Reference: {results.observationAnalysis.referencePerformance.replace('_', ' ').replace('-', ' ')} basket performance
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Performance Chart */}
+      {results.chartData && results.chartData.available && (
+        <div style={{
+          background: 'var(--bg-secondary)',
+          padding: '1.5rem',
+          borderRadius: '6px',
+          marginBottom: '1.5rem'
+        }}>
+          <h4 style={{
+            margin: '0 0 1rem 0',
+            fontSize: '1rem',
+            color: 'var(--text-primary)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}>
+            📈 Performance Chart
+            <span style={{
+              fontSize: '0.8rem',
+              background: 'var(--accent-color)',
+              color: 'white',
+              padding: '4px 8px',
+              borderRadius: '4px',
+              fontWeight: '500'
+            }}>
+              Rebased to 100
+            </span>
+          </h4>
+          
+          <StructuredProductChart productId={productId} height="550px" />
+        </div>
+      )}
+      
+    </div>
+  );
+};
+
