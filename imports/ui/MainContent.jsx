@@ -20,6 +20,7 @@ import UnderlyingsView from './UnderlyingsView.jsx';
 import DirectEquitiesView from './DirectEquitiesView.jsx';
 import BirthdayCalendar from './BirthdayCalendar.jsx';
 import TemplateProductReport from './TemplateProductReport.jsx';
+import Schedule from './Schedule.jsx';
 import Dialog from './Dialog.jsx';
 import { useDialog } from './useDialog.js';
 
@@ -263,7 +264,11 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
       case 'direct-equities':
         if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
         return <DirectEquitiesView user={user} />;
-      
+
+      case 'schedule':
+        if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
+        return <Schedule user={user} />;
+
       case 'birthday-calendar':
         if (!hasAccess(USER_ROLES.ADMIN)) return <div>Access denied</div>;
         return <BirthdayCalendar user={user} />;

@@ -2,7 +2,7 @@
 // Handles all CRM-related publications (clients, meetings, documents, activities)
 
 import { check } from 'meteor/check';
-import { InvestorProfilesCollection } from '/imports/api/investorProfiles';
+// import { InvestorProfilesCollection } from '/imports/api/investorProfiles'; // Commented out - module doesn't exist
 import { UsersCollection, USER_ROLES } from '/imports/api/users';
 
 Meteor.publish('clientDocuments', function(clientId) {
@@ -33,14 +33,14 @@ Meteor.publish('clientActivities', function(clientId, limit = 50) {
   );
 });
 
-// Publish investor profiles (admin only)
-Meteor.publish('investorProfiles', async function() {
-  const user = await UsersCollection.findOneAsync(this.userId);
-  if (!user || (user.role !== USER_ROLES.ADMIN && user.role !== USER_ROLES.SUPERADMIN)) {
-    return this.ready();
-  }
-  return InvestorProfilesCollection.find({}, { sort: { createdAt: -1 } });
-});
+// Publish investor profiles (admin only) - COMMENTED OUT - InvestorProfilesCollection doesn't exist
+// Meteor.publish('investorProfiles', async function() {
+//   const user = await UsersCollection.findOneAsync(this.userId);
+//   if (!user || (user.role !== USER_ROLES.ADMIN && user.role !== USER_ROLES.SUPERADMIN)) {
+//     return this.ready();
+//   }
+//   return InvestorProfilesCollection.find({}, { sort: { createdAt: -1 } });
+// });
 
 
 

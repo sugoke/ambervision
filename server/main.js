@@ -43,6 +43,9 @@ import { MarketDataHelpers, MarketDataCacheCollection } from '/imports/api/marke
 import { globalProductValidator } from '/imports/api/validators/productStructureValidator.js';
 import '/imports/api/reports';
 import '/imports/api/templateReports';
+import '/imports/api/underlyingsAnalysis';
+import './publications/underlyingsAnalysis';
+import './publications'; // Import all publications from index.js
 
 // Complex product templates are now part of BUILT_IN_TEMPLATES in /imports/api/templates.js
 // import './insertComplexTemplates';

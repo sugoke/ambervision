@@ -38,6 +38,13 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
       role: 'client'
     },
     {
+      id: 'schedule',
+      label: 'Schedule',
+      icon: '📅',
+      description: 'Product observation calendar',
+      role: 'client'
+    },
+    {
       id: 'administration',
       label: 'Administration',
       icon: '⚙️',

@@ -1,0 +1,159 @@
+// Schedule Publications
+// Provides aggregated observation schedule data from all live products
+// Last updated: 2025-10-10
+
+console.log('🗓️ Loading schedule.js publication file...');
+
+import { Meteor } from 'meteor/meteor';
+import { Mongo } from 'meteor/mongo';
+import { check } from 'meteor/check';
+import { UsersCollection, USER_ROLES } from '/imports/api/users';
+import { ProductsCollection } from '/imports/api/products';
+import { AllocationsCollection } from '/imports/api/allocations';
+import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
+
+// Publication that aggregates all observations from live products
+Meteor.publish("schedule.observations", async function (sessionId = null) {
+  console.log('[SCHEDULE] Publication called with sessionId:', sessionId);
+
+  const effectiveSessionId = sessionId || this.connection.headers?.sessionid || this.connection.id;
+  let currentUser = null;
+
+  // Try to get user from session
+  if (effectiveSessionId) {
+    try {
+      const session = await SessionHelpers.validateSession(effectiveSessionId);
+      if (session && session.userId) {
+        currentUser = await UsersCollection.findOneAsync(session.userId);
+        console.log('[SCHEDULE] User found:', currentUser.email, 'Role:', currentUser.role);
+      }
+    } catch (error) {
+      console.log('[SCHEDULE] Session validation error:', error.message);
+    }
+  }
+
+  // If no authenticated user, return empty (security)
+  if (!currentUser) {
+    console.log('[SCHEDULE] No authenticated user, returning empty');
+    return this.ready();
+  }
+
+  // Determine which products the user has access to based on role
+  let productQuery = {};
+
+  if (currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.ADMIN) {
+    // Admin sees all products
+    productQuery = {};
+  } else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
+    // RM sees products of their assigned clients
+    const assignedClients = await UsersCollection.find({
+      role: USER_ROLES.CLIENT,
+      relationshipManagerId: currentUser._id
+    }).fetchAsync();
+
+    const clientIds = assignedClients.map(client => client._id);
+    if (clientIds.length === 0) {
+      return this.ready();
+    }
+
+    const clientAllocations = await AllocationsCollection.find({
+      clientId: { $in: clientIds }
+    }).fetchAsync();
+
+    const productIds = [...new Set(clientAllocations.map(alloc => alloc.productId))];
+    productQuery = { _id: { $in: productIds } };
+  } else if (currentUser.role === USER_ROLES.CLIENT) {
+    // Client sees only products they have allocations in
+    const userAllocations = await AllocationsCollection.find({
+      clientId: currentUser._id
+    }).fetchAsync();
+
+    const productIds = [...new Set(userAllocations.map(alloc => alloc.productId))];
+    if (productIds.length === 0) {
+      return this.ready();
+    }
+
+    productQuery = { _id: { $in: productIds } };
+  }
+
+  // Fetch all products with observation schedules
+  // Include all products the user has access to with observation schedules
+  console.log('[SCHEDULE] Product query:', JSON.stringify(productQuery));
+
+  const products = await ProductsCollection.find({
+    ...productQuery,
+    observationSchedule: { $exists: true, $ne: [] }
+  }).fetchAsync();
+
+  console.log('[SCHEDULE] Found', products.length, 'products with observationSchedule');
+
+  if (products.length > 0) {
+    console.log('[SCHEDULE] Sample product:', {
+      id: products[0]._id,
+      title: products[0].title,
+      hasSchedule: !!products[0].observationSchedule,
+      scheduleLength: products[0].observationSchedule?.length
+    });
+  }
+
+  // Process and publish observation schedule data
+  const observations = [];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  products.forEach(product => {
+    if (!product.observationSchedule || !Array.isArray(product.observationSchedule)) {
+      return;
+    }
+
+    console.log('[SCHEDULE] Processing product:', product._id, 'Schedule items:', product.observationSchedule.length);
+
+    product.observationSchedule.forEach((obs, index) => {
+      // Log the actual observation object to see its structure
+      console.log('[SCHEDULE] Observation', index, ':', JSON.stringify(obs));
+
+      // Try different possible field names for the date
+      const dateValue = obs.date || obs.observationDate || obs.valueDate;
+
+      if (!dateValue) {
+        console.log('[SCHEDULE] WARNING: No date field found in observation', index, 'Fields:', Object.keys(obs));
+        return;
+      }
+
+      const obsDate = new Date(dateValue);
+      obsDate.setHours(0, 0, 0, 0);
+
+      console.log('[SCHEDULE] Observation', index, 'date:', dateValue, 'Parsed:', obsDate, 'Today:', today, 'Past or Future:', obsDate < today ? 'PAST' : 'FUTURE');
+
+      // Include ALL observations (both past and future)
+      observations.push({
+        _id: `${product._id}_obs_${index}`, // Unique ID for reactivity
+        productId: product._id,
+        productTitle: product.title || product.name || 'Untitled Product',
+        productIsin: product.isin || product.ISIN || 'N/A',
+        observationDate: dateValue,
+        observationType: obs.type || 'observation',
+        isFinal: index === product.observationSchedule.length - 1,
+        isCallable: obs.isCallable || false,
+        couponRate: obs.couponRate || null,
+        autocallLevel: obs.autocallLevel || null,
+        observationIndex: index,
+        isPast: obsDate < today  // Add flag to identify past observations
+      });
+    });
+  });
+
+  // Sort observations by date (ascending)
+  observations.sort((a, b) => new Date(a.observationDate) - new Date(b.observationDate));
+
+  console.log('[SCHEDULE] Publishing', observations.length, 'observations');
+
+  // Publish each observation to the client
+  observations.forEach(obs => {
+    this.added('observationSchedule', obs._id, obs);
+  });
+
+  this.ready();
+  console.log('[SCHEDULE] Publication ready!');
+});
+
