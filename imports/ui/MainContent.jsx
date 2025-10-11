@@ -259,7 +259,7 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
         return <TestInput />;
       
       case 'underlyings':
-        return <UnderlyingsView user={user} />;
+        return <UnderlyingsView user={user} onNavigateToReport={handleViewProductReport} />;
       
       case 'direct-equities':
         if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
