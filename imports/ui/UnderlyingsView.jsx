@@ -2,8 +2,10 @@ import React, { useState, useMemo } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker, useSubscribe } from 'meteor/react-meteor-data';
 import { UnderlyingsAnalysisCollection } from '/imports/api/underlyingsAnalysis';
+import { RiskAnalysisReportsCollection } from '/imports/api/riskAnalysis';
 import { useTheme } from './ThemeContext.jsx';
 import { Bubble } from 'react-chartjs-2';
+import RiskReportModal from './components/RiskReportModal.jsx';
 import {
   Chart as ChartJS,
   LinearScale,
@@ -25,6 +27,12 @@ const UnderlyingsView = ({ user }) => {
   const [refreshError, setRefreshError] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(25);
+
+  // Risk Report State
+  const [isRiskReportModalOpen, setIsRiskReportModalOpen] = useState(false);
+  const [isGeneratingRiskReport, setIsGeneratingRiskReport] = useState(false);
+  const [riskReportId, setRiskReportId] = useState(null);
+  const [riskReportError, setRiskReportError] = useState(null);
 
   // Subscribe to the pre-computed analysis
   const isLoading = useSubscribe('phoenixUnderlyingsAnalysis');
@@ -62,6 +70,51 @@ const UnderlyingsView = ({ user }) => {
     } finally {
       setIsRefreshing(false);
     }
+  };
+
+  // Get session ID for authenticated API calls
+  const getSessionId = () => localStorage.getItem('sessionId');
+
+  // Subscribe to risk report if we have a report ID
+  useSubscribe('riskAnalysisReport', riskReportId, getSessionId(), { skip: !riskReportId });
+
+  // Get the risk report from database
+  const riskReport = useTracker(() => {
+    if (!riskReportId) return null;
+    return RiskAnalysisReportsCollection.findOne(riskReportId);
+  }, [riskReportId]);
+
+  // Risk Report Generation Handler
+  const handleGenerateRiskReport = async () => {
+    setIsRiskReportModalOpen(true);
+    setIsGeneratingRiskReport(true);
+    setRiskReportError(null);
+    setRiskReportId(null);
+
+    try {
+      const sessionId = getSessionId();
+      if (!sessionId) {
+        throw new Error('No valid session found. Please log in first.');
+      }
+
+      console.log('Generating risk analysis report...');
+      const result = await Meteor.callAsync('riskAnalysis.generate', sessionId);
+
+      console.log('Risk report generated:', result);
+      setRiskReportId(result.reportId);
+    } catch (error) {
+      console.error('Error generating risk report:', error);
+      setRiskReportError(error.message || error.reason || 'Failed to generate risk report');
+    } finally {
+      setIsGeneratingRiskReport(false);
+    }
+  };
+
+  // Close risk report modal
+  const handleCloseRiskReport = () => {
+    setIsRiskReportModalOpen(false);
+    setRiskReportId(null);
+    setRiskReportError(null);
   };
 
   // Filter and sort data
@@ -139,7 +192,8 @@ const UnderlyingsView = ({ user }) => {
       performance: underlying.performance,
       barrier: underlying.protectionBarrierLevel,
       productIsin: underlying.productIsin,
-      productTitle: underlying.productTitle
+      productTitle: underlying.productTitle,
+      productId: underlying.productId // Store productId for click navigation
     }));
 
     return {
@@ -156,6 +210,18 @@ const UnderlyingsView = ({ user }) => {
   const bubbleChartOptions = {
     responsive: true,
     maintainAspectRatio: false,
+    onClick: (event, elements, chart) => {
+      if (elements.length > 0) {
+        const elementIndex = elements[0].index;
+        const datasetIndex = elements[0].datasetIndex;
+        const clickedBubble = chart.data.datasets[datasetIndex].data[elementIndex];
+
+        if (clickedBubble && clickedBubble.productId) {
+          // Navigate to the product report
+          window.location.href = `/report/${clickedBubble.productId}`;
+        }
+      }
+    },
     plugins: {
       legend: {
         display: false
@@ -181,7 +247,9 @@ const UnderlyingsView = ({ user }) => {
               `Barrier Level: ${point.barrier}%`,
               `Days to Final Obs: ${point.x}`,
               `Product: ${point.productIsin}`,
-              `Title: ${point.productTitle}`
+              `Title: ${point.productTitle}`,
+              ``,
+              `💡 Click to view product report`
             ];
           }
         }
@@ -317,24 +385,54 @@ const UnderlyingsView = ({ user }) => {
             {generatedAt && <span> • Generated: {generatedAt}</span>}
           </p>
         </div>
-        <button
-          onClick={handleRefresh}
-          disabled={isRefreshing}
-          style={{
-            padding: '0.75rem 1.5rem',
-            background: isRefreshing ? 'var(--bg-tertiary)' : 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
-            color: '#fff',
-            border: 'none',
-            borderRadius: '10px',
-            fontSize: '0.95rem',
-            fontWeight: '600',
-            cursor: isRefreshing ? 'not-allowed' : 'pointer',
-            transition: 'all 0.2s',
-            opacity: isRefreshing ? 0.6 : 1
-          }}
-        >
-          {isRefreshing ? 'Refreshing...' : '↻ Refresh Analysis'}
-        </button>
+        <div style={{ display: 'flex', gap: '1rem' }}>
+          <button
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            style={{
+              padding: '0.75rem 1.5rem',
+              background: isRefreshing ? 'var(--bg-tertiary)' : 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '10px',
+              fontSize: '0.95rem',
+              fontWeight: '600',
+              cursor: isRefreshing ? 'not-allowed' : 'pointer',
+              transition: 'all 0.2s',
+              opacity: isRefreshing ? 0.6 : 1
+            }}
+          >
+            {isRefreshing ? 'Refreshing...' : '↻ Refresh Analysis'}
+          </button>
+          <button
+            onClick={handleGenerateRiskReport}
+            disabled={summary.belowBarrier === 0 && summary.warningZone === 0}
+            style={{
+              padding: '0.75rem 1.5rem',
+              background: (summary.belowBarrier === 0 && summary.warningZone === 0)
+                ? 'var(--bg-tertiary)'
+                : 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '10px',
+              fontSize: '0.95rem',
+              fontWeight: '600',
+              cursor: (summary.belowBarrier === 0 && summary.warningZone === 0) ? 'not-allowed' : 'pointer',
+              transition: 'all 0.2s',
+              opacity: (summary.belowBarrier === 0 && summary.warningZone === 0) ? 0.6 : 1,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem'
+            }}
+            title={
+              (summary.belowBarrier === 0 && summary.warningZone === 0)
+                ? 'No underlyings currently at risk'
+                : 'Generate AI-powered risk analysis report'
+            }
+          >
+            <span>⚠️</span> Generate Risk Report
+          </button>
+        </div>
       </div>
 
       {refreshError && (
@@ -996,8 +1094,10 @@ const UnderlyingsView = ({ user }) => {
             <span style={{ color: '#10b981', fontWeight: '600' }}> Green</span> = safe (&gt;10% above barrier),
             <span style={{ color: '#f97316', fontWeight: '600' }}> Orange</span> = warning zone (0-10% above barrier),
             <span style={{ color: '#ef4444', fontWeight: '600' }}> Red</span> = below barrier (capital at risk).
+            <br />
+            <span style={{ fontWeight: '600' }}>💡 Click any bubble to view the full product report.</span>
           </p>
-          <div style={{ height: '500px', position: 'relative' }}>
+          <div style={{ height: '500px', position: 'relative', cursor: 'pointer' }}>
             <Bubble data={bubbleChartData} options={bubbleChartOptions} />
           </div>
         </div>
@@ -1013,6 +1113,22 @@ const UnderlyingsView = ({ user }) => {
         }}>
           Analysis generated: {generatedAt}
         </div>
+      )}
+
+      {/* Risk Report Modal */}
+      {isRiskReportModalOpen && (
+        <RiskReportModal
+          report={riskReport}
+          onClose={handleCloseRiskReport}
+          isGenerating={isGeneratingRiskReport}
+          progress={
+            riskReportError
+              ? `Error: ${riskReportError}`
+              : isGeneratingRiskReport
+              ? 'Analyzing underlyings and searching for news...'
+              : null
+          }
+        />
       )}
     </div>
   );
