@@ -1,274 +1,122 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker, useSubscribe } from 'meteor/react-meteor-data';
-import { ProductsCollection } from '/imports/api/products';
-import { MarketDataCacheCollection } from '/imports/api/marketDataCache';
+import { UnderlyingsAnalysisCollection } from '/imports/api/underlyingsAnalysis';
 import { useTheme } from './ThemeContext.jsx';
+import { Bubble } from 'react-chartjs-2';
+import {
+  Chart as ChartJS,
+  LinearScale,
+  PointElement,
+  Tooltip,
+  Legend
+} from 'chart.js';
+import annotationPlugin from 'chartjs-plugin-annotation';
+
+// Register Chart.js components
+ChartJS.register(LinearScale, PointElement, Tooltip, Legend, annotationPlugin);
 
 const UnderlyingsView = ({ user }) => {
   const { isDarkMode } = useTheme();
   const [sortColumn, setSortColumn] = useState('symbol');
   const [sortDirection, setSortDirection] = useState('asc');
   const [searchTerm, setSearchTerm] = useState('');
-  
-  // Subscribe to products and market data
-  const isLoading = useSubscribe('products');
-  const marketDataLoading = useSubscribe('underlyingsMarketData');
-  
-  // Get all live Phoenix products
-  const { liveProducts, marketData } = useTracker(() => {
-    const products = ProductsCollection.find({
-      $and: [
-        {
-          $or: [
-            { status: 'live' },
-            { status: 'Live' },
-            { status: 'active' },
-            { status: 'Active' },
-            { productStatus: 'live' },
-            { productStatus: 'Live' },
-            { productStatus: 'active' },
-            { productStatus: 'Active' }
-          ]
-        },
-        {
-          $or: [
-            { template: 'phoenix_autocallable' },
-            { templateId: 'phoenix_autocallable' }
-          ]
-        }
-      ]
-    }).fetch();
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(25);
 
-    const marketDataCache = MarketDataCacheCollection.find({}).fetch();
-    const marketDataMap = {};
-    // Index by both fullTicker and symbol for flexible lookup
-    marketDataCache.forEach(item => {
-      marketDataMap[item.fullTicker] = item;
-      marketDataMap[item.symbol] = item; // Also index by symbol for backward compatibility
-    });
+  // Subscribe to the pre-computed analysis
+  const isLoading = useSubscribe('phoenixUnderlyingsAnalysis');
 
-    return { liveProducts: products, marketData: marketDataMap };
+  // Get the analysis from database (NO client-side calculations)
+  const analysisData = useTracker(() => {
+    const analysis = UnderlyingsAnalysisCollection.findOne({ _id: 'phoenix_live_underlyings' });
+    return analysis || null;
   }, []);
-  
-  // Extract all unique underlyings from live products
-  const underlyingsData = useMemo(() => {
-    const underlyingsMap = new Map();
 
-    liveProducts.forEach(product => {
-      // Use the new underlyings array if available, otherwise fall back to extracting from payoffStructure
-      const productUnderlyings = product.underlyings || [];
-      
-      if (productUnderlyings.length === 0 && product.payoffStructure) {
-        // Fallback: extract from payoffStructure for older products
-        const items = product.payoffStructure || [];
+  // Extract data from analysis (all pre-computed server-side)
+  const underlyingsData = analysisData?.underlyings || [];
+  const summary = analysisData?.summary || {
+    totalRows: 0,
+    totalProducts: 0,
+    uniqueUnderlyings: 0,
+    positivePerformance: 0,
+    negativePerformance: 0,
+    withProtection: 0,
+    belowBarrier: 0,
+    warningZone: 0,
+    safeZone: 0
+  };
+  const generatedAt = analysisData?.generatedAtFormatted || null;
 
-        items.forEach(item => {
-          if (item.type === 'underlying') {
-            if (item.isBasket && item.selectedSecurities) {
-              item.selectedSecurities.forEach(security => {
-                productUnderlyings.push({
-                  symbol: security.symbol,
-                  name: security.name || security.symbol,
-                  exchange: security.exchange,
-                  type: security.type || 'Stock',
-                  strikePrice: parseFloat(security.strikePrice) || null,
-                  weight: parseFloat(security.weight) || (100 / item.selectedSecurities.length),
-                  isBasketComponent: true
-                });
-              });
-            } else if (item.selectedSecurity) {
-              const security = item.selectedSecurity;
-              productUnderlyings.push({
-                symbol: security.symbol,
-                name: security.name || security.symbol,
-                exchange: security.exchange,
-                type: security.type || 'Stock',
-                strikePrice: parseFloat(item.strikePrice) || null,
-                weight: 100,
-                isBasketComponent: false
-              });
-            }
-          }
-        });
-      }
-      
-      // Process each underlying
-      productUnderlyings.forEach(underlying => {
-        // Use fullTicker as primary key if available, otherwise use symbol
-        // Priority: securityData.ticker (validated from EOD API) > fullTicker > constructed from symbol+exchange
-        const fullTicker = underlying.securityData?.ticker ||
-                          underlying.fullTicker ||
-                          (underlying.ticker && underlying.ticker.includes('.') ? underlying.ticker : null) ||
-                          (underlying.symbol && underlying.exchange ? `${underlying.symbol}.${underlying.exchange}` : null);
+  // Refresh handler - regenerate analysis on demand
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    setRefreshError(null);
+    try {
+      await Meteor.callAsync('underlyingsAnalysis.generate');
+    } catch (error) {
+      console.error('Error refreshing analysis:', error);
+      setRefreshError(error.message || 'Failed to refresh analysis');
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
-        const symbol = underlying.symbol || underlying.ticker || underlying.securityData?.symbol;
-        const name = underlying.name || underlying.securityData?.name || symbol;
-        const exchange = underlying.securityData?.exchange || underlying.exchange;
-
-        const key = fullTicker || symbol;
-
-        if (!underlyingsMap.has(key)) {
-          underlyingsMap.set(key, {
-            symbol: symbol,
-            fullTicker: fullTicker,
-            ticker: fullTicker, // For market data lookup
-            name: name,
-            exchange: exchange,
-            type: underlying.type || 'Stock',
-            products: [],
-            tradeDates: [],
-            initialPrices: []
-          });
-        }
-
-        const mapEntry = underlyingsMap.get(key);
-
-        // Check if this product has capital protection (protection barrier exists)
-        const hasProtection = product.structureParams?.protectionBarrierLevel > 0 ||
-                             product.structureParams?.protectionBarrier > 0 ||
-                             (product.structure?.maturity || product.payoffStructure || []).some(
-                               item => item.type === 'barrier' && item.barrier_type === 'protection'
-                             );
-
-        mapEntry.products.push({
-          id: product._id,
-          title: product.title,
-          isin: product.isin,
-          tradeDate: product.tradeDate,
-          finalObservation: product.finalObservation || product.finalObservationDate,
-          weight: underlying.weight || 100,
-          hasProtection: hasProtection
-        });
-
-        if (product.tradeDate) {
-          mapEntry.tradeDates.push(new Date(product.tradeDate));
-        }
-
-        // Track final observation dates
-        if (!mapEntry.finalObservationDates) {
-          mapEntry.finalObservationDates = [];
-        }
-        const finalObs = product.finalObservation || product.finalObservationDate;
-        if (finalObs) {
-          mapEntry.finalObservationDates.push(new Date(finalObs));
-        }
-
-        // Check multiple possible field names for strike price
-        const strikePrice = underlying.strike || underlying.strikePrice;
-        if (strikePrice) {
-          mapEntry.initialPrices.push({
-            date: product.tradeDate,
-            price: parseFloat(strikePrice)
-          });
-        }
-      });
-    });
-    
-    // Calculate performance for each underlying
-    const underlyingsArray = Array.from(underlyingsMap.values()).map(underlying => {
-      // Get current market data - prioritize fullTicker lookup, fallback to symbol
-      const currentMarketData = marketData[underlying.fullTicker] ||
-                               marketData[underlying.ticker] ||
-                               marketData[underlying.symbol];
-      const currentPrice = currentMarketData?.cache?.latestPrice ||
-                          currentMarketData?.price ||
-                          0;
-      
-      // Calculate earliest trade date
-      const earliestTradeDate = underlying.tradeDates.length > 0
-        ? new Date(Math.min(...underlying.tradeDates))
-        : null;
-
-      // Calculate latest final observation date (furthest in the future)
-      const latestFinalObservation = underlying.finalObservationDates && underlying.finalObservationDates.length > 0
-        ? new Date(Math.max(...underlying.finalObservationDates))
-        : null;
-
-      // Get initial price (use average if multiple)
-      const initialPrice = underlying.initialPrices.length > 0
-        ? underlying.initialPrices.reduce((sum, p) => sum + p.price, 0) / underlying.initialPrices.length
-        : currentPrice;
-
-      // Calculate performance
-      const performance = initialPrice > 0 ? ((currentPrice - initialPrice) / initialPrice * 100) : 0;
-
-      // Calculate days to final observation (negative if already passed)
-      const daysToFinalObservation = latestFinalObservation
-        ? Math.ceil((latestFinalObservation - new Date()) / (1000 * 60 * 60 * 24))
-        : 0;
-
-      // Check if any product using this underlying has capital protection
-      const hasAnyProtection = underlying.products.some(p => p.hasProtection);
-      const protectionProductCount = underlying.products.filter(p => p.hasProtection).length;
-
-      return {
-        ...underlying,
-        currentPrice,
-        initialPrice,
-        performance,
-        earliestTradeDate,
-        latestFinalObservation,
-        daysToFinalObservation,
-        productCount: underlying.products.length,
-        hasAnyProtection,
-        protectionProductCount,
-        lastUpdate: currentMarketData?.cache?.latestDate || currentMarketData?.lastUpdated || currentMarketData?.timestamp,
-        hasMarketData: !!currentMarketData
-      };
-    });
-    
-    return underlyingsArray;
-  }, [liveProducts, marketData]);
-  
   // Filter and sort data
   const filteredAndSortedData = useMemo(() => {
     let filtered = underlyingsData;
-    
+
     // Apply search filter
     if (searchTerm) {
       const searchLower = searchTerm.toLowerCase();
-      filtered = filtered.filter(item => 
+      filtered = filtered.filter(item =>
         item.symbol.toLowerCase().includes(searchLower) ||
         item.name.toLowerCase().includes(searchLower) ||
-        item.products.some(p => 
-          p.title.toLowerCase().includes(searchLower) ||
-          p.isin.toLowerCase().includes(searchLower)
-        )
+        item.productTitle.toLowerCase().includes(searchLower) ||
+        item.productIsin.toLowerCase().includes(searchLower)
       );
     }
-    
+
     // Sort data
     const sorted = [...filtered].sort((a, b) => {
       let aValue = a[sortColumn];
       let bValue = b[sortColumn];
-      
+
       // Handle numeric columns
-      if (['currentPrice', 'initialPrice', 'performance', 'daysToFinalObservation', 'productCount'].includes(sortColumn)) {
+      if (['currentPrice', 'initialPrice', 'performance', 'daysToFinalObservation', 'distanceToBarrier'].includes(sortColumn)) {
         aValue = parseFloat(aValue) || 0;
         bValue = parseFloat(bValue) || 0;
       }
-      
+
       // Handle date columns
-      if (sortColumn === 'earliestTradeDate') {
+      if (sortColumn === 'tradeDate') {
         aValue = aValue ? new Date(aValue).getTime() : 0;
         bValue = bValue ? new Date(bValue).getTime() : 0;
       }
 
-      // Handle boolean columns (protection)
-      if (sortColumn === 'hasAnyProtection') {
-        aValue = aValue ? 1 : 0;
-        bValue = bValue ? 1 : 0;
-      }
 
       if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
       if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
       return 0;
     });
-    
+
     return sorted;
   }, [underlyingsData, searchTerm, sortColumn, sortDirection]);
-  
+
+  // Reset to page 1 when search term or items per page changes
+  React.useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, itemsPerPage]);
+
+  // Calculate pagination
+  const totalItems = filteredAndSortedData.length;
+  const totalPages = itemsPerPage === 'all' ? 1 : Math.ceil(totalItems / itemsPerPage);
+  const startIndex = itemsPerPage === 'all' ? 0 : (currentPage - 1) * itemsPerPage;
+  const endIndex = itemsPerPage === 'all' ? totalItems : startIndex + itemsPerPage;
+  const paginatedData = filteredAndSortedData.slice(startIndex, endIndex);
+
   const handleSort = (column) => {
     if (sortColumn === column) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
@@ -277,19 +125,153 @@ const UnderlyingsView = ({ user }) => {
       setSortDirection('asc');
     }
   };
-  
-  const getPerformanceColor = (performance) => {
-    if (performance > 0) return '#10b981';
-    if (performance < 0) return '#ef4444';
-    return '#6b7280';
+
+  // Prepare bubble chart data for underlyings with barriers (uses pre-computed properties)
+  const bubbleChartData = useMemo(() => {
+    const protectedUnderlyings = underlyingsData.filter(u => u.distanceToBarrier != null && u.hasMarketData);
+
+    const bubbles = protectedUnderlyings.map(underlying => ({
+      x: underlying.daysToFinalObservation,
+      y: underlying.distanceToBarrier,
+      r: underlying.bubbleSize || 8,
+      label: underlying.symbol,
+      name: underlying.name,
+      performance: underlying.performance,
+      barrier: underlying.protectionBarrierLevel,
+      productIsin: underlying.productIsin,
+      productTitle: underlying.productTitle
+    }));
+
+    return {
+      datasets: [{
+        label: 'Underlyings',
+        data: bubbles,
+        backgroundColor: protectedUnderlyings.map(u => u.bubbleColor || 'rgba(16, 185, 129, 0.6)'),
+        borderColor: protectedUnderlyings.map(u => u.bubbleBorderColor || 'rgba(16, 185, 129, 1)'),
+        borderWidth: 2
+      }]
+    };
+  }, [underlyingsData]);
+
+  const bubbleChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        display: false
+      },
+      tooltip: {
+        backgroundColor: isDarkMode ? 'rgba(30, 30, 30, 0.95)' : 'rgba(255, 255, 255, 0.95)',
+        titleColor: isDarkMode ? '#fff' : '#000',
+        bodyColor: isDarkMode ? '#fff' : '#000',
+        borderColor: isDarkMode ? '#444' : '#ccc',
+        borderWidth: 1,
+        padding: 12,
+        callbacks: {
+          title: (context) => {
+            const point = context[0].raw;
+            return point.label;
+          },
+          label: (context) => {
+            const point = context.raw;
+            return [
+              `Name: ${point.name}`,
+              `Performance: ${point.performance >= 0 ? '+' : ''}${point.performance.toFixed(2)}%`,
+              `Distance to Barrier: ${point.y >= 0 ? '+' : ''}${point.y.toFixed(1)}%`,
+              `Barrier Level: ${point.barrier}%`,
+              `Days to Final Obs: ${point.x}`,
+              `Product: ${point.productIsin}`,
+              `Title: ${point.productTitle}`
+            ];
+          }
+        }
+      },
+      annotation: {
+        annotations: {
+          barrierLine: {
+            type: 'line',
+            yMin: 0,
+            yMax: 0,
+            borderColor: '#ef4444',
+            borderWidth: 2,
+            borderDash: [5, 5],
+            label: {
+              display: true,
+              content: 'Barrier Threshold',
+              position: 'end',
+              backgroundColor: '#ef4444',
+              color: '#fff',
+              padding: 4,
+              font: {
+                size: 11,
+                weight: '600'
+              }
+            }
+          },
+          warningZone: {
+            type: 'line',
+            yMin: 10,
+            yMax: 10,
+            borderColor: '#f97316',
+            borderWidth: 2,
+            borderDash: [10, 5],
+            label: {
+              display: true,
+              content: 'Warning Zone',
+              position: 'start',
+              backgroundColor: '#f97316',
+              color: '#fff',
+              padding: 4,
+              font: {
+                size: 11,
+                weight: '600'
+              }
+            }
+          }
+        }
+      }
+    },
+    scales: {
+      x: {
+        title: {
+          display: true,
+          text: 'Days to Final Observation',
+          color: isDarkMode ? '#9ca3af' : '#6b7280',
+          font: { size: 14, weight: '600' }
+        },
+        grid: {
+          color: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)'
+        },
+        ticks: {
+          color: isDarkMode ? '#9ca3af' : '#6b7280'
+        }
+      },
+      y: {
+        title: {
+          display: true,
+          text: 'Distance to Barrier (%)',
+          color: isDarkMode ? '#9ca3af' : '#6b7280',
+          font: { size: 14, weight: '600' }
+        },
+        grid: {
+          color: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)'
+        },
+        ticks: {
+          color: isDarkMode ? '#9ca3af' : '#6b7280',
+          callback: function(value) {
+            return value >= 0 ? `+${value}%` : `${value}%`;
+          }
+        }
+      }
+    }
   };
-  
-  if (isLoading() || marketDataLoading()) {
+
+  if (isLoading()) {
     return (
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
+      <div style={{
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
         height: '400px',
         color: 'var(--text-secondary)'
       }}>
@@ -297,422 +279,684 @@ const UnderlyingsView = ({ user }) => {
       </div>
     );
   }
-  
+
   return (
     <div style={{
       padding: '2rem',
       background: 'var(--bg-primary)',
       minHeight: '100vh'
     }}>
-          {/* Header */}
-          <div style={{
-            background: 'linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)',
-            borderRadius: '20px',
-            padding: '2rem',
-            marginBottom: '2rem',
+      {/* Header */}
+      <div style={{
+        background: 'linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)',
+        borderRadius: '20px',
+        padding: '2rem',
+        marginBottom: '2rem',
+        border: '1px solid var(--border-color)',
+        boxShadow: '0 10px 30px rgba(0, 0, 0, 0.1)',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center'
+      }}>
+        <div>
+          <h1 style={{
+            margin: '0 0 0.5rem 0',
+            fontSize: '2rem',
+            fontWeight: '700',
+            color: 'var(--text-primary)',
+            letterSpacing: '-0.02em'
+          }}>
+            Phoenix Autocallable - Underlying Assets
+          </h1>
+          <p style={{
+            margin: 0,
+            fontSize: '1rem',
+            color: 'var(--text-secondary)'
+          }}>
+            Track performance of underlying assets in live Phoenix products
+            {generatedAt && <span> • Generated: {generatedAt}</span>}
+          </p>
+        </div>
+        <button
+          onClick={handleRefresh}
+          disabled={isRefreshing}
+          style={{
+            padding: '0.75rem 1.5rem',
+            background: isRefreshing ? 'var(--bg-tertiary)' : 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '10px',
+            fontSize: '0.95rem',
+            fontWeight: '600',
+            cursor: isRefreshing ? 'not-allowed' : 'pointer',
+            transition: 'all 0.2s',
+            opacity: isRefreshing ? 0.6 : 1
+          }}
+        >
+          {isRefreshing ? 'Refreshing...' : '↻ Refresh Analysis'}
+        </button>
+      </div>
+
+      {refreshError && (
+        <div style={{
+          background: '#fef2f2',
+          border: '1px solid #fecaca',
+          borderRadius: '12px',
+          padding: '1rem',
+          marginBottom: '2rem',
+          color: '#991b1b'
+        }}>
+          Error: {refreshError}
+        </div>
+      )}
+
+      {/* Statistics Cards */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+        gap: '1rem',
+        marginBottom: '2rem'
+      }}>
+        <div style={{
+          background: 'var(--bg-secondary)',
+          borderRadius: '12px',
+          padding: '1.5rem',
+          border: '1px solid var(--border-color)'
+        }}>
+          <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+            Unique Underlyings
+          </div>
+          <div style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+            {summary.uniqueUnderlyings}
+          </div>
+        </div>
+
+        <div style={{
+          background: 'var(--bg-secondary)',
+          borderRadius: '12px',
+          padding: '1.5rem',
+          border: '1px solid var(--border-color)'
+        }}>
+          <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+            Live Phoenix Products
+          </div>
+          <div style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+            {summary.totalProducts}
+          </div>
+        </div>
+
+        <div style={{
+          background: 'var(--bg-secondary)',
+          borderRadius: '12px',
+          padding: '1.5rem',
+          border: '1px solid var(--border-color)'
+        }}>
+          <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+            Positive Performance
+          </div>
+          <div style={{ fontSize: '2rem', fontWeight: '700', color: '#10b981' }}>
+            {summary.positivePerformance}
+          </div>
+        </div>
+
+        <div style={{
+          background: 'var(--bg-secondary)',
+          borderRadius: '12px',
+          padding: '1.5rem',
+          border: '1px solid var(--border-color)'
+        }}>
+          <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+            Negative Performance
+          </div>
+          <div style={{ fontSize: '2rem', fontWeight: '700', color: '#ef4444' }}>
+            {summary.negativePerformance}
+          </div>
+        </div>
+
+        <div style={{
+          background: 'var(--bg-secondary)',
+          borderRadius: '12px',
+          padding: '1.5rem',
+          border: '1px solid var(--border-color)'
+        }}>
+          <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+            Warning Zone
+          </div>
+          <div style={{ fontSize: '2rem', fontWeight: '700', color: '#f97316' }}>
+            {summary.warningZone}
+          </div>
+        </div>
+
+        <div style={{
+          background: 'var(--bg-secondary)',
+          borderRadius: '12px',
+          padding: '1.5rem',
+          border: '1px solid var(--border-color)'
+        }}>
+          <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+            Below Barrier
+          </div>
+          <div style={{ fontSize: '2rem', fontWeight: '700', color: '#ef4444' }}>
+            {summary.belowBarrier}
+          </div>
+        </div>
+      </div>
+
+      {/* Search Bar */}
+      <div style={{
+        background: 'var(--bg-secondary)',
+        borderRadius: '12px',
+        padding: '1rem',
+        marginBottom: '2rem',
+        border: '1px solid var(--border-color)'
+      }}>
+        <input
+          type="text"
+          placeholder="Search by symbol, name, product title or ISIN..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          style={{
+            width: '100%',
+            padding: '0.75rem',
+            background: 'var(--bg-primary)',
             border: '1px solid var(--border-color)',
-            boxShadow: '0 10px 30px rgba(0, 0, 0, 0.1)'
-          }}>
-            <h1 style={{
-              margin: '0 0 0.5rem 0',
-              fontSize: '2rem',
-              fontWeight: '700',
-              color: 'var(--text-primary)',
-              letterSpacing: '-0.02em'
-            }}>
-              Phoenix Autocallable - Underlying Assets
-            </h1>
-            <p style={{
-              margin: 0,
-              fontSize: '1rem',
-              color: 'var(--text-secondary)'
-            }}>
-              Track performance of underlying assets in live Phoenix products
-            </p>
-          </div>
-          
-          {/* Statistics Cards */}
+            borderRadius: '8px',
+            color: 'var(--text-primary)',
+            fontSize: '0.95rem',
+            outline: 'none'
+          }}
+        />
+      </div>
+
+      {/* Pagination Controls - Top */}
+      {totalItems > 0 && (
+        <div style={{
+          background: 'var(--bg-secondary)',
+          borderRadius: '12px',
+          padding: '1rem 1.5rem',
+          marginBottom: '1rem',
+          border: '1px solid var(--border-color)',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '1rem'
+        }}>
+          {/* Results info */}
           <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-            gap: '1rem',
-            marginBottom: '2rem'
+            fontSize: '0.9rem',
+            color: 'var(--text-secondary)',
+            fontWeight: '500'
           }}>
-            <div style={{
-              background: 'var(--bg-secondary)',
-              borderRadius: '12px',
-              padding: '1.5rem',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-                Total Underlyings
-              </div>
-              <div style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--text-primary)' }}>
-                {underlyingsData.length}
-              </div>
-            </div>
-            
-            <div style={{
-              background: 'var(--bg-secondary)',
-              borderRadius: '12px',
-              padding: '1.5rem',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-                Live Phoenix Products
-              </div>
-              <div style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--text-primary)' }}>
-                {liveProducts.length}
-              </div>
-            </div>
-            
-            <div style={{
-              background: 'var(--bg-secondary)',
-              borderRadius: '12px',
-              padding: '1.5rem',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-                Positive Performance
-              </div>
-              <div style={{ fontSize: '2rem', fontWeight: '700', color: '#10b981' }}>
-                {underlyingsData.filter(u => u.performance > 0).length}
-              </div>
-            </div>
-            
-            <div style={{
-              background: 'var(--bg-secondary)',
-              borderRadius: '12px',
-              padding: '1.5rem',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-                Negative Performance
-              </div>
-              <div style={{ fontSize: '2rem', fontWeight: '700', color: '#ef4444' }}>
-                {underlyingsData.filter(u => u.performance < 0).length}
-              </div>
-            </div>
+            Showing {startIndex + 1}-{Math.min(endIndex, totalItems)} of {totalItems} results
           </div>
-          
-          {/* Search Bar */}
+
+          {/* Items per page selector */}
           <div style={{
-            background: 'var(--bg-secondary)',
-            borderRadius: '12px',
-            padding: '1rem',
-            marginBottom: '2rem',
-            border: '1px solid var(--border-color)'
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.75rem'
           }}>
-            <input
-              type="text"
-              placeholder="Search by symbol, name, product title or ISIN..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+            <label style={{
+              fontSize: '0.9rem',
+              color: 'var(--text-secondary)',
+              fontWeight: '500'
+            }}>
+              Results per page:
+            </label>
+            <select
+              value={itemsPerPage}
+              onChange={(e) => setItemsPerPage(e.target.value === 'all' ? 'all' : parseInt(e.target.value))}
               style={{
-                width: '100%',
-                padding: '0.75rem',
+                padding: '0.5rem 0.75rem',
                 background: 'var(--bg-primary)',
                 border: '1px solid var(--border-color)',
                 borderRadius: '8px',
                 color: 'var(--text-primary)',
-                fontSize: '0.95rem',
+                fontSize: '0.9rem',
+                fontWeight: '600',
+                cursor: 'pointer',
                 outline: 'none'
               }}
-            />
+            >
+              <option value="10">10</option>
+              <option value="25">25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="all">All</option>
+            </select>
           </div>
-          
-          {/* Table */}
-          <div style={{
-            background: 'var(--bg-secondary)',
-            borderRadius: '12px',
-            border: '1px solid var(--border-color)',
-            overflow: 'hidden'
-          }}>
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{
-                width: '100%',
-                borderCollapse: 'collapse',
-                fontSize: '0.95rem'
+
+          {/* Page navigation */}
+          {itemsPerPage !== 'all' && totalPages > 1 && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem'
+            }}>
+              <button
+                onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                disabled={currentPage === 1}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: currentPage === 1 ? 'var(--bg-tertiary)' : 'var(--accent-color)',
+                  color: currentPage === 1 ? 'var(--text-muted)' : 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '0.85rem',
+                  fontWeight: '600',
+                  cursor: currentPage === 1 ? 'not-allowed' : 'pointer',
+                  transition: 'all 0.2s'
+                }}
+              >
+                ← Previous
+              </button>
+
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.25rem'
               }}>
-                <thead>
-                  <tr style={{ borderBottom: '2px solid var(--border-color)' }}>
-                    <th
-                      onClick={() => handleSort('hasAnyProtection')}
+                {/* Show first page */}
+                {currentPage > 3 && (
+                  <>
+                    <button
+                      onClick={() => setCurrentPage(1)}
                       style={{
-                        padding: '0.5rem',
-                        textAlign: 'center',
+                        padding: '0.5rem 0.75rem',
+                        background: 'var(--bg-primary)',
+                        color: 'var(--text-primary)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '6px',
+                        fontSize: '0.85rem',
                         fontWeight: '600',
-                        color: 'var(--text-secondary)',
-                        cursor: 'pointer',
-                        userSelect: 'none',
-                        whiteSpace: 'nowrap',
-                        width: '60px'
-                      }}
-                      title="Capital Protection"
-                    >
-                      🛡️ {sortColumn === 'hasAnyProtection' && (sortDirection === 'asc' ? '↑' : '↓')}
-                    </th>
-                    <th
-                      onClick={() => handleSort('symbol')}
-                      style={{
-                        padding: '1rem',
-                        textAlign: 'left',
-                        fontWeight: '600',
-                        color: 'var(--text-secondary)',
-                        cursor: 'pointer',
-                        userSelect: 'none',
-                        whiteSpace: 'nowrap'
-                      }}
-                    >
-                      Symbol {sortColumn === 'symbol' && (sortDirection === 'asc' ? '↑' : '↓')}
-                    </th>
-                    <th 
-                      onClick={() => handleSort('name')}
-                      style={{
-                        padding: '1rem',
-                        textAlign: 'left',
-                        fontWeight: '600',
-                        color: 'var(--text-secondary)',
-                        cursor: 'pointer',
-                        userSelect: 'none',
-                        whiteSpace: 'nowrap'
-                      }}
-                    >
-                      Name {sortColumn === 'name' && (sortDirection === 'asc' ? '↑' : '↓')}
-                    </th>
-                    <th 
-                      onClick={() => handleSort('currentPrice')}
-                      style={{
-                        padding: '1rem',
-                        textAlign: 'right',
-                        fontWeight: '600',
-                        color: 'var(--text-secondary)',
-                        cursor: 'pointer',
-                        userSelect: 'none',
-                        whiteSpace: 'nowrap'
-                      }}
-                    >
-                      Current Price {sortColumn === 'currentPrice' && (sortDirection === 'asc' ? '↑' : '↓')}
-                    </th>
-                    <th 
-                      onClick={() => handleSort('initialPrice')}
-                      style={{
-                        padding: '1rem',
-                        textAlign: 'right',
-                        fontWeight: '600',
-                        color: 'var(--text-secondary)',
-                        cursor: 'pointer',
-                        userSelect: 'none',
-                        whiteSpace: 'nowrap'
-                      }}
-                    >
-                      Initial Price {sortColumn === 'initialPrice' && (sortDirection === 'asc' ? '↑' : '↓')}
-                    </th>
-                    <th 
-                      onClick={() => handleSort('performance')}
-                      style={{
-                        padding: '1rem',
-                        textAlign: 'right',
-                        fontWeight: '600',
-                        color: 'var(--text-secondary)',
-                        cursor: 'pointer',
-                        userSelect: 'none',
-                        whiteSpace: 'nowrap'
-                      }}
-                    >
-                      Performance {sortColumn === 'performance' && (sortDirection === 'asc' ? '↑' : '↓')}
-                    </th>
-                    <th
-                      onClick={() => handleSort('daysToFinalObservation')}
-                      style={{
-                        padding: '1rem',
-                        textAlign: 'right',
-                        fontWeight: '600',
-                        color: 'var(--text-secondary)',
-                        cursor: 'pointer',
-                        userSelect: 'none',
-                        whiteSpace: 'nowrap'
-                      }}
-                    >
-                      Days to Final Obs {sortColumn === 'daysToFinalObservation' && (sortDirection === 'asc' ? '↑' : '↓')}
-                    </th>
-                    <th 
-                      onClick={() => handleSort('productCount')}
-                      style={{
-                        padding: '1rem',
-                        textAlign: 'center',
-                        fontWeight: '600',
-                        color: 'var(--text-secondary)',
-                        cursor: 'pointer',
-                        userSelect: 'none',
-                        whiteSpace: 'nowrap'
-                      }}
-                    >
-                      Products {sortColumn === 'productCount' && (sortDirection === 'asc' ? '↑' : '↓')}
-                    </th>
-                    <th style={{
-                      padding: '1rem',
-                      textAlign: 'left',
-                      fontWeight: '600',
-                      color: 'var(--text-secondary)',
-                      whiteSpace: 'nowrap'
-                    }}>
-                      Used In Products
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredAndSortedData.map((underlying, index) => (
-                    <tr 
-                      key={underlying.symbol}
-                      style={{
-                        borderBottom: '1px solid var(--border-color)',
-                        transition: 'background-color 0.2s',
                         cursor: 'pointer'
                       }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = 'transparent';
+                    >
+                      1
+                    </button>
+                    <span style={{ color: 'var(--text-muted)', padding: '0 0.25rem' }}>...</span>
+                  </>
+                )}
+
+                {/* Show page numbers around current page */}
+                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                  let pageNum;
+                  if (totalPages <= 5) {
+                    pageNum = i + 1;
+                  } else if (currentPage <= 3) {
+                    pageNum = i + 1;
+                  } else if (currentPage >= totalPages - 2) {
+                    pageNum = totalPages - 4 + i;
+                  } else {
+                    pageNum = currentPage - 2 + i;
+                  }
+
+                  if (pageNum < 1 || pageNum > totalPages) return null;
+                  if (currentPage > 3 && pageNum === 1) return null;
+                  if (currentPage < totalPages - 2 && pageNum === totalPages) return null;
+
+                  return (
+                    <button
+                      key={pageNum}
+                      onClick={() => setCurrentPage(pageNum)}
+                      style={{
+                        padding: '0.5rem 0.75rem',
+                        background: currentPage === pageNum ? 'var(--accent-color)' : 'var(--bg-primary)',
+                        color: currentPage === pageNum ? 'white' : 'var(--text-primary)',
+                        border: currentPage === pageNum ? 'none' : '1px solid var(--border-color)',
+                        borderRadius: '6px',
+                        fontSize: '0.85rem',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s'
                       }}
                     >
-                      <td style={{
-                        padding: '0.5rem',
-                        textAlign: 'center',
-                        background: underlying.hasAnyProtection
-                          ? 'linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(5, 150, 105, 0.1) 100%)'
-                          : 'transparent'
-                      }}>
-                        {underlying.hasAnyProtection ? (
-                          <span
-                            style={{
-                              fontSize: '1.25rem',
-                              cursor: 'help'
-                            }}
-                            title={`${underlying.protectionProductCount} of ${underlying.productCount} products have capital protection`}
-                          >
-                            🛡️
-                          </span>
-                        ) : (
-                          <span style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>—</span>
-                        )}
-                      </td>
-                      <td style={{ padding: '1rem', fontWeight: '600', color: 'var(--text-primary)' }}>
-                        {underlying.symbol}
-                      </td>
-                      <td style={{ padding: '1rem', color: 'var(--text-primary)' }}>
-                        {underlying.name}
-                        {underlying.exchange && (
-                          <span style={{ 
-                            marginLeft: '0.5rem', 
-                            fontSize: '0.75rem', 
-                            color: 'var(--text-secondary)' 
-                          }}>
-                            ({underlying.exchange})
-                          </span>
-                        )}
-                      </td>
-                      <td style={{ padding: '1rem', textAlign: 'right', fontWeight: '500' }}>
-                        {underlying.hasMarketData ? (
-                          underlying.currentPrice.toFixed(2)
-                        ) : (
-                          <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic' }}>No data</span>
-                        )}
-                      </td>
-                      <td style={{ padding: '1rem', textAlign: 'right', color: 'var(--text-secondary)' }}>
-                        {underlying.initialPrice > 0 ? underlying.initialPrice.toFixed(2) : (
-                          <span style={{ fontStyle: 'italic' }}>—</span>
-                        )}
-                      </td>
-                      <td style={{
-                        padding: '1rem',
-                        textAlign: 'right',
+                      {pageNum}
+                    </button>
+                  );
+                })}
+
+                {/* Show last page */}
+                {currentPage < totalPages - 2 && (
+                  <>
+                    <span style={{ color: 'var(--text-muted)', padding: '0 0.25rem' }}>...</span>
+                    <button
+                      onClick={() => setCurrentPage(totalPages)}
+                      style={{
+                        padding: '0.5rem 0.75rem',
+                        background: 'var(--bg-primary)',
+                        color: 'var(--text-primary)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '6px',
+                        fontSize: '0.85rem',
                         fontWeight: '600',
-                        color: getPerformanceColor(underlying.performance)
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {totalPages}
+                    </button>
+                  </>
+                )}
+              </div>
+
+              <button
+                onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+                disabled={currentPage === totalPages}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: currentPage === totalPages ? 'var(--bg-tertiary)' : 'var(--accent-color)',
+                  color: currentPage === totalPages ? 'var(--text-muted)' : 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '0.85rem',
+                  fontWeight: '600',
+                  cursor: currentPage === totalPages ? 'not-allowed' : 'pointer',
+                  transition: 'all 0.2s'
+                }}
+              >
+                Next →
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Table - Elegant Design matching Phoenix Report */}
+      <div style={{
+        background: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
+        borderRadius: '12px',
+        padding: '1px',
+        boxShadow: '0 10px 40px rgba(51, 65, 85, 0.2)'
+      }}>
+        <div style={{
+          background: 'var(--bg-secondary)',
+          borderRadius: '11px',
+          overflow: 'hidden'
+        }}>
+          {/* Scrollable wrapper for the table */}
+          <div style={{
+            overflowX: 'auto',
+            overflowY: 'hidden',
+            maxWidth: '100%'
+          }}>
+            {/* Table with minimum width to ensure proper display */}
+            <div style={{
+              minWidth: '1200px'
+            }}>
+              {/* Table Header - Sleek Dark Header */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '0.8fr 1.2fr 0.9fr 0.9fr 0.9fr 1fr 0.9fr 1.5fr',
+                gap: '0.75rem',
+                padding: '1.25rem 1.5rem',
+                background: 'linear-gradient(135deg, #1e293b 0%, #334155 100%)',
+                borderBottom: '2px solid rgba(148, 163, 184, 0.2)'
+              }}>
+                <div
+                  onClick={() => handleSort('symbol')}
+                  style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px',
+                    cursor: 'pointer',
+                    userSelect: 'none'
+                  }}
+                >
+                  🏢 Symbol {sortColumn === 'symbol' && (sortDirection === 'asc' ? '↑' : '↓')}
+                </div>
+                <div
+                  onClick={() => handleSort('name')}
+                  style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px',
+                    cursor: 'pointer',
+                    userSelect: 'none'
+                  }}
+                >
+                  📝 Name {sortColumn === 'name' && (sortDirection === 'asc' ? '↑' : '↓')}
+                </div>
+                <div
+                  onClick={() => handleSort('currentPrice')}
+                  style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px',
+                    textAlign: 'right',
+                    cursor: 'pointer',
+                    userSelect: 'none'
+                  }}
+                >
+                  💵 Current {sortColumn === 'currentPrice' && (sortDirection === 'asc' ? '↑' : '↓')}
+                </div>
+                <div
+                  onClick={() => handleSort('initialPrice')}
+                  style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px',
+                    textAlign: 'right',
+                    cursor: 'pointer',
+                    userSelect: 'none'
+                  }}
+                >
+                  📌 Initial {sortColumn === 'initialPrice' && (sortDirection === 'asc' ? '↑' : '↓')}
+                </div>
+                <div
+                  onClick={() => handleSort('performance')}
+                  style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px',
+                    textAlign: 'right',
+                    cursor: 'pointer',
+                    userSelect: 'none'
+                  }}
+                >
+                  📈 Performance {sortColumn === 'performance' && (sortDirection === 'asc' ? '↑' : '↓')}
+                </div>
+                <div
+                  onClick={() => handleSort('distanceToBarrier')}
+                  style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px',
+                    textAlign: 'right',
+                    cursor: 'pointer',
+                    userSelect: 'none'
+                  }}
+                  title="Distance to lowest protection barrier"
+                >
+                  🛡️ Barrier {sortColumn === 'distanceToBarrier' && (sortDirection === 'asc' ? '↑' : '↓')}
+                </div>
+                <div
+                  onClick={() => handleSort('daysToFinalObservation')}
+                  style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px',
+                    textAlign: 'right',
+                    cursor: 'pointer',
+                    userSelect: 'none'
+                  }}
+                >
+                  ⏰ Days Left {sortColumn === 'daysToFinalObservation' && (sortDirection === 'asc' ? '↑' : '↓')}
+                </div>
+                <div
+                  onClick={() => handleSort('productIsin')}
+                  style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px',
+                    cursor: 'pointer',
+                    userSelect: 'none'
+                  }}
+                >
+                  📊 Product {sortColumn === 'productIsin' && (sortDirection === 'asc' ? '↑' : '↓')}
+                </div>
+              </div>
+
+              {/* Table Rows - Enhanced Visual Hierarchy */}
+              {paginatedData.map((underlying, index) => (
+                <div
+                  key={`${underlying.symbol}-${underlying.productId}`}
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '0.8fr 1.2fr 0.9fr 0.9fr 0.9fr 1fr 0.9fr 1.5fr',
+                    gap: '0.75rem',
+                    padding: '1rem 1.5rem',
+                    borderBottom: index < paginatedData.length - 1 ?
+                      '1px solid rgba(148, 163, 184, 0.15)' : 'none',
+                    background: 'transparent',
+                    transition: 'all 0.15s ease',
+                    cursor: 'pointer'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.backgroundColor = 'rgba(148, 163, 184, 0.05)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = 'transparent';
+                  }}
+                >
+                  {/* Symbol */}
+                  <div style={{
+                    fontSize: '0.875rem',
+                    color: 'var(--text-primary)',
+                    fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
+                    fontWeight: '700'
+                  }}>
+                    {underlying.symbol}
+                  </div>
+
+                  {/* Name */}
+                  <div style={{
+                    fontSize: '0.875rem',
+                    color: 'var(--text-primary)',
+                    fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
+                    fontWeight: '600'
+                  }}>
+                    {underlying.name}
+                    {underlying.exchange && (
+                      <span style={{
+                        marginLeft: '0.5rem',
+                        fontSize: '0.7rem',
+                        color: 'var(--text-muted)'
                       }}>
-                        {underlying.hasMarketData && underlying.initialPrice > 0 ? (
-                          `${underlying.performance >= 0 ? '+' : ''}${underlying.performance.toFixed(2)}%`
-                        ) : (
-                          <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic' }}>—</span>
-                        )}
-                      </td>
-                      <td style={{
-                        padding: '1rem',
-                        textAlign: 'right',
-                        color: underlying.daysToFinalObservation < 0 ? '#ef4444' : 'var(--text-secondary)',
-                        fontWeight: underlying.daysToFinalObservation < 0 ? '600' : 'normal'
-                      }}>
-                        {underlying.daysToFinalObservation < 0 ? (
-                          `${underlying.daysToFinalObservation} (expired)`
-                        ) : (
-                          underlying.daysToFinalObservation
-                        )}
-                      </td>
-                      <td style={{ padding: '1rem', textAlign: 'center' }}>
-                        <span style={{
-                          padding: '0.25rem 0.75rem',
-                          background: 'var(--bg-primary)',
-                          borderRadius: '12px',
-                          fontSize: '0.875rem',
-                          fontWeight: '600'
-                        }}>
-                          {underlying.productCount}
-                        </span>
-                      </td>
-                      <td style={{ padding: '1rem' }}>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                          {underlying.products.slice(0, 3).map(product => (
-                            <span
-                              key={product.id}
-                              style={{
-                                padding: '0.25rem 0.5rem',
-                                background: product.hasProtection
-                                  ? 'linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(5, 150, 105, 0.15) 100%)'
-                                  : 'var(--bg-primary)',
-                                borderRadius: '6px',
-                                fontSize: '0.75rem',
-                                color: 'var(--text-secondary)',
-                                border: product.hasProtection
-                                  ? '1px solid rgba(16, 185, 129, 0.3)'
-                                  : '1px solid var(--border-color)',
-                                position: 'relative',
-                                paddingLeft: product.hasProtection ? '1.25rem' : '0.5rem'
-                              }}
-                              title={`${product.title} (${product.isin})${product.hasProtection ? ' - Capital Protected' : ''}`}
-                            >
-                              {product.hasProtection && (
-                                <span style={{
-                                  position: 'absolute',
-                                  left: '0.25rem',
-                                  fontSize: '0.65rem'
-                                }}>
-                                  🛡️
-                                </span>
-                              )}
-                              {product.isin}
-                            </span>
-                          ))}
-                          {underlying.products.length > 3 && (
-                            <span style={{
-                              padding: '0.25rem 0.5rem',
-                              background: 'var(--bg-tertiary)',
-                              borderRadius: '6px',
-                              fontSize: '0.75rem',
-                              color: 'var(--text-secondary)',
-                              fontWeight: '600'
-                            }}>
-                              +{underlying.products.length - 3} more
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              
-              {filteredAndSortedData.length === 0 && (
+                        ({underlying.exchange})
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Current Price */}
+                  <div style={{
+                    fontSize: '0.875rem',
+                    textAlign: 'right',
+                    fontWeight: '600',
+                    color: 'var(--text-primary)',
+                    fontFamily: '"Inter", -apple-system, system-ui, sans-serif'
+                  }}>
+                    {underlying.currentPriceFormatted || (
+                      <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontWeight: '400' }}>No data</span>
+                    )}
+                  </div>
+
+                  {/* Initial Price */}
+                  <div style={{
+                    fontSize: '0.875rem',
+                    textAlign: 'right',
+                    color: 'var(--text-secondary)',
+                    fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
+                    fontWeight: '600'
+                  }}>
+                    {underlying.initialPriceFormatted || (
+                      <span style={{ fontStyle: 'italic', fontWeight: '400' }}>—</span>
+                    )}
+                  </div>
+
+                  {/* Performance */}
+                  <div style={{
+                    fontSize: '0.875rem',
+                    textAlign: 'right',
+                    fontWeight: '700',
+                    color: underlying.performanceColor || 'var(--text-secondary)',
+                    fontFamily: '"Inter", -apple-system, system-ui, sans-serif'
+                  }}>
+                    {underlying.performanceFormatted || (
+                      <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontWeight: '400' }}>—</span>
+                    )}
+                  </div>
+
+                  {/* Distance to Barrier */}
+                  <div
+                    style={{
+                      fontSize: '0.875rem',
+                      textAlign: 'right',
+                      fontWeight: '700',
+                      color: underlying.distanceToBarrierColor || 'var(--text-secondary)',
+                      fontFamily: '"Inter", -apple-system, system-ui, sans-serif'
+                    }}
+                    title={underlying.lowestBarrier != null ? `Barrier at ${underlying.lowestBarrier}%` : ''}
+                  >
+                    {underlying.distanceToBarrierFormatted || (
+                      <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontWeight: '400' }}>—</span>
+                    )}
+                  </div>
+
+                  {/* Days to Final Observation */}
+                  <div style={{
+                    fontSize: '0.875rem',
+                    textAlign: 'right',
+                    color: underlying.daysToFinalObservation < 0 ? '#ef4444' : 'var(--text-secondary)',
+                    fontWeight: underlying.daysToFinalObservation < 0 ? '700' : '600',
+                    fontFamily: '"Inter", -apple-system, system-ui, sans-serif'
+                  }}>
+                    {underlying.daysToFinalObservationFormatted}
+                  </div>
+
+                  {/* Product ISIN and Title */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                    <div style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--text-primary)',
+                      fontWeight: '600',
+                      fontFamily: 'monospace'
+                    }}>
+                      {underlying.productIsin}
+                    </div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      color: 'var(--text-secondary)',
+                      lineHeight: '1.2',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical'
+                    }}>
+                      {underlying.productTitle}
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              {totalItems === 0 && (
                 <div style={{
                   padding: '3rem',
                   textAlign: 'center',
@@ -723,18 +967,53 @@ const UnderlyingsView = ({ user }) => {
               )}
             </div>
           </div>
-          
-          {/* Last Update */}
-          {underlyingsData.length > 0 && underlyingsData[0].lastUpdate && (
-            <div style={{
-              marginTop: '1rem',
-              textAlign: 'center',
-              fontSize: '0.875rem',
-              color: 'var(--text-secondary)'
-            }}>
-              Market data last updated: {new Date(underlyingsData[0].lastUpdate).toLocaleString()}
-            </div>
-          )}
+        </div>
+      </div>
+
+      {/* Bubble Chart - Risk Visualization */}
+      {bubbleChartData.datasets[0].data.length > 0 && (
+        <div style={{
+          background: 'var(--bg-secondary)',
+          borderRadius: '12px',
+          border: '1px solid var(--border-color)',
+          padding: '2rem',
+          marginTop: '2rem'
+        }}>
+          <h2 style={{
+            margin: '0 0 1.5rem 0',
+            fontSize: '1.5rem',
+            fontWeight: '700',
+            color: 'var(--text-primary)'
+          }}>
+            Barrier Risk Visualization
+          </h2>
+          <p style={{
+            margin: '0 0 1.5rem 0',
+            fontSize: '0.95rem',
+            color: 'var(--text-secondary)'
+          }}>
+            Each bubble represents one product-underlying combination.
+            <span style={{ color: '#10b981', fontWeight: '600' }}> Green</span> = safe (&gt;10% above barrier),
+            <span style={{ color: '#f97316', fontWeight: '600' }}> Orange</span> = warning zone (0-10% above barrier),
+            <span style={{ color: '#ef4444', fontWeight: '600' }}> Red</span> = below barrier (capital at risk).
+          </p>
+          <div style={{ height: '500px', position: 'relative' }}>
+            <Bubble data={bubbleChartData} options={bubbleChartOptions} />
+          </div>
+        </div>
+      )}
+
+      {/* Last Update */}
+      {generatedAt && (
+        <div style={{
+          marginTop: '1rem',
+          textAlign: 'center',
+          fontSize: '0.875rem',
+          color: 'var(--text-secondary)'
+        }}>
+          Analysis generated: {generatedAt}
+        </div>
+      )}
     </div>
   );
 };
