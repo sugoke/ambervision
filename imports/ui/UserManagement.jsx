@@ -146,6 +146,7 @@ const UserManagement = ({ user: currentUser }) => {
       email: freshUser.email,
       role: freshUser.role,
       profile: freshUser.profile || {},
+      relationshipManagerId: freshUser.relationshipManagerId || null,
       bankAccounts: userBankAccounts
     };
     
@@ -167,12 +168,14 @@ const UserManagement = ({ user: currentUser }) => {
     console.log('UserManagement: Saving user profile data:', {
       userId: editingUser._id,
       email: editingUser.email,
-      profile: editingUser.profile
+      profile: editingUser.profile,
+      relationshipManagerId: editingUser.relationshipManagerId
     });
 
     Meteor.call('users.updateProfile', editingUser._id, {
       email: editingUser.email,
-      profile: editingUser.profile
+      profile: editingUser.profile,
+      relationshipManagerId: editingUser.relationshipManagerId
     }, (err) => {
       if (err) {
         console.error('UserManagement: Error saving user profile:', err);
@@ -452,6 +455,7 @@ const UserManagement = ({ user: currentUser }) => {
                 }}
               >
                 <option value={USER_ROLES.CLIENT}>Client</option>
+                <option value={USER_ROLES.RELATIONSHIP_MANAGER}>Relationship Manager</option>
                 <option value={USER_ROLES.ADMIN}>Admin</option>
                 {currentUser.role === USER_ROLES.SUPERADMIN && (
                   <option value={USER_ROLES.SUPERADMIN}>Super Admin</option>
@@ -654,6 +658,7 @@ const UserManagement = ({ user: currentUser }) => {
                 <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'left' }}>First Name</th>
                 <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'left' }}>Last Name</th>
                 <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'left' }}>Role</th>
+                <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'left' }}>Relationship Manager</th>
                 <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'left' }}>Created</th>
                 <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'center' }}>Actions</th>
               </tr>
@@ -692,21 +697,60 @@ const UserManagement = ({ user: currentUser }) => {
                         }}
                       >
                         <option value={USER_ROLES.CLIENT}>Client</option>
+                        <option value={USER_ROLES.RELATIONSHIP_MANAGER}>Relationship Manager</option>
                         <option value={USER_ROLES.ADMIN}>Admin</option>
                         <option value={USER_ROLES.SUPERADMIN}>Super Admin</option>
                       </select>
                     ) : (
                       <span style={{
                         padding: '4px 8px',
-                        backgroundColor: 
+                        backgroundColor:
                           user.role === USER_ROLES.SUPERADMIN ? 'var(--danger-color)' :
-                          user.role === USER_ROLES.ADMIN ? 'var(--warning-color)' : 'var(--success-color)',
+                          user.role === USER_ROLES.ADMIN ? 'var(--warning-color)' :
+                          user.role === USER_ROLES.RELATIONSHIP_MANAGER ? '#3b82f6' :
+                          'var(--success-color)',
                         color: 'white',
                         borderRadius: '3px',
                         fontSize: '0.8em'
                       }}>
                         {user.role || USER_ROLES.CLIENT}
                       </span>
+                    )}
+                  </td>
+                  <td style={{ padding: '12px', border: '1px solid var(--border-color)' }}>
+                    {user.role === USER_ROLES.CLIENT && user.relationshipManagerId ? (
+                      (() => {
+                        const rm = users.find(u => u._id === user.relationshipManagerId);
+                        return rm ? (
+                          <span style={{
+                            padding: '4px 8px',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            color: '#3b82f6',
+                            borderRadius: '4px',
+                            fontSize: '0.85em',
+                            fontWeight: '500'
+                          }}>
+                            {rm.profile?.firstName || ''} {rm.profile?.lastName || rm.email}
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.85em', fontStyle: 'italic' }}>
+                            RM not found
+                          </span>
+                        );
+                      })()
+                    ) : user.role === USER_ROLES.CLIENT ? (
+                      <span style={{
+                        padding: '4px 8px',
+                        backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                        color: '#f59e0b',
+                        borderRadius: '4px',
+                        fontSize: '0.85em',
+                        fontWeight: '500'
+                      }}>
+                        Unassigned
+                      </span>
+                    ) : (
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.85em' }}>-</span>
                     )}
                   </td>
                   <td style={{ padding: '12px', border: '1px solid var(--border-color)' }}>
@@ -1011,6 +1055,64 @@ const UserManagement = ({ user: currentUser }) => {
                 <option value="it">Italian</option>
               </select>
             </div>
+
+            {/* Relationship Manager Assignment - Only for clients */}
+            {(editingUser.role === USER_ROLES.CLIENT || !editingUser.role) && (
+              <div style={{ marginBottom: '1.5rem' }}>
+                <label htmlFor="edit-user-rm" style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontWeight: '600',
+                  color: 'var(--text-secondary)'
+                }}>
+                  👔 Relationship Manager
+                </label>
+                <select
+                  id="edit-user-rm"
+                  name="editUserRelationshipManager"
+                  value={editingUser.relationshipManagerId || ''}
+                  onChange={(e) => {
+                    setEditingUser(prev => ({
+                      ...prev,
+                      relationshipManagerId: e.target.value || null
+                    }));
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    border: '2px solid var(--border-color)',
+                    borderRadius: '8px',
+                    fontSize: '1rem',
+                    backgroundColor: 'var(--bg-secondary)',
+                    color: 'var(--text-primary)',
+                    boxSizing: 'border-box',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <option value="">No Relationship Manager (Unassigned)</option>
+                  {users.filter(u => u.role === USER_ROLES.RELATIONSHIP_MANAGER).map(rm => (
+                    <option key={rm._id} value={rm._id}>
+                      {rm.profile?.firstName || ''} {rm.profile?.lastName || rm.email}
+                    </option>
+                  ))}
+                </select>
+                {editingUser.relationshipManagerId && (
+                  <div style={{
+                    marginTop: '8px',
+                    padding: '8px 12px',
+                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                    borderRadius: '6px',
+                    fontSize: '0.85rem',
+                    color: '#3b82f6'
+                  }}>
+                    ℹ️ This client is assigned to {(() => {
+                      const rm = users.find(u => u._id === editingUser.relationshipManagerId);
+                      return rm ? `${rm.profile?.firstName || ''} ${rm.profile?.lastName || rm.email}` : 'Unknown RM';
+                    })()}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Family Members Section - Only for clients */}
             {(editingUser.role === USER_ROLES.CLIENT || !editingUser.role) && (

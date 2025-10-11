@@ -1742,6 +1742,28 @@ Meteor.methods({
       console.log('Server: Merged profile data:', updateData.profile);
     }
 
+    // Update relationship manager ID if provided (including null to unassign)
+    if (userData.hasOwnProperty('relationshipManagerId')) {
+      if (userData.relationshipManagerId) {
+        // Verify the RM exists and has the correct role
+        const rmUser = await UsersCollection.findOneAsync({
+          _id: userData.relationshipManagerId,
+          role: USER_ROLES.RELATIONSHIP_MANAGER
+        });
+
+        if (!rmUser) {
+          throw new Meteor.Error('invalid-rm', 'Invalid relationship manager');
+        }
+
+        updateData.relationshipManagerId = userData.relationshipManagerId;
+        console.log('Server: Assigning client to RM:', rmUser.email);
+      } else {
+        // Explicitly unassign the RM
+        updateData.relationshipManagerId = null;
+        console.log('Server: Unassigning RM from client');
+      }
+    }
+
     console.log('Server: Final update data:', updateData);
 
     const result = await UsersCollection.updateAsync(userId, {
