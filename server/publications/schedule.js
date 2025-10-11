@@ -13,8 +13,8 @@ import { AllocationsCollection } from '/imports/api/allocations';
 import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
 
 // Publication that aggregates all observations from live products
-Meteor.publish("schedule.observations", async function (sessionId = null) {
-  console.log('[SCHEDULE] Publication called with sessionId:', sessionId);
+Meteor.publish("schedule.observations", async function (sessionId = null, viewAsFilter = null) {
+  console.log('[SCHEDULE] Publication called with sessionId:', sessionId, 'viewAsFilter:', viewAsFilter);
 
   const effectiveSessionId = sessionId || this.connection.headers?.sessionid || this.connection.id;
   let currentUser = null;
@@ -41,8 +41,42 @@ Meteor.publish("schedule.observations", async function (sessionId = null) {
   // Determine which products the user has access to based on role
   let productQuery = {};
 
-  if (currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.ADMIN) {
-    // Admin sees all products
+  // Handle View As filter for admins
+  if (viewAsFilter && (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN)) {
+    console.log(`[SCHEDULE] Admin ${currentUser.email} viewing as:`, viewAsFilter);
+
+    // Determine the client ID to filter by
+    let targetClientId = null;
+
+    if (viewAsFilter.type === 'client') {
+      targetClientId = viewAsFilter.id;
+    } else if (viewAsFilter.type === 'account') {
+      // Find the user associated with this bank account
+      const { BankAccountsCollection } = await import('/imports/api/bankAccounts');
+      const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
+      if (bankAccount) {
+        targetClientId = bankAccount.userId;
+      }
+    }
+
+    if (targetClientId) {
+      // Find allocations for this specific client
+      const allocations = await AllocationsCollection.find({
+        clientId: targetClientId
+      }).fetchAsync();
+
+      const productIds = [...new Set(allocations.map(alloc => alloc.productId))];
+
+      console.log(`[SCHEDULE] Filtering to ${productIds.length} products for client ${targetClientId}`);
+
+      if (productIds.length === 0) {
+        return this.ready();
+      }
+
+      productQuery = { _id: { $in: productIds } };
+    }
+  } else if (currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.ADMIN) {
+    // Admin sees all products (when not using View As)
     productQuery = {};
   } else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
     // RM sees products of their assigned clients

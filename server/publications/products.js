@@ -5,10 +5,11 @@ import { check } from 'meteor/check';
 import { UsersCollection, USER_ROLES } from '/imports/api/users';
 import { ProductsCollection } from '/imports/api/products';
 import { AllocationsCollection } from '/imports/api/allocations';
+import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
 
 // Role-based products publication with access control
-Meteor.publish("products", async function (sessionId = null) {
+Meteor.publish("products", async function (sessionId = null, viewAsFilter = null) {
   // Use provided sessionId parameter or fallback to connection ID
   const effectiveSessionId = sessionId || this.connection.headers?.sessionid || this.connection.id;
   let currentUser = null;
@@ -31,13 +32,48 @@ Meteor.publish("products", async function (sessionId = null) {
     return this.ready();
   }
 
-  // SuperAdmin sees everything
+  // Handle View As filter for admins
+  if (viewAsFilter && (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN)) {
+    console.log(`[PRODUCTS] Admin ${currentUser.email} viewing as:`, viewAsFilter);
+
+    // Determine the client ID to filter by
+    let targetClientId = null;
+
+    if (viewAsFilter.type === 'client') {
+      targetClientId = viewAsFilter.id;
+    } else if (viewAsFilter.type === 'account') {
+      // Find the user associated with this bank account
+      const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
+      if (bankAccount) {
+        targetClientId = bankAccount.userId;
+      }
+    }
+
+    if (targetClientId) {
+      // Find allocations for this specific client
+      const allocations = await AllocationsCollection.find({
+        clientId: targetClientId
+      }).fetchAsync();
+
+      const productIds = [...new Set(allocations.map(alloc => alloc.productId))];
+
+      console.log(`[PRODUCTS] Filtering to ${productIds.length} products for client ${targetClientId}`);
+
+      if (productIds.length === 0) {
+        return this.ready();
+      }
+
+      return ProductsCollection.find({ _id: { $in: productIds } });
+    }
+  }
+
+  // SuperAdmin sees everything (when not using View As)
   if (currentUser.role === USER_ROLES.SUPERADMIN) {
     console.log(`[PRODUCTS] SuperAdmin ${currentUser.email} accessing products`);
     return ProductsCollection.find();
   }
 
-  // Admin sees everything (same as superadmin for now)
+  // Admin sees everything (same as superadmin for now, when not using View As)
   if (currentUser.role === USER_ROLES.ADMIN) {
     console.log(`[PRODUCTS] Admin ${currentUser.email} accessing products`);
     return ProductsCollection.find();

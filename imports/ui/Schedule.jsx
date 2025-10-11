@@ -2,19 +2,21 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { Mongo } from 'meteor/mongo';
 import { useTracker } from 'meteor/react-meteor-data';
+import { useViewAs } from './ViewAsContext.jsx';
 
 // Create a client-side collection to receive the published schedule data
 const ObservationScheduleCollection = new Mongo.Collection('observationSchedule');
 
 const Schedule = ({ user }) => {
+  const { viewAsFilter } = useViewAs();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const nextObservationRef = useRef(null);
   const tableContainerRef = useRef(null);
 
-  // Subscribe to schedule observations
+  // Subscribe to schedule observations with view-as filter
   const { observations, isLoading } = useTracker(() => {
     const sessionId = localStorage.getItem('sessionId');
-    const handle = Meteor.subscribe('schedule.observations', sessionId);
+    const handle = Meteor.subscribe('schedule.observations', sessionId, viewAsFilter);
 
     const obs = ObservationScheduleCollection.find(
       {},
@@ -34,7 +36,7 @@ const Schedule = ({ user }) => {
       observations: obs,
       isLoading: !handle.ready()
     };
-  }, []);
+  }, [viewAsFilter]);
 
   // Find the next observation (first future or today's observation)
   // Server now provides isPast flag, so we find first non-past observation
@@ -72,7 +74,7 @@ const Schedule = ({ user }) => {
 
     // Resubscribe to force server-side refresh and recalculation
     const sessionId = localStorage.getItem('sessionId');
-    Meteor.subscribe('schedule.observations', sessionId, {
+    Meteor.subscribe('schedule.observations', sessionId, viewAsFilter, {
       onReady: () => {
         setIsRefreshing(false);
       },

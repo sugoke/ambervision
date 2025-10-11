@@ -3,7 +3,9 @@ import Login from './Login.jsx';
 import MainContent from './MainContent.jsx';
 import MarketTicker from './MarketTicker.jsx';
 import GlobalSearchBar from './components/GlobalSearchBar.jsx';
+import ViewAsFilter from './components/ViewAsFilter.jsx';
 import { ThemeProvider, useTheme } from './ThemeContext.jsx';
+import { ViewAsProvider } from './ViewAsContext.jsx';
 
 const AppContent = () => {
   const { theme } = useTheme();
@@ -244,12 +246,26 @@ const AppContent = () => {
                 />
               </div>
               
-              {/* Global Search Bar */}
-              <GlobalSearchBar onProductSelect={(product) => {
-                // Navigate to the product report when selected
-                handleSectionChange('report', product._id);
-              }} />
-              
+              {/* Center section - Global Search + View As Filter */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '1rem',
+                flex: 1,
+                maxWidth: '800px',
+                marginLeft: '1rem',
+                marginRight: '1rem'
+              }}>
+                {/* Global Search Bar */}
+                <GlobalSearchBar onProductSelect={(product) => {
+                  // Navigate to the product report when selected
+                  handleSectionChange('report', product._id);
+                }} />
+
+                {/* View As Filter - Only for admins */}
+                <ViewAsFilter currentUser={user} />
+              </div>
+
               {/* User Login Info */}
               <Login onUserChange={handleUserChange} compact={true} />
             </header>
@@ -314,7 +330,9 @@ const AppContent = () => {
 export const App = () => {
   return (
     <ThemeProvider>
-      <AppContent />
+      <ViewAsProvider>
+        <AppContent />
+      </ViewAsProvider>
     </ThemeProvider>
   );
 };

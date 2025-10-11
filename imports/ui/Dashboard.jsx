@@ -5,10 +5,12 @@ import { ProductsCollection } from '/imports/api/products';
 import { ProductPricesCollection } from '/imports/api/productPrices';
 import { AllocationsCollection } from '/imports/api/allocations';
 import { useTheme } from './ThemeContext.jsx';
+import { useViewAs } from './ViewAsContext.jsx';
 
 const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProduct, onViewProductReport }) => {
   const { theme } = useTheme();
-  
+  const { viewAsFilter } = useViewAs();
+
   // Responsive detection
   const [isMobile, setIsMobile] = useState(false);
   const [isTablet, setIsTablet] = useState(false);
@@ -182,20 +184,20 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
   
   // Use useTracker for more stable subscription handling
   const { products, allocations, productPrices, isLoading } = useTracker(() => {
-    // Subscribe to all required data
-    const productsHandle = Meteor.subscribe('products', sessionId);
+    // Subscribe to all required data with view-as filter
+    const productsHandle = Meteor.subscribe('products', sessionId, viewAsFilter);
     const allocationsHandle = Meteor.subscribe('allAllocations', sessionId);
     const pricesHandle = Meteor.subscribe('productPrices', sessionId);
-    
+
     const loading = !productsHandle.ready() || !allocationsHandle.ready() || !pricesHandle.ready();
-    
+
     return {
       products: ProductsCollection.find({}, { sort: { createdAt: -1 } }).fetch(),
       allocations: AllocationsCollection.find().fetch(),
       productPrices: ProductPricesCollection.find({ isActive: true }).fetch(),
       isLoading: loading
     };
-  }, [sessionId]);
+  }, [sessionId, viewAsFilter]);
 
   // Calculate nominal totals per product (memoized for performance)
   const nominalByProduct = useMemo(() => {

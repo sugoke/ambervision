@@ -11,6 +11,7 @@ import './marketData';
 import './priceData';
 import './equityHoldings';
 import './schedule';
+import './viewAsData';
 
 
 
