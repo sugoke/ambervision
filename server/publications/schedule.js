@@ -87,6 +87,23 @@ Meteor.publish("schedule.observations", async function (sessionId = null) {
 
   console.log('[SCHEDULE] Found', products.length, 'products with observationSchedule');
 
+  // Fetch reports to get observation outcomes
+  const { ReportsCollection } = await import('/imports/api/reports');
+  const productIds = products.map(p => p._id);
+  const reports = await ReportsCollection.find({
+    productId: { $in: productIds }
+  }).fetchAsync();
+
+  // Create a map of productId -> observation analysis
+  const reportMap = {};
+  reports.forEach(report => {
+    if (report.templateResults?.observationAnalysis?.observations) {
+      reportMap[report.productId] = report.templateResults.observationAnalysis.observations;
+    }
+  });
+
+  console.log('[SCHEDULE] Found', reports.length, 'reports for observation outcomes');
+
   if (products.length > 0) {
     console.log('[SCHEDULE] Sample product:', {
       id: products[0]._id,
@@ -160,6 +177,38 @@ Meteor.publish("schedule.observations", async function (sessionId = null) {
 
       console.log('[SCHEDULE] Observation', index, 'date:', dateValue, 'Days left:', daysLeft, 'Past or Future:', isPast ? 'PAST' : 'FUTURE');
 
+      // Try to find matching observation outcome from report
+      let outcome = null;
+      const reportObservations = reportMap[product._id];
+
+      console.log('[SCHEDULE] Product:', product._id, 'Obs index:', index, 'Has report observations:', !!reportObservations);
+
+      if (reportObservations && reportObservations.length > index) {
+        const reportObs = reportObservations[index];
+        // Verify it's the same observation by checking if dates match approximately
+        const reportObsDate = new Date(reportObs.observationDate);
+        reportObsDate.setHours(0, 0, 0, 0);
+
+        const dateDiff = Math.abs(reportObsDate.getTime() - obsDate.getTime());
+        console.log('[SCHEDULE] Date comparison - Report:', reportObsDate.toISOString(), 'Schedule:', obsDate.toISOString(), 'Diff (ms):', dateDiff);
+
+        if (dateDiff < 86400000) { // Within 1 day
+          outcome = {
+            couponPaid: reportObs.couponPaid || 0,
+            couponPaidFormatted: reportObs.couponPaidFormatted || null,
+            productCalled: reportObs.productCalled || false,
+            couponInMemory: reportObs.couponInMemory || 0,
+            couponInMemoryFormatted: reportObs.couponInMemoryFormatted || null,
+            hasOccurred: reportObs.hasOccurred || false
+          };
+          console.log('[SCHEDULE] Outcome matched:', outcome);
+        } else {
+          console.log('[SCHEDULE] Date mismatch - skipping outcome');
+        }
+      } else {
+        console.log('[SCHEDULE] No report observations for product or index out of bounds');
+      }
+
       // Include ALL observations (both past and future) with pre-calculated values
       observations.push({
         _id: `${product._id}_obs_${index}`, // Unique ID for reactivity
@@ -178,7 +227,9 @@ Meteor.publish("schedule.observations", async function (sessionId = null) {
         daysLeftText: daysLeftText,
         daysLeftColor: daysLeftColor,
         isToday: isToday,
-        isPast: isPast
+        isPast: isPast,
+        // Observation outcome data (from report)
+        outcome: outcome
       });
     });
   });

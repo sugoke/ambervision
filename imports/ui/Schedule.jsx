@@ -9,6 +9,7 @@ const ObservationScheduleCollection = new Mongo.Collection('observationSchedule'
 const Schedule = ({ user }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const nextObservationRef = useRef(null);
+  const tableContainerRef = useRef(null);
 
   // Subscribe to schedule observations
   const { observations, isLoading } = useTracker(() => {
@@ -19,6 +20,15 @@ const Schedule = ({ user }) => {
       {},
       { sort: { observationDate: 1 } }
     ).fetch();
+
+    // Debug: Check if outcome data is present
+    if (obs.length > 0) {
+      console.log('[SCHEDULE CLIENT] First observation:', obs[0]);
+      console.log('[SCHEDULE CLIENT] Has outcome?', !!obs[0].outcome);
+      if (obs[0].outcome) {
+        console.log('[SCHEDULE CLIENT] Outcome data:', obs[0].outcome);
+      }
+    }
 
     return {
       observations: obs,
@@ -32,13 +42,26 @@ const Schedule = ({ user }) => {
 
   // Auto-scroll to next observation on initial load
   useEffect(() => {
-    if (!isLoading && nextObservationRef.current) {
+    if (!isLoading && nextObservationRef.current && tableContainerRef.current) {
       // Wait for DOM to render, then scroll
       setTimeout(() => {
-        nextObservationRef.current?.scrollIntoView({
-          behavior: 'smooth',
-          block: 'center'
-        });
+        // Scroll within the table container to center the next observation
+        const container = tableContainerRef.current;
+        const element = nextObservationRef.current;
+
+        if (container && element) {
+          const containerHeight = container.clientHeight;
+          const elementTop = element.offsetTop;
+          const elementHeight = element.clientHeight;
+
+          // Calculate scroll position to center the element
+          const scrollPosition = elementTop - (containerHeight / 2) + (elementHeight / 2);
+
+          container.scrollTo({
+            top: scrollPosition,
+            behavior: 'smooth'
+          });
+        }
       }, 100);
     }
   }, [isLoading, observations.length]);
@@ -219,243 +242,380 @@ const Schedule = ({ user }) => {
         </div>
       )}
 
-      {/* Observations Table */}
+      {/* Observations Table - Elegant Design matching Phoenix Report */}
       {!isLoading && observations.length > 0 && (
         <div style={{
-          background: 'var(--bg-secondary)',
+          background: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
           borderRadius: '12px',
-          overflow: 'hidden',
-          border: '1px solid var(--border-color)',
-          display: 'flex',
-          flexDirection: 'column'
+          padding: '1px',
+          boxShadow: '0 10px 40px rgba(51, 65, 85, 0.2)'
         }}>
-          {/* Fixed Header */}
-          <table style={{
-            width: '100%',
-            borderCollapse: 'collapse',
-            tableLayout: 'fixed'
-          }}>
-            <thead>
-              <tr style={{
-                background: 'var(--bg-tertiary)',
-                borderBottom: '2px solid var(--border-color)'
-              }}>
-                <th style={{
-                  padding: '1rem',
-                  textAlign: 'left',
-                  color: 'var(--text-secondary)',
-                  fontWeight: '600',
-                  fontSize: '0.85rem',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.5px',
-                  width: '18%'
-                }}>
-                  Date
-                </th>
-                <th style={{
-                  padding: '1rem',
-                  textAlign: 'left',
-                  color: 'var(--text-secondary)',
-                  fontWeight: '600',
-                  fontSize: '0.85rem',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.5px',
-                  width: '12%'
-                }}>
-                  Days Left
-                </th>
-                <th style={{
-                  padding: '1rem',
-                  textAlign: 'left',
-                  color: 'var(--text-secondary)',
-                  fontWeight: '600',
-                  fontSize: '0.85rem',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.5px',
-                  width: '18%'
-                }}>
-                  Type
-                </th>
-                <th style={{
-                  padding: '1rem',
-                  textAlign: 'left',
-                  color: 'var(--text-secondary)',
-                  fontWeight: '600',
-                  fontSize: '0.85rem',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.5px',
-                  width: '25%'
-                }}>
-                  Product Name
-                </th>
-                <th style={{
-                  padding: '1rem',
-                  textAlign: 'left',
-                  color: 'var(--text-secondary)',
-                  fontWeight: '600',
-                  fontSize: '0.85rem',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.5px',
-                  width: '15%'
-                }}>
-                  ISIN
-                </th>
-                <th style={{
-                  padding: '1rem',
-                  textAlign: 'left',
-                  color: 'var(--text-secondary)',
-                  fontWeight: '600',
-                  fontSize: '0.85rem',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.5px',
-                  width: '12%'
-                }}>
-                  Details
-                </th>
-              </tr>
-            </thead>
-          </table>
-
-          {/* Scrollable Body - Shows 7 rows at a time */}
           <div style={{
-            maxHeight: '420px',
-            overflowY: 'auto',
-            overflowX: 'hidden'
+            background: 'var(--bg-secondary)',
+            borderRadius: '11px',
+            overflow: 'hidden'
           }}>
-            <table style={{
-              width: '100%',
-              borderCollapse: 'collapse',
-              tableLayout: 'fixed'
-            }}>
-              <tbody>
+            {/* Scrollable wrapper for the table - Both horizontal and vertical */}
+            <div
+              ref={tableContainerRef}
+              className="schedule-table-container"
+              style={{
+                overflowX: 'auto',
+                overflowY: 'auto',
+                maxWidth: '100%',
+                maxHeight: '500px', // Show approximately 7 rows + header
+                position: 'relative'
+              }}>
+              {/* Table with minimum width to ensure proper display */}
+              <div style={{
+                minWidth: '900px'
+              }}>
+                {/* Table Header - Sleek Dark Header */}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1.2fr 1fr 1.2fr 1.5fr 1fr 1fr',
+                  gap: '0.75rem',
+                  padding: '1.25rem 1.5rem',
+                  background: 'linear-gradient(135deg, #1e293b 0%, #334155 100%)',
+                  borderBottom: '2px solid rgba(148, 163, 184, 0.2)'
+                }}>
+                  <div style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px'
+                  }}>
+                    📅 Observation
+                  </div>
+                  <div style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px',
+                    textAlign: 'center'
+                  }}>
+                    ⏰ Days Left
+                  </div>
+                  <div style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px'
+                  }}>
+                    🏷️ Type
+                  </div>
+                  <div style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px'
+                  }}>
+                    📊 Product
+                  </div>
+                  <div style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px'
+                  }}>
+                    🔢 ISIN
+                  </div>
+                  <div style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px',
+                    textAlign: 'center'
+                  }}>
+                    💰 Details
+                  </div>
+                </div>
+
+                {/* Table Rows - Enhanced Visual Hierarchy */}
                 {observations.map((obs, index) => {
-                  const isNextObservation = index === nextObservationIndex;
+                const isNextObservation = index === nextObservationIndex;
+                const isFutureRow = !obs.isPast;
+                const isPastRow = obs.isPast;
 
-                  // Get color based on server-calculated daysLeftColor
-                  const getDaysLeftColor = (colorKey) => {
-                    switch (colorKey) {
-                      case 'muted': return 'var(--text-muted)';
-                      case 'urgent': return '#f59e0b';
-                      case 'soon': return '#3b82f6';
-                      default: return 'var(--text-primary)';
-                    }
-                  };
+                // Get color based on server-calculated daysLeftColor
+                const getDaysLeftColor = (colorKey) => {
+                  switch (colorKey) {
+                    case 'muted': return '#94a3b8';
+                    case 'urgent': return '#f59e0b';
+                    case 'soon': return '#3b82f6';
+                    default: return 'var(--text-primary)';
+                  }
+                };
 
-                  return (
-                    <tr
-                      key={obs._id}
-                      ref={isNextObservation ? nextObservationRef : null}
+                return (
+                  <div
+                    key={obs._id}
+                    ref={isNextObservation ? nextObservationRef : null}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1.2fr 1fr 1.2fr 1.5fr 1fr 1fr',
+                      gap: '0.75rem',
+                      padding: '1rem 1.5rem',
+                      borderBottom: index < observations.length - 1 ?
+                        '1px solid rgba(148, 163, 184, 0.15)' : 'none',
+                      background: isNextObservation
+                        ? 'linear-gradient(135deg, rgba(59, 130, 246, 0.15) 0%, rgba(96, 165, 250, 0.15) 100%)'
+                        : isFutureRow
+                          ? 'rgba(148, 163, 184, 0.05)'
+                          : 'transparent',
+                      borderLeft: isNextObservation
+                        ? '4px solid #3b82f6'
+                        : obs.isFinal
+                          ? '4px solid #ea580c'
+                          : 'none',
+                      transition: 'all 0.15s ease',
+                      position: 'relative'
+                    }}
+                  >
+                    {/* Observation Date */}
+                    <div style={{
+                      fontSize: '0.875rem',
+                      color: isFutureRow ? '#94a3b8' : 'var(--text-primary)',
+                      fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
+                      fontWeight: isNextObservation ? '700' : '600',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem'
+                    }}>
+                      {obs.isToday && (
+                        <span style={{
+                          background: '#f59e0b',
+                          color: 'white',
+                          padding: '0.3rem 0.6rem',
+                          borderRadius: '6px',
+                          fontSize: '0.65rem',
+                          fontWeight: '700',
+                          letterSpacing: '0.5px'
+                        }}>
+                          TODAY
+                        </span>
+                      )}
+                      {isNextObservation && !obs.isToday && (
+                        <span style={{
+                          marginRight: '0.5rem',
+                          fontSize: '1rem'
+                        }}>
+                          ⏰
+                        </span>
+                      )}
+                      {obs.observationDateFormatted}
+                    </div>
+
+                    {/* Days Left */}
+                    <div style={{
+                      fontSize: '0.875rem',
+                      color: getDaysLeftColor(obs.daysLeftColor),
+                      fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
+                      fontWeight: '700',
+                      textAlign: 'center',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}>
+                      {obs.daysLeftText}
+                    </div>
+
+                    {/* Observation Type - Badge Style */}
+                    <div style={{
+                      fontSize: '0.75rem',
+                      display: 'inline-flex',
+                      alignItems: 'center'
+                    }}>
+                      <span style={{
+                        background: obs.isFinal
+                          ? 'linear-gradient(135deg, #ea580c 0%, #c2410c 100%)'
+                          : isFutureRow
+                            ? 'rgba(148, 163, 184, 0.2)'
+                            : 'linear-gradient(135deg, #1e293b 0%, #334155 100%)',
+                        color: obs.isFinal
+                          ? '#ffffff'
+                          : isFutureRow
+                            ? '#64748b'
+                            : '#ffffff',
+                        padding: '0.4rem 0.85rem',
+                        borderRadius: '8px',
+                        fontWeight: '700',
+                        whiteSpace: 'nowrap',
+                        boxShadow: isFutureRow
+                          ? 'none'
+                          : '0 2px 12px rgba(30, 41, 59, 0.2)',
+                        letterSpacing: '0.3px'
+                      }}>
+                        {getObservationTypeDisplay(obs)}
+                      </span>
+                    </div>
+
+                    {/* Product Name */}
+                    <div style={{
+                      fontSize: '0.875rem',
+                      color: isFutureRow ? '#94a3b8' : 'var(--text-primary)',
+                      fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
+                      fontWeight: '600',
+                      display: 'flex',
+                      alignItems: 'center'
+                    }}>
+                      {obs.productTitle}
+                    </div>
+
+                    {/* ISIN - Clickable */}
+                    <div
+                      onClick={() => {
+                        window.history.pushState(null, null, `/report/${obs.productId}`);
+                        window.location.href = `/report/${obs.productId}`;
+                      }}
                       style={{
-                        borderBottom: index < observations.length - 1 ? '1px solid var(--border-color)' : 'none',
-                        background: isNextObservation ? 'rgba(0, 123, 255, 0.1)' : 'transparent',
-                        transition: 'background 0.2s ease'
+                        fontSize: '0.85rem',
+                        color: isFutureRow ? '#94a3b8' : 'var(--text-primary)',
+                        fontFamily: 'monospace',
+                        fontWeight: '500',
+                        display: 'flex',
+                        alignItems: 'center',
+                        cursor: 'pointer',
+                        textDecoration: 'underline',
+                        textDecorationStyle: 'dotted',
+                        textUnderlineOffset: '3px',
+                        transition: 'all 0.2s ease'
                       }}
                       onMouseEnter={(e) => {
-                        if (!isNextObservation) {
-                          e.currentTarget.style.background = 'var(--bg-tertiary)';
-                        }
+                        e.currentTarget.style.color = '#3b82f6';
+                        e.currentTarget.style.textDecorationStyle = 'solid';
                       }}
                       onMouseLeave={(e) => {
-                        if (!isNextObservation) {
-                          e.currentTarget.style.background = 'transparent';
-                        }
+                        e.currentTarget.style.color = isFutureRow ? '#94a3b8' : 'var(--text-primary)';
+                        e.currentTarget.style.textDecorationStyle = 'dotted';
                       }}
+                      title={`Click to open ${obs.productTitle} report`}
                     >
-                      <td style={{
-                        padding: '1rem',
-                        color: 'var(--text-primary)',
-                        fontWeight: isNextObservation ? '600' : '400',
-                        width: '18%'
-                      }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                          {obs.isToday && (
+                      {obs.productIsin}
+                    </div>
+
+                    {/* Details - Observation Outcomes */}
+                    <div style={{
+                      fontSize: '0.8rem',
+                      fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
+                      textAlign: 'center',
+                      fontWeight: '600',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.25rem',
+                      justifyContent: 'center',
+                      alignItems: 'center'
+                    }}>
+                      {/* Show outcome for past observations */}
+                      {obs.outcome && obs.outcome.hasOccurred ? (
+                        <>
+                          {/* Product was called/redeemed */}
+                          {obs.outcome.productCalled && (
                             <span style={{
-                              background: '#f59e0b',
-                              color: 'white',
-                              padding: '0.25rem 0.5rem',
-                              borderRadius: '4px',
+                              background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
+                              color: '#ffffff',
+                              padding: '0.35rem 0.7rem',
+                              borderRadius: '8px',
+                              display: 'inline-block',
                               fontSize: '0.7rem',
-                              fontWeight: '600'
+                              fontWeight: '700',
+                              boxShadow: '0 2px 8px rgba(5, 150, 105, 0.3)',
+                              letterSpacing: '0.3px'
                             }}>
-                              TODAY
+                              🎊 REDEEMED
                             </span>
                           )}
-                          {isNextObservation && !obs.isToday && (
+                          {/* Coupon was paid */}
+                          {obs.outcome.couponPaid > 0 && (
                             <span style={{
-                              background: 'var(--accent-color)',
-                              color: 'white',
-                              padding: '0.25rem 0.5rem',
-                              borderRadius: '4px',
-                              fontSize: '0.7rem',
-                              fontWeight: '600'
+                              color: '#059669',
+                              background: '#d1fae5',
+                              padding: '0.3rem 0.6rem',
+                              borderRadius: '6px',
+                              display: 'inline-block',
+                              fontSize: '0.75rem',
+                              boxShadow: '0 1px 3px rgba(5, 150, 105, 0.1)'
                             }}>
-                              NEXT
+                              💵 Coupon: {obs.outcome.couponPaidFormatted}
                             </span>
                           )}
-                          {obs.observationDateFormatted}
-                        </div>
-                      </td>
-                      <td style={{
-                        padding: '1rem',
-                        color: getDaysLeftColor(obs.daysLeftColor),
-                        fontWeight: '600',
-                        width: '12%'
-                      }}>
-                        {obs.daysLeftText}
-                      </td>
-                      <td style={{
-                        padding: '1rem',
-                        width: '18%'
-                      }}>
-                        <span style={{
-                          ...getObservationTypeBadgeStyle(obs),
-                          padding: '0.4rem 0.8rem',
-                          borderRadius: '6px',
-                          fontSize: '0.85rem',
-                          fontWeight: '500',
-                          display: 'inline-block'
-                        }}>
-                          {getObservationTypeDisplay(obs)}
-                        </span>
-                      </td>
-                      <td style={{
-                        padding: '1rem',
-                        color: 'var(--text-primary)',
-                        fontWeight: '500',
-                        width: '25%'
-                      }}>
-                        {obs.productTitle}
-                      </td>
-                      <td style={{
-                        padding: '1rem',
-                        color: 'var(--text-secondary)',
-                        fontFamily: 'monospace',
-                        fontSize: '0.9rem',
-                        width: '15%'
-                      }}>
-                        {obs.productIsin}
-                      </td>
-                      <td style={{
-                        padding: '1rem',
-                        color: 'var(--text-secondary)',
-                        fontSize: '0.9rem',
-                        width: '12%'
-                      }}>
-                        {obs.couponRate && (
-                          <div>Coupon: {obs.couponRate}%</div>
-                        )}
-                        {obs.autocallLevel && (
-                          <div>Autocall: {obs.autocallLevel}%</div>
-                        )}
-                        {!obs.couponRate && !obs.autocallLevel && (
-                          <div style={{ opacity: 0.5 }}>-</div>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                          {/* Memory coupon accumulated */}
+                          {obs.outcome.couponInMemory > 0 && (
+                            <span style={{
+                              color: '#c2410c',
+                              background: '#fed7aa',
+                              padding: '0.3rem 0.6rem',
+                              borderRadius: '6px',
+                              display: 'inline-block',
+                              fontSize: '0.75rem',
+                              boxShadow: '0 1px 3px rgba(234, 88, 12, 0.1)'
+                            }}>
+                              🧠 Memory: {obs.outcome.couponInMemoryFormatted}
+                            </span>
+                          )}
+                          {/* No outcome */}
+                          {obs.outcome.couponPaid === 0 && obs.outcome.couponInMemory === 0 && !obs.outcome.productCalled && (
+                            <span style={{
+                              color: '#94a3b8',
+                              fontStyle: 'italic',
+                              fontSize: '0.75rem',
+                              fontWeight: '500'
+                            }}>
+                              ✗ No coupon
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        /* Show triggers for future observations */
+                        <>
+                          {obs.couponRate && (
+                            <span style={{
+                              color: '#059669',
+                              background: '#d1fae5',
+                              padding: '0.3rem 0.6rem',
+                              borderRadius: '6px',
+                              display: 'inline-block',
+                              fontSize: '0.75rem',
+                              boxShadow: '0 1px 3px rgba(5, 150, 105, 0.1)'
+                            }}>
+                              💵 {obs.couponRate}%
+                            </span>
+                          )}
+                          {obs.autocallLevel && (
+                            <span style={{
+                              color: '#2563eb',
+                              background: '#dbeafe',
+                              padding: '0.3rem 0.6rem',
+                              borderRadius: '6px',
+                              display: 'inline-block',
+                              fontSize: '0.75rem',
+                              boxShadow: '0 1px 3px rgba(37, 99, 235, 0.1)'
+                            }}>
+                              🎯 {obs.autocallLevel}%
+                            </span>
+                          )}
+                          {!obs.couponRate && !obs.autocallLevel && (
+                            <span style={{
+                              color: '#e2e8f0',
+                              fontWeight: '400'
+                            }}>
+                              —
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -538,11 +698,31 @@ const Schedule = ({ user }) => {
         </div>
       )}
 
-      {/* Spin animation for loading/refresh icons */}
+      {/* Spin animation for loading/refresh icons + Custom scrollbar */}
       <style>{`
         @keyframes spin {
           0% { transform: rotate(0deg); }
           100% { transform: rotate(360deg); }
+        }
+
+        /* Custom scrollbar styling for the table */
+        .schedule-table-container::-webkit-scrollbar {
+          width: 8px;
+          height: 8px;
+        }
+
+        .schedule-table-container::-webkit-scrollbar-track {
+          background: rgba(148, 163, 184, 0.1);
+          border-radius: 4px;
+        }
+
+        .schedule-table-container::-webkit-scrollbar-thumb {
+          background: rgba(148, 163, 184, 0.4);
+          border-radius: 4px;
+        }
+
+        .schedule-table-container::-webkit-scrollbar-thumb:hover {
+          background: rgba(148, 163, 184, 0.6);
         }
       `}</style>
     </div>
