@@ -200,12 +200,14 @@ const AppContent = () => {
             /* This will help debug - temporarily make all backgrounds slightly transparent */
           }
         `}</style>
-        {/* Sticky Top Section - Header + Market Ticker */}
+        {/* Fixed Top Section - Header + Market Ticker */}
         {user && (
           <div style={{
-            position: 'sticky',
+            position: 'fixed',
             top: 0,
-            zIndex: 100,
+            left: 0,
+            right: 0,
+            zIndex: 1000,
             background: theme === 'light' ? 'rgba(248, 249, 250, 0.95)' : 'var(--bg-secondary)',
             boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
             backdropFilter: theme === 'light' ? 'blur(10px)' : 'none'
@@ -256,6 +258,9 @@ const AppContent = () => {
             <MarketTicker />
           </div>
         )}
+
+        {/* Spacer to push content below fixed header */}
+        {user && <div style={{ height: '100px' }} />}
 
         {/* Market Ticker for non-logged in users - Always show for now to debug */}
         {!user && <MarketTicker />}

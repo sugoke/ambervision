@@ -464,7 +464,13 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
       {/* Search Bar */}
       <div style={{
         marginBottom: '2rem',
-        position: 'relative'
+        position: 'sticky',
+        top: 0,
+        zIndex: 100,
+        background: 'var(--bg-primary)',
+        paddingTop: '1rem',
+        paddingBottom: '1rem',
+        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)'
       }}>
         <input
           type="text"
@@ -916,8 +922,7 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
           overflow: isMobile || isTablet ? 'auto' : 'hidden'
         }}>
           <table style={{
-            width: isMobile || isTablet ? 'max-content' : '100%',
-            minWidth: isMobile || isTablet ? '800px' : 'auto',
+            width: '100%',
             borderCollapse: 'collapse',
             tableLayout: 'fixed'
           }}>
@@ -927,26 +932,26 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                 borderBottom: '2px solid var(--border-color)'
               }}>
                 {[
-                  { field: 'title', label: 'Product Title', width: '30%' },
-                  { field: 'isin', label: 'ISIN', width: '12%' },
-                  { field: 'currency', label: 'Cur', width: '5%' },
-                  { field: 'nominal', label: 'Nominal', width: '10%' },
-                  { field: 'price', label: 'Price', width: '7%' },
-                  { field: 'position', label: 'Position Value', width: '12%' },
+                  { field: 'title', label: 'Product Title', width: '24%' },
+                  { field: 'isin', label: 'ISIN', width: '10%' },
+                  { field: 'currency', label: 'Cur', width: '4%' },
+                  { field: 'nominal', label: 'Nominal', width: '9%' },
+                  { field: 'price', label: 'Price', width: '6%' },
+                  { field: 'position', label: 'Position', width: '11%' },
                   { field: 'status', label: 'Status', width: '9%' },
-                  { field: 'maturity', label: 'Maturity', width: '10%' }
+                  { field: 'maturity', label: 'Maturity', width: '9%' }
                 ].map(column => (
                   <th
                     key={column.field}
                     onClick={() => handleSort(column.field)}
                     style={{
-                      padding: isMobile ? '8px 12px' : '12px 16px',
+                      padding: isMobile ? '8px 6px' : '10px 8px',
                       textAlign: 'center',
-                      fontSize: isMobile ? '0.75rem' : '0.85rem',
+                      fontSize: isMobile ? '0.7rem' : '0.8rem',
                       fontWeight: '600',
                       color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
-                      letterSpacing: '0.5px',
+                      letterSpacing: '0.3px',
                       cursor: 'pointer',
                       userSelect: 'none',
                       whiteSpace: 'nowrap',
@@ -973,14 +978,14 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                   </th>
                 ))}
                 <th style={{
-                  padding: isMobile ? '8px 12px' : '12px 16px',
-                  width: '5%',
+                  padding: isMobile ? '8px 6px' : '10px 8px',
+                  width: '8%',
                   textAlign: 'center',
-                  fontSize: isMobile ? '0.75rem' : '0.85rem',
+                  fontSize: isMobile ? '0.7rem' : '0.8rem',
                   fontWeight: '600',
                   color: 'var(--text-secondary)',
                   textTransform: 'uppercase',
-                  letterSpacing: '0.5px'
+                  letterSpacing: '0.3px'
                 }}>
                   Actions
                 </th>
@@ -1144,22 +1149,22 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                     {product.maturity || '-'}
                   </td>
                   <td style={{
-                    padding: isMobile ? '10px 12px' : '14px 16px',
+                    padding: isMobile ? '6px 8px' : '10px 12px',
                     textAlign: 'center'
                   }}>
-                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                    <div style={{ display: 'flex', gap: '4px', justifyContent: 'center' }}>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           onEditProduct(product);
                         }}
                         style={{
-                          padding: '6px 12px',
+                          padding: '4px 8px',
                           background: 'var(--accent-color)',
                           color: 'white',
                           border: 'none',
                           borderRadius: '4px',
-                          fontSize: '0.85rem',
+                          fontSize: '0.75rem',
                           fontWeight: '500',
                           cursor: 'pointer',
                           transition: 'all 0.2s ease'
@@ -1182,12 +1187,12 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                             onDeleteProduct(product);
                           }}
                           style={{
-                            padding: '6px 10px',
+                            padding: '4px 8px',
                             background: '#dc3545',
                             color: 'white',
                             border: 'none',
                             borderRadius: '4px',
-                            fontSize: '1rem',
+                            fontSize: '0.85rem',
                             fontWeight: '700',
                             cursor: 'pointer',
                             transition: 'all 0.2s ease',
