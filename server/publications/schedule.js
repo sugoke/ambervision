@@ -123,22 +123,62 @@ Meteor.publish("schedule.observations", async function (sessionId = null) {
       const obsDate = new Date(dateValue);
       obsDate.setHours(0, 0, 0, 0);
 
-      console.log('[SCHEDULE] Observation', index, 'date:', dateValue, 'Parsed:', obsDate, 'Today:', today, 'Past or Future:', obsDate < today ? 'PAST' : 'FUTURE');
+      // Calculate days left (positive = future, negative = past)
+      const diffTime = obsDate.getTime() - today.getTime();
+      const daysLeft = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-      // Include ALL observations (both past and future)
+      // Format date for display
+      const formattedDate = obsDate.toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+      });
+
+      // Format days left text
+      let daysLeftText;
+      let daysLeftColor;
+
+      if (daysLeft < 0) {
+        daysLeftText = `${Math.abs(daysLeft)} days ago`;
+        daysLeftColor = 'muted';
+      } else if (daysLeft === 0) {
+        daysLeftText = 'Today';
+        daysLeftColor = 'urgent';
+      } else if (daysLeft <= 7) {
+        daysLeftText = `${daysLeft} days`;
+        daysLeftColor = 'urgent';
+      } else if (daysLeft <= 30) {
+        daysLeftText = `${daysLeft} days`;
+        daysLeftColor = 'soon';
+      } else {
+        daysLeftText = `${daysLeft} days`;
+        daysLeftColor = 'normal';
+      }
+
+      const isToday = daysLeft === 0;
+      const isPast = daysLeft < 0;
+
+      console.log('[SCHEDULE] Observation', index, 'date:', dateValue, 'Days left:', daysLeft, 'Past or Future:', isPast ? 'PAST' : 'FUTURE');
+
+      // Include ALL observations (both past and future) with pre-calculated values
       observations.push({
         _id: `${product._id}_obs_${index}`, // Unique ID for reactivity
         productId: product._id,
         productTitle: product.title || product.name || 'Untitled Product',
         productIsin: product.isin || product.ISIN || 'N/A',
         observationDate: dateValue,
+        observationDateFormatted: formattedDate,
         observationType: obs.type || 'observation',
         isFinal: index === product.observationSchedule.length - 1,
         isCallable: obs.isCallable || false,
         couponRate: obs.couponRate || null,
         autocallLevel: obs.autocallLevel || null,
         observationIndex: index,
-        isPast: obsDate < today  // Add flag to identify past observations
+        daysLeft: daysLeft,
+        daysLeftText: daysLeftText,
+        daysLeftColor: daysLeftColor,
+        isToday: isToday,
+        isPast: isPast
       });
     });
   });

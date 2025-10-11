@@ -27,14 +27,8 @@ const Schedule = ({ user }) => {
   }, []);
 
   // Find the next observation (first future or today's observation)
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const nextObservationIndex = observations.findIndex(obs => {
-    const obsDate = new Date(obs.observationDate);
-    obsDate.setHours(0, 0, 0, 0);
-    return obsDate >= today;
-  });
+  // Server now provides isPast flag, so we find first non-past observation
+  const nextObservationIndex = observations.findIndex(obs => !obs.isPast);
 
   // Auto-scroll to next observation on initial load
   useEffect(() => {
@@ -49,11 +43,11 @@ const Schedule = ({ user }) => {
     }
   }, [isLoading, observations.length]);
 
-  // Handle manual refresh
+  // Handle manual refresh - triggers server-side recalculation
   const handleRefresh = () => {
     setIsRefreshing(true);
 
-    // Resubscribe to force server-side refresh
+    // Resubscribe to force server-side refresh and recalculation
     const sessionId = localStorage.getItem('sessionId');
     Meteor.subscribe('schedule.observations', sessionId, {
       onReady: () => {
@@ -63,16 +57,6 @@ const Schedule = ({ user }) => {
         console.error('Error refreshing schedule:', error);
         setIsRefreshing(false);
       }
-    });
-  };
-
-  // Format date for display
-  const formatDate = (dateString) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric'
     });
   };
 
@@ -241,11 +225,15 @@ const Schedule = ({ user }) => {
           background: 'var(--bg-secondary)',
           borderRadius: '12px',
           overflow: 'hidden',
-          border: '1px solid var(--border-color)'
+          border: '1px solid var(--border-color)',
+          display: 'flex',
+          flexDirection: 'column'
         }}>
+          {/* Fixed Header */}
           <table style={{
             width: '100%',
-            borderCollapse: 'collapse'
+            borderCollapse: 'collapse',
+            tableLayout: 'fixed'
           }}>
             <thead>
               <tr style={{
@@ -259,7 +247,8 @@ const Schedule = ({ user }) => {
                   fontWeight: '600',
                   fontSize: '0.85rem',
                   textTransform: 'uppercase',
-                  letterSpacing: '0.5px'
+                  letterSpacing: '0.5px',
+                  width: '18%'
                 }}>
                   Date
                 </th>
@@ -270,7 +259,20 @@ const Schedule = ({ user }) => {
                   fontWeight: '600',
                   fontSize: '0.85rem',
                   textTransform: 'uppercase',
-                  letterSpacing: '0.5px'
+                  letterSpacing: '0.5px',
+                  width: '12%'
+                }}>
+                  Days Left
+                </th>
+                <th style={{
+                  padding: '1rem',
+                  textAlign: 'left',
+                  color: 'var(--text-secondary)',
+                  fontWeight: '600',
+                  fontSize: '0.85rem',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px',
+                  width: '18%'
                 }}>
                   Type
                 </th>
@@ -281,7 +283,8 @@ const Schedule = ({ user }) => {
                   fontWeight: '600',
                   fontSize: '0.85rem',
                   textTransform: 'uppercase',
-                  letterSpacing: '0.5px'
+                  letterSpacing: '0.5px',
+                  width: '25%'
                 }}>
                   Product Name
                 </th>
@@ -292,7 +295,8 @@ const Schedule = ({ user }) => {
                   fontWeight: '600',
                   fontSize: '0.85rem',
                   textTransform: 'uppercase',
-                  letterSpacing: '0.5px'
+                  letterSpacing: '0.5px',
+                  width: '15%'
                 }}>
                   ISIN
                 </th>
@@ -303,121 +307,156 @@ const Schedule = ({ user }) => {
                   fontWeight: '600',
                   fontSize: '0.85rem',
                   textTransform: 'uppercase',
-                  letterSpacing: '0.5px'
+                  letterSpacing: '0.5px',
+                  width: '12%'
                 }}>
                   Details
                 </th>
               </tr>
             </thead>
-            <tbody>
-              {observations.map((obs, index) => {
-                const isNextObservation = index === nextObservationIndex;
-                const obsDate = new Date(obs.observationDate);
-                obsDate.setHours(0, 0, 0, 0);
-                const isToday = obsDate.getTime() === today.getTime();
-
-                return (
-                  <tr
-                    key={obs._id}
-                    ref={isNextObservation ? nextObservationRef : null}
-                    style={{
-                      borderBottom: index < observations.length - 1 ? '1px solid var(--border-color)' : 'none',
-                      background: isNextObservation ? 'rgba(0, 123, 255, 0.1)' : 'transparent',
-                      transition: 'background 0.2s ease'
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!isNextObservation) {
-                        e.currentTarget.style.background = 'var(--bg-tertiary)';
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!isNextObservation) {
-                        e.currentTarget.style.background = 'transparent';
-                      }
-                    }}
-                  >
-                    <td style={{
-                      padding: '1rem',
-                      color: 'var(--text-primary)',
-                      fontWeight: isNextObservation ? '600' : '400'
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        {isToday && (
-                          <span style={{
-                            background: '#f59e0b',
-                            color: 'white',
-                            padding: '0.25rem 0.5rem',
-                            borderRadius: '4px',
-                            fontSize: '0.7rem',
-                            fontWeight: '600'
-                          }}>
-                            TODAY
-                          </span>
-                        )}
-                        {isNextObservation && !isToday && (
-                          <span style={{
-                            background: 'var(--accent-color)',
-                            color: 'white',
-                            padding: '0.25rem 0.5rem',
-                            borderRadius: '4px',
-                            fontSize: '0.7rem',
-                            fontWeight: '600'
-                          }}>
-                            NEXT
-                          </span>
-                        )}
-                        {formatDate(obs.observationDate)}
-                      </div>
-                    </td>
-                    <td style={{
-                      padding: '1rem'
-                    }}>
-                      <span style={{
-                        ...getObservationTypeBadgeStyle(obs),
-                        padding: '0.4rem 0.8rem',
-                        borderRadius: '6px',
-                        fontSize: '0.85rem',
-                        fontWeight: '500',
-                        display: 'inline-block'
-                      }}>
-                        {getObservationTypeDisplay(obs)}
-                      </span>
-                    </td>
-                    <td style={{
-                      padding: '1rem',
-                      color: 'var(--text-primary)',
-                      fontWeight: '500'
-                    }}>
-                      {obs.productTitle}
-                    </td>
-                    <td style={{
-                      padding: '1rem',
-                      color: 'var(--text-secondary)',
-                      fontFamily: 'monospace',
-                      fontSize: '0.9rem'
-                    }}>
-                      {obs.productIsin}
-                    </td>
-                    <td style={{
-                      padding: '1rem',
-                      color: 'var(--text-secondary)',
-                      fontSize: '0.9rem'
-                    }}>
-                      {obs.couponRate && (
-                        <div>Coupon: {obs.couponRate}%</div>
-                      )}
-                      {obs.autocallLevel && (
-                        <div>Autocall: {obs.autocallLevel}%</div>
-                      )}
-                      {!obs.couponRate && !obs.autocallLevel && (
-                        <div style={{ opacity: 0.5 }}>-</div>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
           </table>
+
+          {/* Scrollable Body - Shows 7 rows at a time */}
+          <div style={{
+            maxHeight: '420px',
+            overflowY: 'auto',
+            overflowX: 'hidden'
+          }}>
+            <table style={{
+              width: '100%',
+              borderCollapse: 'collapse',
+              tableLayout: 'fixed'
+            }}>
+              <tbody>
+                {observations.map((obs, index) => {
+                  const isNextObservation = index === nextObservationIndex;
+
+                  // Get color based on server-calculated daysLeftColor
+                  const getDaysLeftColor = (colorKey) => {
+                    switch (colorKey) {
+                      case 'muted': return 'var(--text-muted)';
+                      case 'urgent': return '#f59e0b';
+                      case 'soon': return '#3b82f6';
+                      default: return 'var(--text-primary)';
+                    }
+                  };
+
+                  return (
+                    <tr
+                      key={obs._id}
+                      ref={isNextObservation ? nextObservationRef : null}
+                      style={{
+                        borderBottom: index < observations.length - 1 ? '1px solid var(--border-color)' : 'none',
+                        background: isNextObservation ? 'rgba(0, 123, 255, 0.1)' : 'transparent',
+                        transition: 'background 0.2s ease'
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!isNextObservation) {
+                          e.currentTarget.style.background = 'var(--bg-tertiary)';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isNextObservation) {
+                          e.currentTarget.style.background = 'transparent';
+                        }
+                      }}
+                    >
+                      <td style={{
+                        padding: '1rem',
+                        color: 'var(--text-primary)',
+                        fontWeight: isNextObservation ? '600' : '400',
+                        width: '18%'
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          {obs.isToday && (
+                            <span style={{
+                              background: '#f59e0b',
+                              color: 'white',
+                              padding: '0.25rem 0.5rem',
+                              borderRadius: '4px',
+                              fontSize: '0.7rem',
+                              fontWeight: '600'
+                            }}>
+                              TODAY
+                            </span>
+                          )}
+                          {isNextObservation && !obs.isToday && (
+                            <span style={{
+                              background: 'var(--accent-color)',
+                              color: 'white',
+                              padding: '0.25rem 0.5rem',
+                              borderRadius: '4px',
+                              fontSize: '0.7rem',
+                              fontWeight: '600'
+                            }}>
+                              NEXT
+                            </span>
+                          )}
+                          {obs.observationDateFormatted}
+                        </div>
+                      </td>
+                      <td style={{
+                        padding: '1rem',
+                        color: getDaysLeftColor(obs.daysLeftColor),
+                        fontWeight: '600',
+                        width: '12%'
+                      }}>
+                        {obs.daysLeftText}
+                      </td>
+                      <td style={{
+                        padding: '1rem',
+                        width: '18%'
+                      }}>
+                        <span style={{
+                          ...getObservationTypeBadgeStyle(obs),
+                          padding: '0.4rem 0.8rem',
+                          borderRadius: '6px',
+                          fontSize: '0.85rem',
+                          fontWeight: '500',
+                          display: 'inline-block'
+                        }}>
+                          {getObservationTypeDisplay(obs)}
+                        </span>
+                      </td>
+                      <td style={{
+                        padding: '1rem',
+                        color: 'var(--text-primary)',
+                        fontWeight: '500',
+                        width: '25%'
+                      }}>
+                        {obs.productTitle}
+                      </td>
+                      <td style={{
+                        padding: '1rem',
+                        color: 'var(--text-secondary)',
+                        fontFamily: 'monospace',
+                        fontSize: '0.9rem',
+                        width: '15%'
+                      }}>
+                        {obs.productIsin}
+                      </td>
+                      <td style={{
+                        padding: '1rem',
+                        color: 'var(--text-secondary)',
+                        fontSize: '0.9rem',
+                        width: '12%'
+                      }}>
+                        {obs.couponRate && (
+                          <div>Coupon: {obs.couponRate}%</div>
+                        )}
+                        {obs.autocallLevel && (
+                          <div>Autocall: {obs.autocallLevel}%</div>
+                        )}
+                        {!obs.couponRate && !obs.autocallLevel && (
+                          <div style={{ opacity: 0.5 }}>-</div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -492,7 +531,7 @@ const Schedule = ({ user }) => {
               color: 'var(--text-primary)'
             }}>
               {nextObservationIndex >= 0
-                ? formatDate(observations[nextObservationIndex].observationDate)
+                ? observations[nextObservationIndex].observationDateFormatted
                 : 'None'}
             </div>
           </div>
