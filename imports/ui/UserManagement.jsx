@@ -8,6 +8,7 @@ import Dialog from './Dialog';
 import { useDialog } from './useDialog';
 
 const UserManagement = ({ user: currentUser }) => {
+  const [activeSection, setActiveSection] = useState('users'); // 'users', 'rm-management', 'create'
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserPassword, setNewUserPassword] = useState('');
   const [newUserRole, setNewUserRole] = useState(USER_ROLES.CLIENT);
@@ -18,6 +19,7 @@ const UserManagement = ({ user: currentUser }) => {
   const [success, setSuccess] = useState('');
   const [editingUser, setEditingUser] = useState(null);
   const [editModal, setEditModal] = useState(false);
+  const [selectedRmId, setSelectedRmId] = useState(null); // For RM management section
   const [newBankAccount, setNewBankAccount] = useState({
     bankId: '',
     accountNumber: '',
@@ -340,9 +342,92 @@ const UserManagement = ({ user: currentUser }) => {
   }
 
 
+  // Calculate RM statistics
+  const relationshipManagers = useMemo(() => {
+    return users.filter(u => u.role === USER_ROLES.RELATIONSHIP_MANAGER);
+  }, [users]);
+
+  const rmStats = useMemo(() => {
+    return relationshipManagers.map(rm => {
+      const assignedClients = users.filter(u =>
+        u.role === USER_ROLES.CLIENT && u.relationshipManagerId === rm._id
+      );
+      return {
+        rm,
+        clientCount: assignedClients.length,
+        clients: assignedClients
+      };
+    });
+  }, [relationshipManagers, users]);
+
+  const unassignedClients = useMemo(() => {
+    return users.filter(u =>
+      u.role === USER_ROLES.CLIENT && !u.relationshipManagerId
+    );
+  }, [users]);
+
   return (
     <div>
+      {/* Tab Navigation */}
+      <div style={{
+        display: 'flex',
+        gap: '1rem',
+        marginBottom: '2rem',
+        borderBottom: '2px solid var(--border-color)',
+        paddingBottom: '0'
+      }}>
+        <button
+          onClick={() => setActiveSection('create')}
+          style={{
+            padding: '1rem 1.5rem',
+            background: activeSection === 'create' ? 'var(--accent-color)' : 'transparent',
+            color: activeSection === 'create' ? 'white' : 'var(--text-primary)',
+            border: 'none',
+            borderBottom: activeSection === 'create' ? '3px solid var(--accent-color)' : '3px solid transparent',
+            cursor: 'pointer',
+            fontSize: '1rem',
+            fontWeight: '600',
+            transition: 'all 0.3s ease'
+          }}
+        >
+          ➕ Create User
+        </button>
+        <button
+          onClick={() => setActiveSection('users')}
+          style={{
+            padding: '1rem 1.5rem',
+            background: activeSection === 'users' ? 'var(--accent-color)' : 'transparent',
+            color: activeSection === 'users' ? 'white' : 'var(--text-primary)',
+            border: 'none',
+            borderBottom: activeSection === 'users' ? '3px solid var(--accent-color)' : '3px solid transparent',
+            cursor: 'pointer',
+            fontSize: '1rem',
+            fontWeight: '600',
+            transition: 'all 0.3s ease'
+          }}
+        >
+          👥 All Users ({users.length})
+        </button>
+        <button
+          onClick={() => setActiveSection('rm-management')}
+          style={{
+            padding: '1rem 1.5rem',
+            background: activeSection === 'rm-management' ? 'var(--accent-color)' : 'transparent',
+            color: activeSection === 'rm-management' ? 'white' : 'var(--text-primary)',
+            border: 'none',
+            borderBottom: activeSection === 'rm-management' ? '3px solid var(--accent-color)' : '3px solid transparent',
+            cursor: 'pointer',
+            fontSize: '1rem',
+            fontWeight: '600',
+            transition: 'all 0.3s ease'
+          }}
+        >
+          👔 RM Management ({relationshipManagers.length} RMs)
+        </button>
+      </div>
+
       {/* Create New User Form */}
+      {activeSection === 'create' && (
       <section style={{
         marginBottom: '2rem',
         padding: '1.5rem',
@@ -572,6 +657,7 @@ const UserManagement = ({ user: currentUser }) => {
           </button>
         </form>
       </section>
+      )}
 
       {/* Messages */}
       {error && (
@@ -603,6 +689,7 @@ const UserManagement = ({ user: currentUser }) => {
       )}
 
       {/* Users List */}
+      {activeSection === 'users' && (
       <section style={{
         background: 'var(--bg-primary)',
         border: '1px solid var(--border-color)',
@@ -821,6 +908,453 @@ const UserManagement = ({ user: currentUser }) => {
           </div>
         )}
       </section>
+      )}
+
+      {/* RM Management Section */}
+      {activeSection === 'rm-management' && (
+        <div>
+          {/* RM Overview Stats */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+            gap: '1rem',
+            marginBottom: '2rem'
+          }}>
+            <div style={{
+              background: 'linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '12px',
+              padding: '1.5rem',
+              textAlign: 'center'
+            }}>
+              <div style={{
+                fontSize: '2rem',
+                fontWeight: '700',
+                color: '#3b82f6',
+                marginBottom: '0.5rem'
+              }}>
+                {relationshipManagers.length}
+              </div>
+              <div style={{
+                color: 'var(--text-secondary)',
+                fontSize: '0.9rem',
+                fontWeight: '500',
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px'
+              }}>
+                Total RMs
+              </div>
+            </div>
+
+            <div style={{
+              background: 'linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '12px',
+              padding: '1.5rem',
+              textAlign: 'center'
+            }}>
+              <div style={{
+                fontSize: '2rem',
+                fontWeight: '700',
+                color: 'var(--success-color)',
+                marginBottom: '0.5rem'
+              }}>
+                {users.filter(u => u.role === USER_ROLES.CLIENT).length}
+              </div>
+              <div style={{
+                color: 'var(--text-secondary)',
+                fontSize: '0.9rem',
+                fontWeight: '500',
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px'
+              }}>
+                Total Clients
+              </div>
+            </div>
+
+            <div style={{
+              background: 'linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '12px',
+              padding: '1.5rem',
+              textAlign: 'center'
+            }}>
+              <div style={{
+                fontSize: '2rem',
+                fontWeight: '700',
+                color: '#f59e0b',
+                marginBottom: '0.5rem'
+              }}>
+                {unassignedClients.length}
+              </div>
+              <div style={{
+                color: 'var(--text-secondary)',
+                fontSize: '0.9rem',
+                fontWeight: '500',
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px'
+              }}>
+                Unassigned Clients
+              </div>
+            </div>
+
+            <div style={{
+              background: 'linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '12px',
+              padding: '1.5rem',
+              textAlign: 'center'
+            }}>
+              <div style={{
+                fontSize: '2rem',
+                fontWeight: '700',
+                color: '#6366f1',
+                marginBottom: '0.5rem'
+              }}>
+                {relationshipManagers.length > 0
+                  ? Math.round(users.filter(u => u.role === USER_ROLES.CLIENT && u.relationshipManagerId).length / relationshipManagers.length)
+                  : 0}
+              </div>
+              <div style={{
+                color: 'var(--text-secondary)',
+                fontSize: '0.9rem',
+                fontWeight: '500',
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px'
+              }}>
+                Avg Clients per RM
+              </div>
+            </div>
+          </div>
+
+          {/* RM Overview Table */}
+          <section style={{
+            background: 'var(--bg-primary)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '12px',
+            padding: '1.5rem',
+            marginBottom: '2rem'
+          }}>
+            <h3 style={{
+              margin: '0 0 1.5rem 0',
+              fontSize: '1.2rem',
+              fontWeight: '600',
+              color: 'var(--text-primary)'
+            }}>
+              Relationship Managers Overview
+            </h3>
+
+            {relationshipManagers.length === 0 ? (
+              <div style={{
+                textAlign: 'center',
+                padding: '3rem 2rem',
+                background: 'var(--bg-secondary)',
+                borderRadius: '12px',
+                border: '2px dashed var(--border-color)'
+              }}>
+                <div style={{ fontSize: '3rem', marginBottom: '1rem', opacity: 0.3 }}>👔</div>
+                <h3 style={{
+                  margin: '0 0 0.5rem 0',
+                  color: 'var(--text-secondary)',
+                  fontSize: '1.1rem',
+                  fontWeight: '500'
+                }}>
+                  No Relationship Managers
+                </h3>
+                <p style={{
+                  margin: 0,
+                  color: 'var(--text-muted)',
+                  fontSize: '0.9rem'
+                }}>
+                  Create users with "Relationship Manager" role to get started
+                </p>
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{
+                  width: '100%',
+                  borderCollapse: 'collapse',
+                  border: '1px solid var(--border-color)'
+                }}>
+                  <thead>
+                    <tr style={{ backgroundColor: 'var(--bg-tertiary)' }}>
+                      <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'left' }}>RM Name</th>
+                      <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'left' }}>Email</th>
+                      <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'center' }}>Assigned Clients</th>
+                      <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'center' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rmStats.map(({ rm, clientCount, clients }) => (
+                      <tr key={rm._id} style={{ backgroundColor: 'var(--bg-primary)' }}>
+                        <td style={{ padding: '12px', border: '1px solid var(--border-color)' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{
+                              padding: '4px 8px',
+                              backgroundColor: '#3b82f6',
+                              color: 'white',
+                              borderRadius: '4px',
+                              fontSize: '0.75rem',
+                              fontWeight: '600'
+                            }}>
+                              RM
+                            </span>
+                            <span style={{ fontWeight: '600' }}>
+                              {rm.profile?.firstName || ''} {rm.profile?.lastName || 'Unknown'}
+                            </span>
+                          </div>
+                        </td>
+                        <td style={{ padding: '12px', border: '1px solid var(--border-color)' }}>
+                          {rm.email}
+                        </td>
+                        <td style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'center' }}>
+                          <span style={{
+                            padding: '4px 12px',
+                            backgroundColor: clientCount > 0 ? 'rgba(34, 197, 94, 0.1)' : 'rgba(156, 163, 175, 0.1)',
+                            color: clientCount > 0 ? '#22c55e' : '#9ca3af',
+                            borderRadius: '12px',
+                            fontSize: '0.9rem',
+                            fontWeight: '600'
+                          }}>
+                            {clientCount} {clientCount === 1 ? 'client' : 'clients'}
+                          </span>
+                        </td>
+                        <td style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'center' }}>
+                          <button
+                            onClick={() => setSelectedRmId(selectedRmId === rm._id ? null : rm._id)}
+                            style={{
+                              padding: '6px 12px',
+                              backgroundColor: selectedRmId === rm._id ? '#3b82f6' : 'var(--accent-color)',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '6px',
+                              cursor: 'pointer',
+                              fontSize: '0.85rem',
+                              fontWeight: '600',
+                              transition: 'all 0.2s ease'
+                            }}
+                          >
+                            {selectedRmId === rm._id ? 'Hide Clients' : 'View Clients'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          {/* Selected RM's Clients */}
+          {selectedRmId && (() => {
+            const rmStat = rmStats.find(s => s.rm._id === selectedRmId);
+            if (!rmStat) return null;
+
+            return (
+              <section style={{
+                background: 'var(--bg-primary)',
+                border: '2px solid #3b82f6',
+                borderRadius: '12px',
+                padding: '1.5rem',
+                marginBottom: '2rem'
+              }}>
+                <h3 style={{
+                  margin: '0 0 1.5rem 0',
+                  fontSize: '1.1rem',
+                  fontWeight: '600',
+                  color: 'var(--text-primary)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem'
+                }}>
+                  <span style={{
+                    padding: '4px 8px',
+                    backgroundColor: '#3b82f6',
+                    color: 'white',
+                    borderRadius: '4px',
+                    fontSize: '0.75rem'
+                  }}>
+                    RM
+                  </span>
+                  {rmStat.rm.profile?.firstName || ''} {rmStat.rm.profile?.lastName || rmStat.rm.email}'s Clients ({rmStat.clientCount})
+                </h3>
+
+                {rmStat.clients.length === 0 ? (
+                  <div style={{
+                    textAlign: 'center',
+                    padding: '2rem',
+                    color: 'var(--text-muted)',
+                    fontStyle: 'italic'
+                  }}>
+                    No clients assigned yet
+                  </div>
+                ) : (
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))',
+                    gap: '1rem'
+                  }}>
+                    {rmStat.clients.map(client => (
+                      <div
+                        key={client._id}
+                        style={{
+                          padding: '1rem',
+                          background: 'var(--bg-secondary)',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '8px',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center'
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontWeight: '600', marginBottom: '4px' }}>
+                            {client.profile?.firstName || ''} {client.profile?.lastName || 'Unknown'}
+                          </div>
+                          <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                            {client.email}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleEditUser(client)}
+                          style={{
+                            padding: '4px 8px',
+                            backgroundColor: 'var(--accent-color)',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '0.75rem',
+                            fontWeight: '600'
+                          }}
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            );
+          })()}
+
+          {/* Unassigned Clients */}
+          {unassignedClients.length > 0 && (
+            <section style={{
+              background: 'var(--bg-primary)',
+              border: '2px solid #f59e0b',
+              borderRadius: '12px',
+              padding: '1.5rem'
+            }}>
+              <h3 style={{
+                margin: '0 0 1.5rem 0',
+                fontSize: '1.1rem',
+                fontWeight: '600',
+                color: 'var(--text-primary)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
+              }}>
+                <span style={{
+                  padding: '4px 8px',
+                  backgroundColor: '#f59e0b',
+                  color: 'white',
+                  borderRadius: '4px',
+                  fontSize: '0.75rem'
+                }}>
+                  ⚠️
+                </span>
+                Unassigned Clients ({unassignedClients.length})
+              </h3>
+
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+                gap: '1rem'
+              }}>
+                {unassignedClients.map(client => (
+                  <div
+                    key={client._id}
+                    style={{
+                      padding: '1rem',
+                      background: 'rgba(245, 158, 11, 0.05)',
+                      border: '1px solid rgba(245, 158, 11, 0.3)',
+                      borderRadius: '8px'
+                    }}
+                  >
+                    <div style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'flex-start',
+                      marginBottom: '0.75rem'
+                    }}>
+                      <div>
+                        <div style={{ fontWeight: '600', marginBottom: '4px' }}>
+                          {client.profile?.firstName || ''} {client.profile?.lastName || 'Unknown'}
+                        </div>
+                        <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                          {client.email}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <select
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            // Directly update the client's RM
+                            Meteor.call('users.updateProfile', client._id, {
+                              relationshipManagerId: e.target.value
+                            }, (err) => {
+                              if (err) {
+                                setError(err.reason);
+                              } else {
+                                setSuccess(`Client assigned successfully!`);
+                                e.target.value = ''; // Reset dropdown
+                              }
+                            });
+                          }
+                        }}
+                        style={{
+                          flex: 1,
+                          padding: '6px 8px',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '4px',
+                          fontSize: '0.85rem',
+                          backgroundColor: 'var(--bg-secondary)',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <option value="">Assign to RM...</option>
+                        {relationshipManagers.map(rm => (
+                          <option key={rm._id} value={rm._id}>
+                            {rm.profile?.firstName || ''} {rm.profile?.lastName || rm.email}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => handleEditUser(client)}
+                        style={{
+                          padding: '6px 12px',
+                          backgroundColor: 'var(--accent-color)',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          fontSize: '0.85rem',
+                          fontWeight: '600'
+                        }}
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
+      )}
 
       {/* Edit User Modal */}
       {editModal && editingUser && (
