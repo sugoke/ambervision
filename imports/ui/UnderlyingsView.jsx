@@ -196,11 +196,6 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
       productId: underlying.productId // Store productId for click navigation
     }));
 
-    console.log('[Bubble Chart] Created bubbles:', bubbles.length);
-    if (bubbles.length > 0) {
-      console.log('[Bubble Chart] Sample bubble:', bubbles[0]);
-    }
-
     return {
       datasets: [{
         label: 'Underlyings',
@@ -216,23 +211,12 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
     responsive: true,
     maintainAspectRatio: false,
     onClick: (event, elements, chart) => {
-      console.log('[Bubble Click] Event triggered', { elements, chart });
-
       if (elements.length > 0) {
         const elementIndex = elements[0].index;
         const datasetIndex = elements[0].datasetIndex;
         const clickedBubble = chart.data.datasets[datasetIndex].data[elementIndex];
 
-        console.log('[Bubble Click] Clicked bubble data:', {
-          elementIndex,
-          datasetIndex,
-          clickedBubble,
-          productId: clickedBubble?.productId
-        });
-
         if (clickedBubble && clickedBubble.productId) {
-          console.log('[Bubble Click] Navigating to report:', clickedBubble.productId);
-
           // Use internal navigation instead of page reload
           if (onNavigateToReport) {
             onNavigateToReport({ _id: clickedBubble.productId });
@@ -240,11 +224,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
             // Fallback to URL navigation if handler not provided
             window.location.href = `/report/${clickedBubble.productId}`;
           }
-        } else {
-          console.warn('[Bubble Click] No productId found on bubble:', clickedBubble);
         }
-      } else {
-        console.log('[Bubble Click] No elements clicked');
       }
     },
     plugins: {
