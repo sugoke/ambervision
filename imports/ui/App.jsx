@@ -56,8 +56,8 @@ const AppContent = () => {
         // For report routes, use pathname-based routing
         window.history.pushState(null, null, `/report/${productId}`);
       } else {
-        // For regular sections, use hash-based routing
-        window.history.replaceState(null, null, `#${section}`);
+        // For regular sections, reset to root with hash
+        window.history.pushState(null, null, `/#${section}`);
       }
     }
   }, []);

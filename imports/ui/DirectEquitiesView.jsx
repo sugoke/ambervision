@@ -5,6 +5,7 @@ import { EquityHoldingsCollection } from '/imports/api/equityHoldings';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { MarketDataHelpers } from '/imports/api/marketDataCache';
 import { UsersCollection, USER_ROLES } from '/imports/api/users';
+import { useViewAs } from './ViewAsContext.jsx';
 import AddStockModal from './components/AddStockModal.jsx';
 
 // Local UI debug toggle (set to true only when needed)
@@ -321,7 +322,7 @@ const CompanyLogo = ({ logoData, symbol, companyName, size = 40 }) => {
 };
 
 const DirectEquitiesView = ({ user }) => {
-  const [selectedBankAccountId, setSelectedBankAccountId] = useState(null);
+  const { viewAsFilter } = useViewAs();
   const [isAddStockModalOpen, setIsAddStockModalOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isUpdatingPrices, setIsUpdatingPrices] = useState(false);
@@ -331,6 +332,7 @@ const DirectEquitiesView = ({ user }) => {
   const [selectedStock, setSelectedStock] = useState(null); // Stock details modal
   const [stockDetails, setStockDetails] = useState(null); // Stock performance data
   const [modifyHolding, setModifyHolding] = useState(null); // Modify holding modal
+  const [selectedBankAccount, setSelectedBankAccount] = useState(null); // Currently selected bank account for detailed view
   const [exchangeRates, setExchangeRates] = useState(null); // Currency exchange rates for UI conversion
   const [ratesLoading, setRatesLoading] = useState(true); // Loading state for rates
   const [previousClosePrices, setPreviousClosePrices] = useState({}); // Store previous close prices by symbol
@@ -359,35 +361,16 @@ const DirectEquitiesView = ({ user }) => {
   };
 
   // Get user's bank accounts and holdings
-  const { bankAccounts, selectedBankAccount, holdings, allHoldings, isDataReady, users } = useTracker(() => {
+  const { bankAccounts, holdings, allHoldings, isDataReady, users } = useTracker(() => {
     const sessionId = getSessionId();
     // console.log('DirectEquitiesView: Subscribing to userBankAccounts with sessionId:', sessionId);
-    
+
     // Only subscribe to userBankAccounts with proper session
     const bankAccountsHandle = Meteor.subscribe('userBankAccounts', sessionId);
-    // Don't subscribe to allBankAccounts - it bypasses authentication
-    const allBankAccountsHandle = { ready: () => bankAccountsHandle.ready() };
-    
-    // console.log('DirectEquitiesView: Both subscriptions started');
-    
-    // For admins: subscribe to holdings from all accessible bank accounts
-    // For other users: subscribe only to selected bank account holdings
-    const isAdmin = user.role === USER_ROLES.ADMIN || user.role === USER_ROLES.SUPERADMIN;
-    const holdingsHandles = [];
-    
-    if (isAdmin) {
-      // Subscribe to holdings for all accessible bank accounts
-      const availableBankAccounts = BankAccountsCollection.find({ isActive: true }).fetch();
-      availableBankAccounts.forEach(account => {
-        holdingsHandles.push(Meteor.subscribe('equityHoldings', account._id, sessionId));
-      });
-    } else if (selectedBankAccountId) {
-      // Subscribe to holdings for the selected bank account
-      // console.log('DirectEquitiesView: Subscribing to equityHoldings for bank account:', selectedBankAccountId);
-      holdingsHandles.push(Meteor.subscribe('equityHoldings', selectedBankAccountId, sessionId));
-    } else {
-      // console.log('DirectEquitiesView: No selectedBankAccountId, skipping holdings subscription');
-    }
+
+    // Subscribe to equity holdings with viewAsFilter
+    // Publication will handle filtering based on role and viewAsFilter
+    const holdingsHandle = Meteor.subscribe('equityHoldings', sessionId, viewAsFilter);
 
     // For admins and RMs, also subscribe to user data for ownership display
     const usersHandle = (user.role === USER_ROLES.ADMIN || user.role === USER_ROLES.SUPERADMIN || user.role === USER_ROLES.RELATIONSHIP_MANAGER) ?
@@ -401,105 +384,56 @@ const DirectEquitiesView = ({ user }) => {
       accountNumber: a.accountNumber,
       isActive: a.isActive
     })));
-    
-    const bankAccounts = BankAccountsCollection.find({ isActive: true }, { 
-      sort: { createdAt: -1 } 
+
+    const bankAccounts = BankAccountsCollection.find({ isActive: true }, {
+      sort: { createdAt: -1 }
     }).fetch();
-    
+
     console.log('DirectEquitiesView: Found ACTIVE bank accounts:', bankAccounts.length, bankAccounts);
-    console.log('DirectEquitiesView: Bank account details:', bankAccounts.map(acc => ({ 
-      id: acc._id, 
+    console.log('DirectEquitiesView: Bank account details:', bankAccounts.map(acc => ({
+      id: acc._id,
       accountNumber: acc.accountNumber,
       userId: acc.userId,
       currency: acc.currency,
       isActive: acc.isActive
     })));
 
-    const selectedBankAccount = selectedBankAccountId ? 
-      BankAccountsCollection.findOne(selectedBankAccountId) : null;
+    // Get holdings - publication filters based on viewAsFilter and role
+    const holdings = EquityHoldingsCollection.find({}, { sort: { currentValue: -1 } }).fetch();
 
-    // Get holdings for selected bank account
-    const holdings = selectedBankAccountId ? 
-      EquityHoldingsCollection.find(
-        { bankAccountId: selectedBankAccountId },
-        { sort: { currentValue: -1 } }
-      ).fetch() : [];
-    
-    // Debug: Check all holdings in the collection
-    const allHoldingsInCollection = EquityHoldingsCollection.find({}).fetch();
-    // Removed debug logs that were running on every render
-    // console.log('DirectEquitiesView: Holdings for bank account', selectedBankAccountId, ':', holdings.length, holdings);
-    // console.log('DirectEquitiesView: ALL holdings in collection:', allHoldingsInCollection.length, allHoldingsInCollection.map(h => ({
-    //   id: h._id,
-    //   bankAccountId: h.bankAccountId,
-    //   symbol: h.symbol,
-    //   quantity: h.quantity
-    // })));
-
-    // For admins: get all holdings across all bank accounts
-    const allHoldings = isAdmin ? 
-      EquityHoldingsCollection.find({}, { sort: { currentValue: -1 } }).fetch() : [];
+    // For admins: allHoldings is same as holdings (publication handles filtering)
+    // For clients: holdings only contains their own holdings
+    const allHoldings = holdings;
 
     // Get user data for bank account ownership display
     const users = UsersCollection.find({}).fetch();
 
-    const isDataReady = bankAccountsHandle.ready() && allBankAccountsHandle.ready() && holdingsHandles.every(h => h.ready()) && (!usersHandle || usersHandle.ready());
-    
+    const isDataReady = bankAccountsHandle.ready() && holdingsHandle.ready() && (!usersHandle || usersHandle.ready());
+
     console.log('DirectEquitiesView: Subscription status:', {
       bankAccountsReady: bankAccountsHandle.ready(),
-      allBankAccountsReady: allBankAccountsHandle.ready(),
-      holdingsHandles: holdingsHandles.length,
-      holdingsReady: holdingsHandles.every(h => h.ready()),
-      holdingsReadyDetails: holdingsHandles.map(h => h.ready()),
+      holdingsReady: holdingsHandle.ready(),
       usersReady: !usersHandle || usersHandle.ready(),
       isDataReady,
+      viewAsFilter,
       user: { id: user._id, username: user.username, role: user.role }
     });
 
     return {
       bankAccounts,
-      selectedBankAccount,
       holdings,
       allHoldings,
       users,
       isDataReady
     };
-  }, [selectedBankAccountId, user.role]);
+  }, [viewAsFilter, user.role]);
 
-  // Initialize with first available bank account
+  // Mark as loaded once data is ready
   useEffect(() => {
-    console.log('DirectEquitiesView: Bank account selection effect triggered:', {
-      isDataReady,
-      bankAccountsLength: bankAccounts.length,
-      selectedBankAccountId,
-      firstBankAccountId: bankAccounts.length > 0 ? bankAccounts[0]._id : 'none'
-    });
-    
-    if (isDataReady && bankAccounts.length > 0 && !selectedBankAccountId) {
-      // For admin users, prioritize the admin account
-      let targetAccount = bankAccounts[0]; // fallback to first account
-      
-      if (user.role === 'superadmin' || user.role === 'admin') {
-        // Look for the admin account (account number ADMIN-001 or the known ID)
-        const adminAccount = bankAccounts.find(acc => 
-          acc.accountNumber === 'ADMIN-001' || 
-          acc._id === '68923a8ac311ef8ddacbdfed'
-        );
-        if (adminAccount) {
-          targetAccount = adminAccount;
-          console.log('DirectEquitiesView: Found admin account, selecting it:', adminAccount._id, adminAccount.accountNumber);
-        } else {
-          console.log('DirectEquitiesView: Admin account not found, using first account');
-        }
-      }
-      
-      console.log('DirectEquitiesView: Setting selected bank account to:', targetAccount._id, targetAccount.accountNumber);
-      setSelectedBankAccountId(targetAccount._id);
-      setIsLoading(false);
-    } else if (isDataReady) {
+    if (isDataReady) {
       setIsLoading(false);
     }
-  }, [isDataReady, bankAccounts, selectedBankAccountId]);
+  }, [isDataReady]);
 
   // Fetch exchange rates for currency conversion
   useEffect(() => {
@@ -537,15 +471,35 @@ const DirectEquitiesView = ({ user }) => {
     return () => clearInterval(interval);
   }, []);
 
-  const handleBankAccountChange = (bankAccountId) => {
-    console.log('DirectEquitiesView: Bank account selection changed to:', bankAccountId);
-    if (bankAccountId && bankAccountId !== selectedBankAccountId) {
-      setSelectedBankAccountId(bankAccountId);
-      console.log('DirectEquitiesView: Updated selectedBankAccountId to:', bankAccountId);
-    } else if (!bankAccountId) {
-      setSelectedBankAccountId(null);
-      console.log('DirectEquitiesView: Cleared bank account selection');
+
+  // Helper to get target bank account ID from viewAsFilter or holdings
+  const getTargetBankAccountId = () => {
+    // If viewAsFilter is set to a specific account, use that
+    if (viewAsFilter && viewAsFilter.type === 'account') {
+      return viewAsFilter.id;
     }
+
+    // If viewAsFilter is set to a client, get their first account
+    if (viewAsFilter && viewAsFilter.type === 'client') {
+      const clientAccounts = bankAccounts.filter(acc => acc.userId === viewAsFilter.id);
+      if (clientAccounts.length > 0) {
+        return clientAccounts[0]._id;
+      }
+    }
+
+    // If no filter and user is client/RM, use their first account
+    if (!viewAsFilter && (user.role === USER_ROLES.CLIENT || user.role === USER_ROLES.RELATIONSHIP_MANAGER)) {
+      if (bankAccounts.length > 0) {
+        return bankAccounts[0]._id;
+      }
+    }
+
+    // For admins with no filter, use the first available account
+    if (bankAccounts.length > 0) {
+      return bankAccounts[0]._id;
+    }
+
+    return null;
   };
 
   const handleAddStock = () => {
@@ -554,17 +508,18 @@ const DirectEquitiesView = ({ user }) => {
 
   const handleStockAdded = async (stockData, transactionData) => {
     try {
+      const targetBankAccountId = getTargetBankAccountId();
       const sessionId = getSessionId();
       console.log('DirectEquitiesView: Attempting to add stock with:', {
-        selectedBankAccountId,
+        targetBankAccountId,
         stockData,
         transactionData,
         sessionId
       });
-      
-      const result = await Meteor.callAsync('equityHoldings.add', 
-        selectedBankAccountId, 
-        stockData, 
+
+      const result = await Meteor.callAsync('equityHoldings.add',
+        targetBankAccountId,
+        stockData,
         transactionData,
         sessionId
       );
@@ -588,25 +543,26 @@ const DirectEquitiesView = ({ user }) => {
   };
 
   const updatePrices = async () => {
-    if (!selectedBankAccountId || isUpdatingPrices) return;
-    
+    const targetBankAccountId = getTargetBankAccountId();
+    if (!targetBankAccountId || isUpdatingPrices) return;
+
     setIsUpdatingPrices(true);
     try {
       const sessionId = getSessionId();
-      
+
       // Debug: Check currency rates and test conversion
       console.log('🔍 Debugging currency conversion...');
-      console.log('Selected bank account:', selectedBankAccount);
-      
+      console.log('Target bank account ID:', targetBankAccountId);
+
       try {
         // Check what currency rates are available
         const currencyCheck = await Meteor.callAsync('debug.checkCurrencyRates');
         console.log('💰 Currency cache status:', currencyCheck);
-        
+
         // Test a simple USD->EUR conversion
         const testConversion = await Meteor.callAsync('debug.testCurrencyConversion', 100, 'USD', 'EUR');
         console.log('🔄 Test conversion 100 USD->EUR:', testConversion);
-        
+
         // Force refresh currency cache if needed
         if (!currencyCheck.allCachedPairs || currencyCheck.allCachedPairs.length === 0) {
           // console.log('⚠️ No currency rates found, forcing refresh...');
@@ -615,8 +571,8 @@ const DirectEquitiesView = ({ user }) => {
       } catch (debugError) {
         console.warn('Debug currency check failed:', debugError);
       }
-      
-      await Meteor.callAsync('equityHoldings.updatePrices', selectedBankAccountId, sessionId);
+
+      await Meteor.callAsync('equityHoldings.updatePrices', targetBankAccountId, sessionId);
       setLastPriceUpdate(new Date());
     } catch (error) {
       console.error('Error updating prices:', error);
@@ -645,11 +601,11 @@ const DirectEquitiesView = ({ user }) => {
       }
       
       setLastPriceUpdate(new Date());
-      
+
       // Force UI refresh after successful price update
       setTimeout(() => {
         console.log('🔄 Forcing UI refresh after currency conversion...');
-        setSelectedBankAccountId(prev => prev); // Trigger re-render
+        // UI will auto-refresh via reactive subscriptions
       }, 1500);
       
     } catch (error) {
@@ -1299,27 +1255,27 @@ Check browser console for TTE currency details.`;
     }
   };
 
-  // Auto-refresh prices every 5 minutes and trigger initial update
+  // Auto-refresh prices every 15 minutes and trigger initial update
   useEffect(() => {
     if (!user) return;
-    
+
     // Initial price update when component loads or user/accounts change
     const initialUpdate = () => {
       if (user.role === 'admin' || user.role === 'superadmin') {
         updateAllPrices();
-      } else if (selectedBankAccountId) {
+      } else {
         updatePrices();
       }
     };
-    
+
     // Trigger initial update after a short delay
     const initialTimeout = setTimeout(initialUpdate, 1000);
-    
+
     // Set up periodic updates every 15 minutes
     const interval = setInterval(() => {
       if (user.role === 'admin' || user.role === 'superadmin') {
         updateAllPrices();
-      } else if (selectedBankAccountId) {
+      } else {
         updatePrices();
       }
     }, 15 * 60 * 1000); // 15 minutes
@@ -1328,7 +1284,7 @@ Check browser console for TTE currency details.`;
       clearTimeout(initialTimeout);
       clearInterval(interval);
     };
-  }, [user, selectedBankAccountId, bankAccounts, allHoldings]);
+  }, [user, viewAsFilter, bankAccounts, allHoldings]);
 
   // Calculate summary statistics for selected bank account (values already stored in account reference currency)
   const summary = holdings.reduce((acc, h) => {
@@ -1659,7 +1615,8 @@ Check browser console for TTE currency details.`;
   };
 
   const handleCsvUpload = async () => {
-    if (!csvFile || !selectedBankAccountId) {
+    const targetBankAccountId = getTargetBankAccountId();
+    if (!csvFile || !targetBankAccountId) {
       setCsvUploadResult({
         success: false,
         error: 'Please select a CSV file and bank account'
@@ -1673,7 +1630,7 @@ Check browser console for TTE currency details.`;
     try {
       const text = await csvFile.text();
       const csvData = parseCSV(text);
-      
+
       if (csvData.length === 0) {
         setCsvUploadResult({
           success: false,
@@ -1687,9 +1644,9 @@ Check browser console for TTE currency details.`;
 
       // Upload to server
       const sessionId = getSessionId();
-      const result = await Meteor.callAsync('equityHoldings.uploadCsv', 
-        selectedBankAccountId, 
-        csvData, 
+      const result = await Meteor.callAsync('equityHoldings.uploadCsv',
+        targetBankAccountId,
+        csvData,
         sessionId
       );
       
@@ -1898,36 +1855,6 @@ Check browser console for TTE currency details.`;
         </div>
 
         <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-          {/* Bank Account Selector */}
-          <select
-            value={selectedBankAccountId || ''}
-            onChange={(e) => handleBankAccountChange(e.target.value)}
-            style={{
-              padding: '0.5rem 0.75rem',
-              borderRadius: '8px',
-              border: '1px solid var(--border-color)',
-              backgroundColor: 'var(--bg-secondary)',
-              color: 'var(--text-primary)',
-              fontSize: '1rem',
-              minWidth: '300px'
-            }}
-          >
-            {bankAccounts.map(account => {
-              const owner = users.find(u => u._id === account.userId);
-              const isCurrentUser = account.userId === user._id;
-              const displayName = owner?.profile ? 
-                `${owner.profile.firstName || ''} ${owner.profile.lastName || ''}`.trim() || owner.username :
-                owner?.username;
-              
-              return (
-                <option key={account._id} value={account._id}>
-                  Account: {account.accountNumber} ({account.referenceCurrency})
-                  {!isCurrentUser && displayName ? ` - ${displayName}` : ''}
-                </option>
-              );
-            })}
-          </select>
-
           {/* Action Buttons */}
           <button
             onClick={handleAddStock}
@@ -2381,9 +2308,9 @@ Check browser console for TTE currency details.`;
                                 <div style={{ fontWeight: '600' }}>
                                   {d.currency} {formatNumber(d.averagePrice)}
                                 </div>
-                                {d.currency !== selectedBankAccount.referenceCurrency && (
+                                {d.currency !== bankAccount.referenceCurrency && (
                                   <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: '1px' }}>
-                                    {formatCurrencyValue(d.averagePrice, d.currency, selectedBankAccount.referenceCurrency, exchangeRates)}
+                                    {formatCurrencyValue(d.averagePrice, d.currency, bankAccount.referenceCurrency, exchangeRates)}
                                   </div>
                                 )}
                               </>
@@ -2400,9 +2327,9 @@ Check browser console for TTE currency details.`;
                                 <div style={{ fontWeight: '600' }}>
                                   {d.currency} {formatNumber(d.currentPrice)}
                                 </div>
-                                {d.currency !== selectedBankAccount.referenceCurrency && (
+                                {d.currency !== bankAccount.referenceCurrency && (
                                   <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: '1px' }}>
-                                    {formatCurrencyValue(d.currentPrice, d.currency, selectedBankAccount.referenceCurrency, exchangeRates)}
+                                    {formatCurrencyValue(d.currentPrice, d.currency, bankAccount.referenceCurrency, exchangeRates)}
                                   </div>
                                 )}
                                 {holding.lastPriceUpdate && (
@@ -2425,9 +2352,9 @@ Check browser console for TTE currency details.`;
                                 <div style={{ fontWeight: '600' }}>
                                   {d.currency} {formatNumber(d.currentValue)}
                                 </div>
-                                {d.currency !== selectedBankAccount.referenceCurrency && (
+                                {d.currency !== bankAccount.referenceCurrency && (
                                   <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: '1px' }}>
-                                    {formatCurrencyValue(d.currentValue, d.currency, selectedBankAccount.referenceCurrency, exchangeRates)}
+                                    {formatCurrencyValue(d.currentValue, d.currency, bankAccount.referenceCurrency, exchangeRates)}
                                   </div>
                                 )}
                               </>
@@ -2442,7 +2369,7 @@ Check browser console for TTE currency details.`;
                             fontSize: '0.85rem'
                           }}>
                             <div>
-                              {selectedBankAccount.referenceCurrency} {formatNumber(holding.totalReturn)}
+                              {bankAccount.referenceCurrency} {formatNumber(holding.totalReturn)}
                             </div>
                             <div style={{ fontSize: '0.8rem', opacity: 0.9 }}>
                               ({formatNumber(holding.totalReturnPercent)}%)
@@ -3178,18 +3105,18 @@ Check browser console for TTE currency details.`;
               </button>
               <button
                 onClick={handleCsvUpload}
-                disabled={!csvFile || !selectedBankAccountId || csvUploadLoading}
+                disabled={!csvFile || !getTargetBankAccountId() || csvUploadLoading}
                 style={{
                   padding: '0.75rem 1.5rem',
                   borderRadius: '8px',
                   border: 'none',
-                  backgroundColor: (!csvFile || !selectedBankAccountId || csvUploadLoading) 
-                    ? 'var(--text-muted)' 
+                  backgroundColor: (!csvFile || !getTargetBankAccountId() || csvUploadLoading)
+                    ? 'var(--text-muted)'
                     : '#4CAF50',
                   color: 'white',
                   fontSize: '0.9rem',
-                  cursor: (!csvFile || !selectedBankAccountId || csvUploadLoading) 
-                    ? 'not-allowed' 
+                  cursor: (!csvFile || !getTargetBankAccountId() || csvUploadLoading)
+                    ? 'not-allowed'
                     : 'pointer',
                   display: 'flex',
                   alignItems: 'center',
