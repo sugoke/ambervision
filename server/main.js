@@ -44,6 +44,7 @@ import { globalProductValidator } from '/imports/api/validators/productStructure
 import '/imports/api/reports';
 import '/imports/api/templateReports';
 import '/imports/api/underlyingsAnalysis';
+import '/imports/api/riskAnalysis';
 import './publications/underlyingsAnalysis';
 import './publications'; // Import all publications from index.js
 

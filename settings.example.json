@@ -6,6 +6,7 @@
     "MONGO_URL": "mongodb+srv://username:password@cluster.mongodb.net/database?retryWrites=true&w=majority&authSource=admin",
     "MONGO_OPLOG_URL": "mongodb+srv://username:password@cluster.mongodb.net/local?authSource=admin&retryWrites=true&w=majority",
     "EOD_API_TOKEN": "your_eod_api_token_here",
-    "LOGO_DEV_API_TOKEN": "your_logo_dev_api_token_here"
+    "LOGO_DEV_API_TOKEN": "your_logo_dev_api_token_here",
+    "ANTHROPIC_API_KEY": "your_anthropic_api_key_here"
   }
 }

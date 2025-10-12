@@ -12,6 +12,8 @@ import './priceData';
 import './equityHoldings';
 import './schedule';
 import './viewAsData';
+import './riskAnalysis';
+import './productCommentary';
 
 
 

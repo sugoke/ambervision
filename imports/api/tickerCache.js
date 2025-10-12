@@ -595,23 +595,92 @@ if (Meteor.isServer) {
       }
     },
 
+    // Validate tickers with EOD API - check if they return valid price data
+    async 'tickerCache.validateTickers'(symbols) {
+      check(symbols, [String]);
+
+      try {
+        console.log(`[TickerValidation] Validating ${symbols.length} tickers with EOD API...`);
+        const validTickers = [];
+        const invalidTickers = [];
+
+        // Test each ticker by attempting to fetch price data
+        for (const symbol of symbols) {
+          try {
+            // Try to fetch price from EOD API
+            const priceData = await TickerCacheHelpers.fetchPriceFromEOD(symbol);
+
+            if (priceData && priceData.price > 0) {
+              // Ticker is valid - has real price data
+              validTickers.push({
+                symbol,
+                valid: true,
+                price: priceData.price,
+                reason: 'Valid price data from EOD'
+              });
+              console.log(`  ✓ ${symbol}: Valid (price: ${priceData.price})`);
+            } else {
+              // Ticker returned no valid price data
+              invalidTickers.push({
+                symbol,
+                valid: false,
+                reason: 'No valid price data from EOD API'
+              });
+              console.log(`  ✗ ${symbol}: Invalid (no price data)`);
+            }
+          } catch (error) {
+            // Ticker fetch failed
+            invalidTickers.push({
+              symbol,
+              valid: false,
+              reason: `EOD API error: ${error.message}`
+            });
+            console.log(`  ✗ ${symbol}: Invalid (error: ${error.message})`);
+          }
+
+          // Small delay to avoid overwhelming the API
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        console.log(`[TickerValidation] Complete: ${validTickers.length} valid, ${invalidTickers.length} invalid`);
+
+        return {
+          success: true,
+          totalTested: symbols.length,
+          validCount: validTickers.length,
+          invalidCount: invalidTickers.length,
+          validTickers: validTickers.map(t => t.symbol),
+          invalidTickers: invalidTickers.map(t => ({ symbol: t.symbol, reason: t.reason })),
+          details: [...validTickers, ...invalidTickers]
+        };
+      } catch (error) {
+        console.error('[TickerValidation] Validation failed:', error);
+        return {
+          success: false,
+          error: error.message,
+          validTickers: [],
+          invalidTickers: []
+        };
+      }
+    },
+
     // Test direct EOD API call for debugging
     async 'test.eodDirectCall'(symbol) {
       check(symbol, String);
-      
+
       try {
         const url = `https://eodhistoricaldata.com/api/real-time/${symbol}`;
         const params = {
           api_token: Meteor.settings.private?.EOD_API_TOKEN || '5c265eab2c9066.19444326',
           fmt: 'json'
         };
-        
+
         console.log(`TEST: Making direct API call to ${url}`);
         const response = await HTTP.get(url, { params });
-        
+
         let data = response.data;
         let responseType = 'object';
-        
+
         // Handle array responses
         if (Array.isArray(data)) {
           responseType = 'array';
@@ -619,12 +688,12 @@ if (Meteor.isServer) {
             data = data[0];
           }
         }
-        
+
         console.log(`TEST: Raw response for ${symbol} (type: ${responseType}):`, response.data);
-        
+
         // Test the actual parsing logic
         const parsedByHelper = await TickerCacheHelpers.fetchPriceFromEOD(symbol);
-        
+
         return {
           success: true,
           symbol: symbol,

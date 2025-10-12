@@ -13,6 +13,7 @@ import HimalayaReport from './templates/HimalayaReport.jsx';
 import OrionReport from './templates/OrionReport.jsx';
 import PhoenixReport from './templates/PhoenixReport.jsx';
 import SharkNoteReport from './templates/SharkNoteReport.jsx';
+import ProductCommentaryCard from './components/ProductCommentaryCard.jsx';
 
 /**
  * New Template-based Product Report Component
@@ -893,6 +894,9 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
           )}
         </div>
       )}
+
+      {/* Product Commentary Card */}
+      <ProductCommentaryCard productId={productId} />
 
       {/* Evaluation Error */}
       {evaluationError && (

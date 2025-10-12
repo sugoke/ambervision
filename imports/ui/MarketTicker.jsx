@@ -45,10 +45,18 @@ const extractUnderlyingsFromProducts = (products) => {
         }
         
         if (symbol) {
+          // Skip if symbol looks like a company name (has spaces or is too long)
+          // Valid tickers: "AAPL", "TSLA", "MSFT" (short, no spaces)
+          // Invalid: "Airbnb Inc", "Estee Lauder Companies Inc"
+          if (symbol.includes(' ') || symbol.length > 10) {
+            console.log(`[MarketTicker] Skipping invalid symbol: "${symbol}" (looks like company name)`);
+            return; // Skip this underlying
+          }
+
           // Normalize symbol format for EOD API with proper exchange mapping
           let normalizedSymbol;
           let currency = 'USD'; // Default
-          
+
           if (symbol.includes('.')) {
             normalizedSymbol = symbol;
           } else {
@@ -128,15 +136,21 @@ const extractUnderlyingsFromProducts = (products) => {
           if (item.definition.security) {
             const symbol = item.definition.security.symbol;
             const name = item.definition.security.name || symbol;
-            
+
             if (symbol) {
+              // Skip if symbol looks like a company name (has spaces or is too long)
+              if (symbol.includes(' ') || symbol.length > 10) {
+                console.log(`[MarketTicker] Skipping invalid symbol in payoffStructure: "${symbol}" (looks like company name)`);
+                return; // Skip this security
+              }
+
               // Use the same normalization logic as above
               let normalizedSymbol;
               let currency = 'USD'; // Default
-              
+
               if (symbol.includes('.')) {
                 normalizedSymbol = symbol;
-              } else {
+              } else{
                 // Map common European stocks to correct exchanges
                 const symbolUpper = symbol.toUpperCase();
                 let exchangeSuffix = '.US'; // Default
@@ -209,19 +223,25 @@ const extractUnderlyingsFromProducts = (products) => {
             item.definition.basket.forEach(security => {
               const symbol = security.symbol;
               const name = security.name || symbol;
-              
+
               if (symbol) {
+                // Skip if symbol looks like a company name (has spaces or is too long)
+                if (symbol.includes(' ') || symbol.length > 10) {
+                  console.log(`[MarketTicker] Skipping invalid symbol in basket: "${symbol}" (looks like company name)`);
+                  return; // Skip this security
+                }
+
                 // Use the same normalization logic as above
                 let normalizedSymbol;
                 let currency = 'USD'; // Default
-                
+
                 if (symbol.includes('.')) {
                   normalizedSymbol = symbol;
                 } else {
                   // Map common European stocks to correct exchanges
                   const symbolUpper = symbol.toUpperCase();
                   let exchangeSuffix = '.US'; // Default
-                  
+
                   // French stocks
                   if (['TTE', 'RNO', 'OR', 'AI', 'SAN', 'BN', 'CA', 'MC', 'GLE', 'ML', 'ORA', 'SAF', 'SU', 'UG', 'VIV'].includes(symbolUpper)) {
                     exchangeSuffix = '.PA';
@@ -452,10 +472,101 @@ const MarketTicker = () => {
   const productUnderlyings = useMemo(() => {
     return extractUnderlyingsFromProducts(products);
   }, [products]);
-  
-  const allSecurities = useMemo(() => {
-    return [...BASE_SECURITIES, ...productUnderlyings];
+
+  // State to track validated product underlyings
+  const [validatedProductUnderlyings, setValidatedProductUnderlyings] = useState([]);
+  const [validationComplete, setValidationComplete] = useState(false);
+
+  // Validate product underlyings with EOD API when they change
+  useEffect(() => {
+    if (productUnderlyings.length === 0) {
+      setValidatedProductUnderlyings([]);
+      setValidationComplete(true);
+      return;
+    }
+
+    // Pre-filter to only include symbols that look like valid ticker formats
+    // Valid formats: "AAPL.US", "TSLA.US", "GSPC.INDX", "BTC-USD.CC", etc.
+    // Invalid: "Airbnb Inc", "Estee Lauder Companies Inc" (company names)
+    const isValidTickerFormat = (symbol) => {
+      if (!symbol || typeof symbol !== 'string') return false;
+
+      // Must contain a dot (exchange suffix) OR a dash (forex/crypto)
+      // Examples: AAPL.US, EUR-USD.FOREX, BTC-USD.CC
+      const hasExchange = symbol.includes('.');
+      const hasDash = symbol.includes('-');
+
+      // Must not have spaces (company names have spaces)
+      const hasSpaces = symbol.includes(' ');
+
+      // Must be reasonably short (ticker symbols are typically 1-6 chars before exchange)
+      const parts = symbol.split('.');
+      const tickerPart = parts[0];
+      const isReasonableLength = tickerPart.length <= 10;
+
+      return (hasExchange || hasDash) && !hasSpaces && isReasonableLength;
+    };
+
+    // Filter to only valid-looking tickers before validation
+    const preFilteredUnderlyings = productUnderlyings.filter(u => {
+      const isValid = isValidTickerFormat(u.symbol);
+      if (!isValid) {
+        console.log(`[MarketTicker] Pre-filter rejected: "${u.symbol}" (looks like company name, not ticker)`);
+      }
+      return isValid;
+    });
+
+    if (preFilteredUnderlyings.length === 0) {
+      console.log('[MarketTicker] No valid ticker symbols found after pre-filter');
+      setValidatedProductUnderlyings([]);
+      setValidationComplete(true);
+      return;
+    }
+
+    // Reset validation status
+    setValidationComplete(false);
+
+    // Extract symbols to validate
+    const symbolsToValidate = preFilteredUnderlyings.map(u => u.symbol);
+
+    console.log(`[MarketTicker] Validating ${symbolsToValidate.length} product underlyings with EOD...`);
+
+    // Call server validation method
+    Meteor.call('tickerCache.validateTickers', symbolsToValidate, (error, result) => {
+      if (error) {
+        console.error('[MarketTicker] Validation error:', error);
+        // On error, don't include any - better to show nothing than invalid tickers
+        setValidatedProductUnderlyings([]);
+        setValidationComplete(true);
+        return;
+      }
+
+      if (result && result.success) {
+        // Filter to only include valid tickers
+        const validSymbols = new Set(result.validTickers);
+        const validUnderlyings = preFilteredUnderlyings.filter(u => validSymbols.has(u.symbol));
+
+        console.log(`[MarketTicker] Validation complete: ${validUnderlyings.length}/${preFilteredUnderlyings.length} tickers are valid`);
+
+        if (result.invalidTickers.length > 0) {
+          console.log('[MarketTicker] Invalid tickers excluded:', result.invalidTickers.map(t => `${t.symbol} (${t.reason})`));
+        }
+
+        setValidatedProductUnderlyings(validUnderlyings);
+      } else {
+        // On failure, don't include any
+        console.warn('[MarketTicker] Validation failed, excluding all product underlyings');
+        setValidatedProductUnderlyings([]);
+      }
+
+      setValidationComplete(true);
+    });
   }, [productUnderlyings]);
+
+  const allSecurities = useMemo(() => {
+    // Use validated product underlyings instead of raw ones
+    return [...BASE_SECURITIES, ...validatedProductUnderlyings];
+  }, [validatedProductUnderlyings]);
   
   // Initialize with fallback data immediately to prevent loading delays
   const initialData = useMemo(() => allSecurities.map(security => ({
