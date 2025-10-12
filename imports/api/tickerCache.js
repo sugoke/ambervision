@@ -4,6 +4,7 @@ import { check, Match } from 'meteor/check';
 import { HTTP } from 'meteor/http';
 import { CryptoApiHelper } from './cryptoApi';
 import { MarketDataCacheCollection } from './marketDataCache';
+import { validateTickerFormat, normalizeTickerSymbol, getExchangeName, extractExchange } from '/imports/utils/tickerUtils';
 
 // Ticker price cache collection
 export const TickerPriceCacheCollection = new Mongo.Collection('tickerPriceCache');
@@ -607,35 +608,73 @@ if (Meteor.isServer) {
         // Test each ticker by attempting to fetch price data
         for (const symbol of symbols) {
           try {
+            // First validate format
+            const formatValidation = validateTickerFormat(symbol);
+            if (!formatValidation.valid) {
+              invalidTickers.push({
+                symbol,
+                valid: false,
+                reason: `Invalid format: ${formatValidation.reason}`,
+                suggestion: 'Check if ticker contains spaces or is too long'
+              });
+              console.log(`  ✗ ${symbol}: Invalid format (${formatValidation.reason})`);
+              continue;
+            }
+
             // Try to fetch price from EOD API
             const priceData = await TickerCacheHelpers.fetchPriceFromEOD(symbol);
 
             if (priceData && priceData.price > 0) {
               // Ticker is valid - has real price data
+              const exchange = extractExchange(symbol);
+              const exchangeName = exchange ? getExchangeName(exchange) : 'Unknown';
+
               validTickers.push({
                 symbol,
                 valid: true,
                 price: priceData.price,
+                exchange: exchangeName,
                 reason: 'Valid price data from EOD'
               });
-              console.log(`  ✓ ${symbol}: Valid (price: ${priceData.price})`);
+              console.log(`  ✓ ${symbol}: Valid (${exchangeName}, price: $${priceData.price.toFixed(2)})`);
             } else {
               // Ticker returned no valid price data
+              const exchange = extractExchange(symbol);
+              let suggestion = 'Verify ticker symbol and exchange suffix';
+
+              if (!exchange || exchange === 'US') {
+                suggestion = 'May need correct exchange suffix (e.g., NOVO-B.CO for Danish stocks, SAP.DE for German stocks)';
+              }
+
               invalidTickers.push({
                 symbol,
                 valid: false,
-                reason: 'No valid price data from EOD API'
+                reason: 'No valid price data from EOD API',
+                suggestion: suggestion
               });
-              console.log(`  ✗ ${symbol}: Invalid (no price data)`);
+              console.log(`  ✗ ${symbol}: Invalid (no price data). ${suggestion}`);
             }
           } catch (error) {
             // Ticker fetch failed
+            let reason = `EOD API error: ${error.message}`;
+            let suggestion = 'Check ticker symbol and exchange suffix';
+
+            // Provide more specific suggestions based on error
+            if (error.message.includes('404') || error.message.includes('not found')) {
+              reason = 'Ticker not found on EOD API';
+              suggestion = 'Verify ticker symbol or try different exchange suffix';
+            } else if (error.message.includes('403') || error.message.includes('auth')) {
+              reason = 'API authentication failed';
+              suggestion = 'Check EOD API credentials or rate limits';
+            }
+
             invalidTickers.push({
               symbol,
               valid: false,
-              reason: `EOD API error: ${error.message}`
+              reason: reason,
+              suggestion: suggestion
             });
-            console.log(`  ✗ ${symbol}: Invalid (error: ${error.message})`);
+            console.log(`  ✗ ${symbol}: ${reason}. ${suggestion}`);
           }
 
           // Small delay to avoid overwhelming the API
@@ -644,13 +683,26 @@ if (Meteor.isServer) {
 
         console.log(`[TickerValidation] Complete: ${validTickers.length} valid, ${invalidTickers.length} invalid`);
 
+        // Log summary of invalid tickers with suggestions
+        if (invalidTickers.length > 0) {
+          console.log('[TickerValidation] Invalid tickers summary:');
+          invalidTickers.forEach(t => {
+            console.log(`  - ${t.symbol}: ${t.reason}`);
+            if (t.suggestion) console.log(`    💡 ${t.suggestion}`);
+          });
+        }
+
         return {
           success: true,
           totalTested: symbols.length,
           validCount: validTickers.length,
           invalidCount: invalidTickers.length,
           validTickers: validTickers.map(t => t.symbol),
-          invalidTickers: invalidTickers.map(t => ({ symbol: t.symbol, reason: t.reason })),
+          invalidTickers: invalidTickers.map(t => ({
+            symbol: t.symbol,
+            reason: t.reason,
+            suggestion: t.suggestion
+          })),
           details: [...validTickers, ...invalidTickers]
         };
       } catch (error) {

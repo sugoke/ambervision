@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useFind, useSubscribe } from 'meteor/react-meteor-data';
 import { ProductsCollection } from '/imports/api/products';
+import { normalizeTickerSymbol, validateTickerFormat, getCurrencyFromTicker } from '/imports/utils/tickerUtils';
 
 // Define the base securities we want to track with fallback data - static constant
 // EOD ticker formats:
@@ -45,76 +46,23 @@ const extractUnderlyingsFromProducts = (products) => {
         }
         
         if (symbol) {
-          // Skip if symbol looks like a company name (has spaces or is too long)
-          // Valid tickers: "AAPL", "TSLA", "MSFT" (short, no spaces)
-          // Invalid: "Airbnb Inc", "Estee Lauder Companies Inc"
-          if (symbol.includes(' ') || symbol.length > 10) {
-            console.log(`[MarketTicker] Skipping invalid symbol: "${symbol}" (looks like company name)`);
+          // Validate ticker format
+          const validation = validateTickerFormat(symbol);
+          if (!validation.valid) {
+            console.log(`[MarketTicker] Skipping invalid symbol: "${symbol}" (${validation.reason})`);
             return; // Skip this underlying
           }
 
-          // Normalize symbol format for EOD API with proper exchange mapping
-          let normalizedSymbol;
-          let currency = 'USD'; // Default
+          // Normalize symbol format for EOD API using centralized utility
+          const normalizedSymbol = normalizeTickerSymbol(symbol, { name });
+          if (!normalizedSymbol) {
+            console.log(`[MarketTicker] Failed to normalize symbol: "${symbol}"`);
+            return;
+          }
 
-          if (symbol.includes('.')) {
-            normalizedSymbol = symbol;
-          } else {
-            // Map common European stocks to correct exchanges
-            const symbolUpper = symbol.toUpperCase();
-            let exchangeSuffix = '.US'; // Default
-            
-            // French stocks
-            if (['TTE', 'RNO', 'OR', 'AI', 'SAN', 'BN', 'CA', 'MC', 'GLE', 'ML', 'ORA', 'SAF', 'SU', 'UG', 'VIV'].includes(symbolUpper)) {
-              exchangeSuffix = '.PA';
-              currency = 'EUR';
-            }
-            // German stocks
-            else if (['SAP', 'VOW3', 'ADS', 'BMW', 'DAI', 'BAS', 'ALV', 'DTE', 'SIE', 'MRK', 'IFX', 'FRE', 'HEI', 'CON', 'LIN'].includes(symbolUpper)) {
-              exchangeSuffix = '.DE';
-              currency = 'EUR';
-            }
-            // Dutch stocks
-            else if (['ASML', 'RDSA', 'UNA', 'PHIA', 'ING', 'ABN', 'KPN', 'RAND', 'DSM', 'HEIA'].includes(symbolUpper)) {
-              exchangeSuffix = '.AS';
-              currency = 'EUR';
-            }
-            // Italian stocks
-            else if (['ENI', 'ISP', 'UCG', 'TIT', 'ENEL', 'G', 'MB', 'RACE', 'SRG', 'FCA'].includes(symbolUpper)) {
-              exchangeSuffix = '.MI';
-              currency = 'EUR';
-            }
-            // Swiss stocks
-            else if (['NESN', 'ROG', 'NOVN', 'UHR', 'CFR', 'ABBN', 'SREN', 'GIVN', 'ZURN', 'LONN'].includes(symbolUpper)) {
-              exchangeSuffix = '.SW';
-              currency = 'CHF';
-            }
-            // UK stocks
-            else if (['VOD', 'BP', 'RDSA', 'GSK', 'AZN', 'ULVR', 'DGE', 'RIO', 'BHP', 'HSBA'].includes(symbolUpper)) {
-              exchangeSuffix = '.L';
-              currency = 'GBP';
-            }
-            
-            normalizedSymbol = `${symbol}${exchangeSuffix}`;
-          }
-          
-          // Determine currency based on exchange if not already set
-          if (normalizedSymbol.includes('.INDX')) {
-            if (normalizedSymbol.startsWith('STOXX') || normalizedSymbol.startsWith('FCHI') || normalizedSymbol.startsWith('GDAXI')) {
-              currency = 'EUR';
-            } else if (normalizedSymbol.startsWith('N225')) {
-              currency = 'JPY';
-            } else if (normalizedSymbol.startsWith('FTSE')) {
-              currency = 'GBP';
-            }
-          } else if (normalizedSymbol.includes('.PA') || normalizedSymbol.includes('.DE') || normalizedSymbol.includes('.AS') || normalizedSymbol.includes('.MI')) {
-            currency = 'EUR';
-          } else if (normalizedSymbol.includes('.SW')) {
-            currency = 'CHF';
-          } else if (normalizedSymbol.includes('.L')) {
-            currency = 'GBP';
-          }
-          
+          // Get currency from normalized ticker
+          const currency = getCurrencyFromTicker(normalizedSymbol);
+
           if (!underlyingsMap.has(normalizedSymbol)) {
             underlyingsMap.set(normalizedSymbol, {
               symbol: normalizedSymbol,
@@ -138,74 +86,23 @@ const extractUnderlyingsFromProducts = (products) => {
             const name = item.definition.security.name || symbol;
 
             if (symbol) {
-              // Skip if symbol looks like a company name (has spaces or is too long)
-              if (symbol.includes(' ') || symbol.length > 10) {
-                console.log(`[MarketTicker] Skipping invalid symbol in payoffStructure: "${symbol}" (looks like company name)`);
+              // Validate ticker format
+              const validation = validateTickerFormat(symbol);
+              if (!validation.valid) {
+                console.log(`[MarketTicker] Skipping invalid symbol in payoffStructure: "${symbol}" (${validation.reason})`);
                 return; // Skip this security
               }
 
-              // Use the same normalization logic as above
-              let normalizedSymbol;
-              let currency = 'USD'; // Default
+              // Normalize symbol format for EOD API using centralized utility
+              const normalizedSymbol = normalizeTickerSymbol(symbol, { name });
+              if (!normalizedSymbol) {
+                console.log(`[MarketTicker] Failed to normalize symbol in payoffStructure: "${symbol}"`);
+                return;
+              }
 
-              if (symbol.includes('.')) {
-                normalizedSymbol = symbol;
-              } else{
-                // Map common European stocks to correct exchanges
-                const symbolUpper = symbol.toUpperCase();
-                let exchangeSuffix = '.US'; // Default
-                
-                // French stocks
-                if (['TTE', 'RNO', 'OR', 'AI', 'SAN', 'BN', 'CA', 'MC', 'GLE', 'ML', 'ORA', 'SAF', 'SU', 'UG', 'VIV'].includes(symbolUpper)) {
-                  exchangeSuffix = '.PA';
-                  currency = 'EUR';
-                }
-                // German stocks
-                else if (['SAP', 'VOW3', 'ADS', 'BMW', 'DAI', 'BAS', 'ALV', 'DTE', 'SIE', 'MRK', 'IFX', 'FRE', 'HEI', 'CON', 'LIN'].includes(symbolUpper)) {
-                  exchangeSuffix = '.DE';
-                  currency = 'EUR';
-                }
-                // Dutch stocks
-                else if (['ASML', 'RDSA', 'UNA', 'PHIA', 'ING', 'ABN', 'KPN', 'RAND', 'DSM', 'HEIA'].includes(symbolUpper)) {
-                  exchangeSuffix = '.AS';
-                  currency = 'EUR';
-                }
-                // Italian stocks
-                else if (['ENI', 'ISP', 'UCG', 'TIT', 'ENEL', 'G', 'MB', 'RACE', 'SRG', 'FCA'].includes(symbolUpper)) {
-                  exchangeSuffix = '.MI';
-                  currency = 'EUR';
-                }
-                // Swiss stocks
-                else if (['NESN', 'ROG', 'NOVN', 'UHR', 'CFR', 'ABBN', 'SREN', 'GIVN', 'ZURN', 'LONN'].includes(symbolUpper)) {
-                  exchangeSuffix = '.SW';
-                  currency = 'CHF';
-                }
-                // UK stocks
-                else if (['VOD', 'BP', 'RDSA', 'GSK', 'AZN', 'ULVR', 'DGE', 'RIO', 'BHP', 'HSBA'].includes(symbolUpper)) {
-                  exchangeSuffix = '.L';
-                  currency = 'GBP';
-                }
-                
-                normalizedSymbol = `${symbol}${exchangeSuffix}`;
-              }
-              
-              // Determine currency based on exchange if not already set
-              if (normalizedSymbol.includes('.INDX')) {
-                if (normalizedSymbol.startsWith('STOXX') || normalizedSymbol.startsWith('FCHI') || normalizedSymbol.startsWith('GDAXI')) {
-                  currency = 'EUR';
-                } else if (normalizedSymbol.startsWith('N225')) {
-                  currency = 'JPY';
-                } else if (normalizedSymbol.startsWith('FTSE')) {
-                  currency = 'GBP';
-                }
-              } else if (normalizedSymbol.includes('.PA') || normalizedSymbol.includes('.DE') || normalizedSymbol.includes('.AS') || normalizedSymbol.includes('.MI')) {
-                currency = 'EUR';
-              } else if (normalizedSymbol.includes('.SW')) {
-                currency = 'CHF';
-              } else if (normalizedSymbol.includes('.L')) {
-                currency = 'GBP';
-              }
-              
+              // Get currency from normalized ticker
+              const currency = getCurrencyFromTicker(normalizedSymbol);
+
               if (!underlyingsMap.has(normalizedSymbol)) {
                 underlyingsMap.set(normalizedSymbol, {
                   symbol: normalizedSymbol,
@@ -225,74 +122,23 @@ const extractUnderlyingsFromProducts = (products) => {
               const name = security.name || symbol;
 
               if (symbol) {
-                // Skip if symbol looks like a company name (has spaces or is too long)
-                if (symbol.includes(' ') || symbol.length > 10) {
-                  console.log(`[MarketTicker] Skipping invalid symbol in basket: "${symbol}" (looks like company name)`);
+                // Validate ticker format
+                const validation = validateTickerFormat(symbol);
+                if (!validation.valid) {
+                  console.log(`[MarketTicker] Skipping invalid symbol in basket: "${symbol}" (${validation.reason})`);
                   return; // Skip this security
                 }
 
-                // Use the same normalization logic as above
-                let normalizedSymbol;
-                let currency = 'USD'; // Default
-
-                if (symbol.includes('.')) {
-                  normalizedSymbol = symbol;
-                } else {
-                  // Map common European stocks to correct exchanges
-                  const symbolUpper = symbol.toUpperCase();
-                  let exchangeSuffix = '.US'; // Default
-
-                  // French stocks
-                  if (['TTE', 'RNO', 'OR', 'AI', 'SAN', 'BN', 'CA', 'MC', 'GLE', 'ML', 'ORA', 'SAF', 'SU', 'UG', 'VIV'].includes(symbolUpper)) {
-                    exchangeSuffix = '.PA';
-                    currency = 'EUR';
-                  }
-                  // German stocks
-                  else if (['SAP', 'VOW3', 'ADS', 'BMW', 'DAI', 'BAS', 'ALV', 'DTE', 'SIE', 'MRK', 'IFX', 'FRE', 'HEI', 'CON', 'LIN'].includes(symbolUpper)) {
-                    exchangeSuffix = '.DE';
-                    currency = 'EUR';
-                  }
-                  // Dutch stocks
-                  else if (['ASML', 'RDSA', 'UNA', 'PHIA', 'ING', 'ABN', 'KPN', 'RAND', 'DSM', 'HEIA'].includes(symbolUpper)) {
-                    exchangeSuffix = '.AS';
-                    currency = 'EUR';
-                  }
-                  // Italian stocks
-                  else if (['ENI', 'ISP', 'UCG', 'TIT', 'ENEL', 'G', 'MB', 'RACE', 'SRG', 'FCA'].includes(symbolUpper)) {
-                    exchangeSuffix = '.MI';
-                    currency = 'EUR';
-                  }
-                  // Swiss stocks
-                  else if (['NESN', 'ROG', 'NOVN', 'UHR', 'CFR', 'ABBN', 'SREN', 'GIVN', 'ZURN', 'LONN'].includes(symbolUpper)) {
-                    exchangeSuffix = '.SW';
-                    currency = 'CHF';
-                  }
-                  // UK stocks
-                  else if (['VOD', 'BP', 'RDSA', 'GSK', 'AZN', 'ULVR', 'DGE', 'RIO', 'BHP', 'HSBA'].includes(symbolUpper)) {
-                    exchangeSuffix = '.L';
-                    currency = 'GBP';
-                  }
-                  
-                  normalizedSymbol = `${symbol}${exchangeSuffix}`;
+                // Normalize symbol format for EOD API using centralized utility
+                const normalizedSymbol = normalizeTickerSymbol(symbol, { name });
+                if (!normalizedSymbol) {
+                  console.log(`[MarketTicker] Failed to normalize symbol in basket: "${symbol}"`);
+                  return;
                 }
-                
-                // Determine currency based on exchange if not already set
-                if (normalizedSymbol.includes('.INDX')) {
-                  if (normalizedSymbol.startsWith('STOXX') || normalizedSymbol.startsWith('FCHI') || normalizedSymbol.startsWith('GDAXI')) {
-                    currency = 'EUR';
-                  } else if (normalizedSymbol.startsWith('N225')) {
-                    currency = 'JPY';
-                  } else if (normalizedSymbol.startsWith('FTSE')) {
-                    currency = 'GBP';
-                  }
-                } else if (normalizedSymbol.includes('.PA') || normalizedSymbol.includes('.DE') || normalizedSymbol.includes('.AS') || normalizedSymbol.includes('.MI')) {
-                  currency = 'EUR';
-                } else if (normalizedSymbol.includes('.SW')) {
-                  currency = 'CHF';
-                } else if (normalizedSymbol.includes('.L')) {
-                  currency = 'GBP';
-                }
-                
+
+                // Get currency from normalized ticker
+                const currency = getCurrencyFromTicker(normalizedSymbol);
+
                 if (!underlyingsMap.has(normalizedSymbol)) {
                   underlyingsMap.set(normalizedSymbol, {
                     symbol: normalizedSymbol,
