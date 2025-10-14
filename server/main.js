@@ -38,7 +38,12 @@ import { CurrencyCache } from '/imports/api/currencyCache';
 import './testTickerDiagnosis'; // Ticker diagnosis tool
 import './testSecurityData'; // Check if securityData.ticker exists
 import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
+import { PasswordResetTokensCollection, PasswordResetHelpers } from '/imports/api/passwordResetTokens';
+import { EmailService } from '/imports/api/emailService';
 import { AllocationsCollection } from '/imports/api/allocations';
+import { NotificationsCollection, NotificationHelpers } from '/imports/api/notifications';
+import { CronJobLogsCollection } from '/imports/api/cronJobLogs';
+import { initializeCronJobs } from './cron/jobs';
 // Schedule is now included in reports, no separate collection needed
 import { EquityHoldingsCollection, EquityHoldingsHelpers } from '/imports/api/equityHoldings';
 import { MarketDataHelpers, MarketDataCacheCollection } from '/imports/api/marketDataCache';
@@ -47,6 +52,7 @@ import '/imports/api/reports';
 import '/imports/api/templateReports';
 import '/imports/api/underlyingsAnalysis';
 import '/imports/api/riskAnalysis';
+import '/imports/api/termSheetExtractor';
 import './publications/underlyingsAnalysis';
 import './publications'; // Import all publications from index.js
 
@@ -198,6 +204,15 @@ Meteor.startup(async () => {
     }
   } catch (error) {
     console.error('❌ Error checking/creating admin user:', error);
+  }
+
+  // Initialize cron jobs for nightly operations
+  console.log('⏰ Initializing cron jobs...');
+  try {
+    initializeCronJobs();
+    console.log('✅ Cron jobs initialized successfully');
+  } catch (error) {
+    console.error('❌ Error initializing cron jobs:', error);
   }
 
   // We publish the entire Links collection to all clients.
@@ -1513,6 +1528,153 @@ Meteor.methods({
     } catch (error) {
       console.error('Error in auth.getCurrentUser:', error);
       return null;
+    }
+  },
+
+  /**
+   * Request password reset - Generate token and send email
+   * Always returns success to prevent email enumeration attacks
+   */
+  async 'auth.requestPasswordReset'(email) {
+    check(email, String);
+
+    try {
+      // Normalize email
+      const normalizedEmail = email.toLowerCase().trim();
+
+      // Find user by email
+      const user = await UsersCollection.findOneAsync({ email: normalizedEmail });
+
+      if (user) {
+        // Generate reset token
+        const { token, expiresAt } = await PasswordResetHelpers.createResetToken(user._id, normalizedEmail);
+
+        // Send reset email
+        try {
+          await EmailService.sendPasswordResetEmail(normalizedEmail, token, user.profile?.firstName);
+          console.log(`Password reset email sent to ${normalizedEmail}`);
+        } catch (emailError) {
+          console.error('Failed to send password reset email:', emailError);
+          // Don't throw error to prevent email enumeration
+          // But log it for debugging
+        }
+      } else {
+        console.log(`Password reset requested for non-existent email: ${normalizedEmail}`);
+        // Don't reveal that user doesn't exist
+      }
+
+      // Always return success (prevents email enumeration)
+      return {
+        success: true,
+        message: 'If an account exists with this email, you will receive password reset instructions shortly.'
+      };
+
+    } catch (error) {
+      console.error('Error in auth.requestPasswordReset:', error);
+      // Still return success to prevent information leakage
+      return {
+        success: true,
+        message: 'If an account exists with this email, you will receive password reset instructions shortly.'
+      };
+    }
+  },
+
+  /**
+   * Validate password reset token
+   */
+  async 'auth.validateResetToken'(token) {
+    check(token, String);
+
+    try {
+      const tokenData = await PasswordResetHelpers.validateToken(token);
+
+      if (!tokenData) {
+        return {
+          valid: false,
+          error: 'Invalid or expired reset token'
+        };
+      }
+
+      // Token is valid
+      return {
+        valid: true,
+        email: tokenData.email
+      };
+
+    } catch (error) {
+      console.error('Error in auth.validateResetToken:', error);
+      return {
+        valid: false,
+        error: 'Error validating reset token'
+      };
+    }
+  },
+
+  /**
+   * Reset password using valid token
+   */
+  async 'auth.resetPassword'(token, newPassword) {
+    check(token, String);
+    check(newPassword, String);
+
+    try {
+      // Validate token
+      const tokenData = await PasswordResetHelpers.validateToken(token);
+
+      if (!tokenData) {
+        throw new Meteor.Error('invalid-token', 'Invalid or expired reset token');
+      }
+
+      // Validate password strength (basic validation)
+      if (newPassword.length < 6) {
+        throw new Meteor.Error('weak-password', 'Password must be at least 6 characters long');
+      }
+
+      // Get user
+      const user = await UsersCollection.findOneAsync(tokenData.userId);
+      if (!user) {
+        throw new Meteor.Error('user-not-found', 'User not found');
+      }
+
+      // Update password
+      await UsersCollection.updateAsync(tokenData.userId, {
+        $set: {
+          password: UserHelpers.hashPassword(newPassword)
+        }
+      });
+
+      // Mark token as used
+      await PasswordResetHelpers.markTokenAsUsed(token);
+
+      // Invalidate all active sessions for security
+      await SessionHelpers.invalidateAllUserSessions(tokenData.userId);
+
+      // Invalidate any other unused reset tokens for this user
+      await PasswordResetHelpers.invalidateUserTokens(tokenData.userId);
+
+      console.log(`Password successfully reset for user ${tokenData.userId} (${tokenData.email})`);
+
+      // Send confirmation email (optional, don't throw if it fails)
+      try {
+        await EmailService.sendPasswordChangedEmail(tokenData.email, user.profile?.firstName);
+      } catch (emailError) {
+        console.error('Failed to send password changed confirmation:', emailError);
+      }
+
+      return {
+        success: true,
+        message: 'Password successfully reset. You can now log in with your new password.'
+      };
+
+    } catch (error) {
+      console.error('Error in auth.resetPassword:', error);
+
+      if (error.error) {
+        // Re-throw Meteor.Error
+        throw error;
+      }
+
+      throw new Meteor.Error('reset-failed', 'Failed to reset password', error.message);
     }
   },
 

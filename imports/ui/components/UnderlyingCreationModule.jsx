@@ -273,7 +273,65 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
                     </div>
                     <div className="underlying-strike-cell">
                       {editingProduct ? (
-                        // Editable input field for edit mode
+                        // Editable input field for edit mode - ALWAYS show both strike and last price
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {/* Editable Strike Input */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={underlying.strike || 0}
+                              onChange={(e) => updateUnderlying(underlying.id, 'strike', parseFloat(e.target.value) || 0)}
+                              style={{
+                                padding: '6px 8px',
+                                border: '1px solid var(--border-color)',
+                                borderRadius: '4px',
+                                backgroundColor: 'var(--bg-primary)',
+                                color: 'var(--text-primary)',
+                                fontSize: '0.9rem',
+                                width: '100px',
+                                textAlign: 'right',
+                                fontWeight: 'bold'
+                              }}
+                              placeholder="0.00"
+                            />
+                            <div style={{
+                              fontSize: '0.7rem',
+                              color: 'var(--accent-color)',
+                              textAlign: 'center',
+                              fontWeight: '600'
+                            }}>
+                              Strike (Editable)
+                            </div>
+                          </div>
+
+                          {/* Show Last Price for Reference (Read-only) - ONLY if different from strike */}
+                          {underlying.securityData?.price?.price &&
+                           underlying.securityData.price.price !== underlying.strike &&
+                           underlying.securityData.price.price > 0 && (
+                            <div style={{
+                              padding: '6px 8px',
+                              border: '1px dashed var(--border-color)',
+                              borderRadius: '4px',
+                              backgroundColor: 'var(--bg-tertiary)',
+                              color: 'var(--text-secondary)',
+                              fontSize: '0.85rem',
+                              width: '100px',
+                              textAlign: 'right'
+                            }}>
+                              <div>{underlying.securityData.price.price.toFixed(2)}</div>
+                              <div style={{
+                                fontSize: '0.65rem',
+                                color: 'var(--text-muted)',
+                                marginTop: '2px'
+                              }}>
+                                Last Price
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        // Editable field for create mode - ALWAYS allow manual entry
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                           <input
                             type="number"
@@ -288,37 +346,20 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
                               color: 'var(--text-primary)',
                               fontSize: '0.9rem',
                               width: '100px',
-                              textAlign: 'right'
+                              textAlign: 'right',
+                              fontWeight: underlying.securityData?.tradeDatePrice?.price ? 'bold' : 'normal'
                             }}
                             placeholder="0.00"
                           />
-                          <div style={{ 
-                            fontSize: '0.7rem', 
-                            color: 'var(--text-muted)', 
+                          <div style={{
+                            fontSize: '0.7rem',
+                            color: underlying.securityData?.tradeDatePrice?.price ? 'var(--accent-color)' : 'var(--text-muted)',
+                            marginTop: '2px',
                             textAlign: 'center'
                           }}>
-                            Editable
-                          </div>
-                        </div>
-                      ) : (
-                        // Read-only display for create mode
-                        <div>
-                          <div className="trade-date-price-display" style={{
-                            fontWeight: underlying.securityData?.tradeDatePrice?.price ? 'bold' : 'normal',
-                            color: underlying.securityData?.tradeDatePrice?.price ? 'var(--accent-color)' : 'var(--text-primary)'
-                          }}>
-                            {underlying.securityData?.tradeDatePrice?.price?.toFixed(2) || 
-                             underlying.securityData?.price?.price?.toFixed(2) || 
-                             '0.00'}
-                          </div>
-                          <div style={{ 
-                            fontSize: '0.7rem', 
-                            color: underlying.securityData?.tradeDatePrice?.price ? 'var(--accent-color)' : 'var(--text-muted)', 
-                            marginTop: '2px'
-                          }}>
-                            {productDetails?.tradeDate && underlying.securityData?.tradeDatePrice?.price ? 
+                            {productDetails?.tradeDate && underlying.securityData?.tradeDatePrice?.price ?
                               `${new Date(productDetails?.tradeDate).toLocaleDateString()}` :
-                              'Last available'
+                              'Manual entry'
                             }
                           </div>
                         </div>

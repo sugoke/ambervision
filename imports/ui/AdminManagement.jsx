@@ -6,6 +6,8 @@ import IssuerManagementComponent from './IssuerManagementComponent.jsx';
 import SystemOperations from './SystemOperations.jsx';
 import MarketDataManager from './MarketDataManager.jsx';
 import Prices from './Prices.jsx';
+import CronJobsDashboard from './CronJobsDashboard.jsx';
+import NotificationsPage from './NotificationsPage.jsx';
 
 const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => {
   // Determine initial active tab based on currentSection
@@ -17,6 +19,8 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
       case 'price-data-upload': return 'prices';
       case 'system-operations': return 'system';
       case 'market-data': return 'market';
+      case 'cron-jobs': return 'cron';
+      case 'notifications': return 'notifications';
       case 'administration': return 'banks'; // Default to first tab
       default: return 'banks';
     }
@@ -34,6 +38,8 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
         case 'price-data-upload': return 'prices';
         case 'system-operations': return 'system';
         case 'market-data': return 'market';
+        case 'cron-jobs': return 'cron';
+        case 'notifications': return 'notifications';
         case 'administration': return 'banks'; // Default to first tab
         default: return 'banks';
       }
@@ -90,6 +96,18 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
       label: 'Market Data',
       icon: '💹',
       requiredRole: 'admin'
+    },
+    {
+      id: 'cron',
+      label: 'Cron Jobs',
+      icon: '⏰',
+      requiredRole: 'admin'
+    },
+    {
+      id: 'notifications',
+      label: 'Notifications',
+      icon: '🔔',
+      requiredRole: 'admin'
     }
   ];
 
@@ -108,6 +126,10 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
         return <SystemOperations key="system" user={user} />;
       case 'market':
         return <MarketDataManager key="market" user={user} />;
+      case 'cron':
+        return <CronJobsDashboard key="cron" user={user} />;
+      case 'notifications':
+        return <NotificationsPage key="notifications" currentUser={user} />;
       default:
         return null;
     }

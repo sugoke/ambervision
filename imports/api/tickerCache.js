@@ -657,14 +657,19 @@ if (Meteor.isServer) {
       }
     },
 
-    // Clear invalid prices (price <= 0) from cache
+    // Clear invalid prices (price <= 0, null, or undefined) from cache
     async 'tickerCache.clearInvalidPrices'() {
       try {
         const removed = await TickerPriceCacheCollection.removeAsync({
-          price: { $lte: 0 }
+          $or: [
+            { price: { $lte: 0 } },
+            { price: null },
+            { price: { $exists: false } },
+            { price: { $type: 'undefined' } }
+          ]
         });
 
-        console.log(`[TickerCache] Cleared ${removed} invalid price entries (price <= 0)`);
+        console.log(`[TickerCache] Cleared ${removed} invalid price entries (price <= 0, null, or undefined)`);
 
         return {
           success: true,

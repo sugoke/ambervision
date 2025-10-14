@@ -14,6 +14,7 @@ import ProfileManagement from './ProfileManagement.jsx';
 import ProductAllocation from './ProductAllocation.jsx';
 import RightNavigationMenu from './RightNavigationMenu.jsx';
 import RightSettingsMenu from './RightSettingsMenu.jsx';
+import NotificationsPage from './NotificationsPage.jsx';
 import { USER_ROLES } from '/imports/api/users';
 import TestInput from './TestInput.jsx';
 import UnderlyingsView from './UnderlyingsView.jsx';
@@ -272,7 +273,11 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
       case 'birthday-calendar':
         if (!hasAccess(USER_ROLES.ADMIN)) return <div>Access denied</div>;
         return <BirthdayCalendar user={user} />;
-      
+
+      case 'notifications':
+        if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
+        return <NotificationsPage currentUser={user} />;
+
       default:
         return (
           <Dashboard 

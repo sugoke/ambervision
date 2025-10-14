@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import Login from './Login.jsx';
 import MainContent from './MainContent.jsx';
+import PasswordReset from './PasswordReset.jsx';
 import GlobalSearchBar from './components/GlobalSearchBar.jsx';
 import ViewAsFilter from './components/ViewAsFilter.jsx';
+import NotificationCenter from './NotificationCenter.jsx';
 import { ThemeProvider, useTheme } from './ThemeContext.jsx';
 import { ViewAsProvider } from './ViewAsContext.jsx';
 
@@ -19,10 +21,10 @@ const AppContent = () => {
   // Parse route from URL
   const parseRouteFromUrl = () => {
     if (typeof window === 'undefined') return { section: 'dashboard' };
-    
+
     const pathname = window.location.pathname;
     const hash = window.location.hash.slice(1);
-    
+
     // Check for report route: /report/:productId
     const reportMatch = pathname.match(/^\/report\/([a-zA-Z0-9]+)$/);
     if (reportMatch) {
@@ -30,13 +32,21 @@ const AppContent = () => {
       console.log('App: Found report route for product:', productId);
       return { section: 'report', productId };
     }
-    
+
+    // Check for password reset route: #reset-password?token=XXXXX
+    if (hash.startsWith('reset-password')) {
+      const urlParams = new URLSearchParams(hash.split('?')[1]);
+      const token = urlParams.get('token');
+      console.log('App: Found password reset route with token:', token ? 'present' : 'missing');
+      return { section: 'reset-password', token };
+    }
+
     // Fallback to hash-based routing
     if (hash) {
       console.log('App: Restoring currentSection from URL hash:', hash);
       return { section: hash };
     }
-    
+
     // Fallback to localStorage
     const storedSection = localStorage.getItem('currentSection') || 'dashboard';
     console.log('App: Restoring currentSection from localStorage:', storedSection);
@@ -282,8 +292,17 @@ const AppContent = () => {
                 <ViewAsFilter currentUser={user} />
               </div>
 
-              {/* User Login Info */}
-              <Login onUserChange={handleUserChange} compact={true} />
+              {/* Right section - Notification Center */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
+              }}>
+                <NotificationCenter
+                  currentUser={user}
+                  onViewAllClick={() => handleSectionChange('notifications')}
+                />
+              </div>
             </header>
 
             {/* Market Ticker - Lazy loaded for performance */}
@@ -320,14 +339,26 @@ const AppContent = () => {
           </div>
         )}
 
-        {/* Login Form Section - Only show when not logged in and not loading */}
-        {!user && !isAuthLoading && (
-          <section style={{ 
+        {/* Password Reset Page - Show regardless of login state */}
+        {!isAuthLoading && currentSection === 'reset-password' && (
+          <PasswordReset
+            token={currentRoute.token}
+            onComplete={() => {
+              // Return to login page
+              handleSectionChange('dashboard');
+              window.location.hash = '';
+            }}
+          />
+        )}
+
+        {/* Login Form Section - Only show when not logged in, not loading, and not on reset password page */}
+        {!user && !isAuthLoading && currentSection !== 'reset-password' && (
+          <section style={{
             padding: '0 1rem',
             background: theme === 'light' ? 'transparent' : 'transparent'
           }}>
-            <div style={{ 
-              maxWidth: '1400px', 
+            <div style={{
+              maxWidth: '1400px',
               margin: '0 auto',
               background: theme === 'light' ? 'rgba(255, 255, 255, 0.9)' : 'transparent',
               borderRadius: theme === 'light' ? '8px' : '0',
@@ -341,7 +372,28 @@ const AppContent = () => {
 
 
         {/* Main Content - Protected */}
-        {user && <MainContent user={user} currentSection={currentSection} setCurrentSection={handleSectionChange} onComponentLibraryStateChange={setIsComponentLibraryOpen} currentRoute={currentRoute} />}
+        {user && currentSection !== 'reset-password' && <MainContent user={user} currentSection={currentSection} setCurrentSection={handleSectionChange} onComponentLibraryStateChange={setIsComponentLibraryOpen} currentRoute={currentRoute} />}
+
+        {/* Spacer to prevent content from being hidden behind fixed bottom bar */}
+        {user && <div style={{ height: '60px' }} />}
+
+        {/* Fixed Bottom Bar - User Info and Logout */}
+        {user && (
+          <div style={{
+            position: 'fixed',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            zIndex: 1000,
+            background: theme === 'light' ? 'rgba(248, 249, 250, 0.95)' : 'var(--bg-secondary)',
+            borderTop: '1px solid var(--border-color)',
+            padding: '0.5rem 1rem',
+            backdropFilter: theme === 'light' ? 'blur(10px)' : 'none',
+            boxShadow: '0 -2px 4px rgba(0, 0, 0, 0.1)'
+          }}>
+            <Login onUserChange={handleUserChange} compact={true} />
+          </div>
+        )}
       </div>
   );
 };

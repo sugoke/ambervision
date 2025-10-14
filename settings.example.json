@@ -31,6 +31,12 @@
     "LOGO_DEV_API_TOKEN": "your_logo_dev_api_token_here",
     "ANTHROPIC_API_KEY": "your_anthropic_api_key_here",
 
+    "_comment_mailersend": "MailerSend email service configuration",
+    "MAILERSEND_API_TOKEN": "mlsn.your_mailersend_api_token_here",
+    "MAILERSEND_FROM_EMAIL": "noreply@yourdomain.com",
+    "MAILERSEND_FROM_NAME": "Amber Lake Partners",
+    "APP_URL": "http://localhost:3000",
+
     "_comment_seeding": "Control demo data seeding on startup",
     "seedDemoData": false
   }

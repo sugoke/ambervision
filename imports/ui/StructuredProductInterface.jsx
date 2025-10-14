@@ -28,6 +28,7 @@ import DroppedItem from './components/structured-product/drag-drop/DroppedItem.j
 import { ItemTypes } from './components/structured-product/ItemTypes.js';
 import { globalProductValidator } from '/imports/api/validators/productStructureValidator.js';
 import CustomDateInput from './components/CustomDateInput.jsx';
+import TermSheetUploader from './components/TermSheetUploader.jsx';
 
 
 // Column-based drop zone component
@@ -1526,6 +1527,151 @@ const StructuredProductInterface = ({
   // Get session ID for API calls
   const getSessionId = () => localStorage.getItem('sessionId');
 
+  // Handle term sheet extraction success
+  const handleTermSheetExtracted = useCallback(async (productId, extractedData) => {
+    console.log('StructuredProductInterface: Term sheet extracted successfully, productId:', productId);
+
+    try {
+      // Fetch the full product from database to get all fields
+      const product = await ProductsCollection.findOneAsync({ _id: productId });
+
+      if (!product) {
+        showError('Failed to load extracted product');
+        return;
+      }
+
+      // Load the extracted product data into the interface
+      // This is similar to loading an editingProduct
+
+      // Load basic product details
+      setProductDetails({
+        title: product.title || '',
+        isin: product.isin || '',
+        issuer: product.issuer || '',
+        currency: product.currency || 'USD',
+        tradeDate: product.tradeDate || '',
+        valueDate: product.valueDate || '',
+        finalObservation: product.finalObservation || product.finalObservationDate || '',
+        maturity: product.maturity || product.maturityDate || '',
+        productFamily: product.productFamily || '',
+        notional: product.notional || 100,
+        denomination: product.denomination || 1000,
+        couponFrequency: product.couponFrequency || 'quarterly',
+        underlyingMode: product.underlyingMode || 'single'
+      });
+
+      // Load structure if it exists
+      if (product.structure) {
+        console.log('Loading extracted product structure');
+        setDroppedItems(product.structure);
+      }
+
+      // Load underlyings and fetch current market prices
+      if (product.underlyings) {
+        // First, set the underlyings with their strike prices
+        const underlyingsWithStrikes = product.underlyings.map(u => ({
+          ...u,
+          // Ensure securityData exists but clear price field (we'll fetch fresh)
+          securityData: u.securityData ? {
+            ...u.securityData,
+            price: null  // Clear price so we fetch fresh market data
+          } : null
+        }));
+
+        setUnderlyings(underlyingsWithStrikes);
+
+        if (product.underlyings.length > 1) {
+          setBasketMode('basket');
+        }
+
+        // Fetch current market prices for each underlying
+        product.underlyings.forEach(async (underlying, index) => {
+          if (underlying.securityData) {
+            try {
+              const symbol = underlying.securityData.symbol || underlying.ticker;
+              const exchange = underlying.securityData.exchange;
+
+              // Fetch real-time price
+              const priceData = await Meteor.callAsync('eod.getRealTimePrice', symbol, exchange);
+              let lastPrice = 0;
+
+              if (priceData) {
+                if (typeof priceData === 'number') {
+                  lastPrice = priceData;
+                } else {
+                  lastPrice = priceData.close || priceData.price || priceData.last || 0;
+                }
+              }
+
+              // Update the underlying with the fetched price
+              if (lastPrice > 0) {
+                setUnderlyings(prev => prev.map((u, i) =>
+                  i === index ? {
+                    ...u,
+                    securityData: {
+                      ...u.securityData,
+                      price: { close: lastPrice, price: lastPrice }
+                    }
+                  } : u
+                ));
+              }
+            } catch (error) {
+              console.error(`Failed to fetch price for ${underlying.ticker}:`, error);
+            }
+          }
+        });
+      }
+
+      // Load schedule
+      if (product.observationSchedule) {
+        setObservationSchedule(product.observationSchedule);
+      }
+
+      if (product.maturity || product.maturityDate) {
+        setMaturityDate(product.maturity || product.maturityDate);
+      }
+
+      // Load final observation date
+      let finalObsDate = product.finalObservation || product.finalObservationDate;
+      if (!finalObsDate && product.observationSchedule && product.observationSchedule.length > 0) {
+        const lastObservation = product.observationSchedule[product.observationSchedule.length - 1];
+        if (lastObservation && (lastObservation.observationDate || lastObservation.date)) {
+          finalObsDate = lastObservation.observationDate || lastObservation.date;
+        }
+      }
+
+      if (finalObsDate) {
+        setFinalObservationDate(finalObsDate);
+      }
+
+      // Load template ID
+      if (product.templateId) {
+        setSelectedTemplateId(product.templateId);
+      } else if (product.template) {
+        setSelectedTemplateId(product.template);
+      }
+
+      // Load structure and schedule parameters
+      if (product.structureParams) {
+        setStructureParams(product.structureParams);
+      }
+
+      if (product.scheduleConfig) {
+        setScheduleConfig(product.scheduleConfig);
+      }
+
+      // Show success message and navigate to underlyings tab for review
+      showSuccess('Term sheet extracted successfully! Please review and edit the product details.');
+
+      // Switch to underlyings tab so user can review the extracted data
+      handleTabChange('underlyings');
+
+    } catch (error) {
+      console.error('Error loading extracted product:', error);
+      showError('Failed to load extracted product: ' + error.message);
+    }
+  }, [showError, showSuccess, handleTabChange]);
+
   // Auto-generate product title based on underlyings and parameters
   const generateProductTitle = useCallback(() => {
     try {
@@ -1733,13 +1879,42 @@ const StructuredProductInterface = ({
 
       default:
         return (
-          <TemplateSelector
-            onTemplateSelect={handleTemplateLoad}
-            user={user}
-            onTemplateLoad={handleTemplateLoad}
-            onTemplateNew={handleTemplateNew}
-            selectedTemplateId={selectedTemplateId}
-          />
+          <div>
+            {/* Template Selection */}
+            <TemplateSelector
+              onTemplateSelect={handleTemplateLoad}
+              user={user}
+              onTemplateLoad={handleTemplateLoad}
+              onTemplateNew={handleTemplateNew}
+              selectedTemplateId={selectedTemplateId}
+            />
+
+            {/* Divider */}
+            <div style={{
+              margin: '3rem 0',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '1rem'
+            }}>
+              <div style={{ flex: 1, height: '1px', background: 'var(--border-color)' }} />
+              <span style={{
+                color: 'var(--text-secondary)',
+                fontSize: '0.9rem',
+                fontWeight: '600',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em'
+              }}>
+                Or Extract from Term Sheet
+              </span>
+              <div style={{ flex: 1, height: '1px', background: 'var(--border-color)' }} />
+            </div>
+
+            {/* Term Sheet Uploader */}
+            <TermSheetUploader
+              onProductExtracted={handleTermSheetExtracted}
+              sessionId={getSessionId()}
+            />
+          </div>
         );
     }
   };

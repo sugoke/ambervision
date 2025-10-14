@@ -211,6 +211,87 @@ if (Meteor.isServer) {
     },
 
     /**
+     * Generate a new template report and process events/notifications
+     * This is the main method called by cron jobs and manual re-evaluation
+     *
+     * @param {Object} productData - Full product object
+     * @param {String} triggeredBy - Who triggered the evaluation ('system-cron', 'manual', userId)
+     * @returns {String} - Report ID
+     */
+    async 'templateReports.generate'(productData, triggeredBy = 'system') {
+      check(productData, Object);
+      check(triggeredBy, String);
+
+      console.log(`[templateReports.generate] Generating report for ${productData._id}, triggered by: ${triggeredBy}`);
+
+      // 1. Get previous report for event comparison
+      const previousReport = await TemplateReportsCollection.findOneAsync(
+        { productId: productData._id },
+        { sort: { createdAt: -1 } }
+      );
+
+      if (previousReport) {
+        console.log(`[templateReports.generate] Found previous report from ${previousReport.createdAt}`);
+      } else {
+        console.log(`[templateReports.generate] No previous report found (first evaluation)`);
+      }
+
+      // 2. Generate new report
+      // For system-triggered evaluations, use a system session
+      let sessionId;
+      if (triggeredBy === 'system-cron' || triggeredBy === 'system') {
+        // Find or create a system user session
+        const systemUser = await UsersCollection.findOneAsync({ role: 'superadmin' });
+        if (!systemUser) {
+          throw new Meteor.Error('system-error', 'No superadmin user found for system evaluation');
+        }
+
+        // Create a temporary session for system operations
+        const { SessionsCollection } = await import('./sessions.js');
+        const existingSession = await SessionsCollection.findOneAsync({ userId: systemUser._id });
+
+        if (existingSession) {
+          sessionId = existingSession._id;
+        } else {
+          sessionId = await SessionsCollection.insertAsync({
+            userId: systemUser._id,
+            createdAt: new Date(),
+            lastActivityAt: new Date(),
+            ipAddress: 'system',
+            userAgent: 'cron-job'
+          });
+        }
+      } else {
+        // For manual triggers, triggeredBy should be a sessionId
+        sessionId = triggeredBy;
+      }
+
+      const reportId = await Meteor.callAsync('templateReports.create', productData, sessionId);
+      const currentReport = await TemplateReportsCollection.findOneAsync(reportId);
+
+      console.log(`[templateReports.generate] New report created: ${reportId}`);
+
+      // 3. Detect events by comparing reports
+      const { EventDetector } = await import('./eventDetector.js');
+      const events = EventDetector.detectEvents(previousReport, currentReport, productData);
+
+      if (events && events.length > 0) {
+        console.log(`[templateReports.generate] Detected ${events.length} events:`, events.map(e => e.type));
+      } else {
+        console.log(`[templateReports.generate] No events detected`);
+      }
+
+      // 4. Process notifications
+      if (events && events.length > 0) {
+        const { NotificationService } = await import('./notificationService.js');
+        await NotificationService.processEvents(productData, events, triggeredBy);
+        console.log(`[templateReports.generate] Notifications processed`);
+      }
+
+      return reportId;
+    },
+
+    /**
      * Get latest report for a product
      */
     async 'templateReports.getLatest'(productId) {

@@ -454,18 +454,69 @@ const MarketTicker = () => {
     // Check if we have cached data that's still fresh (less than 15 minutes old)
     const now = new Date();
     const fifteenMinutesAgo = new Date(now.getTime() - 15 * 60 * 1000);
-    
+
     if (!forceRefresh && lastUpdateTime && lastUpdateTime > fifteenMinutesAgo) {
       return;
     }
-    
+
     // console.log('MarketTicker: Fetching fresh market data via server cache');
-    
+
     try {
       // Get symbols to fetch
       const symbols = securities.map(security => security.symbol);
 
-      console.log(`[MarketTicker] Fetching prices for ${symbols.length} symbols:`, symbols);
+      // Check client-side sessionStorage cache first (15-minute TTL)
+      if (!forceRefresh && typeof sessionStorage !== 'undefined') {
+        const cacheKey = 'marketTicker_prices';
+        const cacheTimestampKey = 'marketTicker_timestamp';
+
+        const cachedData = sessionStorage.getItem(cacheKey);
+        const cacheTimestamp = sessionStorage.getItem(cacheTimestampKey);
+
+        if (cachedData && cacheTimestamp) {
+          const age = Date.now() - parseInt(cacheTimestamp, 10);
+          const FIFTEEN_MINUTES = 15 * 60 * 1000;
+
+          if (age < FIFTEEN_MINUTES) {
+            console.log(`[MarketTicker] Using client-side cache (age: ${Math.round(age / 1000)}s)`);
+
+            try {
+              const cachedPrices = JSON.parse(cachedData);
+
+              // Apply cached prices immediately
+              const updatedSecurities = securities.map(security => {
+                const priceData = cachedPrices[security.symbol];
+                if (priceData) {
+                  return {
+                    ...security,
+                    price: priceData.price,
+                    change: priceData.change,
+                    changePercent: priceData.changePercent,
+                    loading: false,
+                    error: false,
+                    fallback: false,
+                    source: priceData.source
+                  };
+                }
+                return security;
+              });
+
+              setMarketData(updatedSecurities);
+              setLastUpdateTime(new Date(parseInt(cacheTimestamp, 10)));
+
+              // Cache hit - no need to call server
+              return;
+            } catch (parseError) {
+              console.error('[MarketTicker] Error parsing cached data:', parseError);
+              // Continue to server call if cache is corrupted
+            }
+          } else {
+            console.log(`[MarketTicker] Client cache expired (age: ${Math.round(age / 1000)}s)`);
+          }
+        }
+      }
+
+      console.log(`[MarketTicker] Fetching prices from server for ${symbols.length} symbols:`, symbols);
 
       // Use the server-side cache method
       Meteor.call('tickerCache.getPrices', symbols, (error, result) => {
@@ -523,8 +574,19 @@ const MarketTicker = () => {
               };
             }
           });
-          
+
           setMarketData(updatedData);
+
+          // Save to client-side sessionStorage cache for fast subsequent loads
+          if (typeof sessionStorage !== 'undefined' && result && result.prices) {
+            try {
+              sessionStorage.setItem('marketTicker_prices', JSON.stringify(result.prices));
+              sessionStorage.setItem('marketTicker_timestamp', Date.now().toString());
+              console.log('[MarketTicker] Saved prices to client cache');
+            } catch (cacheError) {
+              console.error('[MarketTicker] Error saving to client cache:', cacheError);
+            }
+          }
         } else {
           console.error('MarketTicker: Server cache method failed:', result?.error || 'No result returned');
           // Fall back to using fallback data
@@ -709,12 +771,13 @@ const MarketTicker = () => {
         .ticker-item {
           display: inline-flex;
           align-items: center;
-          margin-right: 2rem;
+          margin-right: 2.5rem;
           padding: 0 1rem;
           white-space: nowrap;
           flex-shrink: 0;
           min-width: max-content;
           height: 100%;
+          gap: 0;
         }
       `}</style>
       
@@ -734,15 +797,25 @@ const MarketTicker = () => {
             {(marketData.length > 0 ? marketData : BASE_SECURITIES).map((item, index) => (
               <div key={`${item.symbol}-${index}`} className="ticker-item">
                 <TickerLogo symbol={item.symbol} name={item.name} type={item.type} />
-                <span style={{ 
-                  fontWeight: '600', 
-                  color: 'var(--text-primary)',
-                  marginRight: '8px',
-                  fontSize: '0.875rem'
-                }}>
-                  {item.name}
-                </span>
-                <span style={{ 
+                <div style={{ display: 'flex', flexDirection: 'column', marginRight: '12px' }}>
+                  <span style={{
+                    fontWeight: '600',
+                    color: 'var(--text-primary)',
+                    fontSize: '0.875rem',
+                    lineHeight: '1.2'
+                  }}>
+                    {item.name}
+                  </span>
+                  <span style={{
+                    fontSize: '0.7rem',
+                    color: 'var(--text-secondary)',
+                    fontFamily: 'monospace',
+                    lineHeight: '1.2'
+                  }}>
+                    {item.symbol}
+                  </span>
+                </div>
+                <span style={{
                   color: 'var(--text-primary)',
                   marginRight: '8px',
                   fontSize: '0.875rem',
@@ -803,15 +876,25 @@ const MarketTicker = () => {
             {(marketData.length > 0 ? marketData : BASE_SECURITIES).map((item, index) => (
               <div key={`${item.symbol}-duplicate-${index}`} className="ticker-item">
                 <TickerLogo symbol={item.symbol} name={item.name} type={item.type} />
-                <span style={{ 
-                  fontWeight: '600', 
-                  color: 'var(--text-primary)',
-                  marginRight: '8px',
-                  fontSize: '0.875rem'
-                }}>
-                  {item.name}
-                </span>
-                <span style={{ 
+                <div style={{ display: 'flex', flexDirection: 'column', marginRight: '12px' }}>
+                  <span style={{
+                    fontWeight: '600',
+                    color: 'var(--text-primary)',
+                    fontSize: '0.875rem',
+                    lineHeight: '1.2'
+                  }}>
+                    {item.name}
+                  </span>
+                  <span style={{
+                    fontSize: '0.7rem',
+                    color: 'var(--text-secondary)',
+                    fontFamily: 'monospace',
+                    lineHeight: '1.2'
+                  }}>
+                    {item.symbol}
+                  </span>
+                </div>
+                <span style={{
                   color: 'var(--text-primary)',
                   marginRight: '8px',
                   fontSize: '0.875rem',

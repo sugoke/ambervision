@@ -11,6 +11,11 @@ const Login = ({ onUserChange, compact = false }) => {
   const [rememberMe, setRememberMe] = useState(true); // Default to true for better persistence
   const [error, setError] = useState('');
   const [currentUser, setCurrentUser] = useState(null);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetSuccess, setResetSuccess] = useState(false);
+  const [resetError, setResetError] = useState('');
 
   useEffect(() => {
     // Check for existing session on component mount
@@ -207,27 +212,68 @@ const Login = ({ onUserChange, compact = false }) => {
     });
   };
 
+  const handleForgotPassword = (e) => {
+    e.preventDefault();
+    setResetError('');
+    setResetLoading(true);
+
+    Meteor.call('auth.requestPasswordReset', resetEmail, (err, result) => {
+      setResetLoading(false);
+
+      if (err) {
+        setResetError(err.reason || 'Failed to send reset email');
+      } else {
+        setResetSuccess(true);
+        // Auto-close after 5 seconds
+        setTimeout(() => {
+          setShowForgotPassword(false);
+          setResetSuccess(false);
+          setResetEmail('');
+        }, 5000);
+      }
+    });
+  };
+
   if (currentUser) {
     if (compact) {
       return (
-        <div style={{ 
-          display: 'flex', 
-          alignItems: 'center', 
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
           gap: '15px',
-          color: 'white',
-          fontSize: '0.9rem',
-          flexShrink: 0
+          color: 'var(--text-primary)',
+          fontSize: '0.85rem',
+          flexShrink: 0,
+          justifyContent: 'flex-end'
         }}>
-          <span>{currentUser.email} ({currentUser.role})</span>
-          <button onClick={handleLogout} style={{ 
-            padding: '5px 12px', 
-            backgroundColor: 'rgba(255, 255, 255, 0.2)', 
-            color: 'white', 
-            border: '1px solid rgba(255, 255, 255, 0.3)', 
-            borderRadius: '3px',
-            cursor: 'pointer',
-            fontSize: '0.8rem'
+          <span style={{
+            padding: '4px 10px',
+            backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.05)',
+            borderRadius: '4px',
+            fontWeight: '500'
           }}>
+            {currentUser.email} ({currentUser.role})
+          </span>
+          <button onClick={handleLogout} style={{
+            padding: '6px 14px',
+            backgroundColor: isDark ? 'rgba(220, 53, 69, 0.2)' : 'rgba(220, 53, 69, 0.1)',
+            color: isDark ? '#ff6b6b' : '#dc3545',
+            border: `1px solid ${isDark ? 'rgba(220, 53, 69, 0.3)' : 'rgba(220, 53, 69, 0.2)'}`,
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '0.8rem',
+            fontWeight: '500',
+            transition: 'all 0.2s ease'
+          }}
+          onMouseEnter={(e) => {
+            e.target.style.backgroundColor = isDark ? 'rgba(220, 53, 69, 0.3)' : 'rgba(220, 53, 69, 0.15)';
+            e.target.style.transform = 'translateY(-1px)';
+          }}
+          onMouseLeave={(e) => {
+            e.target.style.backgroundColor = isDark ? 'rgba(220, 53, 69, 0.2)' : 'rgba(220, 53, 69, 0.1)';
+            e.target.style.transform = 'translateY(0)';
+          }}
+          >
             Logout
           </button>
         </div>
@@ -419,37 +465,68 @@ const Login = ({ onUserChange, compact = false }) => {
             />
           </div>
 
-          {/* Remember Me Checkbox - Only show for login */}
+          {/* Remember Me Checkbox & Forgot Password - Only show for login */}
           {isLogin && (
-            <div style={{ 
+            <div style={{
               marginBottom: '24px',
               display: 'flex',
               alignItems: 'center',
-              gap: '8px'
+              justifyContent: 'space-between'
             }}>
-              <input
-                type="checkbox"
-                id="rememberMe"
-                checked={rememberMe}
-                onChange={(e) => setRememberMe(e.target.checked)}
-                style={{
-                  width: '16px',
-                  height: '16px',
-                  accentColor: '#667eea',
-                  cursor: 'pointer'
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <input
+                  type="checkbox"
+                  id="rememberMe"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  style={{
+                    width: '16px',
+                    height: '16px',
+                    accentColor: '#667eea',
+                    cursor: 'pointer'
+                  }}
+                />
+                <label
+                  htmlFor="rememberMe"
+                  style={{
+                    fontSize: '0.875rem',
+                    color: isDark ? '#e0e0e0' : '#374151',
+                    cursor: 'pointer',
+                    userSelect: 'none'
+                  }}
+                >
+                  Remember me
+                </label>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowForgotPassword(true);
+                  setResetEmail(email); // Pre-fill with current email if entered
                 }}
-              />
-              <label 
-                htmlFor="rememberMe"
                 style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#667eea',
                   fontSize: '0.875rem',
-                  color: isDark ? '#e0e0e0' : '#374151',
                   cursor: 'pointer',
-                  userSelect: 'none'
+                  padding: '4px',
+                  textDecoration: 'underline'
+                }}
+                onMouseEnter={(e) => {
+                  e.target.style.color = '#764ba2';
+                }}
+                onMouseLeave={(e) => {
+                  e.target.style.color = '#667eea';
                 }}
               >
-                Remember me for 30 days
-              </label>
+                Forgot password?
+              </button>
             </div>
           )}
           
@@ -529,6 +606,188 @@ const Login = ({ onUserChange, compact = false }) => {
           </div>
         </form>
       </div>
+
+      {/* Forgot Password Modal */}
+      {showForgotPassword && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100vw',
+            height: '100vh',
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000
+          }}
+          onClick={() => {
+            if (!resetLoading) {
+              setShowForgotPassword(false);
+              setResetSuccess(false);
+              setResetError('');
+            }
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: isDark ? '#2d2d2d' : 'white',
+              borderRadius: '12px',
+              padding: '32px',
+              maxWidth: '400px',
+              width: '90%',
+              boxShadow: '0 20px 40px rgba(0, 0, 0, 0.3)',
+              position: 'relative'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Close button */}
+            <button
+              onClick={() => {
+                if (!resetLoading) {
+                  setShowForgotPassword(false);
+                  setResetSuccess(false);
+                  setResetError('');
+                }
+              }}
+              style={{
+                position: 'absolute',
+                top: '16px',
+                right: '16px',
+                background: 'none',
+                border: 'none',
+                fontSize: '1.5rem',
+                cursor: resetLoading ? 'not-allowed' : 'pointer',
+                color: isDark ? '#b0b0b0' : '#6b7280',
+                padding: '4px 8px'
+              }}
+            >
+              ×
+            </button>
+
+            {resetSuccess ? (
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>✓</div>
+                <h3
+                  style={{
+                    margin: '0 0 1rem 0',
+                    color: isDark ? '#10b981' : '#059669',
+                    fontSize: '1.25rem',
+                    fontWeight: '600'
+                  }}
+                >
+                  Check Your Email
+                </h3>
+                <p
+                  style={{
+                    margin: 0,
+                    color: isDark ? '#e0e0e0' : '#374151',
+                    fontSize: '0.95rem',
+                    lineHeight: '1.6'
+                  }}
+                >
+                  If an account exists with this email, you will receive password reset instructions shortly.
+                </p>
+              </div>
+            ) : (
+              <>
+                <h3
+                  style={{
+                    margin: '0 0 1rem 0',
+                    color: isDark ? '#ffffff' : '#1a202c',
+                    fontSize: '1.25rem',
+                    fontWeight: '600'
+                  }}
+                >
+                  Reset Password
+                </h3>
+                <p
+                  style={{
+                    margin: '0 0 1.5rem 0',
+                    color: isDark ? '#b0b0b0' : '#6b7280',
+                    fontSize: '0.9rem',
+                    lineHeight: '1.5'
+                  }}
+                >
+                  Enter your email address and we'll send you instructions to reset your password.
+                </p>
+
+                <form onSubmit={handleForgotPassword}>
+                  <div style={{ marginBottom: '20px' }}>
+                    <label
+                      style={{
+                        display: 'block',
+                        marginBottom: '8px',
+                        fontSize: '0.875rem',
+                        fontWeight: '600',
+                        color: isDark ? '#ffffff' : '#374151'
+                      }}
+                    >
+                      Email Address
+                    </label>
+                    <input
+                      type="email"
+                      value={resetEmail}
+                      onChange={(e) => setResetEmail(e.target.value)}
+                      required
+                      placeholder="Enter your email"
+                      disabled={resetLoading}
+                      style={{
+                        width: '100%',
+                        padding: '12px 14px',
+                        border: '2px solid #e5e7eb',
+                        borderRadius: '8px',
+                        fontSize: '1rem',
+                        boxSizing: 'border-box',
+                        backgroundColor: resetLoading ? '#f3f4f6' : '#ffffff',
+                        outline: 'none'
+                      }}
+                    />
+                  </div>
+
+                  {resetError && (
+                    <div
+                      style={{
+                        color: '#dc2626',
+                        marginBottom: '16px',
+                        padding: '10px 12px',
+                        backgroundColor: '#fef2f2',
+                        border: '1px solid #fecaca',
+                        borderRadius: '6px',
+                        fontSize: '0.875rem'
+                      }}
+                    >
+                      {resetError}
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={resetLoading}
+                    style={{
+                      width: '100%',
+                      padding: '12px 20px',
+                      background: resetLoading
+                        ? '#9ca3af'
+                        : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      cursor: resetLoading ? 'not-allowed' : 'pointer',
+                      fontSize: '1rem',
+                      fontWeight: '600',
+                      transition: 'all 0.2s ease'
+                    }}
+                  >
+                    {resetLoading ? 'Sending...' : 'Send Reset Link'}
+                  </button>
+                </form>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
