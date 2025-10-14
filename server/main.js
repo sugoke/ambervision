@@ -35,6 +35,8 @@ import '/imports/api/marketDataCache';
 import '/imports/api/tickerCache';
 import '/imports/api/currencyCache';
 import { CurrencyCache } from '/imports/api/currencyCache';
+import './testTickerDiagnosis'; // Ticker diagnosis tool
+import './testSecurityData'; // Check if securityData.ticker exists
 import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
 import { AllocationsCollection } from '/imports/api/allocations';
 // Schedule is now included in reports, no separate collection needed

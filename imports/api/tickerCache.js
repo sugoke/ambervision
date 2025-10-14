@@ -4,7 +4,7 @@ import { check, Match } from 'meteor/check';
 import { HTTP } from 'meteor/http';
 import { CryptoApiHelper } from './cryptoApi';
 import { MarketDataCacheCollection } from './marketDataCache';
-import { validateTickerFormat, normalizeTickerSymbol, getExchangeName, extractExchange } from '/imports/utils/tickerUtils';
+import { validateTickerFormat, normalizeTickerSymbol, getExchangeName, extractExchange, normalizeExchangeForEOD } from '/imports/utils/tickerUtils';
 
 // Ticker price cache collection
 export const TickerPriceCacheCollection = new Mongo.Collection('tickerPriceCache');
@@ -42,9 +42,10 @@ export const TickerCacheHelpers = {
       const now = new Date();
       const cachedData = await TickerPriceCacheCollection.findOneAsync({
         symbol: symbol,
-        expiresAt: { $gt: now }
+        expiresAt: { $gt: now },
+        price: { $gt: 0 }  // Only return cache entries with valid prices
       });
-      
+
       return cachedData;
     } catch (error) {
       console.error(`TickerCache: Error getting cached price for ${symbol}:`, error);
@@ -57,9 +58,16 @@ export const TickerCacheHelpers = {
     try {
       const now = new Date();
       const expiresAt = new Date(now.getTime() + this.CACHE_DURATION);
-      
+
       // Ensure we have valid numeric values
-      const price = parseFloat(priceData.price) || 0;
+      const price = parseFloat(priceData.price);
+
+      // CRITICAL: Don't cache if price is invalid (NaN, 0, or negative)
+      if (isNaN(price) || price <= 0) {
+        console.log(`[TickerCache] setCachedPrice: Rejecting invalid price for ${symbol}: ${price} (from priceData.price: ${priceData.price})`);
+        return null;
+      }
+
       const change = parseFloat(priceData.change) || 0;
       const changePercent = parseFloat(priceData.changePercent) || 0;
       const previousClose = parseFloat(priceData.previousClose) || 0;
@@ -104,24 +112,28 @@ export const TickerCacheHelpers = {
       const now = new Date();
       const cachedData = await TickerPriceCacheCollection.find({
         symbol: { $in: symbols },
-        expiresAt: { $gt: now }
+        expiresAt: { $gt: now },
+        price: { $gt: 0 }  // Only return cache entries with valid prices
       }).fetchAsync();
-      
+
       // Convert to map for easy lookup
       const priceMap = new Map();
       cachedData.forEach(data => {
-        priceMap.set(data.symbol, {
-          price: data.price,
-          change: data.change,
-          changePercent: data.changePercent,
-          previousClose: data.previousClose,
-          volume: data.volume,
-          timestamp: data.timestamp,
-          source: data.source,
-          fallback: data.source === 'fallback'
-        });
+        // Double-check price is valid (defense in depth)
+        if (data.price && data.price > 0) {
+          priceMap.set(data.symbol, {
+            price: data.price,
+            change: data.change,
+            changePercent: data.changePercent,
+            previousClose: data.previousClose,
+            volume: data.volume,
+            timestamp: data.timestamp,
+            source: data.source,
+            fallback: data.source === 'fallback'
+          });
+        }
       });
-      
+
       return priceMap;
     } catch (error) {
       console.error('TickerCache: Error getting multiple cached prices:', error);
@@ -139,28 +151,47 @@ export const TickerCacheHelpers = {
     };
 
     try {
-      // First check cache for valid entries
-      const cachedPrices = await this.getCachedPrices(symbols);
-      
+      // Normalize all symbols for EOD API compatibility before processing
+      const normalizedSymbols = symbols.map(symbol => normalizeExchangeForEOD(symbol));
+
+      console.log(`[TickerCache] refreshTickerPrices called with ${symbols.length} symbols`);
+      console.log(`[TickerCache] Original symbols:`, symbols);
+      console.log(`[TickerCache] Normalized symbols:`, normalizedSymbols);
+
+      // First check cache for valid entries (using normalized symbols)
+      const cachedPrices = await this.getCachedPrices(normalizedSymbols);
+
       const symbolsToFetch = [];
-      symbols.forEach(symbol => {
-        if (cachedPrices.has(symbol)) {
-          results.prices.set(symbol, cachedPrices.get(symbol));
+      normalizedSymbols.forEach((normalizedSymbol, index) => {
+        const originalSymbol = symbols[index];
+        if (cachedPrices.has(normalizedSymbol)) {
+          // Return with original symbol as key for client compatibility
+          results.prices.set(originalSymbol, cachedPrices.get(normalizedSymbol));
           results.cached++;
         } else {
-          symbolsToFetch.push(symbol);
+          symbolsToFetch.push(normalizedSymbol);
         }
       });
 
+      console.log(`[TickerCache] Cached: ${results.cached}, To fetch: ${symbolsToFetch.length}`);
+      console.log(`[TickerCache] Symbols to fetch from API:`, symbolsToFetch);
+
       // Fetch remaining symbols from EOD API or free crypto APIs
-      for (const symbol of symbolsToFetch) {
+      // Note: symbolsToFetch already contains normalized symbols
+      for (const normalizedSymbol of symbolsToFetch) {
+        // Find the original symbol for this normalized symbol
+        const originalIndex = normalizedSymbols.indexOf(normalizedSymbol);
+        const originalSymbol = symbols[originalIndex];
+
+        console.log(`[TickerCache] Fetching price for: ${normalizedSymbol} (original: ${originalSymbol})`);
+
         try {
           let priceData = null;
           let source = 'eod';
 
           // Check if this is a crypto symbol we can get from free APIs
-          if (CryptoApiHelper.isSupportedCrypto(symbol)) {
-            priceData = await CryptoApiHelper.getCryptoPrice(symbol);
+          if (CryptoApiHelper.isSupportedCrypto(normalizedSymbol)) {
+            priceData = await CryptoApiHelper.getCryptoPrice(normalizedSymbol);
             if (priceData) {
               source = priceData.source || 'crypto-api';
             }
@@ -170,10 +201,10 @@ export const TickerCacheHelpers = {
           if (!priceData) {
             try {
               const latestData = await MarketDataCacheCollection.findOneAsync(
-                { fullTicker: symbol },
+                { fullTicker: normalizedSymbol },
                 { sort: { date: -1 } }
               );
-              
+
               if (latestData) {
                 priceData = {
                   price: latestData.close,
@@ -187,19 +218,34 @@ export const TickerCacheHelpers = {
                 source = 'market-cache';
               } else {
                 // Fallback to EOD API
-                priceData = await this.fetchPriceFromEOD(symbol);
+                priceData = await this.fetchPriceFromEOD(normalizedSymbol);
               }
             } catch (cacheError) {
-              console.error(`TickerCache: Error accessing market data cache for ${symbol}:`, cacheError);
+              console.error(`TickerCache: Error accessing market data cache for ${normalizedSymbol}:`, cacheError);
               // Fallback to EOD API
-              priceData = await this.fetchPriceFromEOD(symbol);
+              priceData = await this.fetchPriceFromEOD(normalizedSymbol);
             }
           }
 
           if (priceData) {
-            await this.setCachedPrice(symbol, priceData, source);
-            results.prices.set(symbol, {
-              price: priceData.close || priceData.price || priceData.last,
+            console.log(`[TickerCache] ✓ ${normalizedSymbol}: Got price data`, {
+              price: priceData.price,
+              close: priceData.close,
+              last: priceData.last,
+              change: priceData.change,
+              changePercent: priceData.changePercent,
+              source: source,
+              rawPriceData: priceData
+            });
+
+            const finalPrice = priceData.close || priceData.price || priceData.last;
+            console.log(`[TickerCache] ${normalizedSymbol}: Final price calculation: close=${priceData.close} || price=${priceData.price} || last=${priceData.last} => ${finalPrice}`);
+
+            // Cache with normalized symbol
+            await this.setCachedPrice(normalizedSymbol, priceData, source);
+            // Return with original symbol as key for client compatibility
+            results.prices.set(originalSymbol, {
+              price: finalPrice,
               change: priceData.change || 0,
               changePercent: priceData.changePercent || priceData.change_p || 0,
               previousClose: priceData.previousClose || priceData.previous_close,
@@ -210,10 +256,11 @@ export const TickerCacheHelpers = {
             });
             results.fetched++;
           } else {
+            console.log(`[TickerCache] ✗ ${normalizedSymbol}: NO PRICE DATA from any source`);
             results.failed++;
           }
         } catch (error) {
-          console.error(`TickerCache: Error fetching ${symbol}:`, error);
+          console.error(`TickerCache: Error fetching ${normalizedSymbol} (original: ${originalSymbol}):`, error);
           results.failed++;
         }
 
@@ -239,12 +286,14 @@ export const TickerCacheHelpers = {
         fmt: 'json'
       };
 
-      // console.log(`TickerCache: Fetching real-time price for ${symbol}`);
+      console.log(`[TickerCache] fetchPriceFromEOD: Fetching real-time price for ${symbol}`);
       let response;
       try {
         response = await HTTP.get(url, { params });
+        console.log(`[TickerCache] fetchPriceFromEOD: Real-time API success for ${symbol}`);
       } catch (realtimeError) {
-        console.log(`TickerCache: Real-time API failed for ${symbol}, trying end-of-day API`);
+        console.log(`[TickerCache] fetchPriceFromEOD: Real-time API failed for ${symbol}:`, realtimeError.message);
+        console.log(`[TickerCache] fetchPriceFromEOD: Trying end-of-day API for ${symbol}`);
         // Fallback to end-of-day API with latest data
         url = `https://eodhistoricaldata.com/api/eod/${symbol}`;
         params = {
@@ -254,9 +303,12 @@ export const TickerCacheHelpers = {
           limit: 2 // Get last 2 days to calculate change
         };
         response = await HTTP.get(url, { params });
+        console.log(`[TickerCache] fetchPriceFromEOD: End-of-day API success for ${symbol}`);
       }
-      
+
       if (response.data) {
+        console.log(`[TickerCache] fetchPriceFromEOD: Raw response for ${symbol}:`, JSON.stringify(response.data).substring(0, 200));
+
         // Handle different response formats from EOD API
         let data = response.data;
         let isEodFormat = false;
@@ -294,15 +346,17 @@ export const TickerCacheHelpers = {
         
         // Check if the value is "NA" or invalid
         if (priceValue === "NA" || priceValue === null || priceValue === undefined) {
-          console.log(`TickerCache: ${symbol} returned NA or invalid price, skipping API data`);
+          console.log(`[TickerCache] fetchPriceFromEOD: ${symbol} returned NA or invalid price, skipping API data`);
           return null;
         }
-        
+
         const price = parseFloat(priceValue);
         if (isNaN(price) || price <= 0) {
-          console.log(`TickerCache: ${symbol} returned invalid numeric price: ${priceValue}`);
+          console.log(`[TickerCache] fetchPriceFromEOD: ${symbol} returned invalid numeric price: ${priceValue}`);
           return null;
         }
+
+        console.log(`[TickerCache] fetchPriceFromEOD: ${symbol} parsed price: $${price}`);
         
         // Parse other fields from EOD as-is (no recalculation)
         const previousCloseValue = data.previousClose || data.previous_close || data.prevClose || data.prev_close || data.yesterday_close;
@@ -388,6 +442,13 @@ export const TickerCacheHelpers = {
           volume: data.volume || 0,
           timestamp: priceTimestamp
         };
+
+        console.log(`[TickerCache] fetchPriceFromEOD: ${symbol} final result:`, {
+          price: resultData.price,
+          change: resultData.change,
+          changePercent: resultData.changePercent,
+          previousClose: resultData.previousClose
+        });
 
         // Debug log for percentage calculation (disabled for performance)
         // console.log('TickerCache: Parsed price data', {
@@ -577,11 +638,11 @@ if (Meteor.isServer) {
     // Clear ticker cache
     async 'tickerCache.clear'(symbol = null) {
       check(symbol, Match.Optional(Match.OneOf(String, null)));
-      
+
       try {
         const query = symbol ? { symbol: symbol } : {};
         const removed = await TickerPriceCacheCollection.removeAsync(query);
-        
+
         return {
           success: true,
           message: `Cleared ${removed} cache entries${symbol ? ` for ${symbol}` : ''}`,
@@ -589,6 +650,29 @@ if (Meteor.isServer) {
         };
       } catch (error) {
         console.error('TickerCache: Error clearing cache:', error);
+        return {
+          success: false,
+          error: error.message
+        };
+      }
+    },
+
+    // Clear invalid prices (price <= 0) from cache
+    async 'tickerCache.clearInvalidPrices'() {
+      try {
+        const removed = await TickerPriceCacheCollection.removeAsync({
+          price: { $lte: 0 }
+        });
+
+        console.log(`[TickerCache] Cleared ${removed} invalid price entries (price <= 0)`);
+
+        return {
+          success: true,
+          message: `Cleared ${removed} invalid price cache entries`,
+          removedCount: removed
+        };
+      } catch (error) {
+        console.error('TickerCache: Error clearing invalid prices:', error);
         return {
           success: false,
           error: error.message
@@ -608,54 +692,61 @@ if (Meteor.isServer) {
         // Test each ticker by attempting to fetch price data
         for (const symbol of symbols) {
           try {
-            // First validate format
-            const formatValidation = validateTickerFormat(symbol);
+            // First normalize exchange suffix for EOD compatibility
+            const normalizedSymbol = normalizeExchangeForEOD(symbol);
+
+            // Then validate format
+            const formatValidation = validateTickerFormat(normalizedSymbol);
             if (!formatValidation.valid) {
               invalidTickers.push({
                 symbol,
+                normalizedSymbol,
                 valid: false,
                 reason: `Invalid format: ${formatValidation.reason}`,
                 suggestion: 'Check if ticker contains spaces or is too long'
               });
-              console.log(`  ✗ ${symbol}: Invalid format (${formatValidation.reason})`);
+              console.log(`  ✗ ${symbol} (${normalizedSymbol}): Invalid format (${formatValidation.reason})`);
               continue;
             }
 
-            // Try to fetch price from EOD API
-            const priceData = await TickerCacheHelpers.fetchPriceFromEOD(symbol);
+            // Try to fetch price from EOD API using normalized symbol
+            const priceData = await TickerCacheHelpers.fetchPriceFromEOD(normalizedSymbol);
 
             if (priceData && priceData.price > 0) {
               // Ticker is valid - has real price data
-              const exchange = extractExchange(symbol);
+              const exchange = extractExchange(normalizedSymbol);
               const exchangeName = exchange ? getExchangeName(exchange) : 'Unknown';
 
               validTickers.push({
-                symbol,
+                symbol,  // Return original symbol
+                normalizedSymbol,
                 valid: true,
                 price: priceData.price,
                 exchange: exchangeName,
                 reason: 'Valid price data from EOD'
               });
-              console.log(`  ✓ ${symbol}: Valid (${exchangeName}, price: $${priceData.price.toFixed(2)})`);
+              console.log(`  ✓ ${symbol} → ${normalizedSymbol}: Valid (${exchangeName}, price: $${priceData.price.toFixed(2)})`);
             } else {
               // Ticker returned no valid price data
-              const exchange = extractExchange(symbol);
+              const exchange = extractExchange(normalizedSymbol);
               let suggestion = 'Verify ticker symbol and exchange suffix';
 
               if (!exchange || exchange === 'US') {
-                suggestion = 'May need correct exchange suffix (e.g., NOVO-B.CO for Danish stocks, SAP.DE for German stocks)';
+                suggestion = 'May need correct exchange suffix (e.g., NOVO-B.CO for Danish stocks, SAP.F for German stocks)';
               }
 
               invalidTickers.push({
                 symbol,
+                normalizedSymbol,
                 valid: false,
                 reason: 'No valid price data from EOD API',
                 suggestion: suggestion
               });
-              console.log(`  ✗ ${symbol}: Invalid (no price data). ${suggestion}`);
+              console.log(`  ✗ ${symbol} → ${normalizedSymbol}: Invalid (no price data). ${suggestion}`);
             }
           } catch (error) {
             // Ticker fetch failed
+            const normalizedSymbol = normalizeExchangeForEOD(symbol);
             let reason = `EOD API error: ${error.message}`;
             let suggestion = 'Check ticker symbol and exchange suffix';
 
@@ -670,11 +761,12 @@ if (Meteor.isServer) {
 
             invalidTickers.push({
               symbol,
+              normalizedSymbol,
               valid: false,
               reason: reason,
               suggestion: suggestion
             });
-            console.log(`  ✗ ${symbol}: ${reason}. ${suggestion}`);
+            console.log(`  ✗ ${symbol} → ${normalizedSymbol}: ${reason}. ${suggestion}`);
           }
 
           // Small delay to avoid overwhelming the API

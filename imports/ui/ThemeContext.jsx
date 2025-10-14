@@ -12,15 +12,12 @@ export const useTheme = () => {
 
 export const ThemeProvider = ({ children }) => {
   const [theme, setTheme] = useState(() => {
-    // Check localStorage first, then system preference
+    // Check localStorage first, then default to dark
     const saved = localStorage.getItem('structured-products-theme');
     if (saved) return saved;
-    
-    // Check system preference
-    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-      return 'dark';
-    }
-    return 'light';
+
+    // Default to dark mode (night mode)
+    return 'dark';
   });
 
   const toggleTheme = () => {
@@ -87,18 +84,11 @@ export const ThemeProvider = ({ children }) => {
     }
   }, [theme]);
 
-  // Listen for system theme changes
+  // System theme changes are disabled - we default to dark mode
+  // Users can manually toggle if they prefer light mode
   useEffect(() => {
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    const handleChange = (e) => {
-      // Only auto-switch if no explicit theme is saved
-      if (!localStorage.getItem('structured-products-theme')) {
-        setTheme(e.matches ? 'dark' : 'light');
-      }
-    };
-
-    mediaQuery.addEventListener('change', handleChange);
-    return () => mediaQuery.removeEventListener('change', handleChange);
+    // No longer listening to system theme changes
+    // Dark mode is the standard default
   }, []);
 
   return (

@@ -2,7 +2,10 @@
   "name": "ambervision",
   "private": true,
   "scripts": {
-    "start": "meteor run --settings settings.json",
+    "start": "meteor run",
+    "start:local": "meteor run --settings settings-local.json",
+    "start:atlas": "meteor run --settings settings-production.json",
+    "start:production": "meteor run --settings settings-production.json --production",
     "test": "meteor test --once --driver-package meteortesting:mocha",
     "test-app": "TEST_WATCH=1 meteor test --full-app --driver-package meteortesting:mocha",
     "visualize": "meteor --production --extra-packages bundle-visualizer"
@@ -34,5 +37,8 @@
       "server": "server/main.js"
     },
     "testModule": "tests/main.js"
+  },
+  "devDependencies": {
+    "mup": "^1.5.11"
   }
 }

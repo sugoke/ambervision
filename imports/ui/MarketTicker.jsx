@@ -2,7 +2,8 @@ import React, { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useFind, useSubscribe } from 'meteor/react-meteor-data';
 import { ProductsCollection } from '/imports/api/products';
-import { normalizeTickerSymbol, validateTickerFormat, getCurrencyFromTicker } from '/imports/utils/tickerUtils';
+import { normalizeTickerSymbol, validateTickerFormat, getCurrencyFromTicker, normalizeExchangeForEOD } from '/imports/utils/tickerUtils';
+import { getStockLogoUrl } from '/imports/utils/stockLogoUtils';
 
 // Define the base securities we want to track with fallback data - static constant
 // EOD ticker formats:
@@ -25,130 +26,144 @@ const BASE_SECURITIES = [
 ];
 
 // Function to extract unique underlyings from products
+// SIMPLIFIED: Use stored securityData.ticker when available, only normalize as fallback
 const extractUnderlyingsFromProducts = (products) => {
   const underlyingsMap = new Map();
-  
+
   products.forEach(product => {
     if (product.underlyings && Array.isArray(product.underlyings)) {
       product.underlyings.forEach(underlying => {
-        // Handle different underlying structures
-        let symbol, name;
-        
-        if (underlying.symbol) {
-          symbol = underlying.symbol;
-          name = underlying.name || symbol;
-        } else if (underlying.ticker) {
-          symbol = underlying.ticker;
-          name = underlying.name || symbol;
-        } else if (underlying.security) {
-          symbol = underlying.security.symbol;
-          name = underlying.security.name || symbol;
-        }
-        
-        if (symbol) {
-          // Validate ticker format
-          const validation = validateTickerFormat(symbol);
-          if (!validation.valid) {
-            console.log(`[MarketTicker] Skipping invalid symbol: "${symbol}" (${validation.reason})`);
-            return; // Skip this underlying
-          }
+        let ticker, name;
 
-          // Normalize symbol format for EOD API using centralized utility
-          const normalizedSymbol = normalizeTickerSymbol(symbol, { name });
-          if (!normalizedSymbol) {
-            console.log(`[MarketTicker] Failed to normalize symbol: "${symbol}"`);
+        // Priority 1: Use stored full ticker from securityData (already has exchange suffix)
+        if (underlying.securityData?.ticker) {
+          const originalTicker = underlying.securityData.ticker;
+          ticker = normalizeExchangeForEOD(originalTicker);
+          name = underlying.name || underlying.securityData.name || ticker;
+          console.log(`[MarketTicker] Extracted ticker: ${originalTicker} → ${ticker} (${name})`);
+        }
+        // Priority 2: Fallback to normalization if securityData.ticker missing
+        else {
+          const shortSymbol = underlying.symbol || underlying.ticker;
+          if (!shortSymbol) return;
+
+          const validation = validateTickerFormat(shortSymbol);
+          if (!validation.valid) {
+            console.log(`[MarketTicker] Skipping invalid symbol: "${shortSymbol}" (${validation.reason})`);
             return;
           }
 
-          // Get currency from normalized ticker
-          const currency = getCurrencyFromTicker(normalizedSymbol);
+          ticker = normalizeTickerSymbol(shortSymbol, { name: underlying.name });
+          name = underlying.name || shortSymbol;
 
-          if (!underlyingsMap.has(normalizedSymbol)) {
-            underlyingsMap.set(normalizedSymbol, {
-              symbol: normalizedSymbol,
-              name: name || symbol,
-              type: 'stock',
-              currency: currency,
-              fallbackPrice: 100.00,
-              fallbackChange: 0.00
-            });
+          if (!ticker) {
+            console.log(`[MarketTicker] Failed to normalize symbol: "${shortSymbol}"`);
+            return;
           }
+        }
+
+        // Get currency from ticker
+        const currency = getCurrencyFromTicker(ticker);
+
+        if (!underlyingsMap.has(ticker)) {
+          underlyingsMap.set(ticker, {
+            symbol: ticker,
+            name: name,
+            type: 'stock',
+            currency: currency,
+            fallbackPrice: 100.00,
+            fallbackChange: 0.00
+          });
         }
       });
     }
-    
+
     // Also check payoffStructure for underlying assets
     if (product.payoffStructure && Array.isArray(product.payoffStructure)) {
       product.payoffStructure.forEach(item => {
         if (item.type === 'Underlying Asset' && item.definition) {
           if (item.definition.security) {
-            const symbol = item.definition.security.symbol;
-            const name = item.definition.security.name || symbol;
+            let ticker, name;
 
-            if (symbol) {
-              // Validate ticker format
-              const validation = validateTickerFormat(symbol);
+            // Priority 1: Use stored full ticker from securityData
+            if (item.definition.security.securityData?.ticker) {
+              ticker = normalizeExchangeForEOD(item.definition.security.securityData.ticker);
+              name = item.definition.security.name || ticker;
+            }
+            // Priority 2: Fallback to normalization
+            else {
+              const shortSymbol = item.definition.security.symbol;
+              if (!shortSymbol) return;
+
+              const validation = validateTickerFormat(shortSymbol);
               if (!validation.valid) {
-                console.log(`[MarketTicker] Skipping invalid symbol in payoffStructure: "${symbol}" (${validation.reason})`);
-                return; // Skip this security
-              }
-
-              // Normalize symbol format for EOD API using centralized utility
-              const normalizedSymbol = normalizeTickerSymbol(symbol, { name });
-              if (!normalizedSymbol) {
-                console.log(`[MarketTicker] Failed to normalize symbol in payoffStructure: "${symbol}"`);
+                console.log(`[MarketTicker] Skipping invalid symbol in payoffStructure: "${shortSymbol}" (${validation.reason})`);
                 return;
               }
 
-              // Get currency from normalized ticker
-              const currency = getCurrencyFromTicker(normalizedSymbol);
+              ticker = normalizeTickerSymbol(shortSymbol, { name: item.definition.security.name });
+              name = item.definition.security.name || shortSymbol;
 
-              if (!underlyingsMap.has(normalizedSymbol)) {
-                underlyingsMap.set(normalizedSymbol, {
-                  symbol: normalizedSymbol,
-                  name: name || symbol,
+              if (!ticker) {
+                console.log(`[MarketTicker] Failed to normalize symbol in payoffStructure: "${shortSymbol}"`);
+                return;
+              }
+            }
+
+            const currency = getCurrencyFromTicker(ticker);
+
+            if (!underlyingsMap.has(ticker)) {
+              underlyingsMap.set(ticker, {
+                symbol: ticker,
+                name: name,
+                type: 'stock',
+                currency: currency,
+                fallbackPrice: 100.00,
+                fallbackChange: 0.00
+              });
+            }
+          }
+
+          if (item.definition.basket && Array.isArray(item.definition.basket)) {
+            item.definition.basket.forEach(security => {
+              let ticker, name;
+
+              // Priority 1: Use stored full ticker from securityData
+              if (security.securityData?.ticker) {
+                ticker = normalizeExchangeForEOD(security.securityData.ticker);
+                name = security.name || ticker;
+              }
+              // Priority 2: Fallback to normalization
+              else {
+                const shortSymbol = security.symbol;
+                if (!shortSymbol) return;
+
+                const validation = validateTickerFormat(shortSymbol);
+                if (!validation.valid) {
+                  console.log(`[MarketTicker] Skipping invalid symbol in basket: "${shortSymbol}" (${validation.reason})`);
+                  return;
+                }
+
+                ticker = normalizeTickerSymbol(shortSymbol, { name: security.name });
+                name = security.name || shortSymbol;
+
+                if (!ticker) {
+                  console.log(`[MarketTicker] Failed to normalize symbol in basket: "${shortSymbol}"`);
+                  return;
+                }
+              }
+
+              const currency = getCurrencyFromTicker(ticker);
+
+              if (!underlyingsMap.has(ticker)) {
+                underlyingsMap.set(ticker, {
+                  symbol: ticker,
+                  name: name,
                   type: 'stock',
                   currency: currency,
                   fallbackPrice: 100.00,
                   fallbackChange: 0.00
                 });
-              }
-            }
-          }
-          
-          if (item.definition.basket && Array.isArray(item.definition.basket)) {
-            item.definition.basket.forEach(security => {
-              const symbol = security.symbol;
-              const name = security.name || symbol;
-
-              if (symbol) {
-                // Validate ticker format
-                const validation = validateTickerFormat(symbol);
-                if (!validation.valid) {
-                  console.log(`[MarketTicker] Skipping invalid symbol in basket: "${symbol}" (${validation.reason})`);
-                  return; // Skip this security
-                }
-
-                // Normalize symbol format for EOD API using centralized utility
-                const normalizedSymbol = normalizeTickerSymbol(symbol, { name });
-                if (!normalizedSymbol) {
-                  console.log(`[MarketTicker] Failed to normalize symbol in basket: "${symbol}"`);
-                  return;
-                }
-
-                // Get currency from normalized ticker
-                const currency = getCurrencyFromTicker(normalizedSymbol);
-
-                if (!underlyingsMap.has(normalizedSymbol)) {
-                  underlyingsMap.set(normalizedSymbol, {
-                    symbol: normalizedSymbol,
-                    name: name || symbol,
-                    type: 'stock',
-                    currency: currency,
-                    fallbackPrice: 100.00,
-                    fallbackChange: 0.00
-                  });
-                }
               }
             });
           }
@@ -156,7 +171,7 @@ const extractUnderlyingsFromProducts = (products) => {
       });
     }
   });
-  
+
   return Array.from(underlyingsMap.values());
 };
 
@@ -215,10 +230,11 @@ const getCompanyDomain = (symbol) => {
 
 // Function to get logo URL with multiple fallback strategies
 const getLogoUrl = (symbol, name, type) => {
-  // Strategy 1: For stocks, use Financial Modeling Prep logo API (more accurate for stocks)
+  // Strategy 1: For stocks, use Logo.dev (more reliable and has better international coverage)
   if (type === 'stock' || type === 'etf') {
-    const tickerSymbol = symbol.replace('.US', '').replace('.', '-');
-    return `https://financialmodelingprep.com/image-stock/${tickerSymbol}.png`;
+    // Extract just the ticker symbol (before the exchange suffix)
+    const cleanSymbol = symbol.split('.')[0];
+    return getStockLogoUrl(cleanSymbol);
   }
   
   // Strategy 2: For major indices, use flag emojis and custom icons
@@ -376,6 +392,7 @@ const MarketTicker = () => {
     const symbolsToValidate = preFilteredUnderlyings.map(u => u.symbol);
 
     console.log(`[MarketTicker] Validating ${symbolsToValidate.length} product underlyings with EOD...`);
+    console.log(`[MarketTicker] Symbols to validate:`, symbolsToValidate);
 
     // Call server validation method
     Meteor.call('tickerCache.validateTickers', symbolsToValidate, (error, result) => {
@@ -447,7 +464,9 @@ const MarketTicker = () => {
     try {
       // Get symbols to fetch
       const symbols = securities.map(security => security.symbol);
-      
+
+      console.log(`[MarketTicker] Fetching prices for ${symbols.length} symbols:`, symbols);
+
       // Use the server-side cache method
       Meteor.call('tickerCache.getPrices', symbols, (error, result) => {
         
@@ -467,11 +486,19 @@ const MarketTicker = () => {
         }
 
         if (result && result.success) {
-            
+          console.log(`[MarketTicker] Received prices for ${Object.keys(result.prices).length} symbols`);
+          console.log(`[MarketTicker] Price data:`, result.prices);
+
           // Update market data with cached/fetched prices
           const updatedData = securities.map(security => {
             const priceData = result.prices[security.symbol];
-            
+
+            if (priceData) {
+              console.log(`[MarketTicker] ✓ ${security.symbol}: $${priceData.price} (${priceData.changePercent?.toFixed(2)}%)`);
+            } else {
+              console.log(`[MarketTicker] ✗ ${security.symbol}: NO PRICE DATA`);
+            }
+
             if (priceData) {
               return {
                 ...security,

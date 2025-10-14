@@ -1,17 +1,21 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import Login from './Login.jsx';
 import MainContent from './MainContent.jsx';
-import MarketTicker from './MarketTicker.jsx';
 import GlobalSearchBar from './components/GlobalSearchBar.jsx';
 import ViewAsFilter from './components/ViewAsFilter.jsx';
 import { ThemeProvider, useTheme } from './ThemeContext.jsx';
 import { ViewAsProvider } from './ViewAsContext.jsx';
+
+// Lazy load MarketTicker to improve initial page load performance
+// This splits MarketTicker into a separate chunk that loads asynchronously
+const MarketTicker = lazy(() => import('./MarketTicker.jsx'));
 
 const AppContent = () => {
   const { theme } = useTheme();
   const [user, setUser] = useState(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true); // Add loading state for authentication
   const [isComponentLibraryOpen, setIsComponentLibraryOpen] = useState(false);
+  const [showMarketTicker, setShowMarketTicker] = useState(false); // Defer MarketTicker loading
   // Parse route from URL
   const parseRouteFromUrl = () => {
     if (typeof window === 'undefined') return { section: 'dashboard' };
@@ -120,7 +124,7 @@ const AppContent = () => {
     // Listen for both hash changes and popstate (back/forward)
     window.addEventListener('hashchange', handleNavigation);
     window.addEventListener('popstate', handleNavigation);
-    
+
     // Set initial hash if missing and not a report route
     if (!window.location.hash && currentSection && currentSection !== 'report') {
       window.history.replaceState(null, null, `#${currentSection}`);
@@ -131,6 +135,18 @@ const AppContent = () => {
       window.removeEventListener('popstate', handleNavigation);
     };
   }, [currentSection, currentRoute]);
+
+  // Defer MarketTicker loading to improve initial page load performance
+  // Wait 2 seconds after auth completes to allow main content to render first
+  useEffect(() => {
+    if (!isAuthLoading) {
+      const timer = setTimeout(() => {
+        setShowMarketTicker(true);
+      }, 2000); // 2 second delay after auth completes
+
+      return () => clearTimeout(timer);
+    }
+  }, [isAuthLoading]);
 
   // Create background style for both light and dark mode
   const backgroundStyle = theme === 'light' ? {
@@ -270,16 +286,19 @@ const AppContent = () => {
               <Login onUserChange={handleUserChange} compact={true} />
             </header>
 
-            {/* Market Ticker */}
-            <MarketTicker />
+            {/* Market Ticker - Lazy loaded for performance */}
+            {showMarketTicker ? (
+              <Suspense fallback={<div style={{ height: '50px', background: 'linear-gradient(90deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)', borderBottom: '1px solid var(--border-color)' }} />}>
+                <MarketTicker />
+              </Suspense>
+            ) : (
+              <div style={{ height: '50px', background: 'linear-gradient(90deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)', borderBottom: '1px solid var(--border-color)' }} />
+            )}
           </div>
         )}
 
         {/* Spacer to push content below fixed header */}
         {user && <div style={{ height: '100px' }} />}
-
-        {/* Market Ticker for non-logged in users - Always show for now to debug */}
-        {!user && <MarketTicker />}
 
         {/* Loading state during authentication check */}
         {isAuthLoading && (

@@ -3,13 +3,16 @@ import { Meteor } from 'meteor/meteor';
 import { MarketDataHelpers } from '/imports/api/marketDataCache';
 import { StockLogo, StockLogoFallback } from '/imports/utils/stockLogoUtils';
 
-const AddStockModal = ({ isOpen, onClose, onStockAdded, portfolioCurrency }) => {
+const AddStockModal = ({ isOpen, onClose, onStockAdded, bankAccounts = [], initialBankAccountId = null }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [selectedStock, setSelectedStock] = useState(null);
   const [isSearching, setIsSearching] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [stockSelected, setStockSelected] = useState(false);
+
+  // Bank account selection state
+  const [selectedBankAccountId, setSelectedBankAccountId] = useState(initialBankAccountId);
   
   // Transaction form state
   const [quantity, setQuantity] = useState('');
@@ -33,6 +36,20 @@ const AddStockModal = ({ isOpen, onClose, onStockAdded, portfolioCurrency }) => 
 
   // Get session ID for API calls
   const getSessionId = () => localStorage.getItem('sessionId');
+
+  // Get portfolio currency from selected bank account
+  const getPortfolioCurrency = () => {
+    if (!selectedBankAccountId) return 'USD';
+    const account = bankAccounts.find(acc => acc._id === selectedBankAccountId);
+    return account?.referenceCurrency || 'USD';
+  };
+
+  // Initialize bank account selection if not set
+  useEffect(() => {
+    if (!selectedBankAccountId && bankAccounts.length > 0) {
+      setSelectedBankAccountId(initialBankAccountId || bankAccounts[0]._id);
+    }
+  }, [bankAccounts, initialBankAccountId]);
 
   // Search for stocks
   useEffect(() => {
@@ -98,10 +115,10 @@ const AddStockModal = ({ isOpen, onClose, onStockAdded, portfolioCurrency }) => 
   };
 
   const getCurrentFxRate = async () => {
-    if (!selectedStock || !portfolioCurrency) return;
-    
+    if (!selectedStock) return;
+
     const stockCurrency = selectedStock.currency || 'USD';
-    const accountCurrency = portfolioCurrency || 'USD';
+    const accountCurrency = getPortfolioCurrency();
     
     // Skip if same currency
     if (stockCurrency === accountCurrency) {
@@ -138,7 +155,12 @@ const AddStockModal = ({ isOpen, onClose, onStockAdded, portfolioCurrency }) => 
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
+
+    if (!selectedBankAccountId) {
+      alert('Please select a bank account');
+      return;
+    }
+
     if (!selectedStock || !quantity || !price) {
       alert('Please fill in all required fields');
       return;
@@ -185,11 +207,12 @@ const AddStockModal = ({ isOpen, onClose, onStockAdded, portfolioCurrency }) => 
       }
 
       console.log('AddStockModal: Sending data:', {
+        selectedBankAccountId,
         stockData,
         transactionData
       });
 
-      await onStockAdded(stockData, transactionData);
+      await onStockAdded(stockData, transactionData, selectedBankAccountId);
     } catch (error) {
       console.error('Error adding stock:', error);
       alert('Failed to add stock: ' + error.message);
@@ -213,6 +236,8 @@ const AddStockModal = ({ isOpen, onClose, onStockAdded, portfolioCurrency }) => 
     setUseManualFxRate(false);
     setCurrentFxRate(null);
     setCurrentPrice(null);
+    // Reset to initial bank account if provided, or first available account
+    setSelectedBankAccountId(initialBankAccountId || (bankAccounts.length > 0 ? bankAccounts[0]._id : null));
   };
 
   const handleClose = () => {
@@ -294,6 +319,42 @@ const AddStockModal = ({ isOpen, onClose, onStockAdded, portfolioCurrency }) => 
         </div>
 
         <form onSubmit={handleSubmit}>
+          {/* Bank Account Selection */}
+          <div style={{ marginBottom: '1.5rem' }}>
+            <label style={{
+              display: 'block',
+              marginBottom: '0.5rem',
+              fontSize: '1rem',
+              fontWeight: '500',
+              color: 'var(--text-primary)'
+            }}>
+              🏦 Bank Account *
+            </label>
+            <select
+              value={selectedBankAccountId || ''}
+              onChange={(e) => setSelectedBankAccountId(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '0.75rem',
+                borderRadius: '8px',
+                border: '1px solid var(--border-color)',
+                backgroundColor: 'var(--bg-primary)',
+                color: 'var(--text-primary)',
+                fontSize: '1rem',
+                cursor: 'pointer'
+              }}
+              required
+            >
+              <option value="" disabled>Select a bank account...</option>
+              {bankAccounts.map(account => (
+                <option key={account._id} value={account._id}>
+                  Account {account.accountNumber} • {account.referenceCurrency}
+                  {account.ownerDisplayName ? ` • ${account.ownerDisplayName}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+
           {/* Stock Search */}
           <div style={{ marginBottom: '1.5rem', position: 'relative' }}>
             <label style={{
@@ -625,8 +686,8 @@ const AddStockModal = ({ isOpen, onClose, onStockAdded, portfolioCurrency }) => 
           </div>
 
           {/* FX Rate Section (only show if different currencies) */}
-          {selectedStock && selectedStock.currency && portfolioCurrency && 
-           selectedStock.currency !== portfolioCurrency && (
+          {selectedStock && selectedStock.currency && getPortfolioCurrency() &&
+           selectedStock.currency !== getPortfolioCurrency() && (
             <div style={{
               backgroundColor: 'var(--bg-primary)',
               padding: '1rem',
@@ -645,7 +706,7 @@ const AddStockModal = ({ isOpen, onClose, onStockAdded, portfolioCurrency }) => 
                   fontWeight: '500',
                   color: 'var(--text-primary)'
                 }}>
-                  💱 FX Rate ({currentFxRate?.pair?.replace('.FOREX', '') || `${selectedStock.currency}${portfolioCurrency}`})
+                  💱 FX Rate ({currentFxRate?.pair?.replace('.FOREX', '') || `${selectedStock.currency}${getPortfolioCurrency()}`})
                 </label>
                 <label style={{
                   display: 'flex',
@@ -770,7 +831,7 @@ const AddStockModal = ({ isOpen, onClose, onStockAdded, portfolioCurrency }) => 
               }}>
                 <span>Total Cost:</span>
                 <span style={{ fontWeight: '600', fontSize: '1.1rem' }}>
-                  {selectedStock?.currency || portfolioCurrency} {(
+                  {selectedStock?.currency || getPortfolioCurrency()} {(
                     parseFloat(quantity) * parseFloat(price) + parseFloat(fees || 0)
                   ).toFixed(2)}
                 </span>
@@ -780,7 +841,7 @@ const AddStockModal = ({ isOpen, onClose, onStockAdded, portfolioCurrency }) => 
                 color: 'var(--text-muted)',
                 marginTop: '0.25rem'
               }}>
-                {quantity} shares × {selectedStock?.currency || portfolioCurrency} {price} + {selectedStock?.currency || portfolioCurrency} {fees || 0} fees
+                {quantity} shares × {selectedStock?.currency || getPortfolioCurrency()} {price} + {selectedStock?.currency || getPortfolioCurrency()} {fees || 0} fees
               </div>
             </div>
           )}
@@ -808,7 +869,7 @@ const AddStockModal = ({ isOpen, onClose, onStockAdded, portfolioCurrency }) => 
             </button>
             <button
               type="submit"
-              disabled={isSubmitting || !selectedStock || !quantity || !price}
+              disabled={isSubmitting || !selectedBankAccountId || !selectedStock || !quantity || !price}
               style={{
                 padding: '0.75rem 1.5rem',
                 borderRadius: '8px',
@@ -817,7 +878,7 @@ const AddStockModal = ({ isOpen, onClose, onStockAdded, portfolioCurrency }) => 
                 color: 'white',
                 fontSize: '1rem',
                 cursor: isSubmitting ? 'not-allowed' : 'pointer',
-                opacity: isSubmitting || !selectedStock || !quantity || !price ? 0.6 : 1
+                opacity: isSubmitting || !selectedBankAccountId || !selectedStock || !quantity || !price ? 0.6 : 1
               }}
             >
               {isSubmitting ? 'Adding...' : 'Add Stock'}

@@ -41,7 +41,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 To access the MongoDB database directly (when MCP is not available):
 1. Use Node.js with MongoDB driver: `const { MongoClient } = require('mongodb');`
 2. Connection string is stored in `settings.json` under `private.MONGO_URL` (excluded from version control)
-3. Database name: `ambervisiondb`
+3. Database name: `amberlake`
 4. Key collections: `customUsers`, `products`, `templates`, `sessions`, `banks`, `bankAccounts`, `issuers`
 
 ### MongoDB Atlas API Credentials

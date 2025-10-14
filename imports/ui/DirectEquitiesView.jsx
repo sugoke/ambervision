@@ -343,6 +343,14 @@ const DirectEquitiesView = ({ user }) => {
   const [csvUploadResult, setCsvUploadResult] = useState(null);
   const [csvFile, setCsvFile] = useState(null);
   const [csvPreviewData, setCsvPreviewData] = useState(null);
+  const [csvSelectedBankAccountId, setCsvSelectedBankAccountId] = useState(null);
+
+  // Initialize CSV bank account selection when modal opens
+  useEffect(() => {
+    if (isCsvUploadModalOpen && !csvSelectedBankAccountId) {
+      setCsvSelectedBankAccountId(getTargetBankAccountId());
+    }
+  }, [isCsvUploadModalOpen]);
 
   // Get session ID for API calls
   const getSessionId = () => localStorage.getItem('sessionId');
@@ -435,6 +443,14 @@ const DirectEquitiesView = ({ user }) => {
     }
   }, [isDataReady]);
 
+  // Initialize all accounts as collapsed by default
+  useEffect(() => {
+    if (bankAccounts && bankAccounts.length > 0) {
+      const allAccountIds = new Set(bankAccounts.map(account => account._id));
+      setCollapsedAccounts(allAccountIds);
+    }
+  }, [bankAccounts.length]); // Only run when number of accounts changes
+
   // Fetch exchange rates for currency conversion
   useEffect(() => {
     const fetchExchangeRates = async () => {
@@ -502,23 +518,39 @@ const DirectEquitiesView = ({ user }) => {
     return null;
   };
 
+  // Enrich bank accounts with owner display names for admin/RM users
+  const enrichedBankAccounts = bankAccounts.map(account => {
+    const isAdmin = user.role === USER_ROLES.ADMIN || user.role === USER_ROLES.SUPERADMIN;
+    const isCurrentUser = account.userId === user._id;
+
+    let ownerDisplayName = null;
+    if (isAdmin && !isCurrentUser) {
+      const accountOwner = users.find(u => u._id === account.userId);
+      ownerDisplayName = accountOwner ? (accountOwner.profile?.name || accountOwner.username || 'Unknown User') : 'Unknown User';
+    }
+
+    return {
+      ...account,
+      ownerDisplayName
+    };
+  });
+
   const handleAddStock = () => {
     setIsAddStockModalOpen(true);
   };
 
-  const handleStockAdded = async (stockData, transactionData) => {
+  const handleStockAdded = async (stockData, transactionData, bankAccountId) => {
     try {
-      const targetBankAccountId = getTargetBankAccountId();
       const sessionId = getSessionId();
       console.log('DirectEquitiesView: Attempting to add stock with:', {
-        targetBankAccountId,
+        bankAccountId,
         stockData,
         transactionData,
         sessionId
       });
 
       const result = await Meteor.callAsync('equityHoldings.add',
-        targetBankAccountId,
+        bankAccountId,
         stockData,
         transactionData,
         sessionId
@@ -1615,8 +1647,7 @@ Check browser console for TTE currency details.`;
   };
 
   const handleCsvUpload = async () => {
-    const targetBankAccountId = getTargetBankAccountId();
-    if (!csvFile || !targetBankAccountId) {
+    if (!csvFile || !csvSelectedBankAccountId) {
       setCsvUploadResult({
         success: false,
         error: 'Please select a CSV file and bank account'
@@ -1645,7 +1676,7 @@ Check browser console for TTE currency details.`;
       // Upload to server
       const sessionId = getSessionId();
       const result = await Meteor.callAsync('equityHoldings.uploadCsv',
-        targetBankAccountId,
+        csvSelectedBankAccountId,
         csvData,
         sessionId
       );
@@ -1660,6 +1691,7 @@ Check browser console for TTE currency details.`;
           setCsvFile(null);
           setCsvPreviewData(null);
           setCsvUploadResult(null);
+          setCsvSelectedBankAccountId(null);
           updatePrices(); // Refresh price data
         }, 2000);
       }
@@ -2818,7 +2850,8 @@ Check browser console for TTE currency details.`;
           isOpen={isAddStockModalOpen}
           onClose={() => setIsAddStockModalOpen(false)}
           onStockAdded={handleStockAdded}
-          portfolioCurrency={selectedBankAccount?.referenceCurrency || 'USD'}
+          bankAccounts={enrichedBankAccounts}
+          initialBankAccountId={getTargetBankAccountId()}
         />
       )}
 
@@ -2867,6 +2900,7 @@ Check browser console for TTE currency details.`;
                   setCsvFile(null);
                   setCsvPreviewData(null);
                   setCsvUploadResult(null);
+                  setCsvSelectedBankAccountId(null);
                 }}
                 style={{
                   border: 'none',
@@ -2881,49 +2915,42 @@ Check browser console for TTE currency details.`;
               </button>
             </div>
 
-            {/* Target Account Info */}
-            {selectedBankAccount && (
-              <div style={{
-                backgroundColor: 'var(--bg-tertiary)',
-                border: '1px solid var(--accent-color)',
-                borderRadius: '8px',
-                padding: '1rem',
-                marginBottom: '1.5rem'
+            {/* Bank Account Selection */}
+            <div style={{ marginBottom: '1.5rem' }}>
+              <label style={{
+                display: 'block',
+                marginBottom: '0.5rem',
+                fontSize: '0.9rem',
+                fontWeight: '600',
+                color: 'var(--text-primary)'
               }}>
-                <h4 style={{
-                  margin: '0 0 0.5rem 0',
-                  fontSize: '0.9rem',
-                  fontWeight: '600',
+                🏦 Target Bank Account *
+              </label>
+              <select
+                value={csvSelectedBankAccountId || ''}
+                onChange={(e) => setCsvSelectedBankAccountId(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '0.75rem',
+                  borderRadius: '8px',
+                  border: '2px solid var(--accent-color)',
+                  backgroundColor: 'var(--bg-secondary)',
                   color: 'var(--text-primary)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem'
-                }}>
-                  <span style={{ color: 'var(--accent-color)' }}>🎯</span>
-                  Target Account
-                </h4>
-                <p style={{
-                  margin: 0,
-                  color: 'var(--text-secondary)',
-                  fontSize: '0.85rem'
-                }}>
-                  Holdings will be uploaded to: <strong style={{ color: 'var(--text-primary)' }}>
-                    Account {selectedBankAccount.accountNumber} ({selectedBankAccount.referenceCurrency})
-                    {(() => {
-                      // Show client name for admin users
-                      const isAdmin = user.role === USER_ROLES.ADMIN || user.role === USER_ROLES.SUPERADMIN;
-                      const isCurrentUser = selectedBankAccount.userId === user._id;
-                      if (isAdmin && !isCurrentUser) {
-                        const accountOwner = users.find(u => u._id === selectedBankAccount.userId);
-                        const displayName = accountOwner ? (accountOwner.profile?.name || accountOwner.username || 'Unknown User') : 'Unknown User';
-                        return ` - ${displayName}`;
-                      }
-                      return '';
-                    })()}
-                  </strong>
-                </p>
-              </div>
-            )}
+                  fontSize: '0.95rem',
+                  cursor: 'pointer',
+                  fontWeight: '500'
+                }}
+                required
+              >
+                <option value="" disabled>Select a bank account...</option>
+                {enrichedBankAccounts.map(account => (
+                  <option key={account._id} value={account._id}>
+                    Account {account.accountNumber} • {account.referenceCurrency}
+                    {account.ownerDisplayName ? ` • ${account.ownerDisplayName}` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
 
             {/* Instructions */}
             <div style={{
@@ -3090,6 +3117,7 @@ Check browser console for TTE currency details.`;
                   setCsvFile(null);
                   setCsvPreviewData(null);
                   setCsvUploadResult(null);
+                  setCsvSelectedBankAccountId(null);
                 }}
                 style={{
                   padding: '0.75rem 1.5rem',
@@ -3105,17 +3133,17 @@ Check browser console for TTE currency details.`;
               </button>
               <button
                 onClick={handleCsvUpload}
-                disabled={!csvFile || !getTargetBankAccountId() || csvUploadLoading}
+                disabled={!csvFile || !csvSelectedBankAccountId || csvUploadLoading}
                 style={{
                   padding: '0.75rem 1.5rem',
                   borderRadius: '8px',
                   border: 'none',
-                  backgroundColor: (!csvFile || !getTargetBankAccountId() || csvUploadLoading)
+                  backgroundColor: (!csvFile || !csvSelectedBankAccountId || csvUploadLoading)
                     ? 'var(--text-muted)'
                     : '#4CAF50',
                   color: 'white',
                   fontSize: '0.9rem',
-                  cursor: (!csvFile || !getTargetBankAccountId() || csvUploadLoading)
+                  cursor: (!csvFile || !csvSelectedBankAccountId || csvUploadLoading)
                     ? 'not-allowed'
                     : 'pointer',
                   display: 'flex',

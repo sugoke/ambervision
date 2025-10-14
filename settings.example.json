@@ -1,12 +1,37 @@
 {
+  "_comment": "AMBERVISION SETTINGS CONFIGURATION",
+  "_instructions": [
+    "This is a template file. Copy this to create your own settings file:",
+    "",
+    "FOR LOCAL DEVELOPMENT:",
+    "  Copy to 'settings-local.json' and remove MONGO_URL fields",
+    "  Meteor will automatically use local MongoDB (no configuration needed)",
+    "  Run with: npm start",
+    "",
+    "FOR PRODUCTION/ATLAS:",
+    "  Copy to 'settings-production.json' and add your MongoDB Atlas credentials",
+    "  Run with: npm run start:production",
+    "  Or deploy with MONGO_URL environment variable",
+    "",
+    "IMPORTANT: Never commit settings-local.json or settings-production.json to git!"
+  ],
+
   "public": {
-    "appName": "Ambervision Structured Products"
+    "appName": "Ambervision Structured Products",
+    "environment": "development"
   },
+
   "private": {
-    "MONGO_URL": "mongodb+srv://username:password@cluster.mongodb.net/database?retryWrites=true&w=majority&authSource=admin",
-    "MONGO_OPLOG_URL": "mongodb+srv://username:password@cluster.mongodb.net/local?authSource=admin&retryWrites=true&w=majority",
+    "_comment_mongo": "LOCAL: Omit MONGO_URL to use local MongoDB. PRODUCTION: Add MongoDB Atlas connection string",
+    "MONGO_URL": "mongodb+srv://username:password@cluster.mongodb.net/database?retryWrites=true&w=majority&appName=Cluster0",
+    "MONGO_OPLOG_URL": "mongodb+srv://username:password@cluster.mongodb.net/local?retryWrites=true&w=majority&appName=Cluster0&authSource=admin",
+
+    "_comment_apis": "API keys for external services",
     "EOD_API_TOKEN": "your_eod_api_token_here",
     "LOGO_DEV_API_TOKEN": "your_logo_dev_api_token_here",
-    "ANTHROPIC_API_KEY": "your_anthropic_api_key_here"
+    "ANTHROPIC_API_KEY": "your_anthropic_api_key_here",
+
+    "_comment_seeding": "Control demo data seeding on startup",
+    "seedDemoData": false
   }
 }

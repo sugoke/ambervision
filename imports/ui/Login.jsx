@@ -6,8 +6,8 @@ import { useTheme } from './ThemeContext.jsx';
 const Login = ({ onUserChange, compact = false }) => {
   const { theme, isDark } = useTheme();
   const [isLogin, setIsLogin] = useState(true);
-  const [email, setEmail] = useState('admin@example.com');
-  const [password, setPassword] = useState('admin123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(true); // Default to true for better persistence
   const [error, setError] = useState('');
   const [currentUser, setCurrentUser] = useState(null);
@@ -302,33 +302,27 @@ const Login = ({ onUserChange, compact = false }) => {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: '0.75rem',
-            marginBottom: '1rem'
+            marginBottom: '2rem'
           }}>
-            <div style={{
-              width: '40px',
-              height: '40px',
-              borderRadius: '10px',
-              background: 'linear-gradient(135deg, #FF8A00 0%, #FFA500 100%)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '1.2rem',
-              boxShadow: '0 4px 12px rgba(255, 138, 0, 0.3)'
-            }}>
-              🔮
-            </div>
-            <div style={{
-              fontSize: '1.3rem',
-              fontWeight: '700',
-              background: 'linear-gradient(135deg, #FF8A00 0%, #FFA500 100%)',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
-              backgroundClip: 'text',
-              letterSpacing: '-0.025em'
-            }}>
-              Ambervision
-            </div>
+            <img
+              src="https://amberlakepartners.com/assets/logos/horizontal_logo2.png"
+              alt="Amber Lake Partners"
+              style={{
+                height: '60px',
+                width: 'auto',
+                objectFit: 'contain'
+              }}
+              onError={(e) => {
+                e.target.style.display = 'none';
+                // Fallback: show text if image fails to load
+                const fallback = document.createElement('div');
+                fallback.style.fontSize = '1.5rem';
+                fallback.style.fontWeight = '700';
+                fallback.style.color = isDark ? '#ffffff' : '#1a202c';
+                fallback.textContent = 'Amber Lake Partners';
+                e.target.parentNode.appendChild(fallback);
+              }}
+            />
           </div>
           <h1 style={{
             fontSize: '1.3rem',
@@ -348,41 +342,14 @@ const Login = ({ onUserChange, compact = false }) => {
           </p>
         </div>
 
-        {/* Demo Account Info */}
-        {isLogin && (
-          <div style={{
-            backgroundColor: isDark ? '#3a3a3a' : '#f7fafc',
-            border: isDark ? '1px solid #4a4a4a' : '1px solid #e2e8f0',
-            borderRadius: '8px',
-            padding: '16px',
-            marginBottom: '24px'
-          }}>
-            <div style={{ fontSize: '0.875rem', color: isDark ? '#e0e0e0' : '#4a5568', marginBottom: '12px', fontWeight: '600' }}>
-              Demo Accounts:
-            </div>
-            <div style={{ fontSize: '0.8rem', color: isDark ? '#b0b0b0' : '#718096', marginBottom: '12px' }}>
-              <div style={{ fontWeight: '600', color: isDark ? '#e0e0e0' : '#4a5568', marginBottom: '4px' }}>Admin Account:</div>
-              <div><strong>Email:</strong> admin@example.com</div>
-              <div><strong>Password:</strong> admin123</div>
-              <div><strong>Role:</strong> Superadmin (Full Access)</div>
-            </div>
-            <div style={{ fontSize: '0.8rem', color: isDark ? '#b0b0b0' : '#718096', borderTop: isDark ? '1px solid #4a4a4a' : '1px solid #e2e8f0', paddingTop: '8px' }}>
-              <div style={{ fontWeight: '600', color: isDark ? '#e0e0e0' : '#4a5568', marginBottom: '4px' }}>Client Account:</div>
-              <div><strong>Email:</strong> client@example.com</div>
-              <div><strong>Password:</strong> client123</div>
-              <div><strong>Role:</strong> Client (Basic Access)</div>
-            </div>
-          </div>
-        )}
-        
         <form onSubmit={handleSubmit} style={{ width: '100%' }}>
           <div style={{ marginBottom: '24px' }}>
-            <label style={{ 
-              display: 'block', 
+            <label style={{
+              display: 'block',
               marginBottom: '8px',
               fontSize: '0.875rem',
               fontWeight: '600',
-              color: '#374151'
+              color: isDark ? '#ffffff' : '#374151'
             }}>
               Email Address
             </label>
@@ -415,12 +382,12 @@ const Login = ({ onUserChange, compact = false }) => {
           </div>
           
           <div style={{ marginBottom: '24px' }}>
-            <label style={{ 
-              display: 'block', 
+            <label style={{
+              display: 'block',
               marginBottom: '8px',
               fontSize: '0.875rem',
               fontWeight: '600',
-              color: '#374151'
+              color: isDark ? '#ffffff' : '#374151'
             }}>
               Password
             </label>
@@ -532,18 +499,13 @@ const Login = ({ onUserChange, compact = false }) => {
           </button>
           
           <div style={{ textAlign: 'center' }}>
-            <button 
-              type="button" 
+            <button
+              type="button"
               onClick={() => {
                 setIsLogin(!isLogin);
                 // Clear fields when switching modes
-                if (isLogin) {
-                  setEmail('');
-                  setPassword('');
-                } else {
-                  setEmail('admin@example.com');
-                  setPassword('admin123');
-                }
+                setEmail('');
+                setPassword('');
                 setError('');
               }}
               style={{ 
