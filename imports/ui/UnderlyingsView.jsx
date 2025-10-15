@@ -124,12 +124,13 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
     // Apply search filter
     if (searchTerm) {
       const searchLower = searchTerm.toLowerCase();
-      filtered = filtered.filter(item =>
-        item.symbol.toLowerCase().includes(searchLower) ||
-        item.name.toLowerCase().includes(searchLower) ||
-        item.productTitle.toLowerCase().includes(searchLower) ||
-        item.productIsin.toLowerCase().includes(searchLower)
-      );
+      filtered = filtered.filter(item => {
+        const symbol = (item.symbol || '').toLowerCase();
+        const name = (item.name || '').toLowerCase();
+
+        return symbol.includes(searchLower) ||
+               name.includes(searchLower);
+      });
     }
 
     // Sort data
@@ -193,7 +194,9 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
       barrier: underlying.protectionBarrierLevel,
       productIsin: underlying.productIsin,
       productTitle: underlying.productTitle,
-      productId: underlying.productId // Store productId for click navigation
+      productId: underlying.productId, // Store productId for click navigation
+      notional: underlying.productNotional || 100, // Investment amount
+      currency: underlying.productCurrency || 'USD' // Product currency
     }));
 
     return {
@@ -245,8 +248,17 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
           },
           label: (context) => {
             const point = context.raw;
+            // Format currency
+            const currencySymbols = {
+              'USD': '$', 'EUR': '€', 'GBP': '£', 'JPY': '¥', 'CHF': 'Fr',
+              'CAD': 'C$', 'AUD': 'A$', 'HKD': 'HK$', 'SGD': 'S$', 'CNY': '¥'
+            };
+            const currencySymbol = currencySymbols[point.currency] || point.currency + ' ';
+            const formattedInvestment = `${currencySymbol}${point.notional.toLocaleString()}`;
+
             return [
               `Name: ${point.name}`,
+              `Investment: ${formattedInvestment}`,
               `Performance: ${point.performance >= 0 ? '+' : ''}${point.performance.toFixed(2)}%`,
               `Distance to Barrier: ${point.y >= 0 ? '+' : ''}${point.y.toFixed(1)}%`,
               `Barrier Level: ${point.barrier}%`,
@@ -309,28 +321,34 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
         title: {
           display: true,
           text: 'Days to Final Observation',
-          color: isDarkMode ? '#9ca3af' : '#6b7280',
+          color: '#ffffff',
           font: { size: 14, weight: '600' }
+        },
+        border: {
+          color: '#ffffff'
         },
         grid: {
           color: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)'
         },
         ticks: {
-          color: isDarkMode ? '#9ca3af' : '#6b7280'
+          color: '#ffffff'
         }
       },
       y: {
         title: {
           display: true,
           text: 'Distance to Barrier (%)',
-          color: isDarkMode ? '#9ca3af' : '#6b7280',
+          color: '#ffffff',
           font: { size: 14, weight: '600' }
+        },
+        border: {
+          color: '#ffffff'
         },
         grid: {
           color: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)'
         },
         ticks: {
-          color: isDarkMode ? '#9ca3af' : '#6b7280',
+          color: '#ffffff',
           callback: function(value) {
             return value >= 0 ? `+${value}%` : `${value}%`;
           }
@@ -553,22 +571,73 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
         marginBottom: '2rem',
         border: '1px solid var(--border-color)'
       }}>
-        <input
-          type="text"
-          placeholder="Search by symbol, name, product title or ISIN..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          style={{
-            width: '100%',
-            padding: '0.75rem',
-            background: 'var(--bg-primary)',
-            border: '1px solid var(--border-color)',
-            borderRadius: '8px',
-            color: 'var(--text-primary)',
-            fontSize: '0.95rem',
-            outline: 'none'
-          }}
-        />
+        <div style={{ position: 'relative' }}>
+          <input
+            type="text"
+            placeholder="Search by symbol or name..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '0.75rem',
+              paddingRight: searchTerm ? '3rem' : '0.75rem',
+              background: 'var(--bg-primary)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '8px',
+              color: 'var(--text-primary)',
+              fontSize: '0.95rem',
+              outline: 'none'
+            }}
+          />
+          {searchTerm && (
+            <button
+              onClick={() => setSearchTerm('')}
+              style={{
+                position: 'absolute',
+                right: '0.5rem',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--text-secondary)',
+                cursor: 'pointer',
+                fontSize: '1.25rem',
+                padding: '0.25rem 0.5rem',
+                borderRadius: '4px',
+                transition: 'all 0.2s'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = 'var(--text-primary)';
+                e.currentTarget.style.background = 'var(--bg-tertiary)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = 'var(--text-secondary)';
+                e.currentTarget.style.background = 'transparent';
+              }}
+              title="Clear search"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+        {searchTerm && (
+          <div style={{
+            marginTop: '0.75rem',
+            fontSize: '0.875rem',
+            color: 'var(--text-secondary)',
+            fontWeight: '500'
+          }}>
+            {filteredAndSortedData.length === 0 ? (
+              <span style={{ color: '#ef4444' }}>
+                No results found for "{searchTerm}"
+              </span>
+            ) : (
+              <span>
+                Found {filteredAndSortedData.length} result{filteredAndSortedData.length !== 1 ? 's' : ''} for "{searchTerm}"
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Pagination Controls - Top */}
@@ -1095,7 +1164,8 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
             fontSize: '0.95rem',
             color: 'var(--text-secondary)'
           }}>
-            Each bubble represents one product-underlying combination.
+            Each bubble represents one product-underlying combination. Bubble size is proportional to the investment amount.
+            <br />
             <span style={{ color: '#10b981', fontWeight: '600' }}> Green</span> = safe (&gt;10% above barrier),
             <span style={{ color: '#f97316', fontWeight: '600' }}> Orange</span> = warning zone (0-10% above barrier),
             <span style={{ color: '#ef4444', fontWeight: '600' }}> Red</span> = below barrier (capital at risk).

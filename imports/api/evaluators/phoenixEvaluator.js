@@ -22,13 +22,26 @@ export const PhoenixEvaluator = {
     // Extract key Phoenix parameters from product structure
     const phoenixParams = this.extractPhoenixParameters(product);
 
-    // Extract underlying assets data with proper pricing hierarchy
-    const underlyingAssets = PhoenixEvaluationHelpers.extractUnderlyingAssetsData(product);
+    // Extract underlying assets data with proper pricing hierarchy (includes news)
+    const underlyingAssets = await PhoenixEvaluationHelpers.extractUnderlyingAssetsData(product);
 
     // Build observation analysis first (needed for memory autocall flags)
     const observationAnalysis = this.buildObservationSchedule
       ? await this.buildObservationSchedule(product, underlyingAssets, phoenixParams)
       : null;
+
+    // Enhance underlyings with barrier status and chart data
+    // IMPORTANT: Must be done BEFORE buildBasketAnalysis to ensure barrier status is calculated
+    const enhancedUnderlyings = this.enhanceUnderlyingsWithChartData(underlyingAssets, phoenixParams, observationAnalysis);
+
+    // Calculate indicative maturity value (hypothetical redemption if product matured today)
+    const indicativeMaturityValue = PhoenixEvaluationHelpers.calculateIndicativeMaturityValue(
+      product,
+      underlyingAssets,
+      observationAnalysis,
+      phoenixParams,
+      product.currency || 'USD'
+    );
 
     // Create evaluation results
     const evaluation = {
@@ -51,13 +64,16 @@ export const PhoenixEvaluator = {
       phoenixStructure: phoenixParams,
 
       // Underlying assets data with proper pricing and chart data (includes memory autocall flags)
-      underlyings: this.enhanceUnderlyingsWithChartData(underlyingAssets, phoenixParams, observationAnalysis),
+      underlyings: enhancedUnderlyings,
 
-      // Basket analysis for chart visualization
-      basketAnalysis: this.buildBasketAnalysis(underlyingAssets, phoenixParams),
+      // Basket analysis for chart visualization - uses enhanced underlyings with barrier status
+      basketAnalysis: this.buildBasketAnalysis(enhancedUnderlyings, phoenixParams),
 
       // Observation analysis
       observationAnalysis,
+
+      // Indicative maturity value (hypothetical value if product matured today)
+      indicativeMaturityValue,
 
       // Product name
       generatedProductName: PhoenixEvaluationHelpers.generateProductName(product, underlyingAssets, phoenixParams),

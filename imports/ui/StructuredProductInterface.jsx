@@ -1078,6 +1078,9 @@ const StructuredProductInterface = ({
   // Dialog state
   const { dialogState, showAlert, showError, showSuccess, showConfirm, hideDialog } = useDialog();
 
+  // Term sheet uploader collapse state
+  const [isTermSheetExpanded, setIsTermSheetExpanded] = useState(false);
+
   // Available baskets for dropdown components (computed from underlyings)
   const availableBaskets = useMemo(() => {
     if (basketMode === 'single' && underlyings.length > 0) {
@@ -1622,8 +1625,14 @@ const StructuredProductInterface = ({
         });
       }
 
-      // Load schedule
-      if (product.observationSchedule) {
+      // Load schedule configuration ONLY (not observation schedule)
+      // The ScheduleBuilder will auto-generate the observation schedule from scheduleConfig
+      // This ensures isCallable and other fields are properly set
+      if (product.scheduleConfig) {
+        setScheduleConfig(product.scheduleConfig);
+        // DO NOT load observationSchedule - let ScheduleBuilder generate it from scheduleConfig
+      } else if (product.observationSchedule) {
+        // Fallback for older products without scheduleConfig
         setObservationSchedule(product.observationSchedule);
       }
 
@@ -1651,20 +1660,16 @@ const StructuredProductInterface = ({
         setSelectedTemplateId(product.template);
       }
 
-      // Load structure and schedule parameters
+      // Load structure parameters
       if (product.structureParams) {
         setStructureParams(product.structureParams);
       }
 
-      if (product.scheduleConfig) {
-        setScheduleConfig(product.scheduleConfig);
-      }
+      // Show success message and stay on setup tab
+      showSuccess('Term sheet extracted successfully! The product details have been populated below.');
 
-      // Show success message and navigate to underlyings tab for review
-      showSuccess('Term sheet extracted successfully! Please review and edit the product details.');
-
-      // Switch to underlyings tab so user can review the extracted data
-      handleTabChange('underlyings');
+      // Collapse the term sheet uploader and stay on setup tab
+      setIsTermSheetExpanded(false);
 
     } catch (error) {
       console.error('Error loading extracted product:', error);
@@ -1815,10 +1820,110 @@ const StructuredProductInterface = ({
       case 'setup':
         return (
           <div className="setup-tab">
-            <ProductDetailsCard 
+            {/* Term Sheet Uploader - Collapsible */}
+            <div style={{
+              marginBottom: '2rem',
+              background: 'var(--bg-secondary)',
+              borderRadius: '12px',
+              border: '1px solid var(--border-color)',
+              overflow: 'hidden'
+            }}>
+              {/* Collapsible Header */}
+              <div
+                onClick={() => setIsTermSheetExpanded(!isTermSheetExpanded)}
+                style={{
+                  padding: '1.5rem 2rem',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  background: isTermSheetExpanded ? 'var(--bg-tertiary)' : 'var(--bg-secondary)',
+                  transition: 'background 0.2s'
+                }}
+                onMouseEnter={(e) => {
+                  if (!isTermSheetExpanded) {
+                    e.currentTarget.style.background = 'var(--bg-tertiary)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!isTermSheetExpanded) {
+                    e.currentTarget.style.background = 'var(--bg-secondary)';
+                  }
+                }}
+              >
+                <div>
+                  <h2 style={{
+                    margin: '0 0 0.25rem 0',
+                    fontSize: '1.5rem',
+                    fontWeight: '700',
+                    color: 'var(--text-primary)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem'
+                  }}>
+                    📄 Extract from Term Sheet
+                  </h2>
+                  <p style={{
+                    margin: 0,
+                    fontSize: '0.9rem',
+                    color: 'var(--text-secondary)'
+                  }}>
+                    Upload a PDF to automatically extract product details
+                  </p>
+                </div>
+                <div style={{
+                  fontSize: '1.5rem',
+                  color: 'var(--text-secondary)',
+                  transition: 'transform 0.2s',
+                  transform: isTermSheetExpanded ? 'rotate(180deg)' : 'rotate(0deg)'
+                }}>
+                  ▼
+                </div>
+              </div>
+
+              {/* Collapsible Content */}
+              {isTermSheetExpanded && (
+                <div style={{
+                  padding: '0 2rem 2rem 2rem',
+                  borderTop: '1px solid var(--border-color)'
+                }}>
+                  <div style={{ paddingTop: '1.5rem' }}>
+                    <TermSheetUploader
+                      onProductExtracted={handleTermSheetExtracted}
+                      sessionId={getSessionId()}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Divider */}
+            {!isTermSheetExpanded && (
+              <div style={{
+                margin: '2rem 0',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '1rem'
+              }}>
+                <div style={{ flex: 1, height: '1px', background: 'var(--border-color)' }} />
+                <span style={{
+                  color: 'var(--text-secondary)',
+                  fontSize: '0.9rem',
+                  fontWeight: '600',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em'
+                }}>
+                  Product Details
+                </span>
+                <div style={{ flex: 1, height: '1px', background: 'var(--border-color)' }} />
+              </div>
+            )}
+
+            {/* Product Details Card */}
+            <ProductDetailsCard
               productDetails={productDetails}
               onUpdateProductDetails={handleUpdateProductDetails}
-              onRegenerateTitle={() => {}} 
+              onRegenerateTitle={() => {}}
               editingProduct={editingProduct}
             />
           </div>
@@ -1887,32 +1992,6 @@ const StructuredProductInterface = ({
               onTemplateLoad={handleTemplateLoad}
               onTemplateNew={handleTemplateNew}
               selectedTemplateId={selectedTemplateId}
-            />
-
-            {/* Divider */}
-            <div style={{
-              margin: '3rem 0',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '1rem'
-            }}>
-              <div style={{ flex: 1, height: '1px', background: 'var(--border-color)' }} />
-              <span style={{
-                color: 'var(--text-secondary)',
-                fontSize: '0.9rem',
-                fontWeight: '600',
-                textTransform: 'uppercase',
-                letterSpacing: '0.05em'
-              }}>
-                Or Extract from Term Sheet
-              </span>
-              <div style={{ flex: 1, height: '1px', background: 'var(--border-color)' }} />
-            </div>
-
-            {/* Term Sheet Uploader */}
-            <TermSheetUploader
-              onProductExtracted={handleTermSheetExtracted}
-              sessionId={getSessionId()}
             />
           </div>
         );

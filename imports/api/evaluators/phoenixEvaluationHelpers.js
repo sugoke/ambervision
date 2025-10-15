@@ -1,4 +1,5 @@
 import { MarketDataHelpers } from '/imports/api/marketDataCache';
+import { EODApiHelpers } from '/imports/api/eodApi';
 
 /**
  * Phoenix Evaluation Helpers
@@ -144,12 +145,13 @@ export const PhoenixEvaluationHelpers = {
   /**
    * Extract underlying assets data for Phoenix products
    */
-  extractUnderlyingAssetsData(product) {
+  async extractUnderlyingAssetsData(product) {
     const underlyings = [];
     const currency = product.currency || 'USD';
 
     if (product.underlyings && Array.isArray(product.underlyings)) {
-      product.underlyings.forEach((underlying, index) => {
+      // Process all underlyings sequentially to fetch news
+      for (const [index, underlying] of product.underlyings.entries()) {
         const initialPrice = underlying.strike ||
                            (underlying.securityData?.tradeDatePrice?.price) ||
                            (underlying.securityData?.tradeDatePrice?.close) || 0;
@@ -159,6 +161,19 @@ export const PhoenixEvaluationHelpers = {
 
         let performance = initialPrice > 0 ?
           ((currentPrice - initialPrice) / initialPrice) * 100 : 0;
+
+        // Fetch latest news for this underlying
+        let news = [];
+        try {
+          const fullTicker = underlying.securityData?.ticker || `${underlying.ticker}.US`;
+          const [symbol, exchange] = fullTicker.includes('.') ? fullTicker.split('.') : [fullTicker, null];
+
+          // Fetch 2 latest news articles from EOD API
+          news = await EODApiHelpers.getSecurityNews(symbol, exchange, 2);
+        } catch (error) {
+          console.warn(`Phoenix: Failed to fetch news for ${underlying.ticker}:`, error.message);
+          news = []; // Graceful fallback - empty array
+        }
 
         const underlyingData = {
           ticker: underlying.ticker,
@@ -186,11 +201,14 @@ export const PhoenixEvaluationHelpers = {
           hasCurrentData: !!(underlying.securityData?.price?.price),
           lastUpdated: new Date().toISOString(),
 
-          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`
+          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`,
+
+          // Latest news articles
+          news: news
         };
 
         underlyings.push(underlyingData);
-      });
+      }
     }
 
     return underlyings;
@@ -271,6 +289,106 @@ export const PhoenixEvaluationHelpers = {
     const nextDate = new Date();
     nextDate.setMonth(nextDate.getMonth() + 3); // Quarterly default
     return nextDate;
+  },
+
+  /**
+   * Calculate indicative maturity value if product were to mature today
+   * Shows hypothetical redemption: capital + earned coupons
+   * Only for live Phoenix products
+   */
+  calculateIndicativeMaturityValue(product, underlyings, observationSchedule, phoenixParams, currency = 'USD') {
+    // Only calculate for live products
+    const now = new Date();
+    const finalObsDate = product.finalObservation || product.finalObservationDate;
+    const maturityDate = product.maturity || product.maturityDate;
+
+    const isFinalObsPassed = finalObsDate && new Date(finalObsDate) <= now;
+    const isMaturityPassed = maturityDate && new Date(maturityDate) <= now;
+    const hasMatured = isFinalObsPassed || isMaturityPassed;
+
+    if (hasMatured) {
+      return null; // Don't calculate for matured products
+    }
+
+    if (!underlyings || underlyings.length === 0) {
+      return null; // Can't calculate without underlyings
+    }
+
+    // Calculate worst-of basket performance (minimum performance among all underlyings)
+    const basketPerformance = Math.min(...underlyings.map(u => u.performance || 0));
+
+    // Protection barrier from phoenixParams (default 100% if not set)
+    const protectionBarrier = phoenixParams?.protectionBarrier || 100;
+
+    // Calculate current basket level (100 + performance)
+    // Example: -35% performance means current level is 65% of strike
+    const currentLevel = 100 + basketPerformance;
+
+    // Calculate capital return based on protection barrier logic
+    let capitalReturn;
+    let capitalExplanation;
+
+    if (basketPerformance >= (protectionBarrier - 100)) {
+      // Above protection barrier: full capital return (100%)
+      capitalReturn = 100;
+      capitalExplanation = `Basket at ${currentLevel.toFixed(2)}% (above ${protectionBarrier}% barrier) = 100% capital`;
+    } else {
+      // Below protection barrier: geared loss calculation
+      // Step 1: Calculate breach amount
+      const breachAmount = protectionBarrier - currentLevel;
+      // Step 2: Apply gearing factor (breach × 100/barrier)
+      const gearedLoss = breachAmount * (100 / protectionBarrier);
+      // Step 3: Calculate capital return
+      capitalReturn = 100 - gearedLoss;
+      // Example: barrier 70%, current 63.28% → breach 6.72% → loss 6.72×(100/70) = 9.6% → capital 90.4%
+      capitalExplanation = `Basket at ${currentLevel.toFixed(2)}% (below ${protectionBarrier}% barrier): breach ${breachAmount.toFixed(2)}% × (100/${protectionBarrier}) = loss ${gearedLoss.toFixed(2)}% → capital ${capitalReturn.toFixed(2)}%`;
+    }
+
+    // Get coupons from observation schedule
+    const totalCouponsEarned = observationSchedule?.totalCouponsEarned || 0;
+    const totalMemoryCoupons = observationSchedule?.totalMemoryCoupons || 0;
+
+    // Memory coupons are only paid if basket is above protection barrier at maturity
+    // If below barrier, memory coupons are forfeited
+    const isAboveBarrier = basketPerformance >= (protectionBarrier - 100);
+    const memoryCouponsIncluded = isAboveBarrier ? totalMemoryCoupons : 0;
+
+    // Calculate total indicative value
+    const totalIndicativeValue = capitalReturn + totalCouponsEarned + memoryCouponsIncluded;
+
+    // Return pre-formatted object for display
+    return {
+      isLive: true,
+      basketPerformance: basketPerformance,
+      basketPerformanceFormatted: (basketPerformance >= 0 ? '+' : '') + basketPerformance.toFixed(2) + '%',
+
+      protectionBarrier: protectionBarrier,
+      protectionBarrierFormatted: protectionBarrier.toFixed(0) + '%',
+
+      capitalReturn: capitalReturn,
+      capitalReturnFormatted: capitalReturn.toFixed(2) + '%',
+      capitalExplanation: capitalExplanation,
+
+      couponsEarned: totalCouponsEarned,
+      couponsEarnedFormatted: totalCouponsEarned.toFixed(2) + '%',
+
+      memoryCoupons: memoryCouponsIncluded,
+      memoryCouponsFormatted: memoryCouponsIncluded.toFixed(2) + '%',
+      hasMemoryCoupons: totalMemoryCoupons > 0,
+      memoryCouponsForfeit: !isAboveBarrier && totalMemoryCoupons > 0,
+      memoryCouponsForfeitAmount: !isAboveBarrier ? totalMemoryCoupons : 0,
+      memoryCouponsForfeitFormatted: !isAboveBarrier ? totalMemoryCoupons.toFixed(2) + '%' : '0%',
+
+      totalValue: totalIndicativeValue,
+      totalValueFormatted: totalIndicativeValue.toFixed(2) + '%',
+
+      evaluationDate: now,
+      evaluationDateFormatted: now.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric'
+      })
+    };
   },
 
   /**

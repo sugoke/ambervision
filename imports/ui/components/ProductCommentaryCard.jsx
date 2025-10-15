@@ -10,6 +10,7 @@ import { ProductCommentaryCollection } from '/imports/api/riskAnalysis';
 const ProductCommentaryCard = ({ productId }) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState(null);
+  const [isExpanded, setIsExpanded] = useState(false);
 
   // Subscribe to the latest commentary for this product
   const sessionId = localStorage.getItem('sessionId');
@@ -48,16 +49,24 @@ const ProductCommentaryCard = ({ productId }) => {
       background: 'var(--bg-secondary)',
       border: '1px solid var(--border-color)',
       borderRadius: '12px',
-      padding: '1.5rem',
       marginBottom: '2rem',
-      boxShadow: '0 2px 4px rgba(0, 0, 0, 0.05)'
+      boxShadow: '0 2px 4px rgba(0, 0, 0, 0.05)',
+      overflow: 'hidden'
     }}>
-      <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: commentary ? '1rem' : 0
-      }}>
+      {/* Collapsible Header */}
+      <div
+        onClick={() => setIsExpanded(!isExpanded)}
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          padding: '1.5rem',
+          cursor: 'pointer',
+          background: isExpanded ? 'var(--bg-tertiary)' : 'var(--bg-secondary)',
+          transition: 'background 0.2s',
+          borderBottom: isExpanded ? '1px solid var(--border-color)' : 'none'
+        }}
+      >
         <h3 style={{
           margin: 0,
           fontSize: '1.2rem',
@@ -69,39 +78,61 @@ const ProductCommentaryCard = ({ productId }) => {
           💬 Investment Commentary
         </h3>
 
-        <button
-          onClick={handleGenerateCommentary}
-          disabled={isGenerating}
-          style={{
-            background: isGenerating
-              ? 'var(--bg-muted)'
-              : 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
-            color: isGenerating ? 'var(--text-muted)' : 'white',
-            border: 'none',
-            padding: '10px 20px',
-            borderRadius: '8px',
-            fontSize: '0.9rem',
-            fontWeight: '600',
-            cursor: isGenerating ? 'not-allowed' : 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem',
-            transition: 'all 0.3s ease',
-            boxShadow: isGenerating ? 'none' : '0 2px 8px rgba(139, 92, 246, 0.3)'
-          }}
-        >
-          {isGenerating ? (
-            <>
-              <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⏳</span>
-              Generating...
-            </>
-          ) : (
-            <>
-              🤖 {commentary ? 'Regenerate' : 'Generate'} Commentary
-            </>
-          )}
-        </button>
+        <div style={{
+          fontSize: '1.2rem',
+          color: 'var(--text-secondary)',
+          transition: 'transform 0.2s',
+          transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)'
+        }}>
+          ▼
+        </div>
       </div>
+
+      {/* Collapsible Content */}
+      {isExpanded && (
+        <div style={{ padding: '1.5rem' }}>
+          <div style={{
+            display: 'flex',
+            justifyContent: 'flex-end',
+            alignItems: 'center',
+            marginBottom: commentary ? '1rem' : 0
+          }}>
+            <button
+              onClick={(e) => {
+                e.stopPropagation(); // Prevent header toggle
+                handleGenerateCommentary();
+              }}
+              disabled={isGenerating}
+              style={{
+                background: isGenerating
+                  ? 'var(--bg-muted)'
+                  : 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+                color: isGenerating ? 'var(--text-muted)' : 'white',
+                border: 'none',
+                padding: '10px 20px',
+                borderRadius: '8px',
+                fontSize: '0.9rem',
+                fontWeight: '600',
+                cursor: isGenerating ? 'not-allowed' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                transition: 'all 0.3s ease',
+                boxShadow: isGenerating ? 'none' : '0 2px 8px rgba(139, 92, 246, 0.3)'
+              }}
+            >
+              {isGenerating ? (
+                <>
+                  <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⏳</span>
+                  Generating...
+                </>
+              ) : (
+                <>
+                  🤖 {commentary ? 'Regenerate' : 'Generate'} Commentary
+                </>
+              )}
+            </button>
+          </div>
 
       {error && (
         <div style={{
@@ -166,17 +197,19 @@ const ProductCommentaryCard = ({ productId }) => {
         </div>
       )}
 
-      {!commentary && !isGenerating && !error && (
-        <div style={{
-          textAlign: 'center',
-          padding: '2rem 1rem',
-          color: 'var(--text-secondary)',
-          fontSize: '0.9rem'
-        }}>
-          <div style={{ fontSize: '2rem', marginBottom: '0.5rem', opacity: 0.5 }}>💬</div>
-          <p style={{ margin: 0 }}>
-            No commentary generated yet. Click the button above to generate a client-ready investment commentary using AI.
-          </p>
+          {!commentary && !isGenerating && !error && (
+            <div style={{
+              textAlign: 'center',
+              padding: '2rem 1rem',
+              color: 'var(--text-secondary)',
+              fontSize: '0.9rem'
+            }}>
+              <div style={{ fontSize: '2rem', marginBottom: '0.5rem', opacity: 0.5 }}>💬</div>
+              <p style={{ margin: 0 }}>
+                No commentary generated yet. Click the button above to generate a client-ready investment commentary using AI.
+              </p>
+            </div>
+          )}
         </div>
       )}
 
