@@ -1042,6 +1042,14 @@ const StructuredProductInterface = ({
           referencePerformance: 'worst-of',
           barrierObservation: 'continuous'
         };
+      case 'participation_note':
+        return {
+          participationRate: 100,
+          strike: 100,
+          cap: 0,
+          capitalGuarantee: 100,
+          callableByIssuer: false
+        };
       default:
         return {
           couponRate: 8.5,
@@ -2042,9 +2050,8 @@ const StructuredProductInterface = ({
               { id: 'template', label: 'Template', icon: '📋' },
               { id: 'structure', label: 'Structure', icon: '🏗️' },
               { id: 'underlyings', label: 'Underlyings', icon: '📈' },
-              { id: 'schedule', label: 'Schedule', icon: '📅', hideFor: ['orion_memory', 'shark_note'] },
               { id: 'summary', label: 'Summary', icon: '📊' }
-            ].filter(tab => !tab.hideFor || !tab.hideFor.includes(selectedTemplateId)).map((tab) => (
+            ].map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => handleTabChange(tab.id)}

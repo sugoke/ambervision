@@ -49,21 +49,21 @@ const CustomDateInput = ({ value, onChange, className = '', style = {}, placehol
     }
   };
 
-  // Initialize input value on mount
+  // Sync external value changes with local state
   useEffect(() => {
-    if (value && !inputValue) {
-      setInputValue(formatDateForDisplay(value));
-      lastExternalValue.current = value;
+    // Initialize on mount or update when value changes (but not while user is typing)
+    if (value !== lastExternalValue.current) {
+      if (!isTyping) {
+        // User is not typing - safe to update display immediately
+        setInputValue(formatDateForDisplay(value));
+        lastExternalValue.current = value;
+      } else {
+        // User is typing - just update the reference silently
+        // The display will sync when they finish typing (blur or timeout)
+        lastExternalValue.current = value;
+      }
     }
-  }, []);
-
-  // Only update from prop when external value actually changes and user is not typing
-  useEffect(() => {
-    if (value !== lastExternalValue.current && !isTyping) {
-      setInputValue(formatDateForDisplay(value));
-      lastExternalValue.current = value;
-    }
-  }, [value]); // Remove isTyping dependency to prevent interference
+  }, [value, isTyping]);
 
   const stopTyping = () => {
     setIsTyping(false);
@@ -120,34 +120,42 @@ const CustomDateInput = ({ value, onChange, className = '', style = {}, placehol
     // The user can continue typing to complete the date
   };
 
-  const handleFocus = () => {
+  const handleFocus = (e) => {
     setIsTyping(true);
+    // Auto-select all content on focus for easier editing
+    if (inputValue && e.target) {
+      setTimeout(() => {
+        e.target.select();
+      }, 0);
+    }
   };
 
   const handleKeyDown = (e) => {
-    // Allow navigation and editing keys
+    // Allow navigation and editing keys (Backspace, Tab, Escape, Enter, Delete, Arrow keys)
     const allowedKeys = [8, 9, 27, 13, 46, 37, 38, 39, 40];
-    
-    if (allowedKeys.includes(e.keyCode) || 
+
+    if (allowedKeys.includes(e.keyCode) ||
         (e.ctrlKey && [65, 67, 86, 88].includes(e.keyCode))) {
       return;
     }
-    
+
     // On Enter, stop typing and blur
     if (e.keyCode === 13) {
       e.target.blur();
       return;
     }
-    
+
     // Only allow numbers
     if ((e.keyCode < 48 || e.keyCode > 57) && (e.keyCode < 96 || e.keyCode > 105)) {
       e.preventDefault();
       return;
     }
 
-    // Limit to 8 digits
+    // Limit to 8 digits only if no text is selected
     const digitsOnly = inputValue.replace(/\D/g, '');
-    if (digitsOnly.length >= 8) {
+    const hasSelection = e.target.selectionStart !== e.target.selectionEnd;
+
+    if (digitsOnly.length >= 8 && !hasSelection) {
       e.preventDefault();
     }
   };

@@ -309,6 +309,32 @@ if (Meteor.isServer) {
             reason: 'Chart generation failed'
           };
         }
+      } else if (templateId === 'participation_note') {
+        console.log('📈 Generating Participation Note evaluation');
+        const { ParticipationNoteEvaluator } = await import('./evaluators/participationNoteEvaluator.js');
+        templateResults = await ParticipationNoteEvaluator.generateReport(productData, {
+          evaluationDate: new Date()
+        });
+
+        // Generate Participation Note chart data
+        const { ParticipationNoteChartBuilder } = await import('./chartBuilders/participationNoteChartBuilder.js');
+        const chartData = await ParticipationNoteChartBuilder.generateChartData(productData, templateResults);
+
+        if (chartData) {
+          console.log('📊 Participation Note chart data generated, storing in database');
+          await Meteor.callAsync('chartData.upsert', productData._id, chartData);
+          templateResults.chartData = {
+            available: true,
+            type: 'participation_note_performance',
+            productId: productData._id
+          };
+        } else {
+          console.log('⚠️ No Participation Note chart data generated');
+          templateResults.chartData = {
+            available: false,
+            reason: 'Chart generation failed'
+          };
+        }
       } else {
         // Fallback to Phoenix for unknown templates
         console.log('⚠️ Unknown template, falling back to Phoenix');

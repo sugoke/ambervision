@@ -299,7 +299,7 @@ export const BUILT_IN_TEMPLATES = [
     _id: "shark_note",
     name: "Shark Note",
     icon: "🦈",
-    category: "leveraged", 
+    category: "leveraged",
     description: "Leveraged participation note with knock-out barrier and enhanced returns",
     isBuiltIn: true,
     createdAt: new Date(),
@@ -307,7 +307,7 @@ export const BUILT_IN_TEMPLATES = [
     droppedItems: [
       // Daily observation
       {
-        id: "observation_1", 
+        id: "observation_1",
         type: "observation",
         column: "daily",
         row: 1,
@@ -320,7 +320,7 @@ export const BUILT_IN_TEMPLATES = [
         type: "barrier",
         column: "life",
         row: 2,
-        value: "140% Knock-Out Barrier", 
+        value: "140% Knock-Out Barrier",
         barrier_type: "knockout",
         barrier_level: 140,
         sortOrder: 2
@@ -343,6 +343,17 @@ export const BUILT_IN_TEMPLATES = [
         sortOrder: 4
       }
     ]
+  },
+  {
+    _id: "participation_note",
+    name: "Participation Note",
+    icon: "📈",
+    category: "leveraged",
+    description: "At maturity, investor receives performance of underlying(s) multiplied by participation rate. Supports single stock or basket configurations. Optional issuer call feature.",
+    isBuiltIn: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    droppedItems: []
   }
 ];
 

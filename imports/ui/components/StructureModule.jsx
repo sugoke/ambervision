@@ -446,6 +446,218 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
           </div>
         );
 
+      case 'participation_note':
+        return (
+          <div>
+            <div style={commonStyle}>
+              <h4 style={{
+                margin: '0 0 20px 0',
+                color: 'var(--text-secondary)',
+                fontSize: '1.1rem',
+                fontWeight: '600',
+                borderBottom: '2px solid var(--accent-color)',
+                paddingBottom: '8px'
+              }}>📈 Participation Note Configuration</h4>
+
+              {/* Essential Participation Note Parameters */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: '1.5rem',
+                marginBottom: '1.5rem'
+              }}>
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Participation Rate (%)</label>
+                  <input
+                    type="number"
+                    value={structureParams?.participationRate || 100}
+                    min="0"
+                    max="500"
+                    step="1"
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('participationRate', parseInt(e.target.value) || 0)}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Multiplier applied to underlying performance
+                  </div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Strike (%)</label>
+                  <input
+                    type="number"
+                    value={structureParams?.strike || 100}
+                    min="50"
+                    max="150"
+                    step="1"
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('strike', parseInt(e.target.value) || 0)}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Initial reference level
+                  </div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Cap Level (%)</label>
+                  <input
+                    type="number"
+                    value={structureParams?.cap || 150}
+                    min="100"
+                    max="500"
+                    step="5"
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('cap', parseInt(e.target.value) || 0)}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Maximum payout level (0 = no cap)
+                  </div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Capital Guarantee Level (%)</label>
+                  <input
+                    type="number"
+                    value={structureParams?.capitalGuarantee || 100}
+                    min="0"
+                    max="100"
+                    step="1"
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('capitalGuarantee', parseInt(e.target.value) || 0)}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Minimum redemption level at maturity
+                  </div>
+                </div>
+              </div>
+
+              {/* Callable Feature */}
+              <div style={{
+                background: 'var(--bg-tertiary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '8px',
+                padding: '1.5rem',
+                marginBottom: '1rem'
+              }}>
+                <h5 style={{
+                  margin: '0 0 1rem 0',
+                  color: 'var(--text-primary)',
+                  fontSize: '1rem',
+                  fontWeight: '600'
+                }}>
+                  Additional Features
+                </h5>
+
+                <label style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.75rem',
+                  cursor: 'pointer',
+                  padding: '0.5rem',
+                  borderRadius: '6px',
+                  background: 'var(--bg-primary)',
+                  transition: 'background-color 0.2s ease'
+                }}>
+                  <input
+                    type="checkbox"
+                    checked={structureParams?.callableByIssuer === true}
+                    style={{
+                      width: '18px',
+                      height: '18px',
+                      accentColor: 'var(--accent-color)'
+                    }}
+                    onChange={(e) => onParamChange && onParamChange('callableByIssuer', e.target.checked)}
+                  />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                    <span style={{
+                      fontSize: '0.9rem',
+                      color: 'var(--text-primary)',
+                      fontWeight: '500'
+                    }}>
+                      Callable by Issuer
+                    </span>
+                    <span style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--text-muted)',
+                      fontWeight: '400',
+                      fontStyle: 'italic'
+                    }}>
+                      Issuer has the right to call the product before maturity
+                    </span>
+                  </div>
+                </label>
+
+                {/* Rebate field - shown only if callable */}
+                {structureParams?.callableByIssuer && (
+                  <div style={{
+                    padding: '1rem',
+                    background: 'var(--bg-primary)',
+                    borderRadius: '6px',
+                    marginLeft: '2.25rem'
+                  }}>
+                    <label style={labelStyle}>Issuer Call Rebate (%)</label>
+                    <input
+                      type="number"
+                      value={structureParams?.issuerCallRebate || 0}
+                      min="0"
+                      max="20"
+                      step="0.5"
+                      style={numberInputStyle}
+                      onFocus={handleInputFocus}
+                      onBlur={handleInputBlur}
+                      onChange={(e) => onParamChange && onParamChange('issuerCallRebate', parseFloat(e.target.value) || 0)}
+                    />
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                      Additional payment on top of 100% when product is called by issuer (e.g., 5% means investor receives 105%)
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Info Box */}
+              <div style={{
+                marginTop: '1.5rem',
+                padding: '1rem',
+                background: 'var(--bg-tertiary)',
+                borderRadius: '8px',
+                fontSize: '0.85rem',
+                color: 'var(--text-secondary)',
+                lineHeight: '1.5'
+              }}>
+                <div style={{ fontWeight: '600', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+                  ℹ️ How Participation Note Works:
+                </div>
+                <ul style={{ margin: '0', paddingLeft: '1.5rem' }}>
+                  <li>At maturity: redemption = {structureParams?.capitalGuarantee || 100}% + (performance × {structureParams?.participationRate || 100}%)</li>
+                  <li>Performance is calculated from strike level ({structureParams?.strike || 100}%)</li>
+                  {structureParams?.cap && structureParams.cap > 0 ? (
+                    <li>Maximum payout is capped at {structureParams.cap}%</li>
+                  ) : (
+                    <li>No cap - unlimited upside potential with {structureParams?.participationRate || 100}% participation</li>
+                  )}
+                  <li>Capital guarantee ensures minimum payout of {structureParams?.capitalGuarantee || 100}%</li>
+                  {structureParams?.callableByIssuer && (
+                    <>
+                      <li>Issuer may call the product early if market conditions are favorable</li>
+                      {structureParams?.issuerCallRebate > 0 && (
+                        <li>If called: investor receives 100% + {structureParams.issuerCallRebate}% rebate = {100 + structureParams.issuerCallRebate}%</li>
+                      )}
+                    </>
+                  )}
+                </ul>
+              </div>
+            </div>
+          </div>
+        );
+
       case 'shark_note':
         return (
           <div>

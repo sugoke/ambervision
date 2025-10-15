@@ -39,7 +39,10 @@ export async function seedDemoData() {
     
     // 8. Create reverse convertible template
     await createReverseConvertibleTemplate();
-    
+
+    // 9. Create participation note template
+    await createParticipationNoteTemplate();
+
     console.log('[SEEDING] ✅ Demo data seeding completed successfully');
     
   } catch (error) {
@@ -262,6 +265,98 @@ async function createReverseConvertibleTemplate() {
       console.log('Reverse Convertible template already exists');
     }
   } else {
-    console.error('Error creating Reverse Convertible template:', error);
+    console.log('Reverse Convertible template already exists');
+  }
+}
+
+/**
+ * Create the Participation Note template
+ */
+async function createParticipationNoteTemplate() {
+  // Check if template already exists
+  const existingTemplate = await TemplatesCollection.findOneAsync({
+    name: 'Participation Note',
+    templateId: 'participation_note'
+  });
+
+  if (!existingTemplate) {
+    const participationNoteTemplate = {
+      name: 'Participation Note',
+      templateId: 'participation_note',
+      description: 'At maturity, investor receives performance of underlying(s) multiplied by participation rate. Supports single stock or basket configurations. Optional issuer call feature.',
+      category: 'Built-in',
+      structure: [],
+      droppedItems: [],
+      parameters: {
+        participationRate: {
+          label: 'Participation Rate (%)',
+          type: 'number',
+          default: 100,
+          description: 'Percentage of performance to receive (e.g., 150 for 150% participation)'
+        },
+        strike: {
+          label: 'Strike Level (%)',
+          type: 'number',
+          default: 100,
+          description: 'Reference point for performance calculation'
+        },
+        referencePerformance: {
+          label: 'Reference Performance',
+          type: 'select',
+          options: ['worst-of', 'best-of', 'average'],
+          default: 'worst-of',
+          description: 'How to calculate basket performance'
+        },
+        hasIssuerCall: {
+          label: 'Has Issuer Call Option',
+          type: 'boolean',
+          default: false,
+          description: 'Can issuer call the product early'
+        }
+      },
+      instructions: `
+# Participation Note Template
+
+## Payoff Structure
+At maturity, the investor receives:
+- **100% + (Underlying Performance × Participation Rate)**
+
+## Key Features
+- **Participation Rate**: Multiplier applied to underlying performance
+- **Strike Level**: Reference point (typically 100%)
+- **Basket Support**: Single stock, worst-of, best-of, or average
+- **Issuer Call**: Optional early redemption at issuer's discretion
+
+## Example
+- Underlying performance: +20%
+- Participation rate: 150%
+- Payoff: 100% + (20% × 150%) = 130%
+
+## Configuration
+1. Set participation rate (e.g., 100%, 150%, 200%)
+2. Choose strike level (default 100%)
+3. Select basket reference (worst-of, best-of, average)
+4. Enable issuer call option if applicable
+
+## Use Cases
+- Equity upside participation
+- Leveraged returns
+- Custom performance scenarios
+      `.trim(),
+      tags: ['participation', 'performance', 'leverage', 'basket'],
+      isBuiltIn: true,
+      isPublic: true,
+      createdAt: new Date(),
+      version: '1.0.0'
+    };
+
+    try {
+      const templateId = await TemplatesCollection.insertAsync(participationNoteTemplate);
+      console.log(`✅ Created Participation Note template: ${templateId}`);
+    } catch (error) {
+      console.error('❌ Error creating Participation Note template:', error);
+    }
+  } else {
+    console.log('Participation Note template already exists');
   }
 }

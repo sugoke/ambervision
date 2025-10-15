@@ -92,37 +92,46 @@ export class ProductStructureValidator {
    */
   validate(product, options = {}) {
     const result = new ValidationResult();
-    
+
     // Basic product validation
     this.validateBasicProduct(product, result);
-    
+
+    // For template-based products, skip payoff structure validation
+    // Templates use pre-built configurations instead of drag-and-drop components
+    if (product.templateId || product.template) {
+      // Validate schedules for template products
+      this.validateSchedules(product, result);
+      return result;
+    }
+
+    // Legacy drag-and-drop validation (only for non-template products)
     if (!product.payoffStructure || !Array.isArray(product.payoffStructure)) {
       result.addError('Product must have a valid payoff structure');
       return result;
     }
-    
+
     // Component-level validation
     for (const component of product.payoffStructure) {
       this.validateComponent(component, result);
     }
-    
-    // Structure-level validation  
+
+    // Structure-level validation
     this.validatePayoffStructure(product.payoffStructure, result);
-    
+
     // Schedule validation
     this.validateSchedules(product, result);
-    
+
     // Underlying references validation
     this.validateUnderlyingReferences(product, result);
-    
+
     // Logical coherence validation
     this.validateLogicalCoherence(product.payoffStructure, result);
-    
+
     // Performance recommendations
     if (options.includeOptimizationSuggestions) {
       this.addOptimizationSuggestions(product, result);
     }
-    
+
     return result;
   }
   

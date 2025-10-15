@@ -906,6 +906,7 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                           case 'orion_memory': return '⭐';
                           case 'himalaya': return '🏔️';
                           case 'shark_note': return '🦈';
+                          case 'participation_note': return '📈';
                           default: return '📊';
                         }
                       })()}
@@ -1258,6 +1259,7 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                             case 'orion_memory': return '⭐';
                             case 'himalaya': return '🏔️';
                             case 'shark_note': return '🦈';
+                            case 'participation_note': return '📈';
                             default: return '📊';
                           }
                         })()}
