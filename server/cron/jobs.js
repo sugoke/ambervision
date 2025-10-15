@@ -9,9 +9,10 @@ import { conditionalUpdate, updateMarketTickerPrices } from './updateMarketTicke
 /**
  * Cron Jobs Configuration
  *
- * Scheduled jobs for automated system maintenance:
- * 1. Market Data Refresh - Fetches latest market data for all products
- * 2. Product Re-evaluation - Re-evaluates all live (non-matured) products
+ * Scheduled jobs for automated system maintenance (Europe/Zurich timezone - CET/CEST):
+ * 1. Market Data Refresh - Daily at 00:00 CET (midnight)
+ * 2. Product Re-evaluation - Daily at 00:30 CET (30 min after data refresh)
+ * 3. Market Ticker Update - Every 15 minutes (conditional on user activity)
  */
 
 // Store job instances for tracking
@@ -25,19 +26,19 @@ let cronJobs = {
 let scheduleInfo = {
   marketDataRefresh: {
     name: 'marketDataRefresh',
-    schedule: '0 2 * * *', // 2:00 AM daily
+    schedule: '0 0 * * *', // Midnight CET daily
     lastFinishedAt: null,
     nextScheduledRun: null
   },
   productRevaluation: {
     name: 'productRevaluation',
-    schedule: '0 3 * * *', // 3:00 AM daily
+    schedule: '30 0 * * *', // 00:30 CET daily (30 min after data refresh)
     lastFinishedAt: null,
     nextScheduledRun: null
   },
   marketTickerUpdate: {
     name: 'marketTickerUpdate',
-    schedule: '*/15 * * * *', // Every 15 minutes
+    schedule: '*/15 * * * *', // Every 15 minutes (conditional on activity)
     lastFinishedAt: null,
     nextScheduledRun: null
   }
@@ -63,7 +64,7 @@ function getNextRunTime(cronExpression) {
 
 /**
  * JOB 1: Market Data Refresh
- * Runs daily at 2:00 AM
+ * Runs daily at 00:00 CET (midnight European time)
  * Fetches latest market data for all product underlyings
  */
 async function marketDataRefreshJob() {
@@ -193,7 +194,7 @@ async function marketDataRefreshJob() {
 
 /**
  * JOB 2: Product Re-evaluation
- * Runs daily at 3:00 AM (after market data refresh)
+ * Runs daily at 00:30 CET (30 minutes after market data refresh)
  * Re-evaluates all live products with latest market data
  */
 async function productRevaluationJob() {
@@ -284,8 +285,8 @@ export function initializeCronJobs() {
   scheduleInfo.productRevaluation.nextScheduledRun = getNextRunTime(scheduleInfo.productRevaluation.schedule);
   scheduleInfo.marketTickerUpdate.nextScheduledRun = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes from now
 
-  // Schedule Market Data Refresh - Daily at 2:00 AM
-  cronJobs.marketDataRefresh = cron.schedule('0 2 * * *', async () => {
+  // Schedule Market Data Refresh - Daily at midnight CET
+  cronJobs.marketDataRefresh = cron.schedule('0 0 * * *', async () => {
     try {
       await marketDataRefreshJob();
     } catch (error) {
@@ -293,13 +294,13 @@ export function initializeCronJobs() {
     }
   }, {
     scheduled: true,
-    timezone: "America/New_York" // Adjust to your timezone
+    timezone: "Europe/Zurich" // Central European Time (CET/CEST)
   });
 
-  console.log('✓ Market Data Refresh scheduled for 2:00 AM daily');
+  console.log('✓ Market Data Refresh scheduled for midnight (00:00 CET) daily');
 
-  // Schedule Product Re-evaluation - Daily at 3:00 AM
-  cronJobs.productRevaluation = cron.schedule('0 3 * * *', async () => {
+  // Schedule Product Re-evaluation - Daily at 00:30 CET (after data refresh)
+  cronJobs.productRevaluation = cron.schedule('30 0 * * *', async () => {
     try {
       await productRevaluationJob();
     } catch (error) {
@@ -307,10 +308,10 @@ export function initializeCronJobs() {
     }
   }, {
     scheduled: true,
-    timezone: "America/New_York" // Adjust to your timezone
+    timezone: "Europe/Zurich" // Central European Time (CET/CEST)
   });
 
-  console.log('✓ Product Re-evaluation scheduled for 3:00 AM daily');
+  console.log('✓ Product Re-evaluation scheduled for 00:30 CET daily (30 min after data refresh)');
 
   // Schedule Market Ticker Update - Every 15 minutes (conditional on activity)
   cronJobs.marketTickerUpdate = cron.schedule('*/15 * * * *', async () => {
@@ -327,11 +328,12 @@ export function initializeCronJobs() {
     }
   }, {
     scheduled: true,
-    timezone: "America/New_York" // Adjust to your timezone
+    timezone: "Europe/Zurich" // Central European Time (CET/CEST)
   });
 
-  console.log('✓ Market Ticker Update scheduled every 15 minutes (conditional)');
+  console.log('✓ Market Ticker Update scheduled every 15 minutes (conditional on activity)');
   console.log('✓ Cron jobs initialized and started');
+  console.log('✓ All jobs configured for Europe/Zurich timezone (CET/CEST)');
 }
 
 /**

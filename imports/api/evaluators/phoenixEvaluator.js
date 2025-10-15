@@ -411,6 +411,12 @@ export const PhoenixEvaluator = {
       const obsDate = new Date(obs.observationDate);
       const isPast = obsDate <= today;
 
+      // Infer isCallable if not explicitly set: if observation has autocallLevel, it's callable
+      if (obs.isCallable === undefined && obs.autocallLevel !== undefined && obs.autocallLevel !== null) {
+        obs.isCallable = true;
+        console.log(`✅ Inferred isCallable=true for observation ${i + 1} (has autocallLevel: ${obs.autocallLevel}%)`);
+      }
+
       // Calculate basket level (worst-of performance) at this observation date
       // AND per-underlying performance for memory autocall tracking
       let basketLevel = 0;
@@ -463,8 +469,10 @@ export const PhoenixEvaluator = {
       // Convert barrier levels to performance thresholds
       // autocallBarrier of 100 means 0% performance (100-100=0)
       // protectionBarrier of 70 means -30% performance (70-100=-30)
-      const autocallThreshold = (phoenixParams.autocallBarrier || 100) - 100;
-      const couponThreshold = (phoenixParams.protectionBarrier || 70) - 100;
+      // USE PER-OBSERVATION autocall level if available (e.g., step-down: 100%, 90%, 85%)
+      const observationAutocallLevel = obs.autocallLevel || phoenixParams.autocallBarrier || 100;
+      const autocallThreshold = observationAutocallLevel - 100;
+      const couponThreshold = ((obs.couponBarrier || phoenixParams.protectionBarrier || 70) - 100);
 
       // Memory Autocall: Track per-underlying flags
       // IMPORTANT: Only flag underlyings during CALLABLE observations (not during coupon-only periods)
@@ -576,8 +584,8 @@ export const PhoenixEvaluator = {
       observations.push({
         observationDate: obs.observationDate,
         observationDateFormatted: new Date(obs.observationDate).toLocaleDateString(),
-        paymentDate: obs.valueDate,
-        paymentDateFormatted: obs.valueDate ? new Date(obs.valueDate).toLocaleDateString() : null,
+        paymentDate: obs.paymentDate || obs.valueDate,
+        paymentDateFormatted: (obs.paymentDate || obs.valueDate) ? new Date(obs.paymentDate || obs.valueDate).toLocaleDateString() : null,
         observationType,
         basketLevel,
         basketLevelFormatted: basketLevel !== null ? `${basketLevel >= 0 ? '+' : ''}${basketLevel.toFixed(2)}%` : 'N/A (Missing Data)',
@@ -592,8 +600,8 @@ export const PhoenixEvaluator = {
         couponInMemoryFormatted: `${displayMemory.toFixed(1)}%`,
         autocalled,
         productCalled: autocalled, // For redemption detection
-        autocallLevel: obs.isCallable ? (obs.autocallLevel || phoenixParams.autocallBarrier) : null,
-        autocallLevelFormatted: obs.isCallable ? `${obs.autocallLevel || phoenixParams.autocallBarrier}%` : 'N/A',
+        autocallLevel: obs.isCallable ? observationAutocallLevel : null,
+        autocallLevelFormatted: obs.isCallable ? `${observationAutocallLevel}%` : 'N/A',
         isCallable: obs.isCallable || false,
         hasOccurred: isPast,
         status: isPast ? 'completed' : 'upcoming',

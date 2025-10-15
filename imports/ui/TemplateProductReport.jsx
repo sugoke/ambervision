@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Meteor } from 'meteor/meteor';
 import { ProductsCollection } from '/imports/api/products';
-import { ReportsCollection } from '/imports/api/reports';
+import { TemplateReportsCollection } from '/imports/api/templateReports';
 import { USER_ROLES, UsersCollection } from '/imports/api/users';
 import { AllocationsCollection, AllocationHelpers } from '/imports/api/allocations';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
@@ -13,6 +13,7 @@ import HimalayaReport from './templates/HimalayaReport.jsx';
 import OrionReport from './templates/OrionReport.jsx';
 import PhoenixReport from './templates/PhoenixReport.jsx';
 import SharkNoteReport from './templates/SharkNoteReport.jsx';
+import ParticipationNoteReport from './templates/ParticipationNoteReport.jsx';
 import ProductCommentaryCard from './components/ProductCommentaryCard.jsx';
 
 /**
@@ -31,7 +32,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
   const { product, latestReport, allocations, allocationsSummary, allocationDetails, productPrice, isDataReady } = useTracker(() => {
     const sessionId = localStorage.getItem('sessionId');
     const productHandle = Meteor.subscribe('products.single', productId);
-    const reportsHandle = Meteor.subscribe('reports.forProduct', productId);
+    const reportsHandle = Meteor.subscribe('templateReports.forProduct', productId);
     const allocationsHandle = Meteor.subscribe('productAllocations', productId, sessionId);
     const usersHandle = Meteor.subscribe('customUsers');
     const bankAccountsHandle = Meteor.subscribe('allBankAccounts');
@@ -49,7 +50,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
         { sort: { priceDate: -1, uploadDate: -1 } }
       );
     }
-    const reportData = ReportsCollection.findOne(
+    const reportData = TemplateReportsCollection.findOne(
       { productId },
       { sort: { createdAt: -1 } }
     );
@@ -174,8 +175,8 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
         throw new Error('No session found');
       }
       
-      // Call the reports method
-      const reportId = await Meteor.callAsync('reports.createTemplate', product, sessionId);
+      // Call the template reports method (uses template registry system)
+      const reportId = await Meteor.callAsync('templateReports.create', product, sessionId);
       console.log('TemplateProductReport: Evaluation completed, report ID:', reportId);
       
       // The useTracker will automatically pick up the new report due to reactivity
@@ -270,6 +271,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
               case 'orion_memory': return 'orion.png';
               case 'himalaya': return 'himalaya.png';
               case 'shark_note': return 'shark.gif';
+              case 'participation_note': return 'participation.gif';
               default: return 'phoenix.gif';
             }
           })()}')`,
@@ -583,7 +585,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
                     fontSize: '0.95rem',
                     fontFamily: 'monospace'
                   }}>
-                    {latestReport?.tradeDateFormatted || product.tradeDateFormatted || 'N/A'}
+                    {latestReport?.templateResults?.timeline?.tradeDateFormatted || product.tradeDateFormatted || 'N/A'}
                   </div>
                 </div>
 
@@ -604,7 +606,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
                     fontSize: '0.95rem',
                     fontFamily: 'monospace'
                   }}>
-                    {latestReport?.valueDateFormatted || product.valueDateFormatted || product.issueDateFormatted || 'N/A'}
+                    {latestReport?.templateResults?.timeline?.valueDateFormatted || product.valueDateFormatted || product.issueDateFormatted || 'N/A'}
                   </div>
                 </div>
 
@@ -625,7 +627,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
                     fontSize: '0.95rem',
                     fontFamily: 'monospace'
                   }}>
-                    {latestReport?.finalObservationFormatted || product.finalObservationFormatted || 'N/A'}
+                    {latestReport?.templateResults?.timeline?.finalObservationFormatted || product.finalObservationFormatted || 'N/A'}
                   </div>
                 </div>
 
@@ -646,7 +648,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
                     fontSize: '0.95rem',
                     fontFamily: 'monospace'
                   }}>
-                    {latestReport?.maturityFormatted || product.maturityFormatted || 'N/A'}
+                    {latestReport?.templateResults?.timeline?.maturityDateFormatted || product.maturityFormatted || 'N/A'}
                   </div>
                 </div>
               </div>
@@ -946,7 +948,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
           <div>
             {/* Template Results Display */}
             {latestReport.templateResults && Object.keys(latestReport.templateResults).length > 0 &&
-             renderTemplateResults(latestReport.templateResults, latestReport.templateId, productId)}
+             renderTemplateResults(latestReport.templateResults, latestReport.templateId, productId, product, user)}
           </div>
         </div>
       ) : (
@@ -1004,6 +1006,7 @@ const getTemplateName = (templateId) => {
     'himalaya': 'Himalaya',
     'himalaya_protection': 'Himalaya Protection',
     'shark_note': 'Shark Note',
+    'participation_note': 'Participation Note',
     'unknown_template': 'Unknown Template',
     'unknown': 'Unknown'
   };
@@ -1018,6 +1021,7 @@ const getTemplateIcon = (templateId) => {
     'himalaya': '🏔️',
     'himalaya_protection': '🏔️',
     'shark_note': '🦈',
+    'participation_note': '📈',
     'unknown_template': '📄',
     'unknown': '📄'
   };
@@ -1026,7 +1030,7 @@ const getTemplateIcon = (templateId) => {
 };
 
 // Helper to render template-specific results
-const renderTemplateResults = (results, templateId, productId) => {
+const renderTemplateResults = (results, templateId, productId, product, user) => {
   // Use template-specific report components for consistent architecture
   if (templateId === 'phoenix_autocallable' && results.templateType === 'phoenix_autocallable') {
     return <PhoenixReport results={results} productId={productId} />;
@@ -1042,6 +1046,10 @@ const renderTemplateResults = (results, templateId, productId) => {
 
   if (templateId === 'shark_note' && results.templateType === 'shark_note') {
     return <SharkNoteReport results={results} productId={productId} />;
+  }
+
+  if (templateId === 'participation_note' && results.templateType === 'participation_note') {
+    return <ParticipationNoteReport results={results} productId={productId} product={product} user={user} />;
   }
 
   // Default generic display for unknown templates

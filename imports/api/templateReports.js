@@ -8,10 +8,12 @@ import { PhoenixEvaluator } from '/imports/api/evaluators/phoenixEvaluator';
 import { OrionEvaluator } from '/imports/api/evaluators/orionEvaluator';
 import { HimalayaEvaluator } from '/imports/api/evaluators/himalayaEvaluator';
 import { SharkNoteEvaluator } from '/imports/api/evaluators/sharkNoteEvaluator';
+import { ParticipationNoteEvaluator } from '/imports/api/evaluators/participationNoteEvaluator';
 import { PhoenixChartBuilder } from '/imports/api/chartBuilders/phoenixChartBuilder';
 import { OrionChartBuilder } from '/imports/api/chartBuilders/orionChartBuilder';
 import { HimalayaChartBuilder } from '/imports/api/chartBuilders/himalayaChartBuilder';
 import { SharkNoteChartBuilder } from '/imports/api/chartBuilders/sharkNoteChartBuilder';
+import { ParticipationNoteChartBuilder } from '/imports/api/chartBuilders/participationNoteChartBuilder';
 
 /**
  * Template-based Reports Collection
@@ -155,6 +157,16 @@ if (Meteor.isServer) {
         };
       }
 
+      // DEBUG: Log underlyings with news before saving to database
+      if (templateResults.underlyings) {
+        console.log('📰 [templateReports.create] Underlyings before DB save:', templateResults.underlyings.map(u => ({
+          ticker: u.ticker,
+          hasNews: !!u.news,
+          newsCount: u.news?.length || 0,
+          newsTitle: u.news?.[0]?.title
+        })));
+      }
+
       const report = {
         productId: productData._id,
         productIsin: productData.isin,
@@ -181,7 +193,7 @@ if (Meteor.isServer) {
         createdAt: new Date(),
         version: '1.0.0'
       };
-      
+
       // Remove old reports for this product (keep only latest)
       const removedCount = await TemplateReportsCollection.removeAsync({ productId: productData._id });
       if (removedCount > 0) {
@@ -441,6 +453,11 @@ const TEMPLATE_REGISTRY = {
     evaluator: SharkNoteEvaluator,
     chartBuilder: SharkNoteChartBuilder,
     uiComponent: 'SharkNoteReport'
+  },
+  participation_note: {
+    evaluator: ParticipationNoteEvaluator,
+    chartBuilder: ParticipationNoteChartBuilder,
+    uiComponent: 'ParticipationNoteReport'
   },
   // Future templates can be added here
 };
