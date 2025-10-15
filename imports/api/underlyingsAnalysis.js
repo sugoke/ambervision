@@ -3,6 +3,7 @@ import { Meteor } from 'meteor/meteor';
 import { check } from 'meteor/check';
 import { ProductsCollection } from './products';
 import { MarketDataCacheCollection } from './marketDataCache';
+import { AllocationsCollection } from './allocations';
 
 /**
  * UnderlyingsAnalysis Collection
@@ -57,6 +58,29 @@ if (Meteor.isServer) {
       });
 
       console.log(`[UnderlyingsAnalysis] Loaded ${marketDataCache.length} market data entries`);
+
+      // Get all active allocations and group by product
+      const allocations = await AllocationsCollection.find({ status: 'active' }).fetchAsync();
+      const nominalByProduct = {};
+
+      allocations.forEach(allocation => {
+        if (!nominalByProduct[allocation.productId]) {
+          nominalByProduct[allocation.productId] = 0;
+        }
+        nominalByProduct[allocation.productId] += allocation.nominalInvested || 0;
+      });
+
+      console.log(`[UnderlyingsAnalysis] Loaded ${allocations.length} allocations`);
+
+      // First pass: collect all notional amounts to calculate min/max for bubble scaling
+      const notionalAmounts = products
+        .map(p => nominalByProduct[p._id] || 0)
+        .filter(n => n > 0);
+
+      const minNotional = notionalAmounts.length > 0 ? Math.min(...notionalAmounts) : 0;
+      const maxNotional = notionalAmounts.length > 0 ? Math.max(...notionalAmounts) : 0;
+
+      console.log(`[UnderlyingsAnalysis] Investment range: ${minNotional.toLocaleString()} - ${maxNotional.toLocaleString()}`);
 
       // Extract and process underlyings - create one row per underlying-product combination
       const underlyingsArray = [];
@@ -115,6 +139,16 @@ if (Meteor.isServer) {
           if (protectionBarrier) {
             protectionBarrierLevel = protectionBarrier.barrier_level || protectionBarrier.level;
           }
+        }
+
+        // Calculate bubble size based on actual investment amount from allocations
+        // Scale from minNotional-maxNotional to 5-20 pixel radius
+        const productNotional = nominalByProduct[product._id] || 0;
+        let bubbleSize = 8; // Default
+        if (maxNotional > minNotional && productNotional > 0) {
+          // Linear scaling: map notional to 5-20 range
+          const normalizedValue = (productNotional - minNotional) / (maxNotional - minNotional);
+          bubbleSize = 5 + (normalizedValue * 15); // 5 to 20 pixels
         }
 
         // Create a row for each underlying in this product
@@ -186,6 +220,7 @@ if (Meteor.isServer) {
             productId: product._id,
             productTitle: product.title,
             productIsin: product.isin,
+            productCurrency: product.currency || 'USD',
             tradeDate,
             finalObservation,
             weight: underlying.weight || 100,
@@ -236,7 +271,8 @@ if (Meteor.isServer) {
                  distanceToBarrier < 10 ? 'rgba(249, 115, 22, 1)' :
                  'rgba(16, 185, 129, 1)')
               : null,
-            bubbleSize: 8 // Fixed size since each row is one product
+            bubbleSize: bubbleSize, // Proportional to product notional amount
+            productNotional: productNotional // Store for tooltip/debugging
           });
         }
       }

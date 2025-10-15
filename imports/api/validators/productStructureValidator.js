@@ -241,19 +241,20 @@ export class ProductStructureValidator {
    * Validate barrier component
    */
   validateBarrierComponent(component, result) {
-    if (!component.value && component.value !== 0) {
-      result.addError('Barrier component must have a value', component, 'value');
-    } else if (typeof component.value === 'string') {
-      const numValue = parseFloat(component.value);
+    // Check barrier_level field (the actual numeric barrier value)
+    if (component.barrier_level === undefined && component.barrier_level !== 0) {
+      result.addError('Barrier component must have a barrier_level', component, 'barrier_level');
+    } else if (component.barrier_level !== undefined) {
+      const numValue = parseFloat(component.barrier_level);
       if (isNaN(numValue)) {
-        result.addError('Barrier value must be numeric', component, 'value');
+        result.addError('Barrier level must be numeric', component, 'barrier_level');
       } else if (numValue < 0) {
-        result.addWarning('Negative barrier value may be unusual', component, 'value');
+        result.addWarning('Negative barrier level may be unusual', component, 'barrier_level');
       } else if (numValue > 200) {
-        result.addWarning('Barrier value above 200% may be unusual', component, 'value');
+        result.addWarning('Barrier level above 200% may be unusual', component, 'barrier_level');
       }
     }
-    
+
     if (component.barrier_type) {
       const validTypes = ['protection', 'autocall', 'coupon', 'knockout', 'knockin'];
       if (!validTypes.includes(component.barrier_type)) {

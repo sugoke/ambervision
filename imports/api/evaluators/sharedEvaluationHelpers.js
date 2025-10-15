@@ -1,4 +1,5 @@
 import { MarketDataHelpers } from '/imports/api/marketDataCache';
+import { EODApiHelpers } from '/imports/api/eodApi';
 
 /**
  * Shared Evaluation Helpers
@@ -178,12 +179,13 @@ export const SharedEvaluationHelpers = {
    * Extract underlying assets data with proper pricing hierarchy
    * Generic extraction logic that works for all template types
    */
-  extractUnderlyingAssetsData(product) {
+  async extractUnderlyingAssetsData(product) {
     const underlyings = [];
     const currency = product.currency || 'USD';
 
     if (product.underlyings && Array.isArray(product.underlyings)) {
-      product.underlyings.forEach((underlying, index) => {
+      // Process all underlyings sequentially to fetch news
+      for (const [index, underlying] of product.underlyings.entries()) {
         // Get initial price
         const initialPrice = underlying.strike ||
                            (underlying.securityData?.tradeDatePrice?.price) ||
@@ -200,6 +202,19 @@ export const SharedEvaluationHelpers = {
         // No mock data - if no real market data is available, performance stays at 0
         if (performance === 0 && evaluationPriceInfo.source === 'initial_fallback') {
           // Silent - no mock data
+        }
+
+        // Fetch latest news for this underlying
+        let news = [];
+        try {
+          const fullTicker = underlying.securityData?.ticker || `${underlying.ticker}.US`;
+          const [symbol, exchange] = fullTicker.includes('.') ? fullTicker.split('.') : [fullTicker, null];
+
+          // Fetch 2 latest news articles from EOD API
+          news = await EODApiHelpers.getSecurityNews(symbol, exchange, 2);
+        } catch (error) {
+          console.warn(`Failed to fetch news for ${underlying.ticker}:`, error.message);
+          news = []; // Graceful fallback - empty array
         }
 
         const underlyingData = {
@@ -233,11 +248,14 @@ export const SharedEvaluationHelpers = {
           lastUpdated: new Date().toISOString(),
 
           // Full ticker for API calls
-          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`
+          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`,
+
+          // Latest news articles
+          news: news
         };
 
         underlyings.push(underlyingData);
-      });
+      }
     }
 
     return underlyings;

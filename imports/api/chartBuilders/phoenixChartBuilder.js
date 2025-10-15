@@ -419,9 +419,16 @@ export const PhoenixChartBuilder = {
       }
     });
 
+    // CRITICAL: Ensure protection barrier is fully visible with padding below it
+    // If protection barrier exists, make sure Y-axis minimum is at least 10-15% below it
+    if (protectionBarrier) {
+      const barrierWithPadding = protectionBarrier - 15; // 15% padding below barrier
+      minY = Math.min(minY, barrierWithPadding);
+    }
+
     // Add padding to Y-axis range
     const yRange = maxY - minY;
-    minY = Math.floor(minY - yRange * 0.1);
+    minY = Math.floor(minY - yRange * 0.05); // Reduced padding since we already added specific barrier padding
     maxY = Math.ceil(maxY + yRange * 0.1);
 
     return {

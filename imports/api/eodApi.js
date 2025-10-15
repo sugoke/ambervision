@@ -467,7 +467,9 @@ export const EODApiHelpers = {
     try {
       const ticker = exchange ? `${symbol}.${exchange}` : symbol;
       const url = `${EOD_BASE_URL}/news`;
-      
+
+      console.log(`[EOD News API] Fetching news for ticker: ${ticker} (symbol: ${symbol}, exchange: ${exchange})`);
+
       const response = await HTTP.get(url, {
         params: {
           api_token: EOD_API_TOKEN,
@@ -476,6 +478,8 @@ export const EODApiHelpers = {
           fmt: 'json'
         }
       });
+
+      console.log(`[EOD News API] Received ${response.data?.length || 0} news articles for ${ticker}`);
 
       const news = response.data || [];
       
@@ -490,7 +494,11 @@ export const EODApiHelpers = {
         symbols: article.symbols || [ticker]
       }));
     } catch (error) {
-      
+      console.warn(`[EOD News API] Failed to fetch news for ${symbol}.${exchange}:`, error.message);
+      if (error.response) {
+        console.warn(`[EOD News API] Response status: ${error.response.statusCode}`);
+        console.warn(`[EOD News API] Response data:`, error.response.data);
+      }
       // Return empty array on error to prevent component crashes
       return [];
     }

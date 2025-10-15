@@ -301,7 +301,8 @@ This is the base Memory Autocall Phoenix template with core features:
 
 **Maturity Logic:**
 1. IF underlying ≥ protection barrier → 100% + memory coupons
-2. ELSE → Underlying performance + memory coupons
+2. ELSE → Geared capital loss: 100 × (current_level / barrier_level) + memory coupons
+   Example: underlying at 65%, barrier at 70% → capital = 100 × (65/70) = 92.86%
 
 **To Use:**
 1. Set underlying (single stock, basket, or index)
