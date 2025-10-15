@@ -31,6 +31,30 @@ Meteor.publish("underlyingsMarketData", function () {
   });
 });
 
+// Publish ticker prices for MarketTicker component (public - for all users)
+Meteor.publish("tickerPrices", function () {
+  // Import here to avoid circular dependency
+  const { TickerPriceCacheCollection } = require('/imports/api/tickerCache');
+
+  // Return only valid, non-expired ticker prices
+  return TickerPriceCacheCollection.find({
+    price: { $gt: 0 },              // Only valid prices
+    expiresAt: { $gt: new Date() }  // Not expired
+  }, {
+    fields: {
+      symbol: 1,
+      price: 1,
+      change: 1,
+      changePercent: 1,
+      previousClose: 1,
+      source: 1,
+      timestamp: 1,
+      lastUpdated: 1
+    },
+    sort: { symbol: 1 }
+  });
+});
+
 
 
 

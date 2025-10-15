@@ -40,10 +40,12 @@ import './testSecurityData'; // Check if securityData.ticker exists
 import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
 import { PasswordResetTokensCollection, PasswordResetHelpers } from '/imports/api/passwordResetTokens';
 import { EmailService } from '/imports/api/emailService';
+import './testEmailMethod'; // Test email functionality
 import { AllocationsCollection } from '/imports/api/allocations';
 import { NotificationsCollection, NotificationHelpers } from '/imports/api/notifications';
 import { CronJobLogsCollection } from '/imports/api/cronJobLogs';
 import { initializeCronJobs } from './cron/jobs';
+import { updateMarketTickerPrices, isDataStale } from './cron/updateMarketTicker';
 // Schedule is now included in reports, no separate collection needed
 import { EquityHoldingsCollection, EquityHoldingsHelpers } from '/imports/api/equityHoldings';
 import { MarketDataHelpers, MarketDataCacheCollection } from '/imports/api/marketDataCache';
@@ -53,6 +55,8 @@ import '/imports/api/templateReports';
 import '/imports/api/underlyingsAnalysis';
 import '/imports/api/riskAnalysis';
 import '/imports/api/termSheetExtractor';
+import '/imports/api/amberConversations';
+import '/imports/api/amberService';
 import './publications/underlyingsAnalysis';
 import './publications'; // Import all publications from index.js
 
@@ -214,6 +218,26 @@ Meteor.startup(async () => {
   } catch (error) {
     console.error('❌ Error initializing cron jobs:', error);
   }
+
+  // First-user trigger: Update market ticker prices when user connects after idle period
+  Meteor.onConnection((connection) => {
+    // Check if ticker data is stale (>15 minutes old)
+    if (isDataStale(15)) {
+      console.log('[MarketTicker] Stale data detected on new connection, triggering immediate update');
+
+      // Run async without blocking connection
+      Meteor.defer(async () => {
+        try {
+          await updateMarketTickerPrices();
+          console.log('[MarketTicker] First-user trigger update completed');
+        } catch (error) {
+          console.error('[MarketTicker] First-user trigger update failed:', error);
+        }
+      });
+    }
+  });
+
+  console.log('✅ Market ticker first-user trigger configured');
 
   // We publish the entire Links collection to all clients.
   // In order to be fetched in real-time to the clients

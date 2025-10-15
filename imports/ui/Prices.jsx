@@ -75,17 +75,20 @@ const Prices = () => {
     oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
 
     return products.filter(product => {
-      // Only check live products with ISIN
-      if (!product.isin || product.status !== 'live') return false;
-      
+      // Only check products with ISIN (exclude drafts/deleted)
+      if (!product.isin) return false;
+
+      // Skip explicitly deleted or draft products
+      if (product.status === 'deleted' || product.status === 'draft') return false;
+
       const latestPrice = latestPricesByISIN[product.isin];
-      
+
       // No price at all
       if (!latestPrice) return true;
-      
+
       // Price is older than one week
       if (new Date(latestPrice.uploadDate) < oneWeekAgo) return true;
-      
+
       return false;
     }).map(product => {
       const latestPrice = latestPricesByISIN[product.isin];
@@ -690,7 +693,7 @@ const Prices = () => {
                 fontSize: '0.85rem',
                 color: 'var(--text-secondary)'
               }}>
-                Live products with missing or outdated prices (older than 7 days)
+                Products with ISIN that have missing or outdated prices (older than 7 days)
               </p>
             </div>
           </div>
@@ -731,7 +734,7 @@ const Prices = () => {
               color: 'var(--text-muted)',
               fontSize: '0.85rem'
             }}>
-              No live products require price updates at this time
+              No products require price updates at this time
             </p>
           </div>
         ) : (

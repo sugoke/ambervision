@@ -612,7 +612,7 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
       {/* Statistics Cards */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: isMobile ? '1fr 1fr' : isTablet ? 'repeat(3, 1fr)' : 'repeat(auto-fit, minmax(200px, 1fr))',
+        gridTemplateColumns: isMobile ? '1fr 1fr' : isTablet ? 'repeat(3, 1fr)' : 'repeat(5, 1fr)',
         gap: isMobile ? '0.75rem' : '1.5rem',
         marginBottom: '2rem'
       }}>
@@ -837,13 +837,314 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
             </button>
           )}
         </div>
+      ) : isMobile ? (
+        // Mobile Card Layout
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '1rem'
+        }}>
+          {paginatedProducts.map((product, index) => {
+            const status = getProductLifecycleStatus(product);
+            const getStatusColor = (status) => {
+              if (status.startsWith('Autocalled')) return '#0284c7';
+              if (status.startsWith('Matured')) return '#6b7280';
+              switch (status) {
+                case 'Live': return '#059669';
+                case 'Pending': return '#f59e0b';
+                default: return '#6b7280';
+              }
+            };
+
+            const nominal = nominalByProduct[product._id];
+            const currentPrice = priceMap.get(product.isin) || 100.00;
+            const positionValue = nominal ? (nominal * currentPrice / 100) : 0;
+            const convertedValue = positionValue > 0 ? convertCurrency(positionValue, product.currency || 'USD') : 0;
+
+            return (
+              <div
+                key={product._id}
+                onClick={() => onViewProductReport ? onViewProductReport(product) : onEditProduct(product)}
+                style={{
+                  background: 'var(--bg-secondary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '12px',
+                  padding: '1rem',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)'
+                }}
+                onTouchStart={(e) => {
+                  e.currentTarget.style.transform = 'scale(0.98)';
+                  e.currentTarget.style.boxShadow = '0 2px 8px rgba(0, 123, 255, 0.2)';
+                }}
+                onTouchEnd={(e) => {
+                  e.currentTarget.style.transform = 'scale(1)';
+                  e.currentTarget.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.1)';
+                }}
+              >
+                {/* Header Row: Title and Status */}
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'flex-start',
+                  marginBottom: '0.75rem',
+                  gap: '0.5rem'
+                }}>
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    flex: 1,
+                    minWidth: 0
+                  }}>
+                    <span style={{ fontSize: '1.5rem', flexShrink: 0 }}>
+                      {(() => {
+                        const templateId = product.templateId || product.template || '';
+                        switch(templateId) {
+                          case 'phoenix_autocallable': return '🦅';
+                          case 'orion_memory': return '⭐';
+                          case 'himalaya': return '🏔️';
+                          case 'shark_note': return '🦈';
+                          default: return '📊';
+                        }
+                      })()}
+                    </span>
+                    <div style={{
+                      fontSize: '1rem',
+                      fontWeight: '600',
+                      color: 'var(--text-primary)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical'
+                    }}>
+                      {getProductDisplayTitle(product)}
+                    </div>
+                  </div>
+                  <span style={{
+                    display: 'inline-block',
+                    padding: '4px 8px',
+                    borderRadius: '8px',
+                    fontSize: '0.7rem',
+                    fontWeight: '600',
+                    textTransform: 'uppercase',
+                    background: getStatusColor(status),
+                    color: 'white',
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0
+                  }}>
+                    {status.length > 10 ? status.substring(0, 10) + '...' : status}
+                  </span>
+                </div>
+
+                {/* Info Grid */}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '0.75rem',
+                  marginBottom: '0.75rem'
+                }}>
+                  <div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      color: 'var(--text-secondary)',
+                      textTransform: 'uppercase',
+                      fontWeight: '600',
+                      marginBottom: '0.25rem',
+                      letterSpacing: '0.5px'
+                    }}>
+                      ISIN
+                    </div>
+                    <div style={{
+                      fontSize: '0.85rem',
+                      fontFamily: 'monospace',
+                      color: 'var(--text-primary)',
+                      fontWeight: '500'
+                    }}>
+                      {product.isin || '-'}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      color: 'var(--text-secondary)',
+                      textTransform: 'uppercase',
+                      fontWeight: '600',
+                      marginBottom: '0.25rem',
+                      letterSpacing: '0.5px'
+                    }}>
+                      Currency
+                    </div>
+                    <div style={{
+                      fontSize: '0.85rem',
+                      color: 'var(--text-primary)',
+                      fontWeight: '500'
+                    }}>
+                      {product.currency || '-'}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      color: 'var(--text-secondary)',
+                      textTransform: 'uppercase',
+                      fontWeight: '600',
+                      marginBottom: '0.25rem',
+                      letterSpacing: '0.5px'
+                    }}>
+                      Price
+                    </div>
+                    <div style={{
+                      fontSize: '0.85rem',
+                      color: 'var(--text-primary)',
+                      fontWeight: '600'
+                    }}>
+                      {currentPrice.toFixed(2)}%
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      color: 'var(--text-secondary)',
+                      textTransform: 'uppercase',
+                      fontWeight: '600',
+                      marginBottom: '0.25rem',
+                      letterSpacing: '0.5px'
+                    }}>
+                      Maturity
+                    </div>
+                    <div style={{
+                      fontSize: '0.85rem',
+                      color: 'var(--text-primary)',
+                      fontWeight: '500'
+                    }}>
+                      {product.maturity || '-'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Position Info - Full Width */}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '0.75rem',
+                  padding: '0.75rem',
+                  background: 'var(--bg-tertiary)',
+                  borderRadius: '8px',
+                  marginBottom: '0.75rem'
+                }}>
+                  <div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      color: 'var(--text-secondary)',
+                      textTransform: 'uppercase',
+                      fontWeight: '600',
+                      marginBottom: '0.25rem',
+                      letterSpacing: '0.5px'
+                    }}>
+                      Nominal
+                    </div>
+                    <div style={{
+                      fontSize: '0.9rem',
+                      color: 'var(--text-primary)',
+                      fontWeight: '700'
+                    }}>
+                      {nominal ? nominal.toLocaleString(undefined, {
+                        minimumFractionDigits: 0,
+                        maximumFractionDigits: 0
+                      }) : '-'}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      color: 'var(--text-secondary)',
+                      textTransform: 'uppercase',
+                      fontWeight: '600',
+                      marginBottom: '0.25rem',
+                      letterSpacing: '0.5px'
+                    }}>
+                      Position Value
+                    </div>
+                    <div style={{
+                      fontSize: '0.9rem',
+                      color: 'var(--success-color)',
+                      fontWeight: '700'
+                    }}>
+                      {convertedValue > 0 ? convertedValue.toLocaleString(undefined, {
+                        minimumFractionDigits: 0,
+                        maximumFractionDigits: 0
+                      }) : '-'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div style={{
+                  display: 'flex',
+                  gap: '0.5rem',
+                  justifyContent: 'stretch'
+                }}>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEditProduct(product);
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '0.75rem',
+                      background: 'var(--accent-color)',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      fontSize: '0.85rem',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease'
+                    }}
+                  >
+                    Edit
+                  </button>
+                  {onDeleteProduct && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteProduct(product);
+                      }}
+                      style={{
+                        padding: '0.75rem',
+                        background: '#dc3545',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '8px',
+                        fontSize: '1rem',
+                        fontWeight: '700',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                        minWidth: '48px'
+                      }}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       ) : (
-        // Products Table
+        // Desktop/Tablet Table Layout
         <div style={{
           background: 'var(--bg-secondary)',
           borderRadius: '12px',
           border: '1px solid var(--border-color)',
-          overflow: isMobile || isTablet ? 'auto' : 'hidden'
+          overflow: 'hidden'
         }}>
           <table style={{
             width: '100%',
@@ -869,9 +1170,9 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                     key={column.field}
                     onClick={() => handleSort(column.field)}
                     style={{
-                      padding: isMobile ? '8px 6px' : '10px 8px',
+                      padding: '10px 8px',
                       textAlign: 'center',
-                      fontSize: isMobile ? '0.7rem' : '0.8rem',
+                      fontSize: '0.8rem',
                       fontWeight: '600',
                       color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
@@ -902,10 +1203,10 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                   </th>
                 ))}
                 <th style={{
-                  padding: isMobile ? '8px 6px' : '10px 8px',
+                  padding: '10px 8px',
                   width: '8%',
                   textAlign: 'center',
-                  fontSize: isMobile ? '0.7rem' : '0.8rem',
+                  fontSize: '0.8rem',
                   fontWeight: '600',
                   color: 'var(--text-secondary)',
                   textTransform: 'uppercase',
@@ -938,8 +1239,8 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                   }}
                 >
                   <td style={{
-                    padding: isMobile ? '10px 12px' : '14px 16px',
-                    fontSize: isMobile ? '0.85rem' : '0.95rem',
+                    padding: '14px 16px',
+                    fontSize: '0.95rem',
                     fontWeight: '500',
                     color: 'var(--text-primary)'
                   }}>
@@ -965,39 +1266,39 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                     </div>
                   </td>
                   <td style={{
-                    padding: isMobile ? '10px 12px' : '14px 16px',
-                    fontSize: isMobile ? '0.8rem' : '0.9rem',
+                    padding: '14px 16px',
+                    fontSize: '0.9rem',
                     color: 'var(--text-secondary)',
                     fontFamily: 'monospace'
                   }}>
                     {product.isin || '-'}
                   </td>
                   <td style={{
-                    padding: isMobile ? '10px 12px' : '14px 16px',
-                    fontSize: isMobile ? '0.8rem' : '0.9rem',
+                    padding: '14px 16px',
+                    fontSize: '0.9rem',
                     color: 'var(--text-secondary)',
                     textAlign: 'center'
                   }}>
                     {product.currency || '-'}
                   </td>
                   <td style={{
-                    padding: isMobile ? '10px 12px' : '14px 16px',
-                    fontSize: isMobile ? '0.8rem' : '0.9rem',
+                    padding: '14px 16px',
+                    fontSize: '0.9rem',
                     fontWeight: '600',
                     color: 'var(--text-primary)',
                     textAlign: 'right'
                   }}>
-                    {nominalByProduct[product._id] ? 
+                    {nominalByProduct[product._id] ?
                       nominalByProduct[product._id].toLocaleString(undefined, {
                         minimumFractionDigits: 2,
                         maximumFractionDigits: 2
-                      }) : 
+                      }) :
                       '-'
                     }
                   </td>
                   <td style={{
-                    padding: isMobile ? '10px 12px' : '14px 16px',
-                    fontSize: isMobile ? '0.8rem' : '0.9rem',
+                    padding: '14px 16px',
+                    fontSize: '0.9rem',
                     color: 'var(--text-secondary)',
                     textAlign: 'right'
                   }}>
@@ -1008,8 +1309,8 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                     })()}
                   </td>
                   <td style={{
-                    padding: isMobile ? '10px 12px' : '14px 16px',
-                    fontSize: isMobile ? '0.8rem' : '0.9rem',
+                    padding: '14px 16px',
+                    fontSize: '0.9rem',
                     fontWeight: '600',
                     color: 'var(--text-primary)',
                     textAlign: 'right'
@@ -1019,12 +1320,12 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                       // Get current price from uploaded prices, fallback to 100.00
                       const currentPrice = priceMap.get(product.isin) || 100.00;
                       const positionValue = nominal ? (nominal * currentPrice / 100) : 0;
-                      
+
                       if (positionValue <= 0) return '-';
-                      
+
                       // Convert from product currency to reference currency
                       const convertedValue = convertCurrency(positionValue, product.currency || 'USD');
-                      
+
                       return convertedValue.toLocaleString(undefined, {
                         minimumFractionDigits: 2,
                         maximumFractionDigits: 2
@@ -1032,7 +1333,7 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                     })()}
                   </td>
                   <td style={{
-                    padding: isMobile ? '10px 12px' : '14px 16px',
+                    padding: '14px 16px',
                     textAlign: 'center'
                   }}>
                     {(() => {
@@ -1046,7 +1347,7 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                           default: return '#6b7280';
                         }
                       };
-                      
+
                       return (
                         <span style={{
                           display: 'inline-block',
@@ -1064,8 +1365,8 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                     })()}
                   </td>
                   <td style={{
-                    padding: isMobile ? '10px 12px' : '14px 16px',
-                    fontSize: isMobile ? '0.8rem' : '0.9rem',
+                    padding: '14px 16px',
+                    fontSize: '0.9rem',
                     color: 'var(--text-secondary)',
                     width: '120px',
                     textAlign: 'center'
@@ -1073,7 +1374,7 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                     {product.maturity || '-'}
                   </td>
                   <td style={{
-                    padding: isMobile ? '6px 8px' : '10px 12px',
+                    padding: '10px 12px',
                     textAlign: 'center'
                   }}>
                     <div style={{ display: 'flex', gap: '4px', justifyContent: 'center' }}>
@@ -1140,76 +1441,83 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
               ))}
             </tbody>
           </table>
-          {filteredAndSortedProducts.length > 0 && (
+        </div>
+      )}
+
+      {/* Pagination - Common for all layouts */}
+      {filteredAndSortedProducts.length > 0 && (
+        <div style={{
+          padding: isMobile ? '12px' : '16px',
+          background: 'var(--bg-secondary)',
+          borderRadius: '12px',
+          border: '1px solid var(--border-color)',
+          marginTop: isMobile ? '1rem' : '0',
+          display: 'flex',
+          flexDirection: isMobile ? 'column' : 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: isMobile ? '1rem' : '0'
+        }}>
+          <div style={{
+            fontSize: isMobile ? '0.8rem' : '0.85rem',
+            color: 'var(--text-secondary)',
+            textAlign: isMobile ? 'center' : 'left'
+          }}>
+            Showing {((currentPage - 1) * productsPerPage) + 1} to {Math.min(currentPage * productsPerPage, filteredAndSortedProducts.length)} of {filteredAndSortedProducts.length} products
+          </div>
+
+          {totalPages > 1 && (
             <div style={{
-              padding: isMobile ? '8px 12px' : '12px 16px',
-              background: 'var(--bg-tertiary)',
-              borderTop: '1px solid var(--border-color)',
               display: 'flex',
-              flexDirection: isMobile ? 'column' : 'row',
-              justifyContent: 'space-between',
               alignItems: 'center',
-              gap: isMobile ? '1rem' : '0'
+              gap: isMobile ? '8px' : '10px',
+              flexWrap: 'nowrap',
+              justifyContent: 'center'
             }}>
-              <div style={{
-                fontSize: isMobile ? '0.75rem' : '0.85rem',
-                color: 'var(--text-secondary)',
-                textAlign: isMobile ? 'center' : 'left'
+              <button
+                onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                disabled={currentPage === 1}
+                style={{
+                  padding: isMobile ? '8px 14px' : '8px 16px',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  background: currentPage === 1 ? 'var(--bg-muted)' : 'var(--bg-secondary)',
+                  color: currentPage === 1 ? 'var(--text-muted)' : 'var(--text-primary)',
+                  cursor: currentPage === 1 ? 'not-allowed' : 'pointer',
+                  fontSize: isMobile ? '0.8rem' : '0.85rem',
+                  fontWeight: '500',
+                  transition: 'all 0.2s ease'
+                }}
+              >
+                {isMobile ? '←' : 'Previous'}
+              </button>
+
+              <span style={{
+                fontSize: isMobile ? '0.8rem' : '0.85rem',
+                color: 'var(--text-primary)',
+                padding: '0 8px',
+                fontWeight: '600'
               }}>
-                Showing {((currentPage - 1) * productsPerPage) + 1} to {Math.min(currentPage * productsPerPage, filteredAndSortedProducts.length)} of {filteredAndSortedProducts.length} products
-              </div>
-              
-              {totalPages > 1 && (
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: isMobile ? '5px' : '10px',
-                  flexWrap: isMobile ? 'wrap' : 'nowrap',
-                  justifyContent: isMobile ? 'center' : 'flex-start'
-                }}>
-                  <button
-                    onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
-                    disabled={currentPage === 1}
-                    style={{
-                      padding: '6px 12px',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '4px',
-                      background: currentPage === 1 ? 'var(--bg-muted)' : 'var(--bg-secondary)',
-                      color: currentPage === 1 ? 'var(--text-muted)' : 'var(--text-primary)',
-                      cursor: currentPage === 1 ? 'not-allowed' : 'pointer',
-                      fontSize: '0.85rem',
-                      transition: 'all 0.3s ease'
-                    }}
-                  >
-                    Previous
-                  </button>
-                  
-                  <span style={{
-                    fontSize: '0.85rem',
-                    color: 'var(--text-secondary)',
-                    padding: '0 10px'
-                  }}>
-                    Page {currentPage} of {totalPages}
-                  </span>
-                  
-                  <button
-                    onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
-                    disabled={currentPage === totalPages}
-                    style={{
-                      padding: '6px 12px',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '4px',
-                      background: currentPage === totalPages ? 'var(--bg-muted)' : 'var(--bg-secondary)',
-                      color: currentPage === totalPages ? 'var(--text-muted)' : 'var(--text-primary)',
-                      cursor: currentPage === totalPages ? 'not-allowed' : 'pointer',
-                      fontSize: '0.85rem',
-                      transition: 'all 0.3s ease'
-                    }}
-                  >
-                    Next
-                  </button>
-                </div>
-              )}
+                {currentPage} / {totalPages}
+              </span>
+
+              <button
+                onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+                disabled={currentPage === totalPages}
+                style={{
+                  padding: isMobile ? '8px 14px' : '8px 16px',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  background: currentPage === totalPages ? 'var(--bg-muted)' : 'var(--bg-secondary)',
+                  color: currentPage === totalPages ? 'var(--text-muted)' : 'var(--text-primary)',
+                  cursor: currentPage === totalPages ? 'not-allowed' : 'pointer',
+                  fontSize: isMobile ? '0.8rem' : '0.85rem',
+                  fontWeight: '500',
+                  transition: 'all 0.2s ease'
+                }}
+              >
+                {isMobile ? '→' : 'Next'}
+              </button>
             </div>
           )}
         </div>

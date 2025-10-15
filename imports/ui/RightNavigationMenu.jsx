@@ -31,13 +31,6 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
       role: 'client'
     },
     {
-      id: 'direct-equities',
-      label: 'Direct Equities',
-      icon: '💼',
-      description: 'Portfolio monitoring & stock tracking',
-      role: 'client'
-    },
-    {
       id: 'schedule',
       label: 'Schedule',
       icon: '📅',
@@ -45,23 +38,31 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
       role: 'client'
     },
     {
+      id: 'direct-equities',
+      label: 'Direct Equities',
+      icon: '💼',
+      description: 'Portfolio monitoring & stock tracking',
+      role: 'client'
+    },
+    {
+      id: 'intranet',
+      label: 'Intranet',
+      icon: '🏢',
+      description: 'Internal team workspace',
+      role: 'rm',
+      nonClientOnly: true
+    },
+    {
       id: 'administration',
       label: 'Administration',
       icon: '⚙️',
       description: 'Admin & system management',
       role: 'admin'
-    },
-    {
-      id: 'birthday-calendar',
-      label: 'Birthday Calendar',
-      icon: '🎂',
-      description: 'Track team & client birthdays',
-      role: 'admin'
     }
   ];
 
   const getRoleLevel = (role) => {
-    const levels = { client: 1, admin: 2, superadmin: 3 };
+    const levels = { client: 1, rm: 2, admin: 2, superadmin: 3 };
     return levels[role] || 0;
   };
 
@@ -70,14 +71,22 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
   
   // Check if user is in an admin section that requires form interactions
   const isInAdminFormSection = ['user-management', 'issuer-management', 'administration', 'bank-management', 'price-data-upload', 'market-data'].includes(currentSection);
-  
-  // Auto-close menu when entering admin sections to prevent input blocking
+
+  // Track previous section to detect section changes
+  const [prevSection, setPrevSection] = useState(currentSection);
+
+  // Auto-close menu when ENTERING admin sections to prevent input blocking
+  // But allow manual opening/closing once already in an admin section
   useEffect(() => {
-    if (isInAdminFormSection && isOpen) {
-      console.log('Auto-closing navigation menu for admin section:', currentSection);
+    const isEnteringAdminSection = isInAdminFormSection && prevSection !== currentSection;
+
+    if (isEnteringAdminSection && isOpen) {
+      console.log('Auto-closing navigation menu when entering admin section:', currentSection);
       onToggle();
     }
-  }, [isInAdminFormSection, isOpen]);
+
+    setPrevSection(currentSection);
+  }, [currentSection]);
 
   return (
     <>
@@ -219,7 +228,7 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
               }}
               style={{
                 margin: '0.5rem 1rem',
-                padding: '1rem',
+                padding: '0.75rem 1rem',
                 borderRadius: '10px',
                 cursor: 'pointer',
                 transition: 'all 0.2s ease',
@@ -249,8 +258,7 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
               <div style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: '12px',
-                marginBottom: '6px'
+                gap: '12px'
               }}>
                 <span style={{
                   fontSize: '1.1rem',
@@ -259,19 +267,12 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
                   {item.icon}
                 </span>
                 <span style={{
-                  fontSize: '1rem',
+                  fontSize: '1.05rem',
                   fontWeight: '600',
                   opacity: currentSection === item.id ? 1 : 0.9
                 }}>
                   {item.label}
                 </span>
-              </div>
-              <div style={{
-                fontSize: '0.8rem',
-                opacity: currentSection === item.id ? 0.9 : 0.7,
-                paddingLeft: '32px'
-              }}>
-                {item.description}
               </div>
             </div>
           ))}

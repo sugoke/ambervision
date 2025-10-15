@@ -5,6 +5,7 @@ import PasswordReset from './PasswordReset.jsx';
 import GlobalSearchBar from './components/GlobalSearchBar.jsx';
 import ViewAsFilter from './components/ViewAsFilter.jsx';
 import NotificationCenter from './NotificationCenter.jsx';
+import AmberChat from './AmberChat.jsx';
 import { ThemeProvider, useTheme } from './ThemeContext.jsx';
 import { ViewAsProvider } from './ViewAsContext.jsx';
 
@@ -18,6 +19,7 @@ const AppContent = () => {
   const [isAuthLoading, setIsAuthLoading] = useState(true); // Add loading state for authentication
   const [isComponentLibraryOpen, setIsComponentLibraryOpen] = useState(false);
   const [showMarketTicker, setShowMarketTicker] = useState(false); // Defer MarketTicker loading
+  const [isAmberChatOpen, setIsAmberChatOpen] = useState(false); // Amber AI chat state
   // Parse route from URL
   const parseRouteFromUrl = () => {
     if (typeof window === 'undefined') return { section: 'dashboard' };
@@ -272,27 +274,29 @@ const AppContent = () => {
                 />
               </div>
               
-              {/* Center section - Global Search + View As Filter */}
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '1rem',
-                flex: 1,
-                maxWidth: '800px',
-                marginLeft: '1rem',
-                marginRight: '1rem'
-              }}>
-                {/* Global Search Bar */}
-                <GlobalSearchBar onProductSelect={(product) => {
-                  // Navigate to the product report when selected
-                  handleSectionChange('report', product._id);
-                }} />
+              {/* Center section - Global Search + View As Filter - Hide in Intranet section */}
+              {currentSection !== 'intranet' && (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '1rem',
+                  flex: 1,
+                  maxWidth: '800px',
+                  marginLeft: '1rem',
+                  marginRight: '1rem'
+                }}>
+                  {/* Global Search Bar */}
+                  <GlobalSearchBar onProductSelect={(product) => {
+                    // Navigate to the product report when selected
+                    handleSectionChange('report', product._id);
+                  }} />
 
-                {/* View As Filter - Only for admins */}
-                <ViewAsFilter currentUser={user} />
-              </div>
+                  {/* View As Filter - Only for admins */}
+                  <ViewAsFilter currentUser={user} />
+                </div>
+              )}
 
-              {/* Right section - Notification Center */}
+              {/* Right section - Notification Center + Amber AI */}
               <div style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -302,22 +306,63 @@ const AppContent = () => {
                   currentUser={user}
                   onViewAllClick={() => handleSectionChange('notifications')}
                 />
+
+                {/* Amber AI Chat Toggle */}
+                <button
+                  onClick={() => setIsAmberChatOpen(!isAmberChatOpen)}
+                  style={{
+                    width: '36px',
+                    height: '36px',
+                    borderRadius: '50%',
+                    border: 'none',
+                    background: isAmberChatOpen
+                      ? 'linear-gradient(135deg, #b65f23 0%, #c76d2f 100%)'
+                      : 'linear-gradient(135deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%)',
+                    color: isAmberChatOpen ? 'white' : 'var(--text-primary)',
+                    fontSize: '1.2rem',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    transition: 'all 0.2s ease',
+                    boxShadow: isAmberChatOpen
+                      ? '0 2px 8px rgba(182, 95, 35, 0.3)'
+                      : '0 2px 4px rgba(0, 0, 0, 0.1)'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isAmberChatOpen) {
+                      e.target.style.background = 'linear-gradient(135deg, #b65f23 0%, #c76d2f 100%)';
+                      e.target.style.color = 'white';
+                      e.target.style.boxShadow = '0 2px 8px rgba(182, 95, 35, 0.3)';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isAmberChatOpen) {
+                      e.target.style.background = 'linear-gradient(135deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%)';
+                      e.target.style.color = 'var(--text-primary)';
+                      e.target.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.1)';
+                    }
+                  }}
+                  title="Chat with Amber AI"
+                >
+                  🔮
+                </button>
               </div>
             </header>
 
-            {/* Market Ticker - Lazy loaded for performance */}
-            {showMarketTicker ? (
+            {/* Market Ticker - Lazy loaded for performance - Hide in Intranet section */}
+            {currentSection !== 'intranet' && (showMarketTicker ? (
               <Suspense fallback={<div style={{ height: '50px', background: 'linear-gradient(90deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)', borderBottom: '1px solid var(--border-color)' }} />}>
                 <MarketTicker />
               </Suspense>
             ) : (
               <div style={{ height: '50px', background: 'linear-gradient(90deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)', borderBottom: '1px solid var(--border-color)' }} />
-            )}
+            ))}
           </div>
         )}
 
-        {/* Spacer to push content below fixed header */}
-        {user && <div style={{ height: '100px' }} />}
+        {/* Spacer to push content below fixed header - Adjust height for Intranet (no MarketTicker) */}
+        {user && <div style={{ height: currentSection === 'intranet' ? '50px' : '100px' }} />}
 
         {/* Loading state during authentication check */}
         {isAuthLoading && (
@@ -375,7 +420,7 @@ const AppContent = () => {
         {user && currentSection !== 'reset-password' && <MainContent user={user} currentSection={currentSection} setCurrentSection={handleSectionChange} onComponentLibraryStateChange={setIsComponentLibraryOpen} currentRoute={currentRoute} />}
 
         {/* Spacer to prevent content from being hidden behind fixed bottom bar */}
-        {user && <div style={{ height: '60px' }} />}
+        {user && <div style={{ height: '40px' }} />}
 
         {/* Fixed Bottom Bar - User Info and Logout */}
         {user && (
@@ -387,12 +432,21 @@ const AppContent = () => {
             zIndex: 1000,
             background: theme === 'light' ? 'rgba(248, 249, 250, 0.95)' : 'var(--bg-secondary)',
             borderTop: '1px solid var(--border-color)',
-            padding: '0.5rem 1rem',
+            padding: '0.3rem 1rem',
             backdropFilter: theme === 'light' ? 'blur(10px)' : 'none',
             boxShadow: '0 -2px 4px rgba(0, 0, 0, 0.1)'
           }}>
             <Login onUserChange={handleUserChange} compact={true} />
           </div>
+        )}
+
+        {/* Amber AI Chat Panel */}
+        {user && (
+          <AmberChat
+            isOpen={isAmberChatOpen}
+            onClose={() => setIsAmberChatOpen(false)}
+            currentUser={user}
+          />
         )}
       </div>
   );

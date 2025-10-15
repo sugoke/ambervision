@@ -1,5 +1,6 @@
 import React from 'react';
 import StructuredProductChart from '../components/StructuredProductChart.jsx';
+import UnderlyingNews from '../components/UnderlyingNews.jsx';
 
 /**
  * Shark Note Report Component
@@ -241,6 +242,40 @@ const SharkNoteReport = ({ results, productId, product }) => {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Latest News Section */}
+      {underlyings.length > 0 && (
+        <div style={{
+          background: 'var(--bg-secondary)',
+          padding: '1.5rem',
+          borderRadius: '6px',
+          marginBottom: '1.5rem'
+        }}>
+          <h4 style={{
+            margin: '0 0 1rem 0',
+            fontSize: '1rem',
+            color: 'var(--text-primary)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}>
+            📰 Latest News
+          </h4>
+          <div style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '1rem'
+          }}>
+            {underlyings.map((underlying, index) => (
+              <UnderlyingNews
+                key={index}
+                ticker={underlying.ticker}
+                news={underlying.news}
+              />
+            ))}
+          </div>
         </div>
       )}
 
