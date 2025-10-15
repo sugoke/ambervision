@@ -19,11 +19,11 @@ import { USER_ROLES } from '/imports/api/users';
 import TestInput from './TestInput.jsx';
 import UnderlyingsView from './UnderlyingsView.jsx';
 import DirectEquitiesView from './DirectEquitiesView.jsx';
-import BirthdayCalendar from './BirthdayCalendar.jsx';
 import TemplateProductReport from './TemplateProductReport.jsx';
 import Schedule from './Schedule.jsx';
 import Dialog from './Dialog.jsx';
 import { useDialog } from './useDialog.js';
+import Intranet from './Intranet.jsx';
 
 const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibraryStateChange, currentRoute }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -157,10 +157,15 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
   };
 
   const hasAccess = (requiredRole) => {
-    const roleHierarchy = { client: 1, admin: 2, superadmin: 3 };
+    const roleHierarchy = { client: 1, rm: 2, admin: 2, superadmin: 3 };
     const userRoleLevel = roleHierarchy[getUserRole()] || 1;
     const requiredRoleLevel = roleHierarchy[requiredRole] || 1;
     return userRoleLevel >= requiredRoleLevel;
+  };
+
+  const isNonClient = () => {
+    const role = getUserRole();
+    return role !== 'client';
   };
 
   const renderContent = () => {
@@ -270,9 +275,9 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
         if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
         return <Schedule user={user} />;
 
-      case 'birthday-calendar':
-        if (!hasAccess(USER_ROLES.ADMIN)) return <div>Access denied</div>;
-        return <BirthdayCalendar user={user} />;
+      case 'intranet':
+        if (!isNonClient()) return <div>Access denied</div>;
+        return <Intranet user={user} />;
 
       case 'notifications':
         if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;

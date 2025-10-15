@@ -240,28 +240,28 @@ const Login = ({ onUserChange, compact = false }) => {
         <div style={{
           display: 'flex',
           alignItems: 'center',
-          gap: '15px',
+          gap: '10px',
           color: 'var(--text-primary)',
-          fontSize: '0.85rem',
+          fontSize: '0.75rem',
           flexShrink: 0,
           justifyContent: 'flex-end'
         }}>
           <span style={{
-            padding: '4px 10px',
+            padding: '3px 8px',
             backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.05)',
-            borderRadius: '4px',
+            borderRadius: '3px',
             fontWeight: '500'
           }}>
             {currentUser.email} ({currentUser.role})
           </span>
           <button onClick={handleLogout} style={{
-            padding: '6px 14px',
+            padding: '4px 10px',
             backgroundColor: isDark ? 'rgba(220, 53, 69, 0.2)' : 'rgba(220, 53, 69, 0.1)',
             color: isDark ? '#ff6b6b' : '#dc3545',
             border: `1px solid ${isDark ? 'rgba(220, 53, 69, 0.3)' : 'rgba(220, 53, 69, 0.2)'}`,
-            borderRadius: '4px',
+            borderRadius: '3px',
             cursor: 'pointer',
-            fontSize: '0.8rem',
+            fontSize: '0.7rem',
             fontWeight: '500',
             transition: 'all 0.2s ease'
           }}

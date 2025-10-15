@@ -4,6 +4,7 @@ import cron from 'node-cron';
 import { CronJobLogHelpers } from '/imports/api/cronJobLogs';
 import { MarketDataHelpers } from '/imports/api/marketDataCache';
 import { ProductsCollection } from '/imports/api/products';
+import { conditionalUpdate, updateMarketTickerPrices } from './updateMarketTicker';
 
 /**
  * Cron Jobs Configuration
@@ -16,7 +17,8 @@ import { ProductsCollection } from '/imports/api/products';
 // Store job instances for tracking
 let cronJobs = {
   marketDataRefresh: null,
-  productRevaluation: null
+  productRevaluation: null,
+  marketTickerUpdate: null
 };
 
 // Store next run times for the dashboard
@@ -30,6 +32,12 @@ let scheduleInfo = {
   productRevaluation: {
     name: 'productRevaluation',
     schedule: '0 3 * * *', // 3:00 AM daily
+    lastFinishedAt: null,
+    nextScheduledRun: null
+  },
+  marketTickerUpdate: {
+    name: 'marketTickerUpdate',
+    schedule: '*/15 * * * *', // Every 15 minutes
     lastFinishedAt: null,
     nextScheduledRun: null
   }
@@ -274,6 +282,7 @@ export function initializeCronJobs() {
   // Calculate initial next run times
   scheduleInfo.marketDataRefresh.nextScheduledRun = getNextRunTime(scheduleInfo.marketDataRefresh.schedule);
   scheduleInfo.productRevaluation.nextScheduledRun = getNextRunTime(scheduleInfo.productRevaluation.schedule);
+  scheduleInfo.marketTickerUpdate.nextScheduledRun = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes from now
 
   // Schedule Market Data Refresh - Daily at 2:00 AM
   cronJobs.marketDataRefresh = cron.schedule('0 2 * * *', async () => {
@@ -302,6 +311,26 @@ export function initializeCronJobs() {
   });
 
   console.log('✓ Product Re-evaluation scheduled for 3:00 AM daily');
+
+  // Schedule Market Ticker Update - Every 15 minutes (conditional on activity)
+  cronJobs.marketTickerUpdate = cron.schedule('*/15 * * * *', async () => {
+    try {
+      const result = await conditionalUpdate(30); // Check for activity in last 30 minutes
+
+      if (!result.skipped) {
+        scheduleInfo.marketTickerUpdate.lastFinishedAt = new Date();
+      }
+
+      scheduleInfo.marketTickerUpdate.nextScheduledRun = new Date(Date.now() + 15 * 60 * 1000);
+    } catch (error) {
+      console.error('[CRON] Market Ticker Update job error:', error);
+    }
+  }, {
+    scheduled: true,
+    timezone: "America/New_York" // Adjust to your timezone
+  });
+
+  console.log('✓ Market Ticker Update scheduled every 15 minutes (conditional)');
   console.log('✓ Cron jobs initialized and started');
 }
 
@@ -355,6 +384,29 @@ if (Meteor.isServer) {
     },
 
     /**
+     * Manually trigger market ticker update
+     */
+    async 'cronJobs.triggerMarketTickerUpdate'(sessionId) {
+      check(sessionId, String);
+
+      // Authenticate user - only superadmin
+      const currentUser = await Meteor.callAsync('auth.getCurrentUser', sessionId);
+      if (!currentUser || currentUser.role !== 'superadmin') {
+        throw new Meteor.Error('access-denied', 'Superadmin privileges required');
+      }
+
+      console.log(`[MANUAL] Market Ticker Update triggered by ${currentUser.email}`);
+
+      try {
+        const result = await updateMarketTickerPrices();
+        scheduleInfo.marketTickerUpdate.lastFinishedAt = new Date();
+        return { success: true, result };
+      } catch (error) {
+        throw new Meteor.Error('job-execution-failed', error.message);
+      }
+    },
+
+    /**
      * Get next scheduled run times for all jobs
      */
     async 'cronJobs.getSchedule'(sessionId) {
@@ -376,6 +428,11 @@ if (Meteor.isServer) {
           name: scheduleInfo.productRevaluation.name,
           nextScheduledRun: scheduleInfo.productRevaluation.nextScheduledRun,
           lastFinishedAt: scheduleInfo.productRevaluation.lastFinishedAt
+        },
+        {
+          name: scheduleInfo.marketTickerUpdate.name,
+          nextScheduledRun: scheduleInfo.marketTickerUpdate.nextScheduledRun,
+          lastFinishedAt: scheduleInfo.marketTickerUpdate.lastFinishedAt
         }
       ];
     }
