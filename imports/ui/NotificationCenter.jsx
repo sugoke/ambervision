@@ -134,6 +134,19 @@ const NotificationCenter = ({ currentUser, onViewAllClick }) => {
     return !notification.readBy || !notification.readBy.includes(currentUser._id);
   };
 
+  // Lock body scroll when dropdown is open on mobile
+  useEffect(() => {
+    if (isOpen && window.innerWidth <= 768) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [isOpen]);
+
   return (
     <div style={{ position: 'relative' }} ref={dropdownRef}>
       {/* Bell Icon Button */}
@@ -203,6 +216,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick }) => {
       {/* Dropdown Menu */}
       {isOpen && (
         <div
+          className="notification-dropdown"
           style={{
             position: 'absolute',
             top: 'calc(100% + 8px)',
@@ -219,6 +233,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick }) => {
         >
           {/* Header */}
           <div
+            className="notification-header"
             style={{
               padding: '1rem',
               borderBottom: `1px solid ${theme === 'light' ? '#e5e7eb' : '#374151'}`,
@@ -227,34 +242,63 @@ const NotificationCenter = ({ currentUser, onViewAllClick }) => {
               alignItems: 'center'
             }}
           >
-            <h3
-              style={{
-                margin: 0,
-                fontSize: '1rem',
-                fontWeight: '600',
-                color: theme === 'light' ? '#1f2937' : '#f9fafb'
-              }}
-            >
-              Notifications
-            </h3>
-            {unreadCount > 0 && (
-              <span
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <h3
                 style={{
-                  fontSize: '0.75rem',
-                  color: theme === 'light' ? '#6b7280' : '#9ca3af',
-                  background: theme === 'light' ? '#f3f4f6' : '#374151',
-                  padding: '0.25rem 0.5rem',
-                  borderRadius: '12px',
-                  fontWeight: '500'
+                  margin: 0,
+                  fontSize: '1rem',
+                  fontWeight: '600',
+                  color: theme === 'light' ? '#1f2937' : '#f9fafb'
                 }}
               >
-                {unreadCount} unread
-              </span>
-            )}
+                Notifications
+              </h3>
+              {unreadCount > 0 && (
+                <span
+                  style={{
+                    fontSize: '0.75rem',
+                    color: theme === 'light' ? '#6b7280' : '#9ca3af',
+                    background: theme === 'light' ? '#f3f4f6' : '#374151',
+                    padding: '0.25rem 0.5rem',
+                    borderRadius: '12px',
+                    fontWeight: '500'
+                  }}
+                >
+                  {unreadCount} unread
+                </span>
+              )}
+            </div>
+
+            {/* Close button for mobile */}
+            <button
+              className="notification-close-btn"
+              onClick={() => setIsOpen(false)}
+              style={{
+                display: 'none',
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                padding: '0.5rem',
+                borderRadius: '6px',
+                color: theme === 'light' ? '#6b7280' : '#9ca3af',
+                fontSize: '1.5rem',
+                lineHeight: '1',
+                transition: 'all 0.2s ease'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = theme === 'light' ? '#f3f4f6' : '#374151';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent';
+              }}
+            >
+              ✕
+            </button>
           </div>
 
           {/* Notifications List */}
           <div
+            className="notification-list"
             style={{
               maxHeight: '400px',
               overflowY: 'auto'
@@ -379,6 +423,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick }) => {
           {/* Footer */}
           {recentNotifications.length > 0 && (
             <div
+              className="notification-footer"
               style={{
                 padding: '0.75rem',
                 borderTop: `1px solid ${theme === 'light' ? '#e5e7eb' : '#374151'}`,
@@ -412,6 +457,84 @@ const NotificationCenter = ({ currentUser, onViewAllClick }) => {
           )}
         </div>
       )}
+
+      {/* Mobile Responsiveness CSS */}
+      <style>{`
+        @media (max-width: 768px) {
+          .notification-dropdown {
+            position: fixed !important;
+            top: 0 !important;
+            right: 0 !important;
+            left: 0 !important;
+            bottom: 0 !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            height: 100vh !important;
+            height: -webkit-fill-available !important;
+            max-height: 100vh !important;
+            max-height: -webkit-fill-available !important;
+            border-radius: 0 !important;
+            border: none !important;
+            z-index: 10000 !important;
+            display: flex !important;
+            flex-direction: column !important;
+          }
+
+          /* Show close button on mobile */
+          .notification-close-btn {
+            display: flex !important;
+            align-items: center;
+            justify-content: center;
+          }
+
+          /* Make notifications list fill available space */
+          .notification-list {
+            flex: 1 !important;
+            max-height: none !important;
+            overflow-y: auto !important;
+            -webkit-overflow-scrolling: touch !important;
+          }
+
+          /* Compact header on mobile */
+          .notification-header {
+            padding: 0.75rem 1rem !important;
+            flex-shrink: 0 !important;
+          }
+
+          /* Compact footer on mobile */
+          .notification-footer {
+            flex-shrink: 0 !important;
+          }
+
+          /* iOS safe area support */
+          @supports (padding: max(0px)) {
+            .notification-header {
+              padding-top: max(0.75rem, env(safe-area-inset-top)) !important;
+            }
+
+            .notification-footer {
+              padding-bottom: max(0.75rem, env(safe-area-inset-bottom)) !important;
+            }
+          }
+        }
+
+        /* Extra small devices */
+        @media (max-width: 480px) {
+          .notification-header {
+            padding: 0.65rem 0.85rem !important;
+          }
+        }
+
+        /* iOS-specific fixes */
+        @supports (-webkit-touch-callout: none) {
+          @media (max-width: 768px) {
+            .notification-dropdown {
+              height: -webkit-fill-available !important;
+              max-height: -webkit-fill-available !important;
+            }
+          }
+        }
+      `}</style>
     </div>
   );
 };

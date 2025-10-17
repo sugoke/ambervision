@@ -47,11 +47,30 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
     scrollToBottom();
   }, [conversation?.messages]);
 
-  // Focus input when opened
+  // Focus input when opened and handle body scroll
   useEffect(() => {
-    if (isOpen && inputRef.current) {
-      inputRef.current.focus();
+    if (isOpen) {
+      // Prevent body scroll on mobile when chat is open
+      document.body.style.overflow = 'hidden';
+      document.body.style.position = 'fixed';
+      document.body.style.width = '100%';
+
+      if (inputRef.current) {
+        inputRef.current.focus();
+      }
+    } else {
+      // Restore body scroll
+      document.body.style.overflow = '';
+      document.body.style.position = '';
+      document.body.style.width = '';
     }
+
+    return () => {
+      // Cleanup on unmount
+      document.body.style.overflow = '';
+      document.body.style.position = '';
+      document.body.style.width = '';
+    };
   }, [isOpen]);
 
   // Initialize conversation ID on mount when user is available
@@ -110,10 +129,12 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
   const messages = conversation?.messages || [];
 
   return (
-    <div style={{
+    <div className="amber-chat-panel" style={{
       position: 'fixed',
       top: 0,
       right: 0,
+      bottom: 0,
+      left: 0,
       width: '100%',
       maxWidth: '450px',
       height: '100vh',
@@ -123,19 +144,22 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
       zIndex: 1000,
       display: 'flex',
       flexDirection: 'column',
-      transition: 'transform 0.3s ease'
+      transition: 'transform 0.3s ease',
+      overflow: 'hidden',
+      WebkitOverflowScrolling: 'touch'
     }}>
       {/* Header */}
-      <div style={{
+      <div className="amber-chat-header" style={{
         padding: '1.5rem',
         borderBottom: '1px solid var(--border-color)',
         background: 'linear-gradient(135deg, #b65f23 0%, #c76d2f 100%)',
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'space-between'
+        justifyContent: 'space-between',
+        flexShrink: 0
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <div style={{
+          <div className="amber-chat-avatar" style={{
             width: '40px',
             height: '40px',
             borderRadius: '50%',
@@ -148,14 +172,14 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
             🔮
           </div>
           <div>
-            <div style={{
+            <div className="amber-chat-title" style={{
               fontSize: '0.95rem',
               fontWeight: '700',
               color: 'white'
             }}>
               Amber AI
             </div>
-            <div style={{
+            <div className="amber-chat-subtitle" style={{
               fontSize: '0.7rem',
               color: 'rgba(255, 255, 255, 0.85)'
             }}>
@@ -216,13 +240,14 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
       </div>
 
       {/* Messages */}
-      <div style={{
+      <div className="amber-chat-messages" style={{
         flex: 1,
         overflowY: 'auto',
         padding: '1rem',
         display: 'flex',
         flexDirection: 'column',
-        gap: '0.75rem'
+        gap: '0.75rem',
+        minHeight: 0
       }}>
         {messages.length === 0 && (
           <div style={{
@@ -381,10 +406,11 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
       </div>
 
       {/* Input */}
-      <div style={{
+      <div className="amber-chat-input" style={{
         padding: '1rem',
         borderTop: '1px solid var(--border-color)',
-        background: 'var(--bg-secondary)'
+        background: 'var(--bg-secondary)',
+        flexShrink: 0
       }}>
         <div style={{
           display: 'flex',
@@ -463,7 +489,7 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
         </div>
       </div>
 
-      {/* CSS for typing animation */}
+      {/* CSS for typing animation and mobile responsiveness */}
       <style>{`
         @keyframes fadeIn {
           from {
@@ -484,6 +510,96 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
           30% {
             transform: translateY(-10px);
             opacity: 1;
+          }
+        }
+
+        /* Base panel styles */
+        .amber-chat-panel {
+          -webkit-overflow-scrolling: touch;
+        }
+
+        /* iOS safe area support */
+        @supports (padding: max(0px)) {
+          .amber-chat-panel {
+            padding-left: max(0px, env(safe-area-inset-left));
+            padding-right: max(0px, env(safe-area-inset-right));
+          }
+
+          .amber-chat-header {
+            padding-top: max(1.5rem, env(safe-area-inset-top)) !important;
+          }
+
+          .amber-chat-input {
+            padding-bottom: max(1rem, env(safe-area-inset-bottom)) !important;
+          }
+        }
+
+        /* Mobile responsiveness - Comprehensive styling */
+        @media (max-width: 768px) {
+          .amber-chat-panel {
+            max-width: 100% !important;
+            left: 0 !important;
+            right: 0 !important;
+            border-left: none !important;
+            box-shadow: none !important;
+            /* Use viewport height with fallback */
+            height: 100vh !important;
+            height: -webkit-fill-available !important;
+            min-height: -webkit-fill-available !important;
+          }
+
+          /* Compact header on mobile */
+          .amber-chat-header {
+            padding: 0.75rem 1rem !important;
+          }
+
+          .amber-chat-avatar {
+            width: 32px !important;
+            height: 32px !important;
+            fontSize: 1.2rem !important;
+          }
+
+          .amber-chat-title {
+            fontSize: 0.85rem !important;
+          }
+
+          .amber-chat-subtitle {
+            font-size: 0.65rem !important;
+          }
+
+          /* Compact messages area on mobile */
+          .amber-chat-messages {
+            padding: 0.75rem !important;
+            gap: 0.5rem !important;
+            -webkit-overflow-scrolling: touch !important;
+          }
+
+          /* Compact input area on mobile */
+          .amber-chat-input {
+            padding: 0.75rem !important;
+          }
+        }
+
+        /* Extra small devices */
+        @media (max-width: 480px) {
+          .amber-chat-header {
+            padding: 0.65rem 0.85rem !important;
+          }
+
+          .amber-chat-messages {
+            padding: 0.65rem !important;
+          }
+
+          .amber-chat-input {
+            padding: 0.65rem !important;
+          }
+        }
+
+        /* iOS-specific fixes */
+        @supports (-webkit-touch-callout: none) {
+          .amber-chat-panel {
+            height: -webkit-fill-available !important;
+            min-height: -webkit-fill-available !important;
           }
         }
       `}</style>
