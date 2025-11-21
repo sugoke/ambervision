@@ -995,7 +995,8 @@ const PortfolioManagementSystem = ({ user }) => {
   const tabs = [
     { id: 'positions', label: 'Positions', icon: '📊' },
     { id: 'transactions', label: 'Transactions', icon: '💱' },
-    { id: 'performance', label: 'Performance', icon: '📈' }
+    { id: 'performance', label: 'Performance', icon: '📈' },
+    { id: 'alerts', label: 'Alerts', icon: '⚠️' }
   ];
 
   const handleSort = (field) => {
@@ -1004,6 +1005,12 @@ const PortfolioManagementSystem = ({ user }) => {
     } else {
       setSortBy(field);
       setSortDirection('desc');
+    }
+  };
+
+  const handleIsinClick = (productId) => {
+    if (productId) {
+      window.location.href = `/report/${productId}`;
     }
   };
 
@@ -1829,8 +1836,33 @@ const PortfolioManagementSystem = ({ user }) => {
                                   e.currentTarget.style.background = 'transparent';
                                 }}
                               >
-                                <td style={{ padding: '0.75rem', paddingLeft: '4rem', color: 'var(--text-secondary)', fontSize: '0.85rem', fontFamily: 'monospace' }}>
-                                  {position.isin || 'N/A'}
+                                <td style={{ padding: '0.75rem', paddingLeft: '4rem', fontSize: '0.85rem', fontFamily: 'monospace' }}>
+                                  {position.linkedProduct ? (
+                                    <span
+                                      onClick={() => handleIsinClick(position.linkedProduct._id)}
+                                      style={{
+                                        color: '#3b82f6',
+                                        cursor: 'pointer',
+                                        textDecoration: 'none',
+                                        transition: 'all 0.2s ease'
+                                      }}
+                                      onMouseEnter={(e) => {
+                                        e.currentTarget.style.textDecoration = 'underline';
+                                        e.currentTarget.style.color = '#60a5fa';
+                                      }}
+                                      onMouseLeave={(e) => {
+                                        e.currentTarget.style.textDecoration = 'none';
+                                        e.currentTarget.style.color = '#3b82f6';
+                                      }}
+                                      title={`View ${position.linkedProduct.productName || 'product'} report`}
+                                    >
+                                      {position.isin}
+                                    </span>
+                                  ) : (
+                                    <span style={{ color: 'var(--text-secondary)' }}>
+                                      {position.isin || 'N/A'}
+                                    </span>
+                                  )}
                                 </td>
                                 <td style={{ padding: '0.75rem', color: 'var(--text-primary)', fontSize: '0.85rem' }}>{position.name}</td>
                                 <td style={{ padding: '0.75rem', color: 'var(--text-secondary)' }}>
@@ -1991,8 +2023,33 @@ const PortfolioManagementSystem = ({ user }) => {
                                       e.currentTarget.style.background = 'transparent';
                                     }}
                                   >
-                                    <td style={{ padding: '0.75rem', paddingLeft: '3.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem', fontFamily: 'monospace' }}>
-                                      {position.isin || 'N/A'}
+                                    <td style={{ padding: '0.75rem', paddingLeft: '3.5rem', fontSize: '0.85rem', fontFamily: 'monospace' }}>
+                                      {position.linkedProduct ? (
+                                        <span
+                                          onClick={() => handleIsinClick(position.linkedProduct._id)}
+                                          style={{
+                                            color: '#3b82f6',
+                                            cursor: 'pointer',
+                                            textDecoration: 'none',
+                                            transition: 'all 0.2s ease'
+                                          }}
+                                          onMouseEnter={(e) => {
+                                            e.currentTarget.style.textDecoration = 'underline';
+                                            e.currentTarget.style.color = '#60a5fa';
+                                          }}
+                                          onMouseLeave={(e) => {
+                                            e.currentTarget.style.textDecoration = 'none';
+                                            e.currentTarget.style.color = '#3b82f6';
+                                          }}
+                                          title={`View ${position.linkedProduct.productName || 'product'} report`}
+                                        >
+                                          {position.isin}
+                                        </span>
+                                      ) : (
+                                        <span style={{ color: 'var(--text-secondary)' }}>
+                                          {position.isin || 'N/A'}
+                                        </span>
+                                      )}
                                     </td>
                                     <td style={{ padding: '0.75rem', color: 'var(--text-primary)' }}>{position.name}</td>
                                     <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-primary)' }}>
@@ -2077,8 +2134,33 @@ const PortfolioManagementSystem = ({ user }) => {
                             e.currentTarget.style.background = 'transparent';
                           }}
                         >
-                          <td style={{ padding: '0.75rem', paddingLeft: '2.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem', fontFamily: 'monospace' }}>
-                            {position.isin || 'N/A'}
+                          <td style={{ padding: '0.75rem', paddingLeft: '2.5rem', fontSize: '0.85rem', fontFamily: 'monospace' }}>
+                            {position.linkedProduct ? (
+                              <span
+                                onClick={() => handleIsinClick(position.linkedProduct._id)}
+                                style={{
+                                  color: '#3b82f6',
+                                  cursor: 'pointer',
+                                  textDecoration: 'none',
+                                  transition: 'all 0.2s ease'
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.textDecoration = 'underline';
+                                  e.currentTarget.style.color = '#60a5fa';
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.textDecoration = 'none';
+                                  e.currentTarget.style.color = '#3b82f6';
+                                }}
+                                title={`View ${position.linkedProduct.productName || 'product'} report`}
+                              >
+                                {position.isin}
+                              </span>
+                            ) : (
+                              <span style={{ color: 'var(--text-secondary)' }}>
+                                {position.isin || 'N/A'}
+                              </span>
+                            )}
                           </td>
                           <td style={{ padding: '0.75rem', color: 'var(--text-primary)' }}>{position.name}</td>
                           <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-primary)' }}>
@@ -2803,6 +2885,305 @@ const PortfolioManagementSystem = ({ user }) => {
     );
   };
 
+  const renderAlertsSection = () => {
+    // Loading state
+    if (isLoading) {
+      return (
+        <div style={{ padding: '1.5rem' }}>
+          <LiquidGlassCard>
+            <div style={{
+              textAlign: 'center',
+              padding: '4rem 2rem',
+              color: 'var(--text-muted)'
+            }}>
+              <div style={{ fontSize: '3rem', marginBottom: '1rem', opacity: 0.5 }}>⏳</div>
+              <h3 style={{
+                margin: '0 0 0.5rem 0',
+                color: 'var(--text-secondary)',
+                fontSize: '1.1rem'
+              }}>
+                Loading Alerts...
+              </h3>
+            </div>
+          </LiquidGlassCard>
+        </div>
+      );
+    }
+
+    // Get cash positions only
+    const cashPositions = filteredHoldings.filter(pos => pos.assetClass === 'cash');
+
+    // Group cash positions by account (userId + portfolioCode + bankId)
+    const accountCashBalances = {};
+
+    cashPositions.forEach(pos => {
+      const accountKey = `${pos.userId}|${pos.portfolioCode}|${pos.bankId}`;
+
+      if (!accountCashBalances[accountKey]) {
+        accountCashBalances[accountKey] = {
+          userId: pos.userId,
+          portfolioCode: pos.portfolioCode,
+          bankId: pos.bankId,
+          userName: pos.userName || 'Unknown',
+          totalBalance: 0, // in portfolio currency
+          currencies: {},
+          lastUpdate: pos.snapshotDate || pos.fileDate || new Date()
+        };
+      }
+
+      // Add to total balance (in portfolio currency)
+      const balanceValue = pos.marketValue || 0;
+      accountCashBalances[accountKey].totalBalance += balanceValue;
+
+      // Track per-currency balances
+      const currency = pos.currency || 'UNKNOWN';
+      if (!accountCashBalances[accountKey].currencies[currency]) {
+        accountCashBalances[accountKey].currencies[currency] = {
+          balance: 0,
+          balanceOriginal: 0
+        };
+      }
+      accountCashBalances[accountKey].currencies[currency].balance += balanceValue;
+      accountCashBalances[accountKey].currencies[currency].balanceOriginal += (pos.marketValueOriginalCurrency || balanceValue);
+    });
+
+    // Filter for negative balances only
+    const negativeBalances = Object.values(accountCashBalances)
+      .filter(account => account.totalBalance < 0)
+      .sort((a, b) => a.totalBalance - b.totalBalance); // Most negative first
+
+    // Enrich with bank and account details
+    const enrichedAlerts = negativeBalances.map(alert => {
+      const account = bankAccounts.find(acc =>
+        acc.userId === alert.userId &&
+        acc.accountNumber === alert.portfolioCode &&
+        acc.bankId === alert.bankId
+      );
+      const bank = BanksCollection.findOne({ _id: alert.bankId });
+
+      return {
+        ...alert,
+        bankName: bank?.name || 'Unknown Bank',
+        accountNumber: account?.accountNumber || alert.portfolioCode,
+        accountType: account?.accountType || 'N/A',
+        accountStructure: account?.accountStructure || 'N/A',
+        referenceCurrency: account?.referenceCurrency || 'EUR'
+      };
+    });
+
+    // Empty state
+    if (enrichedAlerts.length === 0) {
+      return (
+        <div style={{ padding: '1.5rem' }}>
+          <LiquidGlassCard>
+            <div style={{
+              textAlign: 'center',
+              padding: '4rem 2rem',
+              color: 'var(--text-muted)'
+            }}>
+              <div style={{ fontSize: '3rem', marginBottom: '1rem', opacity: 0.5 }}>✅</div>
+              <h3 style={{
+                margin: '0 0 0.5rem 0',
+                color: 'var(--text-secondary)',
+                fontSize: '1.1rem'
+              }}>
+                No Negative Cash Balances
+              </h3>
+              <p style={{
+                margin: '0',
+                fontSize: '0.95rem',
+                color: 'var(--text-muted)'
+              }}>
+                All accounts in your perimeter have positive or zero cash balances.
+              </p>
+            </div>
+          </LiquidGlassCard>
+        </div>
+      );
+    }
+
+    // Display alerts
+    return (
+      <div style={{ padding: '1.5rem' }}>
+        {/* Summary Header */}
+        <LiquidGlassCard style={{ marginBottom: '1.5rem' }}>
+          <div style={{
+            padding: '1.5rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '1rem'
+          }}>
+            <div style={{
+              fontSize: '3rem',
+              lineHeight: '1'
+            }}>
+              ⚠️
+            </div>
+            <div style={{ flex: 1 }}>
+              <h2 style={{
+                margin: '0 0 0.5rem 0',
+                fontSize: '1.5rem',
+                color: 'var(--text-primary)'
+              }}>
+                Negative Cash Balance Alerts
+              </h2>
+              <p style={{
+                margin: '0',
+                fontSize: '0.95rem',
+                color: 'var(--text-secondary)'
+              }}>
+                {enrichedAlerts.length} account{enrichedAlerts.length !== 1 ? 's' : ''} with negative cash balance
+              </p>
+            </div>
+            <div style={{
+              textAlign: 'right',
+              fontSize: '2rem',
+              fontWeight: '700',
+              color: '#ef4444'
+            }}>
+              {enrichedAlerts.reduce((sum, alert) => sum + alert.totalBalance, 0).toLocaleString('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+              })}
+            </div>
+          </div>
+        </LiquidGlassCard>
+
+        {/* Alert Cards */}
+        {enrichedAlerts.map((alert, index) => (
+          <LiquidGlassCard key={index} style={{ marginBottom: '1rem' }}>
+            <div style={{
+              padding: '1.5rem',
+              borderLeft: '4px solid #ef4444'
+            }}>
+              {/* Header Row */}
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'flex-start',
+                marginBottom: '1rem'
+              }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{
+                    fontSize: '1.2rem',
+                    fontWeight: '700',
+                    color: 'var(--text-primary)',
+                    marginBottom: '0.5rem'
+                  }}>
+                    {alert.userName}
+                  </div>
+                  <div style={{
+                    display: 'flex',
+                    gap: '1.5rem',
+                    flexWrap: 'wrap',
+                    fontSize: '0.9rem',
+                    color: 'var(--text-secondary)'
+                  }}>
+                    <div>
+                      <span style={{ fontWeight: '600' }}>Bank:</span>{' '}
+                      {alert.bankName}
+                    </div>
+                    <div>
+                      <span style={{ fontWeight: '600' }}>Account:</span>{' '}
+                      {alert.accountNumber}
+                    </div>
+                    <div>
+                      <span style={{ fontWeight: '600' }}>Portfolio Code:</span>{' '}
+                      {alert.portfolioCode}
+                    </div>
+                  </div>
+                </div>
+                <div style={{
+                  textAlign: 'right',
+                  paddingLeft: '1rem'
+                }}>
+                  <div style={{
+                    fontSize: '1.8rem',
+                    fontWeight: '700',
+                    color: '#ef4444',
+                    marginBottom: '0.25rem'
+                  }}>
+                    {alert.totalBalance.toLocaleString('en-US', {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2
+                    })}
+                  </div>
+                  <div style={{
+                    fontSize: '0.85rem',
+                    color: 'var(--text-muted)'
+                  }}>
+                    {alert.referenceCurrency}
+                  </div>
+                </div>
+              </div>
+
+              {/* Currency Breakdown */}
+              {Object.keys(alert.currencies).length > 1 && (
+                <div style={{
+                  marginTop: '1rem',
+                  paddingTop: '1rem',
+                  borderTop: '1px solid var(--border-color)'
+                }}>
+                  <div style={{
+                    fontSize: '0.85rem',
+                    fontWeight: '600',
+                    color: 'var(--text-secondary)',
+                    marginBottom: '0.75rem'
+                  }}>
+                    Currency Breakdown:
+                  </div>
+                  <div style={{
+                    display: 'flex',
+                    gap: '1.5rem',
+                    flexWrap: 'wrap'
+                  }}>
+                    {Object.entries(alert.currencies).map(([currency, data]) => (
+                      <div key={currency} style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem',
+                        fontSize: '0.9rem'
+                      }}>
+                        <span style={{
+                          fontWeight: '600',
+                          color: 'var(--text-secondary)'
+                        }}>
+                          {currency}:
+                        </span>
+                        <span style={{
+                          color: data.balanceOriginal < 0 ? '#ef4444' : 'var(--text-primary)',
+                          fontWeight: data.balanceOriginal < 0 ? '600' : '400'
+                        }}>
+                          {data.balanceOriginal.toLocaleString('en-US', {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2
+                          })}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Last Update */}
+              <div style={{
+                marginTop: '1rem',
+                fontSize: '0.8rem',
+                color: 'var(--text-muted)'
+              }}>
+                Last updated: {new Date(alert.lastUpdate).toLocaleDateString('en-US', {
+                  year: 'numeric',
+                  month: 'short',
+                  day: 'numeric'
+                })}
+              </div>
+            </div>
+          </LiquidGlassCard>
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div style={{
       maxWidth: '1400px',
@@ -3102,6 +3483,7 @@ const PortfolioManagementSystem = ({ user }) => {
           {activeTab === 'positions' && renderPositionsSection()}
           {activeTab === 'transactions' && renderTransactionsSection()}
           {activeTab === 'performance' && renderPerformanceSection()}
+          {activeTab === 'alerts' && renderAlertsSection()}
         </div>
       </LiquidGlassCard>
     </div>
