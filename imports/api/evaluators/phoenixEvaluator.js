@@ -57,8 +57,8 @@ export const PhoenixEvaluator = {
         observationFrequency: phoenixParams.observationFrequency || 'quarterly'
       },
 
-      // Current status evaluation
-      currentStatus: PhoenixEvaluationHelpers.buildProductStatus(product),
+      // Current status evaluation (includes autocall detection)
+      currentStatus: PhoenixEvaluationHelpers.buildProductStatus(product, observationAnalysis),
 
       // Phoenix-specific parameters
       phoenixStructure: phoenixParams,
@@ -254,9 +254,9 @@ export const PhoenixEvaluator = {
         hasMemoryAutocallFlag,
         memoryAutocallFlaggedDate,
         memoryAutocallFlaggedDateFormatted: memoryAutocallFlaggedDate ?
-          new Date(memoryAutocallFlaggedDate).toLocaleDateString('en-US', {
-            month: 'short',
-            day: 'numeric',
+          new Date(memoryAutocallFlaggedDate).toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: '2-digit',
             year: 'numeric'
           }) : null
       };
@@ -376,23 +376,77 @@ export const PhoenixEvaluator = {
   },
 
   /**
+   * Generate observation schedule automatically if missing
+   */
+  generateObservationSchedule(product, phoenixParams) {
+    const tradeDate = new Date(product.tradeDate || product.issueDate || product.valueDate);
+    const maturityDate = new Date(product.maturity || product.maturityDate);
+    const frequency = phoenixParams.observationFrequency || 'quarterly';
+
+    // Calculate interval in months
+    const intervalMonths = {
+      'monthly': 1,
+      'quarterly': 3,
+      'semi-annual': 6,
+      'annually': 12
+    }[frequency] || 3; // Default to quarterly
+
+    const schedule = [];
+    let currentDate = new Date(tradeDate);
+
+    // Generate observations from trade date to maturity
+    while (currentDate < maturityDate) {
+      // Add interval months
+      currentDate = new Date(currentDate);
+      currentDate.setMonth(currentDate.getMonth() + intervalMonths);
+
+      // Don't go past maturity
+      if (currentDate > maturityDate) {
+        currentDate = maturityDate;
+      }
+
+      schedule.push({
+        observationDate: currentDate.toISOString(),
+        valueDate: currentDate.toISOString(), // Same as observation date by default
+        isCallable: true, // Phoenix products can autocall at any observation
+        autocallLevel: phoenixParams.autocallBarrier || 100
+      });
+
+      // Break if we've reached maturity
+      if (currentDate >= maturityDate) {
+        break;
+      }
+    }
+
+    console.log(`🔧 Phoenix: Generated ${schedule.length} observations for product (${frequency} frequency)`);
+    return schedule;
+  },
+
+  /**
    * Build observation schedule analysis
    */
   async buildObservationSchedule(product, underlyings, phoenixParams) {
-    const schedule = product.observationSchedule || [];
+    let schedule = product.observationSchedule || [];
 
+    // Generate schedule if missing
     if (schedule.length === 0) {
-      return {
-        totalObservations: 0,
-        nextObservation: null,
-        observations: [],
-        totalCouponsEarnedFormatted: '0%',
-        totalMemoryCouponsFormatted: '0%',
-        remainingObservations: 0,
-        hasMemoryAutocall: phoenixParams.memoryAutocall || false,
-        hasMemoryCoupon: phoenixParams.memoryCoupon || false,
-        underlyingAutocallFlags: {}
-      };
+      console.log(`⚠️ Phoenix: Product missing observationSchedule, generating automatically`);
+      schedule = this.generateObservationSchedule(product, phoenixParams);
+
+      // If still empty after generation (shouldn't happen), return empty structure
+      if (schedule.length === 0) {
+        return {
+          totalObservations: 0,
+          nextObservation: null,
+          observations: [],
+          totalCouponsEarnedFormatted: PhoenixEvaluationHelpers.formatCouponPercentage(0, phoenixParams.couponRate),
+          totalMemoryCouponsFormatted: PhoenixEvaluationHelpers.formatCouponPercentage(0, phoenixParams.couponRate),
+          remainingObservations: 0,
+          hasMemoryAutocall: phoenixParams.memoryAutocall || false,
+          hasMemoryCoupon: phoenixParams.memoryCoupon || false,
+          underlyingAutocallFlags: {}
+        };
+      }
     }
 
     const today = new Date();
@@ -409,16 +463,22 @@ export const PhoenixEvaluator = {
     // Process each observation
     for (const [i, obs] of schedule.entries()) {
       const obsDate = new Date(obs.observationDate);
-      const isPast = obsDate <= today;
+      const today = new Date();
+      const obsDateOnly = new Date(obsDate.getFullYear(), obsDate.getMonth(), obsDate.getDate());
+      const todayOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
-      // Calculate basket level (worst-of performance) at this observation date
-      // AND per-underlying performance for memory autocall tracking
+      // Determine if observation has occurred by checking data availability
+      // For future dates: don't try to fetch data
+      // For today and past: try to fetch data - if data exists, observation has occurred
+      let isPast = false;
       let basketLevel = 0;
       let hasAllHistoricalData = true;
       const underlyingPerformances = []; // Store {ticker, performance, price} for each underlying
 
-      if (underlyings.length > 0 && isPast) {
-        // For past observations, fetch historical prices from MarketDataCacheCollection
+      // Only try to fetch historical data if date is BEFORE today (not today itself)
+      // Market closes on observation date, but prices are only available the NEXT day
+      if (underlyings.length > 0 && obsDateOnly < todayOnly) {
+        // Try to fetch historical prices from MarketDataCacheCollection
         const performanceData = await Promise.all(
           underlyings.map(async (u) => {
             const fullTicker = u.fullTicker || `${u.ticker}.US`;
@@ -435,9 +495,14 @@ export const PhoenixEvaluator = {
               };
             }
 
-            // ❌ NO FALLBACK - Missing historical data is a data quality issue
-            // Log warning for missing historical data
-            console.warn(`⚠️ Missing historical price for ${fullTicker} at ${obsDate.toISOString().split('T')[0]} - skipping observation calculation`);
+            // Missing historical data - either market hasn't closed yet (if today) or data gap
+            if (obsDateOnly.getTime() === todayOnly.getTime()) {
+              // For today specifically, missing data means market hasn't closed
+              console.log(`📊 No market data yet for ${fullTicker} on ${obsDate.toISOString().split('T')[0]} - market still open or closing soon`);
+            } else {
+              // For past dates, missing data is a data quality issue
+              console.warn(`⚠️ Missing historical price for ${fullTicker} at ${obsDate.toISOString().split('T')[0]} - data gap`);
+            }
             hasAllHistoricalData = false;
             return null;
           })
@@ -446,17 +511,22 @@ export const PhoenixEvaluator = {
         // Filter out null entries and store valid performances
         const validPerformances = performanceData.filter(p => p !== null);
         if (hasAllHistoricalData && validPerformances.length === underlyings.length) {
+          // Successfully retrieved all data - observation has occurred
+          isPast = true;
           underlyingPerformances.push(...validPerformances);
           basketLevel = Math.min(...validPerformances.map(p => p.performance));
         } else {
-          // Mark this observation as incomplete due to missing data
+          // Could not retrieve complete data
+          isPast = false; // Observation hasn't occurred yet (or data unavailable)
           basketLevel = null;
-          console.warn(`⚠️ Incomplete historical data for observation ${i + 1} on ${obsDate.toISOString().split('T')[0]} - cannot determine basket level`);
+          if (obsDateOnly.getTime() !== todayOnly.getTime()) {
+            console.warn(`⚠️ Incomplete historical data for observation ${i + 1} on ${obsDate.toISOString().split('T')[0]} - cannot determine basket level`);
+          }
         }
       }
 
       // For future observations, basket level is unknown
-      if (!isPast) {
+      if (!isPast && obsDateOnly > todayOnly) {
         basketLevel = 0; // Will be calculated when the date arrives
       }
 
@@ -527,12 +597,7 @@ export const PhoenixEvaluator = {
 
       // Determine if coupon is paid (chart builder expects number, not boolean)
       // Only evaluate if we have valid basket level data
-      const couponPaid = isPast && basketLevel !== null && basketAboveCouponBarrier ? (phoenixParams.couponRate || 0) : 0;
-      const couponAmount = couponPaid;
-
-      if (couponPaid > 0) {
-        totalCouponsEarned += couponAmount;
-      }
+      const baseCouponPaid = isPast && basketLevel !== null && basketAboveCouponBarrier ? (phoenixParams.couponRate || 0) : 0;
 
       // Check for autocall - logic depends on memory autocall setting
       let autocalled = false;
@@ -553,7 +618,7 @@ export const PhoenixEvaluator = {
 
       // Memory coupon logic
       // Add to memory if: basket BELOW coupon barrier, product has memory feature, and it's a past observation
-      const memoryCouponAdded = isPast && !couponPaid && basketLevel !== null && !basketAboveCouponBarrier && (phoenixParams.memoryCoupon || false);
+      const memoryCouponAdded = isPast && !baseCouponPaid && basketLevel !== null && !basketAboveCouponBarrier && (phoenixParams.memoryCoupon || false);
       if (memoryCouponAdded) {
         totalMemoryCoupons += phoenixParams.couponRate || 0;
       }
@@ -573,11 +638,36 @@ export const PhoenixEvaluator = {
       const showCumulativeMemory = isPast && (isFinalObservation || autocalled) && totalMemoryCoupons > 0;
       const displayMemory = showCumulativeMemory ? totalMemoryCoupons : couponInMemory;
 
+      // Calculate total coupon payout for this observation
+      // When memory coupons are released (final observation or autocall), include accumulated memory
+      // in the coupon paid amount so the observation table shows the total payout
+      const isMemoryReleaseEvent = showCumulativeMemory && baseCouponPaid > 0;
+      const couponPaid = baseCouponPaid + (isMemoryReleaseEvent ? totalMemoryCoupons : 0);
+      const couponAmount = couponPaid;
+
+      if (couponPaid > 0) {
+        totalCouponsEarned += couponAmount;
+      }
+
+      // Reset memory bucket to 0 after memory coupons are paid out
+      // This happens at autocall or final observation when basket is above coupon barrier
+      if (isMemoryReleaseEvent) {
+        totalMemoryCoupons = 0;
+      }
+
       observations.push({
         observationDate: obs.observationDate,
-        observationDateFormatted: new Date(obs.observationDate).toLocaleDateString(),
+        observationDateFormatted: new Date(obs.observationDate).toLocaleDateString('en-GB', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric'
+        }),
         paymentDate: obs.valueDate,
-        paymentDateFormatted: obs.valueDate ? new Date(obs.valueDate).toLocaleDateString() : null,
+        paymentDateFormatted: obs.valueDate ? new Date(obs.valueDate).toLocaleDateString('en-GB', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric'
+        }) : null,
         observationType,
         basketLevel,
         basketLevelFormatted: basketLevel !== null ? `${basketLevel >= 0 ? '+' : ''}${basketLevel.toFixed(2)}%` : 'N/A (Missing Data)',
@@ -585,16 +675,17 @@ export const PhoenixEvaluator = {
         basketAboveBarrier,
         couponPaid,
         couponAmount,
-        couponAmountFormatted: `${couponAmount.toFixed(1)}%`,
-        couponPaidFormatted: `${couponPaid.toFixed(1)}%`,
+        couponAmountFormatted: PhoenixEvaluationHelpers.formatCouponPercentage(couponAmount, phoenixParams.couponRate),
+        couponPaidFormatted: PhoenixEvaluationHelpers.formatCouponPercentage(couponPaid, phoenixParams.couponRate),
         memoryCouponAdded,
         couponInMemory: displayMemory,
-        couponInMemoryFormatted: `${displayMemory.toFixed(1)}%`,
+        couponInMemoryFormatted: PhoenixEvaluationHelpers.formatCouponPercentage(displayMemory, phoenixParams.couponRate),
         autocalled,
         productCalled: autocalled, // For redemption detection
         autocallLevel: obs.isCallable ? (obs.autocallLevel || phoenixParams.autocallBarrier) : null,
         autocallLevelFormatted: obs.isCallable ? `${obs.autocallLevel || phoenixParams.autocallBarrier}%` : 'N/A',
         isCallable: obs.isCallable || false,
+        isFinal: isFinalObservation, // Flag for final/maturity observation
         hasOccurred: isPast,
         status: isPast ? 'completed' : 'upcoming',
         // Memory Autocall tracking
@@ -603,13 +694,33 @@ export const PhoenixEvaluator = {
       });
     }
 
-    const remainingObservations = observations.filter(o => o.status === 'upcoming').length;
+    // Calculate remaining observations
+    // If product has been autocalled or matured, there are no remaining observations
+    const hasMatured = observations.length > 0 && observations[observations.length - 1].status === 'completed';
+    const remainingObservations = (productCalled || hasMatured) ? 0 : observations.filter(o => o.status === 'upcoming').length;
+
+    // Calculate next observation prediction
+    const nextObservationPrediction = await this.calculateNextObservationPrediction(
+      product,
+      underlyings,
+      observations,
+      phoenixParams,
+      totalMemoryCoupons,
+      underlyingAutocallFlags
+    );
+
+    console.log(`[PHOENIX] Next observation prediction for ${product._id}:`, {
+      hasData: !!nextObservationPrediction,
+      outcomeType: nextObservationPrediction?.outcomeType,
+      displayText: nextObservationPrediction?.displayText,
+      isLastObservation: nextObservationPrediction?.isLastObservation
+    });
 
     return {
       totalObservations: schedule.length,
       observations,
-      totalCouponsEarnedFormatted: `${totalCouponsEarned.toFixed(1)}%`,
-      totalMemoryCouponsFormatted: `${totalMemoryCoupons.toFixed(1)}%`,
+      totalCouponsEarnedFormatted: PhoenixEvaluationHelpers.formatCouponPercentage(totalCouponsEarned, phoenixParams.couponRate),
+      totalMemoryCouponsFormatted: PhoenixEvaluationHelpers.formatCouponPercentage(totalMemoryCoupons, phoenixParams.couponRate),
       totalCouponsEarned,
       totalMemoryCoupons,
       remainingObservations,
@@ -617,11 +728,264 @@ export const PhoenixEvaluator = {
       hasMemoryCoupon: phoenixParams.memoryCoupon || false,
       isEarlyAutocall: productCalled,
       callDate,
-      callDateFormatted: callDate ? new Date(callDate).toLocaleDateString() : null,
+      callDateFormatted: callDate ? new Date(callDate).toLocaleDateString('en-GB', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      }) : null,
       isMaturedAtFinal: !productCalled && observations.length > 0 && observations[observations.length - 1].status === 'completed',
       nextObservation: PhoenixEvaluationHelpers.getNextObservationDate(product),
       // Memory Autocall tracking
-      underlyingAutocallFlags // {ticker: firstFlaggedDate}
+      underlyingAutocallFlags, // {ticker: firstFlaggedDate}
+      // Next observation prediction
+      nextObservationPrediction
     };
+  },
+
+  /**
+   * Calculate prediction for next observation based on current prices
+   */
+  async calculateNextObservationPrediction(product, underlyings, observations, phoenixParams, totalMemoryCoupons, underlyingAutocallFlags) {
+    try {
+      console.log(`[PHOENIX PRED] Calculating prediction for product ${product._id}:`, {
+        observationCount: observations.length,
+        upcomingCount: observations.filter(o => o.status === 'upcoming').length,
+        completedCount: observations.filter(o => o.status === 'completed').length,
+        underlyingCount: underlyings.length
+      });
+
+      // Find next upcoming observation or last observation if none upcoming
+      let targetObservation = observations.find(obs => obs.status === 'upcoming' && !obs.hasOccurred);
+      const isLastObservation = !targetObservation;
+
+      if (isLastObservation && observations.length > 0) {
+        // No upcoming observations - use last observation
+        targetObservation = observations[observations.length - 1];
+        console.log(`[PHOENIX PRED] No upcoming observations, using last observation:`, {
+          date: targetObservation.observationDate,
+          status: targetObservation.status
+        });
+      }
+
+      if (!targetObservation) {
+        // No observations at all
+        console.log(`[PHOENIX PRED] No observations found, returning null`);
+        return null;
+      }
+
+      console.log(`[PHOENIX PRED] Target observation:`, {
+        date: targetObservation.observationDate,
+        status: targetObservation.status,
+        isLastObservation
+      });
+
+      // Get current underlying performances
+      const underlyingPerformances = underlyings.map(u => ({
+        ticker: u.ticker,
+        currentPerformance: u.performance || 0,
+        performanceFormatted: ((u.performance || 0) >= 0 ? '+' : '') + (u.performance || 0).toFixed(2) + '%'
+      }));
+
+      // Calculate current basket level (worst-of)
+      const currentBasketLevel = Math.min(...underlyings.map(u => u.performance || 0));
+      const currentBasketLevelFormatted = (currentBasketLevel >= 0 ? '+' : '') + currentBasketLevel.toFixed(2) + '%';
+
+      // Get thresholds
+      const protectionBarrier = phoenixParams.protectionBarrier || 70;
+      const autocallBarrier = phoenixParams.autocallBarrier || 100;
+      const couponRate = phoenixParams.couponRate || 0;
+
+      const couponThreshold = protectionBarrier - 100; // e.g., -30 for 70% barrier
+      const autocallThreshold = autocallBarrier - 100; // e.g., 0 for 100% barrier
+
+      // Calculate days until observation
+      const today = new Date();
+      const obsDate = new Date(targetObservation.observationDate);
+      const daysUntil = Math.ceil((obsDate - today) / (1000 * 60 * 60 * 24));
+
+      // Initialize prediction object
+      const prediction = {
+        date: targetObservation.observationDate,
+        dateFormatted: PhoenixEvaluationHelpers.formatObservationDate(targetObservation.observationDate),
+        daysUntil: daysUntil > 0 ? daysUntil : 0,
+        isLastObservation,
+        isFinalObservation: targetObservation.isFinal || false,
+
+        currentBasketLevel,
+        currentBasketLevelFormatted,
+
+        couponWouldPay: false,
+        couponAmount: 0,
+        couponAmountFormatted: '',
+
+        memoryWouldBeAdded: false,
+        memoryAmountAdded: 0,
+        memoryWouldBeReleased: false,
+        totalMemoryCoupons,
+        totalMemoryCouponsFormatted: PhoenixEvaluationHelpers.formatCouponPercentage(totalMemoryCoupons, couponRate),
+
+        autocallWouldTrigger: false,
+        autocallPrice: 0,
+        autocallPriceFormatted: '',
+
+        redemptionAmount: 0,
+        redemptionAmountFormatted: '',
+
+        underlyingPerformances,
+
+        outcomeType: 'no_event',
+        displayText: '',
+        explanation: '',
+        assumption: 'Based on current underlying prices'
+      };
+
+      // Determine outcome type based on current basket level
+
+      // Check for autocall
+      if (targetObservation.isCallable && currentBasketLevel >= autocallThreshold) {
+        // Standard autocall
+        prediction.autocallWouldTrigger = true;
+        prediction.outcomeType = 'autocall';
+
+        // Calculate autocall price: 100% + coupon + accumulated memory
+        const autocallPrice = 100 + couponRate + totalMemoryCoupons;
+        prediction.autocallPrice = autocallPrice;
+        prediction.autocallPriceFormatted = `${autocallPrice.toFixed(2)}%`;
+
+        prediction.couponWouldPay = true;
+        prediction.couponAmount = couponRate;
+        prediction.couponAmountFormatted = PhoenixEvaluationHelpers.formatPredictionCoupon(couponRate);
+
+        if (totalMemoryCoupons > 0) {
+          prediction.memoryWouldBeReleased = true;
+          prediction.displayText = `${prediction.dateFormatted}; autocall; ${prediction.autocallPriceFormatted} (incl. ${prediction.totalMemoryCouponsFormatted} memory)`;
+          prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Above autocall barrier (${autocallBarrier}%), product would autocall at ${prediction.autocallPriceFormatted} including ${prediction.totalMemoryCouponsFormatted} memory coupons.`;
+        } else {
+          prediction.displayText = `${prediction.dateFormatted}; autocall; ${prediction.autocallPriceFormatted}`;
+          prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Above autocall barrier (${autocallBarrier}%), product would autocall at ${prediction.autocallPriceFormatted}.`;
+        }
+      }
+      // Check for memory autocall (all underlyings flagged)
+      else if (phoenixParams.memoryAutocall && targetObservation.isCallable) {
+        const allFlagged = Object.keys(underlyingAutocallFlags || {}).length === underlyings.length;
+        if (allFlagged) {
+          prediction.autocallWouldTrigger = true;
+          prediction.outcomeType = 'autocall';
+
+          const autocallPrice = 100 + couponRate + totalMemoryCoupons;
+          prediction.autocallPrice = autocallPrice;
+          prediction.autocallPriceFormatted = `${autocallPrice.toFixed(2)}%`;
+
+          prediction.displayText = `${prediction.dateFormatted}; memory autocall; ${prediction.autocallPriceFormatted}`;
+          prediction.explanation = `All underlyings have reached autocall level at some point. Memory autocall would trigger at ${prediction.autocallPriceFormatted}.`;
+        }
+      }
+      // Check for coupon payment
+      else if (currentBasketLevel >= couponThreshold) {
+        prediction.couponWouldPay = true;
+        prediction.couponAmount = couponRate;
+        prediction.couponAmountFormatted = PhoenixEvaluationHelpers.formatPredictionCoupon(couponRate);
+        prediction.outcomeType = 'coupon';
+
+        prediction.displayText = `${prediction.dateFormatted}; coupon; ${prediction.couponAmountFormatted}`;
+        prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Above coupon barrier (${protectionBarrier}%), would receive ${prediction.couponAmountFormatted} coupon.`;
+      }
+      // Memory coupon would be added
+      else if (phoenixParams.memoryCoupon) {
+        prediction.memoryWouldBeAdded = true;
+        prediction.memoryAmountAdded = couponRate;
+        prediction.outcomeType = 'memory_added';
+
+        const newMemoryTotal = totalMemoryCoupons + couponRate;
+        prediction.displayText = `${prediction.dateFormatted}; coupon; in memory (total: ${PhoenixEvaluationHelpers.formatPredictionCoupon(newMemoryTotal)})`;
+        prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Below coupon barrier (${protectionBarrier}%), ${PhoenixEvaluationHelpers.formatPredictionCoupon(couponRate)} would be added to memory (new total: ${PhoenixEvaluationHelpers.formatPredictionCoupon(newMemoryTotal)}).`;
+      }
+      // No event
+      else {
+        prediction.outcomeType = 'no_event';
+        prediction.displayText = `${prediction.dateFormatted}; no event`;
+        prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Below coupon barrier (${protectionBarrier}%), no coupon would be paid.`;
+      }
+
+      // Handle final observation
+      if (targetObservation.isFinal) {
+        prediction.isFinalObservation = true;
+
+        // Calculate capital return using proper geared loss formula
+        let capitalReturn = 100;
+        let capitalExplanation = '';
+
+        const barrierThreshold = protectionBarrier - 100; // e.g., 70% barrier = -30% threshold
+
+        if (currentBasketLevel >= barrierThreshold) {
+          // Above protection barrier: full capital return
+          capitalReturn = 100;
+          capitalExplanation = `Basket at ${currentBasketLevelFormatted} (above ${protectionBarrier}% barrier) = 100% capital`;
+        } else {
+          // Below protection barrier: geared loss calculation
+          const currentLevel = 100 + currentBasketLevel; // e.g., -40% perf = 60% level
+          const breachAmount = protectionBarrier - currentLevel; // e.g., 70 - 60 = 10% breach
+          const gearedLoss = breachAmount * (100 / protectionBarrier); // e.g., 10 × (100/70) = 14.29% loss
+          capitalReturn = 100 - gearedLoss; // e.g., 100 - 14.29 = 85.71%
+          capitalExplanation = `Basket at ${(currentLevel).toFixed(2)}% (below ${protectionBarrier}% barrier): breach ${breachAmount.toFixed(2)}% × (100/${protectionBarrier}) = loss ${gearedLoss.toFixed(2)}% → capital ${capitalReturn.toFixed(2)}%`;
+        }
+
+        // Calculate coupon components
+        const couponsEarned = totalCouponsEarned || 0;
+        const memoryCouponsAvailable = totalMemoryCoupons || 0;
+
+        // Memory coupons only paid if above barrier at maturity
+        const isAboveBarrier = currentBasketLevel >= barrierThreshold;
+        const memoryCouponsPaid = isAboveBarrier ? memoryCouponsAvailable : 0;
+
+        // Total redemption amount
+        const redemptionAmount = capitalReturn + couponsEarned + memoryCouponsPaid;
+
+        // Add detailed breakdown to prediction
+        prediction.capitalReturn = capitalReturn;
+        prediction.capitalReturnFormatted = `${capitalReturn.toFixed(2)}%`;
+        prediction.capitalExplanation = capitalExplanation;
+
+        prediction.couponsEarned = couponsEarned;
+        prediction.couponsEarnedFormatted = PhoenixEvaluationHelpers.formatCouponPercentage(couponsEarned, couponRate);
+
+        prediction.memoryCoupons = memoryCouponsPaid;
+        prediction.memoryCouponsFormatted = PhoenixEvaluationHelpers.formatCouponPercentage(memoryCouponsPaid, couponRate);
+        prediction.memoryCouponsForfeit = !isAboveBarrier && memoryCouponsAvailable > 0;
+        prediction.memoryCouponsForfeitAmount = !isAboveBarrier ? memoryCouponsAvailable : 0;
+
+        prediction.redemptionAmount = redemptionAmount;
+        prediction.redemptionAmountFormatted = `${redemptionAmount.toFixed(2)}%`;
+        prediction.outcomeType = 'final_redemption';
+
+        // Display text
+        if (memoryCouponsPaid > 0) {
+          prediction.displayText = `${prediction.dateFormatted}; final redemption; ${prediction.redemptionAmountFormatted} (incl. ${prediction.memoryCouponsFormatted} memory)`;
+        } else {
+          prediction.displayText = `${prediction.dateFormatted}; final redemption; ${prediction.redemptionAmountFormatted}`;
+        }
+
+        // Explanation
+        if (isAboveBarrier) {
+          prediction.explanation = `Final observation. Basket at ${currentBasketLevelFormatted} (above ${protectionBarrier}% barrier). Total return: ${prediction.capitalReturnFormatted} capital + ${prediction.couponsEarnedFormatted} coupons${memoryCouponsPaid > 0 ? ` + ${prediction.memoryCouponsFormatted} memory` : ''} = ${prediction.redemptionAmountFormatted}.`;
+        } else {
+          prediction.explanation = `Final observation. Basket at ${currentBasketLevelFormatted} (below ${protectionBarrier}% barrier). Capital return ${prediction.capitalReturnFormatted} (geared loss applied)${couponsEarned > 0 ? ` + ${prediction.couponsEarnedFormatted} coupons` : ''}${prediction.memoryCouponsForfeit ? `. Memory coupons ${prediction.memoryCouponsFormatted} forfeited` : ''}.`;
+        }
+      }
+
+      console.log(`[PHOENIX PRED] Prediction calculated successfully:`, {
+        outcomeType: prediction.outcomeType,
+        displayText: prediction.displayText,
+        isLastObservation: prediction.isLastObservation,
+        basketLevel: prediction.currentBasketLevel
+      });
+
+      return prediction;
+
+    } catch (error) {
+      console.error('[PHOENIX PRED] ❌ Error calculating next observation prediction:', error);
+      console.error('[PHOENIX PRED] Error stack:', error.stack);
+      return null;
+    }
   }
 };
