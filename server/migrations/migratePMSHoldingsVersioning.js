@@ -70,7 +70,7 @@ export async function migratePMSHoldingsVersioning() {
       await PMSHoldingsCollection.updateAsync(latest._id, {
         $set: {
           uniqueKey: newKey,
-          snapshotDate: latest.fileDate || latest.createdAt,
+          snapshotDate: latest.dataDate || latest.fileDate || latest.createdAt,
           processedAt: latest.createdAt || new Date(),
           isLatest: true
         }
@@ -87,7 +87,7 @@ export async function migratePMSHoldingsVersioning() {
         await PMSHoldingsCollection.updateAsync(older._id, {
           $set: {
             uniqueKey: newKey,
-            snapshotDate: older.fileDate || older.createdAt,
+            snapshotDate: older.dataDate || older.fileDate || older.createdAt,
             processedAt: older.createdAt || new Date(),
             isLatest: false,
             replacedBy: newerVersion._id,

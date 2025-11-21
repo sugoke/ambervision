@@ -44,7 +44,8 @@ export const PMSHoldingsHelpers = {
     });
 
     const now = new Date();
-    const snapshotDate = holdingData.fileDate;
+    // Use dataDate if available (actual portfolio valuation date), otherwise fallback to fileDate
+    const snapshotDate = holdingData.dataDate || holdingData.fileDate;
 
     // Find the current "latest" version for this position
     const existing = await PMSHoldingsCollection.findOneAsync({
