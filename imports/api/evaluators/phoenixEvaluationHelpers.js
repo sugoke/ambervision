@@ -20,8 +20,21 @@ export const PhoenixEvaluationHelpers = {
     const finalObsDate = product.finalObservation || product.finalObservationDate;
     const maturityDate = product.maturity || product.maturityDate;
 
-    const isFinalObsPassed = finalObsDate && new Date(finalObsDate) <= now;
-    const isMaturityPassed = maturityDate && new Date(maturityDate) <= now;
+    // Strip time components for date-only comparison
+    const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    // Final observation is a market date - data only available the NEXT day
+    const isFinalObsPassed = finalObsDate && (() => {
+      const finalObsDateOnly = new Date(new Date(finalObsDate).getFullYear(), new Date(finalObsDate).getMonth(), new Date(finalObsDate).getDate());
+      return finalObsDateOnly < nowDateOnly;
+    })();
+
+    // Maturity is settlement date - product has matured ON or after this date
+    const isMaturityPassed = maturityDate && (() => {
+      const maturityDateOnly = new Date(new Date(maturityDate).getFullYear(), new Date(maturityDate).getMonth(), new Date(maturityDate).getDate());
+      return maturityDateOnly <= nowDateOnly;
+    })();
+
     const isRedeemed = isFinalObsPassed || isMaturityPassed;
 
     if (!isRedeemed) {
@@ -143,6 +156,27 @@ export const PhoenixEvaluationHelpers = {
   },
 
   /**
+   * Detect decimal precision of a number (e.g., 3.0825 has 4 decimal places)
+   */
+  getDecimalPrecision(value) {
+    if (!value || value === 0) return 2; // Default to 2 decimals
+
+    const valueStr = value.toString();
+    if (!valueStr.includes('.')) return 0; // No decimals
+
+    const decimalPart = valueStr.split('.')[1];
+    return decimalPart ? decimalPart.length : 0;
+  },
+
+  /**
+   * Format coupon percentage with dynamic precision matching the coupon rate
+   */
+  formatCouponPercentage(amount, couponRate) {
+    const precision = this.getDecimalPrecision(couponRate);
+    return amount.toFixed(Math.max(precision, 2)) + '%'; // Minimum 2 decimals
+  },
+
+  /**
    * Extract underlying assets data for Phoenix products
    */
   async extractUnderlyingAssetsData(product) {
@@ -150,30 +184,43 @@ export const PhoenixEvaluationHelpers = {
     const currency = product.currency || 'USD';
 
     if (product.underlyings && Array.isArray(product.underlyings)) {
-      // Process all underlyings sequentially to fetch news
+      // Process all underlyings sequentially to fetch current prices and news
       for (const [index, underlying] of product.underlyings.entries()) {
         const initialPrice = underlying.strike ||
                            (underlying.securityData?.tradeDatePrice?.price) ||
                            (underlying.securityData?.tradeDatePrice?.close) || 0;
+
+        // Fetch current price from market data cache if not already present
+        if (!underlying.securityData) {
+          underlying.securityData = {};
+        }
+
+        if (!underlying.securityData.price) {
+          try {
+            const fullTicker = underlying.securityData?.ticker || `${underlying.ticker}.US`;
+            const cachedPrice = await MarketDataHelpers.getCurrentPrice(fullTicker);
+
+            if (cachedPrice && cachedPrice.price) {
+              underlying.securityData.price = {
+                price: cachedPrice.price,
+                close: cachedPrice.price,
+                date: cachedPrice.date || new Date(),
+                source: 'market_data_cache'
+              };
+              console.log(`✅ Phoenix: Fetched current price for ${fullTicker}: $${cachedPrice.price}`);
+            } else {
+              console.warn(`⚠️ Phoenix: No current price available for ${fullTicker}, using initial price as fallback`);
+            }
+          } catch (error) {
+            console.warn(`⚠️ Phoenix: Failed to fetch current price for ${underlying.ticker}:`, error.message);
+          }
+        }
 
         const evaluationPriceInfo = this.getEvaluationPrice(underlying, product);
         const currentPrice = evaluationPriceInfo.price;
 
         let performance = initialPrice > 0 ?
           ((currentPrice - initialPrice) / initialPrice) * 100 : 0;
-
-        // Fetch latest news for this underlying
-        let news = [];
-        try {
-          const fullTicker = underlying.securityData?.ticker || `${underlying.ticker}.US`;
-          const [symbol, exchange] = fullTicker.includes('.') ? fullTicker.split('.') : [fullTicker, null];
-
-          // Fetch 2 latest news articles from EOD API
-          news = await EODApiHelpers.getSecurityNews(symbol, exchange, 2);
-        } catch (error) {
-          console.warn(`Phoenix: Failed to fetch news for ${underlying.ticker}:`, error.message);
-          news = []; // Graceful fallback - empty array
-        }
 
         const underlyingData = {
           ticker: underlying.ticker,
@@ -192,19 +239,16 @@ export const PhoenixEvaluationHelpers = {
           currentPriceFormatted: this.formatCurrency(currentPrice, currency),
           performanceFormatted: (performance >= 0 ? '+' : '') + performance.toFixed(2) + '%',
           priceDateFormatted: evaluationPriceInfo.date ?
-            new Date(evaluationPriceInfo.date).toLocaleDateString('en-US', {
-              month: 'short',
-              day: 'numeric',
+            new Date(evaluationPriceInfo.date).toLocaleDateString('en-GB', {
+              day: '2-digit',
+              month: '2-digit',
               year: 'numeric'
             }) : null,
 
           hasCurrentData: !!(underlying.securityData?.price?.price),
           lastUpdated: new Date().toISOString(),
 
-          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`,
-
-          // Latest news articles
-          news: news
+          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`
         };
 
         underlyings.push(underlyingData);
@@ -216,8 +260,11 @@ export const PhoenixEvaluationHelpers = {
 
   /**
    * Build product status for Phoenix products
+   *
+   * @param {Object} product - The product document
+   * @param {Object} observationAnalysis - Optional observation analysis with autocall detection
    */
-  buildProductStatus(product) {
+  buildProductStatus(product, observationAnalysis = null) {
     const now = new Date();
     const finalObsDate = product.finalObservation || product.finalObservationDate;
     const maturityDate = product.maturity || product.maturityDate;
@@ -232,15 +279,37 @@ export const PhoenixEvaluationHelpers = {
     let productStatus = 'live';
     let statusDetails = {};
 
-    if (isMaturityPassed || isFinalObsPassed) {
+    // Check for early autocall FIRST (highest priority)
+    if (observationAnalysis?.isEarlyAutocall && observationAnalysis?.callDate) {
+      productStatus = 'autocalled';
+      const callDate = new Date(observationAnalysis.callDate);
+      const daysToCall = Math.ceil((callDate - now) / (1000 * 60 * 60 * 24));
+
+      statusDetails = {
+        autocallDate: observationAnalysis.callDate,
+        autocallDateFormatted: callDate.toLocaleDateString('en-GB', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric'
+        }),
+        redemptionType: 'early_autocall',
+        daysToCall: daysToCall,
+        daysToCallText: daysToCall >= 0
+          ? `${daysToCall} days`
+          : `${Math.abs(daysToCall)} days (autocalled)`
+      };
+    }
+    // Check for maturity (if not autocalled)
+    else if (isMaturityPassed || isFinalObsPassed) {
       productStatus = 'matured';
       statusDetails = {
         maturedDate: maturityDate || finalObsDate,
-        maturedDateFormatted: new Date(maturityDate || finalObsDate).toLocaleDateString('en-US', {
-          month: 'short',
-          day: 'numeric',
+        maturedDateFormatted: new Date(maturityDate || finalObsDate).toLocaleDateString('en-GB', {
+          day: '2-digit',
+          month: '2-digit',
           year: 'numeric'
-        })
+        }),
+        redemptionType: 'maturity'
       };
     }
 
@@ -253,10 +322,11 @@ export const PhoenixEvaluationHelpers = {
         : `${Math.abs(daysToMaturity)} days (matured)`,
       daysToFinalObs,
       hasMatured: isMaturityPassed || isFinalObsPassed,
+      hasAutocalled: observationAnalysis?.isEarlyAutocall || false,
       evaluationDate: now,
-      evaluationDateFormatted: now.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
+      evaluationDateFormatted: now.toLocaleDateString('en-GB', {
+        day: '2-digit',
+        month: '2-digit',
         year: 'numeric',
         hour: '2-digit',
         minute: '2-digit'
@@ -306,8 +376,11 @@ export const PhoenixEvaluationHelpers = {
     const isMaturityPassed = maturityDate && new Date(maturityDate) <= now;
     const hasMatured = isFinalObsPassed || isMaturityPassed;
 
-    if (hasMatured) {
-      return null; // Don't calculate for matured products
+    // Check if product has autocalled
+    const hasAutocalled = observationSchedule?.isEarlyAutocall || false;
+
+    if (hasMatured || hasAutocalled) {
+      return null; // Don't calculate for matured or autocalled products
     }
 
     if (!underlyings || underlyings.length === 0) {
@@ -370,22 +443,22 @@ export const PhoenixEvaluationHelpers = {
       capitalExplanation: capitalExplanation,
 
       couponsEarned: totalCouponsEarned,
-      couponsEarnedFormatted: totalCouponsEarned.toFixed(2) + '%',
+      couponsEarnedFormatted: this.formatCouponPercentage(totalCouponsEarned, phoenixParams.couponRate),
 
       memoryCoupons: memoryCouponsIncluded,
-      memoryCouponsFormatted: memoryCouponsIncluded.toFixed(2) + '%',
+      memoryCouponsFormatted: this.formatCouponPercentage(memoryCouponsIncluded, phoenixParams.couponRate),
       hasMemoryCoupons: totalMemoryCoupons > 0,
       memoryCouponsForfeit: !isAboveBarrier && totalMemoryCoupons > 0,
       memoryCouponsForfeitAmount: !isAboveBarrier ? totalMemoryCoupons : 0,
-      memoryCouponsForfeitFormatted: !isAboveBarrier ? totalMemoryCoupons.toFixed(2) + '%' : '0%',
+      memoryCouponsForfeitFormatted: !isAboveBarrier ? this.formatCouponPercentage(totalMemoryCoupons, phoenixParams.couponRate) : '0%',
 
       totalValue: totalIndicativeValue,
       totalValueFormatted: totalIndicativeValue.toFixed(2) + '%',
 
       evaluationDate: now,
-      evaluationDateFormatted: now.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
+      evaluationDateFormatted: now.toLocaleDateString('en-GB', {
+        day: '2-digit',
+        month: '2-digit',
         year: 'numeric'
       })
     };
@@ -401,5 +474,57 @@ export const PhoenixEvaluationHelpers = {
 
     const tickers = underlyings.map(u => u.ticker).join('/');
     return `${tickers} Phoenix Autocallable`;
+  },
+
+  /**
+   * Format date as "1st Dec 25" (ordinal day + abbreviated month + 2-digit year)
+   */
+  formatObservationDate(dateInput) {
+    const date = new Date(dateInput);
+
+    // Get day with ordinal suffix
+    const day = date.getDate();
+    const ordinalSuffix = (day) => {
+      if (day > 3 && day < 21) return 'th'; // covers 11th-20th
+      switch (day % 10) {
+        case 1: return 'st';
+        case 2: return 'nd';
+        case 3: return 'rd';
+        default: return 'th';
+      }
+    };
+    const dayWithOrdinal = `${day}${ordinalSuffix(day)}`;
+
+    // Get abbreviated month name
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const month = monthNames[date.getMonth()];
+
+    // Get 2-digit year
+    const year = String(date.getFullYear()).slice(-2);
+
+    return `${dayWithOrdinal} ${month} ${year}`;
+  },
+
+  /**
+   * Format coupon percentage for predictions with 2-4 decimal places
+   * Shows minimum 2 decimals, up to 4 if needed
+   */
+  formatPredictionCoupon(value) {
+    // If value has significant digits beyond 2 decimals, show up to 4
+    const rounded2 = Math.round(value * 100) / 100;
+    const rounded4 = Math.round(value * 10000) / 10000;
+
+    // If rounding to 2 decimals loses precision, use more decimals
+    if (rounded2 !== rounded4) {
+      // Check if we need 3 or 4 decimals
+      const rounded3 = Math.round(value * 1000) / 1000;
+      if (rounded3 !== rounded4) {
+        return `${value.toFixed(4)}%`;
+      }
+      return `${value.toFixed(3)}%`;
+    }
+
+    // Always show at least 2 decimals
+    return `${value.toFixed(2)}%`;
   }
 };

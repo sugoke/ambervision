@@ -24,11 +24,14 @@ import { ProductsCollection } from '/imports/api/products';
 import { ChartDataCollection } from '/imports/api/chartData';
 import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
 import { BanksCollection, BankHelpers } from '/imports/api/banks';
+import { BankConnectionsCollection, BankConnectionHelpers } from '/imports/api/bankConnections';
+import { BankConnectionLogsCollection, BankConnectionLogHelpers } from '/imports/api/bankConnectionLogs';
 import { BankAccountsCollection, BankAccountHelpers } from '/imports/api/bankAccounts';
 import { ProductPricesCollection, ProductPriceHelpers } from '/imports/api/productPrices';
 import { IssuersCollection, IssuerHelpers, DEFAULT_ISSUERS } from '/imports/api/issuers';
 import { TemplatesCollection, TemplateHelpers, BUILT_IN_TEMPLATES } from '/imports/api/templates';
 import '/imports/api/eodApi';
+import '/imports/api/cbondsApi';
 import '/imports/api/underlyingPrices';
 // Removed: product evaluation module
 import '/imports/api/marketDataCache';
@@ -44,11 +47,15 @@ import './testEmailMethod'; // Test email functionality
 import { AllocationsCollection } from '/imports/api/allocations';
 import { NotificationsCollection, NotificationHelpers } from '/imports/api/notifications';
 import { CronJobLogsCollection } from '/imports/api/cronJobLogs';
+import { NewslettersCollection } from '/imports/api/newsletters';
 import { initializeCronJobs } from './cron/jobs';
 import { updateMarketTickerPrices, isDataStale } from './cron/updateMarketTicker';
 // Schedule is now included in reports, no separate collection needed
 import { EquityHoldingsCollection, EquityHoldingsHelpers } from '/imports/api/equityHoldings';
+import { PMSHoldingsCollection, PMSHoldingsHelpers } from '/imports/api/pmsHoldings';
+import { SecuritiesMetadataCollection, SecuritiesMetadataHelpers } from '/imports/api/securitiesMetadata';
 import { MarketDataHelpers, MarketDataCacheCollection } from '/imports/api/marketDataCache';
+import { BankFileStructuresCollection, BankFileStructureHelpers } from '/imports/api/bankFileStructures';
 import { globalProductValidator } from '/imports/api/validators/productStructureValidator.js';
 import '/imports/api/reports';
 import '/imports/api/templateReports';
@@ -57,7 +64,18 @@ import '/imports/api/riskAnalysis';
 import '/imports/api/termSheetExtractor';
 import '/imports/api/amberConversations';
 import '/imports/api/amberService';
+import './methods/bankConnectionMethods';
+import './methods/bankPositionMethods';
+import './methods/pmsMigrationMethods';
+import './migrations/migratePMSHoldingsVersioning';
+import './methods/securitiesMethods';
+import './methods/performanceMethods';
+import './methods/pdfGenerationMethods';
+import './methods/pmsLinkingMethods';
+import './pdfAuth'; // PDF authentication middleware
 import './publications/underlyingsAnalysis';
+import './publications/bankConnections';
+import './publications/securitiesMetadata';
 import './publications'; // Import all publications from index.js
 
 // Complex product templates are now part of BUILT_IN_TEMPLATES in /imports/api/templates.js
@@ -90,7 +108,14 @@ Meteor.startup(async () => {
     `${mongoOplogUrl.substring(0, 25)}...${mongoOplogUrl.substring(mongoOplogUrl.lastIndexOf('/'))}` : mongoOplogUrl);
   console.log('Database Type:', mongoUrl.includes('mongodb+srv') ? 'Atlas (Cloud)' : 'Local MongoDB');
   console.log('====================================\n');
-  
+
+  // Check if SFTP Private Key is available in settings
+  if (Meteor.settings && Meteor.settings.private && Meteor.settings.private.SFTP_PRIVATE_KEY) {
+    console.log('✅ SFTP_PRIVATE_KEY loaded from settings file');
+  } else {
+    console.log('⚠️  SFTP_PRIVATE_KEY not found in Meteor.settings.private');
+  }
+
   // Log collection counts at startup
   const productCount = await ProductsCollection.find().countAsync();
   const equityHoldingsCount = await EquityHoldingsCollection.find().countAsync();
@@ -172,6 +197,46 @@ Meteor.startup(async () => {
     console.log('🏗️  Built-in templates initialization complete');
   } catch (error) {
     console.error('❌ Error initializing built-in templates:', error);
+  }
+
+  // One-time migration: Update termsheet URLs from old format (/termsheets/{productId}/{filename}) to new flat format (/termsheets/{filename})
+  console.log('📄 Migrating termsheet URLs to flat structure...');
+  try {
+    const productsWithTermsheets = await ProductsCollection.find({
+      'termSheet.url': { $exists: true, $ne: null }
+    }).fetchAsync();
+
+    let migrated = 0;
+    for (const product of productsWithTermsheets) {
+      const url = product.termSheet.url;
+
+      // Check if URL is in old format: /termsheets/{productId}/{filename}
+      const urlParts = url.replace(/^\//, '').split('/');
+      if (urlParts.length === 3 && urlParts[0] === 'termsheets') {
+        // Old format detected - update to new flat format
+        const filename = urlParts[2];
+        const newUrl = `/termsheets/${filename}`;
+
+        await ProductsCollection.updateAsync(product._id, {
+          $set: {
+            'termSheet.url': newUrl
+          }
+        });
+
+        console.log(`  ✅ Migrated: ${product.title} (${product._id})`);
+        console.log(`     Old: ${url}`);
+        console.log(`     New: ${newUrl}`);
+        migrated++;
+      }
+    }
+
+    if (migrated > 0) {
+      console.log(`📄 Migrated ${migrated} termsheet URL(s) to flat structure`);
+    } else {
+      console.log(`📄 No termsheet URLs needed migration`);
+    }
+  } catch (error) {
+    console.error('❌ Error migrating termsheet URLs:', error);
   }
 
   // Ensure admin user exists
@@ -1702,11 +1767,33 @@ Meteor.methods({
     }
   },
 
-  async 'users.create'({ email, password, role = USER_ROLES.CLIENT, profile = {} }) {
+  async 'users.create'({ email, password, role = USER_ROLES.CLIENT, profile = {}, sessionId }) {
     check(email, String);
     check(password, String);
     check(role, String);
     check(profile, Object);
+    check(sessionId, Match.Optional(String));
+
+    // 1. Authenticate the caller (if sessionId is provided)
+    if (sessionId) {
+      const currentUser = await Meteor.callAsync('auth.getCurrentUser', sessionId);
+
+      if (!currentUser) {
+        throw new Meteor.Error('access-denied', 'Authentication required');
+      }
+
+      // 2. Check if caller has permission to create users
+      if (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN) {
+        throw new Meteor.Error('access-denied', 'Only admins can create users');
+      }
+
+      // 3. Check if admin is trying to create superadmin (only superadmin can do this)
+      if (role === USER_ROLES.SUPERADMIN && currentUser.role !== USER_ROLES.SUPERADMIN) {
+        throw new Meteor.Error('access-denied', 'Only superadmins can create other superadmins');
+      }
+
+      console.log(`User creation requested by ${currentUser.email} (${currentUser.role}) - Creating ${role} user: ${email}`);
+    }
 
     // Check if user already exists
     const existingUser = await UsersCollection.findOneAsync({ email });
@@ -1886,6 +1973,57 @@ Meteor.methods({
     return await UsersCollection.removeAsync(userId);
   },
 
+  async 'users.adminResetPassword'(userId, newPassword, sessionId) {
+    check(userId, String);
+    check(newPassword, String);
+    check(sessionId, String);
+
+    // CRITICAL: Verify caller is SUPERADMIN using sessionId-based auth
+    const session = await SessionHelpers.validateSession(sessionId);
+    if (!session || !session.userId) {
+      throw new Meteor.Error('unauthorized', 'Invalid or expired session');
+    }
+
+    const currentUser = await UsersCollection.findOneAsync(session.userId);
+    if (!currentUser || currentUser.role !== USER_ROLES.SUPERADMIN) {
+      throw new Meteor.Error('unauthorized', 'Only superadmins can reset user passwords');
+    }
+
+    // Validate target user exists
+    const targetUser = await UsersCollection.findOneAsync(userId);
+    if (!targetUser) {
+      throw new Meteor.Error('user-not-found', 'Target user not found');
+    }
+
+    // Validate password strength
+    if (!newPassword || newPassword.length < 6) {
+      throw new Meteor.Error('weak-password', 'Password must be at least 6 characters long');
+    }
+
+    try {
+      // Update password
+      await UsersCollection.updateAsync(userId, {
+        $set: {
+          password: UserHelpers.hashPassword(newPassword)
+        }
+      });
+
+      // Invalidate all active sessions for security (force re-login)
+      await SessionHelpers.invalidateAllUserSessions(userId);
+
+      // Log action for audit trail
+      console.log(`[ADMIN PASSWORD RESET] Superadmin ${currentUser.email} (${session.userId}) reset password for user ${targetUser.email} (${userId})`);
+
+      return {
+        success: true,
+        message: 'Password reset successfully. User has been logged out of all sessions.'
+      };
+    } catch (error) {
+      console.error('Error resetting password:', error);
+      throw new Meteor.Error('reset-failed', 'Failed to reset password', error.message);
+    }
+  },
+
   async 'users.updateProfile'(userId, userData) {
     console.log('Server: users.updateProfile called with:', { userId, userData });
     
@@ -1934,18 +2072,18 @@ Meteor.methods({
     // Update relationship manager ID if provided (including null to unassign)
     if (userData.hasOwnProperty('relationshipManagerId')) {
       if (userData.relationshipManagerId) {
-        // Verify the RM exists and has the correct role
+        // Verify the RM exists and has the correct role (RM, admin, or superadmin)
         const rmUser = await UsersCollection.findOneAsync({
           _id: userData.relationshipManagerId,
-          role: USER_ROLES.RELATIONSHIP_MANAGER
+          role: { $in: [USER_ROLES.RELATIONSHIP_MANAGER, USER_ROLES.ADMIN, USER_ROLES.SUPERADMIN] }
         });
 
         if (!rmUser) {
-          throw new Meteor.Error('invalid-rm', 'Invalid relationship manager');
+          throw new Meteor.Error('invalid-rm', 'Invalid relationship manager (must be RM, admin, or superadmin)');
         }
 
         updateData.relationshipManagerId = userData.relationshipManagerId;
-        console.log('Server: Assigning client to RM:', rmUser.email);
+        console.log('Server: Assigning client to RM:', rmUser.email, `(${rmUser.role})`);
       } else {
         // Explicitly unassign the RM
         updateData.relationshipManagerId = null;
@@ -2333,6 +2471,53 @@ Meteor.methods({
 
 
   // Product management methods
+  async 'products.checkISINUniqueness'(isin, excludeProductId = null) {
+    // Validate ISIN parameter
+    if (!isin || typeof isin !== 'string') {
+      throw new Meteor.Error('invalid-parameter', 'ISIN is required');
+    }
+
+    // Clean and normalize ISIN
+    const cleanedIsin = isin.trim().toUpperCase();
+
+    // Build query to find products with this ISIN
+    // IMPORTANT: Only check non-draft products to allow multiple draft versions
+    const query = {
+      isin: cleanedIsin,
+      productStatus: { $ne: 'draft' } // Exclude draft products
+    };
+
+    // Exclude current product if updating
+    if (excludeProductId) {
+      query._id = { $ne: excludeProductId };
+    }
+
+    try {
+      // Check if another non-draft product exists with this ISIN
+      const existingProduct = await ProductsCollection.findOneAsync(query, {
+        fields: { _id: 1, title: 1, isin: 1, createdAt: 1, productStatus: 1 }
+      });
+
+      if (existingProduct) {
+        return {
+          isUnique: false,
+          conflict: {
+            productId: existingProduct._id,
+            title: existingProduct.title,
+            isin: existingProduct.isin,
+            createdAt: existingProduct.createdAt,
+            status: existingProduct.productStatus
+          }
+        };
+      }
+
+      return { isUnique: true, conflict: null };
+    } catch (error) {
+      console.error('[ISIN CHECK] Error checking ISIN uniqueness:', error);
+      throw new Meteor.Error('check-failed', `Failed to check ISIN uniqueness: ${error.message}`);
+    }
+  },
+
   async 'products.save'(productData, sessionId) {
     // Validate session and get user
     const user = await validateSessionAndGetUser(sessionId);
@@ -2495,12 +2680,12 @@ Meteor.methods({
   async 'products.cleanupChartData'() {
     // Import ChartDataCollection for migration
     const { ChartDataCollection } = await import('/imports/api/chartData.js');
-    
+
     try {
       const products = await ProductsCollection.find({}).fetchAsync();
       let migrated = 0;
       let found = products.length;
-      
+
       for (const product of products) {
         // Check if product has embedded chartData that needs migration
         if (product.chartData) {
@@ -2519,21 +2704,173 @@ Meteor.methods({
               }
             }
           );
-          
+
           // Remove chartData from product document
           await ProductsCollection.updateAsync(product._id, {
             $unset: { chartData: 1 }
           });
-          
+
           migrated++;
         }
       }
-      
+
       console.log(`Chart data cleanup: Migrated ${migrated} of ${found} products`);
       return { success: true, migrated, found };
     } catch (error) {
       console.error('Chart data cleanup error:', error);
       throw new Meteor.Error('cleanup-failed', `Failed to cleanup chart data: ${error.message}`);
+    }
+  },
+
+  async 'products.processAllLiveProducts'(options = {}, sessionId) {
+    check(options, Match.Optional(Object));
+    check(sessionId, Match.Optional(String));
+
+    const { includeDebug = false } = options;
+
+    if (includeDebug) {
+      console.log('=== BATCH PROCESS START ===');
+      console.log('[SERVER] products.processAllLiveProducts called');
+      console.log('[SERVER] Options:', options);
+      console.log('[SERVER] SessionId:', sessionId);
+    }
+
+    // Validate session and check admin permissions
+    if (sessionId) {
+      const user = await validateSessionAndGetUser(sessionId);
+      if (!user) {
+        throw new Meteor.Error('not-authorized', 'You must be logged in');
+      }
+
+      // Only admins and superadmins can batch process all products
+      if (user.role !== USER_ROLES.ADMIN && user.role !== USER_ROLES.SUPERADMIN) {
+        throw new Meteor.Error('access-denied', 'Only admins can batch process all products');
+      }
+
+      if (includeDebug) {
+        console.log('[SERVER] User authenticated:', user.email, 'Role:', user.role);
+      }
+    }
+
+    const batchStartTime = Date.now();
+
+    try {
+      // Get all products from database
+      const allProducts = await ProductsCollection.find({}).fetchAsync();
+
+      if (includeDebug) {
+        console.log(`[SERVER] Found ${allProducts.length} products to process`);
+      }
+
+      let succeeded = 0;
+      let failed = 0;
+      const errors = [];
+      const durations = [];
+
+      // Summary data
+      const summary = {
+        autocallCount: 0,
+        totalReturns: [],
+        totalEvents: 0,
+        totalPayments: 0
+      };
+
+      // Process each product
+      for (const product of allProducts) {
+        const productStartTime = Date.now();
+
+        try {
+          if (includeDebug) {
+            console.log(`[SERVER] Processing product: ${product.title} (${product._id})`);
+          }
+
+          // Generate report for product (same as CRON job)
+          const report = await Meteor.callAsync('templateReports.generate', product, 'batch-process');
+
+          const duration = Date.now() - productStartTime;
+          durations.push(duration);
+          succeeded++;
+
+          // Collect summary data from report if available
+          if (report) {
+            // Check for autocall status
+            if (report.status?.autocalled || report.hasAutocalled) {
+              summary.autocallCount++;
+            }
+
+            // Collect total return if available
+            if (report.summary?.totalReturn !== undefined) {
+              summary.totalReturns.push(report.summary.totalReturn);
+            } else if (report.performance?.totalReturn !== undefined) {
+              summary.totalReturns.push(report.performance.totalReturn);
+            }
+
+            // Count events and payments
+            if (report.events && Array.isArray(report.events)) {
+              summary.totalEvents += report.events.length;
+              summary.totalPayments += report.events.filter(e => e.type === 'payment' || e.type === 'coupon').length;
+            } else if (report.schedule && Array.isArray(report.schedule)) {
+              summary.totalEvents += report.schedule.length;
+              summary.totalPayments += report.schedule.filter(e => e.type === 'payment' || e.type === 'coupon').length;
+            }
+          }
+
+          if (includeDebug) {
+            console.log(`[SERVER] ✓ ${product.title}: ${duration}ms`);
+          }
+
+        } catch (error) {
+          const duration = Date.now() - productStartTime;
+          failed++;
+
+          errors.push({
+            productId: product._id,
+            title: product.title,
+            error: error.message
+          });
+
+          if (includeDebug) {
+            console.error(`[SERVER] ✗ ${product.title}: ${error.message}`);
+          }
+        }
+      }
+
+      const totalTimeMs = Date.now() - batchStartTime;
+      const avgDuration = durations.length > 0
+        ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
+        : 0;
+
+      const results = {
+        success: true,
+        totalProducts: allProducts.length,
+        successfulProducts: succeeded,
+        failedProducts: failed,
+        successRate: allProducts.length > 0 ? Math.round((succeeded / allProducts.length) * 100) : 0,
+        totalTimeMs,
+        avgDurationMs: avgDuration,
+        summary,
+        errors: errors.length > 0 ? errors : undefined
+      };
+
+      if (includeDebug) {
+        console.log('[SERVER] Batch processing complete:', results);
+        console.log('=== BATCH PROCESS END ===');
+      }
+
+      return results;
+
+    } catch (error) {
+      console.error('[SERVER] Batch processing failed:', error);
+
+      return {
+        success: false,
+        error: error.message,
+        totalProducts: 0,
+        successfulProducts: 0,
+        failedProducts: 0,
+        successRate: 0,
+        totalTimeMs: Date.now() - batchStartTime
+      };
     }
   },
 
@@ -2568,27 +2905,40 @@ Meteor.methods({
 
     // Generate title from product data
     const parts = [];
+    const templateId = product.templateId || product.template;
+    const isOrion = templateId && templateId.toLowerCase().includes('orion');
 
     // Add underlyings
     if (product.underlyings && product.underlyings.length > 0) {
       const tickers = product.underlyings.map(u => u.ticker || u.symbol).filter(Boolean);
       if (tickers.length > 0) {
-        if (tickers.length === 1) {
+        // Special handling for Orion: always show first 2 + remaining count
+        if (isOrion && tickers.length > 2) {
+          parts.push(`${tickers.slice(0, 2).join('/')} +${tickers.length - 2}`);
+        } else if (tickers.length === 1) {
           parts.push(tickers[0]);
-        } else if (tickers.length <= 3) {
+        } else if (tickers.length === 2) {
+          parts.push(tickers.join('/'));
+        } else if (tickers.length === 3) {
           parts.push(tickers.join('/'));
         } else {
-          parts.push(`${tickers.slice(0, 2).join('/')}+${tickers.length - 2}`);
+          parts.push(`${tickers.slice(0, 2).join('/')} +${tickers.length - 2}`);
         }
       }
     }
 
     // Add template
-    if (product.templateId || product.template) {
-      const template = (product.templateId || product.template)
+    if (templateId) {
+      let templateName = templateId
         .replace(/_/g, ' ')
         .replace(/\b\w/g, l => l.toUpperCase());
-      parts.push(template);
+
+      // Special handling for Orion: just use "Orion" instead of "Orion Memory"
+      if (isOrion) {
+        templateName = 'Orion';
+      }
+
+      parts.push(templateName);
     }
 
     // Add coupon rate
@@ -3369,7 +3719,11 @@ Meteor.methods({
           purchasePrice: allocation.purchasePrice,
           allocatedAt: new Date(),
           allocatedBy: user._id,
-          status: 'active'
+          status: 'active',
+          // PMS Holdings linking fields
+          linkedHoldingIds: [],
+          holdingsSyncedAt: null,
+          isin: product.isin || null
         });
 
         allocationIds.push(allocationId);
@@ -3378,6 +3732,121 @@ Meteor.methods({
       return { success: true, allocationIds };
     } catch (error) {
       throw new Meteor.Error('allocation-failed', `Failed to create allocations: ${error.message}`);
+    }
+  },
+
+  async 'allocations.update'({ allocationId, updates, sessionId }) {
+    check(allocationId, String);
+    check(updates, Object);
+    check(sessionId, String);
+
+    // Validate session and get user
+    const user = await validateSessionAndGetUser(sessionId);
+    if (!user) {
+      throw new Meteor.Error('not-authorized', 'You must be logged in to update allocations');
+    }
+
+    // Only admins and superadmins can update allocations
+    if (user.role !== USER_ROLES.ADMIN && user.role !== USER_ROLES.SUPERADMIN) {
+      throw new Meteor.Error('not-authorized', 'Only administrators can update allocations');
+    }
+
+    // Validate allocation exists
+    const allocation = await AllocationsCollection.findOneAsync(allocationId);
+    if (!allocation) {
+      throw new Meteor.Error('allocation-not-found', 'Allocation not found');
+    }
+
+    try {
+      const updateData = {
+        lastModifiedAt: new Date(),
+        lastModifiedBy: user._id
+      };
+
+      // Validate and add nominalInvested if provided
+      if (updates.nominalInvested !== undefined) {
+        check(updates.nominalInvested, Number);
+        if (updates.nominalInvested <= 0) {
+          throw new Meteor.Error('invalid-nominal', 'Nominal invested must be greater than 0');
+        }
+        updateData.nominalInvested = updates.nominalInvested;
+      }
+
+      // Validate and add purchasePrice if provided
+      if (updates.purchasePrice !== undefined) {
+        check(updates.purchasePrice, Number);
+        if (updates.purchasePrice <= 0) {
+          throw new Meteor.Error('invalid-price', 'Purchase price must be greater than 0');
+        }
+        updateData.purchasePrice = updates.purchasePrice;
+      }
+
+      // Validate and add clientId if provided
+      if (updates.clientId !== undefined) {
+        check(updates.clientId, String);
+        const client = await UsersCollection.findOneAsync(updates.clientId);
+        if (!client || client.role !== USER_ROLES.CLIENT) {
+          throw new Meteor.Error('invalid-client', 'Invalid client ID');
+        }
+        updateData.clientId = updates.clientId;
+      }
+
+      // Validate and add bankAccountId if provided
+      if (updates.bankAccountId !== undefined) {
+        check(updates.bankAccountId, String);
+        // Use the new clientId if provided, otherwise use existing
+        const clientId = updates.clientId || allocation.clientId;
+        const bankAccount = await BankAccountsCollection.findOneAsync({
+          _id: updates.bankAccountId,
+          userId: clientId,
+          isActive: true
+        });
+        if (!bankAccount) {
+          throw new Meteor.Error('invalid-bank-account', 'Invalid bank account for client');
+        }
+        updateData.bankAccountId = updates.bankAccountId;
+      }
+
+      // Update the allocation
+      const result = await AllocationsCollection.updateAsync(
+        { _id: allocationId },
+        { $set: updateData }
+      );
+
+      return { success: true, modifiedCount: result };
+    } catch (error) {
+      throw new Meteor.Error('update-failed', `Failed to update allocation: ${error.message}`);
+    }
+  },
+
+  async 'allocations.delete'({ allocationId, sessionId }) {
+    check(allocationId, String);
+    check(sessionId, String);
+
+    // Validate session and get user
+    const user = await validateSessionAndGetUser(sessionId);
+    if (!user) {
+      throw new Meteor.Error('not-authorized', 'You must be logged in to delete allocations');
+    }
+
+    // Only admins and superadmins can delete allocations
+    if (user.role !== USER_ROLES.ADMIN && user.role !== USER_ROLES.SUPERADMIN) {
+      throw new Meteor.Error('not-authorized', 'Only administrators can delete allocations');
+    }
+
+    // Validate allocation exists
+    const allocation = await AllocationsCollection.findOneAsync(allocationId);
+    if (!allocation) {
+      throw new Meteor.Error('allocation-not-found', 'Allocation not found');
+    }
+
+    try {
+      // Delete the allocation
+      const result = await AllocationsCollection.removeAsync({ _id: allocationId });
+
+      return { success: true, deletedCount: result };
+    } catch (error) {
+      throw new Meteor.Error('delete-failed', `Failed to delete allocation: ${error.message}`);
     }
   },
 
@@ -3399,10 +3868,13 @@ Meteor.methods({
     }
 
     try {
-      // Verify the RM user exists and has the correct role
-      const rmUser = await UsersCollection.findOneAsync({ _id: rmUserId, role: USER_ROLES.RELATIONSHIP_MANAGER });
+      // Verify the RM user exists and has the correct role (RM, admin, or superadmin)
+      const rmUser = await UsersCollection.findOneAsync({
+        _id: rmUserId,
+        role: { $in: [USER_ROLES.RELATIONSHIP_MANAGER, USER_ROLES.ADMIN, USER_ROLES.SUPERADMIN] }
+      });
       if (!rmUser) {
-        throw new Meteor.Error('invalid-rm', 'Invalid relationship manager');
+        throw new Meteor.Error('invalid-rm', 'Invalid relationship manager (must be RM, admin, or superadmin)');
       }
 
       // Verify the client exists and has the correct role
@@ -3417,7 +3889,7 @@ Meteor.methods({
         { $set: { relationshipManagerId: rmUserId } }
       );
 
-      console.log(`Assigned client ${clientUserId} to RM ${rmUserId}`);
+      console.log(`Assigned client ${clientUserId} to RM ${rmUserId} (${rmUser.role})`);
       return { success: true, updated: result };
     } catch (error) {
       throw new Meteor.Error('assignment-failed', `Failed to assign relationship manager: ${error.message}`);
@@ -5831,6 +6303,155 @@ Meteor.publish('equityHoldings', async function (bankAccountId, sessionId = null
   }
 });
 
+// ViewAs Filter Methods - Optimized for fast search
+Meteor.methods({
+  /**
+   * Search for clients and bank accounts for ViewAs filter
+   * Optimized method that only returns matching results (no heavy publications)
+   */
+  async 'viewAs.search'(searchTerm, sessionId) {
+    check(searchTerm, String);
+    check(sessionId, String);
+
+    // Validate session and get user
+    const session = await SessionHelpers.validateSession(sessionId);
+    if (!session) {
+      throw new Meteor.Error('not-authorized', 'Invalid or expired session');
+    }
+
+    const currentUser = await UsersCollection.findOneAsync(session.userId);
+    if (!currentUser) {
+      throw new Meteor.Error('not-authorized', 'User not found');
+    }
+
+    // Only admins and superadmins can use ViewAs filter
+    if (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN) {
+      throw new Meteor.Error('access-denied', 'Only admins can use ViewAs filter');
+    }
+
+    // If search term is empty, return empty results (don't load everything)
+    if (!searchTerm || searchTerm.trim().length < 2) {
+      return { clients: [], bankAccounts: [] };
+    }
+
+    const searchLower = searchTerm.trim().toLowerCase();
+    const searchRegex = new RegExp(searchTerm.trim(), 'i');
+
+    // Search clients (limit to 5 results for performance)
+    const clients = await UsersCollection.find(
+      {
+        role: USER_ROLES.CLIENT,
+        $or: [
+          { email: searchRegex },
+          { 'profile.firstName': searchRegex },
+          { 'profile.lastName': searchRegex }
+        ]
+      },
+      {
+        limit: 5,
+        fields: {
+          email: 1,
+          username: 1,
+          role: 1,
+          profile: 1,
+          relationshipManagerId: 1
+        },
+        sort: { 'profile.lastName': 1, 'profile.firstName': 1 }
+      }
+    ).fetchAsync();
+
+    // Search bank accounts (limit to 5 results for performance)
+    const bankAccounts = await BankAccountsCollection.find(
+      {
+        isActive: true,
+        accountNumber: searchRegex
+      },
+      {
+        limit: 5,
+        sort: { accountNumber: 1 }
+      }
+    ).fetchAsync();
+
+    // Enhance bank accounts with user and bank info
+    const enhancedAccounts = await Promise.all(
+      bankAccounts.map(async (account) => {
+        const user = await UsersCollection.findOneAsync(account.userId);
+        const bank = await BanksCollection.findOneAsync(account.bankId);
+
+        const userName = user ? `${user.profile?.firstName || ''} ${user.profile?.lastName || ''}`.trim() : 'Unknown';
+        const userEmail = user?.email || '';
+
+        // Also check if user name or email matches search
+        const userMatches = userName.toLowerCase().includes(searchLower) ||
+                           userEmail.toLowerCase().includes(searchLower);
+
+        return {
+          ...account,
+          userName,
+          userEmail,
+          bankName: bank?.name || 'Unknown Bank',
+          _matchedByUser: userMatches
+        };
+      })
+    );
+
+    // Also search for accounts by user name/email
+    const userMatches = await UsersCollection.find(
+      {
+        role: USER_ROLES.CLIENT,
+        $or: [
+          { 'profile.firstName': searchRegex },
+          { 'profile.lastName': searchRegex },
+          { email: searchRegex }
+        ]
+      },
+      {
+        limit: 10,
+        fields: { _id: 1 }
+      }
+    ).fetchAsync();
+
+    if (userMatches.length > 0) {
+      const userIds = userMatches.map(u => u._id);
+      const accountsByUser = await BankAccountsCollection.find(
+        {
+          isActive: true,
+          userId: { $in: userIds },
+          _id: { $nin: bankAccounts.map(a => a._id) } // Exclude already found accounts
+        },
+        {
+          limit: 5
+        }
+      ).fetchAsync();
+
+      const enhancedUserAccounts = await Promise.all(
+        accountsByUser.map(async (account) => {
+          const user = await UsersCollection.findOneAsync(account.userId);
+          const bank = await BanksCollection.findOneAsync(account.bankId);
+
+          return {
+            ...account,
+            userName: user ? `${user.profile?.firstName || ''} ${user.profile?.lastName || ''}`.trim() : 'Unknown',
+            userEmail: user?.email || '',
+            bankName: bank?.name || 'Unknown Bank',
+            _matchedByUser: true
+          };
+        })
+      );
+
+      enhancedAccounts.push(...enhancedUserAccounts);
+    }
+
+    // Limit total accounts to 5
+    const finalAccounts = enhancedAccounts.slice(0, 5);
+
+    return {
+      clients,
+      bankAccounts: finalAccounts
+    };
+  }
+});
+
 // Server-side routing for shareable report URLs
 WebApp.connectHandlers.use('/report', async (req, res, next) => {
   // Extract product ID from URL: /report/:productId
@@ -5838,9 +6459,9 @@ WebApp.connectHandlers.use('/report', async (req, res, next) => {
   if (urlParts.length !== 2 || !urlParts[1]) {
     return next(); // Let Meteor handle it
   }
-  
+
   const productId = urlParts[1];
-  
+
   try {
     // Verify the product exists
     const product = await ProductsCollection.findOneAsync(productId);
@@ -5848,7 +6469,7 @@ WebApp.connectHandlers.use('/report', async (req, res, next) => {
       // Product not found, let Meteor handle with 404
       return next();
     }
-    
+
     // Product exists, let the client-side handle the route
     // This ensures the URL is valid and the product is accessible
     next();
@@ -5857,3 +6478,66 @@ WebApp.connectHandlers.use('/report', async (req, res, next) => {
     next(); // Let Meteor handle any errors
   }
 });
+
+// Server-side routing for termsheet file serving from persistent volume
+import fs from 'fs';
+import path from 'path';
+
+WebApp.connectHandlers.use('/termsheets', async (req, res, next) => {
+  // URL format: /termsheets/{filename} (flat structure)
+  const urlParts = req.url.split('/').filter(p => p);
+
+  // If we're in development (no TERMSHEETS_PATH), let Meteor serve from public/
+  if (!process.env.TERMSHEETS_PATH) {
+    return next();
+  }
+
+  if (urlParts.length !== 1) {
+    return next();
+  }
+
+  const filename = urlParts[0];
+
+  try {
+    // Construct file path from TERMSHEETS_PATH (flat structure)
+    const filePath = path.join(process.env.TERMSHEETS_PATH, filename);
+
+    // Security: Prevent directory traversal
+    const normalizedPath = path.normalize(filePath);
+    if (!normalizedPath.startsWith(process.env.TERMSHEETS_PATH)) {
+      console.error('⚠️  Security: Attempted directory traversal:', req.url);
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Forbidden');
+      return;
+    }
+
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      console.log(`📄 Termsheet not found: ${filePath}`);
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Termsheet not found');
+      return;
+    }
+
+    // Read and serve the PDF file
+    const fileBuffer = fs.readFileSync(filePath);
+    const stat = fs.statSync(filePath);
+
+    res.writeHead(200, {
+      'Content-Type': 'application/pdf',
+      'Content-Length': stat.size,
+      'Content-Disposition': `inline; filename="${filename}"`,
+      'Cache-Control': 'public, max-age=86400' // Cache for 24 hours
+    });
+
+    res.end(fileBuffer);
+    console.log(`📄 Served termsheet: ${filename} (${stat.size} bytes)`);
+
+  } catch (error) {
+    console.error('Error serving termsheet:', error);
+    res.writeHead(500, { 'Content-Type': 'text/plain' });
+    res.end('Internal server error');
+  }
+});
+
+// Trigger restart
