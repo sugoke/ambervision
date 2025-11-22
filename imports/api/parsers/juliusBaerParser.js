@@ -221,12 +221,17 @@ export const JuliusBaerParser = {
       portfolioCurrency: row.PTF_CCY_ISO || row.PORTFOLIO_CCY || null, // Account's base currency (EUR, USD, CHF, etc.)
 
       // Pricing Information
-      marketPrice: this.parseNumber(row.POS_PRICE),
+      // Normalize POS_PRICE: if percentage type, divide by 100 to convert to decimal (66.41% → 0.6641)
+      // This ensures consistent decimal storage format across all price fields
+      priceType: row.POS_CALC === '%' ? 'percentage' : 'absolute', // Extract from POS_CALC field
+      marketPrice: row.POS_CALC === '%'
+        ? this.parseNumber(row.POS_PRICE) / 100  // Convert percentage to decimal (66.41 → 0.6641)
+        : this.parseNumber(row.POS_PRICE),       // Keep absolute prices as-is
       priceDate: this.parseDate(row.POS_PRICE_DATE),
       priceCurrency: row.POS_PRICE_CCY_ISO || null,
-      priceType: row.POS_CALC === '%' ? 'percentage' : 'absolute', // Extract from POS_CALC field
 
       // Additional Pricing
+      // COST_PRICE is already in decimal format (0.72 = 72%), no conversion needed
       costPrice: this.parseNumber(row.COST_PRICE),
       lastPrice: this.parseNumber(row.LAST_PRICE_MKT_CODE),
       lastPriceCurrency: row.LAST_PRICE_CCY_ISO || null,
