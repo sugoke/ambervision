@@ -141,9 +141,10 @@ export const JuliusBaerParser = {
   calculateCostBasis(quantity, costPrice, priceType) {
     if (!quantity || !costPrice) return null;
 
-    // Convert percentage prices to decimal (e.g., 100% → 1.0)
-    const adjustedCostPrice = priceType === 'percentage' ? costPrice / 100 : costPrice;
-    return quantity * adjustedCostPrice;
+    // COST_PRICE in JB files is already in decimal format for bonds (0.72 = 72%)
+    // Unlike POS_PRICE which is in percentage format (72.00 = 72%)
+    // So we do NOT divide COST_PRICE by 100
+    return quantity * costPrice;
   },
 
   /**
