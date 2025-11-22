@@ -1938,6 +1938,26 @@ const PortfolioManagementSystem = ({ user }) => {
                                   </td>
                                 </tr>
 
+                                {/* Thin Column Header Ribbon for Structured Products */}
+                                {isSubExpanded && (
+                                  <tr style={{
+                                    background: theme === 'light' ? 'rgba(0, 0, 0, 0.03)' : 'rgba(255, 255, 255, 0.03)',
+                                    borderBottom: '1px solid var(--border-color)',
+                                    height: '2rem'
+                                  }}>
+                                    <th style={{ padding: '0.25rem 0.75rem', paddingLeft: '3.5rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'left' }}>ISIN</th>
+                                    <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'left' }}>Name</th>
+                                    <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Quantity</th>
+                                    <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Avg Price</th>
+                                    <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Current Price</th>
+                                    <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Market Value</th>
+                                    <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Portfolio Value</th>
+                                    <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Total Cost</th>
+                                    <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Gain/Loss</th>
+                                    <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Return %</th>
+                                  </tr>
+                                )}
+
                                 {/* Individual Position Rows */}
                                 {isSubExpanded && positions.map((position) => (
                                   <tr
