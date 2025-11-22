@@ -394,18 +394,17 @@ const PortfolioManagementSystem = ({ user }) => {
 
     // Transform holdings to match our table structure
     const transformedHoldings = filteredHoldings.map((holding) => {
-      // Convert percentage prices to decimal (e.g., 100% → 1.0)
-      const adjustedCostPrice = holding.priceType === 'percentage'
-        ? (holding.costPrice || 0) / 100
-        : (holding.costPrice || 0);
+      // Use pre-calculated cost basis from parser (NO calculations in UI!)
+      const costBasisPortfolioCurrency = holding.costBasisPortfolioCurrency || 0;
+      const costBasisOriginalCurrency = holding.costBasisOriginalCurrency || 0;
 
-      const costBasis = holding.quantity * adjustedCostPrice;
+      // Use pre-calculated P&L values from parser
       const unrealizedPnL = holding.unrealizedPnL !== null && holding.unrealizedPnL !== undefined
         ? holding.unrealizedPnL
-        : (holding.marketValue - costBasis);
+        : 0;
       const unrealizedPnLPercent = holding.unrealizedPnLPercent !== null && holding.unrealizedPnLPercent !== undefined
         ? holding.unrealizedPnLPercent
-        : (costBasis > 0 ? (unrealizedPnL / costBasis) * 100 : 0);
+        : 0;
 
       // Link to product if ISIN exists
       const linkedProduct = holding.isin ? productsByIsin[holding.isin.toUpperCase()] : null;
@@ -455,7 +454,8 @@ const PortfolioManagementSystem = ({ user }) => {
         marketValue: holding.marketValue || 0,
         marketValueOriginalCurrency: holding.marketValueOriginalCurrency,
         marketValueNoAccruedInterest: holding.marketValueNoAccruedInterest,
-        costBasis: costBasis,
+        costBasis: costBasisPortfolioCurrency,
+        costBasisOriginalCurrency: costBasisOriginalCurrency,
         gainLoss: unrealizedPnL,
         gainLossPercent: unrealizedPnLPercent,
         sector: metadata?.sector || holding.bankSpecificData?.sector?.name || 'Unknown',
@@ -841,6 +841,7 @@ const PortfolioManagementSystem = ({ user }) => {
         const subCostBasis = subPositions.reduce((sum, p) => sum + p.costBasis, 0);
         const subGainLoss = subMarketValue - subCostBasis;
         const subGainLossPercent = subCostBasis > 0 ? (subGainLoss / subCostBasis) * 100 : 0;
+        const subPercentage = totalPortfolioValue > 0 ? (subMarketValue / totalPortfolioValue) * 100 : 0;
 
         const subCurrencyCounts = subPositions.reduce((counts, p) => {
           counts[p.currency] = (counts[p.currency] || 0) + 1;
@@ -855,6 +856,7 @@ const PortfolioManagementSystem = ({ user }) => {
           costBasis: subCostBasis,
           gainLoss: subGainLoss,
           gainLossPercent: subGainLossPercent,
+          percentage: subPercentage,
           count: subPositions.length,
           currency: subDominantCurrency,
           hasMixedCurrencies: Object.keys(subCurrencyCounts).length > 1
@@ -1008,11 +1010,7 @@ const PortfolioManagementSystem = ({ user }) => {
     }
   };
 
-  const handleIsinClick = (productId) => {
-    if (productId) {
-      window.location.href = `/report/${productId}`;
-    }
-  };
+  // Removed handleIsinClick - using native anchor navigation instead
 
   const renderPositionsSection = () => {
     // Loading state
@@ -1506,142 +1504,72 @@ const PortfolioManagementSystem = ({ user }) => {
                   borderBottom: '2px solid var(--border-color)',
                   background: theme === 'light' ? 'rgba(0, 0, 0, 0.02)' : 'rgba(255, 255, 255, 0.02)'
                 }}>
-                  <th
-                    onClick={() => handleSort('isin')}
-                    style={{
-                      padding: '0.75rem',
-                      textAlign: 'left',
-                      fontWeight: '400',
-                      color: 'var(--text-muted)',
-                      cursor: 'pointer',
-                      userSelect: 'none'
-                    }}
-                  >
-                    ISIN {sortBy === 'isin' && (sortDirection === 'asc' ? '↑' : '↓')}
+                  <th style={{
+                    padding: '0.75rem',
+                    paddingLeft: '2.5rem',
+                    textAlign: 'left',
+                    fontWeight: '500',
+                    color: 'var(--text-muted)',
+                    fontSize: '0.75rem',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em'
+                  }}>
+                    Asset Class
                   </th>
-                  <th
-                    onClick={() => handleSort('name')}
-                    style={{
-                      padding: '0.75rem',
-                      textAlign: 'left',
-                      fontWeight: '400',
-                      color: 'var(--text-muted)',
-                      cursor: 'pointer',
-                      userSelect: 'none'
-                    }}
-                  >
-                    Name {sortBy === 'name' && (sortDirection === 'asc' ? '↑' : '↓')}
+                  <th style={{
+                    padding: '0.75rem',
+                    textAlign: 'right',
+                    fontWeight: '500',
+                    color: 'var(--text-muted)',
+                    fontSize: '0.75rem',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em'
+                  }}>
+                    Proportion
                   </th>
-                  <th
-                    onClick={() => handleSort('quantity')}
-                    style={{
-                      padding: '0.75rem',
-                      textAlign: 'right',
-                      fontWeight: '400',
-                      color: 'var(--text-muted)',
-                      cursor: 'pointer',
-                      userSelect: 'none'
-                    }}
-                  >
-                    Quantity {sortBy === 'quantity' && (sortDirection === 'asc' ? '↑' : '↓')}
+                  <th style={{
+                    padding: '0.75rem',
+                    textAlign: 'right',
+                    fontWeight: '500',
+                    color: 'var(--text-muted)',
+                    fontSize: '0.75rem',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em'
+                  }}>
+                    Size
                   </th>
-                  <th
-                    style={{
-                      padding: '0.75rem',
-                      textAlign: 'center',
-                      fontWeight: '400',
-                      color: 'var(--text-muted)'
-                    }}
-                  >
-                    Currency
+                  <th style={{
+                    padding: '0.75rem',
+                    textAlign: 'right',
+                    fontWeight: '500',
+                    color: 'var(--text-muted)',
+                    fontSize: '0.75rem',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em'
+                  }}>
+                    Cost
                   </th>
-                  <th
-                    onClick={() => handleSort('avgPrice')}
-                    style={{
-                      padding: '0.75rem',
-                      textAlign: 'right',
-                      fontWeight: '400',
-                      color: 'var(--text-muted)',
-                      cursor: 'pointer',
-                      userSelect: 'none'
-                    }}
-                  >
-                    Avg Price {sortBy === 'avgPrice' && (sortDirection === 'asc' ? '↑' : '↓')}
+                  <th style={{
+                    padding: '0.75rem',
+                    textAlign: 'right',
+                    fontWeight: '500',
+                    color: 'var(--text-muted)',
+                    fontSize: '0.75rem',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em'
+                  }}>
+                    Variation
                   </th>
-                  <th
-                    onClick={() => handleSort('currentPrice')}
-                    style={{
-                      padding: '0.75rem',
-                      textAlign: 'right',
-                      fontWeight: '400',
-                      color: 'var(--text-muted)',
-                      cursor: 'pointer',
-                      userSelect: 'none'
-                    }}
-                  >
-                    Current Price {sortBy === 'currentPrice' && (sortDirection === 'asc' ? '↑' : '↓')}
-                  </th>
-                  <th
-                    onClick={() => handleSort('marketValue')}
-                    style={{
-                      padding: '0.75rem',
-                      textAlign: 'right',
-                      fontWeight: '400',
-                      color: 'var(--text-muted)',
-                      cursor: 'pointer',
-                      userSelect: 'none'
-                    }}
-                  >
-                    Market Value {sortBy === 'marketValue' && (sortDirection === 'asc' ? '↑' : '↓')}
-                  </th>
-                  <th
-                    style={{
-                      padding: '0.75rem',
-                      textAlign: 'right',
-                      fontWeight: '400',
-                      color: 'var(--text-muted)'
-                    }}
-                  >
-                    Portfolio Value ({portfolioCurrency})
-                  </th>
-                  <th
-                    onClick={() => handleSort('costBasis')}
-                    style={{
-                      padding: '0.75rem',
-                      textAlign: 'right',
-                      fontWeight: '400',
-                      color: 'var(--text-muted)',
-                      cursor: 'pointer',
-                      userSelect: 'none'
-                    }}
-                  >
-                    Total Cost ({portfolioCurrency}) {sortBy === 'costBasis' && (sortDirection === 'asc' ? '↑' : '↓')}
-                  </th>
-                  <th
-                    onClick={() => handleSort('gainLoss')}
-                    style={{
-                      padding: '0.75rem',
-                      textAlign: 'right',
-                      fontWeight: '400',
-                      color: 'var(--text-muted)',
-                      cursor: 'pointer',
-                      userSelect: 'none'
-                    }}
-                  >
-                    Gain/Loss {sortBy === 'gainLoss' && (sortDirection === 'asc' ? '↑' : '↓')}
-                  </th>
-                  <th
-                    onClick={() => handleSort('gainLossPercent')}
-                    style={{
-                      padding: '0.75rem',
-                      textAlign: 'right',
-                      fontWeight: '400',
-                      color: 'var(--text-muted)',
-                      cursor: 'pointer',
-                      userSelect: 'none'
-                    }}
-                  >
-                    Return % {sortBy === 'gainLossPercent' && (sortDirection === 'asc' ? '↑' : '↓')}
+                  <th style={{
+                    padding: '0.75rem',
+                    textAlign: 'right',
+                    fontWeight: '500',
+                    color: 'var(--text-muted)',
+                    fontSize: '0.75rem',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em'
+                  }}>
+                    Performance
                   </th>
                 </tr>
               </thead>
@@ -1677,7 +1605,7 @@ const PortfolioManagementSystem = ({ user }) => {
                             : 'linear-gradient(135deg, rgba(0, 123, 255, 0.15) 0%, rgba(0, 123, 255, 0.08) 100%)';
                         }}
                       >
-                        <td colSpan="2" style={{ padding: '1rem', fontWeight: '400', color: 'var(--text-primary)', fontSize: '1rem' }}>
+                        <td style={{ padding: '1rem', paddingLeft: '2.5rem', fontWeight: '400', color: 'var(--text-primary)', fontSize: '1rem' }}>
                           <span style={{ marginRight: '0.5rem', fontSize: '0.875rem', color: 'var(--text-muted)' }}>
                             {isExpanded ? '▼' : '▶'}
                           </span>
@@ -1691,34 +1619,23 @@ const PortfolioManagementSystem = ({ user }) => {
                             ({subtotal.count} position{subtotal.count !== 1 ? 's' : ''})
                           </span>
                         </td>
-                        <td colSpan="3" style={{ padding: '1rem', textAlign: 'right', color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
-                          <span style={{ fontWeight: '400', color: 'var(--text-primary)' }}>
-                            {subtotal.percentage.toFixed(2)}%
-                          </span> of portfolio
+                        <td style={{ padding: '1rem', textAlign: 'right', fontWeight: '400', color: 'var(--text-primary)', fontSize: '0.875rem' }}>
+                          {subtotal.percentage.toFixed(2)}%
                         </td>
-                        <td style={{ padding: '1rem', textAlign: 'right', fontWeight: '400', color: 'var(--text-primary)' }}>
-                          {subtotal.hasMixedCurrencies ? 'Multiple currencies' : formatCurrency(subtotal.marketValue, subtotal.currency)}
-                        </td>
-                        <td style={{ padding: '1rem', textAlign: 'right', fontWeight: '400', color: 'var(--text-secondary)' }}>
+                        <td style={{ padding: '1rem', textAlign: 'right', fontWeight: '400', color: 'var(--text-primary)', fontSize: '0.875rem' }}>
                           {formatCurrency(subtotal.marketValue, portfolioCurrency)}
                         </td>
-                        <td style={{ padding: '1rem', textAlign: 'right', fontWeight: '400', color: 'var(--text-secondary)' }}>
-                          {formatCurrency(subtotal.costBasis, subtotal.currency)}
-                          {subtotal.hasMixedCurrencies && (
-                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginLeft: '0.25rem' }} title="Mixed currencies">*</span>
-                          )}
+                        <td style={{ padding: '1rem', textAlign: 'right', fontWeight: '400', color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
+                          {formatCurrency(subtotal.costBasis, portfolioCurrency)}
                         </td>
-                        <td style={{ padding: '1rem' }}></td>
                         <td style={{
                           padding: '1rem',
                           textAlign: 'right',
                           fontWeight: '400',
+                          fontSize: '0.875rem',
                           color: subtotal.gainLoss >= 0 ? '#10b981' : '#ef4444'
                         }}>
-                          {subtotal.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(subtotal.gainLoss), subtotal.currency)}
-                          {subtotal.hasMixedCurrencies && (
-                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginLeft: '0.25rem' }} title="Mixed currencies">*</span>
-                          )}
+                          {subtotal.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(subtotal.gainLoss), portfolioCurrency)}
                         </td>
                         <td style={{ padding: '1rem', textAlign: 'right' }}>
                           <span style={{
@@ -1771,7 +1688,7 @@ const PortfolioManagementSystem = ({ user }) => {
                                   : 'linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(16, 185, 129, 0.06) 100%)';
                               }}
                             >
-                              <td colSpan="2" style={{ padding: '0.75rem', paddingLeft: '2.5rem', fontWeight: '400', color: 'var(--text-primary)', fontSize: '0.9rem' }}>
+                              <td style={{ padding: '0.75rem', paddingLeft: '3.5rem', fontWeight: '400', color: 'var(--text-primary)', fontSize: '0.9rem' }}>
                                 <span style={{ marginRight: '0.5rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                                   {isSubExpanded ? '▼' : '▶'}
                                 </span>
@@ -1785,25 +1702,23 @@ const PortfolioManagementSystem = ({ user }) => {
                                   ({subTotal.count} position{subTotal.count !== 1 ? 's' : ''})
                                 </span>
                               </td>
-                              <td colSpan="3" style={{ padding: '0.75rem' }}></td>
-                              <td style={{ padding: '0.75rem', textAlign: 'right', fontWeight: '400', color: 'var(--text-primary)', fontSize: '0.9rem' }}>
-                                {subTotal.hasMixedCurrencies ? 'Multiple currencies' : formatCurrency(subTotal.marketValue, subTotal.currency)}
+                              <td style={{ padding: '0.75rem', textAlign: 'right', fontWeight: '400', color: 'var(--text-primary)', fontSize: '0.85rem' }}>
+                                {subTotal.percentage.toFixed(2)}%
                               </td>
-                              <td style={{ padding: '0.75rem', textAlign: 'right', fontWeight: '400', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                              <td style={{ padding: '0.75rem', textAlign: 'right', fontWeight: '400', color: 'var(--text-primary)', fontSize: '0.85rem' }}>
                                 {formatCurrency(subTotal.marketValue, portfolioCurrency)}
                               </td>
-                              <td style={{ padding: '0.75rem', textAlign: 'right', fontWeight: '400', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                                {formatCurrency(subTotal.costBasis, subTotal.currency)}
+                              <td style={{ padding: '0.75rem', textAlign: 'right', fontWeight: '400', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                                {formatCurrency(subTotal.costBasis, portfolioCurrency)}
                               </td>
-                              <td style={{ padding: '0.75rem' }}></td>
                               <td style={{
                                 padding: '0.75rem',
                                 textAlign: 'right',
                                 fontWeight: '400',
-                                color: subTotal.gainLoss >= 0 ? '#10b981' : '#ef4444',
-                                fontSize: '0.9rem'
+                                fontSize: '0.85rem',
+                                color: subTotal.gainLoss >= 0 ? '#10b981' : '#ef4444'
                               }}>
-                                {subTotal.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(subTotal.gainLoss), subTotal.currency)}
+                                {subTotal.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(subTotal.gainLoss), portfolioCurrency)}
                               </td>
                               <td style={{ padding: '0.75rem', textAlign: 'right' }}>
                                 <span style={{
@@ -1820,6 +1735,27 @@ const PortfolioManagementSystem = ({ user }) => {
                                 </span>
                               </td>
                             </tr>
+
+                            {/* Thin Column Header Ribbon for Sub-Asset Class */}
+                            {isSubExpanded && (
+                              <tr style={{
+                                background: theme === 'light' ? 'rgba(0, 0, 0, 0.03)' : 'rgba(255, 255, 255, 0.03)',
+                                borderBottom: '1px solid var(--border-color)',
+                                height: '2rem'
+                              }}>
+                                <th style={{ padding: '0.25rem 0.75rem', paddingLeft: '4rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'left' }}>ISIN</th>
+                                <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'left' }}>Name</th>
+                                <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Quantity</th>
+                                <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'center' }}>Currency</th>
+                                <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Avg Price</th>
+                                <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Current Price</th>
+                                <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Market Value</th>
+                                <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Portfolio Value</th>
+                                <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Total Cost</th>
+                                <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Gain/Loss</th>
+                                <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Return %</th>
+                              </tr>
+                            )}
 
                             {/* Individual Positions within Sub-Asset Class */}
                             {isSubExpanded && subPositions.map((position) => (
@@ -1838,13 +1774,18 @@ const PortfolioManagementSystem = ({ user }) => {
                               >
                                 <td style={{ padding: '0.75rem', paddingLeft: '4rem', fontSize: '0.85rem', fontFamily: 'monospace' }}>
                                   {position.linkedProduct ? (
-                                    <span
-                                      onClick={() => handleIsinClick(position.linkedProduct._id)}
+                                    <a
+                                      href={`/report/${position.linkedProduct._id}`}
                                       style={{
                                         color: '#3b82f6',
                                         cursor: 'pointer',
                                         textDecoration: 'none',
-                                        transition: 'all 0.2s ease'
+                                        transition: 'all 0.2s ease',
+                                        display: 'inline-block',
+                                        padding: '0.5rem',
+                                        margin: '-0.5rem',
+                                        touchAction: 'manipulation',
+                                        WebkitTapHighlightColor: 'rgba(59, 130, 246, 0.2)'
                                       }}
                                       onMouseEnter={(e) => {
                                         e.currentTarget.style.textDecoration = 'underline';
@@ -1857,7 +1798,7 @@ const PortfolioManagementSystem = ({ user }) => {
                                       title={`View ${position.linkedProduct.productName || 'product'} report`}
                                     >
                                       {position.isin}
-                                    </span>
+                                    </a>
                                   ) : (
                                     <span style={{ color: 'var(--text-secondary)' }}>
                                       {position.isin || 'N/A'}
@@ -1865,17 +1806,6 @@ const PortfolioManagementSystem = ({ user }) => {
                                   )}
                                 </td>
                                 <td style={{ padding: '0.75rem', color: 'var(--text-primary)', fontSize: '0.85rem' }}>{position.name}</td>
-                                <td style={{ padding: '0.75rem', color: 'var(--text-secondary)' }}>
-                                  <span style={{
-                                    padding: '0.25rem 0.5rem',
-                                    borderRadius: '4px',
-                                    background: 'var(--bg-tertiary)',
-                                    fontSize: '0.7rem',
-                                    fontWeight: '400'
-                                  }}>
-                                    {position.sector}
-                                  </span>
-                                </td>
                                 <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-primary)', fontSize: '0.85rem' }}>
                                   {position.quantity.toLocaleString()}
                                 </td>
@@ -1904,9 +1834,9 @@ const PortfolioManagementSystem = ({ user }) => {
                                 </td>
                                 <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
                                   {formatCurrency(position.costBasis, portfolioCurrency)}
-                                  {position.currency !== portfolioCurrency && (
+                                  {position.currency !== portfolioCurrency && position.costBasisOriginalCurrency && (
                                     <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                                      {formatCurrency(position.costBasis, position.currency)}
+                                      {formatCurrency(position.costBasisOriginalCurrency, position.currency)}
                                     </div>
                                   )}
                                 </td>
@@ -2025,13 +1955,18 @@ const PortfolioManagementSystem = ({ user }) => {
                                   >
                                     <td style={{ padding: '0.75rem', paddingLeft: '3.5rem', fontSize: '0.85rem', fontFamily: 'monospace' }}>
                                       {position.linkedProduct ? (
-                                        <span
-                                          onClick={() => handleIsinClick(position.linkedProduct._id)}
+                                        <a
+                                          href={`/report/${position.linkedProduct._id}`}
                                           style={{
                                             color: '#3b82f6',
                                             cursor: 'pointer',
                                             textDecoration: 'none',
-                                            transition: 'all 0.2s ease'
+                                            transition: 'all 0.2s ease',
+                                            display: 'inline-block',
+                                            padding: '0.5rem',
+                                            margin: '-0.5rem',
+                                            touchAction: 'manipulation',
+                                            WebkitTapHighlightColor: 'rgba(59, 130, 246, 0.2)'
                                           }}
                                           onMouseEnter={(e) => {
                                             e.currentTarget.style.textDecoration = 'underline';
@@ -2044,7 +1979,7 @@ const PortfolioManagementSystem = ({ user }) => {
                                           title={`View ${position.linkedProduct.productName || 'product'} report`}
                                         >
                                           {position.isin}
-                                        </span>
+                                        </a>
                                       ) : (
                                         <span style={{ color: 'var(--text-secondary)' }}>
                                           {position.isin || 'N/A'}
@@ -2079,9 +2014,9 @@ const PortfolioManagementSystem = ({ user }) => {
                                     </td>
                                     <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
                                       {formatCurrency(position.costBasis, portfolioCurrency)}
-                                      {position.currency !== portfolioCurrency && (
+                                      {position.currency !== portfolioCurrency && position.costBasisOriginalCurrency && (
                                         <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                                          {formatCurrency(position.costBasis, position.currency)}
+                                          {formatCurrency(position.costBasisOriginalCurrency, position.currency)}
                                         </div>
                                       )}
                                     </td>
@@ -2119,6 +2054,27 @@ const PortfolioManagementSystem = ({ user }) => {
                         })
                       }
 
+                      {/* Thin Column Header Ribbon for Direct Positions */}
+                      {isExpanded && group.positions.length > 0 && (
+                        <tr style={{
+                          background: theme === 'light' ? 'rgba(0, 0, 0, 0.03)' : 'rgba(255, 255, 255, 0.03)',
+                          borderBottom: '1px solid var(--border-color)',
+                          height: '2rem'
+                        }}>
+                          <th style={{ padding: '0.25rem 0.75rem', paddingLeft: '2.5rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'left' }}>ISIN</th>
+                          <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'left' }}>Name</th>
+                          <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Quantity</th>
+                          <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'center' }}>Currency</th>
+                          <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Avg Price</th>
+                          <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Current Price</th>
+                          <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Market Value</th>
+                          <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Portfolio Value</th>
+                          <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Total Cost</th>
+                          <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Gain/Loss</th>
+                          <th style={{ padding: '0.25rem 0.75rem', fontSize: '0.7rem', fontWeight: '500', color: 'var(--text-muted)', textAlign: 'right' }}>Return %</th>
+                        </tr>
+                      )}
+
                       {/* Direct Positions (not in sub-groups) */}
                       {isExpanded && group.positions.map((position) => (
                         <tr
@@ -2136,13 +2092,18 @@ const PortfolioManagementSystem = ({ user }) => {
                         >
                           <td style={{ padding: '0.75rem', paddingLeft: '2.5rem', fontSize: '0.85rem', fontFamily: 'monospace' }}>
                             {position.linkedProduct ? (
-                              <span
-                                onClick={() => handleIsinClick(position.linkedProduct._id)}
+                              <a
+                                href={`/report/${position.linkedProduct._id}`}
                                 style={{
                                   color: '#3b82f6',
                                   cursor: 'pointer',
                                   textDecoration: 'none',
-                                  transition: 'all 0.2s ease'
+                                  transition: 'all 0.2s ease',
+                                  display: 'inline-block',
+                                  padding: '0.5rem',
+                                  margin: '-0.5rem',
+                                  touchAction: 'manipulation',
+                                  WebkitTapHighlightColor: 'rgba(59, 130, 246, 0.2)'
                                 }}
                                 onMouseEnter={(e) => {
                                   e.currentTarget.style.textDecoration = 'underline';
@@ -2155,15 +2116,15 @@ const PortfolioManagementSystem = ({ user }) => {
                                 title={`View ${position.linkedProduct.productName || 'product'} report`}
                               >
                                 {position.isin}
-                              </span>
+                              </a>
                             ) : (
                               <span style={{ color: 'var(--text-secondary)' }}>
                                 {position.isin || 'N/A'}
                               </span>
                             )}
                           </td>
-                          <td style={{ padding: '0.75rem', color: 'var(--text-primary)' }}>{position.name}</td>
-                          <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-primary)' }}>
+                          <td style={{ padding: '0.75rem', color: 'var(--text-primary)', fontSize: '0.85rem' }}>{position.name}</td>
+                          <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-primary)', fontSize: '0.85rem' }}>
                             {position.quantity.toLocaleString()}
                           </td>
                           <td style={{ padding: '0.75rem', textAlign: 'center', color: 'var(--text-primary)' }}>
