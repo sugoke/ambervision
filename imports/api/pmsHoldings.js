@@ -59,7 +59,9 @@ export const PMSHoldingsHelpers = {
         existing.snapshotDate.getTime() !== snapshotDate.getTime() ||
         existing.quantity !== holdingData.quantity ||
         existing.marketValue !== holdingData.marketValue ||
-        existing.marketPrice !== holdingData.marketPrice;
+        existing.marketPrice !== holdingData.marketPrice ||
+        existing.costBasisPortfolioCurrency !== holdingData.costBasisPortfolioCurrency ||
+        existing.costBasisOriginalCurrency !== holdingData.costBasisOriginalCurrency;
 
       if (hasChanged) {
         // Mark existing record as no longer latest
