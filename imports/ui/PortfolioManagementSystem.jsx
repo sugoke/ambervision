@@ -307,8 +307,9 @@ const formatPrice = (value, currencyCode, priceType) => {
   if (!value && value !== 0) return '-';
 
   // If priceType is percentage, format as percentage
+  // Value is stored as decimal (0.73 = 73%), multiply by 100 for display
   if (priceType === 'percentage') {
-    const formattedValue = value.toLocaleString('en-US', {
+    const formattedValue = (value * 100).toLocaleString('en-US', {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2
     });
