@@ -16,11 +16,25 @@ export const PMSHoldingsHelpers = {
   /**
    * Generate unique key for position tracking across time
    * Hash of: bankId + portfolioCode + isin (or currency for cash)
+   * For FX forwards: includes endDate (Julius Baer) or reference (CFM) to differentiate contracts
    * Note: fileDate is NOT included to allow versioning of the same position over time
    */
-  generateUniqueKey({ bankId, portfolioCode, isin, currency, securityType }) {
+  generateUniqueKey({ bankId, portfolioCode, isin, currency, securityType, endDate, reference }) {
     // For cash positions without ISIN, use currency + 'CASH' as identifier
-    const identifier = isin || (securityType === 'CASH' ? `CASH_${currency}` : 'UNKNOWN');
+    let identifier = isin || (securityType === 'CASH' ? `CASH_${currency}` : 'UNKNOWN');
+
+    // For FX forwards, include differentiating factor to separate contracts
+    if (securityType === 'FX_FORWARD') {
+      if (endDate) {
+        // Julius Baer: use value/settlement date
+        const endDateStr = endDate instanceof Date ? endDate.toISOString().split('T')[0] : String(endDate).split('T')[0];
+        identifier = `${identifier}|${endDateStr}`;
+      } else if (reference) {
+        // CFM: use FX reference number (e.g., FX0329536)
+        identifier = `${identifier}|${reference}`;
+      }
+    }
+
     const data = `${bankId}|${portfolioCode}|${identifier}`;
     return crypto.createHash('sha256').update(data).digest('hex');
   },
@@ -34,12 +48,20 @@ export const PMSHoldingsHelpers = {
     check(holdingData.portfolioCode, String);
     check(holdingData.fileDate, Date);
 
-    const uniqueKey = this.generateUniqueKey({
+    // Use parser's uniqueKey if provided, otherwise generate one
+    // This allows bank-specific parsers to define their own uniqueKey logic
+    // (e.g., CMB Monaco uses Position_Number instead of ISIN for stability)
+    const uniqueKey = holdingData.uniqueKey || this.generateUniqueKey({
       bankId: holdingData.bankId,
       portfolioCode: holdingData.portfolioCode,
       isin: holdingData.isin,
       currency: holdingData.currency,
-      securityType: holdingData.securityType
+      securityType: holdingData.securityType,
+      // For FX forwards, include differentiating factor:
+      // - Julius Baer: uses endDate (value/settlement date)
+      // - CFM: uses reference (FX reference number)
+      endDate: holdingData.bankSpecificData?.instrumentDates?.endDate,
+      reference: holdingData.bankSpecificData?.instrumentDates?.reference || holdingData.bankSpecificData?.reference
       // NO fileDate in uniqueKey!
     });
 
@@ -64,15 +86,9 @@ export const PMSHoldingsHelpers = {
         existing.costBasisOriginalCurrency !== holdingData.costBasisOriginalCurrency;
 
       if (hasChanged) {
-        // Mark existing record as no longer latest
-        await PMSHoldingsCollection.updateAsync(existing._id, {
-          $set: {
-            isLatest: false,
-            replacedAt: now
-          }
-        });
-
-        // Insert new version
+        // STEP 1: Insert new version FIRST
+        // This ensures we always have at least one record with isLatest: true
+        // If this insert fails, the old record remains visible (fail-safe)
         const newHoldingId = await PMSHoldingsCollection.insertAsync({
           ...holdingData,
           uniqueKey,
@@ -91,19 +107,40 @@ export const PMSHoldingsHelpers = {
           linkedBy: existing.linkedBy
         });
 
-        // Update the old record to point to the new one
-        await PMSHoldingsCollection.updateAsync(existing._id, {
-          $set: { replacedBy: newHoldingId }
-        });
+        // STEP 2: Only after successful insert, mark ALL old versions as not latest
+        // Uses multi: true to handle any potential duplicate isLatest records
+        await PMSHoldingsCollection.updateAsync(
+          {
+            uniqueKey,
+            isLatest: true,
+            _id: { $ne: newHoldingId }  // Exclude the one we just inserted
+          },
+          {
+            $set: {
+              isLatest: false,
+              replacedAt: now,
+              replacedBy: newHoldingId
+            }
+          },
+          { multi: true }
+        );
 
         console.log(`[PMS_HOLDINGS] Created version ${(existing.version || 0) + 1} for ${holdingData.securityName}`);
-        return { _id: newHoldingId, updated: true, versioned: true };
+        return { _id: newHoldingId, isNew: false, updated: true, versioned: true };
       } else {
-        // No changes - just update timestamp
+        // No value changes - but still update file-related fields to reflect new file was processed
         await PMSHoldingsCollection.updateAsync(existing._id, {
-          $set: { updatedAt: now }
+          $set: {
+            updatedAt: now,
+            processedAt: now,
+            // Update file source info even if values unchanged
+            fileDate: holdingData.fileDate,
+            sourceFile: holdingData.sourceFile,
+            sourceFilePath: holdingData.sourceFilePath,
+            processingDate: holdingData.processingDate || now
+          }
         });
-        return { _id: existing._id, updated: false, versioned: false };
+        return { _id: existing._id, isNew: false, updated: false, versioned: false };
       }
     } else {
       // First version
@@ -125,7 +162,7 @@ export const PMSHoldingsHelpers = {
         linkedBy: null
       });
       console.log(`[PMS_HOLDINGS] Created initial version for ${holdingData.securityName}`);
-      return { _id: holdingId, updated: false, versioned: false };
+      return { _id: holdingId, isNew: true, updated: false, versioned: false };
     }
   },
 
@@ -223,6 +260,24 @@ export const PMSHoldingsHelpers = {
 if (Meteor.isServer) {
   Meteor.startup(async () => {
     try {
+      // MIGRATION: Drop old unique index on uniqueKey that blocks versioning
+      // The versioning system needs multiple records with same uniqueKey (different versions)
+      try {
+        const rawCollection = PMSHoldingsCollection.rawCollection();
+        const indexes = await rawCollection.indexes();
+        const oldUniqueIndex = indexes.find(idx =>
+          idx.name === 'uniqueKey_1' && idx.unique === true
+        );
+        if (oldUniqueIndex) {
+          console.log('[PMS_HOLDINGS] Dropping old unique index on uniqueKey to enable versioning...');
+          await rawCollection.dropIndex('uniqueKey_1');
+          console.log('[PMS_HOLDINGS] Successfully dropped uniqueKey_1 unique index');
+        }
+      } catch (dropError) {
+        // Index might not exist or already dropped - that's fine
+        console.log('[PMS_HOLDINGS] Note: uniqueKey_1 index drop skipped:', dropError.message);
+      }
+
       // Compound index for finding latest versions (most common query)
       await PMSHoldingsCollection.createIndexAsync({
         uniqueKey: 1,
