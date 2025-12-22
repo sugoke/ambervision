@@ -46,31 +46,33 @@ const STOCK_EXCHANGE_MAP = {
   'KER': '.PA',      // Kering
   'RI': '.PA',       // Pernod Ricard
 
-  // === German Stocks (Frankfurt/XETRA) .F ===
-  'SAP': '.F',       // SAP
-  'VOW3': '.F',      // Volkswagen
-  'ADS': '.F',       // Adidas
-  'BMW': '.F',       // BMW
-  'DAI': '.F',       // Daimler/Mercedes
-  'BAS': '.F',       // BASF
-  'ALV': '.F',       // Allianz
-  'DTE': '.F',       // Deutsche Telekom
-  'SIE': '.F',       // Siemens
-  'MRK': '.F',       // Merck
-  'IFX': '.F',       // Infineon
-  'FRE': '.F',       // Fresenius
-  'HEI': '.F',       // HeidelbergCement
-  'CON': '.F',       // Continental
-  'LIN': '.F',       // Linde
-  'DB1': '.F',       // Deutsche Börse
-  'DBK': '.F',       // Deutsche Bank
-  'MUV2': '.F',      // Munich Re
-  'BEI': '.F',       // Beiersdorf
-  'HEN3': '.F',      // Henkel
-  'VNA': '.F',       // Vonovia
-  'EOAN': '.F',      // E.ON
-  'RWE': '.F',       // RWE
-  'PAH3': '.F',      // Porsche
+  // === German Stocks (XETRA/Frankfurt) ===
+  // EOD API supports: XETRA, F, BE, HM, DU, HA, MU, STU
+  // Using .XETRA as primary (main electronic exchange)
+  'SAP': '.XETRA',   // SAP
+  'VOW3': '.XETRA',  // Volkswagen
+  'ADS': '.XETRA',   // Adidas
+  'BMW': '.XETRA',   // BMW
+  'DAI': '.XETRA',   // Daimler/Mercedes
+  'BAS': '.XETRA',   // BASF
+  'ALV': '.XETRA',   // Allianz
+  'DTE': '.XETRA',   // Deutsche Telekom
+  'SIE': '.XETRA',   // Siemens
+  'MRK': '.XETRA',   // Merck
+  'IFX': '.XETRA',   // Infineon
+  'FRE': '.XETRA',   // Fresenius
+  'HEI': '.XETRA',   // HeidelbergCement
+  'CON': '.XETRA',   // Continental
+  'LIN': '.XETRA',   // Linde
+  'DB1': '.XETRA',   // Deutsche Börse
+  'DBK': '.XETRA',   // Deutsche Bank
+  'MUV2': '.XETRA',  // Munich Re
+  'BEI': '.XETRA',   // Beiersdorf
+  'HEN3': '.XETRA',  // Henkel
+  'VNA': '.XETRA',   // Vonovia
+  'EOAN': '.XETRA',  // E.ON
+  'RWE': '.XETRA',   // RWE
+  'PAH3': '.XETRA',  // Porsche
 
   // === Dutch Stocks (Euronext Amsterdam) .AS ===
   'ASML': '.AS',     // ASML
@@ -125,29 +127,30 @@ const STOCK_EXCHANGE_MAP = {
   'HOLN': '.SW',     // Holcim
   'SGSN': '.SW',     // SGS
 
-  // === UK Stocks (London Stock Exchange) .L ===
-  'VOD': '.L',       // Vodafone
-  'BP': '.L',        // BP
-  'RDSA': '.L',      // Royal Dutch Shell A
-  'RDSB': '.L',      // Royal Dutch Shell B
-  'GSK': '.L',       // GlaxoSmithKline
-  'AZN': '.L',       // AstraZeneca
-  'ULVR': '.L',      // Unilever
-  'DGE': '.L',       // Diageo
-  'RIO': '.L',       // Rio Tinto
-  'BHP': '.L',       // BHP
-  'HSBA': '.L',      // HSBC
-  'BATS': '.L',      // British American Tobacco
-  'LLOY': '.L',      // Lloyds Banking Group
-  'BARC': '.L',      // Barclays
-  'PRU': '.L',       // Prudential
-  'NG': '.L',        // National Grid
-  'SSE': '.L',       // SSE
-  'LSEG': '.L',      // London Stock Exchange Group
-  'IMB': '.L',       // Imperial Brands
-  'RB': '.L',        // Reckitt Benckiser
-  'REL': '.L',       // RELX
-  'STAN': '.L',      // Standard Chartered
+  // === UK Stocks (London Stock Exchange) .LSE ===
+  'VOD': '.LSE',     // Vodafone
+  'BP': '.LSE',      // BP
+  'RDSA': '.LSE',    // Royal Dutch Shell A
+  'RDSB': '.LSE',    // Royal Dutch Shell B
+  'GSK': '.LSE',     // GlaxoSmithKline
+  'AZN': '.LSE',     // AstraZeneca
+  'ULVR': '.LSE',    // Unilever
+  'DGE': '.LSE',     // Diageo
+  'RIO': '.LSE',     // Rio Tinto
+  'BHP': '.LSE',     // BHP
+  'HSBA': '.LSE',    // HSBC
+  'BATS': '.LSE',    // British American Tobacco
+  'LLOY': '.LSE',    // Lloyds Banking Group
+  'BARC': '.LSE',    // Barclays
+  'PRU': '.LSE',     // Prudential
+  'NG': '.LSE',      // National Grid
+  'SSE': '.LSE',     // SSE
+  'LSEG': '.LSE',    // London Stock Exchange Group
+  'IMB': '.LSE',     // Imperial Brands
+  'RB': '.LSE',      // Reckitt Benckiser
+  'REL': '.LSE',     // RELX
+  'STAN': '.LSE',    // Standard Chartered
+  'OCDO': '.LSE',    // Ocado (added)
 
   // === Danish Stocks (Nasdaq Copenhagen) .CO ===
   'NOVO-B': '.CO',   // Novo Nordisk
@@ -276,12 +279,12 @@ const STOCK_EXCHANGE_MAP = {
 const COUNTRY_TO_EXCHANGE = {
   'US': '.US',
   'FR': '.PA',
-  'DE': '.F',    // Germany uses Frankfurt exchange code
+  'DE': '.XETRA',    // Germany uses XETRA (main electronic exchange)
   'NL': '.AS',
   'IT': '.MI',
   'CH': '.SW',
-  'GB': '.L',
-  'UK': '.L',
+  'GB': '.LSE',
+  'UK': '.LSE',
   'DK': '.CO',
   'SE': '.ST',
   'NO': '.OL',
@@ -308,7 +311,7 @@ const COUNTRY_TO_EXCHANGE = {
 const CURRENCY_TO_EXCHANGE = {
   'USD': '.US',
   'EUR': '.PA',  // Default to Paris for EUR (could also be .DE, .AS, .MI)
-  'GBP': '.L',
+  'GBP': '.LSE',
   'CHF': '.SW',
   'DKK': '.CO',
   'SEK': '.ST',
@@ -478,8 +481,15 @@ export const getCurrencyFromTicker = (ticker) => {
   const exchangeToCurrency = {
     'US': 'USD',
     'PA': 'EUR',
-    'F': 'EUR',    // Frankfurt
-    'DE': 'EUR',   // Keep for backwards compatibility
+    'XETRA': 'EUR', // XETRA
+    'F': 'EUR',     // Frankfurt
+    'DE': 'EUR',    // Keep for backwards compatibility
+    'BE': 'EUR',    // Berlin
+    'HM': 'EUR',    // Hamburg
+    'DU': 'EUR',    // Dusseldorf
+    'HA': 'EUR',    // Hanover
+    'MU': 'EUR',    // Munich
+    'STU': 'EUR',   // Stuttgart
     'AS': 'EUR',
     'MI': 'EUR',
     'MC': 'EUR',
@@ -487,7 +497,9 @@ export const getCurrencyFromTicker = (ticker) => {
     'LS': 'EUR',
     'VI': 'EUR',
     'SW': 'CHF',
-    'L': 'GBP',
+    'LSE': 'GBP',
+    'L': 'GBP',     // Keep for backwards compatibility
+    'IL': 'GBP',    // London IL
     'CO': 'DKK',
     'ST': 'SEK',
     'OL': 'NOK',
@@ -522,28 +534,57 @@ export const isKnownStock = (ticker) => {
  */
 export const getExchangeName = (exchangeCode) => {
   const exchangeNames = {
+    // Major exchanges
     'US': 'US Exchanges (NYSE/NASDAQ)',
     'PA': 'Euronext Paris',
-    'F': 'Frankfurt Stock Exchange (XETRA)',
-    'DE': 'XETRA (Frankfurt)',  // Keep for backwards compatibility
+    'XETRA': 'XETRA Stock Exchange',
+    'F': 'Frankfurt Stock Exchange',
+    'DE': 'XETRA (legacy)',  // Keep for backwards compatibility
     'AS': 'Euronext Amsterdam',
     'MI': 'Borsa Italiana (Milan)',
     'SW': 'SIX Swiss Exchange',
-    'L': 'London Stock Exchange',
-    'CO': 'Nasdaq Copenhagen',
-    'ST': 'Nasdaq Stockholm',
-    'OL': 'Oslo Børs',
-    'HE': 'Nasdaq Helsinki',
-    'MC': 'BME Spanish Exchanges',
+    'LSE': 'London Stock Exchange',
+    'L': 'London Stock Exchange (legacy)',
+    'IL': 'London IL',
+
+    // Nordic exchanges
+    'CO': 'Copenhagen Exchange',
+    'ST': 'Stockholm Exchange',
+    'OL': 'Oslo Stock Exchange',
+    'HE': 'Helsinki Exchange',
+
+    // Other European
+    'MC': 'Madrid Exchange',
     'BR': 'Euronext Brussels',
     'LS': 'Euronext Lisbon',
-    'VI': 'Vienna Stock Exchange',
+    'VI': 'Vienna Exchange',
+    'LU': 'Luxembourg Stock Exchange',
+    'IR': 'Irish Exchange',
+    'IC': 'Iceland Exchange',
+    'PR': 'Prague Stock Exchange',
+    'BUD': 'Budapest Stock Exchange',
+    'WAR': 'Warsaw Stock Exchange',
+    'RO': 'Bucharest Stock Exchange',
+    'ZSE': 'Zagreb Stock Exchange',
+    'AT': 'Athens Exchange',
+
+    // German regional exchanges
+    'BE': 'Berlin Exchange',
+    'HM': 'Hamburg Exchange',
+    'DU': 'Dusseldorf Exchange',
+    'HA': 'Hanover Exchange',
+    'MU': 'Munich Exchange',
+    'STU': 'Stuttgart Exchange',
+
+    // Asian/Global exchanges
     'SI': 'Singapore Exchange',
     'HK': 'Hong Kong Stock Exchange',
     'KS': 'Korea Exchange',
     'T': 'Tokyo Stock Exchange',
     'AX': 'Australian Securities Exchange',
     'TO': 'Toronto Stock Exchange',
+
+    // Indices and special
     'INDX': 'Index',
     'FOREX': 'Forex',
     'CC': 'Cryptocurrency',
@@ -573,25 +614,42 @@ export const normalizeExchangeForEOD = (ticker) => {
   }
 
   // Exchange suffix mapping: Database format → EOD API format
+  // Based on official EOD API exchanges list: https://eodhd.com/api/exchanges-list/
   const exchangeNormalization = {
-    // German exchanges
-    '.XETRA': '.F',      // XETRA → Frankfurt
-    '.DE': '.F',         // Germany → Frankfurt
-    '.FWB': '.F',        // Frankfurter Wertpapierbörse → Frankfurt
-    '.FRANKFURT': '.F',  // Frankfurt → Frankfurt
+    // US exchanges (EOD supports unified .US or separate exchange codes)
+    // Unified .US is recommended and covers NYSE, NASDAQ, NYSE ARCA, OTC, BATS, etc.
+    '.NASDAQ': '.US',        // NASDAQ → US (unified exchange)
+    '.NYSE': '.US',          // NYSE → US (unified exchange)
+    '.BATS': '.US',          // BATS → US
+    '.OTC': '.US',           // OTC → US
+    '.OTCBB': '.US',         // OTCBB → US
+    '.OTCQB': '.US',         // OTCQB → US
+    '.OTCQX': '.US',         // OTCQX → US
+    '.PINK': '.US',          // PINK → US
+    '.OTCMKTS': '.US',       // OTC Markets → US
+    '.NYSEARCA': '.US',      // NYSE ARCA → US
+    '.NYSEAMERICAN': '.US',  // NYSE American → US
 
-    // UK exchanges
-    '.LSE': '.L',        // London Stock Exchange → L
-    '.LON': '.L',        // London → L
+    // German exchanges (EOD supports: XETRA, F, BE, HM, DU, HA, MU, STU)
+    '.DE': '.XETRA',        // Germany → XETRA (most common)
+    '.FWB': '.F',           // Frankfurter Wertpapierbörse → Frankfurt
+    '.FRANKFURT': '.F',     // Frankfurt → F
 
-    // French exchanges
-    '.EPA': '.PA',       // Euronext Paris → PA
-    '.PAR': '.PA',       // Paris → PA
+    // UK exchanges (EOD supports: LSE, IL)
+    '.LON': '.LSE',         // London → LSE
+    '.L': '.LSE',           // .L → LSE (EOD doesn't support .L - must use LSE)
+
+    // French exchanges (EOD supports: PA)
+    '.EPA': '.PA',          // Euronext Paris → PA
+    '.PAR': '.PA',          // Paris → PA
+
+    // Norwegian exchange (EOD supports: OL)
+    '.OSL': '.OL',          // Oslo → OL (EOD uses .OL not .OSL)
 
     // Other common variations
-    '.AMS': '.AS',       // Amsterdam → AS
-    '.MIL': '.MI',       // Milan → MI
-    '.SWX': '.SW',       // Swiss Exchange → SW
+    '.AMS': '.AS',          // Amsterdam → AS
+    '.MIL': '.MI',          // Milan → MI (not in visible list, but commonly used)
+    '.SWX': '.SW',          // Swiss Exchange → SW
   };
 
   // Check if ticker has an exchange suffix that needs normalization

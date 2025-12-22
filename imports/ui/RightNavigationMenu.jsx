@@ -1,12 +1,30 @@
 import React, { useState, useEffect } from 'react';
+import LiquidGlassCard from './components/LiquidGlassCard.jsx';
+import { useTheme } from './ThemeContext.jsx';
 
-const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, userRole }) => {
+const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, userRole, isMobile }) => {
+  const { toggleTheme, isDark } = useTheme();
+
   const menuItems = [
     {
       id: 'dashboard',
-      label: 'Dashboard',
+      label: 'Home',
       icon: '🏠',
-      description: 'Product overview',
+      description: 'Dashboard overview',
+      role: 'client'
+    },
+    {
+      id: 'pms',
+      label: 'PMS',
+      icon: '📈',
+      description: 'Portfolio Management System',
+      role: 'client'
+    },
+    {
+      id: 'products',
+      label: 'Products',
+      icon: '📋',
+      description: 'Structured products list',
       role: 'client'
     },
     {
@@ -38,11 +56,26 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
       role: 'client'
     },
     {
-      id: 'direct-equities',
-      label: 'Direct Equities',
-      icon: '💼',
-      description: 'Portfolio monitoring & stock tracking',
+      id: 'alerts',
+      label: 'Alert Center',
+      icon: '🚨',
+      description: 'Product alerts & warnings',
       role: 'client'
+    },
+    {
+      id: 'market-news',
+      label: 'Market News',
+      icon: '📰',
+      description: 'Newsletters and market updates',
+      role: 'client'
+    },
+    {
+      id: 'clients',
+      label: 'Clients',
+      icon: '👥',
+      description: 'Client management',
+      role: 'rm',
+      nonClientOnly: true
     },
     {
       id: 'intranet',
@@ -111,40 +144,42 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
         />
       )}
 
-      {/* Menu Toggle Button */}
-      <button
-        onClick={onToggle}
-        style={{
-          position: 'fixed',
-          top: '50%',
-          right: isOpen ? '320px' : '20px',
-          transform: 'translateY(-50%)',
-          width: '50px',
-          height: '50px',
-          borderRadius: '25px',
-          border: 'none',
-          background: 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
-          color: 'white',
-          fontSize: '1rem',
-          cursor: 'pointer',
-          zIndex: 1001,
-          boxShadow: '0 4px 12px rgba(0, 123, 255, 0.3)',
-          transition: 'all 0.3s ease',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center'
-        }}
-        onMouseEnter={(e) => {
-          e.target.style.transform = 'translateY(-50%) scale(1.1)';
-          e.target.style.boxShadow = '0 6px 20px rgba(0, 123, 255, 0.4)';
-        }}
-        onMouseLeave={(e) => {
-          e.target.style.transform = 'translateY(-50%) scale(1)';
-          e.target.style.boxShadow = '0 4px 12px rgba(0, 123, 255, 0.3)';
-        }}
-      >
-        {isOpen ? '✕' : '☰'}
-      </button>
+      {/* Menu Toggle Button - Hidden on mobile (button is in header instead) */}
+      {!isMobile && (
+        <button
+          onClick={onToggle}
+          style={{
+            position: 'fixed',
+            top: '50%',
+            right: isOpen ? '320px' : '20px',
+            transform: 'translateY(-50%)',
+            width: '50px',
+            height: '50px',
+            borderRadius: '25px',
+            border: 'none',
+            background: 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+            color: 'white',
+            fontSize: '1rem',
+            cursor: 'pointer',
+            zIndex: 1001,
+            boxShadow: '0 4px 12px rgba(0, 123, 255, 0.3)',
+            transition: 'all 0.3s ease',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+          onMouseEnter={(e) => {
+            e.target.style.transform = 'translateY(-50%) scale(1.1)';
+            e.target.style.boxShadow = '0 6px 20px rgba(0, 123, 255, 0.4)';
+          }}
+          onMouseLeave={(e) => {
+            e.target.style.transform = 'translateY(-50%) scale(1)';
+            e.target.style.boxShadow = '0 4px 12px rgba(0, 123, 255, 0.3)';
+          }}
+        >
+          {isOpen ? '✕' : '☰'}
+        </button>
+      )}
 
       {/* Menu Panel */}
       <div
@@ -211,6 +246,58 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
           }}>
             Structured Products Suite
           </p>
+        </div>
+
+        {/* Theme Toggle */}
+        <div style={{
+          padding: '0.75rem 1rem',
+          borderBottom: '1px solid var(--border-color)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          background: 'var(--bg-primary)'
+        }}>
+          <span style={{
+            fontSize: '0.9rem',
+            color: 'var(--text-secondary)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}>
+            {isDark ? '🌙' : '☀️'} {isDark ? 'Dark' : 'Light'} Mode
+          </span>
+          <button
+            onClick={toggleTheme}
+            style={{
+              width: '50px',
+              height: '26px',
+              borderRadius: '13px',
+              border: 'none',
+              background: isDark ? 'var(--accent-color)' : 'var(--text-muted)',
+              position: 'relative',
+              cursor: 'pointer',
+              transition: 'all 0.3s ease'
+            }}
+          >
+            <div
+              style={{
+                width: '22px',
+                height: '22px',
+                borderRadius: '50%',
+                background: 'white',
+                position: 'absolute',
+                top: '2px',
+                left: isDark ? '26px' : '2px',
+                transition: 'left 0.3s ease',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '0.6rem'
+              }}
+            >
+              {isDark ? '🌙' : '☀️'}
+            </div>
+          </button>
         </div>
 
         {/* Menu Items */}

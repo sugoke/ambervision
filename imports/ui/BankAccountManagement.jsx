@@ -6,17 +6,49 @@ import { Meteor } from 'meteor/meteor';
 import Dialog from './Dialog.jsx';
 import { useDialog } from './useDialog.js';
 
+// Map bank names to their logo files in public/images/logos_banks/
+const getBankLogoPath = (bankName) => {
+  if (!bankName) return null;
+  // Normalize to remove accents (é -> e, etc.) and convert to lowercase
+  const name = bankName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  if (name.includes('julius') || name.includes('baer')) {
+    return '/images/logos_banks/jb.png';
+  }
+  if (name.includes('andbank')) {
+    return '/images/logos_banks/andbank.png';
+  }
+  if (name.includes('cfm') || name.includes('credit foncier') || name.includes('indosuez')) {
+    return '/images/logos_banks/cfm.png';
+  }
+  if (name.includes('societe generale') || name.includes('sgmc')) {
+    return '/images/logos_banks/SGMC.png';
+  }
+  if (name.includes('edmond') || name.includes('rothschild')) {
+    return '/images/logos_banks/EDRMC.png';
+  }
+  if (name.includes('cmb')) {
+    return '/images/logos_banks/cmb.jpg';
+  }
+  return null; // No logo available - will use fallback emoji
+};
+
 const BankAccountManagement = ({ user }) => {
   const [isAddingAccount, setIsAddingAccount] = useState(false);
   const [newAccount, setNewAccount] = useState({
     bankId: '',
     accountNumber: '',
-    referenceCurrency: 'USD'
+    referenceCurrency: 'USD',
+    authorizedOverdraft: ''
   });
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const { dialogState, showConfirm, hideDialog } = useDialog();
+
+  // Edit mode state
+  const [editingAccount, setEditingAccount] = useState(null);
+  const [editFormData, setEditFormData] = useState({});
 
   // Subscribe to user's bank accounts and banks
   const bankAccountsLoading = useSubscribe('userBankAccounts', user._id);
@@ -53,13 +85,18 @@ const BankAccountManagement = ({ user }) => {
     console.log('BankAccountManagement: Account data:', {
       bankId: newAccount.bankId,
       accountNumber: newAccount.accountNumber,
-      referenceCurrency: newAccount.referenceCurrency
+      referenceCurrency: newAccount.referenceCurrency,
+      authorizedOverdraft: newAccount.authorizedOverdraft
     });
+
+    // Parse authorized overdraft as number, or null if empty
+    const overdraftValue = newAccount.authorizedOverdraft ? parseFloat(newAccount.authorizedOverdraft) : null;
 
     Meteor.call('bankAccounts.add', {
       bankId: newAccount.bankId,
       accountNumber: newAccount.accountNumber.trim(),
       referenceCurrency: newAccount.referenceCurrency,
+      authorizedOverdraft: overdraftValue,
       sessionId: sessionId
     }, (err, result) => {
       console.log('BankAccountManagement: Meteor call result:', err ? `Error: ${err.message}` : 'Success');
@@ -70,7 +107,7 @@ const BankAccountManagement = ({ user }) => {
       } else {
         console.log('BankAccountManagement: Account added successfully:', result);
         setSuccess('Bank account added successfully!');
-        setNewAccount({ bankId: '', accountNumber: '', referenceCurrency: 'USD' });
+        setNewAccount({ bankId: '', accountNumber: '', referenceCurrency: 'USD', authorizedOverdraft: '' });
         setIsAddingAccount(false);
         setTimeout(() => setSuccess(''), 3000);
       }
@@ -94,6 +131,44 @@ const BankAccountManagement = ({ user }) => {
 
   const getBankInfo = (bankId) => {
     return banks.find(bank => bank._id === bankId);
+  };
+
+  const handleEditAccount = (account) => {
+    setEditingAccount(account._id);
+    setEditFormData({
+      referenceCurrency: account.referenceCurrency,
+      authorizedOverdraft: account.authorizedOverdraft || ''
+    });
+  };
+
+  const handleCancelEdit = () => {
+    setEditingAccount(null);
+    setEditFormData({});
+  };
+
+  const handleSaveEdit = (accountId) => {
+    setIsLoading(true);
+    const sessionId = localStorage.getItem('sessionId');
+    const overdraftValue = editFormData.authorizedOverdraft ? parseFloat(editFormData.authorizedOverdraft) : null;
+
+    Meteor.call('bankAccounts.update', {
+      accountId,
+      updates: {
+        referenceCurrency: editFormData.referenceCurrency,
+        authorizedOverdraft: overdraftValue
+      },
+      sessionId
+    }, (err) => {
+      setIsLoading(false);
+      if (err) {
+        setError(err.reason || 'Failed to update account');
+      } else {
+        setSuccess('Account updated successfully!');
+        setEditingAccount(null);
+        setEditFormData({});
+        setTimeout(() => setSuccess(''), 3000);
+      }
+    });
   };
 
   console.log('BankAccountManagement: Current state:', {
@@ -313,6 +388,43 @@ const BankAccountManagement = ({ user }) => {
                   ))}
                 </select>
               </div>
+
+              <div>
+                <label style={{
+                  display: 'block',
+                  marginBottom: '8px',
+                  fontSize: '0.875rem',
+                  fontWeight: '600',
+                  color: 'var(--text-primary)'
+                }}>
+                  Credit Line (Optional)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1000"
+                  value={newAccount.authorizedOverdraft}
+                  onChange={(e) => setNewAccount({ ...newAccount, authorizedOverdraft: e.target.value })}
+                  placeholder="e.g. 50000"
+                  style={{
+                    width: '100%',
+                    padding: '12px 16px',
+                    border: '2px solid var(--border-color)',
+                    borderRadius: '8px',
+                    fontSize: '1rem',
+                    boxSizing: 'border-box',
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-primary)'
+                  }}
+                />
+                <div style={{
+                  fontSize: '0.75rem',
+                  color: 'var(--text-muted)',
+                  marginTop: '4px'
+                }}>
+                  Authorized overdraft amount in {newAccount.referenceCurrency}
+                </div>
+              </div>
             </div>
 
             <div style={{
@@ -324,7 +436,7 @@ const BankAccountManagement = ({ user }) => {
                 type="button"
                 onClick={() => {
                   setIsAddingAccount(false);
-                  setNewAccount({ bankId: '', accountNumber: '', referenceCurrency: 'USD' });
+                  setNewAccount({ bankId: '', accountNumber: '', referenceCurrency: 'USD', authorizedOverdraft: '' });
                   setError('');
                 }}
                 style={{
@@ -410,143 +522,334 @@ const BankAccountManagement = ({ user }) => {
         }}>
           {bankAccounts.map((account) => {
             const bankInfo = getBankInfo(account.bankId);
+            const isEditing = editingAccount === account._id;
+
             return (
               <div
                 key={account._id}
                 style={{
                   background: 'var(--bg-primary)',
-                  border: '1px solid var(--border-color)',
+                  border: isEditing ? '2px solid var(--accent-color)' : '1px solid var(--border-color)',
                   borderRadius: '8px',
                   padding: '1.5rem',
                   transition: 'all 0.3s ease'
                 }}
               >
-                <div style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'flex-start'
-                }}>
-                  <div style={{ flex: 1 }}>
+                {isEditing ? (
+                  // Edit Form
+                  <div>
+                    <h4 style={{
+                      margin: '0 0 1rem 0',
+                      fontSize: '1rem',
+                      fontWeight: '600',
+                      color: 'var(--text-primary)'
+                    }}>
+                      Edit Account: {account.accountNumber}
+                    </h4>
                     <div style={{
                       display: 'grid',
-                      gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
                       gap: '1rem',
                       marginBottom: '1rem'
                     }}>
                       <div>
-                        <div style={{
-                          fontSize: '0.75rem',
+                        <label style={{
+                          display: 'block',
+                          marginBottom: '8px',
+                          fontSize: '0.875rem',
                           fontWeight: '600',
-                          color: 'var(--text-muted)',
-                          textTransform: 'uppercase',
-                          letterSpacing: '0.5px',
-                          marginBottom: '4px'
+                          color: 'var(--text-primary)'
                         }}>
-                          Bank
-                        </div>
-                        <div style={{
-                          fontSize: '1rem',
-                          color: 'var(--text-primary)',
-                          fontWeight: '600'
-                        }}>
-                          {bankInfo ? bankInfo.name : 'Unknown Bank'}
-                        </div>
-                        {bankInfo && (
-                          <div style={{
-                            fontSize: '0.85rem',
-                            color: 'var(--text-secondary)'
-                          }}>
-                            {bankInfo.city}, {bankInfo.country}
-                          </div>
-                        )}
+                          Reference Currency
+                        </label>
+                        <select
+                          value={editFormData.referenceCurrency}
+                          onChange={(e) => setEditFormData({ ...editFormData, referenceCurrency: e.target.value })}
+                          style={{
+                            width: '100%',
+                            padding: '10px 14px',
+                            border: '2px solid var(--border-color)',
+                            borderRadius: '6px',
+                            fontSize: '0.95rem',
+                            background: 'var(--bg-secondary)',
+                            color: 'var(--text-primary)'
+                          }}
+                        >
+                          {currencies.map(currency => (
+                            <option key={currency} value={currency}>{currency}</option>
+                          ))}
+                        </select>
                       </div>
-
                       <div>
+                        <label style={{
+                          display: 'block',
+                          marginBottom: '8px',
+                          fontSize: '0.875rem',
+                          fontWeight: '600',
+                          color: 'var(--text-primary)'
+                        }}>
+                          Credit Line (Authorized Overdraft)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1000"
+                          value={editFormData.authorizedOverdraft}
+                          onChange={(e) => setEditFormData({ ...editFormData, authorizedOverdraft: e.target.value })}
+                          placeholder="e.g. 50000"
+                          style={{
+                            width: '100%',
+                            padding: '10px 14px',
+                            border: '2px solid var(--border-color)',
+                            borderRadius: '6px',
+                            fontSize: '0.95rem',
+                            boxSizing: 'border-box',
+                            background: 'var(--bg-secondary)',
+                            color: 'var(--text-primary)'
+                          }}
+                        />
                         <div style={{
                           fontSize: '0.75rem',
-                          fontWeight: '600',
                           color: 'var(--text-muted)',
-                          textTransform: 'uppercase',
-                          letterSpacing: '0.5px',
-                          marginBottom: '4px'
+                          marginTop: '4px'
                         }}>
-                          Account Number
-                        </div>
-                        <div style={{
-                          fontSize: '1rem',
-                          color: 'var(--text-primary)',
-                          fontWeight: '500',
-                          fontFamily: 'monospace'
-                        }}>
-                          {account.accountNumber}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{
-                          fontSize: '0.75rem',
-                          fontWeight: '600',
-                          color: 'var(--text-muted)',
-                          textTransform: 'uppercase',
-                          letterSpacing: '0.5px',
-                          marginBottom: '4px'
-                        }}>
-                          Currency
-                        </div>
-                        <div style={{
-                          fontSize: '1rem',
-                          color: 'var(--text-primary)',
-                          fontWeight: '600'
-                        }}>
-                          {account.referenceCurrency}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{
-                          fontSize: '0.75rem',
-                          fontWeight: '600',
-                          color: 'var(--text-muted)',
-                          textTransform: 'uppercase',
-                          letterSpacing: '0.5px',
-                          marginBottom: '4px'
-                        }}>
-                          Added
-                        </div>
-                        <div style={{
-                          fontSize: '0.9rem',
-                          color: 'var(--text-secondary)'
-                        }}>
-                          {account.createdAt ? new Date(account.createdAt).toLocaleDateString() : 'Unknown'}
+                          Authorized overdraft in {editFormData.referenceCurrency}. Leave empty for no credit line.
                         </div>
                       </div>
                     </div>
+                    <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                      <button
+                        onClick={handleCancelEdit}
+                        style={{
+                          padding: '8px 16px',
+                          border: '1px solid var(--border-color)',
+                          background: 'var(--bg-secondary)',
+                          color: 'var(--text-secondary)',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          fontSize: '0.85rem'
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => handleSaveEdit(account._id)}
+                        disabled={isLoading}
+                        style={{
+                          padding: '8px 16px',
+                          background: isLoading ? 'var(--text-muted)' : 'var(--accent-color)',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '6px',
+                          cursor: isLoading ? 'not-allowed' : 'pointer',
+                          fontSize: '0.85rem',
+                          fontWeight: '600'
+                        }}
+                      >
+                        {isLoading ? 'Saving...' : 'Save Changes'}
+                      </button>
+                    </div>
                   </div>
+                ) : (
+                  // Display Mode
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start'
+                  }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+                        gap: '1rem',
+                        marginBottom: '1rem'
+                      }}>
+                        <div>
+                          <div style={{
+                            fontSize: '0.75rem',
+                            fontWeight: '600',
+                            color: 'var(--text-muted)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.5px',
+                            marginBottom: '4px'
+                          }}>
+                            Bank
+                          </div>
+                          <div style={{
+                            fontSize: '1rem',
+                            color: 'var(--text-primary)',
+                            fontWeight: '600',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px'
+                          }}>
+                            {(() => {
+                              const logoPath = getBankLogoPath(bankInfo?.name);
+                              if (logoPath) {
+                                return (
+                                  <img
+                                    src={logoPath}
+                                    alt={bankInfo?.name || 'Bank'}
+                                    style={{
+                                      width: '24px',
+                                      height: '24px',
+                                      objectFit: 'contain',
+                                      borderRadius: '4px'
+                                    }}
+                                    onError={(e) => {
+                                      e.target.style.display = 'none';
+                                      e.target.nextSibling.style.display = 'inline';
+                                    }}
+                                  />
+                                );
+                              }
+                              return null;
+                            })()}
+                            <span style={{ fontSize: '1.2rem', display: getBankLogoPath(bankInfo?.name) ? 'none' : 'inline' }}>🏦</span>
+                            {bankInfo ? bankInfo.name : 'Unknown Bank'}
+                          </div>
+                          {bankInfo && (
+                            <div style={{
+                              fontSize: '0.85rem',
+                              color: 'var(--text-secondary)'
+                            }}>
+                              {bankInfo.city}, {bankInfo.country}
+                            </div>
+                          )}
+                        </div>
 
-                  <button
-                    onClick={() => handleRemoveAccount(account._id)}
-                    style={{
-                      background: 'none',
-                      border: '1px solid var(--danger-color)',
-                      color: 'var(--danger-color)',
-                      padding: '8px 16px',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      fontSize: '0.85rem',
-                      marginLeft: '1rem'
-                    }}
-                    onMouseEnter={(e) => {
-                      e.target.style.background = 'var(--danger-color)';
-                      e.target.style.color = 'white';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.target.style.background = 'none';
-                      e.target.style.color = 'var(--danger-color)';
-                    }}
-                  >
-                    Remove
-                  </button>
-                </div>
+                        <div>
+                          <div style={{
+                            fontSize: '0.75rem',
+                            fontWeight: '600',
+                            color: 'var(--text-muted)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.5px',
+                            marginBottom: '4px'
+                          }}>
+                            Account Number
+                          </div>
+                          <div style={{
+                            fontSize: '1rem',
+                            color: 'var(--text-primary)',
+                            fontWeight: '500',
+                            fontFamily: 'monospace'
+                          }}>
+                            {account.accountNumber}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div style={{
+                            fontSize: '0.75rem',
+                            fontWeight: '600',
+                            color: 'var(--text-muted)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.5px',
+                            marginBottom: '4px'
+                          }}>
+                            Currency
+                          </div>
+                          <div style={{
+                            fontSize: '1rem',
+                            color: 'var(--text-primary)',
+                            fontWeight: '600'
+                          }}>
+                            {account.referenceCurrency}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div style={{
+                            fontSize: '0.75rem',
+                            fontWeight: '600',
+                            color: 'var(--text-muted)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.5px',
+                            marginBottom: '4px'
+                          }}>
+                            Credit Line
+                          </div>
+                          <div style={{
+                            fontSize: '1rem',
+                            color: account.authorizedOverdraft > 0 ? '#10b981' : 'var(--text-secondary)',
+                            fontWeight: '600'
+                          }}>
+                            {account.authorizedOverdraft > 0
+                              ? `${account.referenceCurrency} ${account.authorizedOverdraft.toLocaleString()}`
+                              : 'None'}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div style={{
+                            fontSize: '0.75rem',
+                            fontWeight: '600',
+                            color: 'var(--text-muted)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.5px',
+                            marginBottom: '4px'
+                          }}>
+                            Added
+                          </div>
+                          <div style={{
+                            fontSize: '0.9rem',
+                            color: 'var(--text-secondary)'
+                          }}>
+                            {account.createdAt ? new Date(account.createdAt).toLocaleDateString() : 'Unknown'}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '0.5rem', marginLeft: '1rem' }}>
+                      <button
+                        onClick={() => handleEditAccount(account)}
+                        style={{
+                          background: 'none',
+                          border: '1px solid var(--accent-color)',
+                          color: 'var(--accent-color)',
+                          padding: '8px 16px',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          fontSize: '0.85rem'
+                        }}
+                        onMouseEnter={(e) => {
+                          e.target.style.background = 'var(--accent-color)';
+                          e.target.style.color = 'white';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.target.style.background = 'none';
+                          e.target.style.color = 'var(--accent-color)';
+                        }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleRemoveAccount(account._id)}
+                        style={{
+                          background: 'none',
+                          border: '1px solid var(--danger-color)',
+                          color: 'var(--danger-color)',
+                          padding: '8px 16px',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          fontSize: '0.85rem'
+                        }}
+                        onMouseEnter={(e) => {
+                          e.target.style.background = 'var(--danger-color)';
+                          e.target.style.color = 'white';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.target.style.background = 'none';
+                          e.target.style.color = 'var(--danger-color)';
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}

@@ -108,6 +108,12 @@ export const JuliusBaerParser = {
     // Remove spaces and convert to string
     const str = String(value).trim();
 
+    // Handle explicit percentage strings (e.g., "66.41%")
+    if (str.includes('%')) {
+      const num = parseFloat(str.replace(/[,%]/g, ''));
+      return isNaN(num) ? null : num / 100; // Already normalized to decimal
+    }
+
     // Remove commas and parse
     const num = parseFloat(str.replace(/,/g, ''));
 
@@ -137,13 +143,13 @@ export const JuliusBaerParser = {
 
   /**
    * Calculate cost basis in original currency
+   * Note: costPrice must be in normalized decimal format (e.g., 0.6691 = 66.91%)
    */
-  calculateCostBasis(quantity, costPrice, priceType) {
+  calculateCostBasis(quantity, costPrice) {
     if (!quantity || !costPrice) return null;
 
-    // COST_PRICE in JB files is already in decimal format for bonds (0.72 = 72%)
-    // Unlike POS_PRICE which is in percentage format (72.00 = 72%)
-    // So we do NOT divide COST_PRICE by 100
+    // Simple multiplication - costPrice is already normalized to decimal format
+    // by the normalizePrice function (e.g., 1.0 = 100% for percentage-priced instruments)
     return quantity * costPrice;
   },
 
@@ -182,11 +188,79 @@ export const JuliusBaerParser = {
   },
 
   /**
+   * Normalize price value with smart format detection
+   * Julius Baer CSV files are inconsistent:
+   * - POS_PRICE: Often in percentage format (66.91 = 66.91%)
+   * - COST_PRICE: Often already in decimal format (0.727 = 72.7%)
+   *
+   * @param {number|null} rawValue - The parsed numeric value from CSV
+   * @param {string} posCalc - The POS_CALC field value ('% or other)
+   * @param {string} fieldName - Field name for logging (e.g., 'POS_PRICE', 'COST_PRICE')
+   * @param {string} isin - ISIN for logging
+   * @returns {number|null} - Normalized value in decimal format (e.g., 0.6691 = 66.91%)
+   */
+  normalizePrice(rawValue, posCalc, fieldName, isin) {
+    if (!rawValue && rawValue !== 0) return null;
+
+    const isPercentageType = posCalc === '%';
+
+    // If not a percentage type, return as-is (absolute price)
+    if (!isPercentageType) {
+      return rawValue;
+    }
+
+    // Smart detection for percentage-priced instruments
+    // Heuristic: If value >= 10, it's in percentage format (needs ÷100)
+    //            If value < 10, it's likely already in decimal format (use as-is)
+    //
+    // Examples:
+    // - 66.91 >= 10 → divide by 100 → 0.6691 (66.91%)
+    // - 100.0 >= 10 → divide by 100 → 1.0 (100%)
+    // - 0.727 < 10 → use as-is → 0.727 (72.7%)
+    // - 0.05 < 10 → use as-is → 0.05 (5%)
+    // - 5.0 < 10 → use as-is → 5.0 (500%) - edge case but handled
+    //
+    // For very high values (> 10), we can be confident they're percentages
+    const needsDivision = rawValue >= 10;
+    const normalizedValue = needsDivision ? rawValue / 100 : rawValue;
+
+    // Log for debugging percentage normalization
+    if (isin) {
+      console.log(`[JB_PRICE_NORM] ${fieldName} - ISIN: ${isin}`);
+      console.log(`  Raw value: ${rawValue}`);
+      console.log(`  POS_CALC: ${posCalc}`);
+      console.log(`  Needs division: ${needsDivision} (threshold: value >= 10)`);
+      console.log(`  Normalized: ${normalizedValue} (${(normalizedValue * 100).toFixed(2)}%)`);
+    }
+
+    return normalizedValue;
+  },
+
+  /**
    * Map Julius Baer CSV row to standardized schema
    */
   mapToStandardSchema(row, bankId, bankName, sourceFile, fileDate, userId) {
     // Parse data date from CSV (FROM_DATE column in Julius Baer format: YYYYMMDD)
     const dataDate = row.FROM_DATE ? this.parseDate(row.FROM_DATE) : fileDate;
+
+    // Parse raw numeric values
+    const rawCostPrice = this.parseNumber(row.COST_PRICE);
+    const rawMarketPrice = this.parseNumber(row.POS_PRICE);
+
+    // Normalize prices using smart detection
+    const normalizedCostPrice = this.normalizePrice(
+      rawCostPrice,
+      row.POS_CALC,
+      'COST_PRICE',
+      row.INSTR_ISIN_CODE
+    );
+
+    const normalizedMarketPrice = this.normalizePrice(
+      rawMarketPrice,
+      row.POS_CALC,
+      'POS_PRICE',
+      row.INSTR_ISIN_CODE
+    );
 
     return {
       // Source Information
@@ -221,44 +295,41 @@ export const JuliusBaerParser = {
       portfolioCurrency: row.PTF_CCY_ISO || row.PORTFOLIO_CCY || null, // Account's base currency (EUR, USD, CHF, etc.)
 
       // Pricing Information
-      // Normalize POS_PRICE: if percentage type, divide by 100 to convert to decimal (66.41% → 0.6641)
+      // Prices are normalized using the normalizePrice function above
       // This ensures consistent decimal storage format across all price fields
       priceType: row.POS_CALC === '%' ? 'percentage' : 'absolute', // Extract from POS_CALC field
-      marketPrice: row.POS_CALC === '%'
-        ? this.parseNumber(row.POS_PRICE) / 100  // Convert percentage to decimal (66.41 → 0.6641)
-        : this.parseNumber(row.POS_PRICE),       // Keep absolute prices as-is
+      marketPrice: normalizedMarketPrice,
       priceDate: this.parseDate(row.POS_PRICE_DATE),
       priceCurrency: row.POS_PRICE_CCY_ISO || null,
 
       // Additional Pricing
-      // COST_PRICE is already in decimal format (0.72 = 72%), no conversion needed
-      costPrice: this.parseNumber(row.COST_PRICE),
+      // costPrice is pre-calculated above using normalizePrice function
+      costPrice: normalizedCostPrice,
       lastPrice: this.parseNumber(row.LAST_PRICE_MKT_CODE),
       lastPriceCurrency: row.LAST_PRICE_CCY_ISO || null,
 
       // Cost Basis Calculations (in both currencies)
+      // Uses normalized costPrice (already in decimal format)
       costBasisOriginalCurrency: this.calculateCostBasis(
         this.parseNumber(row.QUANTITY),
-        this.parseNumber(row.COST_PRICE),
-        row.POS_CALC === '%' ? 'percentage' : 'absolute'
+        normalizedCostPrice
       ),
       costBasisPortfolioCurrency: this.calculateCostBasisPortfolioCurrency(
         this.calculateCostBasis(
           this.parseNumber(row.QUANTITY),
-          this.parseNumber(row.COST_PRICE),
-          row.POS_CALC === '%' ? 'percentage' : 'absolute'
+          normalizedCostPrice
         ),
         this.parseNumber(row.COST_EXCH_RATE)
       ),
 
       // Performance Metrics (calculated using portfolio currency values)
+      // Uses normalized costPrice (already in decimal format)
       unrealizedPnL: this.calculateUnrealizedPnL(
         this.parseNumber(row.PTF_MKT_VAL),
         this.calculateCostBasisPortfolioCurrency(
           this.calculateCostBasis(
             this.parseNumber(row.QUANTITY),
-            this.parseNumber(row.COST_PRICE),
-            row.POS_CALC === '%' ? 'percentage' : 'absolute'
+            normalizedCostPrice
           ),
           this.parseNumber(row.COST_EXCH_RATE)
         )
@@ -268,8 +339,7 @@ export const JuliusBaerParser = {
         this.calculateCostBasisPortfolioCurrency(
           this.calculateCostBasis(
             this.parseNumber(row.QUANTITY),
-            this.parseNumber(row.COST_PRICE),
-            row.POS_CALC === '%' ? 'percentage' : 'absolute'
+            normalizedCostPrice
           ),
           this.parseNumber(row.COST_EXCH_RATE)
         )

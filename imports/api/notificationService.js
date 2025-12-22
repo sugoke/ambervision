@@ -13,18 +13,21 @@ import { EmailService } from './emailService';
 
 export const NotificationService = {
   /**
-   * Process events and send notifications
+   * Process events and create notifications (email sending handled by daily digest)
    * @param {Object} product - Product data
    * @param {Array} events - Array of detected events
    * @param {String} triggeredBy - Who triggered the evaluation
+   * @param {String} cronJobRunId - ID of cron job run (for batching in daily digest)
    */
-  async processEvents(product, events, triggeredBy = 'system') {
+  async processEvents(product, events, triggeredBy = 'system', cronJobRunId = null) {
     if (!events || events.length === 0) {
       console.log('[NotificationService] No events to process');
       return;
     }
 
     console.log(`[NotificationService] Processing ${events.length} events for product ${product._id}`);
+
+    const createdNotifications = [];
 
     for (const event of events) {
       try {
@@ -44,9 +47,9 @@ export const NotificationService = {
         // Get affected users
         const { users, emails } = await this.getAffectedUsers(product);
 
-        console.log(`[NotificationService] Sending ${event.type} to ${users.length} users`);
+        console.log(`[NotificationService] Creating notification for ${event.type} (${users.length} users)`);
 
-        // Create notification
+        // Create notification (without sending individual emails)
         const notificationId = await NotificationHelpers.createNotification({
           productId: product._id,
           productName: product.title || product.productName,
@@ -58,18 +61,18 @@ export const NotificationService = {
           summary: event.summary,
           sentToUsers: users.map(u => u._id),
           sentToEmails: emails,
-          createdBy: triggeredBy
+          createdBy: triggeredBy,
+          cronJobRunId: cronJobRunId // Track which cron run created this
         });
 
-        // Send emails asynchronously
-        Meteor.defer(async () => {
-          await this.sendEventEmails(notificationId, product, event, users);
-        });
+        createdNotifications.push(notificationId);
 
       } catch (error) {
         console.error(`[NotificationService] Error processing event ${event.type}:`, error);
       }
     }
+
+    return createdNotifications;
   },
 
   /**
@@ -138,73 +141,52 @@ export const NotificationService = {
   },
 
   /**
-   * Send email notifications for an event
-   * @param {String} notificationId - Notification ID
-   * @param {Object} product - Product data
-   * @param {Object} event - Event data
-   * @param {Array} users - Users to send to
+   * Get notifications created during a specific cron job run
+   * @param {String} cronJobRunId - Cron job run ID
+   * @returns {Array} Array of notifications with product allocation data
    */
-  async sendEventEmails(notificationId, product, event, users) {
-    try {
-      console.log(`[NotificationService] Sending emails for ${event.type} to ${users.length} recipients`);
+  async getNotificationsForCronRun(cronJobRunId) {
+    const { NotificationsCollection } = await import('./notifications');
+    const { AllocationsCollection } = await import('./allocations');
+    const { ProductsCollection } = await import('./products');
 
-      // Send individual emails to each user
-      const emailPromises = users.map(user => {
-        const userName = user.profile?.firstName && user.profile?.lastName
-          ? `${user.profile.firstName} ${user.profile.lastName}`
-          : user.username;
+    // Get all notifications from this cron run
+    const notifications = await NotificationsCollection.find({
+      cronJobRunId: cronJobRunId,
+      emailStatus: 'pending' // Only get unsent notifications
+    }).fetchAsync();
 
-        return this.sendEventEmail(user.username, userName, product, event);
-      });
+    // Enrich notifications with product allocation data
+    const enrichedNotifications = await Promise.all(
+      notifications.map(async (notification) => {
+        // Get product allocation data
+        const allocations = await AllocationsCollection.find({
+          productId: notification.productId,
+          status: 'active'
+        }).fetchAsync();
 
-      await Promise.all(emailPromises);
+        const totalNominalInvested = allocations.reduce(
+          (sum, alloc) => sum + (alloc.nominalInvested || 0),
+          0
+        );
 
-      // Mark emails as sent
-      await NotificationHelpers.markEmailsSent(notificationId);
+        const clientCount = new Set(allocations.map(a => a.clientId)).size;
 
-      console.log(`[NotificationService] Emails sent successfully for notification ${notificationId}`);
+        // Get product for additional details
+        const product = await ProductsCollection.findOneAsync({ _id: notification.productId });
 
-    } catch (error) {
-      console.error(`[NotificationService] Error sending emails:`, error);
-      await NotificationHelpers.markEmailsFailed(notificationId, error.message);
-    }
-  },
+        return {
+          ...notification,
+          allocation: {
+            totalNominalInvested,
+            clientCount,
+            currency: allocations[0]?.currency || 'CHF'
+          },
+          product: product || {}
+        };
+      })
+    );
 
-  /**
-   * Send individual event email
-   * @param {String} email - Recipient email
-   * @param {String} userName - Recipient name
-   * @param {Object} product - Product data
-   * @param {Object} event - Event data
-   */
-  async sendEventEmail(email, userName, product, event) {
-    // Get event-specific email method
-    const emailMethod = this.getEmailMethodForEvent(event.type);
-
-    if (!emailMethod) {
-      console.warn(`[NotificationService] No email method for event type: ${event.type}`);
-      return;
-    }
-
-    // Call the email method
-    await emailMethod(email, userName, product, event);
-  },
-
-  /**
-   * Get email sending method for event type
-   */
-  getEmailMethodForEvent(eventType) {
-    const eventEmailMethods = {
-      'coupon_paid': EmailService.sendCouponPaidEmail,
-      'autocall_triggered': EmailService.sendAutocallEmail,
-      'barrier_breached': EmailService.sendBarrierBreachEmail,
-      'barrier_near': EmailService.sendBarrierNearEmail,
-      'final_observation': EmailService.sendFinalObservationEmail,
-      'product_matured': EmailService.sendProductMaturedEmail,
-      'memory_coupon_added': EmailService.sendMemoryCouponEmail,
-      'barrier_recovered': EmailService.sendBarrierRecoveredEmail
-    };
-
-    return eventEmailMethods[eventType];
+    return enrichedNotifications;
   }
 };

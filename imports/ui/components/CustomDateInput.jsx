@@ -1,11 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 const CustomDateInput = ({ value, onChange, className = '', style = {}, placeholder = 'DD/MM/YYYY', ...props }) => {
-  const [inputValue, setInputValue] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
-  const lastExternalValue = useRef(value);
-  const typingTimeoutRef = useRef(null);
-
   // Convert ISO date (YYYY-MM-DD) to display format (DD/MM/YYYY)
   const formatDateForDisplay = (isoDate) => {
     if (!isoDate) return '';
@@ -16,6 +11,12 @@ const CustomDateInput = ({ value, onChange, className = '', style = {}, placehol
       return '';
     }
   };
+
+  // Initialize inputValue with formatted date from value prop (not empty)
+  const [inputValue, setInputValue] = useState(() => formatDateForDisplay(value));
+  const [isTyping, setIsTyping] = useState(false);
+  const lastExternalValue = useRef(value);
+  const typingTimeoutRef = useRef(null);
 
   // Convert DDMMYYYY to ISO format (YYYY-MM-DD)
   const parseInputToISO = (input) => {

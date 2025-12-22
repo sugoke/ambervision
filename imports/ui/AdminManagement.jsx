@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { USER_ROLES } from '/imports/api/users';
-import UserManagement from './UserManagement.jsx';
 import BankManagement from './BankManagement.jsx';
+import BankConnectionsManager from './BankConnectionsManager.jsx';
+import SecuritiesBase from './SecuritiesBase.jsx';
 import IssuerManagementComponent from './IssuerManagementComponent.jsx';
 import SystemOperations from './SystemOperations.jsx';
 import MarketDataManager from './MarketDataManager.jsx';
@@ -13,9 +14,9 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
   // Determine initial active tab based on currentSection
   const getInitialTab = () => {
     switch (currentSection) {
-      case 'user-management': return 'users';
       case 'issuer-management': return 'issuers';
       case 'bank-management': return 'banks';
+      case 'bank-connections': return 'connections';
       case 'price-data-upload': return 'prices';
       case 'system-operations': return 'system';
       case 'market-data': return 'market';
@@ -32,9 +33,9 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
   useEffect(() => {
     const getTabFromSection = (section) => {
       switch (section) {
-        case 'user-management': return 'users';
         case 'issuer-management': return 'issuers';
         case 'bank-management': return 'banks';
+        case 'bank-connections': return 'connections';
         case 'price-data-upload': return 'prices';
         case 'system-operations': return 'system';
         case 'market-data': return 'market';
@@ -44,7 +45,7 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
         default: return 'banks';
       }
     };
-    
+
     const newTab = getTabFromSection(currentSection);
     setActiveTab(newTab);
   }, [currentSection]);
@@ -68,22 +69,28 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
       requiredRole: 'admin'
     },
     {
+      id: 'connections',
+      label: 'Connections',
+      icon: '🔌',
+      requiredRole: 'admin'
+    },
+    {
+      id: 'securities',
+      label: 'Securities Base',
+      icon: '🔖',
+      requiredRole: 'admin'
+    },
+    {
       id: 'issuers',
       label: 'Issuers',
       icon: '🏢',
       requiredRole: 'admin'
     },
     {
-      id: 'users',
-      label: 'Users',
-      icon: '👥',
-      requiredRole: 'superadmin'
-    },
-    {
       id: 'prices',
       label: 'Prices',
       icon: '📈',
-      requiredRole: 'superadmin'
+      requiredRole: 'admin'
     },
     {
       id: 'system',
@@ -116,10 +123,12 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
     switch (activeTab) {
       case 'banks':
         return <BankManagement key="banks" user={user} />;
+      case 'connections':
+        return <BankConnectionsManager key="connections" user={user} />;
+      case 'securities':
+        return <SecuritiesBase key="securities" user={user} />;
       case 'issuers':
         return <IssuerManagementComponent key="issuers" user={user} />;
-      case 'users':
-        return <UserManagement key="users" user={user} />;
       case 'prices':
         return <Prices key="prices" />;
       case 'system':
@@ -142,23 +151,23 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
       <div style={{
         maxWidth: '1200px',
         margin: '0 auto',
-        padding: '2rem'
+        padding: 'min(2rem, 5vw)'
       }}>
       <section style={{
         background: 'var(--bg-secondary)',
         borderRadius: '12px',
-        padding: '2rem',
+        padding: 'min(2rem, 5vw)',
         boxShadow: '0 1px 3px var(--shadow)',
         border: '1px solid var(--border-color)',
         transition: 'all 0.3s ease'
       }}>
         {/* Header */}
         <div style={{
-          marginBottom: '2rem'
+          marginBottom: '1.5rem'
         }}>
           <h2 style={{
             margin: '0 0 0.5rem 0',
-            fontSize: '1.2rem',
+            fontSize: 'clamp(1rem, 4vw, 1.2rem)',
             fontWeight: '600',
             color: 'var(--text-primary)'
           }}>
@@ -167,7 +176,7 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
           <p style={{
             margin: 0,
             color: 'var(--text-secondary)',
-            fontSize: '0.9rem'
+            fontSize: 'clamp(0.8rem, 3vw, 0.9rem)'
           }}>
             Manage products, users, and system settings
           </p>
@@ -176,23 +185,24 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
         {/* Tab Navigation */}
         <div style={{
           borderBottom: '2px solid var(--border-color)',
-          marginBottom: '2rem'
+          marginBottom: '1.5rem'
         }}>
           <div style={{
             display: 'flex',
             gap: '0',
-            overflowX: 'auto'
+            overflowX: 'auto',
+            WebkitOverflowScrolling: 'touch'
           }}>
             {visibleTabs.map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
                 style={{
-                  padding: '12px 24px',
+                  padding: 'clamp(8px, 2vw, 12px) clamp(12px, 4vw, 24px)',
                   border: 'none',
                   background: 'none',
                   cursor: 'pointer',
-                  fontSize: '0.9rem',
+                  fontSize: 'clamp(0.75rem, 3vw, 0.9rem)',
                   fontWeight: '500',
                   color: activeTab === tab.id ? 'var(--accent-color)' : 'var(--text-secondary)',
                   borderBottom: activeTab === tab.id ? '3px solid var(--accent-color)' : '3px solid transparent',
@@ -201,7 +211,7 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
                   whiteSpace: 'nowrap',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '8px'
+                  gap: 'clamp(4px, 2vw, 8px)'
                 }}
                 onMouseEnter={(e) => {
                   if (activeTab !== tab.id) {

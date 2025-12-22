@@ -42,6 +42,19 @@ const Schedule = ({ user }) => {
   // Server now provides isPast flag, so we find first non-past observation
   const nextObservationIndex = observations.findIndex(obs => !obs.isPast);
 
+  // Debug: Log next observation prediction data
+  React.useEffect(() => {
+    if (observations.length > 0 && nextObservationIndex >= 0) {
+      const nextObs = observations[nextObservationIndex];
+      console.log('[SCHEDULE CLIENT] Next observation:', {
+        index: nextObservationIndex,
+        productId: nextObs.productId,
+        hasPrediction: !!nextObs.nextObservationPrediction,
+        predictionData: nextObs.nextObservationPrediction
+      });
+    }
+  }, [observations, nextObservationIndex]);
+
   // Auto-scroll to next observation on initial load
   useEffect(() => {
     if (!isLoading && nextObservationRef.current && tableContainerRef.current) {
@@ -275,7 +288,7 @@ const Schedule = ({ user }) => {
                 {/* Table Header - Sleek Dark Header */}
                 <div style={{
                   display: 'grid',
-                  gridTemplateColumns: '1.2fr 1fr 1.2fr 1.5fr 1fr 1fr',
+                  gridTemplateColumns: '1.2fr 1fr 1.2fr 1.5fr 1fr 1fr 1.3fr',
                   gap: '0.75rem',
                   padding: '1.25rem 1.5rem',
                   background: 'linear-gradient(135deg, #1e293b 0%, #334155 100%)',
@@ -337,6 +350,16 @@ const Schedule = ({ user }) => {
                   }}>
                     💰 Details
                   </div>
+                  <div style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px',
+                    textAlign: 'center'
+                  }}>
+                    🔮 Prediction
+                  </div>
                 </div>
 
                 {/* Table Rows - Enhanced Visual Hierarchy */}
@@ -344,6 +367,12 @@ const Schedule = ({ user }) => {
                 const isNextObservation = index === nextObservationIndex;
                 const isFutureRow = !obs.isPast;
                 const isPastRow = obs.isPast;
+
+                // Check if this is the first upcoming observation for THIS product
+                const isFirstUpcomingForProduct = !obs.isPast &&
+                  !observations.slice(0, index).some(prevObs =>
+                    prevObs.productId === obs.productId && !prevObs.isPast
+                  );
 
                 // Get color based on server-calculated daysLeftColor
                 const getDaysLeftColor = (colorKey) => {
@@ -361,7 +390,8 @@ const Schedule = ({ user }) => {
                     ref={isNextObservation ? nextObservationRef : null}
                     style={{
                       display: 'grid',
-                      gridTemplateColumns: '1.2fr 1fr 1.2fr 1.5fr 1fr 1fr',
+                      gridTemplateColumns: '1.2fr 1fr 1.2fr 1.5fr 1fr 1fr 1.3fr',
+                      alignItems: 'center',
                       gap: '0.75rem',
                       padding: '1rem 1.5rem',
                       borderBottom: index < observations.length - 1 ?
@@ -431,7 +461,7 @@ const Schedule = ({ user }) => {
                     {/* Observation Type - Badge Style */}
                     <div style={{
                       fontSize: '0.75rem',
-                      display: 'inline-flex',
+                      display: 'flex',
                       alignItems: 'center'
                     }}>
                       <span style={{
@@ -611,6 +641,110 @@ const Schedule = ({ user }) => {
                             </span>
                           )}
                         </>
+                      )}
+                    </div>
+
+                    {/* Prediction Column */}
+                    <div style={{
+                      fontSize: '0.875rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.5rem',
+                      flexWrap: 'wrap'
+                    }}>
+                      {isFirstUpcomingForProduct && obs.nextObservationPrediction ? (
+                        <div style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '0.25rem',
+                          alignItems: 'center'
+                        }}>
+                          {obs.nextObservationPrediction.outcomeType === 'autocall' && (
+                            <span style={{
+                              background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                              color: '#ffffff',
+                              padding: '0.35rem 0.7rem',
+                              borderRadius: '8px',
+                              display: 'inline-block',
+                              fontSize: '0.7rem',
+                              fontWeight: '700',
+                              boxShadow: '0 2px 8px rgba(59, 130, 246, 0.3)',
+                              letterSpacing: '0.3px'
+                            }}>
+                              🎊 Autocall: {obs.nextObservationPrediction.autocallPriceFormatted}
+                            </span>
+                          )}
+                          {obs.nextObservationPrediction.outcomeType === 'coupon' && (
+                            <span style={{
+                              color: '#059669',
+                              background: '#d1fae5',
+                              padding: '0.3rem 0.6rem',
+                              borderRadius: '6px',
+                              display: 'inline-block',
+                              fontSize: '0.75rem',
+                              boxShadow: '0 1px 3px rgba(5, 150, 105, 0.1)',
+                              fontWeight: '600'
+                            }}>
+                              💵 Coupon: {obs.nextObservationPrediction.couponAmountFormatted}
+                            </span>
+                          )}
+                          {obs.nextObservationPrediction.outcomeType === 'memory_added' && (
+                            <span style={{
+                              color: '#c2410c',
+                              background: '#fed7aa',
+                              padding: '0.3rem 0.6rem',
+                              borderRadius: '6px',
+                              display: 'inline-block',
+                              fontSize: '0.75rem',
+                              boxShadow: '0 1px 3px rgba(234, 88, 12, 0.1)',
+                              fontWeight: '600'
+                            }}>
+                              🧠 In Memory
+                            </span>
+                          )}
+                          {obs.nextObservationPrediction.outcomeType === 'final_redemption' && (
+                            <span style={{
+                              background: 'linear-gradient(135deg, #ea580c 0%, #c2410c 100%)',
+                              color: '#ffffff',
+                              padding: '0.35rem 0.7rem',
+                              borderRadius: '8px',
+                              display: 'inline-block',
+                              fontSize: '0.7rem',
+                              fontWeight: '700',
+                              boxShadow: '0 2px 8px rgba(234, 88, 12, 0.3)',
+                              letterSpacing: '0.3px'
+                            }}>
+                              🏁 Final: {obs.nextObservationPrediction.redemptionAmountFormatted}
+                            </span>
+                          )}
+                          {obs.nextObservationPrediction.outcomeType === 'no_event' && (
+                            <span style={{
+                              color: '#94a3b8',
+                              fontStyle: 'italic',
+                              fontSize: '0.75rem',
+                              fontWeight: '500'
+                            }}>
+                              ✗ No coupon
+                            </span>
+                          )}
+                          <span style={{
+                            fontSize: '0.65rem',
+                            color: '#94a3b8',
+                            fontStyle: 'italic',
+                            fontWeight: '400'
+                          }}>
+                            Basket: {obs.nextObservationPrediction.currentBasketLevelFormatted}
+                          </span>
+                        </div>
+                      ) : (
+                        <span style={{
+                          color: '#94a3b8',
+                          fontWeight: '400',
+                          fontSize: '0.875rem'
+                        }}>
+                          —
+                        </span>
                       )}
                     </div>
                   </div>

@@ -120,7 +120,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                 marginBottom: '2rem'
               }}>
                 <div style={fieldContainerStyle}>
-                  <label style={labelStyle}>Coupon Rate (%)</label>
+                  <label style={labelStyle}>Coupon Rate (% per period)</label>
                   <input
                     type="text"
                     inputMode="decimal"
@@ -174,14 +174,14 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                   <label style={labelStyle}>Strike Level (%)</label>
                   <input
                     type="number"
-                    value={structureParams?.strikeLevel || 100}
+                    value={structureParams?.strike || 100}
                     min="80"
                     max="120"
                     step="1"
                     style={numberInputStyle}
                     onFocus={handleInputFocus}
                     onBlur={handleInputBlur}
-                    onChange={(e) => onParamChange && onParamChange('strikeLevel', parseInt(e.target.value) || 0)}
+                    onChange={(e) => onParamChange && onParamChange('strike', parseInt(e.target.value) || 0)}
                   />
                 </div>
               </div>
@@ -220,7 +220,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                   }}>
                     <input
                       type="checkbox"
-                      checked={structureParams?.memoryCoupon !== false}
+                      checked={structureParams?.memoryCoupon === true}
                       style={{
                         width: '18px',
                         height: '18px',
@@ -249,7 +249,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                   }}>
                     <input
                       type="checkbox"
-                      checked={structureParams?.memoryAutocall !== false}
+                      checked={structureParams?.memoryAutocall === true}
                       style={{
                         width: '18px',
                         height: '18px',
@@ -469,15 +469,23 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                 <div style={fieldContainerStyle}>
                   <label style={labelStyle}>Participation Rate (%)</label>
                   <input
-                    type="number"
-                    value={structureParams?.participationRate || 100}
+                    type="text"
+                    inputMode="decimal"
+                    defaultValue={structureParams?.participationRate !== undefined ? structureParams.participationRate : 100}
                     min="0"
                     max="500"
                     step="1"
                     style={numberInputStyle}
                     onFocus={handleInputFocus}
-                    onBlur={handleInputBlur}
-                    onChange={(e) => onParamChange && onParamChange('participationRate', parseInt(e.target.value) || 0)}
+                    onBlur={(e) => {
+                      handleInputBlur(e);
+                      const numValue = parseInt(e.target.value);
+                      if (!isNaN(numValue)) {
+                        onParamChange && onParamChange('participationRate', numValue);
+                      } else {
+                        e.target.value = structureParams?.participationRate !== undefined ? structureParams.participationRate : 100;
+                      }
+                    }}
                   />
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
                     Multiplier applied to underlying performance
@@ -487,15 +495,23 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                 <div style={fieldContainerStyle}>
                   <label style={labelStyle}>Strike (%)</label>
                   <input
-                    type="number"
-                    value={structureParams?.strike || 100}
+                    type="text"
+                    inputMode="decimal"
+                    defaultValue={structureParams?.strike !== undefined ? structureParams.strike : 100}
                     min="50"
                     max="150"
                     step="1"
                     style={numberInputStyle}
                     onFocus={handleInputFocus}
-                    onBlur={handleInputBlur}
-                    onChange={(e) => onParamChange && onParamChange('strike', parseInt(e.target.value) || 0)}
+                    onBlur={(e) => {
+                      handleInputBlur(e);
+                      const numValue = parseInt(e.target.value);
+                      if (!isNaN(numValue)) {
+                        onParamChange && onParamChange('strike', numValue);
+                      } else {
+                        e.target.value = structureParams?.strike !== undefined ? structureParams.strike : 100;
+                      }
+                    }}
                   />
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
                     Initial reference level
@@ -505,15 +521,23 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                 <div style={fieldContainerStyle}>
                   <label style={labelStyle}>Cap Level (%)</label>
                   <input
-                    type="number"
-                    value={structureParams?.cap || 150}
-                    min="100"
+                    type="text"
+                    inputMode="decimal"
+                    defaultValue={structureParams?.cap !== undefined ? structureParams.cap : 0}
+                    min="0"
                     max="500"
                     step="5"
                     style={numberInputStyle}
                     onFocus={handleInputFocus}
-                    onBlur={handleInputBlur}
-                    onChange={(e) => onParamChange && onParamChange('cap', parseInt(e.target.value) || 0)}
+                    onBlur={(e) => {
+                      handleInputBlur(e);
+                      const numValue = parseInt(e.target.value);
+                      if (!isNaN(numValue)) {
+                        onParamChange && onParamChange('cap', numValue);
+                      } else {
+                        e.target.value = structureParams?.cap !== undefined ? structureParams.cap : 0;
+                      }
+                    }}
                   />
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
                     Maximum payout level (0 = no cap)
@@ -523,15 +547,23 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                 <div style={fieldContainerStyle}>
                   <label style={labelStyle}>Capital Guarantee Level (%)</label>
                   <input
-                    type="number"
-                    value={structureParams?.capitalGuarantee || 100}
+                    type="text"
+                    inputMode="decimal"
+                    defaultValue={structureParams?.capitalGuarantee !== undefined ? structureParams.capitalGuarantee : 100}
                     min="0"
                     max="100"
                     step="1"
                     style={numberInputStyle}
                     onFocus={handleInputFocus}
-                    onBlur={handleInputBlur}
-                    onChange={(e) => onParamChange && onParamChange('capitalGuarantee', parseInt(e.target.value) || 0)}
+                    onBlur={(e) => {
+                      handleInputBlur(e);
+                      const numValue = parseInt(e.target.value);
+                      if (!isNaN(numValue)) {
+                        onParamChange && onParamChange('capitalGuarantee', numValue);
+                      } else {
+                        e.target.value = structureParams?.capitalGuarantee !== undefined ? structureParams.capitalGuarantee : 100;
+                      }
+                    }}
                   />
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
                     Minimum redemption level at maturity
@@ -601,22 +633,120 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                     padding: '1rem',
                     background: 'var(--bg-primary)',
                     borderRadius: '6px',
-                    marginLeft: '2.25rem'
+                    marginLeft: '2.25rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '1rem'
                   }}>
-                    <label style={labelStyle}>Issuer Call Rebate (%)</label>
-                    <input
-                      type="number"
-                      value={structureParams?.issuerCallRebate || 0}
-                      min="0"
-                      max="20"
-                      step="0.5"
-                      style={numberInputStyle}
-                      onFocus={handleInputFocus}
-                      onBlur={handleInputBlur}
-                      onChange={(e) => onParamChange && onParamChange('issuerCallRebate', parseFloat(e.target.value) || 0)}
-                    />
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                      Additional payment on top of 100% when product is called by issuer (e.g., 5% means investor receives 105%)
+                    {/* Coupon Type Selector */}
+                    <div>
+                      <label style={{
+                        ...labelStyle,
+                        marginBottom: '0.75rem',
+                        display: 'block'
+                      }}>
+                        Rebate Type
+                      </label>
+                      <div style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.5rem'
+                      }}>
+                        <label style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.5rem',
+                          cursor: 'pointer',
+                          padding: '0.5rem',
+                          borderRadius: '4px',
+                          background: structureParams?.issuerCallRebateType === 'fixed' || !structureParams?.issuerCallRebateType ? 'var(--bg-secondary)' : 'transparent',
+                          border: '1px solid',
+                          borderColor: structureParams?.issuerCallRebateType === 'fixed' || !structureParams?.issuerCallRebateType ? 'var(--accent-color)' : 'var(--border-color)'
+                        }}>
+                          <input
+                            type="radio"
+                            name="issuerCallRebateType"
+                            value="fixed"
+                            checked={structureParams?.issuerCallRebateType === 'fixed' || !structureParams?.issuerCallRebateType}
+                            style={{
+                              accentColor: 'var(--accent-color)'
+                            }}
+                            onChange={(e) => onParamChange && onParamChange('issuerCallRebateType', 'fixed')}
+                          />
+                          <div style={{ display: 'flex', flexDirection: 'column' }}>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: '500' }}>
+                              Fixed Coupon Amount
+                            </span>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                              Flat payment regardless of time spent (e.g., 5% means investor receives 105%)
+                            </span>
+                          </div>
+                        </label>
+                        <label style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.5rem',
+                          cursor: 'pointer',
+                          padding: '0.5rem',
+                          borderRadius: '4px',
+                          background: structureParams?.issuerCallRebateType === 'per_annum' ? 'var(--bg-secondary)' : 'transparent',
+                          border: '1px solid',
+                          borderColor: structureParams?.issuerCallRebateType === 'per_annum' ? 'var(--accent-color)' : 'var(--border-color)'
+                        }}>
+                          <input
+                            type="radio"
+                            name="issuerCallRebateType"
+                            value="per_annum"
+                            checked={structureParams?.issuerCallRebateType === 'per_annum'}
+                            style={{
+                              accentColor: 'var(--accent-color)'
+                            }}
+                            onChange={(e) => onParamChange && onParamChange('issuerCallRebateType', 'per_annum')}
+                          />
+                          <div style={{ display: 'flex', flexDirection: 'column' }}>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: '500' }}>
+                              Coupon p.a.
+                            </span>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                              Calculated based on time spent in product (prorated by days)
+                            </span>
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Rebate Value */}
+                    <div>
+                      <label style={labelStyle}>
+                        {structureParams?.issuerCallRebateType === 'per_annum'
+                          ? 'Issuer Call Rebate (% p.a.)'
+                          : 'Issuer Call Rebate (%)'}
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        defaultValue={structureParams?.issuerCallRebate !== undefined ? structureParams.issuerCallRebate : 0}
+                        min="0"
+                        max="20"
+                        step="0.5"
+                        style={numberInputStyle}
+                        onFocus={handleInputFocus}
+                        onBlur={(e) => {
+                          handleInputBlur(e);
+                          const value = e.target.value.replace(',', '.');
+                          const numValue = parseFloat(value);
+                          if (!isNaN(numValue)) {
+                            onParamChange && onParamChange('issuerCallRebate', numValue);
+                          } else {
+                            e.target.value = structureParams?.issuerCallRebate !== undefined ? structureParams.issuerCallRebate : 0;
+                          }
+                        }}
+                      />
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                        {structureParams?.issuerCallRebateType === 'per_annum'
+                          ? 'Annual rate that will be prorated based on actual days held when product is called'
+                          : 'Additional payment on top of 100% when product is called by issuer (e.g., 5% means investor receives 105%)'}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -648,10 +778,415 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                     <>
                       <li>Issuer may call the product early if market conditions are favorable</li>
                       {structureParams?.issuerCallRebate > 0 && (
-                        <li>If called: investor receives 100% + {structureParams.issuerCallRebate}% rebate = {100 + structureParams.issuerCallRebate}%</li>
+                        structureParams?.issuerCallRebateType === 'per_annum' ? (
+                          <li>If called: investor receives 100% + prorated coupon ({structureParams.issuerCallRebate}% p.a. × days held / 365)</li>
+                        ) : (
+                          <li>If called: investor receives 100% + {structureParams.issuerCallRebate}% fixed rebate = {100 + structureParams.issuerCallRebate}%</li>
+                        )
                       )}
                     </>
                   )}
+                </ul>
+              </div>
+            </div>
+          </div>
+        );
+
+      case 'reverse_convertible':
+        return (
+          <div>
+            <div style={commonStyle}>
+              <h4 style={{
+                margin: '0 0 20px 0',
+                color: 'var(--text-secondary)',
+                fontSize: '1.1rem',
+                fontWeight: '600',
+                borderBottom: '2px solid var(--accent-color)',
+                paddingBottom: '8px'
+              }}>🔄 Reverse Convertible Configuration</h4>
+
+              {/* Essential Parameters */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr 1fr',
+                gap: '1.5rem',
+                marginBottom: '2rem'
+              }}>
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Coupon Rate p.a. (%)</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    defaultValue={structureParams?.couponRate !== undefined ? structureParams.couponRate : 3.5}
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={(e) => {
+                      handleInputBlur(e);
+                      // Parse and save value on blur
+                      const value = e.target.value.replace(',', '.');
+                      const numValue = parseFloat(value);
+                      if (!isNaN(numValue)) {
+                        onParamChange && onParamChange('couponRate', numValue);
+                      } else {
+                        // Reset to default if invalid
+                        e.target.value = structureParams?.couponRate !== undefined ? structureParams.couponRate : 3.5;
+                      }
+                    }}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Guaranteed coupon paid at maturity
+                  </div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Capital Protection Barrier</label>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <select
+                      value={structureParams?.barrierType || 'european'}
+                      style={{ ...selectInputStyle, width: '110px' }}
+                      onFocus={handleInputFocus}
+                      onBlur={handleInputBlur}
+                      onChange={(e) => onParamChange && onParamChange('barrierType', e.target.value)}
+                    >
+                      <option value="american">American</option>
+                      <option value="european">European</option>
+                    </select>
+                    <input
+                      type="number"
+                      value={structureParams?.capitalProtectionBarrier || 70}
+                      min="0"
+                      max="100"
+                      step="1"
+                      style={{ ...numberInputStyle, width: '70px' }}
+                      onFocus={handleInputFocus}
+                      onBlur={handleInputBlur}
+                      onChange={(e) => onParamChange && onParamChange('capitalProtectionBarrier', parseInt(e.target.value) || 0)}
+                    />
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>%</span>
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    {structureParams?.barrierType === 'american'
+                      ? 'Continuous monitoring during product life'
+                      : 'Checked only at final observation'}
+                  </div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Strike Level (%)</label>
+                  <input
+                    type="number"
+                    value={structureParams?.strike || 100}
+                    min="50"
+                    max="150"
+                    step="1"
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('strike', parseInt(e.target.value) || 0)}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Initial reference level for performance calculation
+                  </div>
+                </div>
+              </div>
+
+              {/* Gearing Factor Display (Calculated) */}
+              <div style={{
+                background: 'var(--bg-tertiary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '8px',
+                padding: '1.5rem',
+                marginBottom: '1rem'
+              }}>
+                <h5 style={{
+                  margin: '0 0 1rem 0',
+                  color: 'var(--text-primary)',
+                  fontSize: '1rem',
+                  fontWeight: '600'
+                }}>
+                  Calculated Parameters
+                </h5>
+
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '1rem'
+                }}>
+                  <div style={{
+                    padding: '1rem',
+                    background: 'var(--bg-primary)',
+                    borderRadius: '6px'
+                  }}>
+                    <div style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--text-muted)',
+                      textTransform: 'uppercase',
+                      marginBottom: '0.5rem',
+                      fontWeight: '600'
+                    }}>
+                      Gearing Factor
+                    </div>
+                    <div style={{
+                      fontSize: '1.5rem',
+                      fontWeight: '700',
+                      color: 'var(--accent-color)',
+                      fontFamily: 'monospace'
+                    }}>
+                      {(1 / ((structureParams?.capitalProtectionBarrier || 70) / 100)).toFixed(2)}x
+                    </div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      color: 'var(--text-muted)',
+                      marginTop: '0.5rem',
+                      lineHeight: '1.4'
+                    }}>
+                      Downside participation below barrier
+                      <br />
+                      Formula: 1 ÷ (barrier ÷ 100)
+                    </div>
+                  </div>
+
+                  <div style={{
+                    padding: '1rem',
+                    background: 'var(--bg-primary)',
+                    borderRadius: '6px'
+                  }}>
+                    <div style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--text-muted)',
+                      textTransform: 'uppercase',
+                      marginBottom: '0.5rem',
+                      fontWeight: '600'
+                    }}>
+                      Example Scenario
+                    </div>
+                    <div style={{
+                      fontSize: '0.8rem',
+                      color: 'var(--text-secondary)',
+                      lineHeight: '1.6'
+                    }}>
+                      If underlying at 60% (−40%):<br />
+                      <span style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                        100% + (−40% × {(1 / ((structureParams?.capitalProtectionBarrier || 70) / 100)).toFixed(2)}) + {structureParams?.couponRate || 3.5}%
+                      </span>
+                      <br />
+                      = <strong>{(100 + (-40 * (1 / ((structureParams?.capitalProtectionBarrier || 70) / 100))) + (structureParams?.couponRate || 3.5)).toFixed(1)}%</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Info Box */}
+              <div style={{
+                marginTop: '1.5rem',
+                padding: '1rem',
+                background: 'var(--bg-tertiary)',
+                borderRadius: '8px',
+                fontSize: '0.85rem',
+                color: 'var(--text-secondary)',
+                lineHeight: '1.5'
+              }}>
+                <div style={{ fontWeight: '600', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+                  ℹ️ How Reverse Convertible Works:
+                </div>
+                <ul style={{ margin: '0', paddingLeft: '1.5rem' }}>
+                  <li><strong>Guaranteed Coupon:</strong> {structureParams?.couponRate || 3.5}% paid at maturity regardless of underlying performance</li>
+                  <li><strong>Above Barrier ({structureParams?.capitalProtectionBarrier || 70}%):</strong> Full capital protection → 100% + {structureParams?.couponRate || 3.5}% coupon</li>
+                  <li><strong>Below Barrier:</strong> Geared downside exposure → 100% + (performance × {(1 / ((structureParams?.capitalProtectionBarrier || 70) / 100)).toFixed(2)}x) + {structureParams?.couponRate || 3.5}% coupon</li>
+                  <li><strong>{structureParams?.barrierType === 'american' ? 'American Barrier:' : 'European Barrier:'}</strong> {structureParams?.barrierType === 'american' ? 'Monitored continuously (any intraday touch counts)' : 'Checked only at final observation date'}</li>
+                  <li><strong>Best for:</strong> Investors seeking high income with moderate downside protection in stable markets</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        );
+
+      case 'reverse_convertible_bond':
+        return (
+          <div>
+            <div style={commonStyle}>
+              <h4 style={{
+                margin: '0 0 20px 0',
+                color: 'var(--text-secondary)',
+                fontSize: '1.1rem',
+                fontWeight: '600',
+                borderBottom: '2px solid var(--accent-color)',
+                paddingBottom: '8px'
+              }}>📜 Reverse Convertible (Bond) Configuration</h4>
+
+              {/* Essential Parameters */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: '1.5rem',
+                marginBottom: '2rem'
+              }}>
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Coupon Rate p.a. (%)</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    defaultValue={structureParams?.couponRate !== undefined ? structureParams.couponRate : 3.5}
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={(e) => {
+                      handleInputBlur(e);
+                      // Parse and save value on blur
+                      const value = e.target.value.replace(',', '.');
+                      const numValue = parseFloat(value);
+                      if (!isNaN(numValue)) {
+                        onParamChange && onParamChange('couponRate', numValue);
+                      } else {
+                        // Reset to default if invalid
+                        e.target.value = structureParams?.couponRate !== undefined ? structureParams.couponRate : 3.5;
+                      }
+                    }}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Guaranteed coupon paid at maturity
+                  </div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Capital Protection Barrier</label>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <select
+                      value={structureParams?.barrierType || 'european'}
+                      style={{ ...selectInputStyle, width: '110px' }}
+                      onFocus={handleInputFocus}
+                      onBlur={handleInputBlur}
+                      onChange={(e) => onParamChange && onParamChange('barrierType', e.target.value)}
+                    >
+                      <option value="american">American</option>
+                      <option value="european">European</option>
+                    </select>
+                    <input
+                      type="number"
+                      value={structureParams?.capitalProtectionBarrier || 100}
+                      min="0"
+                      max="100"
+                      step="1"
+                      style={{ ...numberInputStyle, width: '70px' }}
+                      onFocus={handleInputFocus}
+                      onBlur={handleInputBlur}
+                      onChange={(e) => onParamChange && onParamChange('capitalProtectionBarrier', parseInt(e.target.value) || 0)}
+                    />
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>%</span>
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    {structureParams?.barrierType === 'american'
+                      ? 'Continuous monitoring during product life'
+                      : 'Checked only at final observation'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Gearing Factor Display (Calculated) */}
+              <div style={{
+                background: 'var(--bg-tertiary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '8px',
+                padding: '1.5rem',
+                marginBottom: '1rem'
+              }}>
+                <h5 style={{
+                  margin: '0 0 1rem 0',
+                  color: 'var(--text-primary)',
+                  fontSize: '1rem',
+                  fontWeight: '600'
+                }}>
+                  Calculated Parameters
+                </h5>
+
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '1rem'
+                }}>
+                  <div style={{
+                    padding: '1rem',
+                    background: 'var(--bg-primary)',
+                    borderRadius: '6px'
+                  }}>
+                    <div style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--text-muted)',
+                      textTransform: 'uppercase',
+                      marginBottom: '0.5rem',
+                      fontWeight: '600'
+                    }}>
+                      Gearing Factor
+                    </div>
+                    <div style={{
+                      fontSize: '1.5rem',
+                      fontWeight: '700',
+                      color: 'var(--accent-color)',
+                      fontFamily: 'monospace'
+                    }}>
+                      {(1 / ((structureParams?.capitalProtectionBarrier || 100) / 100)).toFixed(2)}x
+                    </div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      color: 'var(--text-muted)',
+                      marginTop: '0.5rem',
+                      lineHeight: '1.4'
+                    }}>
+                      Downside participation below barrier
+                      <br />
+                      Formula: 1 ÷ (barrier ÷ 100)
+                    </div>
+                  </div>
+
+                  <div style={{
+                    padding: '1rem',
+                    background: 'var(--bg-primary)',
+                    borderRadius: '6px'
+                  }}>
+                    <div style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--text-muted)',
+                      textTransform: 'uppercase',
+                      marginBottom: '0.5rem',
+                      fontWeight: '600'
+                    }}>
+                      Example Scenario
+                    </div>
+                    <div style={{
+                      fontSize: '0.8rem',
+                      color: 'var(--text-secondary)',
+                      lineHeight: '1.6'
+                    }}>
+                      If bond at 95% (−5%):<br />
+                      <span style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                        100% + (−5% × {(1 / ((structureParams?.capitalProtectionBarrier || 100) / 100)).toFixed(2)}) + {structureParams?.couponRate || 3.5}%
+                      </span>
+                      <br />
+                      = <strong>{(100 + (-5 * (1 / ((structureParams?.capitalProtectionBarrier || 100) / 100))) + (structureParams?.couponRate || 3.5)).toFixed(1)}%</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Info Box */}
+              <div style={{
+                marginTop: '1.5rem',
+                padding: '1rem',
+                background: 'var(--bg-tertiary)',
+                borderRadius: '8px',
+                fontSize: '0.85rem',
+                color: 'var(--text-secondary)',
+                lineHeight: '1.5'
+              }}>
+                <div style={{ fontWeight: '600', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+                  ℹ️ How Reverse Convertible (Bond) Works:
+                </div>
+                <ul style={{ margin: '0', paddingLeft: '1.5rem' }}>
+                  <li><strong>Guaranteed Coupon:</strong> {structureParams?.couponRate || 3.5}% paid at maturity regardless of bond performance</li>
+                  <li><strong>Above Barrier ({structureParams?.capitalProtectionBarrier || 100}%):</strong> Full capital protection → 100% + {structureParams?.couponRate || 3.5}% coupon</li>
+                  <li><strong>Below Barrier:</strong> Geared downside exposure → 100% + (performance × {(1 / ((structureParams?.capitalProtectionBarrier || 100) / 100)).toFixed(2)}x) + {structureParams?.couponRate || 3.5}% coupon</li>
+                  <li><strong>{structureParams?.barrierType === 'american' ? 'American Barrier:' : 'European Barrier:'}</strong> {structureParams?.barrierType === 'american' ? 'Monitored continuously (any intraday touch counts)' : 'Checked only at final observation date'}</li>
+                  <li><strong>Bond Underlying:</strong> This template is designed for reverse convertibles on bond underlyings</li>
+                  <li><strong>Best for:</strong> Investors seeking high income with full capital protection on investment-grade bonds</li>
                 </ul>
               </div>
             </div>

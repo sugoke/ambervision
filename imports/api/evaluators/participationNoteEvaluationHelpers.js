@@ -91,11 +91,22 @@ export const ParticipationNoteEvaluationHelpers = {
 
     const now = new Date();
     const maturityDate = product.maturity || product.maturityDate;
-    const isMaturityPassed = maturityDate && new Date(maturityDate) <= now;
+
+    // Strip time components for date-only comparison
+    const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    // Maturity is settlement date - product has matured ON or after this date
+    const isMaturityPassed = maturityDate && (() => {
+      const maturityDateOnly = new Date(new Date(maturityDate).getFullYear(), new Date(maturityDate).getMonth(), new Date(maturityDate).getDate());
+      return maturityDateOnly <= nowDateOnly;
+    })();
 
     // Check if product was called by issuer
     const issuerCallDate = product.structureParameters?.issuerCallDate || product.structure?.issuerCallDate;
-    const isCalledByIssuer = issuerCallDate && new Date(issuerCallDate) <= now;
+    const isCalledByIssuer = issuerCallDate && (() => {
+      const issuerCallDateOnly = new Date(new Date(issuerCallDate).getFullYear(), new Date(issuerCallDate).getMonth(), new Date(issuerCallDate).getDate());
+      return issuerCallDateOnly <= nowDateOnly;
+    })();
 
     // Use call date or maturity date for redemption
     const redemptionDate = isCalledByIssuer ? new Date(issuerCallDate) : (isMaturityPassed ? new Date(maturityDate) : null);
@@ -292,7 +303,8 @@ export const ParticipationNoteEvaluationHelpers = {
     const now = new Date();
     const issuerCallDate = product.structureParameters?.issuerCallDate || product.structure?.issuerCallDate;
     let issuerCallPrice = product.structureParameters?.issuerCallPrice || product.structure?.issuerCallPrice;
-    const issuerCallRebate = product.structureParams?.issuerCallRebate || product.structureParameters?.issuerCallRebate || 0;
+    const issuerCallRebateRaw = product.structureParams?.issuerCallRebate || product.structureParameters?.issuerCallRebate || 0;
+    const issuerCallRebateType = product.structureParams?.issuerCallRebateType || product.structureParameters?.issuerCallRebateType || 'fixed';
 
     if (!issuerCallDate) {
       return {
@@ -300,16 +312,50 @@ export const ParticipationNoteEvaluationHelpers = {
         isCalled: false,
         callDate: null,
         callPrice: null,
-        rebate: null
+        rebate: null,
+        rebateType: null
       };
     }
 
     const isCalled = new Date(issuerCallDate) <= now;
 
-    // If no explicit call price set but there's a rebate, calculate: 100% + rebate
-    if (!issuerCallPrice && issuerCallRebate > 0) {
-      issuerCallPrice = 100 + issuerCallRebate;
+    // Calculate actual rebate based on type
+    let issuerCallRebate = issuerCallRebateRaw;
+    let rebateCalculationDetails = null;
+
+    if (issuerCallRebateType === 'per_annum' && issuerCallRebateRaw > 0) {
+      // Calculate prorated rebate based on days held
+      const tradeDate = product.tradeDate || product.valueDate;
+      if (tradeDate) {
+        const tradeDateObj = new Date(tradeDate);
+        const callDateObj = new Date(issuerCallDate);
+        const daysHeld = Math.ceil((callDateObj - tradeDateObj) / (1000 * 60 * 60 * 24));
+        const yearsHeld = daysHeld / 365;
+
+        // Prorate the annual rate
+        issuerCallRebate = issuerCallRebateRaw * yearsHeld;
+
+        rebateCalculationDetails = {
+          annualRate: issuerCallRebateRaw,
+          daysHeld: daysHeld,
+          yearsHeld: yearsHeld,
+          proratedRebate: issuerCallRebate
+        };
+
+        console.log(`[Participation Note] Prorated rebate calculation: ${issuerCallRebateRaw}% p.a. × ${daysHeld} days / 365 = ${issuerCallRebate.toFixed(2)}%`);
+      }
     }
+
+    // Track whether an explicit call price was set by user
+    const hasExplicitCallPrice = !!issuerCallPrice;
+
+    // If no explicit call price set, use 100% as base
+    if (!issuerCallPrice) {
+      issuerCallPrice = 100;
+    }
+
+    // Calculate total: call price + rebate (rebate is separate, never double-count)
+    const totalReceived = issuerCallPrice + issuerCallRebate;
 
     return {
       hasCallOption: true,
@@ -320,10 +366,15 @@ export const ParticipationNoteEvaluationHelpers = {
         day: 'numeric',
         year: 'numeric'
       }),
-      callPrice: issuerCallPrice || null,
-      callPriceFormatted: issuerCallPrice ? `${issuerCallPrice.toFixed(2)}%` : null,
+      callPrice: issuerCallPrice,
+      callPriceFormatted: `${issuerCallPrice.toFixed(2)}%`,
+      hasExplicitCallPrice: hasExplicitCallPrice,
       rebate: issuerCallRebate,
-      rebateFormatted: issuerCallRebate > 0 ? `${issuerCallRebate.toFixed(2)}%` : null
+      rebateFormatted: issuerCallRebate > 0 ? `${issuerCallRebate.toFixed(2)}%` : null,
+      rebateType: issuerCallRebateType,
+      rebateCalculationDetails: rebateCalculationDetails,
+      totalReceived: totalReceived,
+      totalReceivedFormatted: `${totalReceived.toFixed(2)}%`
     };
   },
 
@@ -366,26 +417,6 @@ export const ParticipationNoteEvaluationHelpers = {
         let performance = initialPrice > 0 ?
           ((currentPrice - initialPrice) / initialPrice) * 100 : 0;
 
-        // Fetch latest news for this underlying
-        let news = [];
-        try {
-          const fullTicker = underlying.securityData?.ticker || `${underlying.ticker}.US`;
-          const [symbol, exchange] = fullTicker.includes('.') ? fullTicker.split('.') : [fullTicker, null];
-
-          console.log(`📰 [Participation Note] Fetching news for ${underlying.ticker}: fullTicker=${fullTicker}, symbol=${symbol}, exchange=${exchange}`);
-
-          // Fetch 2 latest news articles from EOD API
-          news = await EODApiHelpers.getSecurityNews(symbol, exchange, 2);
-
-          console.log(`📰 [Participation Note] Received ${news?.length || 0} news articles for ${underlying.ticker}`);
-          if (news && news.length > 0) {
-            console.log(`📰 [Participation Note] First article:`, news[0].title);
-          }
-        } catch (error) {
-          console.warn(`📰 [Participation Note] Failed to fetch news for ${underlying.ticker}:`, error.message);
-          news = []; // Graceful fallback - empty array
-        }
-
         const underlyingData = {
           ticker: underlying.ticker,
           name: underlying.name || underlying.ticker,
@@ -412,10 +443,7 @@ export const ParticipationNoteEvaluationHelpers = {
           hasCurrentData: !!(underlying.securityData?.price?.price),
           lastUpdated: new Date().toISOString(),
 
-          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`,
-
-          // Latest news articles
-          news: news
+          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`
         };
 
         underlyings.push(underlyingData);

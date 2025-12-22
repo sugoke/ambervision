@@ -1,15 +1,22 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import { IssuersCollection } from '/imports/api/issuers';
 import { formatDateToISO, formatDateToDDMMYYYY, isWeekend, isMarketHoliday, getNextTradingDay } from '/imports/utils/dateUtils.js';
 import { formatDateForDisplay, formatDateInput as formatDateInputUtil, formatDateForInput } from '/imports/utils/dateFormatters.js';
 import CustomDateInput from '../../CustomDateInput.jsx';
+import { validateISIN, cleanISIN } from '/imports/utils/isinValidator.js';
 
 const ProductDetailsCard = ({ productDetails, onUpdateProductDetails, onRegenerateTitle, editingProduct }) => {
   const [editingField, setEditingField] = useState(null);
   const [tempValue, setTempValue] = useState('');
-  
+
+  // ISIN validation states
+  const [isinValidation, setIsinValidation] = useState({ valid: true, error: null });
+  const [isinUniqueness, setIsinUniqueness] = useState({ isUnique: true, conflict: null });
+  const [isCheckingIsin, setIsCheckingIsin] = useState(false);
+  const isinCheckTimeoutRef = useRef(null);
+
   // Date calculation helper states
   const [showDateHelper, setShowDateHelper] = useState(false);
   const [initialToPaymentDelay, setInitialToPaymentDelay] = useState(14);
@@ -21,6 +28,61 @@ const ProductDetailsCard = ({ productDetails, onUpdateProductDetails, onRegenera
     Meteor.subscribe('issuers');
     return IssuersCollection.find({ active: true }, { sort: { name: 1 } }).fetch();
   });
+
+  // Validate ISIN whenever productDetails.isin changes
+  useEffect(() => {
+    const currentIsin = productDetails.isin;
+
+    // Clear previous timeout
+    if (isinCheckTimeoutRef.current) {
+      clearTimeout(isinCheckTimeoutRef.current);
+    }
+
+    // Reset validation states if ISIN is empty
+    if (!currentIsin || !currentIsin.trim()) {
+      setIsinValidation({ valid: true, error: null });
+      setIsinUniqueness({ isUnique: true, conflict: null });
+      setIsCheckingIsin(false);
+      return;
+    }
+
+    // Validate ISIN syntax
+    const syntaxValidation = validateISIN(currentIsin);
+    setIsinValidation(syntaxValidation);
+
+    // If syntax is invalid, don't check uniqueness
+    if (!syntaxValidation.valid) {
+      setIsinUniqueness({ isUnique: true, conflict: null });
+      setIsCheckingIsin(false);
+      return;
+    }
+
+    // Debounce uniqueness check (500ms after user stops typing)
+    setIsCheckingIsin(true);
+    isinCheckTimeoutRef.current = setTimeout(async () => {
+      try {
+        const cleanedIsin = cleanISIN(currentIsin);
+        const result = await Meteor.callAsync(
+          'products.checkISINUniqueness',
+          cleanedIsin,
+          editingProduct?._id // Exclude current product if editing
+        );
+        setIsinUniqueness(result);
+      } catch (error) {
+        console.error('Error checking ISIN uniqueness:', error);
+        setIsinUniqueness({ isUnique: true, conflict: null });
+      } finally {
+        setIsCheckingIsin(false);
+      }
+    }, 500);
+
+    // Cleanup timeout on unmount
+    return () => {
+      if (isinCheckTimeoutRef.current) {
+        clearTimeout(isinCheckTimeoutRef.current);
+      }
+    };
+  }, [productDetails.isin, editingProduct?._id]);
 
   const handleEdit = (field, currentValue) => {
     setEditingField(field);
@@ -199,6 +261,10 @@ const ProductDetailsCard = ({ productDetails, onUpdateProductDetails, onRegenera
       { value: 'DKK', label: 'DKK - Danish Krone' },
     ];
 
+    // Get ISIN validation status for display
+    const showIsinValidation = field === 'isin' && value && value.trim();
+    const hasIsinError = showIsinValidation && (!isinValidation.valid || !isinUniqueness.isUnique);
+
     return (
       <div className="product-field">
         <label className="field-label">{label}:</label>
@@ -263,9 +329,53 @@ const ProductDetailsCard = ({ productDetails, onUpdateProductDetails, onRegenera
                 handleEdit(field, value);
               }
             }}
+            style={hasIsinError ? { color: '#ef4444', fontWeight: '500' } : {}}
           >
             {value || 'Click to edit'}
           </span>
+        )}
+
+        {/* ISIN validation feedback */}
+        {showIsinValidation && (
+          <div style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}>
+            {isCheckingIsin && (
+              <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⏳</span>
+                Checking ISIN...
+              </div>
+            )}
+
+            {!isCheckingIsin && !isinValidation.valid && (
+              <div style={{ color: '#ef4444', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span>❌</span>
+                <span>{isinValidation.error}</span>
+              </div>
+            )}
+
+            {!isCheckingIsin && isinValidation.valid && !isinUniqueness.isUnique && (
+              <div style={{ color: '#ef4444' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                  <span>⚠️</span>
+                  <span style={{ fontWeight: '500' }}>ISIN already exists in database</span>
+                </div>
+                {isinUniqueness.conflict && (
+                  <div style={{ marginLeft: '1.75rem', color: '#6b7280', fontSize: '0.8rem' }}>
+                    Product: <strong style={{ color: '#ef4444' }}>{isinUniqueness.conflict.title}</strong>
+                    {isinUniqueness.conflict.createdAt && (
+                      <> (created {new Date(isinUniqueness.conflict.createdAt).toLocaleDateString()})</>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!isCheckingIsin && isinValidation.valid && isinUniqueness.isUnique && (
+              <div style={{ color: '#10b981', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span>✅</span>
+                <span>Valid ISIN</span>
+              </div>
+            )}
+          </div>
         )}
       </div>
     );

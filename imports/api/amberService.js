@@ -9,11 +9,13 @@ import { ReportsCollection } from './reports';
 import { TemplateReportsCollection } from './templateReports';
 import { EquityHoldingsCollection } from './equityHoldings';
 import { MarketDataCacheCollection } from './marketDataCache';
+import { UnderlyingPricesCollection } from './underlyingPrices';
+import { UnderlyingsAnalysisCollection } from './underlyingsAnalysis';
 
 // Anthropic API configuration
 const ANTHROPIC_API_KEY = Meteor.settings.private?.ANTHROPIC_API_KEY;
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const ANTHROPIC_MODEL = 'claude-sonnet-4-20250514';
+const ANTHROPIC_MODEL = 'claude-3-5-haiku-20241022';
 
 // Cache duration (5 minutes as per Anthropic docs)
 const CACHE_DURATION_MS = 5 * 60 * 1000;
@@ -45,6 +47,9 @@ if (Meteor.isServer) {
         },
         timestamp: new Date().toISOString(),
         products: [],
+        allocations: [],
+        underlyingPrices: [],
+        underlyingsAnalysis: null,
         upcomingObservations: [],
         equityHoldings: [],
         recentNotifications: []
@@ -58,6 +63,44 @@ if (Meteor.isServer) {
         // Admin sees all products
         products = await ProductsCollection.find({}, { limit: 1000 }).fetchAsync();
         context.dataScope = 'admin';
+
+        // Get all allocations for admin context
+        const allocations = await AllocationsCollection.find({}, { limit: 5000 }).fetchAsync();
+        context.allocations = allocations.map(a => ({
+          productId: a.productId,
+          clientId: a.clientId,
+          notional: a.notional,
+          quantity: a.quantity
+        }));
+
+        // Get underlying prices
+        const underlyingPrices = await UnderlyingPricesCollection.find({}, {
+          limit: 1000,
+          sort: { date: -1 }
+        }).fetchAsync();
+        context.underlyingPrices = underlyingPrices.map(p => ({
+          ticker: p.ticker,
+          date: p.date,
+          close: p.close
+        }));
+
+        // Get underlyings analysis (live analysis data)
+        const underlyingsAnalysis = await UnderlyingsAnalysisCollection.findOneAsync({
+          _id: 'phoenix_live_underlyings'
+        });
+        if (underlyingsAnalysis) {
+          context.underlyingsAnalysis = {
+            lastUpdate: underlyingsAnalysis.lastUpdate,
+            underlyingCount: underlyingsAnalysis.underlyings?.length || 0,
+            underlyings: underlyingsAnalysis.underlyings?.map(u => ({
+              ticker: u.ticker,
+              name: u.name,
+              currentPrice: u.currentPrice,
+              performance: u.performance,
+              distanceToBarrier: u.distanceToBarrier
+            })) || []
+          };
+        }
       } else if (user.role === USER_ROLES.RELATIONSHIP_MANAGER) {
         // RM sees products of assigned clients
         const assignedClients = await UsersCollection.find({
@@ -77,6 +120,56 @@ if (Meteor.isServer) {
 
         context.dataScope = 'rm';
         context.clientCount = clientIds.length;
+
+        // Get allocations for RM's clients
+        context.allocations = allocations.map(a => ({
+          productId: a.productId,
+          clientId: a.clientId,
+          notional: a.notional,
+          quantity: a.quantity
+        }));
+
+        // Get underlying prices for RM's products
+        const underlyingTickers = products.flatMap(p =>
+          (p.underlyings || []).map(u => u.ticker)
+        ).filter(Boolean);
+
+        if (underlyingTickers.length > 0) {
+          const underlyingPrices = await UnderlyingPricesCollection.find({
+            ticker: { $in: underlyingTickers }
+          }, {
+            limit: 1000,
+            sort: { date: -1 }
+          }).fetchAsync();
+          context.underlyingPrices = underlyingPrices.map(p => ({
+            ticker: p.ticker,
+            date: p.date,
+            close: p.close
+          }));
+        }
+
+        // Get underlyings analysis (live analysis data)
+        const underlyingsAnalysis = await UnderlyingsAnalysisCollection.findOneAsync({
+          _id: 'phoenix_live_underlyings'
+        });
+        if (underlyingsAnalysis) {
+          // Filter to only underlyings in RM's products
+          const relevantUnderlyings = underlyingsAnalysis.underlyings?.filter(u =>
+            underlyingTickers.includes(u.ticker)
+          ) || [];
+
+          context.underlyingsAnalysis = {
+            lastUpdate: underlyingsAnalysis.lastUpdate,
+            underlyingCount: relevantUnderlyings.length,
+            underlyings: relevantUnderlyings.map(u => ({
+              ticker: u.ticker,
+              name: u.name,
+              currentPrice: u.currentPrice,
+              performance: u.performance,
+              distanceToBarrier: u.distanceToBarrier
+            }))
+          };
+        }
       } else if (user.role === USER_ROLES.CLIENT) {
         // Client sees only their allocated products
         const allocations = await AllocationsCollection.find({
@@ -270,6 +363,7 @@ if (Meteor.isServer) {
     async getProductReport(productId, userId) {
       // Try template report first (for products created from templates)
       let report = await TemplateReportsCollection.findOneAsync({ productId });
+      let isTemplateReport = !!report;
 
       // Fallback to regular reports
       if (!report) {
@@ -292,41 +386,119 @@ if (Meteor.isServer) {
         }
       }
 
+      // Extract data based on report type
+      let underlyings, status, basketPerformance, redemption, structure;
+
+      if (isTemplateReport) {
+        // Template report structure: data is in templateResults
+        const results = report.templateResults || {};
+        underlyings = results.underlyings || [];
+        status = results.currentStatus || {};
+        basketPerformance = results.basketPerformance || {};
+        redemption = results.redemption || {};
+
+        // Different templates store structure differently
+        structure = results.phoenixStructure ||
+                   results.orionStructure ||
+                   results.himalayaStructure ||
+                   results.sharkNoteStructure ||
+                   results.participationStructure ||
+                   results.reverseConvertibleStructure ||
+                   {};
+      } else {
+        // Legacy report structure: data is at top level
+        underlyings = report.underlyings || [];
+        status = {
+          hasMatured: report.hasMatured,
+          daysToMaturity: report.daysToMaturity,
+          productStatus: report.productStatus
+        };
+        basketPerformance = { current: report.basketPerformance };
+        redemption = report.redemption || {};
+        structure = {};
+      }
+
       return {
         productId: report.productId,
-        evaluationDate: report.evaluationDate,
+        productName: report.productName || report.productIsin,
+        templateId: report.templateId,
+        evaluationDate: report.evaluationDate || status.evaluationDate,
 
         // Current status
         status: {
-          hasMatured: report.hasMatured,
-          daysToMaturity: report.daysToMaturity,
-          redeemed: report.redeemed
+          hasMatured: status.hasMatured,
+          daysToMaturity: status.daysToMaturity,
+          daysToMaturityText: status.daysToMaturityText,
+          productStatus: status.productStatus,
+          evaluationDateFormatted: status.evaluationDateFormatted
         },
 
-        // Current pricing and performance
-        underlyings: report.underlyings?.map(u => ({
+        // Current pricing and performance (from underlyings)
+        underlyings: underlyings.map(u => ({
           ticker: u.ticker,
           name: u.name,
           initialPrice: u.initialPrice,
+          initialPriceFormatted: u.initialPriceFormatted,
           currentPrice: u.currentPrice,
+          currentPriceFormatted: u.currentPriceFormatted,
           performance: u.performance,
-          performanceFormatted: u.performanceFormatted
-        })) || [],
+          performanceFormatted: u.performanceFormatted,
+          isPositive: u.isPositive,
+          priceDate: u.priceDate,
+          priceDateFormatted: u.priceDateFormatted,
+          priceLevelLabel: u.priceLevelLabel,
+          distanceToBarrier: u.distanceToBarrier,
+          distanceToBarrierFormatted: u.distanceToBarrierFormatted,
+          barrierStatus: u.barrierStatus,
+          barrierStatusText: u.barrierStatusText,
+          isWorstPerforming: u.isWorstPerforming
+        })),
 
-        // Indicative maturity value (for Phoenix/autocallables)
+        // Basket performance (worst-of)
+        basketPerformance: {
+          current: basketPerformance.current,
+          currentFormatted: basketPerformance.currentFormatted,
+          isPositive: basketPerformance.isPositive
+        },
+
+        // Product structure (barriers, coupons, etc.)
+        structure: {
+          capitalProtectionBarrier: structure.capitalProtectionBarrier,
+          capitalProtectionBarrierFormatted: structure.capitalProtectionBarrierFormatted,
+          autocallBarrier: structure.autocallBarrier,
+          autocallBarrierFormatted: structure.autocallBarrierFormatted,
+          couponRate: structure.couponRate,
+          couponRateFormatted: structure.couponRateFormatted,
+          couponBarrier: structure.couponBarrier,
+          couponBarrierFormatted: structure.couponBarrierFormatted,
+          hasMemory: structure.hasMemory,
+          upperBarrier: structure.upperBarrier,
+          rebateValue: structure.rebateValue,
+          floorLevel: structure.floorLevel,
+          participationRate: structure.participationRate,
+          gearingFactor: structure.gearingFactor,
+          gearingFactorFormatted: structure.gearingFactorFormatted
+        },
+
+        // Redemption/payoff information
+        redemption: {
+          capitalComponent: redemption.capitalComponent,
+          capitalComponentFormatted: redemption.capitalComponentFormatted,
+          coupon: redemption.coupon,
+          couponFormatted: redemption.couponFormatted,
+          totalValue: redemption.totalValue,
+          totalValueFormatted: redemption.totalValueFormatted,
+          barrierBreached: redemption.barrierBreached,
+          capitalExplanation: redemption.capitalExplanation,
+          formula: redemption.formula
+        },
+
+        // Legacy fields for backward compatibility
         indicativeMaturityValue: report.indicativeMaturityValue,
-
-        // Payoff calculations
         payoffScenarios: report.payoffScenarios,
-
-        // Coupon history and schedule
         couponHistory: report.couponHistory,
         upcomingCoupons: report.upcomingCoupons,
-
-        // Barrier status
         barrierStatus: report.barrierStatus,
-
-        // Next observation
         nextObservation: report.nextObservation
       };
     },

@@ -1,16 +1,22 @@
 import React from 'react';
 import StructuredProductChart from '../components/StructuredProductChart.jsx';
 import UnderlyingNews from '../components/UnderlyingNews.jsx';
+import { getTranslation } from '../../utils/reportTranslations';
 
 /**
  * Shark Note Report Component
  *
  * Displays evaluation results for Shark Note structured products.
  * All data is pre-calculated in the evaluator - this component only displays.
+ * Supports multiple languages (EN/FR) via URL parameter.
  *
  * NO CALCULATIONS PERFORMED IN THIS COMPONENT.
  */
 const SharkNoteReport = ({ results, productId, product }) => {
+  // Get language from URL params
+  const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  const lang = urlParams?.get('lang') || 'en';
+  const tr = getTranslation(lang);
   if (!results) {
     return (
       <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
@@ -43,7 +49,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
         alignItems: 'center',
         gap: '0.5rem'
       }}>
-        🦈 Shark Note Evaluation Results
+        🦈 {lang === 'fr' ? 'Résultats d\'Évaluation Shark Note' : 'Shark Note Evaluation Results'}
       </div>
 
       {/* Underlying Assets Performance Table */}
@@ -62,7 +68,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
             alignItems: 'center',
             gap: '0.5rem'
           }}>
-            📊 Underlying Assets Performance
+            📊 {tr.underlyingAssetsPerformance}
           </h4>
 
           {/* Table with Gradient Border */}
@@ -100,7 +106,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
                       color: '#e2e8f0',
                       textTransform: 'uppercase',
                       letterSpacing: '1px'
-                    }}>🏢 Asset</div>
+                    }}>🏢 {tr.asset}</div>
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
@@ -108,7 +114,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
                       textTransform: 'uppercase',
                       textAlign: 'center',
                       letterSpacing: '1px'
-                    }}>📍 Initial</div>
+                    }}>📍 {tr.initialLevel}</div>
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
@@ -116,7 +122,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
                       textTransform: 'uppercase',
                       textAlign: 'center',
                       letterSpacing: '1px'
-                    }}>💹 Current</div>
+                    }}>💹 {tr.currentLevel}</div>
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
@@ -124,7 +130,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
                       textTransform: 'uppercase',
                       textAlign: 'center',
                       letterSpacing: '1px'
-                    }}>📊 Performance</div>
+                    }}>📊 {tr.performance}</div>
                   </div>
 
                   {/* Table Rows */}
@@ -261,7 +267,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
             alignItems: 'center',
             gap: '0.5rem'
           }}>
-            📰 Latest News
+            📰 {tr.latestNews}
           </h4>
           <div style={{
             display: 'flex',
@@ -272,7 +278,6 @@ const SharkNoteReport = ({ results, productId, product }) => {
               <UnderlyingNews
                 key={index}
                 ticker={underlying.ticker}
-                news={underlying.news}
               />
             ))}
           </div>
@@ -298,7 +303,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
           alignItems: 'center',
           gap: '0.5rem'
         }}>
-          🎯 Upper Barrier Status
+          🎯 {lang === 'fr' ? 'Statut Barrière Supérieure' : 'Upper Barrier Status'}
         </h4>
 
         <div style={{

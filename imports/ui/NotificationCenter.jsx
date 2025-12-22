@@ -7,10 +7,11 @@ import { useTheme } from './ThemeContext.jsx';
  *
  * Bell icon with unread count badge and dropdown showing recent notifications
  */
-const NotificationCenter = ({ currentUser, onViewAllClick }) => {
+const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }) => {
   const { theme } = useTheme();
   const [isOpen, setIsOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
   const [recentNotifications, setRecentNotifications] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const dropdownRef = useRef(null);
@@ -35,7 +36,14 @@ const NotificationCenter = ({ currentUser, onViewAllClick }) => {
 
   const loadNotifications = async (sessionId) => {
     try {
-      // Get unread count
+      // Get last viewed timestamp from localStorage
+      const lastViewedAt = localStorage.getItem('notificationsLastViewedAt');
+
+      // Get total count (only new notifications since last viewed)
+      const total = await Meteor.callAsync('notifications.getTotalCount', sessionId, lastViewedAt);
+      setTotalCount(total);
+
+      // Get unread count (still used for display purposes)
       const count = await Meteor.callAsync('notifications.getUnreadCount', sessionId);
       setUnreadCount(count);
 
@@ -65,7 +73,14 @@ const NotificationCenter = ({ currentUser, onViewAllClick }) => {
   }, [isOpen]);
 
   const handleBellClick = () => {
-    setIsOpen(!isOpen);
+    const newIsOpen = !isOpen;
+    setIsOpen(newIsOpen);
+
+    // Reset counter and store last viewed timestamp when opening the modal
+    if (newIsOpen) {
+      setTotalCount(0);
+      localStorage.setItem('notificationsLastViewedAt', new Date().toISOString());
+    }
   };
 
   const handleMarkAsRead = async (notificationId) => {
@@ -187,8 +202,8 @@ const NotificationCenter = ({ currentUser, onViewAllClick }) => {
           <path d="M13.73 21a2 2 0 0 1-3.46 0" />
         </svg>
 
-        {/* Unread Count Badge */}
-        {unreadCount > 0 && (
+        {/* Total Count Badge */}
+        {totalCount > 0 && (
           <div
             style={{
               position: 'absolute',
@@ -208,7 +223,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick }) => {
               boxShadow: '0 2px 4px rgba(0, 0, 0, 0.2)'
             }}
           >
-            {unreadCount > 99 ? '99+' : unreadCount}
+            {totalCount > 99 ? '99+' : totalCount}
           </div>
         )}
       </button>
@@ -253,7 +268,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick }) => {
               >
                 Notifications
               </h3>
-              {unreadCount > 0 && (
+              {totalCount > 0 && (
                 <span
                   style={{
                     fontSize: '0.75rem',
@@ -264,7 +279,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick }) => {
                     fontWeight: '500'
                   }}
                 >
-                  {unreadCount} unread
+                  {totalCount} notification{totalCount !== 1 ? 's' : ''}
                 </span>
               )}
             </div>
@@ -339,8 +354,17 @@ const NotificationCenter = ({ currentUser, onViewAllClick }) => {
                         : 'transparent';
                     }}
                     onClick={() => {
+                      // Mark as read if unread
                       if (unread) {
                         handleMarkAsRead(notification._id);
+                      }
+
+                      // Close the dropdown
+                      setIsOpen(false);
+
+                      // Navigate to the report
+                      if (onNotificationClick) {
+                        onNotificationClick(notification);
                       }
                     }}
                   >
@@ -379,7 +403,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick }) => {
                               color: theme === 'light' ? '#1f2937' : '#f9fafb'
                             }}
                           >
-                            {notification.productName}
+                            {notification.title || notification.productName || 'Alert'}
                           </span>
                           {unread && (
                             <div
@@ -402,7 +426,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick }) => {
                             lineHeight: '1.4'
                           }}
                         >
-                          {notification.summary}
+                          {notification.message || notification.summary || ''}
                         </p>
                         <span
                           style={{

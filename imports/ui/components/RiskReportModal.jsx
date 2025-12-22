@@ -1,5 +1,6 @@
 import React from 'react';
 import RiskAnalysisReport from './RiskAnalysisReport.jsx';
+import PDFDownloadButton from './PDFDownloadButton.jsx';
 import { useTheme } from '../ThemeContext.jsx';
 
 /**
@@ -153,8 +154,28 @@ const RiskReportModal = ({ report, onClose, isGenerating = false, progress = nul
               {isGenerating ? 'Generating Risk Analysis Report...' : 'Risk Analysis Report'}
             </h2>
 
-            {!isGenerating && (
+            {!isGenerating && report && (
               <div style={{ display: 'flex', gap: '0.75rem' }}>
+                <PDFDownloadButton
+                  reportId={report._id}
+                  reportType="risk-analysis"
+                  filename={`Risk_Analysis_${new Date().toISOString().split('T')[0]}`}
+                  title="Download PDF"
+                  style={{
+                    padding: '0.625rem 1.25rem',
+                    background: 'linear-gradient(135deg, #1e3a5f 0%, #2d4a6f 100%)',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontSize: '0.875rem',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem'
+                  }}
+                />
                 <button
                   onClick={handleExport}
                   style={{
@@ -234,6 +255,32 @@ const RiskReportModal = ({ report, onClose, isGenerating = false, progress = nul
                   Close
                 </button>
               </div>
+            )}
+
+            {/* Close button when not generating and no report */}
+            {!isGenerating && !report && (
+              <button
+                onClick={onClose}
+                style={{
+                  padding: '0.625rem 1.25rem',
+                  background: isDarkMode ? '#374151' : '#e5e7eb',
+                  color: isDarkMode ? '#e5e7eb' : '#1f2937',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '0.875rem',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = isDarkMode ? '#4b5563' : '#d1d5db';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = isDarkMode ? '#374151' : '#e5e7eb';
+                }}
+              >
+                Close
+              </button>
             )}
           </div>
 

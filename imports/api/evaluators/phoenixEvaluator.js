@@ -1,5 +1,6 @@
 import { PhoenixEvaluationHelpers } from './phoenixEvaluationHelpers';
 import { MarketDataCacheCollection } from '/imports/api/marketDataCache';
+import { matchAllScheduledPayments } from '../helpers/paymentMatcher.js';
 
 /**
  * Phoenix Autocallable Evaluator
@@ -98,6 +99,7 @@ export const PhoenixEvaluator = {
     const params = {
       autocallBarrier: 100,     // Default 100% autocall level
       protectionBarrier: 70,    // Default 70% protection
+      couponBarrier: null,      // Separate coupon barrier (defaults to protectionBarrier if null)
       couponRate: 0,           // Default no coupon
       observationFrequency: 'quarterly',
       memoryCoupon: false,
@@ -160,6 +162,13 @@ export const PhoenixEvaluator = {
 
       if (product.structureParams.couponRate !== undefined) {
         params.couponRate = product.structureParams.couponRate;
+      }
+
+      // Extract separate coupon barrier if defined (can be different from protection barrier)
+      if (product.structureParams.couponBarrier !== undefined) {
+        params.couponBarrier = product.structureParams.couponBarrier;
+      } else if (product.structureParams.memoryBarrier !== undefined) {
+        params.couponBarrier = product.structureParams.memoryBarrier;
       }
 
       if (product.structureParams.memoryCoupon !== undefined) {
@@ -460,6 +469,16 @@ export const PhoenixEvaluator = {
     // Memory Autocall: Track which underlyings have reached autocall level (across any observation)
     const underlyingAutocallFlags = {}; // {ticker: firstFlaggedDate}
 
+    // Pre-fetch trade date prices for all underlyings (for consistent performance calculation)
+    // This ensures the evaluator uses the same initial price as the chart builder
+    const tradeDatePrices = {};
+    for (const u of underlyings) {
+      const fullTicker = u.fullTicker || `${u.ticker}.US`;
+      const tradeDatePrice = await this.getPriceAtDate(fullTicker, tradeDate, tradeDate);
+      tradeDatePrices[u.ticker] = tradeDatePrice || u.initialPrice || u.strike;
+      console.log(`📊 Phoenix: Trade date price for ${fullTicker}: ${tradeDatePrices[u.ticker]} (market data: ${tradeDatePrice}, stored strike: ${u.strike})`);
+    }
+
     // Process each observation
     for (const [i, obs] of schedule.entries()) {
       const obsDate = new Date(obs.observationDate);
@@ -483,7 +502,10 @@ export const PhoenixEvaluator = {
           underlyings.map(async (u) => {
             const fullTicker = u.fullTicker || `${u.ticker}.US`;
             const obsPrice = await this.getPriceAtDate(fullTicker, obsDate, tradeDate);
-            const initialPrice = u.initialPrice || u.strike;
+
+            // Use pre-fetched trade date price for consistent performance calculation
+            // This ensures the evaluator uses the same initial price as the chart builder
+            const initialPrice = tradeDatePrices[u.ticker];
 
             if (obsPrice && initialPrice) {
               const performance = ((obsPrice - initialPrice) / initialPrice) * 100;
@@ -534,7 +556,9 @@ export const PhoenixEvaluator = {
       // autocallBarrier of 100 means 0% performance (100-100=0)
       // protectionBarrier of 70 means -30% performance (70-100=-30)
       const autocallThreshold = (phoenixParams.autocallBarrier || 100) - 100;
-      const couponThreshold = (phoenixParams.protectionBarrier || 70) - 100;
+      // Use per-observation couponBarrier, fall back to global couponBarrier, then protectionBarrier
+      const effectiveCouponBarrier = obs.couponBarrier || phoenixParams.couponBarrier || phoenixParams.protectionBarrier || 70;
+      const couponThreshold = effectiveCouponBarrier - 100;
 
       // Memory Autocall: Track per-underlying flags
       // IMPORTANT: Only flag underlyings during CALLABLE observations (not during coupon-only periods)
@@ -631,17 +655,22 @@ export const PhoenixEvaluator = {
       }
 
       // Calculate memory coupon amount for this observation
+      // Only show in Memory column if coupon is being STORED (not paid)
       const couponInMemory = memoryCouponAdded ? (phoenixParams.couponRate || 0) : 0;
 
-      // For final observation or autocall, show cumulative memory coupons if any exist
-      // BUT ONLY if the observation has occurred (isPast = true)
-      const showCumulativeMemory = isPast && (isFinalObservation || autocalled) && totalMemoryCoupons > 0;
-      const displayMemory = showCumulativeMemory ? totalMemoryCoupons : couponInMemory;
+      // Memory Release Logic:
+      // Memory coupons are released (paid out) whenever the basket returns ABOVE the coupon barrier
+      // This happens at ANY observation where a coupon is paid, not just maturity/autocall
+      // The accumulated memory gets added to the current coupon payment
+      const isMemoryReleaseEvent = isPast && baseCouponPaid > 0 && totalMemoryCoupons > 0;
+
+      // For display purposes: Memory column shows ONLY when coupon is stored in memory
+      // When memory is released (paid out), it goes to the Coupon column, not Memory column
+      // An observation can EITHER store a coupon in memory OR pay out (with accumulated memory) - never both
+      const displayMemory = couponInMemory;
 
       // Calculate total coupon payout for this observation
-      // When memory coupons are released (final observation or autocall), include accumulated memory
-      // in the coupon paid amount so the observation table shows the total payout
-      const isMemoryReleaseEvent = showCumulativeMemory && baseCouponPaid > 0;
+      // When memory coupons are released, include accumulated memory in the coupon paid amount
       const couponPaid = baseCouponPaid + (isMemoryReleaseEvent ? totalMemoryCoupons : 0);
       const couponAmount = couponPaid;
 
@@ -650,7 +679,7 @@ export const PhoenixEvaluator = {
       }
 
       // Reset memory bucket to 0 after memory coupons are paid out
-      // This happens at autocall or final observation when basket is above coupon barrier
+      // This happens whenever the basket returns above coupon barrier and a coupon is paid
       if (isMemoryReleaseEvent) {
         totalMemoryCoupons = 0;
       }
@@ -716,9 +745,12 @@ export const PhoenixEvaluator = {
       isLastObservation: nextObservationPrediction?.isLastObservation
     });
 
+    // Match scheduled payments with actual PMS operations
+    const enhancedObservations = await matchAllScheduledPayments(product, observations);
+
     return {
       totalObservations: schedule.length,
-      observations,
+      observations: enhancedObservations,
       totalCouponsEarnedFormatted: PhoenixEvaluationHelpers.formatCouponPercentage(totalCouponsEarned, phoenixParams.couponRate),
       totalMemoryCouponsFormatted: PhoenixEvaluationHelpers.formatCouponPercentage(totalMemoryCoupons, phoenixParams.couponRate),
       totalCouponsEarned,
@@ -795,7 +827,9 @@ export const PhoenixEvaluator = {
       const autocallBarrier = phoenixParams.autocallBarrier || 100;
       const couponRate = phoenixParams.couponRate || 0;
 
-      const couponThreshold = protectionBarrier - 100; // e.g., -30 for 70% barrier
+      // Use couponBarrier if defined, otherwise fall back to protectionBarrier
+      const effectiveCouponBarrier = phoenixParams.couponBarrier || protectionBarrier;
+      const couponThreshold = effectiveCouponBarrier - 100; // e.g., -30 for 70% barrier
       const autocallThreshold = autocallBarrier - 100; // e.g., 0 for 100% barrier
 
       // Calculate days until observation
@@ -878,9 +912,32 @@ export const PhoenixEvaluator = {
 
           prediction.displayText = `${prediction.dateFormatted}; memory autocall; ${prediction.autocallPriceFormatted}`;
           prediction.explanation = `All underlyings have reached autocall level at some point. Memory autocall would trigger at ${prediction.autocallPriceFormatted}.`;
+        } else if (currentBasketLevel >= couponThreshold) {
+          // Memory autocall conditions not met, but basket is above coupon barrier - pay coupon
+          prediction.couponWouldPay = true;
+          prediction.couponAmount = couponRate;
+          prediction.couponAmountFormatted = PhoenixEvaluationHelpers.formatPredictionCoupon(couponRate);
+          prediction.outcomeType = 'coupon';
+
+          prediction.displayText = `${prediction.dateFormatted}; coupon; ${prediction.couponAmountFormatted}`;
+          prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Above coupon barrier (${protectionBarrier}%), would receive ${prediction.couponAmountFormatted} coupon.`;
+        } else if (phoenixParams.memoryCoupon) {
+          // Below coupon barrier, add to memory
+          prediction.memoryWouldBeAdded = true;
+          prediction.memoryAmountAdded = couponRate;
+          prediction.outcomeType = 'memory_added';
+
+          const newMemoryTotal = totalMemoryCoupons + couponRate;
+          prediction.displayText = `${prediction.dateFormatted}; coupon; in memory (total: ${PhoenixEvaluationHelpers.formatPredictionCoupon(newMemoryTotal)})`;
+          prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Below coupon barrier (${protectionBarrier}%), ${PhoenixEvaluationHelpers.formatPredictionCoupon(couponRate)} would be added to memory (new total: ${PhoenixEvaluationHelpers.formatPredictionCoupon(newMemoryTotal)}).`;
+        } else {
+          // No event
+          prediction.outcomeType = 'no_event';
+          prediction.displayText = `${prediction.dateFormatted}; no event`;
+          prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Below coupon barrier (${protectionBarrier}%), no coupon would be paid.`;
         }
       }
-      // Check for coupon payment
+      // Check for coupon payment (non-memory autocall case)
       else if (currentBasketLevel >= couponThreshold) {
         prediction.couponWouldPay = true;
         prediction.couponAmount = couponRate;
@@ -890,7 +947,7 @@ export const PhoenixEvaluator = {
         prediction.displayText = `${prediction.dateFormatted}; coupon; ${prediction.couponAmountFormatted}`;
         prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Above coupon barrier (${protectionBarrier}%), would receive ${prediction.couponAmountFormatted} coupon.`;
       }
-      // Memory coupon would be added
+      // Memory coupon would be added (non-memory autocall case)
       else if (phoenixParams.memoryCoupon) {
         prediction.memoryWouldBeAdded = true;
         prediction.memoryAmountAdded = couponRate;

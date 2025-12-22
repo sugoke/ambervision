@@ -174,6 +174,169 @@ export const BankPositionParser = {
   },
 
   /**
+   * Get all unique file dates available in a directory
+   * Returns sorted array of dates (oldest first for chronological processing)
+   */
+  getAvailableFileDates(directoryPath) {
+    const files = this.findPositionFiles(directoryPath);
+
+    if (files.length === 0) {
+      return [];
+    }
+
+    // Extract unique dates using date string as key
+    const dateMap = new Map();
+    files.forEach(f => {
+      const dateStr = f.fileDate.toISOString().split('T')[0];
+      if (!dateMap.has(dateStr)) {
+        dateMap.set(dateStr, f.fileDate);
+      }
+    });
+
+    // Return sorted dates (oldest first for chronological processing)
+    return Array.from(dateMap.values()).sort((a, b) => a.getTime() - b.getTime());
+  },
+
+  /**
+   * Find all position files for a specific date
+   * @param {string} directoryPath - Path to bank files directory
+   * @param {Date} targetDate - Date to find files for
+   * @returns {Array} - Files matching the target date
+   */
+  findFilesByDate(directoryPath, targetDate) {
+    const files = this.findPositionFiles(directoryPath);
+
+    if (files.length === 0) {
+      return [];
+    }
+
+    // Normalize target date to YYYY-MM-DD string for comparison
+    const targetDateStr = targetDate.toISOString().split('T')[0];
+
+    // Filter files matching the target date
+    return files.filter(f => {
+      const fileDateStr = f.fileDate.toISOString().split('T')[0];
+      return fileDateStr === targetDateStr;
+    });
+  },
+
+  /**
+   * Parse all files for a specific date (securities + cash + FX rates)
+   * Similar to parseLatestFile but for a specific date instead of the latest
+   * @param {string} directoryPath - Path to bank files directory
+   * @param {Date} targetDate - Date to process files for
+   * @param {object} options - Parsing options (bankId, bankName, userId)
+   * @returns {object} - Parse result with positions, filename, fileDate, etc.
+   */
+  parseFilesForDate(directoryPath, targetDate, options = {}) {
+    const filesForDate = this.findFilesByDate(directoryPath, targetDate);
+
+    if (filesForDate.length === 0) {
+      return {
+        positions: [],
+        filename: null,
+        fileDate: targetDate,
+        totalRecords: 0,
+        error: `No files found for date: ${targetDate.toISOString().split('T')[0]}`
+      };
+    }
+
+    // Separate file types
+    const securitiesFiles = filesForDate.filter(f => f.fileType === 'securities');
+    const cashFiles = filesForDate.filter(f => f.fileType === 'cash');
+    const fxRatesFiles = filesForDate.filter(f => f.fileType === 'fxrates');
+
+    console.log(`[BANK_PARSER] Files for ${targetDate.toISOString().split('T')[0]}: ${filesForDate.length} total (${securitiesFiles.length} securities, ${cashFiles.length} cash, ${fxRatesFiles.length} fxrates)`);
+
+    // Parse FX rates file first if available
+    let fxRates = {};
+    if (fxRatesFiles.length > 0) {
+      try {
+        const fxFile = fxRatesFiles[0];
+        const parser = this.parsers[fxFile.bankParser];
+        if (parser && parser.parseFxRates) {
+          const fxContent = this.readFile(fxFile.filePath);
+          fxRates = parser.parseFxRates(fxContent);
+          console.log(`[BANK_PARSER] Loaded ${Object.keys(fxRates).length} FX rates from ${fxFile.filename}`);
+        }
+      } catch (error) {
+        console.error(`[BANK_PARSER] Error parsing FX rates file: ${error.message}`);
+      }
+    }
+
+    // Parse all files and combine positions
+    let allPositions = [];
+    let primaryFilename = null;
+    let primaryFileDate = null;
+    let primaryContent = null;
+    let primaryParser = null;
+
+    // Parse securities files first
+    for (const file of securitiesFiles) {
+      try {
+        console.log(`[BANK_PARSER] Parsing securities file for ${targetDate.toISOString().split('T')[0]}: ${file.filename}`);
+        const parser = this.parsers[file.bankParser];
+        const result = this.parseFile(file.filePath, {
+          ...options,
+          parser,
+          fileType: 'securities',
+          fxRates
+        });
+
+        allPositions = allPositions.concat(result.positions);
+
+        // Use first securities file as primary
+        if (!primaryFilename) {
+          primaryFilename = result.filename;
+          primaryFileDate = result.fileDate;
+          primaryContent = result.content;
+          primaryParser = result.parser;
+        }
+      } catch (error) {
+        console.error(`[BANK_PARSER] Error parsing securities file ${file.filename}: ${error.message}`);
+      }
+    }
+
+    // Parse cash files (with FX rates for currency conversion)
+    for (const file of cashFiles) {
+      try {
+        console.log(`[BANK_PARSER] Parsing cash/FX file for ${targetDate.toISOString().split('T')[0]}: ${file.filename}`);
+        const parser = this.parsers[file.bankParser];
+        const result = this.parseFile(file.filePath, {
+          ...options,
+          parser,
+          fileType: 'cash',
+          fxRates
+        });
+
+        allPositions = allPositions.concat(result.positions);
+
+        // If no securities file, use cash file as primary
+        if (!primaryFilename) {
+          primaryFilename = result.filename;
+          primaryFileDate = result.fileDate;
+          primaryContent = result.content;
+          primaryParser = result.parser;
+        }
+      } catch (error) {
+        console.error(`[BANK_PARSER] Error parsing cash file ${file.filename}: ${error.message}`);
+      }
+    }
+
+    console.log(`[BANK_PARSER] Total positions parsed for ${targetDate.toISOString().split('T')[0]}: ${allPositions.length}`);
+
+    return {
+      positions: allPositions,
+      filename: primaryFilename,
+      fileDate: primaryFileDate,
+      totalRecords: allPositions.length,
+      content: primaryContent,
+      parser: primaryParser,
+      filesProcessed: filesForDate.map(f => ({ filename: f.filename, type: f.fileType }))
+    };
+  },
+
+  /**
    * Read file content
    */
   readFile(filePath) {

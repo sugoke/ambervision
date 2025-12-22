@@ -137,7 +137,7 @@ export const formatCurrency = (amount, currency = 'USD', decimals = 2) => {
     return `${formattedNumber} ${symbol}`;
   }
   
-  return `${symbol}${formattedNumber}`;
+  return `${symbol} ${formattedNumber}`;
 };
 
 // Calculate percentage change

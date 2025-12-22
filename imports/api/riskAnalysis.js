@@ -5,6 +5,7 @@ import { HTTP } from 'meteor/http';
 import { UnderlyingsAnalysisCollection } from './underlyingsAnalysis';
 import { EODApiHelpers } from './eodApi';
 import { ReportsCollection } from './reports';
+import { TemplateReportsCollection } from './templateReports';
 
 /**
  * Risk Analysis Reports Collection
@@ -95,9 +96,10 @@ if (Meteor.isServer) {
   /**
    * Generate risk analysis for a single at-risk underlying
    * @param {Object} underlying - Underlying data from analysis collection
+   * @param {string} language - Language for analysis ('en' or 'fr')
    * @returns {Promise<Object>} - Analysis result with AI-generated text
    */
-  async function analyzeUnderlyingRisk(underlying) {
+  async function analyzeUnderlyingRisk(underlying, language = 'en') {
     const {
       symbol,
       name,
@@ -159,14 +161,20 @@ if (Meteor.isServer) {
     // Build detailed prompt for Claude
     const prompt = `You are a professional financial analyst preparing a risk assessment for structured products held across multiple client portfolios. Your analysis will be read by risk officers and senior management.
 
+IMPORTANT - BARRIER TERMINOLOGY EXPLANATION:
+- A "70% protection barrier" means the stock can drop to 70% of its initial strike price before breaching (i.e., a maximum 30% decline is protected)
+- "Distance to Barrier" shows how far the current price is from the barrier level:
+  - NEGATIVE distance (e.g., -5.2%) means the stock is ALREADY BELOW the barrier by that amount
+  - POSITIVE distance (e.g., +10%) means the stock still has that much cushion before reaching the barrier
+
 UNDERLYING DETAILS:
 - Company: ${name} (${symbol})
 - Current Price: ${currentPrice.toFixed(2)}
 - Initial Strike Price: ${initialPrice.toFixed(2)}
-- Current Performance: ${performance >= 0 ? '+' : ''}${performance.toFixed(2)}%
-- Protection Barrier Level: ${protectionBarrierLevel}%
-- Distance to Barrier: ${distanceToBarrier >= 0 ? '+' : ''}${distanceToBarrier.toFixed(1)}%
-- Barrier Price: ${barrierPrice.toFixed(2)} (stock would need to drop ${Math.abs(percentToBarrier).toFixed(1)}% more to breach)
+- Current Performance: ${performance >= 0 ? '+' : ''}${performance.toFixed(2)}% (from initial strike)
+- Protection Barrier Level: ${protectionBarrierLevel}% of initial (barrier is breached when stock drops below ${protectionBarrierLevel}% of strike)
+- Barrier Price: ${barrierPrice.toFixed(2)} (the actual price level at which barrier is breached)
+- Distance to Barrier: ${distanceToBarrier >= 0 ? '+' : ''}${distanceToBarrier.toFixed(1)}% ${distanceToBarrier < 0 ? '(ALREADY BELOW BARRIER)' : '(still above barrier)'}
 - Days to Final Observation: ${daysToFinalObservation} days (${(daysToFinalObservation / 365).toFixed(1)} years)
 - Affected Product: ${productTitle} (${productIsin})
 ${newsSection}
@@ -197,7 +205,8 @@ CRITICAL REQUIREMENTS:
 - Avoid overly technical jargon
 - Do NOT make specific price predictions
 - Focus on risk management perspective
-
+${language === 'fr' ? `
+LANGUAGE: Write the ENTIRE analysis in FRENCH (Français). All text must be in French.` : ''}
 Write the analysis now:`;
 
     try {
@@ -246,9 +255,10 @@ Write the analysis now:`;
   /**
    * Generate executive summary for the entire risk report
    * @param {Array} analyses - Array of individual stock analyses
+   * @param {string} language - Language for summary ('en' or 'fr')
    * @returns {Promise<Object>} - Executive summary
    */
-  async function generateExecutiveSummary(analyses) {
+  async function generateExecutiveSummary(analyses, language = 'en') {
     // Calculate summary statistics
     const totalAtRisk = analyses.length;
     const criticalCount = analyses.filter(a => a.riskLevel === 'critical').length;
@@ -267,26 +277,35 @@ Write the analysis now:`;
 
     const prompt = `You are a Chief Risk Officer preparing an executive summary for senior management about at-risk positions across multiple client portfolios holding structured products.
 
+IMPORTANT CONTEXT - BARRIER TERMINOLOGY:
+- A "70% protection barrier" means the stock can drop to 70% of its initial price (a 30% decline) before breaching
+- A "-5% distance to barrier" means the stock is currently 5% BELOW the barrier level (already breached)
+- A "+10% distance to barrier" means the stock is currently 10% ABOVE the barrier (still safe, with 10% cushion)
+
 RISK OVERVIEW ACROSS ALL PORTFOLIOS:
-- Total Underlyings Below Barrier: ${totalAtRisk}
+- Underlyings Currently Below Their Protection Barriers: ${totalAtRisk} (out of many more underlyings in the portfolio that are performing above their barriers)
 - Critical Risk (>5% below barrier): ${criticalCount}
 - High Risk (0-5% below barrier): ${highCount}
-- Moderate Risk (slightly above barrier): ${totalAtRisk - criticalCount - highCount}
+- Moderate Risk: ${totalAtRisk - criticalCount - highCount}
 - Average Distance to Barrier: ${averageDistance >= 0 ? '+' : ''}${averageDistance.toFixed(1)}%
 - Average Days to Final Observation: ${averageDaysRemaining} days
+
+NOTE: This report only includes underlyings that are CURRENTLY below their protection barriers. The majority of underlyings across the portfolio are performing above their barriers and are not included in this risk report.
 
 AT-RISK POSITIONS:
 ${JSON.stringify(analysesData, null, 2)}
 
 TASK:
 Write an executive summary (2-3 paragraphs, 200-300 words):
-- Overall assessment of risk level across all portfolios
+- Overall assessment of risk level for the AT-RISK positions (not the entire portfolio)
+- Be clear that these ${totalAtRisk} underlyings represent only the problematic positions, not the entire portfolio
 - Identify the most concerning positions (critical/high risk)
-- Highlight key trends or common factors across positions
-- Mention mitigating factors (time remaining, protection features)
-- Overall risk management perspective for multiple client portfolios
+- Highlight key trends or common factors across these at-risk positions
+- Mention mitigating factors (time remaining, protection features, recovery potential)
+- Overall risk management perspective
 - Keep tone professional, balanced, and cautiously optimistic
-
+${language === 'fr' ? `
+LANGUAGE: Write the ENTIRE summary in FRENCH (Français). All text must be in French.` : ''}
 Write the summary now:`;
 
     try {
@@ -312,10 +331,12 @@ Write the summary now:`;
     /**
      * Generate comprehensive risk analysis report for all underlyings below protection barriers
      * @param {string} sessionId - User session ID for authentication
+     * @param {string} language - Language for report ('en' or 'fr')
      * @returns {Promise<Object>} - Generated report with ID
      */
-    async 'riskAnalysis.generate'(sessionId) {
+    async 'riskAnalysis.generate'(sessionId, language = 'en') {
       check(sessionId, String);
+      check(language, String);
 
       console.log('[RiskAnalysis] Starting risk analysis generation...');
       const startTime = Date.now();
@@ -338,8 +359,35 @@ Write the summary now:`;
 
       console.log(`[RiskAnalysis] Found ${atRiskUnderlyings.length} at-risk underlyings`);
 
+      // If no at-risk underlyings, generate a positive portfolio health report
       if (atRiskUnderlyings.length === 0) {
-        throw new Meteor.Error('no-at-risk-underlyings', 'No underlyings currently below or near protection barriers');
+        const healthReport = {
+          generatedAt: new Date(),
+          generatedBy: this.userId,
+          summary: {
+            totalAtRisk: 0,
+            uniqueUnderlyings: 0,
+            criticalRisk: 0,
+            highRisk: 0,
+            moderateRisk: 0,
+            averageDistanceToBarrier: 0,
+            averageDaysRemaining: 0
+          },
+          analyses: [],
+          executiveSummary: '# Portfolio Health Report\n\n✅ **All Clear!** Your portfolio is currently in excellent health. All underlyings are performing above their protection barriers, indicating no immediate risks to your structured products.\n\nThis is a positive indicator that your investment strategy is working well. Continue to monitor your positions regularly for any market changes.',
+          impactedProducts: [],
+          totalProducts: analysisData.underlyings.length,
+          generationTime: 0
+        };
+
+        const reportId = await RiskAnalysisReportsCollection.insertAsync(healthReport);
+        console.log('[RiskAnalysis] Portfolio health report generated successfully');
+
+        return {
+          reportId,
+          atRiskCount: 0,
+          generationTime: 0
+        };
       }
 
       // Group by unique underlying symbol (same stock may appear in multiple products)
@@ -368,16 +416,16 @@ Write the summary now:`;
         }
       }
 
-      console.log(`[RiskAnalysis] Analyzing ${uniqueUnderlyings.length} unique underlyings across ${atRiskUnderlyings.length} product positions`);
+      console.log(`[RiskAnalysis] Analyzing ${uniqueUnderlyings.length} unique underlyings across ${atRiskUnderlyings.length} product positions in ${language}`);
 
       // Analyze each unique underlying in parallel
-      const analysisPromises = uniqueUnderlyings.map(u => analyzeUnderlyingRisk(u));
+      const analysisPromises = uniqueUnderlyings.map(u => analyzeUnderlyingRisk(u, language));
       const analyses = await Promise.all(analysisPromises);
 
       console.log('[RiskAnalysis] Individual analyses complete');
 
       // Generate executive summary
-      const { executiveSummary } = await generateExecutiveSummary(analyses);
+      const { executiveSummary } = await generateExecutiveSummary(analyses, language);
 
       // Aggregate impacted products
       const allProducts = [];
@@ -430,6 +478,7 @@ Write the summary now:`;
       const report = {
         generatedAt: new Date(),
         generatedBy: this.userId,
+        language, // Store language for reference
         summary,
         analyses: analyses.map(a => ({
           ...a,
@@ -514,8 +563,8 @@ Write the summary now:`;
       console.log(`[ProductCommentary] Generating commentary for product ${productId}...`);
       const startTime = Date.now();
 
-      // Get the latest report for this product
-      const report = await ReportsCollection.findOneAsync(
+      // Get the latest report for this product (using new TemplateReportsCollection)
+      const report = await TemplateReportsCollection.findOneAsync(
         { productId },
         { sort: { createdAt: -1 } }
       );
@@ -524,16 +573,14 @@ Write the summary now:`;
         throw new Meteor.Error('report-not-found', 'No evaluation report found for this product. Please run an evaluation first.');
       }
 
-      // Extract key product information from report
-      const {
-        title,
-        isin,
-        currency,
-        tradeDate,
-        maturity,
-        finalObservation,
-        templateResults
-      } = report;
+      // Extract key product information from report (new TemplateReportsCollection structure)
+      const title = report.productName || report.staticData?.name || 'Unknown Product';
+      const isin = report.productIsin || report.staticData?.isin || 'Unknown';
+      const currency = report.staticData?.currency || 'USD';
+      const tradeDate = report.staticData?.tradeDate;
+      const maturity = report.staticData?.maturityDate;
+      const finalObservation = report.templateResults?.currentStatus?.finalObservation || report.staticData?.finalObservation;
+      const templateResults = report.templateResults || {};
 
       const underlyings = templateResults?.underlyings || [];
       const phoenixParams = templateResults?.phoenixStructure || templateResults?.productParameters || {};

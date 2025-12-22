@@ -31,17 +31,304 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
   };
 
   const updateUnderlying = (id, field, value) => {
-    setUnderlyings(prev => 
+    setUnderlyings(prev =>
       prev.map(u => u.id === id ? { ...u, [field]: value } : u)
     );
   };
 
+  // Input handlers for decimal inputs (handle comma/dot separator)
+  const handleInputFocus = (e) => {
+    e.target.select();
+  };
 
+  const handleInputBlur = (e) => {
+    // Normalize and validate on blur
+    const value = e.target.value.replace(',', '.');
+    const numValue = parseFloat(value);
+    if (!isNaN(numValue)) {
+      e.target.value = numValue;
+    }
+  };
+
+
+
+  // Simplified Bond Interface for Reverse Convertible Bond Template
+  if (selectedTemplateId === 'reverse_convertible_bond') {
+    return (
+      <div className="underlying-creation-module">
+        <h3 className="card-title" style={{ marginBottom: '1.5rem', color: 'var(--text-primary)' }}>📜 Bond Underlying</h3>
+
+        <div style={{
+          background: 'var(--bg-secondary)',
+          border: '1px solid var(--border-color)',
+          borderRadius: '12px',
+          padding: '2rem',
+          maxWidth: '800px'
+        }}>
+          <p style={{
+            fontSize: '0.95rem',
+            color: 'var(--text-secondary)',
+            marginBottom: '1.5rem',
+            lineHeight: '1.6'
+          }}>
+            This template accepts one bond underlying. Please enter the ISIN code to search and select the bond.
+          </p>
+
+          {underlyings.length === 0 ? (
+            <div>
+              <h4 style={{ marginBottom: '1rem', color: 'var(--text-primary)', fontSize: '1rem' }}>
+                🔍 Search Bond by ISIN
+              </h4>
+              <div style={{ marginBottom: '1rem' }}>
+                <SecurityAutocomplete
+                  value={newUnderlying.ticker}
+                  onChange={(value) => setNewUnderlying(prev => ({ ...prev, ticker: value }))}
+                  placeholder="Enter bond ISIN (e.g., US912828YK40, XS2314779427)..."
+                  onSecuritySelect={async (security) => {
+                    const underlying = {
+                      id: Date.now(),
+                      ticker: (security.symbol || security.Code).toUpperCase(),
+                      name: security.name || security.Name,
+                      isin: security.ISIN || '',
+                      securityData: {
+                        symbol: security.symbol || security.Code,
+                        name: security.name || security.Name,
+                        exchange: security.exchange || security.Exchange,
+                        currency: security.currency || security.Currency,
+                        country: security.country || security.Country,
+                        ticker: security.ticker,
+                        price: null,
+                        tradeDatePrice: null
+                      }
+                    };
+
+                    // Add to underlyings
+                    setUnderlyings([underlying]);
+
+                    // Clear the search input
+                    setNewUnderlying({ isin: '', ticker: '', name: '', strike: 0, securityData: null });
+
+                    // Fetch prices
+                    const symbol = security.Code || security.symbol;
+                    const exchange = security.Exchange || security.exchange;
+
+                    let tradeDatePrice = 0;
+                    if (productDetails?.tradeDate) {
+                      try {
+                        const tradeDate = new Date(productDetails?.tradeDate);
+                        const tickerWithUS = symbol.includes('.') ? symbol : `${symbol}.US`;
+                        const localPrice = await Meteor.callAsync('underlyingPrices.getPrice', tickerWithUS, tradeDate, 'close');
+
+                        if (localPrice && localPrice > 0) {
+                          tradeDatePrice = localPrice;
+                        } else {
+                          const eodData = await Meteor.callAsync('eod.getEndOfDayPrice', symbol, exchange, productDetails?.tradeDate);
+                          if (eodData) {
+                            tradeDatePrice = eodData.close || eodData.adjusted_close || eodData.price || 0;
+                          }
+                        }
+                      } catch (error) {
+                        console.error('Error fetching trade date price:', error);
+                      }
+                    }
+
+                    let lastPrice = 0;
+                    try {
+                      const priceData = await Meteor.callAsync('eod.getRealTimePrice', symbol, exchange);
+                      if (priceData) {
+                        if (typeof priceData === 'number') {
+                          lastPrice = priceData;
+                        } else {
+                          lastPrice = priceData.close || priceData.price || priceData.last || 0;
+                        }
+                      }
+                    } catch (error) {
+                      console.error('Error fetching last price:', error);
+                    }
+
+                    // Update with prices
+                    setUnderlyings(prev => {
+                      return prev.map(u => {
+                        if (u.id === underlying.id) {
+                          return {
+                            ...u,
+                            strike: tradeDatePrice > 0 ? tradeDatePrice : (lastPrice > 0 ? lastPrice : u.strike),
+                            securityData: {
+                              ...u.securityData,
+                              price: lastPrice > 0 ? { close: lastPrice, price: lastPrice } : null,
+                              tradeDatePrice: tradeDatePrice > 0 ? { close: tradeDatePrice, price: tradeDatePrice } : null
+                            }
+                          };
+                        }
+                        return u;
+                      });
+                    });
+                  }}
+                />
+              </div>
+            </div>
+          ) : (
+            <div>
+              <h4 style={{ marginBottom: '1rem', color: 'var(--text-primary)', fontSize: '1rem' }}>
+                Selected Bond
+              </h4>
+              <div style={{
+                background: 'var(--bg-primary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '8px',
+                padding: '1.5rem',
+                marginBottom: '1rem'
+              }}>
+                {underlyings.map((underlying) => (
+                  <div key={underlying.id}>
+                    <div style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'flex-start',
+                      marginBottom: '1rem'
+                    }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{
+                          fontSize: '1.1rem',
+                          fontWeight: '600',
+                          color: 'var(--text-primary)',
+                          marginBottom: '0.5rem'
+                        }}>
+                          {underlying.securityData?.symbol || underlying.ticker}
+                        </div>
+                        <div style={{
+                          fontSize: '0.9rem',
+                          color: 'var(--text-secondary)',
+                          marginBottom: '0.25rem'
+                        }}>
+                          {underlying.securityData?.name || underlying.name}
+                        </div>
+                        {underlying.isin && (
+                          <div style={{
+                            fontSize: '0.85rem',
+                            color: 'var(--text-muted)',
+                            fontFamily: 'monospace',
+                            marginBottom: '0.5rem'
+                          }}>
+                            ISIN: {underlying.isin}
+                          </div>
+                        )}
+                        <div style={{
+                          fontSize: '0.85rem',
+                          color: 'var(--text-muted)'
+                        }}>
+                          {underlying.securityData?.exchange && `Exchange: ${underlying.securityData.exchange}`}
+                          {underlying.securityData?.currency && ` • Currency: ${underlying.securityData.currency}`}
+                          {underlying.securityData?.country && ` • ${getSecurityCountryFlag(underlying.securityData.country, underlying.securityData.exchange, underlying.isin)}`}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setUnderlyings([])}
+                        style={{
+                          padding: '0.5rem 1rem',
+                          background: '#dc2626',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          fontSize: '0.85rem',
+                          fontWeight: '500'
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 1fr',
+                      gap: '1rem',
+                      paddingTop: '1rem',
+                      borderTop: '1px solid var(--border-color)'
+                    }}>
+                      <div>
+                        <label style={{
+                          display: 'block',
+                          fontSize: '0.85rem',
+                          color: 'var(--text-muted)',
+                          marginBottom: '0.5rem',
+                          fontWeight: '500'
+                        }}>
+                          Initial Price
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={underlying.strike || 0}
+                          onFocus={handleInputFocus}
+                          onBlur={(e) => {
+                            handleInputBlur(e);
+                            const value = e.target.value.replace(',', '.');
+                            const numValue = parseFloat(value);
+                            if (!isNaN(numValue)) {
+                              updateUnderlying(underlying.id, 'strike', numValue);
+                            }
+                          }}
+                          onChange={(e) => {
+                            // Allow temporary invalid states during typing
+                            updateUnderlying(underlying.id, 'strike', e.target.value);
+                          }}
+                          style={{
+                            width: '100%',
+                            padding: '0.5rem',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '4px',
+                            background: 'var(--bg-secondary)',
+                            color: 'var(--text-primary)',
+                            fontSize: '0.9rem'
+                          }}
+                        />
+                      </div>
+                      {underlying.securityData?.price && (
+                        <div>
+                          <label style={{
+                            display: 'block',
+                            fontSize: '0.85rem',
+                            color: 'var(--text-muted)',
+                            marginBottom: '0.5rem',
+                            fontWeight: '500'
+                          }}>
+                            Current Price
+                          </label>
+                          <div style={{
+                            padding: '0.5rem',
+                            background: 'var(--bg-tertiary)',
+                            borderRadius: '4px',
+                            fontSize: '0.9rem',
+                            color: 'var(--text-primary)',
+                            fontWeight: '500'
+                          }}>
+                            {underlying.securityData.currency} {(underlying.securityData.price.close || underlying.securityData.price.price || underlying.securityData.price)?.toFixed(2)}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p style={{
+                fontSize: '0.85rem',
+                color: 'var(--text-muted)',
+                fontStyle: 'italic',
+                marginTop: '1rem'
+              }}>
+                ℹ️ This template supports only one bond underlying. To select a different bond, remove the current one first.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="underlying-creation-module">
       <h3 className="card-title">Underlying Asset Definition</h3>
-      
+
       <div className="underlying-inputs">
         <div className="basket-underlyings">
           <div className="basket-header">
@@ -242,11 +529,11 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
                             )}
                           </div>
                           <div className="security-name" style={{ display: 'flex', alignItems: 'center' }}>
-                            <StockLogo 
-                              symbol={underlying.securityData.symbol} 
+                            <StockLogo
+                              symbol={underlying.securityData.symbol}
                               companyName={underlying.securityData.name}
                             />
-                            <StockLogoFallback 
+                            <StockLogoFallback
                               symbol={underlying.securityData.symbol}
                             />
                             {underlying.securityData.name}
@@ -278,10 +565,22 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
                           {/* Editable Strike Input */}
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                             <input
-                              type="number"
-                              step="0.01"
+                              type="text"
+                              inputMode="decimal"
                               value={underlying.strike || 0}
-                              onChange={(e) => updateUnderlying(underlying.id, 'strike', parseFloat(e.target.value) || 0)}
+                              onFocus={handleInputFocus}
+                              onBlur={(e) => {
+                                handleInputBlur(e);
+                                const value = e.target.value.replace(',', '.');
+                                const numValue = parseFloat(value);
+                                if (!isNaN(numValue)) {
+                                  updateUnderlying(underlying.id, 'strike', numValue);
+                                }
+                              }}
+                              onChange={(e) => {
+                                // Allow temporary invalid states during typing
+                                updateUnderlying(underlying.id, 'strike', e.target.value);
+                              }}
                               style={{
                                 padding: '6px 8px',
                                 border: '1px solid var(--border-color)',
@@ -334,10 +633,22 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
                         // Editable field for create mode - ALWAYS allow manual entry
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                           <input
-                            type="number"
-                            step="0.01"
+                            type="text"
+                            inputMode="decimal"
                             value={underlying.strike || underlying.securityData?.tradeDatePrice?.price || underlying.securityData?.price?.price || 0}
-                            onChange={(e) => updateUnderlying(underlying.id, 'strike', parseFloat(e.target.value) || 0)}
+                            onFocus={handleInputFocus}
+                            onBlur={(e) => {
+                              handleInputBlur(e);
+                              const value = e.target.value.replace(',', '.');
+                              const numValue = parseFloat(value);
+                              if (!isNaN(numValue)) {
+                                updateUnderlying(underlying.id, 'strike', numValue);
+                              }
+                            }}
+                            onChange={(e) => {
+                              // Allow temporary invalid states during typing
+                              updateUnderlying(underlying.id, 'strike', e.target.value);
+                            }}
                             style={{
                               padding: '6px 8px',
                               border: '1px solid var(--border-color)',

@@ -1,9 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { formatDateToISO, formatDateToDDMMYYYY, isWeekend, isMarketHoliday, getNextTradingDay } from '/imports/utils/dateUtils.js';
 
-const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onConfigChange, selectedTemplateId, underlyings }) => {
-  const [schedule, setSchedule] = useState([]);
+const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onConfigChange, selectedTemplateId, underlyings, existingSchedule }) => {
+  const [schedule, setSchedule] = useState(existingSchedule || []);
   const [stepDownInput, setStepDownInput] = useState('');
+  const [hasLoadedExistingSchedule, setHasLoadedExistingSchedule] = useState(false);
+  const [allowRegeneration, setAllowRegeneration] = useState(false);
+
+  // Check if this is a participation note
+  const isParticipationNote = selectedTemplateId === 'participation_note';
 
   // Use props for configuration, fallback to defaults if not provided
   const frequency = scheduleConfig?.frequency || 'quarterly';
@@ -16,6 +21,39 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
   useEffect(() => {
     setStepDownInput(String(stepDownValue));
   }, []);
+
+  // Load existing schedule from term sheet extraction
+  useEffect(() => {
+    if (existingSchedule && existingSchedule.length > 0 && !hasLoadedExistingSchedule) {
+      console.log('[ScheduleBuilder] Loading existing schedule from term sheet:', existingSchedule.length, 'observations');
+
+      // Log rebateAmount values for debugging
+      if (isParticipationNote) {
+        console.log('[ScheduleBuilder] Participation Note schedule with rebateAmount:',
+          existingSchedule.map(obs => ({
+            id: obs.id,
+            observationDate: obs.observationDate,
+            rebateAmount: obs.rebateAmount
+          }))
+        );
+      }
+
+      setSchedule(existingSchedule);
+      setHasLoadedExistingSchedule(true);
+      setAllowRegeneration(false); // Don't allow regeneration immediately after term sheet load
+      if (onUpdateSchedule) {
+        onUpdateSchedule(existingSchedule);
+      }
+    }
+  }, [existingSchedule]);
+
+  // Track configuration changes - when user changes config, allow regeneration
+  useEffect(() => {
+    if (hasLoadedExistingSchedule && schedule.length > 0) {
+      // User has changed a configuration value, enable regeneration
+      setAllowRegeneration(true);
+    }
+  }, [frequency, coolOffPeriods, stepDownValue, initialAutocallLevel, initialCouponBarrier]);
 
   // Calculate delay days from setup tab (difference between trade date and value date)
   const getDelayDays = () => {
@@ -98,7 +136,14 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
   useEffect(() => {
     // Safety check for productDetails
     if (!productDetails) return;
-    
+
+    // IMPORTANT: If schedule exists from term sheet and user hasn't changed config, preserve it
+    // But allow regeneration if user has explicitly changed configuration values
+    if (schedule && schedule.length > 0 && hasLoadedExistingSchedule && !allowRegeneration) {
+      console.log('[ScheduleBuilder] Schedule from term sheet, config unchanged - preserving exact dates');
+      return;
+    }
+
     const observationDates = generateObservationDates();
     const newSchedule = observationDates.map((obsDate, index) => {
       const isCallable = index >= coolOffPeriods;
@@ -111,7 +156,15 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
         const callablePeriodIndex = index - coolOffPeriods;
         autocallLevel = initialAutocallLevel + (stepDownValue * callablePeriodIndex);
       }
-      
+
+      // Preserve rebateAmount from existingSchedule if available (from term sheet extraction)
+      const existingObs = existingSchedule && existingSchedule[index];
+      const rebateAmountValue = isParticipationNote
+        ? (existingObs?.rebateAmount !== undefined && existingObs?.rebateAmount !== null
+            ? existingObs.rebateAmount
+            : 0)
+        : null;
+
       return {
         id: `period_${index}`,
         observationDate: formatDateToISO(obsDate),
@@ -119,7 +172,8 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
         autocallLevel: autocallLevel,
         isCallable: isCallable,
         couponBarrier: initialCouponBarrier,
-        periodIndex: index + 1
+        periodIndex: index + 1,
+        rebateAmount: rebateAmountValue  // Preserve term sheet data or default to 0
       };
     });
 
@@ -135,18 +189,37 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
     coolOffPeriods,
     stepDownValue,
     initialAutocallLevel,
-    initialCouponBarrier
+    initialCouponBarrier,
+    allowRegeneration  // Include this so schedule regenerates when user changes config
   ]);
 
   // Update schedule item
   const updateScheduleItem = (id, field, value) => {
-    const updatedSchedule = schedule.map(item => 
+    const updatedSchedule = schedule.map(item =>
       item.id === id ? { ...item, [field]: value } : item
     );
     setSchedule(updatedSchedule);
     if (onUpdateSchedule) {
       onUpdateSchedule(updatedSchedule);
     }
+  };
+
+  // Delete schedule row
+  const deleteScheduleRow = (id) => {
+    const updatedSchedule = schedule.filter(item => item.id !== id);
+
+    // Reindex periods after deletion
+    const reindexedSchedule = updatedSchedule.map((item, index) => ({
+      ...item,
+      periodIndex: index + 1,
+      id: `period_${index}` // Also update IDs to maintain consistency
+    }));
+
+    setSchedule(reindexedSchedule);
+    if (onUpdateSchedule) {
+      onUpdateSchedule(reindexedSchedule);
+    }
+    console.log('[ScheduleBuilder] Deleted row, remaining observations:', reindexedSchedule.length);
   };
 
   // Get non-call helper text
@@ -341,7 +414,7 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                       background: 'var(--bg-primary)',
                       color: 'var(--text-primary)',
                       fontFamily: 'monospace',
-                      width: '100%',
+                      width: '180px',
                       boxSizing: 'border-box'
                     }}
                   />
@@ -441,107 +514,133 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
               Non-call Periods
             </label>
             <input
-              type="number"
-              min="0"
-              max={schedule.length}
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
               value={coolOffPeriods}
-              onChange={(e) => onConfigChange && onConfigChange('coolOffPeriods', parseInt(e.target.value) || 0)}
+              onChange={(e) => {
+                const value = e.target.value.replace(/[^0-9]/g, '');
+                const numValue = value === '' ? 0 : parseInt(value, 10);
+                const maxValue = schedule.length || 99;
+                const finalValue = Math.min(Math.max(0, numValue), maxValue);
+                onConfigChange && onConfigChange('coolOffPeriods', finalValue);
+              }}
+              onBlur={(e) => {
+                // Ensure value is valid on blur
+                if (e.target.value === '') {
+                  e.target.value = '0';
+                  onConfigChange && onConfigChange('coolOffPeriods', 0);
+                }
+              }}
               style={{...inputStyle, width: '80px'}}
+              placeholder="0"
             />
             <small style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '4px', display: 'block' }}>
-              {getCoolOffHelperText()}
+              {isParticipationNote ? (
+                <>
+                  Cool-off period before early redemption is possible. Example: 6 = callable after 6 months
+                </>
+              ) : (
+                getCoolOffHelperText()
+              )}
             </small>
           </div>
 
           {/* Initial Autocall Level */}
-          <div>
-            <label style={{
-              display: 'block',
-              marginBottom: '0.5rem',
-              fontWeight: '600',
-              color: 'var(--text-primary)',
-              fontSize: '0.9rem'
-            }}>
-              Initial Autocall Level (%)
-            </label>
-            <input
-              type="number"
-              min="50"
-              max="150"
-              step="1"
-              value={initialAutocallLevel}
-              onChange={(e) => onConfigChange && onConfigChange('initialAutocallLevel', parseFloat(e.target.value) || 100)}
-              style={{...inputStyle, width: '80px'}}
-            />
-          </div>
+          {!isParticipationNote && (
+            <div>
+              <label style={{
+                display: 'block',
+                marginBottom: '0.5rem',
+                fontWeight: '600',
+                color: 'var(--text-primary)',
+                fontSize: '0.9rem'
+              }}>
+                Initial Autocall Level (%)
+              </label>
+              <input
+                type="number"
+                min="50"
+                max="150"
+                step="1"
+                value={initialAutocallLevel}
+                onChange={(e) => onConfigChange && onConfigChange('initialAutocallLevel', parseFloat(e.target.value) || 100)}
+                style={{...inputStyle, width: '80px'}}
+              />
+            </div>
+          )}
 
           {/* Step-down Value */}
-          <div>
-            <label style={{
-              display: 'block',
-              marginBottom: '0.5rem',
-              fontWeight: '600',
-              color: 'var(--text-primary)',
-              fontSize: '0.9rem'
-            }}>
-              Step-down per Period (%)
-            </label>
-            <input
-              type="text"
-              inputMode="decimal"
-              value={stepDownInput}
-              onChange={(e) => {
-                const value = e.target.value;
-                // Allow empty, negative sign, decimal point, and valid number patterns
-                if (value === '' || /^-?\d*\.?\d*$/.test(value)) {
-                  setStepDownInput(value);
+          {!isParticipationNote && (
+            <div>
+              <label style={{
+                display: 'block',
+                marginBottom: '0.5rem',
+                fontWeight: '600',
+                color: 'var(--text-primary)',
+                fontSize: '0.9rem'
+              }}>
+                Step-down per Period (%)
+              </label>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={stepDownInput}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  // Allow empty, negative sign, decimal point, and valid number patterns
+                  if (value === '' || /^-?\d*\.?\d*$/.test(value)) {
+                    setStepDownInput(value);
 
-                  // Update parent only if we have a valid number
-                  if (value && value !== '-' && value !== '.' && value !== '-.') {
-                    const numValue = parseFloat(value);
-                    if (!isNaN(numValue) && onConfigChange) {
-                      onConfigChange('stepDownValue', numValue);
+                    // Update parent only if we have a valid number
+                    if (value && value !== '-' && value !== '.' && value !== '-.') {
+                      const numValue = parseFloat(value);
+                      if (!isNaN(numValue) && onConfigChange) {
+                        onConfigChange('stepDownValue', numValue);
+                      }
                     }
                   }
-                }
-              }}
-              onBlur={() => {
-                // On blur, ensure we have a valid number
-                if (stepDownInput === '' || stepDownInput === '-' || stepDownInput === '.' || stepDownInput === '-.') {
-                  setStepDownInput('0');
-                  if (onConfigChange) {
-                    onConfigChange('stepDownValue', 0);
+                }}
+                onBlur={() => {
+                  // On blur, ensure we have a valid number
+                  if (stepDownInput === '' || stepDownInput === '-' || stepDownInput === '.' || stepDownInput === '-.') {
+                    setStepDownInput('0');
+                    if (onConfigChange) {
+                      onConfigChange('stepDownValue', 0);
+                    }
                   }
-                }
-              }}
-              style={{...inputStyle, width: '80px', textAlign: 'right'}}
-            />
-            <small style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '4px', display: 'block' }}>
-              Negative values reduce autocall level
-            </small>
-          </div>
+                }}
+                style={{...inputStyle, width: '80px', textAlign: 'right'}}
+              />
+              <small style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '4px', display: 'block' }}>
+                Negative values reduce autocall level
+              </small>
+            </div>
+          )}
 
           {/* Initial Coupon Barrier */}
-          <div>
-            <label style={{
-              display: 'block',
-              marginBottom: '0.5rem',
-              fontWeight: '600',
-              color: 'var(--text-primary)',
-              fontSize: '0.9rem'
-            }}>
-              Coupon Barrier (%)
-            </label>
-            <input
-              type="number"
-              min="30"
-              max="100"
-              step="1"
-              value={initialCouponBarrier}
-              onChange={(e) => onConfigChange && onConfigChange('initialCouponBarrier', parseFloat(e.target.value) || 70)}
-              style={{...inputStyle, width: '80px'}}
-            />
-          </div>
+          {!isParticipationNote && (
+            <div>
+              <label style={{
+                display: 'block',
+                marginBottom: '0.5rem',
+                fontWeight: '600',
+                color: 'var(--text-primary)',
+                fontSize: '0.9rem'
+              }}>
+                Coupon Barrier (%)
+              </label>
+              <input
+                type="number"
+                min="30"
+                max="100"
+                step="1"
+                value={initialCouponBarrier}
+                onChange={(e) => onConfigChange && onConfigChange('initialCouponBarrier', parseFloat(e.target.value) || 70)}
+                style={{...inputStyle, width: '80px'}}
+              />
+            </div>
+          )}
         </div>
 
       </div>
@@ -577,19 +676,33 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                     Period
                   </th>
                   <th style={{ padding: '12px', textAlign: 'left', fontWeight: '600', color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)' }}>
-                    Observation Date
+                    {isParticipationNote ? 'Early Redemption Observation Date' : 'Observation Date'}
                   </th>
                   <th style={{ padding: '12px', textAlign: 'left', fontWeight: '600', color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)' }}>
-                    Value Date
+                    {isParticipationNote ? 'Early Redemption Date' : 'Value Date'}
                   </th>
+                  {isParticipationNote && (
+                    <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600', color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)' }}>
+                      Rebate (%)
+                    </th>
+                  )}
+                  {!isParticipationNote && (
+                    <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600', color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)' }}>
+                      Autocall Level (%)
+                    </th>
+                  )}
+                  {!isParticipationNote && (
+                    <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600', color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)' }}>
+                      Callable
+                    </th>
+                  )}
+                  {!isParticipationNote && (
+                    <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600', color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)' }}>
+                      Coupon Barrier (%)
+                    </th>
+                  )}
                   <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600', color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)' }}>
-                    Autocall Level (%)
-                  </th>
-                  <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600', color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)' }}>
-                    Callable
-                  </th>
-                  <th style={{ padding: '12px', textAlign: 'center', fontWeight: '600', color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)' }}>
-                    Coupon Barrier (%)
+                    Actions
                   </th>
                 </tr>
               </thead>
@@ -626,15 +739,15 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                         }}
                       />
                     </td>
-                    <td style={{ padding: '12px', textAlign: 'center' }}>
-                      {item.isCallable ? (
+                    {isParticipationNote && (
+                      <td style={{ padding: '12px', textAlign: 'center' }}>
                         <input
                           type="number"
-                          min="50"
-                          max="150"
+                          min="0"
+                          max="50"
                           step="0.5"
-                          value={item.autocallLevel || initialAutocallLevel}
-                          onChange={(e) => updateScheduleItem(item.id, 'autocallLevel', parseFloat(e.target.value) || 100)}
+                          value={item.rebateAmount !== undefined && item.rebateAmount !== null ? item.rebateAmount : 0}
+                          onChange={(e) => updateScheduleItem(item.id, 'rebateAmount', parseFloat(e.target.value) || 0)}
                           style={{
                             ...inputStyle,
                             fontSize: '0.85rem',
@@ -643,54 +756,111 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                             textAlign: 'center'
                           }}
                         />
-                      ) : (
-                        <span style={{
-                          color: 'var(--text-muted)',
-                          fontSize: '0.85rem',
-                          fontStyle: 'italic'
-                        }}>
-                          N/A
-                        </span>
-                      )}
-                    </td>
+                      </td>
+                    )}
+                    {!isParticipationNote && (
+                      <td style={{ padding: '12px', textAlign: 'center' }}>
+                        {item.isCallable ? (
+                          <input
+                            type="number"
+                            min="50"
+                            max="150"
+                            step="0.5"
+                            value={item.autocallLevel || initialAutocallLevel}
+                            onChange={(e) => updateScheduleItem(item.id, 'autocallLevel', parseFloat(e.target.value) || 100)}
+                            style={{
+                              ...inputStyle,
+                              fontSize: '0.85rem',
+                              padding: '4px 6px',
+                              width: '80px',
+                              textAlign: 'center'
+                            }}
+                          />
+                        ) : (
+                          <span style={{
+                            color: 'var(--text-muted)',
+                            fontSize: '0.85rem',
+                            fontStyle: 'italic'
+                          }}>
+                            N/A
+                          </span>
+                        )}
+                      </td>
+                    )}
+                    {!isParticipationNote && (
+                      <td style={{ padding: '12px', textAlign: 'center' }}>
+                        <input
+                          type="checkbox"
+                          checked={item.isCallable}
+                          onChange={(e) => updateScheduleItem(item.id, 'isCallable', e.target.checked)}
+                          style={{
+                            width: '18px',
+                            height: '18px',
+                            accentColor: 'var(--accent-color)',
+                            cursor: 'pointer'
+                          }}
+                        />
+                        {!item.isCallable && (
+                          <div style={{
+                            fontSize: '0.7rem',
+                            color: 'var(--text-muted)',
+                            marginTop: '2px'
+                          }}>
+                            Non-call
+                          </div>
+                        )}
+                      </td>
+                    )}
+                    {!isParticipationNote && (
+                      <td style={{ padding: '12px', textAlign: 'center' }}>
+                        <input
+                          type="number"
+                          min="30"
+                          max="100"
+                          step="1"
+                          value={item.couponBarrier}
+                          onChange={(e) => updateScheduleItem(item.id, 'couponBarrier', parseFloat(e.target.value) || 70)}
+                          style={{
+                            ...inputStyle,
+                            fontSize: '0.85rem',
+                            padding: '4px 6px',
+                            width: '80px',
+                            textAlign: 'center'
+                          }}
+                        />
+                      </td>
+                    )}
                     <td style={{ padding: '12px', textAlign: 'center' }}>
-                      <input
-                        type="checkbox"
-                        checked={item.isCallable}
-                        onChange={(e) => updateScheduleItem(item.id, 'isCallable', e.target.checked)}
+                      <button
+                        onClick={() => deleteScheduleRow(item.id)}
                         style={{
-                          width: '18px',
-                          height: '18px',
-                          accentColor: 'var(--accent-color)',
-                          cursor: 'pointer'
+                          padding: '4px',
+                          background: 'transparent',
+                          color: '#ef4444',
+                          border: '1px solid #ef4444',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          fontSize: '0.75rem',
+                          fontWeight: '700',
+                          width: '24px',
+                          height: '24px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          transition: 'all 0.2s ease'
                         }}
-                      />
-                      {!item.isCallable && (
-                        <div style={{
-                          fontSize: '0.7rem',
-                          color: 'var(--text-muted)',
-                          marginTop: '2px'
-                        }}>
-                          Non-call
-                        </div>
-                      )}
-                    </td>
-                    <td style={{ padding: '12px', textAlign: 'center' }}>
-                      <input
-                        type="number"
-                        min="30"
-                        max="100"
-                        step="1"
-                        value={item.couponBarrier}
-                        onChange={(e) => updateScheduleItem(item.id, 'couponBarrier', parseFloat(e.target.value) || 70)}
-                        style={{
-                          ...inputStyle,
-                          fontSize: '0.85rem',
-                          padding: '4px 6px',
-                          width: '80px',
-                          textAlign: 'center'
+                        onMouseEnter={(e) => {
+                          e.target.style.background = '#ef4444';
+                          e.target.style.color = 'white';
                         }}
-                      />
+                        onMouseLeave={(e) => {
+                          e.target.style.background = 'transparent';
+                          e.target.style.color = '#ef4444';
+                        }}
+                        title="Delete this observation"
+                      >
+                        ✕
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -717,6 +887,88 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                 💡 All dates automatically avoid weekends and major holidays (US/EU)
               </div>
             </div>
+          </div>
+
+          {/* Add Observation Button */}
+          <div style={{
+            padding: '1rem 1.5rem',
+            background: 'var(--bg-secondary)',
+            borderTop: '1px solid var(--border-color)',
+            display: 'flex',
+            gap: '1rem',
+            alignItems: 'center'
+          }}>
+            <button
+              onClick={() => {
+                // Get the last observation or use product dates as fallback
+                const lastObs = schedule[schedule.length - 1];
+                const lastObsDate = lastObs?.observationDate || productDetails?.finalObservation || productDetails?.tradeDate;
+
+                if (!lastObsDate) {
+                  alert('Please set product dates first before adding observations');
+                  return;
+                }
+
+                // Calculate next observation date based on frequency
+                const newObsDate = new Date(lastObsDate);
+                let monthsInterval;
+                switch (frequency) {
+                  case 'monthly': monthsInterval = 1; break;
+                  case 'quarterly': monthsInterval = 3; break;
+                  case 'semi-annually': monthsInterval = 6; break;
+                  case 'annually': monthsInterval = 12; break;
+                  default: monthsInterval = 3;
+                }
+                newObsDate.setMonth(newObsDate.getMonth() + monthsInterval);
+
+                // Create new observation
+                const newObs = {
+                  id: `period_${schedule.length}`,
+                  observationDate: formatDateToISO(newObsDate),
+                  valueDate: formatDateToISO(generateValueDate(newObsDate)),
+                  autocallLevel: initialAutocallLevel,
+                  isCallable: true,
+                  couponBarrier: initialCouponBarrier,
+                  periodIndex: schedule.length + 1,
+                  rebateAmount: isParticipationNote ? 0 : null
+                };
+
+                const updatedSchedule = [...schedule, newObs];
+                setSchedule(updatedSchedule);
+                if (onUpdateSchedule) {
+                  onUpdateSchedule(updatedSchedule);
+                }
+                console.log('[ScheduleBuilder] Added new observation period');
+              }}
+              style={{
+                padding: '0.75rem 1.5rem',
+                background: 'var(--accent-color)',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '0.9rem',
+                fontWeight: '600',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                transition: 'all 0.2s ease'
+              }}
+              onMouseEnter={(e) => {
+                e.target.style.transform = 'scale(1.05)';
+                e.target.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.2)';
+              }}
+              onMouseLeave={(e) => {
+                e.target.style.transform = 'scale(1)';
+                e.target.style.boxShadow = 'none';
+              }}
+              title="Add a new observation period to the schedule"
+            >
+              ➕ Add Observation Period
+            </button>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+              Manually add custom observation periods
+            </span>
           </div>
         </div>
       )}

@@ -9,6 +9,7 @@
 import { ItemTypes, isValidComponentType } from '../componentTypes.js';
 import { isValidOperator } from '../operatorMapping.js';
 import { isWeekend, isMarketHoliday } from '../../utils/dateUtils.js';
+import { validateISIN } from '../../utils/isinValidator.js';
 
 /**
  * Validation result structure
@@ -145,8 +146,12 @@ export class ProductStructureValidator {
     
     if (!product.isin || !product.isin.trim()) {
       result.addError('ISIN is required', null, 'isin');
-    } else if (!/^[A-Z]{2}[A-Z0-9]{10}$/.test(product.isin)) {
-      result.addWarning('ISIN format may be invalid (expected: 12 characters, starting with 2 letters)', null, 'isin');
+    } else {
+      // Validate ISIN syntax using ISO 6166 standard with check digit verification
+      const isinValidation = validateISIN(product.isin);
+      if (!isinValidation.valid) {
+        result.addError(`Invalid ISIN: ${isinValidation.error}`, null, 'isin');
+      }
     }
     
     if (!product.tradeDate) {

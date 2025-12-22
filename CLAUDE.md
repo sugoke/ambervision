@@ -79,6 +79,155 @@ This is a Meteor.js application with React frontend, following the standard Mete
 - **TemplatesCollection**: MongoDB collection for storing user-created product templates with versioning
 - **SessionsCollection**: MongoDB collection for user session management with security tracking
 - **MarketDataCacheCollection**: MongoDB collection for cached market price data
+- **PMSHoldings**: MongoDB collection for Portfolio Management System holdings data from multiple banks
+
+### Bank File Parsers and Number Formatting Standardization
+
+**🚨 CRITICAL ARCHITECTURE RULE - MANDATORY FOR ALL BANK PARSERS 🚨**
+
+**ALL NUMBER FORMATTING AND NORMALIZATION MUST HAPPEN AT THE PARSER LEVEL DURING FILE PROCESSING**
+
+#### Core Principle: Standardized Database Storage
+
+The database must contain **normalized, standardized values** in decimal format. Each bank parser is responsible for converting bank-specific formats into our standardized schema **before** storing data.
+
+#### Standardization Requirements:
+
+**1. Percentage-Based Prices → Decimal Format**
+- **Storage Format**: Always store as decimal (e.g., `1.0` = 100%, `0.6641` = 66.41%)
+- **Display Format**: Multiply by 100 when displaying (handled by UI layer)
+- **Example**:
+  - CSV value: `66.41%` or `100`
+  - Stored in DB: `0.6641` or `1.0`
+  - Displayed: `66.41%` or `100.00%`
+
+**2. Instrument-Specific Price Formats**
+Different instrument types may store prices differently in bank files:
+- **Bonds**: Often already in decimal format (1.0 = 100%)
+- **Structured Products**: Often in percentage format (100 = 100%)
+- **Equities**: Usually absolute prices
+
+**Parser must detect and normalize accordingly**
+
+**3. Cost Basis Calculations**
+- Cost basis should be calculated using **normalized prices**
+- Formula: `quantity × normalizedPrice`
+- No instrument-type logic in calculation functions
+- All complexity handled during normalization
+
+#### Julius Baer Parser Example (Reference Implementation)
+
+Location: `/imports/api/parsers/juliusBaerParser.js`
+
+**Key Implementation Details:**
+
+```javascript
+// Centralized price normalization function
+normalizePrice(rawValue, posCalc, fieldName, isin) {
+  if (!rawValue && rawValue !== 0) return null;
+
+  const isPercentageType = posCalc === '%';
+
+  // If not a percentage type, return as-is (absolute price)
+  if (!isPercentageType) {
+    return rawValue;
+  }
+
+  // For percentage types, always divide by 100 to convert to decimal
+  // This handles both formats consistently:
+  // - 66.91 (representing 66.91%) → 0.6691
+  // - 0.727 (representing 0.727%) → 0.00727
+  return rawValue / 100;
+}
+
+// Usage in mapToStandardSchema()
+const normalizedCostPrice = this.normalizePrice(
+  this.parseNumber(row.COST_PRICE),
+  row.POS_CALC,
+  'COST_PRICE',
+  row.INSTR_ISIN_CODE
+);
+```
+
+**Smart Format Detection:**
+Julius Baer CSV files are inconsistent - different price fields use different formats!
+- **POS_PRICE (current)**: Usually percentage format (66.91 = 66.91%)
+- **COST_PRICE (average)**: Usually decimal format (0.727 = 72.7%)
+
+The parser uses value-range heuristics to detect the correct format:
+- **Value >= 10** with POS_CALC='%' → Percentage format → Divide by 100
+  - Example: 66.91 → 0.6691 (66.91%)
+  - Example: 100.0 → 1.0 (100%)
+- **Value < 10** with POS_CALC='%' → Already decimal → Use as-is
+  - Example: 0.727 → 0.727 (72.7%)
+  - Example: 0.05 → 0.05 (5%)
+- **Explicit "%" symbol**: "66.41%" → 0.6641 (detected in parseNumber)
+- **POS_CALC ≠ '%'**: Absolute prices → 335.50 (no normalization)
+
+**Fields That Must Be Normalized:**
+- `marketPrice`: Normalized via normalizePrice() function
+- `costPrice`: Normalized via normalizePrice() function
+- All cost basis calculations use normalized values
+- Market values in currency units (no normalization needed)
+
+**Detection Logic:**
+- Primary indicator: `POS_CALC` field (% vs absolute)
+- Secondary: Detect '%' symbol in value string
+- Consistent normalization regardless of raw value format
+- Julius Baer may write prices as "66.91" or "0.727" - both handled correctly
+
+#### When Adding a New Bank Parser:
+
+**Required Steps:**
+
+1. **Create Parser File**: `/imports/api/parsers/[bankname]Parser.js`
+
+2. **Implement Detection Logic**:
+   - Identify how the bank indicates percentage vs absolute pricing
+   - Create a `normalizePrice()` function similar to Julius Baer parser
+   - Handle explicit percentage strings (with '%' symbol) in `parseNumber()`
+   - Document bank-specific field mappings in code comments
+
+3. **Normalize All Price Fields**:
+   - Convert percentage prices to decimal (÷ 100) consistently
+   - Use centralized normalization function for all price fields
+   - Handle multiple input formats (66.91, 0.727, "66.41%") uniformly
+   - Document bank-specific quirks and value ranges in comments
+
+4. **Calculate Derived Fields**:
+   - Use normalized values for all calculations
+   - Cost basis, unrealized P&L, performance metrics
+   - Keep calculation functions simple and generic
+
+5. **Map to Standardized Schema**:
+   - Output must match PMSHoldings schema exactly
+   - All prices in decimal format
+   - All dates as Date objects
+   - Currency codes standardized (ISO 4217)
+
+6. **Test Both Instrument Types**:
+   - Verify bonds display correctly
+   - Verify structured products display correctly
+   - Verify equities display correctly
+   - Verify cost basis calculations are accurate
+
+#### Benefits of This Architecture:
+
+✅ **Consistent Database**: All banks store data in same format
+✅ **Simple Display Logic**: UI just multiplies by 100 for percentages
+✅ **Bank Independence**: Each parser handles its own quirks
+✅ **Easy Maintenance**: Bug fixes don't affect other banks
+✅ **Scalable**: Adding new banks doesn't require UI changes
+
+#### Anti-Patterns to Avoid:
+
+❌ **DO NOT** store raw bank values without normalization
+❌ **DO NOT** put normalization logic in UI components
+❌ **DO NOT** put normalization logic in calculation functions
+❌ **DO NOT** assume all banks use same price formats
+❌ **DO NOT** hardcode instrument type logic in multiple places
+
+**The parser is the ONLY place where bank-specific formatting logic should exist.**
 
 ### Technology Stack
 - **Framework**: Meteor.js
@@ -618,3 +767,4 @@ This design ensures that report data is immutable once generated and reflects th
 - there is no conflict, maturity is always after final. final is the last observation on the market. maturity is when the coupon is settled by the bank, it doesn't play a role in the product,
 - no hardcoding, no mock data, always generic logic to adapt to different structured product payoffs
 - never fake data
+- don't deploy before I say

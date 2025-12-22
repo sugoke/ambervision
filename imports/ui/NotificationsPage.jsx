@@ -28,6 +28,9 @@ const NotificationsPage = ({ currentUser }) => {
   // Event type options
   const eventTypes = [
     { value: '', label: 'All Events' },
+    { value: 'warning_alert', label: 'Warning Alert' },
+    { value: 'critical_alert', label: 'Critical Alert' },
+    { value: 'info_alert', label: 'Info Alert' },
     { value: 'coupon_paid', label: 'Coupon Paid' },
     { value: 'autocall_triggered', label: 'Autocall Triggered' },
     { value: 'barrier_breached', label: 'Barrier Breached' },
@@ -409,7 +412,7 @@ const NotificationsPage = ({ currentUser }) => {
                                 color: theme === 'light' ? '#1f2937' : '#f9fafb'
                               }}
                             >
-                              {notification.productName}
+                              {notification.title || notification.productName || 'Notification'}
                             </h3>
                             {unread && (
                               <span
@@ -452,7 +455,7 @@ const NotificationsPage = ({ currentUser }) => {
                         </span>
                       </div>
 
-                      {/* Summary */}
+                      {/* Summary/Message */}
                       <p
                         style={{
                           margin: '0 0 1rem 0',
@@ -461,7 +464,7 @@ const NotificationsPage = ({ currentUser }) => {
                           lineHeight: '1.5'
                         }}
                       >
-                        {notification.summary}
+                        {notification.message || notification.summary || ''}
                       </p>
 
                       {/* Email Status */}

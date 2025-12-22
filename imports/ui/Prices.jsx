@@ -3,6 +3,7 @@ import { useFind, useSubscribe } from 'meteor/react-meteor-data';
 import { Meteor } from 'meteor/meteor';
 import { ProductPricesCollection } from '/imports/api/productPrices';
 import { ProductsCollection } from '/imports/api/products';
+import * as XLSX from 'xlsx';
 
 const Prices = () => {
   const [uploading, setUploading] = useState(false);
@@ -115,11 +116,11 @@ const Prices = () => {
   const parseCSV = (text) => {
     const lines = text.split('\n').filter(line => line.trim());
     const data = [];
-    
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line) continue;
-      
+
       // Detect separator - check if line contains semicolon or comma
       let separator = ',';
       if (line.includes(';') && !line.includes(',')) {
@@ -132,10 +133,10 @@ const Prices = () => {
           separator = ';';
         }
       }
-      
+
       // Split by detected separator
       const values = line.split(separator).map(val => val.trim().replace(/^["']|["']$/g, ''));
-      
+
       if (values.length >= 2) {
         // Handle European decimal format (comma as decimal separator)
         let priceValue = values[1];
@@ -143,26 +144,94 @@ const Prices = () => {
           // European format: semicolon separator with comma as decimal (e.g., "US123;102,50")
           priceValue = priceValue.replace(',', '.');
         }
-        
+
         data.push({
           isin: values[0],
           price: priceValue
         });
       }
     }
-    
+
     console.log('Parsed CSV data:', data);
     return data;
+  };
+
+  // Parse Excel file (.xls, .xlsx)
+  const parseExcel = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, { type: 'array' });
+
+          // Get the first sheet
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+
+          // Convert to JSON - use header: 1 to get raw array data
+          const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+          console.log('Excel data (raw):', jsonData);
+
+          const parsedData = [];
+
+          // Process rows - ISIN in column A (index 0), price in column C (index 2)
+          for (let i = 0; i < jsonData.length; i++) {
+            const row = jsonData[i];
+
+            // Skip empty rows
+            if (!row || row.length === 0) continue;
+
+            // Get ISIN from column A (index 0) and price from column C (index 2)
+            const isin = row[0];
+            const price = row[2]; // Column C is index 2
+
+            // Skip if either ISIN or price is missing
+            if (!isin || price === undefined || price === null || price === '') continue;
+
+            // Convert price to string and handle European decimal format
+            let priceValue = String(price);
+            if (priceValue.includes(',')) {
+              priceValue = priceValue.replace(',', '.');
+            }
+
+            parsedData.push({
+              isin: String(isin).trim(),
+              price: priceValue
+            });
+          }
+
+          console.log('Parsed Excel data:', parsedData);
+          resolve(parsedData);
+        } catch (error) {
+          console.error('Excel parsing error:', error);
+          reject(error);
+        }
+      };
+
+      reader.onerror = (error) => {
+        console.error('FileReader error:', error);
+        reject(error);
+      };
+
+      reader.readAsArrayBuffer(file);
+    });
   };
 
   // Handle file processing (shared between upload and drop)
   const processFile = async (file) => {
     if (!file) return;
 
-    if (!file.name.toLowerCase().endsWith('.csv')) {
+    const fileName = file.name.toLowerCase();
+    const isCSV = fileName.endsWith('.csv');
+    const isExcel = fileName.endsWith('.xls') || fileName.endsWith('.xlsx');
+
+    if (!isCSV && !isExcel) {
       setUploadResult({
         success: false,
-        error: 'Please select a CSV file'
+        error: 'Please select a CSV or Excel file (.csv, .xls, .xlsx)'
       });
       return;
     }
@@ -171,24 +240,32 @@ const Prices = () => {
     setUploadResult(null);
 
     try {
-      const text = await file.text();
-      const csvData = parseCSV(text);
-      
-      if (csvData.length === 0) {
+      let parsedData;
+
+      if (isCSV) {
+        // Parse CSV file
+        const text = await file.text();
+        parsedData = parseCSV(text);
+      } else {
+        // Parse Excel file
+        parsedData = await parseExcel(file);
+      }
+
+      if (parsedData.length === 0) {
         setUploadResult({
           success: false,
-          error: 'No valid data found in CSV file'
+          error: 'No valid data found in file'
         });
         setUploading(false);
         return;
       }
 
-      console.log('Parsed CSV data:', csvData);
+      console.log('Parsed data:', parsedData);
 
       // Upload to server
-      Meteor.call('productPrices.uploadSimpleCsv', csvData, sessionId, (error, result) => {
+      Meteor.call('productPrices.uploadSimpleCsv', parsedData, sessionId, (error, result) => {
         setUploading(false);
-        
+
         if (error) {
           console.error('Upload error:', error);
           setUploadResult({
@@ -236,17 +313,20 @@ const Prices = () => {
     if (uploading) return;
 
     const files = Array.from(e.dataTransfer.files);
-    const csvFile = files.find(file => file.name.toLowerCase().endsWith('.csv'));
-    
-    if (!csvFile) {
+    const validFile = files.find(file => {
+      const fileName = file.name.toLowerCase();
+      return fileName.endsWith('.csv') || fileName.endsWith('.xls') || fileName.endsWith('.xlsx');
+    });
+
+    if (!validFile) {
       setUploadResult({
         success: false,
-        error: 'Please drop a CSV file'
+        error: 'Please drop a CSV or Excel file (.csv, .xls, .xlsx)'
       });
       return;
     }
 
-    await processFile(csvFile);
+    await processFile(validFile);
   };
 
   // Handle file upload
@@ -296,7 +376,7 @@ const Prices = () => {
           color: 'var(--text-secondary)',
           fontSize: '0.9rem'
         }}>
-          Import product prices from CSV files
+          Import product prices from CSV or Excel files (.csv, .xls, .xlsx)
         </p>
         
         <div style={{
@@ -316,7 +396,7 @@ const Prices = () => {
             gap: '0.5rem'
           }}>
             <span style={{ color: 'var(--accent-color)' }}>ℹ️</span>
-            CSV Format Guidelines
+            File Format Guidelines
           </h4>
           <ul style={{
             margin: 0,
@@ -325,10 +405,14 @@ const Prices = () => {
             fontSize: '0.85rem',
             lineHeight: '1.6'
           }}>
-            <li>Column 1: ISIN code (e.g., US1234567890)</li>
-            <li>Column 2: Price value</li>
-            <li style={{ marginTop: '0.5rem' }}>Supported formats:</li>
+            <li><strong>Excel files (.xls, .xlsx):</strong></li>
+            <ul style={{ marginTop: '0.25rem', marginBottom: '0.5rem' }}>
+              <li>Column A: ISIN code (e.g., US1234567890)</li>
+              <li>Column C: Price value (e.g., 102.50)</li>
+            </ul>
+            <li><strong>CSV files (.csv):</strong></li>
             <ul style={{ marginTop: '0.25rem' }}>
+              <li>Column 1: ISIN code, Column 2: Price value</li>
               <li>US format: <code style={{ background: 'var(--bg-tertiary)', padding: '2px 6px', borderRadius: '3px' }}>US1234567890,102.50</code></li>
               <li>European format: <code style={{ background: 'var(--bg-tertiary)', padding: '2px 6px', borderRadius: '3px' }}>US1234567890;102,50</code></li>
             </ul>
@@ -364,24 +448,24 @@ const Prices = () => {
             fontSize: '1rem',
             fontWeight: '600'
           }}>
-            {uploading ? 'Processing CSV file...' : dragOver ? 'Release to upload' : 'Drop CSV file here or click to browse'}
+            {uploading ? 'Processing file...' : dragOver ? 'Release to upload' : 'Drop CSV or Excel file here or click to browse'}
           </h4>
           <p style={{
             margin: 0,
             color: 'var(--text-secondary)',
             fontSize: '0.875rem'
           }}>
-            {uploading ? 'Please wait while we process your file' : 'Maximum file size: 50MB'}
+            {uploading ? 'Please wait while we process your file' : 'Supported formats: .csv, .xls, .xlsx (Maximum: 50MB)'}
           </p>
         </div>
         
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           <input
-            id="csv-file-upload"
-            name="csvFileUpload"
+            id="price-file-upload"
+            name="priceFileUpload"
             ref={fileInputRef}
             type="file"
-            accept=".csv"
+            accept=".csv,.xls,.xlsx"
             onChange={handleFileUpload}
             disabled={uploading}
             style={{ display: 'none' }}
@@ -609,7 +693,7 @@ const Prices = () => {
                     fontWeight: '600',
                     color: 'var(--text-primary)'
                   }}>
-                    {price.price.toFixed(2)}
+                    {price.price.toFixed(2)}%
                   </td>
                   <td style={{
                     padding: '12px',
@@ -851,8 +935,8 @@ const Prices = () => {
                       fontSize: '0.9rem',
                       color: product.hasPrice ? 'var(--text-primary)' : 'var(--text-muted)'
                     }}>
-                      {product.hasPrice 
-                        ? `${product.lastPrice.price.toFixed(2)} ${product.lastPrice.currency || 'USD'}`
+                      {product.hasPrice
+                        ? `${product.lastPrice.price.toFixed(2)}% ${product.lastPrice.currency || 'USD'}`
                         : 'No price'
                       }
                     </td>

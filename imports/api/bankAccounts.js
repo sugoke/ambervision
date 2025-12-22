@@ -13,6 +13,7 @@ export const BankAccountsCollection = new Mongo.Collection('bankAccounts');
 //   accountType: String (personal, company),
 //   accountStructure: String (direct, life_insurance),
 //   lifeInsuranceCompany: String (only if accountStructure is life_insurance),
+//   authorizedOverdraft: Number (optional, credit line amount in reference currency),
 //   isActive: Boolean,
 //   createdAt: Date,
 //   updatedAt: Date
@@ -27,7 +28,7 @@ export const BankAccountHelpers = {
   },
 
   // Add a new bank account for a user
-  async addBankAccount(userId, bankId, accountNumber, referenceCurrency, accountType = 'personal', accountStructure = 'direct', lifeInsuranceCompany = null) {
+  async addBankAccount(userId, bankId, accountNumber, referenceCurrency, accountType = 'personal', accountStructure = 'direct', lifeInsuranceCompany = null, authorizedOverdraft = null) {
     check(userId, String);
     check(bankId, String);
     check(accountNumber, String);
@@ -63,6 +64,11 @@ export const BankAccountHelpers = {
       accountData.lifeInsuranceCompany = lifeInsuranceCompany;
     }
 
+    // Add authorized overdraft (credit line) if provided
+    if (authorizedOverdraft !== null && authorizedOverdraft > 0) {
+      accountData.authorizedOverdraft = authorizedOverdraft;
+    }
+
     const bankAccountId = await BankAccountsCollection.insertAsync(accountData);
 
     return bankAccountId;
@@ -73,9 +79,9 @@ export const BankAccountHelpers = {
     check(accountId, String);
     check(updates, Object);
 
-    const allowedFields = ['bankId', 'accountNumber', 'referenceCurrency'];
+    const allowedFields = ['bankId', 'accountNumber', 'referenceCurrency', 'authorizedOverdraft'];
     const filteredUpdates = {};
-    
+
     allowedFields.forEach(field => {
       if (updates[field] !== undefined) {
         filteredUpdates[field] = updates[field];
@@ -84,6 +90,18 @@ export const BankAccountHelpers = {
 
     if (filteredUpdates.referenceCurrency) {
       filteredUpdates.referenceCurrency = filteredUpdates.referenceCurrency.toUpperCase();
+    }
+
+    // Handle authorizedOverdraft - allow setting to 0 or null to remove it
+    if (updates.authorizedOverdraft !== undefined) {
+      if (updates.authorizedOverdraft === null || updates.authorizedOverdraft === 0 || updates.authorizedOverdraft === '') {
+        // Remove the field if set to 0, null, or empty
+        delete filteredUpdates.authorizedOverdraft;
+        return await BankAccountsCollection.updateAsync(accountId, {
+          $set: { ...filteredUpdates, updatedAt: new Date() },
+          $unset: { authorizedOverdraft: '' }
+        });
+      }
     }
 
     filteredUpdates.updatedAt = new Date();

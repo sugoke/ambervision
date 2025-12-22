@@ -1,32 +1,27 @@
 import React from 'react';
 import StructuredProductChart from '../components/StructuredProductChart.jsx';
 import UnderlyingNews from '../components/UnderlyingNews.jsx';
+import { getTranslation, t } from '../../utils/reportTranslations';
 
 /**
  * Himalaya Report Component
  *
  * Displays evaluation results for Himalaya products.
  * Shows selection history, recorded performances, average calculation, and final payout.
+ * Supports multiple languages (EN/FR) via URL parameter.
  */
 const HimalayaReport = ({ results, productId, product }) => {
+  // Get language from URL params
+  const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  const lang = urlParams?.get('lang') || 'en';
+  const tr = getTranslation(lang);
+
   const params = results.himalayaStructure || {};
   const status = results.currentStatus || {};
   const features = results.features || {};
   const underlyings = results.underlyings || [];
   const calculation = results.himalayaCalculation || {};
   const selectionHistory = calculation.selectionHistory || [];
-
-  // Format dates from product data
-  const formatDate = (dateStr) => {
-    if (!dateStr) return 'N/A';
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  };
-
-  const tradeDateFormatted = formatDate(product?.tradeDate);
-  const paymentDateFormatted = formatDate(product?.paymentDate);
-  const finalDateFormatted = formatDate(params?.finalObservation || product?.finalObservation);
-  const maturityDateFormatted = formatDate(product?.maturity || product?.maturityDate);
 
   return (
     <div style={{
@@ -42,44 +37,9 @@ const HimalayaReport = ({ results, productId, product }) => {
         marginBottom: '1rem',
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: '1rem'
+        gap: '0.5rem'
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          🏔️ Himalaya Evaluation Results
-        </div>
-        <div style={{
-          display: 'flex',
-          gap: '1.5rem',
-          fontSize: '0.75rem',
-          color: 'var(--text-secondary)',
-          fontWeight: '400'
-        }}>
-          <div>
-            <span style={{ color: 'var(--text-muted)' }}>Trade Date:</span>{' '}
-            <span style={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>
-              {tradeDateFormatted}
-            </span>
-          </div>
-          <div>
-            <span style={{ color: 'var(--text-muted)' }}>Payment Date:</span>{' '}
-            <span style={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>
-              {paymentDateFormatted}
-            </span>
-          </div>
-          <div>
-            <span style={{ color: 'var(--text-muted)' }}>Final Date:</span>{' '}
-            <span style={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>
-              {finalDateFormatted}
-            </span>
-          </div>
-          <div>
-            <span style={{ color: 'var(--text-muted)' }}>Maturity:</span>{' '}
-            <span style={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>
-              {maturityDateFormatted}
-            </span>
-          </div>
-        </div>
+        🏔️ {tr.himalayaEvaluationResults}
       </div>
 
       {/* Final Performance Summary */}
@@ -97,21 +57,21 @@ const HimalayaReport = ({ results, productId, product }) => {
         }}>
           <div>
             <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-              Average Performance
+              {status.hasMatured ? tr.finalAveragePerformance : tr.currentAveragePerformance}
             </div>
             <div style={{
               fontSize: '1.5rem',
               fontWeight: '700',
-              color: results.finalPerformance >= 0 ? '#10b981' : '#ef4444',
+              color: results.averagePerformance >= 0 ? '#10b981' : '#ef4444',
               fontFamily: 'monospace'
             }}>
-              {results.finalPerformanceFormatted}
+              {results.averagePerformanceFormatted}
             </div>
           </div>
 
           <div>
             <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-              Floored Performance ({params.floor}% floor)
+              {status.hasMatured ? tr.finalFlooredPerformance : tr.indicativeFlooredPerformance} ({params.floor}% floor)
             </div>
             <div style={{
               fontSize: '1.5rem',
@@ -125,7 +85,7 @@ const HimalayaReport = ({ results, productId, product }) => {
 
           <div>
             <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-              Final Payout
+              {status.hasMatured ? tr.finalPayout : tr.indicativePayoutIfMaturedToday}
             </div>
             <div style={{
               fontSize: '1.5rem',
@@ -133,7 +93,7 @@ const HimalayaReport = ({ results, productId, product }) => {
               color: 'var(--text-primary)',
               fontFamily: 'monospace'
             }}>
-              {results.finalPayoutFormatted}
+              {results.totalPayoutFormatted}
             </div>
           </div>
 
@@ -150,11 +110,43 @@ const HimalayaReport = ({ results, productId, product }) => {
               alignItems: 'center',
               gap: '0.5rem'
             }}>
-              ⚠️ Floor applied: Performance below {params.floor}% floor
+              ⚠️ {t(lang, 'floorApplied', { floor: params.floor })}
             </div>
           )}
         </div>
       </div>
+
+      {/* Indicative Calculation Disclaimer for Live Products */}
+      {!status.hasMatured && (
+        <div style={{
+          background: 'rgba(99, 102, 241, 0.1)',
+          padding: '1rem',
+          borderRadius: '6px',
+          marginBottom: '1.5rem',
+          fontSize: '0.85rem',
+          color: '#6366f1',
+          fontStyle: 'italic',
+          border: '1px solid rgba(99, 102, 241, 0.3)',
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: '0.5rem'
+        }}>
+          <span style={{ fontSize: '1.1rem', flexShrink: 0 }}>💡</span>
+          <span>
+            {tr.indicativeCalculationBasedOnCurrentPrices}
+            Actual performance and payout will be determined at final observation on{' '}
+            <strong>
+              {params.observationDates?.[params.observationDates.length - 1]?.date ?
+                new Date(params.observationDates[params.observationDates.length - 1].date).toLocaleDateString('en-US', {
+                  month: 'short',
+                  day: 'numeric',
+                  year: 'numeric'
+                }) : 'final observation date'
+              }
+            </strong>.
+          </span>
+        </div>
+      )}
 
       {/* Combined Performance Table */}
       {underlyings.length > 0 && (
@@ -172,7 +164,7 @@ const HimalayaReport = ({ results, productId, product }) => {
             alignItems: 'center',
             gap: '0.5rem'
           }}>
-            📊 Himalaya Performance Summary
+            📊 {tr.performanceSummary}
           </h4>
 
           {/* Table with Gradient Border */}
@@ -211,21 +203,21 @@ const HimalayaReport = ({ results, productId, product }) => {
                       textTransform: 'uppercase',
                       letterSpacing: '1px',
                       textAlign: 'center'
-                    }}>🔢 Obs #</div>
+                    }}>🔢 {tr.obsNumber}</div>
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
                       color: '#e2e8f0',
                       textTransform: 'uppercase',
                       letterSpacing: '1px'
-                    }}>📅 Date</div>
+                    }}>📅 {tr.date}</div>
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
                       color: '#e2e8f0',
                       textTransform: 'uppercase',
                       letterSpacing: '1px'
-                    }}>🏆 Best Performer</div>
+                    }}>🏆 {tr.bestPerformer}</div>
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
@@ -233,7 +225,7 @@ const HimalayaReport = ({ results, productId, product }) => {
                       textTransform: 'uppercase',
                       letterSpacing: '1px',
                       textAlign: 'right'
-                    }}>📍 Initial Level</div>
+                    }}>📍 {tr.initialLevel}</div>
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
@@ -241,7 +233,7 @@ const HimalayaReport = ({ results, productId, product }) => {
                       textTransform: 'uppercase',
                       letterSpacing: '1px',
                       textAlign: 'right'
-                    }}>🎯 Final Level</div>
+                    }}>🎯 {status.hasMatured ? tr.finalLevel : tr.observationLevel}</div>
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
@@ -249,7 +241,7 @@ const HimalayaReport = ({ results, productId, product }) => {
                       textTransform: 'uppercase',
                       letterSpacing: '1px',
                       textAlign: 'right'
-                    }}>📊 Performance</div>
+                    }}>📊 {tr.performance}</div>
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
@@ -257,7 +249,7 @@ const HimalayaReport = ({ results, productId, product }) => {
                       textTransform: 'uppercase',
                       letterSpacing: '1px',
                       textAlign: 'center'
-                    }}>✨ Remaining</div>
+                    }}>✨ {tr.remainingUnderlying}</div>
                   </div>
 
                   {/* Selection History Rows */}
@@ -271,7 +263,8 @@ const HimalayaReport = ({ results, productId, product }) => {
                         padding: '1rem 1.5rem',
                         borderBottom: index < selectionHistory.length - 1 ? '1px solid rgba(148, 163, 184, 0.15)' : 'none',
                         alignItems: 'center',
-                        background: 'transparent'
+                        background: selection.status === 'frozen' ? 'rgba(16, 185, 129, 0.05)' : 'transparent',
+                        borderLeft: selection.status === 'frozen' ? '3px solid #10b981' : '3px solid transparent'
                       }}
                     >
                 {/* Observation Number */}
@@ -279,18 +272,49 @@ const HimalayaReport = ({ results, productId, product }) => {
                   textAlign: 'center',
                   fontWeight: '600',
                   color: 'var(--text-primary)',
-                  fontSize: '0.95rem'
+                  fontSize: '0.95rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '0.25rem'
                 }}>
+                  {selection.status === 'frozen' && <span style={{ fontSize: '0.85rem' }}>🔒</span>}
                   {selection.observationNumber}
                 </div>
 
                 {/* Observation Date */}
                 <div style={{
                   fontSize: '0.85rem',
-                  color: 'var(--text-secondary)',
-                  fontFamily: 'monospace'
+                  fontFamily: 'monospace',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.25rem'
                 }}>
-                  {selection.observationDate ? new Date(selection.observationDate).toLocaleDateString() : '-'}
+                  <span style={{ color: 'var(--text-secondary)' }}>
+                    {selection.observationDate ? new Date(selection.observationDate).toLocaleDateString() : '-'}
+                  </span>
+                  {selection.status === 'frozen' && (
+                    <span style={{
+                      fontSize: '0.7rem',
+                      color: '#10b981',
+                      fontWeight: '600',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.5px'
+                    }}>
+                      ● Frozen
+                    </span>
+                  )}
+                  {selection.status === 'pending' && (
+                    <span style={{
+                      fontSize: '0.7rem',
+                      color: '#6b7280',
+                      fontWeight: '600',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.5px'
+                    }}>
+                      ○ Pending
+                    </span>
+                  )}
                 </div>
 
                 {/* Selected Underlying */}
@@ -312,31 +336,56 @@ const HimalayaReport = ({ results, productId, product }) => {
 
                 {/* Initial Level */}
                 <div style={{
-                  textAlign: 'right',
-                  fontFamily: 'monospace',
-                  color: 'var(--text-primary)',
-                  fontSize: '0.85rem'
+                  textAlign: 'right'
                 }}>
-                  {selection.initialLevelFormatted}
+                  <div style={{
+                    fontFamily: 'monospace',
+                    color: 'var(--text-primary)',
+                    fontSize: '0.85rem'
+                  }}>
+                    {selection.initialLevelFormatted}
+                  </div>
+                  <div style={{
+                    fontSize: '0.7rem',
+                    color: 'var(--text-muted)',
+                    marginTop: '0.15rem'
+                  }}>
+                    {product?.tradeDate ? new Date(product.tradeDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Trade date'}
+                  </div>
                 </div>
 
                 {/* Final Level */}
                 <div style={{
-                  textAlign: 'right',
-                  fontFamily: 'monospace',
-                  fontWeight: '600',
-                  color: 'var(--text-primary)',
-                  fontSize: '0.85rem'
+                  textAlign: 'right'
                 }}>
-                  {selection.finalLevelFormatted}
+                  <div style={{
+                    fontFamily: 'monospace',
+                    fontWeight: '600',
+                    color: 'var(--text-primary)',
+                    fontSize: '0.85rem'
+                  }}>
+                    {selection.finalLevelFormatted}
+                  </div>
+                  <div style={{
+                    fontSize: '0.7rem',
+                    color: 'var(--text-muted)',
+                    marginTop: '0.15rem'
+                  }}>
+                    {selection.status === 'frozen'
+                      ? (selection.observationDate ? new Date(selection.observationDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Obs date')
+                      : 'Today'
+                    }
+                  </div>
                 </div>
 
                 {/* Performance */}
                 <div style={{
                   textAlign: 'right',
                   fontFamily: 'monospace',
-                  fontWeight: '700',
-                  color: selection.performance >= 0 ? '#10b981' : '#ef4444',
+                  fontWeight: selection.status === 'frozen' ? '900' : '700',
+                  color: selection.status === 'frozen'
+                    ? (selection.performance >= 0 ? '#10b981' : '#ef4444')
+                    : '#9ca3af',
                   fontSize: '0.95rem'
                 }}>
                   {selection.performanceFormatted}
@@ -375,9 +424,34 @@ const HimalayaReport = ({ results, productId, product }) => {
             <div style={{
               fontSize: '0.9rem',
               color: 'var(--text-primary)',
-              fontFamily: 'monospace'
+              fontFamily: 'monospace',
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              gap: '0.25rem'
             }}>
-              ({calculation.recordedPerformances?.map(p => p.toFixed(2)).join(' + ')}) / {calculation.recordedPerformances?.length} = {results.finalPerformanceFormatted}
+              <span>(</span>
+              {calculation.recordedPerformances?.map((perf, idx) => {
+                const isFrozen = selectionHistory[idx]?.status === 'frozen';
+                const perfFormatted = (perf >= 0 ? '+' : '') + perf.toFixed(2);
+                return (
+                  <React.Fragment key={idx}>
+                    <span style={{
+                      fontWeight: isFrozen ? '700' : '400',
+                      color: isFrozen
+                        ? (perf >= 0 ? '#10b981' : '#ef4444')
+                        : '#9ca3af'
+                    }}>
+                      {perfFormatted}
+                    </span>
+                    {idx < calculation.recordedPerformances.length - 1 && <span> + </span>}
+                  </React.Fragment>
+                );
+              })}
+              <span>) / {calculation.recordedPerformances?.length} = </span>
+              <span style={{ fontWeight: '700', color: results.averagePerformance >= 0 ? '#10b981' : '#ef4444' }}>
+                {results.averagePerformanceFormatted}
+              </span>
             </div>
           </div>
         </div>
@@ -399,7 +473,7 @@ const HimalayaReport = ({ results, productId, product }) => {
             alignItems: 'center',
             gap: '0.5rem'
           }}>
-            📰 Latest News
+            📰 {tr.latestNews}
           </h4>
           <div style={{
             display: 'flex',
@@ -410,7 +484,6 @@ const HimalayaReport = ({ results, productId, product }) => {
               <UnderlyingNews
                 key={index}
                 ticker={underlying.ticker}
-                news={underlying.news}
               />
             ))}
           </div>

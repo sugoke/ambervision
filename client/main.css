@@ -1,11 +1,12 @@
 @import 'structured-product.css';
+@import 'pdf-styles.css';
 
 html, body {
   margin: 0;
   padding: 0;
-  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', sans-serif;
   box-sizing: border-box;
-  background-color: var(--bg-primary);
+  background-color: var(--bg-secondary); /* Use secondary background for better iOS web app appearance */
   color: var(--text-primary);
   transition: all 0.3s ease;
   overflow-x: hidden;
@@ -17,6 +18,22 @@ html, body {
   width: 100%;
   max-width: 100vw;
   overflow-x: hidden;
+  min-height: 100vh;
+}
+
+/* iOS Web App (standalone mode) specific styling */
+@supports (-webkit-touch-callout: none) {
+  html {
+    /* Ensure gray background extends into iOS status bar area */
+    background-color: var(--bg-secondary);
+  }
+
+  /* iOS standalone mode detection */
+  @media all and (display-mode: standalone) {
+    body {
+      background-color: var(--bg-secondary);
+    }
+  }
 }
 
 * {

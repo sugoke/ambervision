@@ -499,6 +499,264 @@ const SummaryModule = ({
     </div>
   );
 
+  // Reverse Convertible Summary (for both stock and bond versions)
+  const renderReverseConvertibleSummary = () => {
+    const isBondVersion = selectedTemplateId === 'reverse_convertible_bond';
+    const icon = isBondVersion ? '📜' : '🔄';
+    const title = isBondVersion ? 'Reverse Convertible (Bond)' : 'Reverse Convertible';
+
+    return (
+      <div style={cardStyle}>
+        <h3 style={titleStyle}>
+          {icon} {title} Summary
+        </h3>
+
+        {/* Product Details Section */}
+        <div style={{
+          background: 'var(--bg-tertiary)',
+          border: '1px solid var(--border-color)',
+          borderRadius: '8px',
+          padding: '1.5rem',
+          marginBottom: '1.5rem'
+        }}>
+          <h4 style={{
+            margin: '0 0 1rem 0',
+            color: 'var(--text-primary)',
+            fontSize: '1rem',
+            fontWeight: '600',
+            borderBottom: '1px solid var(--border-color)',
+            paddingBottom: '0.5rem'
+          }}>
+            📄 Product Details
+          </h4>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+            <div style={infoRowStyle}>
+              <span style={labelStyle}>ISIN:</span>
+              <span style={valueStyle}>{productDetails.isin || 'Not specified'}</span>
+            </div>
+            <div style={infoRowStyle}>
+              <span style={labelStyle}>Issuer:</span>
+              <span style={valueStyle}>{productDetails.issuer || 'Not specified'}</span>
+            </div>
+            <div style={infoRowStyle}>
+              <span style={labelStyle}>Currency:</span>
+              <span style={valueStyle}>{productDetails.currency}</span>
+            </div>
+            <div style={infoRowStyle}>
+              <span style={labelStyle}>Trade Date:</span>
+              <span style={valueStyle}>{productDetails.tradeDate || 'Not specified'}</span>
+            </div>
+            <div style={infoRowStyle}>
+              <span style={labelStyle}>Value Date:</span>
+              <span style={valueStyle}>{productDetails.valueDate || 'Not specified'}</span>
+            </div>
+            <div style={infoRowStyle}>
+              <span style={labelStyle}>Final Observation:</span>
+              <span style={valueStyle}>{productDetails.finalObservation || productDetails.finalObservationDate || 'Not specified'}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Underlying Details Section */}
+        <div style={{
+          background: 'var(--bg-tertiary)',
+          border: '1px solid var(--border-color)',
+          borderRadius: '8px',
+          padding: '1.5rem',
+          marginBottom: '1.5rem'
+        }}>
+          <h4 style={{
+            margin: '0 0 1rem 0',
+            color: 'var(--text-primary)',
+            fontSize: '1rem',
+            fontWeight: '600',
+            borderBottom: '1px solid var(--border-color)',
+            paddingBottom: '0.5rem'
+          }}>
+            📈 {isBondVersion ? 'Bond' : 'Underlying'} Details
+          </h4>
+          {underlyings.length > 0 ? (
+            underlyings.map((underlying, index) => (
+              <div key={index} style={{ marginBottom: index < underlyings.length - 1 ? '1rem' : '0' }}>
+                <div style={{
+                  background: 'var(--bg-primary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  padding: '1rem'
+                }}>
+                  <div style={{
+                    fontSize: '1rem',
+                    fontWeight: '600',
+                    color: 'var(--text-primary)',
+                    marginBottom: '0.5rem'
+                  }}>
+                    {underlying.ticker || underlying.securityData?.symbol || 'N/A'}
+                  </div>
+                  <div style={{
+                    fontSize: '0.9rem',
+                    color: 'var(--text-secondary)',
+                    marginBottom: '0.75rem'
+                  }}>
+                    {underlying.name || underlying.securityData?.name || 'N/A'}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                    {underlying.isin && (
+                      <div style={infoRowStyle}>
+                        <span style={labelStyle}>ISIN:</span>
+                        <span style={{ ...valueStyle, fontFamily: 'monospace', fontSize: '0.85rem' }}>{underlying.isin}</span>
+                      </div>
+                    )}
+                    <div style={infoRowStyle}>
+                      <span style={labelStyle}>Initial Price:</span>
+                      <span style={valueStyle}>
+                        {underlying.securityData?.currency || productDetails.currency} {underlying.strike?.toFixed(2) || '0.00'}
+                      </span>
+                    </div>
+                    {underlying.securityData?.exchange && (
+                      <div style={infoRowStyle}>
+                        <span style={labelStyle}>Exchange:</span>
+                        <span style={valueStyle}>{underlying.securityData.exchange}</span>
+                      </div>
+                    )}
+                    {underlying.securityData?.price && (
+                      <div style={infoRowStyle}>
+                        <span style={labelStyle}>Last Price:</span>
+                        <span style={valueStyle}>
+                          {underlying.securityData.currency || productDetails.currency} {(underlying.securityData.price.close || underlying.securityData.price.price || underlying.securityData.price)?.toFixed(2)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div style={{
+              textAlign: 'center',
+              padding: '2rem',
+              color: 'var(--text-muted)',
+              fontStyle: 'italic'
+            }}>
+              No {isBondVersion ? 'bond' : 'underlying'} added yet
+            </div>
+          )}
+        </div>
+
+        {/* Structure Parameters Section */}
+        <div style={{
+          background: 'var(--bg-tertiary)',
+          border: '1px solid var(--border-color)',
+          borderRadius: '8px',
+          padding: '1.5rem'
+        }}>
+          <h4 style={{
+            margin: '0 0 1rem 0',
+            color: 'var(--text-primary)',
+            fontSize: '1rem',
+            fontWeight: '600',
+            borderBottom: '1px solid var(--border-color)',
+            paddingBottom: '0.5rem'
+          }}>
+            🏗️ Structure Parameters
+          </h4>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+            <div style={infoRowStyle}>
+              <span style={labelStyle}>Coupon Rate p.a.:</span>
+              <span style={{ ...valueStyle, fontWeight: '600', color: '#10b981' }}>
+                {structureParams?.couponRate !== undefined ? `${structureParams.couponRate}%` : '3.5%'}
+              </span>
+            </div>
+            <div style={infoRowStyle}>
+              <span style={labelStyle}>Capital Protection Barrier:</span>
+              <span style={{ ...valueStyle, fontWeight: '600', color: '#f59e0b' }}>
+                {structureParams?.barrierType === 'american' ? 'American' : 'European'} {structureParams?.capitalProtectionBarrier || (isBondVersion ? 100 : 70)}%
+              </span>
+            </div>
+            {!isBondVersion && (
+              <div style={infoRowStyle}>
+                <span style={labelStyle}>Strike Level:</span>
+                <span style={valueStyle}>{structureParams?.strike || 100}%</span>
+              </div>
+            )}
+            <div style={infoRowStyle}>
+              <span style={labelStyle}>Gearing Factor:</span>
+              <span style={{ ...valueStyle, fontWeight: '600', color: '#ef4444' }}>
+                {(1 / ((structureParams?.capitalProtectionBarrier || (isBondVersion ? 100 : 70)) / 100)).toFixed(2)}x
+              </span>
+            </div>
+          </div>
+
+          {/* Payoff Logic Explanation */}
+          <div style={{
+            marginTop: '1.5rem',
+            padding: '1rem',
+            background: 'var(--bg-primary)',
+            borderRadius: '6px',
+            border: '1px solid var(--border-color)'
+          }}>
+            <h5 style={{
+              margin: '0 0 0.75rem 0',
+              fontSize: '0.9rem',
+              fontWeight: '600',
+              color: 'var(--text-primary)'
+            }}>
+              💡 Payoff Logic
+            </h5>
+            <ul style={{
+              margin: '0',
+              paddingLeft: '1.5rem',
+              fontSize: '0.85rem',
+              color: 'var(--text-secondary)',
+              lineHeight: '1.6'
+            }}>
+              <li>
+                <strong>Guaranteed Coupon:</strong> {structureParams?.couponRate || 3.5}% paid at maturity regardless of {isBondVersion ? 'bond' : 'underlying'} performance
+              </li>
+              <li>
+                <strong>Above Barrier ({structureParams?.capitalProtectionBarrier || (isBondVersion ? 100 : 70)}%):</strong> Full capital protection → 100% + {structureParams?.couponRate || 3.5}% coupon
+              </li>
+              <li>
+                <strong>Below Barrier:</strong> Geared downside exposure → 100% + (performance × {(1 / ((structureParams?.capitalProtectionBarrier || (isBondVersion ? 100 : 70)) / 100)).toFixed(2)}x) + {structureParams?.couponRate || 3.5}% coupon
+              </li>
+              <li>
+                <strong>{structureParams?.barrierType === 'american' ? 'American Barrier:' : 'European Barrier:'}</strong> {structureParams?.barrierType === 'american' ? 'Monitored continuously during product life' : 'Checked only at final observation date'}
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        {/* Save Button */}
+        <div style={{ marginTop: '2rem', textAlign: 'center' }}>
+          <button
+            onClick={onSaveProduct}
+            style={{
+              padding: '1rem 3rem',
+              background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+              color: 'white',
+              border: 'none',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontSize: '1rem',
+              fontWeight: '600',
+              boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)',
+              transition: 'all 0.2s ease'
+            }}
+            onMouseEnter={(e) => {
+              e.target.style.transform = 'translateY(-2px)';
+              e.target.style.boxShadow = '0 6px 16px rgba(16, 185, 129, 0.4)';
+            }}
+            onMouseLeave={(e) => {
+              e.target.style.transform = 'translateY(0)';
+              e.target.style.boxShadow = '0 4px 12px rgba(16, 185, 129, 0.3)';
+            }}
+          >
+            {editingProduct ? '✏️ Update Product' : '💾 Save Product'}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   // Generic Summary for unknown templates
   const renderGenericSummary = () => (
     <div style={cardStyle}>
@@ -591,6 +849,9 @@ const SummaryModule = ({
         return renderHimalayaSummary();
       case 'shark_note':
         return renderSharkSummary();
+      case 'reverse_convertible':
+      case 'reverse_convertible_bond':
+        return renderReverseConvertibleSummary();
       default:
         return renderGenericSummary();
     }
@@ -669,39 +930,60 @@ const SummaryModule = ({
             </span>
           </div>
           
-          <div style={{ 
-            display: 'flex', 
-            alignItems: 'center', 
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
             gap: '0.75rem',
             padding: '0.5rem',
             borderRadius: '6px',
             background: (() => {
-              // Handle both array and object formats
+              // Check for template-based structure (structureParams) OR drag-and-drop structure (droppedItems)
               let hasStructure = false;
-              if (Array.isArray(droppedItems)) {
+
+              // For template-based products, check if structureParams exists and has properties
+              if (structureParams && Object.keys(structureParams).length > 0) {
+                hasStructure = true;
+              }
+              // For drag-and-drop products, check droppedItems
+              else if (Array.isArray(droppedItems)) {
                 hasStructure = droppedItems.length > 0;
               } else if (droppedItems && typeof droppedItems === 'object') {
                 hasStructure = (droppedItems.life || []).length > 0 || (droppedItems.maturity || []).length > 0;
               }
+
               return hasStructure ? 'var(--success-color)' : 'var(--warning-color)';
             })(),
             color: 'white'
           }}>
             <span style={{ fontSize: '1.2rem' }}>
               {(() => {
-                // Handle both array and object formats
+                // Check for template-based structure (structureParams) OR drag-and-drop structure (droppedItems)
                 let hasStructure = false;
-                if (Array.isArray(droppedItems)) {
+
+                // For template-based products, check if structureParams exists and has properties
+                if (structureParams && Object.keys(structureParams).length > 0) {
+                  hasStructure = true;
+                }
+                // For drag-and-drop products, check droppedItems
+                else if (Array.isArray(droppedItems)) {
                   hasStructure = droppedItems.length > 0;
                 } else if (droppedItems && typeof droppedItems === 'object') {
                   hasStructure = (droppedItems.life || []).length > 0 || (droppedItems.maturity || []).length > 0;
                 }
+
                 return hasStructure ? '✅' : '⚠️';
               })()}
             </span>
             <span style={{ fontWeight: '500' }}>
               Structure: {(() => {
-                // Handle both array and object formats
+                // Check for template-based structure (structureParams) OR drag-and-drop structure (droppedItems)
+
+                // For template-based products, show "Configured" if structureParams exists
+                if (structureParams && Object.keys(structureParams).length > 0) {
+                  return 'Configured';
+                }
+
+                // For drag-and-drop products, show count or "Empty"
                 let itemCount = 0;
                 if (Array.isArray(droppedItems)) {
                   itemCount = droppedItems.length;

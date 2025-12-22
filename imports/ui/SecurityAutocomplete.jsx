@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Meteor } from 'meteor/meteor';
 import ReactCountryFlag from 'react-country-flag';
 import { getSecurityCountryFlag } from '/imports/utils/securityUtils.js';
+import { normalizeExchangeForEOD } from '/imports/utils/tickerUtils.js';
 
 const SecurityAutocomplete = ({ 
   value = '', 
@@ -137,22 +138,63 @@ const SecurityAutocomplete = ({
 
   // Handle security selection
   const handleSecuritySelect = (security) => {
-    const ticker = security.Exchange ? `${security.Code}.${security.Exchange}` : security.Code;
+    // STEP 1: Clean the symbol by removing country/market codes (e.g., "ADS GY" → "ADS")
+    let cleanSymbol = security.Code || '';
+
+    // Remove common Bloomberg-style suffixes (space + 2 letters)
+    // Examples: "ADS GY" → "ADS", "AIR FP" → "AIR", "INTC UQ" → "INTC"
+    const symbolMatch = cleanSymbol.match(/^([A-Z0-9]+)(\s+[A-Z]{2})?$/);
+    if (symbolMatch) {
+      cleanSymbol = symbolMatch[1]; // Take only the first part
+    }
+
+    // STEP 2: Normalize exchange name to uppercase API format
+    let exchangeCode = security.Exchange || '';
+
+    // Convert common human-readable names to uppercase codes
+    const exchangeNormalizations = {
+      'xetra': 'XETRA',
+      'frankfurt': 'XETRA',
+      'euronext paris': 'PA',
+      'paris': 'PA',
+      'euronext amsterdam': 'AS',
+      'amsterdam': 'AS',
+      'euronext brussels': 'BR',
+      'brussels': 'BR',
+      'london': 'LSE',
+      'nasdaq': 'NASDAQ',
+      'nyse': 'NYSE'
+    };
+
+    const normalizedExchange = exchangeNormalizations[exchangeCode.toLowerCase()] || exchangeCode.toUpperCase();
+
+    // STEP 3: Create ticker and apply EOD API normalization
+    const rawTicker = normalizedExchange ? `${cleanSymbol}.${normalizedExchange}` : cleanSymbol;
+    const normalizedTicker = normalizeExchangeForEOD(rawTicker);
+
+    console.log(`[SecurityAutocomplete] Selected security:`, {
+      original: { code: security.Code, exchange: security.Exchange },
+      cleaned: { symbol: cleanSymbol, exchange: normalizedExchange },
+      ticker: normalizedTicker
+    });
+
     const displayName = `${security.Code} - ${security.Name}`;
-    
+
     setInputValue(displayName);
     setShowDropdown(false);
     setSelectedIndex(-1);
-    
+
     // Call onChange with the display name
     onChange && onChange(displayName);
-    
-    // Call onSecuritySelect with full security data
+
+    // Call onSecuritySelect with enhanced security data
     onSecuritySelect && onSecuritySelect({
       ...security,
-      ticker,
+      Code: cleanSymbol,        // Override with cleaned symbol
+      Exchange: normalizedExchange,  // Override with normalized exchange
+      ticker: normalizedTicker,  // Add normalized ticker field
       displayName,
-      price: prices[ticker]
+      price: prices[normalizedTicker]
     });
   };
 

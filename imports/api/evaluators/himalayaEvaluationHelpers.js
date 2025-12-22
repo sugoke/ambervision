@@ -1,4 +1,5 @@
 import { MarketDataHelpers } from '/imports/api/marketDataCache';
+import { EODApiHelpers } from '/imports/api/eodApi';
 
 /**
  * Himalaya Evaluation Helpers
@@ -19,8 +20,21 @@ export const HimalayaEvaluationHelpers = {
     const finalObsDate = product.finalObservation || product.finalObservationDate;
     const maturityDate = product.maturity || product.maturityDate;
 
-    const isFinalObsPassed = finalObsDate && new Date(finalObsDate) <= now;
-    const isMaturityPassed = maturityDate && new Date(maturityDate) <= now;
+    // Strip time components for date-only comparison
+    const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    // Final observation is a market date - data only available the NEXT day
+    const isFinalObsPassed = finalObsDate && (() => {
+      const finalObsDateOnly = new Date(new Date(finalObsDate).getFullYear(), new Date(finalObsDate).getMonth(), new Date(finalObsDate).getDate());
+      return finalObsDateOnly < nowDateOnly;
+    })();
+
+    // Maturity is settlement date - product has matured ON or after this date
+    const isMaturityPassed = maturityDate && (() => {
+      const maturityDateOnly = new Date(new Date(maturityDate).getFullYear(), new Date(maturityDate).getMonth(), new Date(maturityDate).getDate());
+      return maturityDateOnly <= nowDateOnly;
+    })();
+
     const isRedeemed = isFinalObsPassed || isMaturityPassed;
 
     if (!isRedeemed) {
@@ -144,15 +158,42 @@ export const HimalayaEvaluationHelpers = {
   /**
    * Extract underlying assets data for Himalaya products
    */
-  extractUnderlyingAssetsData(product) {
+  async extractUnderlyingAssetsData(product) {
     const underlyings = [];
     const currency = product.currency || 'USD';
 
     if (product.underlyings && Array.isArray(product.underlyings)) {
-      product.underlyings.forEach((underlying, index) => {
+      // Process all underlyings sequentially to fetch current prices
+      for (const [index, underlying] of product.underlyings.entries()) {
         const initialPrice = underlying.strike ||
                            (underlying.securityData?.tradeDatePrice?.price) ||
                            (underlying.securityData?.tradeDatePrice?.close) || 0;
+
+        // Fetch current price from market data cache if not already present
+        if (!underlying.securityData) {
+          underlying.securityData = {};
+        }
+
+        if (!underlying.securityData.price) {
+          try {
+            const fullTicker = underlying.securityData?.ticker || `${underlying.ticker}.US`;
+            const cachedPrice = await MarketDataHelpers.getCurrentPrice(fullTicker);
+
+            if (cachedPrice && cachedPrice.price) {
+              underlying.securityData.price = {
+                price: cachedPrice.price,
+                close: cachedPrice.price,
+                date: cachedPrice.date || new Date(),
+                source: 'market_data_cache'
+              };
+              console.log(`✅ Himalaya: Fetched current price for ${fullTicker}: $${cachedPrice.price}`);
+            } else {
+              console.warn(`⚠️ Himalaya: No current price available for ${fullTicker}, using initial price as fallback`);
+            }
+          } catch (error) {
+            console.warn(`⚠️ Himalaya: Failed to fetch current price for ${underlying.ticker}:`, error.message);
+          }
+        }
 
         const evaluationPriceInfo = this.getEvaluationPrice(underlying, product);
         const currentPrice = evaluationPriceInfo.price;
@@ -186,11 +227,14 @@ export const HimalayaEvaluationHelpers = {
           hasCurrentData: !!(underlying.securityData?.price?.price),
           lastUpdated: new Date().toISOString(),
 
-          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`
+          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`,
+
+          // Preserve securityData with observationPrices for Himalaya calculations
+          securityData: underlying.securityData
         };
 
         underlyings.push(underlyingData);
-      });
+      }
     }
 
     return underlyings;
@@ -275,13 +319,22 @@ export const HimalayaEvaluationHelpers = {
 
   /**
    * Generate product name for Himalaya products
+   * Format: "XLF/XLV+2 Himalaya" for 4 underlyings (shows first 2, then count of remaining)
    */
   generateProductName(product, underlyings, params) {
     if (!underlyings || underlyings.length === 0) {
       return product.title || product.productName || 'Unnamed Himalaya Product';
     }
 
-    const tickers = underlyings.map(u => u.ticker).join('/');
-    return `${tickers} Himalaya`;
+    const tickers = underlyings.map(u => u.ticker);
+
+    // Show up to 2 tickers, then add "+N" for remaining
+    if (tickers.length <= 2) {
+      return `${tickers.join('/')} Himalaya`;
+    } else {
+      const firstTwo = tickers.slice(0, 2).join('/');
+      const remainingCount = tickers.length - 2;
+      return `${firstTwo}+${remainingCount} Himalaya`;
+    }
   }
 };

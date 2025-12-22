@@ -7,8 +7,11 @@ import { BanksCollection } from '/imports/api/banks';
 import Dialog from './Dialog';
 import { useDialog } from './useDialog';
 
+import UserDetailsScreen from './UserDetailsScreen.jsx';
+
 const UserManagement = ({ user: currentUser }) => {
-  const [activeSection, setActiveSection] = useState('users'); // 'users', 'rm-management', 'create'
+  const [activeSection, setActiveSection] = useState('users'); // 'users', 'rm-management', 'create', 'user-details'
+  const [selectedUserId, setSelectedUserId] = useState(null); // For user details screen
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserPassword, setNewUserPassword] = useState('');
   const [newUserRole, setNewUserRole] = useState(USER_ROLES.CLIENT);
@@ -35,6 +38,12 @@ const UserManagement = ({ user: currentUser }) => {
     relationship: 'spouse',
     birthday: ''
   });
+  const [passwordResetModal, setPasswordResetModal] = useState(false);
+  const [passwordResetUserId, setPasswordResetUserId] = useState(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
   const { dialogState, hideDialog, showConfirm } = useDialog();
 
   // Memoize subscriptions to prevent re-initialization
@@ -82,6 +91,8 @@ const UserManagement = ({ user: currentUser }) => {
     setSuccess('');
     setIsCreatingUser(true);
 
+    const sessionId = localStorage.getItem('sessionId');
+
     Meteor.call('users.create', {
       email: newUserEmail,
       password: newUserPassword,
@@ -90,7 +101,8 @@ const UserManagement = ({ user: currentUser }) => {
         firstName: newUserFirstName,
         lastName: newUserLastName,
         birthday: newUserBirthday ? new Date(newUserBirthday) : null
-      }
+      },
+      sessionId
     }, (err) => {
       setIsCreatingUser(false);
       if (err) {
@@ -131,29 +143,9 @@ const UserManagement = ({ user: currentUser }) => {
   };
 
   const handleEditUser = (user) => {
-    // Use fresh data from users array (already reactive from useTracker)
-    const freshUser = users.find(u => u._id === user._id) || user;
-    
-    // Get user's current bank accounts from reactive bankAccounts array
-    // Filter out any null/undefined accounts and ensure we have the most recent data
-    const userBankAccounts = bankAccounts.filter(account => 
-      account && account.userId === freshUser._id && account.isActive === true
-    );
-    
-    console.log('handleEditUser: Found bank accounts for user', freshUser._id, ':', userBankAccounts.length);
-    console.log('handleEditUser: All bank accounts available:', bankAccounts.length);
-    
-    const editUserData = {
-      _id: freshUser._id,
-      email: freshUser.email,
-      role: freshUser.role,
-      profile: freshUser.profile || {},
-      relationshipManagerId: freshUser.relationshipManagerId || null,
-      bankAccounts: userBankAccounts
-    };
-    
-    setEditingUser(editUserData);
-    setEditModal(true);
+    // Navigate to user details screen
+    setSelectedUserId(user._id);
+    setActiveSection('user-details');
     setError('');
     setSuccess('');
   };
@@ -324,6 +316,58 @@ const UserManagement = ({ user: currentUser }) => {
     return bank ? bank.name : 'Unknown Bank';
   };
 
+  const handleOpenPasswordReset = (userId) => {
+    setPasswordResetUserId(userId);
+    setPasswordResetModal(true);
+    setNewPassword('');
+    setConfirmPassword('');
+    setPasswordError('');
+  };
+
+  const handleClosePasswordReset = () => {
+    setPasswordResetModal(false);
+    setPasswordResetUserId(null);
+    setNewPassword('');
+    setConfirmPassword('');
+    setPasswordError('');
+  };
+
+  const handleResetPassword = () => {
+    // Client-side validation
+    if (!newPassword || !confirmPassword) {
+      setPasswordError('Please fill in both password fields');
+      return;
+    }
+
+    if (newPassword.length < 6) {
+      setPasswordError('Password must be at least 6 characters long');
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setPasswordError('Passwords do not match');
+      return;
+    }
+
+    setPasswordError('');
+    setIsResettingPassword(true);
+
+    // Get sessionId for authentication
+    const sessionId = localStorage.getItem('sessionId');
+
+    // Call server method
+    Meteor.call('users.adminResetPassword', passwordResetUserId, newPassword, sessionId, (err, result) => {
+      setIsResettingPassword(false);
+      if (err) {
+        setPasswordError(err.reason || 'Failed to reset password');
+      } else {
+        setSuccess(result.message || 'Password reset successfully!');
+        // Close password reset modal
+        handleClosePasswordReset();
+      }
+    });
+  };
+
   if (!currentUser || (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN)) {
     return (
       <div style={{ 
@@ -446,7 +490,7 @@ const UserManagement = ({ user: currentUser }) => {
         <form onSubmit={handleCreateUser}>
           <div style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(250px, 100%), 1fr))',
             gap: '1rem',
             marginBottom: '1.5rem'
           }}>
@@ -708,7 +752,7 @@ const UserManagement = ({ user: currentUser }) => {
         {isLoadingUsers ? (
           <div style={{
             textAlign: 'center',
-            padding: '3rem 2rem',
+            padding: 'min(3rem, 8vw) min(2rem, 5vw)',
             background: 'var(--bg-primary)',
             borderRadius: '12px',
             border: '1px dashed var(--border-color)'
@@ -916,7 +960,7 @@ const UserManagement = ({ user: currentUser }) => {
           {/* RM Overview Stats */}
           <div style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(200px, 100%), 1fr))',
             gap: '1rem',
             marginBottom: '2rem'
           }}>
@@ -1047,7 +1091,7 @@ const UserManagement = ({ user: currentUser }) => {
             {relationshipManagers.length === 0 ? (
               <div style={{
                 textAlign: 'center',
-                padding: '3rem 2rem',
+                padding: 'min(3rem, 8vw) min(2rem, 5vw)',
                 background: 'var(--bg-secondary)',
                 borderRadius: '12px',
                 border: '2px dashed var(--border-color)'
@@ -1120,22 +1164,40 @@ const UserManagement = ({ user: currentUser }) => {
                           </span>
                         </td>
                         <td style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'center' }}>
-                          <button
-                            onClick={() => setSelectedRmId(selectedRmId === rm._id ? null : rm._id)}
-                            style={{
-                              padding: '6px 12px',
-                              backgroundColor: selectedRmId === rm._id ? '#3b82f6' : 'var(--accent-color)',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '6px',
-                              cursor: 'pointer',
-                              fontSize: '0.85rem',
-                              fontWeight: '600',
-                              transition: 'all 0.2s ease'
-                            }}
-                          >
-                            {selectedRmId === rm._id ? 'Hide Clients' : 'View Clients'}
-                          </button>
+                          <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                            <button
+                              onClick={() => handleEditUser(rm)}
+                              style={{
+                                padding: '6px 12px',
+                                backgroundColor: '#10b981',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontSize: '0.85rem',
+                                fontWeight: '600',
+                                transition: 'all 0.2s ease'
+                              }}
+                            >
+                              ✏️ Edit
+                            </button>
+                            <button
+                              onClick={() => setSelectedRmId(selectedRmId === rm._id ? null : rm._id)}
+                              style={{
+                                padding: '6px 12px',
+                                backgroundColor: selectedRmId === rm._id ? '#3b82f6' : 'var(--accent-color)',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontSize: '0.85rem',
+                                fontWeight: '600',
+                                transition: 'all 0.2s ease'
+                              }}
+                            >
+                              {selectedRmId === rm._id ? 'Hide Clients' : 'View Clients'}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -1191,7 +1253,7 @@ const UserManagement = ({ user: currentUser }) => {
                 ) : (
                   <div style={{
                     display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))',
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(min(250px, 100%), 1fr))',
                     gap: '1rem'
                   }}>
                     {rmStat.clients.map(client => (
@@ -1269,7 +1331,7 @@ const UserManagement = ({ user: currentUser }) => {
 
               <div style={{
                 display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))',
                 gap: '1rem'
               }}>
                 {unassignedClients.map(client => (
@@ -1354,6 +1416,17 @@ const UserManagement = ({ user: currentUser }) => {
             </section>
           )}
         </div>
+      )}
+
+      {/* User Details Screen */}
+      {activeSection === 'user-details' && selectedUserId && (
+        <UserDetailsScreen
+          userId={selectedUserId}
+          onBack={() => {
+            setActiveSection('users');
+            setSelectedUserId(null);
+          }}
+        />
       )}
 
       {/* Edit User Modal */}
@@ -1587,6 +1660,46 @@ const UserManagement = ({ user: currentUser }) => {
                 <option value="de">German</option>
                 <option value="es">Spanish</option>
                 <option value="it">Italian</option>
+              </select>
+            </div>
+
+            {/* Reference Currency */}
+            <div style={{ marginBottom: '1.5rem' }}>
+              <label htmlFor="edit-user-currency" style={{
+                display: 'block',
+                marginBottom: '8px',
+                fontWeight: '600',
+                color: 'var(--text-secondary)'
+              }}>
+                Reference Currency
+              </label>
+              <select
+                id="edit-user-currency"
+                name="editUserCurrency"
+                value={editingUser.profile?.referenceCurrency || 'EUR'}
+                onChange={(e) => {
+                  setEditingUser(prev => ({
+                    ...prev,
+                    profile: { ...prev.profile, referenceCurrency: e.target.value }
+                  }));
+                }}
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  border: '2px solid var(--border-color)',
+                  borderRadius: '8px',
+                  fontSize: '1rem',
+                  backgroundColor: 'var(--bg-secondary)',
+                  color: 'var(--text-primary)',
+                  boxSizing: 'border-box',
+                  cursor: 'pointer'
+                }}
+              >
+                <option value="USD">USD - US Dollar</option>
+                <option value="EUR">EUR - Euro</option>
+                <option value="GBP">GBP - British Pound</option>
+                <option value="CHF">CHF - Swiss Franc</option>
+                <option value="ILS">ILS - Israeli Shekel</option>
               </select>
             </div>
 
@@ -2179,6 +2292,55 @@ const UserManagement = ({ user: currentUser }) => {
               </div>
             )}
 
+            {/* Password Reset Section - Only for SUPERADMIN */}
+            {currentUser.role === USER_ROLES.SUPERADMIN && (
+              <div style={{
+                marginBottom: '1.5rem',
+                padding: '1rem',
+                background: 'rgba(245, 158, 11, 0.05)',
+                border: '1px solid rgba(245, 158, 11, 0.3)',
+                borderRadius: '8px'
+              }}>
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center'
+                }}>
+                  <div>
+                    <div style={{
+                      fontWeight: '600',
+                      color: 'var(--text-primary)',
+                      marginBottom: '4px'
+                    }}>
+                      🔐 Password Reset
+                    </div>
+                    <div style={{
+                      fontSize: '0.85rem',
+                      color: 'var(--text-secondary)'
+                    }}>
+                      Reset this user's password (will force re-login)
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleOpenPasswordReset(editingUser._id)}
+                    style={{
+                      padding: '8px 16px',
+                      backgroundColor: '#f59e0b',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '0.85rem',
+                      fontWeight: '600',
+                      transition: 'all 0.2s ease'
+                    }}
+                  >
+                    Reset Password
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div style={{
               display: 'flex',
               gap: '12px',
@@ -2220,7 +2382,216 @@ const UserManagement = ({ user: currentUser }) => {
           </div>
         </div>
       )}
-      
+
+      {/* Password Reset Modal */}
+      {passwordResetModal && passwordResetUserId && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 1001
+        }} onClick={handleClosePasswordReset}>
+          <div style={{
+            backgroundColor: 'var(--bg-primary)',
+            borderRadius: '12px',
+            padding: '2rem',
+            width: '90%',
+            maxWidth: '500px',
+            boxShadow: '0 10px 25px rgba(0, 0, 0, 0.2)'
+          }} onClick={(e) => e.stopPropagation()}>
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '1.5rem',
+              borderBottom: '2px solid var(--border-color)',
+              paddingBottom: '1rem'
+            }}>
+              <h2 style={{
+                margin: 0,
+                fontSize: '1.25rem',
+                fontWeight: '600',
+                color: 'var(--text-primary)'
+              }}>
+                🔐 Reset User Password
+              </h2>
+              <button
+                onClick={handleClosePasswordReset}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '1.5rem',
+                  cursor: 'pointer',
+                  color: 'var(--text-muted)',
+                  padding: '4px'
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* User Info */}
+            {(() => {
+              const user = users.find(u => u._id === passwordResetUserId);
+              if (!user) return null;
+              return (
+                <div style={{
+                  padding: '12px',
+                  backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                  borderRadius: '8px',
+                  marginBottom: '1.5rem'
+                }}>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                    Resetting password for:
+                  </div>
+                  <div style={{ fontWeight: '600', color: 'var(--text-primary)' }}>
+                    {user.profile?.firstName || ''} {user.profile?.lastName || ''} ({user.email})
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Password Error Message */}
+            {passwordError && (
+              <div style={{
+                color: 'var(--danger-color)',
+                marginBottom: '1rem',
+                padding: '12px',
+                backgroundColor: 'rgba(220, 53, 69, 0.1)',
+                border: '1px solid rgba(220, 53, 69, 0.3)',
+                borderRadius: '8px',
+                fontSize: '0.875rem'
+              }}>
+                {passwordError}
+              </div>
+            )}
+
+            {/* New Password Input */}
+            <div style={{ marginBottom: '1.5rem' }}>
+              <label htmlFor="new-password" style={{
+                display: 'block',
+                marginBottom: '8px',
+                fontWeight: '600',
+                color: 'var(--text-secondary)'
+              }}>
+                New Password
+              </label>
+              <input
+                id="new-password"
+                name="newPassword"
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="Enter new password (min 6 characters)"
+                autoComplete="new-password"
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  border: '2px solid var(--border-color)',
+                  borderRadius: '8px',
+                  fontSize: '1rem',
+                  backgroundColor: 'var(--bg-secondary)',
+                  color: 'var(--text-primary)',
+                  boxSizing: 'border-box'
+                }}
+              />
+            </div>
+
+            {/* Confirm Password Input */}
+            <div style={{ marginBottom: '1.5rem' }}>
+              <label htmlFor="confirm-password" style={{
+                display: 'block',
+                marginBottom: '8px',
+                fontWeight: '600',
+                color: 'var(--text-secondary)'
+              }}>
+                Confirm Password
+              </label>
+              <input
+                id="confirm-password"
+                name="confirmPassword"
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Re-enter new password"
+                autoComplete="new-password"
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  border: '2px solid var(--border-color)',
+                  borderRadius: '8px',
+                  fontSize: '1rem',
+                  backgroundColor: 'var(--bg-secondary)',
+                  color: 'var(--text-primary)',
+                  boxSizing: 'border-box'
+                }}
+              />
+            </div>
+
+            {/* Warning Message */}
+            <div style={{
+              padding: '12px',
+              backgroundColor: 'rgba(245, 158, 11, 0.1)',
+              border: '1px solid rgba(245, 158, 11, 0.3)',
+              borderRadius: '8px',
+              fontSize: '0.85rem',
+              color: '#f59e0b',
+              marginBottom: '1.5rem'
+            }}>
+              ⚠️ Warning: The user will be logged out of all active sessions and must use the new password to log in again.
+            </div>
+
+            {/* Action Buttons */}
+            <div style={{
+              display: 'flex',
+              gap: '12px',
+              justifyContent: 'flex-end',
+              borderTop: '1px solid var(--border-color)',
+              paddingTop: '1rem'
+            }}>
+              <button
+                onClick={handleClosePasswordReset}
+                disabled={isResettingPassword}
+                style={{
+                  padding: '10px 20px',
+                  background: 'var(--bg-tertiary)',
+                  color: 'var(--text-secondary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  cursor: isResettingPassword ? 'not-allowed' : 'pointer',
+                  fontSize: '0.9rem',
+                  fontWeight: '500'
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleResetPassword}
+                disabled={isResettingPassword}
+                style={{
+                  padding: '10px 20px',
+                  background: isResettingPassword ? 'var(--text-muted)' : '#f59e0b',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: isResettingPassword ? 'not-allowed' : 'pointer',
+                  fontSize: '0.9rem',
+                  fontWeight: '600'
+                }}
+              >
+                {isResettingPassword ? 'Resetting...' : 'Reset Password'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <Dialog
         isOpen={dialogState.isOpen}
         onClose={hideDialog}
