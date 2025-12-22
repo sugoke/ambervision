@@ -10,6 +10,11 @@ const MarketDataManager = ({ user }) => {
   const [isLoadingStats, setIsLoadingStats] = useState(false);
   const { dialogState, hideDialog, showConfirm, showSuccess, showError } = useDialog();
 
+  // State for product lookup modal
+  const [selectedTicker, setSelectedTicker] = useState(null);
+  const [tickerProducts, setTickerProducts] = useState([]);
+  const [isLoadingProducts, setIsLoadingProducts] = useState(false);
+
   // Load cache statistics on component mount
   useEffect(() => {
     const loadStats = async () => {
@@ -123,7 +128,7 @@ const MarketDataManager = ({ user }) => {
     const seconds = Math.floor(ms / 1000);
     const minutes = Math.floor(seconds / 60);
     const hours = Math.floor(minutes / 60);
-    
+
     if (hours > 0) {
       return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
     } else if (minutes > 0) {
@@ -131,6 +136,38 @@ const MarketDataManager = ({ user }) => {
     } else {
       return `${seconds}s`;
     }
+  };
+
+  // Handle clicking on a ticker to show products
+  const handleTickerClick = async (fullTicker) => {
+    setSelectedTicker(fullTicker);
+    setIsLoadingProducts(true);
+    setTickerProducts([]);
+
+    try {
+      const products = await Meteor.callAsync('products.findByUnderlying', fullTicker);
+      setTickerProducts(products);
+    } catch (error) {
+      console.error('Error finding products:', error);
+      setTickerProducts([]);
+    } finally {
+      setIsLoadingProducts(false);
+    }
+  };
+
+  // Sort results to show errors first
+  const getSortedDetails = () => {
+    if (!refreshResults?.details) return [];
+    return [...refreshResults.details].sort((a, b) => {
+      // Sort by errors first (descending)
+      if ((b.errors || 0) !== (a.errors || 0)) {
+        return (b.errors || 0) - (a.errors || 0);
+      }
+      // Then by error flag
+      if (a.error && !b.error) return -1;
+      if (!a.error && b.error) return 1;
+      return 0;
+    });
   };
 
   return (
@@ -496,7 +533,7 @@ const MarketDataManager = ({ user }) => {
                         </tr>
                       </thead>
                       <tbody>
-                        {refreshResults.details.map((result, index) => (
+                        {getSortedDetails().map((result, index) => (
                           <tr key={index} style={{ backgroundColor: 'var(--bg-primary)' }}>
                             <td style={{
                               padding: '12px',
@@ -509,7 +546,17 @@ const MarketDataManager = ({ user }) => {
                               textOverflow: 'ellipsis',
                               maxWidth: '200px'
                             }}>
-                              {result.fullTicker}
+                              <span
+                                onClick={() => handleTickerClick(result.fullTicker)}
+                                style={{
+                                  cursor: 'pointer',
+                                  color: 'var(--accent-color)',
+                                  textDecoration: 'underline'
+                                }}
+                                title="Click to view products with this underlying"
+                              >
+                                {result.fullTicker}
+                              </span>
                             </td>
                             <td style={{
                               padding: '12px',
@@ -617,6 +664,123 @@ const MarketDataManager = ({ user }) => {
           </ul>
         </div>
       </section>
+
+      {/* Product Selection Modal */}
+      {selectedTicker && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+          onClick={() => setSelectedTicker(null)}
+        >
+          <div
+            style={{
+              backgroundColor: 'var(--bg-primary)',
+              borderRadius: '12px',
+              padding: '1.5rem',
+              minWidth: '400px',
+              maxWidth: '600px',
+              maxHeight: '80vh',
+              overflow: 'auto',
+              border: '1px solid var(--border-color)',
+              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{
+              margin: '0 0 1rem 0',
+              fontSize: '1.1rem',
+              fontWeight: '600',
+              color: 'var(--text-primary)'
+            }}>
+              Products with {selectedTicker}
+            </h3>
+
+            {isLoadingProducts ? (
+              <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                Loading products...
+              </div>
+            ) : tickerProducts.length === 0 ? (
+              <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                No products found with this underlying
+              </div>
+            ) : (
+              <div style={{ marginBottom: '1rem' }}>
+                {tickerProducts.map((product) => (
+                  <div
+                    key={product._id}
+                    style={{
+                      padding: '0.75rem 1rem',
+                      borderBottom: '1px solid var(--border-color)',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center'
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: '500', color: 'var(--text-primary)' }}>
+                        {product.title || product.isin || product._id}
+                      </div>
+                      {product.isin && product.title && (
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                          {product.isin}
+                        </div>
+                      )}
+                      {product.maturityDate && (
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                          Maturity: {new Date(product.maturityDate).toLocaleDateString()}
+                        </div>
+                      )}
+                    </div>
+                    <a
+                      href={`/report/${product._id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{
+                        padding: '0.5rem 1rem',
+                        backgroundColor: 'var(--accent-color)',
+                        color: 'white',
+                        borderRadius: '6px',
+                        textDecoration: 'none',
+                        fontSize: '0.85rem',
+                        fontWeight: '500'
+                      }}
+                    >
+                      View Report
+                    </a>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ textAlign: 'right' }}>
+              <button
+                onClick={() => setSelectedTicker(null)}
+                style={{
+                  padding: '0.5rem 1.5rem',
+                  backgroundColor: 'var(--bg-secondary)',
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  fontSize: '0.9rem'
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Dialog Component */}
       <Dialog

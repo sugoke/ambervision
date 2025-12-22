@@ -1,6 +1,7 @@
 import React from 'react';
 import StructuredProductChart from '../components/StructuredProductChart.jsx';
 import UnderlyingNews from '../components/UnderlyingNews.jsx';
+import { getTranslation, t } from '../../utils/reportTranslations';
 
 /**
  * Phoenix Autocallable Report Component
@@ -8,37 +9,54 @@ import UnderlyingNews from '../components/UnderlyingNews.jsx';
  * Displays comprehensive evaluation results for Phoenix Autocallable products.
  * Shows underlying performance, autocall barriers, memory coupons, protection levels,
  * observation schedule, and detailed charts.
+ * Supports multiple languages (EN/FR) via URL parameter.
  */
 const PhoenixReport = ({ results, productId }) => {
+  // Get language from URL params
+  const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  const lang = urlParams?.get('lang') || 'en';
+  const tr = getTranslation(lang);
+
   const phoenixParams = results.phoenixStructure || {};
   const status = results.currentStatus || {};
   const features = results.features || {};
   const placeholder = results.placeholderResults || {};
   const underlyings = results.underlyings || [];
 
-  return (
-    <div style={{
-      marginTop: '1rem',
-      padding: '1rem',
-      background: 'var(--bg-primary)',
-      borderRadius: '6px'
-    }}>
-      <div style={{
-        fontSize: '0.9rem',
-        fontWeight: '600',
-        color: 'var(--text-primary)',
-        marginBottom: '1rem',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '0.5rem'
-      }}>
-        🔥 Phoenix Autocallable Evaluation Results
-      </div>
+  // Debug: Log prediction data
+  React.useEffect(() => {
+    console.log('[PHOENIX REPORT] Report data:', {
+      productId,
+      hasObsAnalysis: !!results.observationAnalysis,
+      hasPrediction: !!results.observationAnalysis?.nextObservationPrediction,
+      predictionData: results.observationAnalysis?.nextObservationPrediction
+    });
+  }, [results, productId]);
 
+  // Mobile detection
+  const [isMobile, setIsMobile] = React.useState(typeof window !== 'undefined' && window.innerWidth < 768);
+  const [isTablet, setIsTablet] = React.useState(typeof window !== 'undefined' && window.innerWidth >= 768 && window.innerWidth < 1024);
+
+  React.useEffect(() => {
+    const handleResize = () => {
+      const mobile = window.innerWidth < 768;
+      const tablet = window.innerWidth >= 768 && window.innerWidth < 1024;
+      setIsMobile(mobile);
+      setIsTablet(tablet);
+    };
+
+    window.addEventListener('resize', handleResize);
+    handleResize();
+
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  return (
+    <div>
       {/* Underlying Assets Performance Card */}
       {underlyings.length > 0 && (
-        <div style={{
-          background: 'var(--bg-secondary)',
+        <div className="pdf-card" style={{
+          background: 'var(--bg-primary)',
           padding: '1.5rem',
           borderRadius: '6px',
           marginBottom: '1.5rem'
@@ -51,7 +69,7 @@ const PhoenixReport = ({ results, productId }) => {
             alignItems: 'center',
             gap: '0.5rem'
           }}>
-            📊 Underlying Assets Performance
+            📊 {tr.underlyingAssetsPerformance}
           </h4>
 
           <div style={{
@@ -149,7 +167,7 @@ const PhoenixReport = ({ results, productId }) => {
                             color: '#10b981',
                             cursor: 'help'
                           }}
-                          title={`Flagged for Memory Autocall on ${underlying.memoryAutocallFlaggedDateFormatted || 'N/A'}`}
+                          title={`${tr.flaggedForMemoryAutocall} ${underlying.memoryAutocallFlaggedDateFormatted || 'N/A'}`}
                         >
                           🔒
                         </span>
@@ -172,11 +190,9 @@ const PhoenixReport = ({ results, productId }) => {
                       gap: '0.5rem'
                     }}>
                       <span>{underlying.exchange}</span>
-                      <span>•</span>
                       <span>{underlying.currency}</span>
                       {underlying.isin && (
                         <>
-                          <span>•</span>
                           <span>ISIN: {underlying.isin}</span>
                         </>
                       )}
@@ -187,8 +203,8 @@ const PhoenixReport = ({ results, productId }) => {
                 {/* Data Grid */}
                 <div style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
-                  gap: '1.25rem',
+                  gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(120px, 1fr))',
+                  gap: isMobile ? '0.75rem' : '1.25rem',
                   alignItems: 'start'
                 }}>
 
@@ -207,7 +223,7 @@ const PhoenixReport = ({ results, productId }) => {
                       fontWeight: '600',
                       letterSpacing: '0.5px'
                     }}>
-                      Initial Level
+                      {tr.initialLevel}
                     </div>
                     <div style={{
                       fontSize: '1.1rem',
@@ -234,7 +250,7 @@ const PhoenixReport = ({ results, productId }) => {
                       fontWeight: '600',
                       letterSpacing: '0.5px'
                     }}>
-                      {underlying.priceLevelLabel || 'Current Level'}
+                      {underlying.priceLevelLabel || tr.currentLevel}
                     </div>
                     <div style={{
                       fontSize: '1.1rem',
@@ -275,7 +291,7 @@ const PhoenixReport = ({ results, productId }) => {
                       fontWeight: '600',
                       letterSpacing: '0.5px'
                     }}>
-                      Performance
+                      {tr.performance}
                     </div>
                     <div style={{
                       fontSize: '1.2rem',
@@ -307,7 +323,7 @@ const PhoenixReport = ({ results, productId }) => {
                       fontWeight: '600',
                       letterSpacing: '0.5px'
                     }}>
-                      Barrier Distance
+                      {tr.barrierDistance}
                     </div>
                     <div style={{
                       fontSize: '1.1rem',
@@ -335,10 +351,10 @@ const PhoenixReport = ({ results, productId }) => {
         </div>
       )}
 
-      {/* Performance Bar Chart */}
-      {underlyings.length > 0 && (
-        <div style={{
-          background: 'var(--bg-secondary)',
+      {/* Performance Bar Chart - Hidden on mobile portrait */}
+      {underlyings.length > 0 && !isMobile && (
+        <div className="pdf-card pdf-page-break-before" style={{
+          background: 'var(--bg-primary)',
           padding: '1.5rem',
           borderRadius: '6px',
           marginBottom: '1.5rem'
@@ -351,7 +367,7 @@ const PhoenixReport = ({ results, productId }) => {
             alignItems: 'center',
             gap: '0.5rem'
           }}>
-            📊 Performance Overview
+            📊 {tr.performanceOverview}
             {phoenixParams.protectionBarrier && (
               <span style={{
                 fontSize: '0.75rem',
@@ -361,7 +377,7 @@ const PhoenixReport = ({ results, productId }) => {
                 borderRadius: '4px',
                 fontWeight: '500'
               }}>
-                Protection at {phoenixParams.protectionBarrier}%
+                {tr.protectionAt} {phoenixParams.protectionBarrier}%
               </span>
             )}
           </h4>
@@ -379,10 +395,23 @@ const PhoenixReport = ({ results, productId }) => {
               gap: '1rem'
             }}>
               {underlyings.map((underlying, index) => {
-                // Calculate bar width and position
+                // Calculate adaptive scale based on protection barrier and performance data
                 const performance = underlying.performance || 0;
-                const maxRange = 150; // Show range from -50% to +100%
-                const zeroPosition = 50; // 0% is at 33.33% from left (50/(50+100))
+                const protectionBarrierLevel = phoenixParams.protectionBarrier || 70; // Stored as level (e.g., 40%)
+
+                // Convert barrier level to performance: 40% level = -60% performance
+                const protectionBarrierPerformance = protectionBarrierLevel - 100;
+
+                // Minimum scale: 10% below protection barrier performance
+                const minScale = Math.min(-50, protectionBarrierPerformance - 10);
+
+                // Maximum scale: Max of (100%, highest performance + 10%)
+                const maxPerformance = Math.max(...underlyings.map(u => u.performance || 0));
+                const maxScale = Math.max(100, maxPerformance + 10);
+
+                // Calculate total range and zero position
+                const totalRange = maxScale - minScale;
+                const zeroPosition = (0 - minScale) / totalRange * 100; // Position of 0% on the scale
 
                 // Calculate bar position and width
                 let barLeft = 0;
@@ -391,11 +420,11 @@ const PhoenixReport = ({ results, productId }) => {
                 if (performance >= 0) {
                   // Positive performance - bar goes from 0 to right
                   barLeft = zeroPosition;
-                  barWidth = Math.min(performance, 100) * (100 - zeroPosition) / 100;
+                  barWidth = Math.min(performance, maxScale) / totalRange * 100;
                 } else {
                   // Negative performance - bar goes from left to 0
                   const absPerf = Math.abs(performance);
-                  barWidth = Math.min(absPerf, 50) * zeroPosition / 50;
+                  barWidth = Math.min(absPerf, Math.abs(minScale)) / totalRange * 100;
                   barLeft = zeroPosition - barWidth;
                 }
 
@@ -418,7 +447,7 @@ const PhoenixReport = ({ results, productId }) => {
                     }}>
                       {underlying.ticker}
                       {underlying.isWorstPerforming && (
-                        <span style={{ fontSize: '0.75rem', color: '#ef4444' }} title="Worst Performing">⚠️</span>
+                        <span style={{ fontSize: '0.75rem', color: '#ef4444' }} title={tr.worstPerforming}>⚠️</span>
                       )}
                     </div>
 
@@ -445,7 +474,7 @@ const PhoenixReport = ({ results, productId }) => {
                       {phoenixParams.protectionBarrier && (
                         <div style={{
                           position: 'absolute',
-                          left: `${zeroPosition + (phoenixParams.protectionBarrier - 100) * (zeroPosition / 50)}%`,
+                          left: `${(protectionBarrierPerformance - minScale) / totalRange * 100}%`,
                           top: '-8px',
                           bottom: '-8px',
                           width: '3px',
@@ -469,7 +498,7 @@ const PhoenixReport = ({ results, productId }) => {
                               borderRadius: '3px',
                               boxShadow: '0 0 6px rgba(96, 165, 250, 0.3)'
                             }}>
-                              Barrier
+                              {tr.barrier}
                             </div>
                           )}
                         </div>
@@ -482,21 +511,25 @@ const PhoenixReport = ({ results, productId }) => {
                         top: '4px',
                         bottom: '4px',
                         width: `${barWidth}%`,
-                        background: performance >= 0
-                          ? 'linear-gradient(90deg, #10b981 0%, #059669 100%)'
-                          : 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)',
+                        background: underlying.barrierStatus === 'breached'
+                          ? 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)'
+                          : underlying.barrierStatus === 'near'
+                            ? 'linear-gradient(90deg, #f59e0b 0%, #d97706 100%)'
+                            : 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
                         borderRadius: '3px',
                         transition: 'all 0.3s ease',
-                        boxShadow: performance >= 0
-                          ? '0 2px 8px rgba(16, 185, 129, 0.3)'
-                          : '0 2px 8px rgba(239, 68, 68, 0.3)',
+                        boxShadow: underlying.barrierStatus === 'breached'
+                          ? '0 2px 8px rgba(239, 68, 68, 0.3)'
+                          : underlying.barrierStatus === 'near'
+                            ? '0 2px 8px rgba(245, 158, 11, 0.3)'
+                            : '0 2px 8px rgba(16, 185, 129, 0.3)',
                         zIndex: 3
                       }} />
 
                       {/* Scale markers */}
                       {index === underlyings.length - 1 && (
                         <>
-                          {/* -50% marker */}
+                          {/* Minimum scale marker */}
                           <div style={{
                             position: 'absolute',
                             left: '0%',
@@ -505,7 +538,7 @@ const PhoenixReport = ({ results, productId }) => {
                             color: 'var(--text-muted)',
                             fontFamily: 'monospace'
                           }}>
-                            -50%
+                            {minScale >= 0 ? '+' : ''}{Math.round(minScale)}%
                           </div>
                           {/* 0% marker */}
                           <div style={{
@@ -520,7 +553,7 @@ const PhoenixReport = ({ results, productId }) => {
                           }}>
                             0%
                           </div>
-                          {/* +100% marker */}
+                          {/* Maximum scale marker */}
                           <div style={{
                             position: 'absolute',
                             right: '0%',
@@ -529,7 +562,7 @@ const PhoenixReport = ({ results, productId }) => {
                             color: 'var(--text-muted)',
                             fontFamily: 'monospace'
                           }}>
-                            +100%
+                            +{Math.round(maxScale)}%
                           </div>
                         </>
                       )}
@@ -539,7 +572,11 @@ const PhoenixReport = ({ results, productId }) => {
                     <div style={{
                       fontSize: '0.9rem',
                       fontWeight: '700',
-                      color: performance >= 0 ? '#10b981' : '#ef4444',
+                      color: underlying.barrierStatus === 'breached'
+                        ? '#ef4444'
+                        : underlying.barrierStatus === 'near'
+                          ? '#f59e0b'
+                          : '#10b981',
                       textAlign: 'right',
                       fontFamily: 'monospace'
                     }}>
@@ -568,7 +605,16 @@ const PhoenixReport = ({ results, productId }) => {
                   background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
                   borderRadius: '2px'
                 }} />
-                <span>Positive Performance</span>
+                <span>{tr.aboveBarrierSafe}</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <div style={{
+                  width: '20px',
+                  height: '12px',
+                  background: 'linear-gradient(90deg, #f59e0b 0%, #d97706 100%)',
+                  borderRadius: '2px'
+                }} />
+                <span>{tr.nearBarrierWarning}</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <div style={{
@@ -577,7 +623,7 @@ const PhoenixReport = ({ results, productId }) => {
                   background: 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)',
                   borderRadius: '2px'
                 }} />
-                <span>Negative Performance</span>
+                <span>{tr.belowBarrierBreached}</span>
               </div>
               {phoenixParams.protectionBarrier && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -587,7 +633,7 @@ const PhoenixReport = ({ results, productId }) => {
                     background: '#60a5fa',
                     boxShadow: '0 0 6px rgba(96, 165, 250, 0.5)'
                   }} />
-                  <span>Protection Barrier ({phoenixParams.protectionBarrier}%)</span>
+                  <span>{tr.protectionBarrier} ({phoenixParams.protectionBarrier}%)</span>
                 </div>
               )}
             </div>
@@ -595,10 +641,10 @@ const PhoenixReport = ({ results, productId }) => {
         </div>
       )}
 
-      {/* Latest News Section */}
+      {/* Latest News Section - Hidden in PDF */}
       {underlyings.length > 0 && (
-        <div style={{
-          background: 'var(--bg-secondary)',
+        <div className="no-print underlying-news-section" style={{
+          background: 'var(--bg-primary)',
           padding: '1.5rem',
           borderRadius: '6px',
           marginBottom: '1.5rem'
@@ -611,7 +657,7 @@ const PhoenixReport = ({ results, productId }) => {
             alignItems: 'center',
             gap: '0.5rem'
           }}>
-            📰 Latest News
+            📰 {tr.latestNews}
           </h4>
           <div style={{
             display: 'flex',
@@ -622,7 +668,6 @@ const PhoenixReport = ({ results, productId }) => {
               <UnderlyingNews
                 key={index}
                 ticker={underlying.ticker}
-                news={underlying.news}
               />
             ))}
           </div>
@@ -631,8 +676,8 @@ const PhoenixReport = ({ results, productId }) => {
 
       {/* Basket Analysis Summary */}
       {results.basketAnalysis && (
-        <div style={{
-          background: 'var(--bg-secondary)',
+        <div className="pdf-card pdf-page-break-before" style={{
+          background: 'var(--bg-primary)',
           padding: '1.5rem',
           borderRadius: '6px',
           marginBottom: '1.5rem'
@@ -645,7 +690,7 @@ const PhoenixReport = ({ results, productId }) => {
             alignItems: 'center',
             gap: '0.5rem'
           }}>
-            🛡️ Capital Protection Analysis
+            🛡️ {tr.capitalProtectionAnalysis}
             <span style={{
               fontSize: '0.8rem',
               background: results.basketAnalysis.breachedCount > 0 ? '#ef4444' :
@@ -661,7 +706,7 @@ const PhoenixReport = ({ results, productId }) => {
 
           <div style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+            gridTemplateColumns: isMobile ? '1fr' : (isTablet ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(180px, 1fr))'),
             gap: '1rem'
           }}>
             <div style={{
@@ -683,7 +728,7 @@ const PhoenixReport = ({ results, productId }) => {
                 color: 'var(--text-secondary)',
                 textTransform: 'uppercase'
               }}>
-                Critical Distance
+                {tr.criticalDistance}
               </div>
             </div>
 
@@ -706,7 +751,7 @@ const PhoenixReport = ({ results, productId }) => {
                 color: 'var(--text-secondary)',
                 textTransform: 'uppercase'
               }}>
-                Above Barrier
+                {tr.aboveBarrier}
               </div>
             </div>
 
@@ -730,7 +775,7 @@ const PhoenixReport = ({ results, productId }) => {
                   color: 'var(--text-secondary)',
                   textTransform: 'uppercase'
                 }}>
-                  Near Barrier
+                  {tr.nearBarrier}
                 </div>
               </div>
             )}
@@ -755,7 +800,7 @@ const PhoenixReport = ({ results, productId }) => {
                   color: 'var(--text-secondary)',
                   textTransform: 'uppercase'
                 }}>
-                  Breached Barrier
+                  {tr.belowBarrier}
                 </div>
               </div>
             )}
@@ -765,68 +810,82 @@ const PhoenixReport = ({ results, productId }) => {
 
       {/* Indicative Maturity Value - Shows hypothetical redemption if product matured today */}
       {results.indicativeMaturityValue && results.indicativeMaturityValue.isLive && (
-        <div style={{
-          background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
+        <div className="pdf-card pdf-page-break-before" style={{
+          background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(79, 70, 229, 0.05) 100%)',
+          border: '2px solid rgba(99, 102, 241, 0.3)',
+          borderRadius: '12px',
           padding: '1.5rem',
-          borderRadius: '8px',
           marginBottom: '1.5rem',
-          border: '2px solid #818cf8',
-          boxShadow: '0 8px 24px rgba(99, 102, 241, 0.3)'
+          position: 'relative',
+          overflow: 'hidden'
         }}>
-          <h4 style={{
-            margin: '0 0 1rem 0',
-            fontSize: '1.1rem',
-            color: 'white',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem',
-            fontWeight: '700'
+          {/* Decorative gradient background */}
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            width: '200px',
+            height: '200px',
+            background: 'radial-gradient(circle, rgba(99, 102, 241, 0.15) 0%, transparent 70%)',
+            pointerEvents: 'none'
+          }} />
+
+          <div style={{
+            position: 'relative',
+            zIndex: 1
           }}>
-            💡 Indicative Value If Matured Today
-            <span style={{
-              fontSize: '0.7rem',
-              background: 'rgba(255, 255, 255, 0.25)',
-              color: 'white',
-              padding: '3px 8px',
-              borderRadius: '4px',
-              fontWeight: '500',
-              marginLeft: 'auto'
+            <h4 style={{
+              margin: '0 0 1rem 0',
+              fontSize: '1rem',
+              color: 'var(--text-primary)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem'
             }}>
-              Hypothetical
+              💡 {tr.indicativeValueIfMaturedToday}
+            <span style={{
+              fontSize: '0.75rem',
+              background: 'rgba(99, 102, 241, 0.2)',
+              color: '#6366f1',
+              padding: '4px 8px',
+              borderRadius: '4px',
+              fontWeight: '600'
+            }}>
+              {tr.hypothetical}
             </span>
           </h4>
 
           <div style={{
-            background: 'rgba(255, 255, 255, 0.15)',
+            background: 'var(--bg-tertiary)',
             padding: '1rem',
             borderRadius: '6px',
             marginBottom: '1rem',
             fontSize: '0.8rem',
-            color: 'rgba(255, 255, 255, 0.95)',
+            color: 'var(--text-secondary)',
             fontStyle: 'italic',
-            border: '1px solid rgba(255, 255, 255, 0.2)'
+            border: '1px solid var(--border-color)'
           }}>
-            This is an indicative calculation showing what you would receive if the product matured today based on current market prices. Actual redemption value at maturity may differ.
+            {tr.indicativeCalculationDisclaimer}
           </div>
 
           {/* Total Indicative Value - Large Display */}
           <div style={{
-            background: 'white',
+            background: 'var(--bg-secondary)',
             padding: '2rem',
             borderRadius: '8px',
             textAlign: 'center',
             marginBottom: '1.5rem',
-            boxShadow: '0 4px 16px rgba(0, 0, 0, 0.1)'
+            border: '1px solid var(--border-color)'
           }}>
             <div style={{
               fontSize: '0.85rem',
-              color: '#64748b',
+              color: 'var(--text-secondary)',
               textTransform: 'uppercase',
               fontWeight: '700',
               letterSpacing: '1px',
               marginBottom: '0.75rem'
             }}>
-              Total Indicative Redemption
+              {tr.currentTheoreticalTotalReturn}
             </div>
             <div style={{
               fontSize: '3rem',
@@ -839,40 +898,40 @@ const PhoenixReport = ({ results, productId }) => {
             </div>
             <div style={{
               fontSize: '0.75rem',
-              color: '#94a3b8',
+              color: 'var(--text-muted)',
               marginTop: '0.5rem'
             }}>
-              As of {results.indicativeMaturityValue.evaluationDateFormatted}
+              {tr.asOf} {results.indicativeMaturityValue.evaluationDateFormatted}
             </div>
           </div>
 
           {/* Breakdown Components */}
           <div style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+            gridTemplateColumns: isMobile ? '1fr' : (isTablet ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(200px, 1fr))'),
             gap: '1rem'
           }}>
             {/* Capital Component */}
             <div style={{
-              background: 'rgba(255, 255, 255, 0.15)',
+              background: 'var(--bg-secondary)',
               padding: '1.25rem',
               borderRadius: '6px',
-              border: '1px solid rgba(255, 255, 255, 0.2)'
+              border: '1px solid var(--border-color)'
             }}>
               <div style={{
                 fontSize: '0.7rem',
-                color: 'rgba(255, 255, 255, 0.85)',
+                color: 'var(--text-secondary)',
                 textTransform: 'uppercase',
                 marginBottom: '0.75rem',
                 fontWeight: '700',
                 letterSpacing: '0.5px'
               }}>
-                💰 Capital Return
+                💰 {tr.capitalReturn}
               </div>
               <div style={{
                 fontSize: '1.8rem',
                 fontWeight: '700',
-                color: 'white',
+                color: 'var(--text-primary)',
                 marginBottom: '0.5rem',
                 fontFamily: 'monospace'
               }}>
@@ -880,7 +939,7 @@ const PhoenixReport = ({ results, productId }) => {
               </div>
               <div style={{
                 fontSize: '0.7rem',
-                color: 'rgba(255, 255, 255, 0.75)',
+                color: 'var(--text-muted)',
                 lineHeight: '1.4'
               }}>
                 {results.indicativeMaturityValue.capitalExplanation}
@@ -889,25 +948,25 @@ const PhoenixReport = ({ results, productId }) => {
 
             {/* Coupons Earned */}
             <div style={{
-              background: 'rgba(255, 255, 255, 0.15)',
+              background: 'var(--bg-secondary)',
               padding: '1.25rem',
               borderRadius: '6px',
-              border: '1px solid rgba(255, 255, 255, 0.2)'
+              border: '1px solid var(--border-color)'
             }}>
               <div style={{
                 fontSize: '0.7rem',
-                color: 'rgba(255, 255, 255, 0.85)',
+                color: 'var(--text-secondary)',
                 textTransform: 'uppercase',
                 marginBottom: '0.75rem',
                 fontWeight: '700',
                 letterSpacing: '0.5px'
               }}>
-                💵 Coupons Earned
+                💵 {tr.couponsEarned}
               </div>
               <div style={{
                 fontSize: '1.8rem',
                 fontWeight: '700',
-                color: results.indicativeMaturityValue.couponsEarned > 0 ? '#10b981' : 'rgba(255, 255, 255, 0.5)',
+                color: results.indicativeMaturityValue.couponsEarned > 0 ? '#10b981' : 'var(--text-muted)',
                 marginBottom: '0.5rem',
                 fontFamily: 'monospace'
               }}>
@@ -915,29 +974,29 @@ const PhoenixReport = ({ results, productId }) => {
               </div>
               <div style={{
                 fontSize: '0.7rem',
-                color: 'rgba(255, 255, 255, 0.75)'
+                color: 'var(--text-muted)'
               }}>
-                Total coupons paid to date
+                {tr.totalCouponsPaidToDate}
               </div>
             </div>
 
             {/* Memory Coupons */}
             {results.indicativeMaturityValue.hasMemoryCoupons && (
               <div style={{
-                background: 'rgba(255, 255, 255, 0.15)',
+                background: 'var(--bg-secondary)',
                 padding: '1.25rem',
                 borderRadius: '6px',
-                border: '1px solid rgba(255, 255, 255, 0.2)'
+                border: '1px solid var(--border-color)'
               }}>
                 <div style={{
                   fontSize: '0.7rem',
-                  color: 'rgba(255, 255, 255, 0.85)',
+                  color: 'var(--text-secondary)',
                   textTransform: 'uppercase',
                   marginBottom: '0.75rem',
                   fontWeight: '700',
                   letterSpacing: '0.5px'
                 }}>
-                  🧠 Memory Coupons
+                  🧠 {tr.memoryCoupons}
                 </div>
                 <div style={{
                   fontSize: '1.8rem',
@@ -953,11 +1012,11 @@ const PhoenixReport = ({ results, productId }) => {
                 </div>
                 <div style={{
                   fontSize: '0.7rem',
-                  color: 'rgba(255, 255, 255, 0.75)'
+                  color: 'var(--text-muted)'
                 }}>
                   {results.indicativeMaturityValue.memoryCouponsForfeit
-                    ? '⚠️ Forfeited (below barrier)'
-                    : 'Accumulated in memory'}
+                    ? `⚠️ ${tr.forfeitedBelowBarrier}`
+                    : tr.accumulatedInMemory}
                 </div>
               </div>
             )}
@@ -967,28 +1026,29 @@ const PhoenixReport = ({ results, productId }) => {
           <div style={{
             marginTop: '1rem',
             padding: '0.85rem 1rem',
-            background: 'rgba(255, 255, 255, 0.1)',
+            background: 'var(--bg-tertiary)',
             borderRadius: '6px',
-            border: '1px solid rgba(255, 255, 255, 0.15)',
+            border: '1px solid var(--border-color)',
             fontSize: '0.75rem',
-            color: 'rgba(255, 255, 255, 0.9)',
+            color: 'var(--text-secondary)',
             display: 'flex',
             alignItems: 'center',
             gap: '0.5rem'
           }}>
             <span style={{ fontSize: '1rem' }}>🛡️</span>
             <div>
-              <strong>Protection Barrier:</strong> {results.indicativeMaturityValue.protectionBarrierFormatted} |
-              <strong style={{ marginLeft: '0.5rem' }}>Current Basket:</strong> {results.indicativeMaturityValue.basketPerformanceFormatted}
+              <strong>{tr.protectionBarrier}:</strong> {results.indicativeMaturityValue.protectionBarrierFormatted} |
+              <strong style={{ marginLeft: '0.5rem' }}>{tr.currentBasket}:</strong> {results.indicativeMaturityValue.basketPerformanceFormatted}
             </div>
+          </div>
           </div>
         </div>
       )}
 
       {/* Observation Schedule */}
       {results.observationAnalysis && results.observationAnalysis.observations && results.observationAnalysis.observations.length > 0 && (
-        <div style={{
-          background: 'var(--bg-secondary)',
+        <div className="pdf-card pdf-page-break-before observation-schedule-section" style={{
+          background: 'var(--bg-primary)',
           padding: '1.5rem',
           borderRadius: '6px',
           marginBottom: '1.5rem'
@@ -1001,7 +1061,7 @@ const PhoenixReport = ({ results, productId }) => {
             alignItems: 'center',
             gap: '0.5rem'
           }}>
-            📅 Observation Schedule
+            📅 {tr.observationSchedule}
             {results.observationAnalysis.isEarlyAutocall && (
               <span style={{
                 fontSize: '0.8rem',
@@ -1011,7 +1071,7 @@ const PhoenixReport = ({ results, productId }) => {
                 borderRadius: '4px',
                 fontWeight: '500'
               }}>
-                Called {results.observationAnalysis.callDateFormatted}
+                {tr.called} {results.observationAnalysis.callDateFormatted}
               </span>
             )}
             {results.observationAnalysis.isMaturedAtFinal && (
@@ -1023,7 +1083,7 @@ const PhoenixReport = ({ results, productId }) => {
                 borderRadius: '4px',
                 fontWeight: '500'
               }}>
-                Matured
+                {tr.matured}
               </span>
             )}
             {results.observationAnalysis.hasMemoryAutocall && (
@@ -1035,7 +1095,7 @@ const PhoenixReport = ({ results, productId }) => {
                 borderRadius: '4px',
                 fontWeight: '500'
               }}>
-                Memory Autocall
+                {tr.memoryAutocall}
               </span>
             )}
             {results.observationAnalysis.hasMemoryCoupon && (
@@ -1047,7 +1107,7 @@ const PhoenixReport = ({ results, productId }) => {
                 borderRadius: '4px',
                 fontWeight: '500'
               }}>
-                Memory Coupon
+                {tr.memoryCoupon}
               </span>
             )}
           </h4>
@@ -1055,7 +1115,7 @@ const PhoenixReport = ({ results, productId }) => {
           {/* Summary Stats */}
           <div style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+            gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(140px, 1fr))',
             gap: '1rem',
             marginBottom: '1.5rem'
           }}>
@@ -1078,7 +1138,7 @@ const PhoenixReport = ({ results, productId }) => {
                 color: 'var(--text-secondary)',
                 textTransform: 'uppercase'
               }}>
-                Total Coupons Earned
+                {tr.totalCouponsEarned}
               </div>
             </div>
 
@@ -1101,7 +1161,7 @@ const PhoenixReport = ({ results, productId }) => {
                 color: 'var(--text-secondary)',
                 textTransform: 'uppercase'
               }}>
-                In Memory
+                {tr.inMemory}
               </div>
             </div>
 
@@ -1124,7 +1184,7 @@ const PhoenixReport = ({ results, productId }) => {
                 color: 'var(--text-secondary)',
                 textTransform: 'uppercase'
               }}>
-                Total Observations
+                {tr.totalObservations}
               </div>
             </div>
 
@@ -1147,10 +1207,235 @@ const PhoenixReport = ({ results, productId }) => {
                 color: 'var(--text-secondary)',
                 textTransform: 'uppercase'
               }}>
-                Remaining
+                {tr.remaining}
               </div>
             </div>
           </div>
+
+          {/* Next Observation Prediction Card - Hide for redeemed/autocalled products */}
+          {results.observationAnalysis.nextObservationPrediction &&
+           !results.observationAnalysis.nextObservationPrediction.isLastObservation &&
+           !results.observationAnalysis.isEarlyAutocall &&
+           !results.observationAnalysis.isMaturedAtFinal &&
+           !results.observationAnalysis.productCalled && (
+            <div className="pdf-card pdf-page-break-before" style={{
+              background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(96, 165, 250, 0.05) 100%)',
+              border: '2px solid rgba(59, 130, 246, 0.3)',
+              borderRadius: '12px',
+              padding: '1.5rem',
+              marginBottom: '1.5rem',
+              position: 'relative',
+              overflow: 'hidden'
+            }}>
+              {/* Decorative gradient background */}
+              <div style={{
+                position: 'absolute',
+                top: 0,
+                right: 0,
+                width: '200px',
+                height: '200px',
+                background: 'radial-gradient(circle, rgba(59, 130, 246, 0.15) 0%, transparent 70%)',
+                pointerEvents: 'none'
+              }} />
+
+              <div style={{
+                position: 'relative',
+                zIndex: 1
+              }}>
+                <h4 style={{
+                  margin: '0 0 1rem 0',
+                  fontSize: '1rem',
+                  color: 'var(--text-primary)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem'
+                }}>
+                  🔮 {tr.nextObservationPrediction}
+                  <span style={{
+                    fontSize: '0.75rem',
+                    background: 'rgba(59, 130, 246, 0.2)',
+                    color: '#3b82f6',
+                    padding: '4px 8px',
+                    borderRadius: '4px',
+                    fontWeight: '600'
+                  }}>
+                    {results.observationAnalysis.nextObservationPrediction.daysUntil} {tr.days}
+                  </span>
+                </h4>
+
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: isMobile ? '1fr' : 'auto 1fr auto',
+                  gap: '1.5rem',
+                  alignItems: 'center'
+                }}>
+                  {/* Date */}
+                  <div style={{
+                    textAlign: isMobile ? 'center' : 'left'
+                  }}>
+                    <div style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--text-secondary)',
+                      textTransform: 'uppercase',
+                      marginBottom: '0.5rem',
+                      fontWeight: '600',
+                      letterSpacing: '0.5px'
+                    }}>
+                      {tr.date}
+                    </div>
+                    <div style={{
+                      fontSize: '1.1rem',
+                      fontWeight: '700',
+                      color: 'var(--text-primary)'
+                    }}>
+                      {results.observationAnalysis.nextObservationPrediction.dateFormatted}
+                    </div>
+                  </div>
+
+                  {/* Prediction Details */}
+                  <div style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.75rem'
+                  }}>
+                    {/* Predicted Outcome */}
+                    <div>
+                      <div style={{
+                        fontSize: '0.75rem',
+                        color: 'var(--text-secondary)',
+                        textTransform: 'uppercase',
+                        marginBottom: '0.5rem',
+                        fontWeight: '600',
+                        letterSpacing: '0.5px'
+                      }}>
+                        {tr.predictedOutcome}
+                      </div>
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem',
+                        flexWrap: 'wrap'
+                      }}>
+                        {results.observationAnalysis.nextObservationPrediction.outcomeType === 'autocall' && (
+                          <span style={{
+                            background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                            color: '#ffffff',
+                            padding: '0.5rem 1rem',
+                            borderRadius: '8px',
+                            fontSize: '0.9rem',
+                            fontWeight: '700',
+                            boxShadow: '0 2px 8px rgba(59, 130, 246, 0.3)',
+                            letterSpacing: '0.3px'
+                          }}>
+                            🎊 {tr.autocallAt} {results.observationAnalysis.nextObservationPrediction.autocallPriceFormatted}
+                          </span>
+                        )}
+                        {results.observationAnalysis.nextObservationPrediction.outcomeType === 'coupon' && (
+                          <span style={{
+                            color: '#059669',
+                            background: '#d1fae5',
+                            padding: '0.5rem 1rem',
+                            borderRadius: '8px',
+                            fontSize: '0.9rem',
+                            fontWeight: '700',
+                            boxShadow: '0 1px 3px rgba(5, 150, 105, 0.1)'
+                          }}>
+                            💵 {tr.coupon}: {results.observationAnalysis.nextObservationPrediction.couponAmountFormatted}
+                          </span>
+                        )}
+                        {results.observationAnalysis.nextObservationPrediction.outcomeType === 'memory_added' && (
+                          <span style={{
+                            color: '#c2410c',
+                            background: '#fed7aa',
+                            padding: '0.5rem 1rem',
+                            borderRadius: '8px',
+                            fontSize: '0.9rem',
+                            fontWeight: '700',
+                            boxShadow: '0 1px 3px rgba(234, 88, 12, 0.1)'
+                          }}>
+                            🧠 {tr.addedToMemory}: {results.observationAnalysis.nextObservationPrediction.couponAmount.toFixed(1)}% ({tr.total}: {results.observationAnalysis.nextObservationPrediction.totalMemoryCouponsFormatted})
+                          </span>
+                        )}
+                        {results.observationAnalysis.nextObservationPrediction.outcomeType === 'final_redemption' && (
+                          <span style={{
+                            background: 'linear-gradient(135deg, #ea580c 0%, #c2410c 100%)',
+                            color: '#ffffff',
+                            padding: '0.5rem 1rem',
+                            borderRadius: '8px',
+                            fontSize: '0.9rem',
+                            fontWeight: '700',
+                            boxShadow: '0 2px 8px rgba(234, 88, 12, 0.3)',
+                            letterSpacing: '0.3px'
+                          }}>
+                            🏁 {tr.finalRedemption}: {results.observationAnalysis.nextObservationPrediction.redemptionAmountFormatted}
+                          </span>
+                        )}
+                        {results.observationAnalysis.nextObservationPrediction.outcomeType === 'no_event' && (
+                          <span style={{
+                            color: '#94a3b8',
+                            fontStyle: 'italic',
+                            fontSize: '0.9rem',
+                            fontWeight: '500'
+                          }}>
+                            ✗ {tr.noCouponWouldBePaid}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Explanation */}
+                    <div style={{
+                      fontSize: '0.85rem',
+                      color: 'var(--text-secondary)',
+                      lineHeight: '1.5'
+                    }}>
+                      {results.observationAnalysis.nextObservationPrediction.explanation}
+                    </div>
+                  </div>
+
+                  {/* Basket Level */}
+                  <div style={{
+                    textAlign: isMobile ? 'center' : 'right',
+                    background: 'var(--bg-tertiary)',
+                    padding: '1rem',
+                    borderRadius: '8px'
+                  }}>
+                    <div style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--text-secondary)',
+                      textTransform: 'uppercase',
+                      marginBottom: '0.5rem',
+                      fontWeight: '600',
+                      letterSpacing: '0.5px'
+                    }}>
+                      {tr.currentBasket}
+                    </div>
+                    <div style={{
+                      fontSize: '1.3rem',
+                      fontWeight: '700',
+                      color: results.observationAnalysis.nextObservationPrediction.currentBasketLevel >= 0 ? '#10b981' : '#ef4444'
+                    }}>
+                      {results.observationAnalysis.nextObservationPrediction.currentBasketLevelFormatted}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Assumption disclaimer */}
+                <div style={{
+                  marginTop: '1rem',
+                  padding: '0.75rem',
+                  background: 'rgba(148, 163, 184, 0.1)',
+                  borderRadius: '6px',
+                  fontSize: '0.75rem',
+                  color: 'var(--text-secondary)',
+                  fontStyle: 'italic',
+                  textAlign: 'center'
+                }}>
+                  ℹ️ {results.observationAnalysis.nextObservationPrediction.assumption}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Observation Table - Elegant Design */}
           <div style={{
@@ -1192,7 +1477,7 @@ const PhoenixReport = ({ results, productId }) => {
                       textTransform: 'uppercase',
                       letterSpacing: '1px'
                     }}>
-                      📅 Observation
+                      📅 {tr.observation}
                     </div>
                     <div style={{
                       fontSize: '0.7rem',
@@ -1201,7 +1486,7 @@ const PhoenixReport = ({ results, productId }) => {
                       textTransform: 'uppercase',
                       letterSpacing: '1px'
                     }}>
-                      💰 Payment
+                      💰 {tr.payment}
                     </div>
                     <div style={{
                       fontSize: '0.7rem',
@@ -1210,17 +1495,7 @@ const PhoenixReport = ({ results, productId }) => {
                       textTransform: 'uppercase',
                       letterSpacing: '1px'
                     }}>
-                      🏷️ Type
-                    </div>
-                    <div style={{
-                      fontSize: '0.7rem',
-                      fontWeight: '700',
-                      color: '#e2e8f0',
-                      textTransform: 'uppercase',
-                      textAlign: 'center',
-                      letterSpacing: '1px'
-                    }}>
-                      🎯 Trigger
+                      🏷️ {tr.type}
                     </div>
                     <div style={{
                       fontSize: '0.7rem',
@@ -1230,7 +1505,7 @@ const PhoenixReport = ({ results, productId }) => {
                       textAlign: 'center',
                       letterSpacing: '1px'
                     }}>
-                      ✅ Status
+                      🎯 {tr.trigger}
                     </div>
                     <div style={{
                       fontSize: '0.7rem',
@@ -1240,7 +1515,7 @@ const PhoenixReport = ({ results, productId }) => {
                       textAlign: 'center',
                       letterSpacing: '1px'
                     }}>
-                      💵 Coupon
+                      ✅ {tr.autocall}
                     </div>
                     <div style={{
                       fontSize: '0.7rem',
@@ -1250,7 +1525,17 @@ const PhoenixReport = ({ results, productId }) => {
                       textAlign: 'center',
                       letterSpacing: '1px'
                     }}>
-                      🧠 Memory
+                      💵 {tr.coupon}
+                    </div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      fontWeight: '700',
+                      color: '#e2e8f0',
+                      textTransform: 'uppercase',
+                      textAlign: 'center',
+                      letterSpacing: '1px'
+                    }}>
+                      🧠 {tr.memory}
                     </div>
                     {results.observationAnalysis.hasMemoryAutocall && (
                       <div style={{
@@ -1261,7 +1546,7 @@ const PhoenixReport = ({ results, productId }) => {
                         textAlign: 'center',
                         letterSpacing: '1px'
                       }}>
-                        🔒 Memory Lock
+                        🔒 {tr.memoryLock}
                       </div>
                     )}
                   </div>
@@ -1291,6 +1576,7 @@ const PhoenixReport = ({ results, productId }) => {
                       gridTemplateColumns: results.observationAnalysis.hasMemoryAutocall
                         ? '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr 1.3fr'
                         : '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr',
+                      alignItems: 'center',
                       gap: '0.75rem',
                       padding: '1rem 1.5rem',
                       borderBottom: index < results.observationAnalysis.observations.length - 1 ?
@@ -1328,7 +1614,7 @@ const PhoenixReport = ({ results, productId }) => {
                           letterSpacing: '0.8px',
                           boxShadow: '0 4px 12px rgba(5, 150, 105, 0.25)'
                         }}>
-                          🎊 Redeemed
+                          🎊 {tr.redeemed}
                         </div>
                       )}
 
@@ -1365,15 +1651,82 @@ const PhoenixReport = ({ results, productId }) => {
                             ? '#94a3b8'
                             : 'var(--text-primary)',
                         fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
-                        fontWeight: isMostRecentObservation ? '700' : '600'
+                        fontWeight: isMostRecentObservation ? '700' : '600',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem'
                       }}>
-                        {obs.paymentDateFormatted}
+                        <span>{obs.paymentDateFormatted}</span>
+                        {/* Payment Confirmation Badge */}
+                        {obs.couponPaid > 0 && obs.hasOccurred && (
+                          <>
+                            {obs.paymentConfirmed ? (
+                              <span
+                                style={{
+                                  background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                                  color: '#ffffff',
+                                  padding: '0.25rem 0.5rem',
+                                  borderRadius: '6px',
+                                  fontSize: '0.65rem',
+                                  fontWeight: '700',
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.5px',
+                                  boxShadow: '0 2px 6px rgba(16, 185, 129, 0.3)',
+                                  cursor: 'help',
+                                  whiteSpace: 'nowrap'
+                                }}
+                                title={obs.confirmedPayment ?
+                                  `Payment Confirmed\nAmount: ${obs.confirmedPayment.actualAmount?.toFixed(2)} ${obs.confirmedPayment.currency || ''}\nDate: ${new Date(obs.confirmedPayment.actualDate).toLocaleDateString('en-GB')}\nConfidence: ${obs.matchConfidence}`
+                                  : 'Payment Confirmed'}
+                              >
+                                ✓ {tr.paid}
+                              </span>
+                            ) : obs.isPastDue ? (
+                              <span
+                                style={{
+                                  background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
+                                  color: '#ffffff',
+                                  padding: '0.25rem 0.5rem',
+                                  borderRadius: '6px',
+                                  fontSize: '0.65rem',
+                                  fontWeight: '700',
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.5px',
+                                  boxShadow: '0 2px 6px rgba(239, 68, 68, 0.3)',
+                                  cursor: 'help',
+                                  whiteSpace: 'nowrap'
+                                }}
+                                title="Payment past due - not found in PMS operations"
+                              >
+                                ⚠ {tr.overdue}
+                              </span>
+                            ) : (
+                              <span
+                                style={{
+                                  background: 'rgba(148, 163, 184, 0.2)',
+                                  color: '#64748b',
+                                  padding: '0.25rem 0.5rem',
+                                  borderRadius: '6px',
+                                  fontSize: '0.65rem',
+                                  fontWeight: '700',
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.5px',
+                                  cursor: 'help',
+                                  whiteSpace: 'nowrap'
+                                }}
+                                title={obs.matchMessage || 'Payment status unknown'}
+                              >
+                                ? {tr.pending}
+                              </span>
+                            )}
+                          </>
+                        )}
                       </div>
 
                       {/* Observation Type - Badge Style */}
                       <div style={{
                         fontSize: '0.75rem',
-                        display: 'inline-flex',
+                        display: 'flex',
                         alignItems: 'center'
                       }}>
                         <span style={{
@@ -1434,7 +1787,7 @@ const PhoenixReport = ({ results, productId }) => {
                             fontSize: '0.8rem',
                             fontWeight: '500'
                           }}>
-                            ⏳ TBD
+                            ⏳ {tr.tbd}
                           </span>
                         ) : obs.productCalled ? (
                           <span style={{
@@ -1452,7 +1805,7 @@ const PhoenixReport = ({ results, productId }) => {
                             gap: '0.3rem',
                             letterSpacing: '0.3px'
                           }}>
-                            ✓ YES
+                            ✓ {tr.yes}
                           </span>
                         ) : (
                           <span style={{
@@ -1460,7 +1813,7 @@ const PhoenixReport = ({ results, productId }) => {
                             fontSize: '0.8rem',
                             fontWeight: '600'
                           }}>
-                            ✗ NO
+                            ✗ {tr.no}
                           </span>
                         )}
                       </div>
@@ -1570,7 +1923,7 @@ const PhoenixReport = ({ results, productId }) => {
                                   alignItems: 'center',
                                   gap: '0.25rem'
                                 }}>
-                                  All Flagged ✓
+                                  {tr.allFlagged} ✓
                                 </span>
                               );
                             }
@@ -1613,8 +1966,8 @@ const PhoenixReport = ({ results, productId }) => {
 
       {/* Performance Chart */}
       {productId && (
-        <div style={{
-          background: 'var(--bg-secondary)',
+        <div className="pdf-card pdf-page-break-before structured-product-chart" style={{
+          background: 'var(--bg-primary)',
           padding: '1.5rem',
           borderRadius: '6px',
           marginBottom: '1.5rem'
@@ -1627,24 +1980,24 @@ const PhoenixReport = ({ results, productId }) => {
             alignItems: 'center',
             gap: '0.5rem'
           }}>
-            📈 Performance Evolution
+            📈 {tr.performanceEvolution}
           </h4>
           <StructuredProductChart productId={productId} height="450px" />
         </div>
       )}
 
       {/* Phoenix Parameters Summary */}
-      <div style={{
-        background: 'var(--bg-secondary)',
-        padding: '1.5rem',
+      <div className="pdf-card pdf-page-break-before" style={{
+        background: 'var(--bg-primary)',
+        padding: isMobile ? '1rem' : '1.5rem',
         borderRadius: '6px',
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-        gap: '1.5rem'
+        gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(200px, 1fr))',
+        gap: isMobile ? '1rem' : '1.5rem'
       }}>
         <div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-            Autocall Barrier
+            {tr.autocallBarrier}
           </div>
           <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)' }}>
             {phoenixParams.autocallBarrier}%
@@ -1653,7 +2006,7 @@ const PhoenixReport = ({ results, productId }) => {
 
         <div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-            Protection Barrier
+            {tr.protectionBarrier}
           </div>
           <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)' }}>
             {phoenixParams.protectionBarrier}%
@@ -1662,7 +2015,7 @@ const PhoenixReport = ({ results, productId }) => {
 
         <div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-            Memory Coupon
+            {tr.memoryCoupon}
           </div>
           <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)' }}>
             {phoenixParams.couponRate}%
@@ -1671,7 +2024,7 @@ const PhoenixReport = ({ results, productId }) => {
 
         <div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-            Observation Frequency
+            {tr.observationFrequency}
           </div>
           <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)', textTransform: 'capitalize' }}>
             {phoenixParams.observationFrequency}

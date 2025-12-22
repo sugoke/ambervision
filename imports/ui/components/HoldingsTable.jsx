@@ -9,6 +9,20 @@ const HoldingsTable = ({ holdings, portfolio, onRemoveHolding, onSellShares }) =
   const [sellQuantity, setSellQuantity] = useState('');
   const [sellPrice, setSellPrice] = useState('');
 
+  // Mobile detection
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
+
+  React.useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+
+    window.addEventListener('resize', handleResize);
+    handleResize();
+
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   // Sort holdings
   const sortedHoldings = useMemo(() => {
     if (!holdings || holdings.length === 0) return [];
@@ -125,37 +139,222 @@ const HoldingsTable = ({ holdings, portfolio, onRemoveHolding, onSellShares }) =
       }}>
         {/* Header */}
         <div style={{
-          padding: '1.5rem 2rem',
+          padding: isMobile ? '1rem' : '1.5rem 2rem',
           borderBottom: '1px solid var(--border-color)',
           display: 'flex',
+          flexDirection: isMobile ? 'column' : 'row',
           justifyContent: 'space-between',
-          alignItems: 'center'
+          alignItems: isMobile ? 'flex-start' : 'center',
+          gap: isMobile ? '0.5rem' : '0'
         }}>
           <h3 style={{
             margin: 0,
-            fontSize: '1.3rem',
+            fontSize: isMobile ? '1.1rem' : '1.3rem',
             fontWeight: '600',
             color: 'var(--text-primary)'
           }}>
             Holdings ({holdings.length})
           </h3>
-          <div style={{
-            fontSize: '0.9rem',
-            color: 'var(--text-muted)'
-          }}>
-            Click column headers to sort
-          </div>
+          {!isMobile && (
+            <div style={{
+              fontSize: '0.9rem',
+              color: 'var(--text-muted)'
+            }}>
+              Click column headers to sort
+            </div>
+          )}
         </div>
 
-        {/* Table */}
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{
-            width: '100%',
-            borderCollapse: 'collapse',
-            fontSize: '0.9rem'
-          }}>
-            <thead>
-              <tr style={{ backgroundColor: 'var(--bg-primary)' }}>
+        {/* Mobile: Card Layout */}
+        {isMobile ? (
+          <div style={{ padding: '0.75rem' }}>
+            {sortedHoldings.map((holding, index) => (
+              <div
+                key={holding._id}
+                style={{
+                  background: 'var(--bg-primary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  padding: '1rem',
+                  marginBottom: index < sortedHoldings.length - 1 ? '0.75rem' : '0'
+                }}
+              >
+                {/* Stock Header */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.75rem',
+                  marginBottom: '1rem',
+                  paddingBottom: '1rem',
+                  borderBottom: '1px solid var(--border-color)'
+                }}>
+                  <StockLogo
+                    symbol={holding.symbol}
+                    companyName={holding.companyName}
+                    style={{ width: '40px', height: '40px', flexShrink: 0 }}
+                  />
+                  <StockLogoFallback
+                    symbol={holding.symbol}
+                    style={{ width: '40px', height: '40px', flexShrink: 0 }}
+                  />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{
+                      fontWeight: '700',
+                      color: 'var(--text-primary)',
+                      fontSize: '1.1rem'
+                    }}>
+                      {holding.symbol}
+                    </div>
+                    <div style={{
+                      color: 'var(--text-muted)',
+                      fontSize: '0.85rem',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap'
+                    }}>
+                      {holding.companyName}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Key Metrics Grid */}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '0.75rem',
+                  marginBottom: '1rem'
+                }}>
+                  <div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.25rem', textTransform: 'uppercase', fontWeight: '600' }}>
+                      Market Value
+                    </div>
+                    <div style={{ fontWeight: '700', color: 'var(--text-primary)', fontSize: '1.1rem' }}>
+                      {formatCurrency(holding.currentValue || 0, holding.currency)}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.25rem', textTransform: 'uppercase', fontWeight: '600' }}>
+                      Total Return
+                    </div>
+                    <div style={{
+                      fontWeight: '700',
+                      fontSize: '1.1rem',
+                      color: getChangeColor(holding.totalReturn || 0)
+                    }}>
+                      {formatCurrency(holding.totalReturn || 0, holding.currency)}
+                    </div>
+                    <div style={{
+                      color: getChangeColor(holding.totalReturnPercent || 0),
+                      fontSize: '0.8rem',
+                      fontWeight: '500'
+                    }}>
+                      {formatPercent(holding.totalReturnPercent || 0)}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.25rem', textTransform: 'uppercase', fontWeight: '600' }}>
+                      Shares
+                    </div>
+                    <div style={{ fontWeight: '600', color: 'var(--text-primary)' }}>
+                      {holding.quantity?.toLocaleString()}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.25rem', textTransform: 'uppercase', fontWeight: '600' }}>
+                      Current Price
+                    </div>
+                    <div style={{ fontWeight: '600', color: 'var(--text-primary)' }}>
+                      {formatCurrency(holding.currentPrice || 0, holding.currency)}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.25rem', textTransform: 'uppercase', fontWeight: '600' }}>
+                      Avg Price
+                    </div>
+                    <div style={{ fontWeight: '500', color: 'var(--text-primary)', fontSize: '0.9rem' }}>
+                      {formatCurrency(holding.averagePrice || 0, holding.currency)}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.25rem', textTransform: 'uppercase', fontWeight: '600' }}>
+                      Day Change
+                    </div>
+                    <div style={{
+                      fontWeight: '600',
+                      fontSize: '0.9rem',
+                      color: getChangeColor(holding.dayChange || 0)
+                    }}>
+                      {formatCurrency(holding.dayChange || 0, holding.currency)}
+                    </div>
+                    <div style={{
+                      color: getChangeColor(holding.dayChangePercent || 0),
+                      fontSize: '0.75rem',
+                      fontWeight: '500'
+                    }}>
+                      {formatPercent(holding.dayChangePercent || 0)}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '0.5rem',
+                  paddingTop: '1rem',
+                  borderTop: '1px solid var(--border-color)'
+                }}>
+                  <button
+                    onClick={() => handleSellClick(holding)}
+                    style={{
+                      padding: '0.75rem',
+                      borderRadius: '6px',
+                      border: '1px solid #f44336',
+                      backgroundColor: 'transparent',
+                      color: '#f44336',
+                      fontSize: '0.9rem',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      minHeight: '44px'
+                    }}
+                  >
+                    Sell
+                  </button>
+                  <button
+                    onClick={() => onRemoveHolding(holding._id)}
+                    style={{
+                      padding: '0.75rem',
+                      borderRadius: '6px',
+                      border: '1px solid var(--border-color)',
+                      backgroundColor: 'transparent',
+                      color: 'var(--text-muted)',
+                      fontSize: '0.9rem',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      minHeight: '44px'
+                    }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          /* Desktop: Table Layout */
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{
+              width: '100%',
+              borderCollapse: 'collapse',
+              fontSize: '0.9rem'
+            }}>
+              <thead>
+                <tr style={{ backgroundColor: 'var(--bg-primary)' }}>
                 <th
                   onClick={() => handleSort('symbol')}
                   style={{
@@ -457,6 +656,7 @@ const HoldingsTable = ({ holdings, portfolio, onRemoveHolding, onSellShares }) =
             </tbody>
           </table>
         </div>
+        )}
       </div>
 
       {/* Sell Modal */}
@@ -476,7 +676,7 @@ const HoldingsTable = ({ holdings, portfolio, onRemoveHolding, onSellShares }) =
           <div style={{
             backgroundColor: 'var(--bg-secondary)',
             borderRadius: '12px',
-            padding: '2rem',
+            padding: isMobile ? '1.5rem' : '2rem',
             width: '90%',
             maxWidth: '400px',
             border: '1px solid var(--border-color)'
@@ -565,6 +765,7 @@ const HoldingsTable = ({ holdings, portfolio, onRemoveHolding, onSellShares }) =
 
               <div style={{
                 display: 'flex',
+                flexDirection: isMobile ? 'column-reverse' : 'row',
                 gap: '1rem',
                 justifyContent: 'flex-end'
               }}>
@@ -577,7 +778,9 @@ const HoldingsTable = ({ holdings, portfolio, onRemoveHolding, onSellShares }) =
                     border: '1px solid var(--border-color)',
                     backgroundColor: 'var(--bg-primary)',
                     color: 'var(--text-primary)',
-                    cursor: 'pointer'
+                    cursor: 'pointer',
+                    minHeight: '44px',
+                    fontWeight: '600'
                   }}
                 >
                   Cancel
@@ -590,7 +793,9 @@ const HoldingsTable = ({ holdings, portfolio, onRemoveHolding, onSellShares }) =
                     border: 'none',
                     backgroundColor: '#f44336',
                     color: 'white',
-                    cursor: 'pointer'
+                    cursor: 'pointer',
+                    minHeight: '44px',
+                    fontWeight: '600'
                   }}
                 >
                   Sell Shares

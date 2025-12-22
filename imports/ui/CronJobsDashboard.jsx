@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Meteor } from 'meteor/meteor';
+import Dialog from './Dialog';
 
 /**
  * Cron Jobs Dashboard - Admin Interface
@@ -17,6 +18,9 @@ const CronJobsDashboard = ({ user }) => {
   const [expandedLog, setExpandedLog] = useState(null);
   const [error, setError] = useState(null);
 
+  // Dialog state
+  const [dialog, setDialog] = useState({ isOpen: false, type: 'info', title: '', message: '', onConfirm: null });
+
   const sessionId = localStorage.getItem('sessionId');
   const isSuperAdmin = user?.role === 'superadmin';
 
@@ -28,6 +32,27 @@ const CronJobsDashboard = ({ user }) => {
     const interval = setInterval(loadDashboardData, 30000);
     return () => clearInterval(interval);
   }, []);
+
+  // Reload logs when filter changes
+  useEffect(() => {
+    const loadFilteredLogs = async () => {
+      try {
+        const logsData = await new Promise((resolve, reject) => {
+          Meteor.call('cronJobLogs.getRecent', selectedJob, 50, sessionId, (err, result) => {
+            if (err) reject(err);
+            else resolve(result);
+          });
+        });
+        setLogs(logsData);
+      } catch (err) {
+        console.error('Failed to load filtered logs:', err);
+      }
+    };
+
+    if (!loading) {
+      loadFilteredLogs();
+    }
+  }, [selectedJob]);
 
   const loadDashboardData = async () => {
     try {
@@ -68,21 +93,51 @@ const CronJobsDashboard = ({ user }) => {
     }
   };
 
-  const handleTriggerJob = async (jobName) => {
+  const getJobDisplayName = (jobName) => {
+    const names = {
+      'marketDataRefresh': 'Market Data Refresh',
+      'productRevaluation': 'Product Re-evaluation',
+      'bankFileSync': 'Bank File Sync',
+      'marketTickerUpdate': 'Market Ticker Update'
+    };
+    return names[jobName] || jobName;
+  };
+
+  const handleTriggerJob = (jobName) => {
     if (!isSuperAdmin) {
-      alert('Only superadmin users can manually trigger jobs');
+      setDialog({
+        isOpen: true,
+        type: 'warning',
+        title: 'Access Denied',
+        message: 'Only superadmin users can manually trigger jobs.',
+        onConfirm: null
+      });
       return;
     }
 
-    if (!confirm(`Manually trigger ${jobName}? This will run the job immediately.`)) {
-      return;
-    }
+    // Show confirmation dialog
+    setDialog({
+      isOpen: true,
+      type: 'confirm',
+      title: 'Trigger Job',
+      message: `Manually trigger ${getJobDisplayName(jobName)}? This will run the job immediately.`,
+      showCancel: true,
+      confirmText: 'Run Now',
+      cancelText: 'Cancel',
+      onConfirm: () => executeTriggerJob(jobName)
+    });
+  };
 
+  const executeTriggerJob = async (jobName) => {
     setTriggering(jobName);
     try {
       const methodName = jobName === 'marketDataRefresh'
         ? 'cronJobs.triggerMarketDataRefresh'
-        : 'cronJobs.triggerProductRevaluation';
+        : jobName === 'productRevaluation'
+        ? 'cronJobs.triggerProductRevaluation'
+        : jobName === 'bankFileSync'
+        ? 'cronJobs.triggerBankFileSync'
+        : 'cronJobs.triggerMarketTickerUpdate';
 
       await new Promise((resolve, reject) => {
         Meteor.call(methodName, sessionId, (err, result) => {
@@ -91,13 +146,25 @@ const CronJobsDashboard = ({ user }) => {
         });
       });
 
-      alert(`${jobName} triggered successfully!`);
+      setDialog({
+        isOpen: true,
+        type: 'success',
+        title: 'Job Triggered',
+        message: `${getJobDisplayName(jobName)} triggered successfully!`,
+        onConfirm: null
+      });
 
       // Reload data after a short delay to see results
       setTimeout(loadDashboardData, 2000);
     } catch (err) {
       console.error(`Failed to trigger ${jobName}:`, err);
-      alert(`Failed to trigger job: ${err.message}`);
+      setDialog({
+        isOpen: true,
+        type: 'error',
+        title: 'Job Failed',
+        message: `Failed to trigger job: ${err.message}`,
+        onConfirm: null
+      });
     } finally {
       setTriggering(null);
     }
@@ -226,12 +293,16 @@ const CronJobsDashboard = ({ user }) => {
                     color: 'var(--text-primary)',
                     fontWeight: '600'
                   }}>
-                    {job.name === 'marketDataRefresh' ? '📊 Market Data Refresh' : '🔄 Product Re-evaluation'}
+                    {job.name === 'marketDataRefresh' ? '📊 Market Data Refresh' :
+                     job.name === 'productRevaluation' ? '🔄 Product Re-evaluation' :
+                     job.name === 'bankFileSync' ? '🏦 Bank File Sync' :
+                     '📈 Market Ticker Update'}
                   </h4>
                   <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                    {job.name === 'marketDataRefresh'
-                      ? 'Fetches latest market data'
-                      : 'Re-evaluates live products'}
+                    {job.name === 'marketDataRefresh' ? 'Fetches latest market data' :
+                     job.name === 'productRevaluation' ? 'Re-evaluates live products' :
+                     job.name === 'bankFileSync' ? 'Downloads & processes bank files' :
+                     'Updates ticker prices'}
                   </p>
                 </div>
                 {jobStats.lastRun && (
@@ -379,6 +450,20 @@ const CronJobsDashboard = ({ user }) => {
             >
               Re-evaluation
             </button>
+            <button
+              onClick={() => setSelectedJob('bankFileSync')}
+              style={{
+                padding: '0.5rem 1rem',
+                background: selectedJob === 'bankFileSync' ? 'var(--accent-color)' : 'var(--bg-tertiary)',
+                color: selectedJob === 'bankFileSync' ? 'white' : 'var(--text-primary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '0.85rem'
+              }}
+            >
+              Bank Sync
+            </button>
           </div>
         </div>
 
@@ -423,17 +508,28 @@ const CronJobsDashboard = ({ user }) => {
                               borderRadius: '12px',
                               fontSize: '0.75rem',
                               fontWeight: '600',
-                              background: log.status === 'success' ? '#10b98120' :
+                              background: log.skipped ? '#f59e0b20' :
+                                        log.status === 'success' ? '#10b98120' :
                                         log.status === 'error' ? '#ef444420' : '#6b728020',
-                              color: log.status === 'success' ? '#10b981' :
+                              color: log.skipped ? '#f59e0b' :
+                                    log.status === 'success' ? '#10b981' :
                                     log.status === 'error' ? '#ef4444' : '#6b7280'
                             }}>
-                              {log.status === 'success' ? '✓ Success' :
+                              {log.skipped ? '⏭ Skipped' :
+                               log.status === 'success' ? '✓ Success' :
                                log.status === 'error' ? '✗ Error' : '● Running'}
                             </span>
+                            {log.skipReason && (
+                              <div style={{ fontSize: '0.7rem', color: '#f59e0b', marginTop: '0.25rem' }}>
+                                {log.skipReason}
+                              </div>
+                            )}
                           </td>
                           <td style={{ padding: '1rem', color: 'var(--text-primary)', fontWeight: '500' }}>
-                            {log.jobName === 'marketDataRefresh' ? '📊 Market Data' : '🔄 Re-evaluation'}
+                            {log.jobName === 'marketDataRefresh' ? '📊 Market Data' :
+                             log.jobName === 'productRevaluation' ? '🔄 Re-evaluation' :
+                             log.jobName === 'bankFileSync' ? '🏦 Bank Sync' :
+                             '📈 Ticker Update'}
                           </td>
                           <td style={{ padding: '1rem', color: 'var(--text-primary)' }}>
                             {formatDate(log.startTime)}
@@ -451,12 +547,40 @@ const CronJobsDashboard = ({ user }) => {
                                   </span>
                                 )}
                               </span>
+                            ) : log.jobName === 'bankFileSync' ? (
+                              <span>
+                                {log.connectionsSucceeded || 0}/{log.connectionsProcessed || 0} connections
+                                {log.connectionsFailed > 0 && (
+                                  <span style={{ color: '#ef4444', marginLeft: '0.5rem' }}>
+                                    ({log.connectionsFailed} failed)
+                                  </span>
+                                )}
+                                {log.filesDownloaded > 0 && (
+                                  <span style={{ color: '#10b981', marginLeft: '0.5rem' }}>
+                                    ({log.filesDownloaded} files)
+                                  </span>
+                                )}
+                              </span>
+                            ) : log.jobName === 'marketTickerUpdate' ? (
+                              <span>
+                                {log.tickersCached || 0}/{log.tickersProcessed || 0} tickers
+                                {log.tickersFailed > 0 && (
+                                  <span style={{ color: '#ef4444', marginLeft: '0.5rem' }}>
+                                    ({log.tickersFailed} failed)
+                                  </span>
+                                )}
+                              </span>
                             ) : (
                               <span>
                                 {log.productsSucceeded || 0}/{log.productsProcessed || 0} products
                                 {log.productsFailed > 0 && (
                                   <span style={{ color: '#ef4444', marginLeft: '0.5rem' }}>
                                     ({log.productsFailed} failed)
+                                  </span>
+                                )}
+                                {log.productsWithStaleData > 0 && (
+                                  <span style={{ color: '#f59e0b', marginLeft: '0.5rem' }}>
+                                    ({log.productsWithStaleData} stale data)
                                   </span>
                                 )}
                               </span>
@@ -537,6 +661,19 @@ const CronJobsDashboard = ({ user }) => {
           )}
         </div>
       </div>
+
+      {/* Styled Dialog for confirmations and alerts */}
+      <Dialog
+        isOpen={dialog.isOpen}
+        onClose={() => setDialog({ ...dialog, isOpen: false })}
+        title={dialog.title}
+        message={dialog.message}
+        type={dialog.type}
+        onConfirm={dialog.onConfirm}
+        showCancel={dialog.showCancel}
+        confirmText={dialog.confirmText || 'OK'}
+        cancelText={dialog.cancelText || 'Cancel'}
+      />
     </div>
   );
 };

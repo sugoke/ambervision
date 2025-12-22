@@ -1,4 +1,5 @@
-import { MarketDataHelpers } from '/imports/api/marketDataCache';
+import { MarketDataHelpers, MarketDataCacheCollection } from '/imports/api/marketDataCache';
+import { EODApiHelpers } from '/imports/api/eodApi';
 
 /**
  * Orion Memory Evaluation Helpers
@@ -19,8 +20,21 @@ export const OrionEvaluationHelpers = {
     const finalObsDate = product.finalObservation || product.finalObservationDate;
     const maturityDate = product.maturity || product.maturityDate;
 
-    const isFinalObsPassed = finalObsDate && new Date(finalObsDate) <= now;
-    const isMaturityPassed = maturityDate && new Date(maturityDate) <= now;
+    // Strip time components for date-only comparison
+    const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    // Final observation is a market date - data only available the NEXT day
+    const isFinalObsPassed = finalObsDate && (() => {
+      const finalObsDateOnly = new Date(new Date(finalObsDate).getFullYear(), new Date(finalObsDate).getMonth(), new Date(finalObsDate).getDate());
+      return finalObsDateOnly < nowDateOnly;
+    })();
+
+    // Maturity is settlement date - product has matured ON or after this date
+    const isMaturityPassed = maturityDate && (() => {
+      const maturityDateOnly = new Date(new Date(maturityDate).getFullYear(), new Date(maturityDate).getMonth(), new Date(maturityDate).getDate());
+      return maturityDateOnly <= nowDateOnly;
+    })();
+
     const isRedeemed = isFinalObsPassed || isMaturityPassed;
 
     if (!isRedeemed) {
@@ -125,6 +139,133 @@ export const OrionEvaluationHelpers = {
   },
 
   /**
+   * Check if upper barrier was touched during product life (lookback)
+   * Examines all daily closes from initial date to current/final observation
+   */
+  async checkBarrierTouchedInHistory(underlying, product, upperBarrier) {
+    console.log(`[ORION BARRIER CHECK] Starting check for ${underlying?.ticker}`);
+    console.log('[ORION BARRIER CHECK] Underlying object:', JSON.stringify(underlying, null, 2));
+    console.log('[ORION BARRIER CHECK] Upper barrier:', upperBarrier);
+
+    try {
+      const tradeDate = new Date(product.tradeDate || product.issueDate || product.valueDate);
+      const now = new Date();
+      const finalObsDate = product.finalObservation || product.finalObservationDate;
+      const maturityDate = product.maturity || product.maturityDate;
+
+      console.log('[ORION BARRIER CHECK] Trade date:', tradeDate);
+      console.log('[ORION BARRIER CHECK] Final obs:', finalObsDate);
+      console.log('[ORION BARRIER CHECK] Maturity:', maturityDate);
+
+      // Determine cutoff date: use final observation if passed, otherwise today
+      const isFinalObsPassed = finalObsDate && new Date(finalObsDate) <= now;
+      const isMaturityPassed = maturityDate && new Date(maturityDate) <= now;
+      const cutoffDate = isFinalObsPassed ? new Date(finalObsDate) : (isMaturityPassed ? new Date(maturityDate) : now);
+
+      console.log('[ORION BARRIER CHECK] Cutoff date:', cutoffDate);
+
+      const fullTicker = underlying.securityData?.ticker || `${underlying.ticker}.US`;
+      console.log('[ORION BARRIER CHECK] Full ticker:', fullTicker);
+
+      // Get historical data from cache
+      let cacheDoc = await MarketDataCacheCollection.findOneAsync({ fullTicker: fullTicker });
+      console.log('[ORION BARRIER CHECK] Cache doc found:', !!cacheDoc);
+
+      // Try alternative exchanges if not found
+      if (!cacheDoc) {
+        const symbol = fullTicker.split('.')[0];
+        const exchanges = ['US', 'PA', 'DE', 'LSE', 'CO'];
+        console.log('[ORION BARRIER CHECK] Trying alternative exchanges for:', symbol);
+        for (const exchange of exchanges) {
+          const altTicker = `${symbol}.${exchange}`;
+          cacheDoc = await MarketDataCacheCollection.findOneAsync({ fullTicker: altTicker });
+          if (cacheDoc) {
+            console.log('[ORION BARRIER CHECK] Found with alt ticker:', altTicker);
+            break;
+          }
+        }
+      }
+
+      if (!cacheDoc || !cacheDoc.history || cacheDoc.history.length === 0) {
+        console.warn(`[ORION BARRIER CHECK] ❌ No historical data found for ${fullTicker}, cannot check barrier touch`);
+        return false;
+      }
+
+      console.log('[ORION BARRIER CHECK] History records available:', cacheDoc.history.length);
+
+      const tradeDateStr = tradeDate.toISOString().split('T')[0];
+
+      // Get initial price from cache (same logic as chart builder)
+      // This ensures chart and evaluator use the same rebasing reference
+      const initialPriceRecord = cacheDoc.history.find(record =>
+        new Date(record.date).toISOString().split('T')[0] === tradeDateStr
+      ) || cacheDoc.history[0];
+
+      const initialPriceFromCache = initialPriceRecord?.adjustedClose || initialPriceRecord?.close;
+
+      // Fallback to strike if cache doesn't have trade date data
+      const initialPrice = initialPriceFromCache ||
+                          underlying.strike ||
+                          (underlying.securityData?.tradeDatePrice?.price) ||
+                          (underlying.securityData?.tradeDatePrice?.close) || 0;
+
+      console.log('[ORION BARRIER CHECK] Initial price from cache:', initialPriceFromCache);
+      console.log('[ORION BARRIER CHECK] Initial price (strike):', underlying.strike);
+      console.log('[ORION BARRIER CHECK] Initial price (used):', initialPrice);
+
+      if (initialPrice === 0) {
+        console.warn(`[ORION BARRIER CHECK] ❌ Initial price is 0 for ${fullTicker}, cannot check barrier`);
+        return false;
+      }
+
+      const cutoffDateStr = cutoffDate.toISOString().split('T')[0];
+
+      console.log('[ORION BARRIER CHECK] Date range:', tradeDateStr, 'to', cutoffDateStr);
+
+      // Filter historical data within the relevant period
+      const relevantHistory = cacheDoc.history.filter(record => {
+        const recordDate = new Date(record.date).toISOString().split('T')[0];
+        return recordDate >= tradeDateStr && recordDate <= cutoffDateStr;
+      });
+
+      console.log('[ORION BARRIER CHECK] Relevant history records:', relevantHistory.length);
+
+      if (relevantHistory.length === 0) {
+        console.warn(`[ORION BARRIER CHECK] ❌ No historical data in relevant period for ${fullTicker}`);
+        return false;
+      }
+
+      // Check if any daily close reached or exceeded the upper barrier
+      // upperBarrier is percentage (e.g., 150 means 150% of initial)
+      const barrierPrice = initialPrice * (upperBarrier / 100);
+
+      console.log('[ORION BARRIER CHECK] Barrier price:', barrierPrice, `(${upperBarrier}% of ${initialPrice})`);
+
+      let maxPrice = 0;
+      let maxDate = null;
+
+      for (const record of relevantHistory) {
+        const closePrice = record.adjustedClose || record.close;
+        if (closePrice > maxPrice) {
+          maxPrice = closePrice;
+          maxDate = record.date;
+        }
+        if (closePrice >= barrierPrice) {
+          console.log(`[ORION BARRIER CHECK] ✅ ${fullTicker} HIT barrier ${upperBarrier}% on ${record.date} (close: ${closePrice}, barrier: ${barrierPrice})`);
+          return true;
+        }
+      }
+
+      console.log(`[ORION BARRIER CHECK] ❌ ${fullTicker} did NOT hit barrier. Max price was ${maxPrice} on ${maxDate}, barrier was ${barrierPrice}`);
+      return false;
+
+    } catch (error) {
+      console.error(`[ORION] Error checking barrier touch for ${underlying.ticker}:`, error);
+      return false;
+    }
+  },
+
+  /**
    * Format currency for Orion displays
    */
   formatCurrency(amount, currency) {
@@ -144,12 +285,12 @@ export const OrionEvaluationHelpers = {
   /**
    * Extract underlying assets data for Orion products
    */
-  extractUnderlyingAssetsData(product) {
+  async extractUnderlyingAssetsData(product) {
     const underlyings = [];
     const currency = product.currency || 'USD';
 
     if (product.underlyings && Array.isArray(product.underlyings)) {
-      product.underlyings.forEach((underlying, index) => {
+      for (const underlying of product.underlyings) {
         const initialPrice = underlying.strike ||
                            (underlying.securityData?.tradeDatePrice?.price) ||
                            (underlying.securityData?.tradeDatePrice?.close) || 0;
@@ -190,7 +331,7 @@ export const OrionEvaluationHelpers = {
         };
 
         underlyings.push(underlyingData);
-      });
+      }
     }
 
     return underlyings;
@@ -281,7 +422,16 @@ export const OrionEvaluationHelpers = {
       return product.title || product.productName || 'Unnamed Orion Product';
     }
 
-    const tickers = underlyings.map(u => u.ticker).join('/');
-    return `${tickers} Orion Memory`;
+    const tickers = underlyings.map(u => u.ticker);
+
+    // Match dashboard logic: show first 2 + count if more than 2
+    let tickerDisplay;
+    if (tickers.length > 2) {
+      tickerDisplay = `${tickers.slice(0, 2).join('/')} +${tickers.length - 2}`;
+    } else {
+      tickerDisplay = tickers.join('/');
+    }
+
+    return `${tickerDisplay} Orion`;
   }
 };

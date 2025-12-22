@@ -18,20 +18,26 @@
     "chart.js": "^4.5.0",
     "chartjs-adapter-date-fns": "^3.0.0",
     "chartjs-plugin-annotation": "^3.1.0",
+    "country-flag-icons": "^1.6.1",
+    "csv-parse": "^6.1.0",
     "ddp": "^0.12.1",
+    "html2pdf.js": "^0.12.1",
     "mailersend": "^2.6.0",
     "mcp-mongodb-atlas": "^0.1.10",
     "meteor-node-stubs": "^1.2.5",
     "mongodb": "^6.18.0",
     "mongodb-mcp-server": "^0.2.0",
     "node-cron": "^4.2.1",
+    "p-limit": "^7.2.0",
     "playwright": "^1.54.2",
+    "puppeteer": "^24.30.0",
     "react": "^18.2.0",
     "react-chartjs-2": "^5.3.0",
     "react-country-flag": "^3.1.0",
     "react-dnd": "^16.0.1",
     "react-dnd-html5-backend": "^16.0.1",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "xlsx": "^0.18.5"
   },
   "meteor": {
     "mainModule": {

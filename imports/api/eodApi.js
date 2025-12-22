@@ -33,8 +33,260 @@ const POPULAR_INDICES = [
   { Code: 'UKX', Name: 'FTSE 100 Index', Exchange: 'INDX', Country: 'UK', Currency: 'GBP', Type: 'Index', ISIN: 'GB0001383545' }, // Alternative FTSE symbol
 ];
 
+// Hong Kong exchange symbols cache (1 week expiry)
+let hkSymbolsCache = {
+  data: null,
+  fetchedAt: null,
+  CACHE_DURATION: 7 * 24 * 60 * 60 * 1000 // 1 week in milliseconds
+};
+
+// European bonds exchange symbols cache (1 week expiry)
+let eubondSymbolsCache = {
+  data: null,
+  fetchedAt: null,
+  CACHE_DURATION: 7 * 24 * 60 * 60 * 1000 // 1 week in milliseconds
+};
+
+// Map EOD search API exchange codes to their API-compatible suffixes for price/historical endpoints
+// The search API sometimes returns different exchange codes than what's needed for price data
+const EOD_EXCHANGE_NORMALIZATION = {
+  'SIX': 'SW',        // Swiss Exchange: SIX → .SW
+  'XETRA': 'F',       // German Exchange: XETRA → .F
+  'FWB': 'F',         // Frankfurt: FWB → .F
+  'LSE': 'L',         // London Stock Exchange: LSE → .L
+  'PA': 'PA',         // Euronext Paris: PA → .PA (no change)
+  'AMS': 'AS',        // Amsterdam: AMS → .AS
+  'SWX': 'SW',        // Swiss Exchange alternate: SWX → .SW
+  'EUBOND': 'EUBOND', // European Bonds: EUBOND → .EUBOND (no change)
+  // US exchanges handled separately in normalizeExchangeCode
+};
+
 // EOD API Helper functions
 export const EODApiHelpers = {
+  // Normalize exchange codes to EOD-compatible formats
+  normalizeExchangeCode(exchange) {
+    if (!exchange) return null;
+
+    const exchangeUpper = exchange.toUpperCase();
+
+    // US exchange normalization - all US exchanges use .US suffix in EOD
+    const usExchanges = ['NASDAQ', 'NYSE', 'AMEX', 'BATS'];
+    if (usExchanges.includes(exchangeUpper)) {
+      return 'US';
+    }
+
+    // Apply EOD exchange normalization mapping
+    if (EOD_EXCHANGE_NORMALIZATION[exchangeUpper]) {
+      return EOD_EXCHANGE_NORMALIZATION[exchangeUpper];
+    }
+
+    // Keep other exchanges as-is (INDX, etc.)
+    return exchange;
+  },
+
+  // Fetch Hong Kong exchange symbols with weekly caching
+  async getHKExchangeSymbols() {
+    // Return cached data if valid (within 1 week)
+    if (hkSymbolsCache.data && hkSymbolsCache.fetchedAt &&
+        (Date.now() - hkSymbolsCache.fetchedAt) < hkSymbolsCache.CACHE_DURATION) {
+      return hkSymbolsCache.data;
+    }
+
+    try {
+      const url = `https://eodhd.com/api/exchange-symbol-list/HK`;
+      const response = await HTTP.get(url, {
+        params: {
+          api_token: EOD_API_TOKEN,
+          fmt: 'json'
+        }
+      });
+
+      const symbols = response.data || [];
+
+      // Cache the result
+      hkSymbolsCache.data = symbols;
+      hkSymbolsCache.fetchedAt = Date.now();
+
+      console.log(`[EOD API] Cached ${symbols.length} Hong Kong symbols`);
+      return symbols;
+    } catch (error) {
+      console.error('[EOD API] Failed to fetch HK exchange symbols:', error.message);
+      // Return cached data if available (even if expired), otherwise empty array
+      return hkSymbolsCache.data || [];
+    }
+  },
+
+  // Search within Hong Kong exchange symbols by code or name
+  async searchHKSymbols(query, limit = 15) {
+    if (!query || query.length < 1) {
+      return [];
+    }
+
+    try {
+      const hkSymbols = await this.getHKExchangeSymbols();
+      const queryLower = query.toLowerCase();
+
+      // Search by code (numeric) or name
+      const matches = hkSymbols.filter(symbol => {
+        const code = (symbol.Code || '').toLowerCase();
+        const name = (symbol.Name || '').toLowerCase();
+        return code.includes(queryLower) || name.includes(queryLower);
+      });
+
+      // Sort: exact code matches first, then starts-with matches, then by relevance
+      matches.sort((a, b) => {
+        const aCode = (a.Code || '').toLowerCase();
+        const bCode = (b.Code || '').toLowerCase();
+        const aName = (a.Name || '').toLowerCase();
+        const bName = (b.Name || '').toLowerCase();
+
+        // Exact code match gets highest priority
+        const aExactCode = aCode === queryLower;
+        const bExactCode = bCode === queryLower;
+        if (aExactCode && !bExactCode) return -1;
+        if (!aExactCode && bExactCode) return 1;
+
+        // Code starts with query gets next priority
+        const aCodeStarts = aCode.startsWith(queryLower);
+        const bCodeStarts = bCode.startsWith(queryLower);
+        if (aCodeStarts && !bCodeStarts) return -1;
+        if (!aCodeStarts && bCodeStarts) return 1;
+
+        // Name starts with query
+        const aNameStarts = aName.startsWith(queryLower);
+        const bNameStarts = bName.startsWith(queryLower);
+        if (aNameStarts && !bNameStarts) return -1;
+        if (!aNameStarts && bNameStarts) return 1;
+
+        // Finally sort by code alphabetically
+        return aCode.localeCompare(bCode);
+      });
+
+      // Format results to match existing search result structure
+      return matches.slice(0, limit).map(symbol => ({
+        Code: symbol.Code,
+        Name: symbol.Name,
+        Exchange: 'HK',
+        Type: symbol.Type || 'Common Stock',
+        Currency: symbol.Currency || 'HKD',
+        Country: 'Hong Kong',
+        ISIN: symbol.Isin || null
+      }));
+    } catch (error) {
+      console.error('[EOD API] Error searching HK symbols:', error.message);
+      return [];
+    }
+  },
+
+  // Fetch European bonds exchange symbols with weekly caching
+  async getEUBONDExchangeSymbols() {
+    // Return cached data if valid (within 1 week)
+    if (eubondSymbolsCache.data && eubondSymbolsCache.fetchedAt &&
+        (Date.now() - eubondSymbolsCache.fetchedAt) < eubondSymbolsCache.CACHE_DURATION) {
+      return eubondSymbolsCache.data;
+    }
+
+    try {
+      const url = `https://eodhd.com/api/exchange-symbol-list/EUBOND`;
+      const response = await HTTP.get(url, {
+        params: {
+          api_token: EOD_API_TOKEN,
+          fmt: 'json'
+        }
+      });
+
+      const symbols = response.data || [];
+
+      // Cache the result
+      eubondSymbolsCache.data = symbols;
+      eubondSymbolsCache.fetchedAt = Date.now();
+
+      console.log(`[EOD API] Cached ${symbols.length} European bond symbols`);
+      return symbols;
+    } catch (error) {
+      console.error('[EOD API] Failed to fetch EUBOND exchange symbols:', error.message);
+      // Return cached data if available (even if expired), otherwise empty array
+      return eubondSymbolsCache.data || [];
+    }
+  },
+
+  // Search within European bonds exchange symbols by code, name, or ISIN
+  async searchEUBONDSymbols(query, limit = 15) {
+    if (!query || query.length < 1) {
+      return [];
+    }
+
+    try {
+      const eubondSymbols = await this.getEUBONDExchangeSymbols();
+      const queryLower = query.toLowerCase();
+
+      // Search by code, name, or ISIN
+      const matches = eubondSymbols.filter(symbol => {
+        const code = (symbol.Code || '').toLowerCase();
+        const name = (symbol.Name || '').toLowerCase();
+        const isin = (symbol.Isin || '').toLowerCase();
+        return code.includes(queryLower) || name.includes(queryLower) || isin.includes(queryLower);
+      });
+
+      // Sort: exact code matches first, ISIN matches, then starts-with matches, then by relevance
+      matches.sort((a, b) => {
+        const aCode = (a.Code || '').toLowerCase();
+        const bCode = (b.Code || '').toLowerCase();
+        const aName = (a.Name || '').toLowerCase();
+        const bName = (b.Name || '').toLowerCase();
+        const aIsin = (a.Isin || '').toLowerCase();
+        const bIsin = (b.Isin || '').toLowerCase();
+
+        // Exact code match gets highest priority
+        const aExactCode = aCode === queryLower;
+        const bExactCode = bCode === queryLower;
+        if (aExactCode && !bExactCode) return -1;
+        if (!aExactCode && bExactCode) return 1;
+
+        // Exact ISIN match gets next priority
+        const aExactIsin = aIsin === queryLower;
+        const bExactIsin = bIsin === queryLower;
+        if (aExactIsin && !bExactIsin) return -1;
+        if (!aExactIsin && bExactIsin) return 1;
+
+        // Code starts with query gets next priority
+        const aCodeStarts = aCode.startsWith(queryLower);
+        const bCodeStarts = bCode.startsWith(queryLower);
+        if (aCodeStarts && !bCodeStarts) return -1;
+        if (!aCodeStarts && bCodeStarts) return 1;
+
+        // ISIN starts with query
+        const aIsinStarts = aIsin.startsWith(queryLower);
+        const bIsinStarts = bIsin.startsWith(queryLower);
+        if (aIsinStarts && !bIsinStarts) return -1;
+        if (!aIsinStarts && bIsinStarts) return 1;
+
+        // Name starts with query
+        const aNameStarts = aName.startsWith(queryLower);
+        const bNameStarts = bName.startsWith(queryLower);
+        if (aNameStarts && !bNameStarts) return -1;
+        if (!aNameStarts && bNameStarts) return 1;
+
+        // Finally sort by code alphabetically
+        return aCode.localeCompare(bCode);
+      });
+
+      // Format results to match existing search result structure
+      return matches.slice(0, limit).map(symbol => ({
+        Code: symbol.Code,
+        Name: symbol.Name,
+        Exchange: 'EUBOND',
+        Type: symbol.Type || 'Bond',
+        Currency: symbol.Currency || 'EUR',
+        Country: symbol.Country || 'Europe',
+        ISIN: symbol.Isin || null
+      }));
+    } catch (error) {
+      console.error('[EOD API] Error searching EUBOND symbols:', error.message);
+      return [];
+    }
+  },
+
   // Search for securities by symbol/name with optimized API calls
   async searchSecurities(query, limit = 20) {
     if (!query || query.length < 2) {
@@ -67,14 +319,33 @@ export const EODApiHelpers = {
         searchPromises.push(promise);
       });
 
+      // Add Hong Kong exchange symbol search in parallel
+      const hkSearchPromise = this.searchHKSymbols(query, 15);
+      searchPromises.push(hkSearchPromise);
+
+      // Add European bonds exchange symbol search in parallel
+      const eubondSearchPromise = this.searchEUBONDSymbols(query, 15);
+      searchPromises.push(eubondSearchPromise);
+
       // Wait for all API calls to complete
       const responses = await Promise.allSettled(searchPromises);
       let results = [];
-      
+
+      // Count of EOD API searches (not including HK and EUBOND which return arrays directly)
+      const eodApiSearchCount = assetTypes.length;
+
       // Combine results from all asset type searches
-      responses.forEach(response => {
-        if (response.status === 'fulfilled' && response.value.data) {
-          results = results.concat(response.value.data);
+      // First N responses are EOD API searches (have .data property)
+      // Last 2 responses are HK and EUBOND searches (return arrays directly)
+      responses.forEach((response, index) => {
+        if (response.status === 'fulfilled') {
+          // HK and EUBOND searches return arrays directly, EOD API searches have .data property
+          const data = index >= eodApiSearchCount
+            ? response.value  // HK or EUBOND search result (array directly)
+            : response.value?.data;  // EOD API search result
+          if (data && Array.isArray(data)) {
+            results = results.concat(data);
+          }
         }
       });
 
@@ -436,12 +707,15 @@ export const EODApiHelpers = {
     const currencyInfo = currency ? ` - ${currency}` : '';
     const countryInfo = country ? ` [${country}]` : '';
     const colors = this.getAssetTypeColor(type);
+    // Normalize exchange code for API compatibility
+    const normalizedExchange = exchange ? this.normalizeExchangeCode(exchange) : null;
+
 
     return {
       primary: `${symbol}${exchangeInfo}`,
       secondary: displayName,
       details: `${type || 'Security'}${currencyInfo}${countryInfo}`,
-      fullTicker: exchange ? `${symbol}.${exchange}` : symbol,
+      fullTicker: normalizedExchange ? `${symbol}.${normalizedExchange}` : symbol,
       symbol,
       exchange,
       currency,
@@ -569,6 +843,64 @@ if (Meteor.isServer) {
 
     async 'eod.getSecurityNews'(symbol, exchange = null, limit = 2) {
       return await EODApiHelpers.getSecurityNews(symbol, exchange, limit);
+    },
+
+    // Refresh Hong Kong exchange symbols cache
+    async 'eod.refreshHKSymbolsCache'() {
+      // Clear the cache
+      hkSymbolsCache.data = null;
+      hkSymbolsCache.fetchedAt = null;
+      // Refetch and return count
+      const symbols = await EODApiHelpers.getHKExchangeSymbols();
+      return {
+        success: true,
+        count: symbols.length,
+        cachedAt: new Date(hkSymbolsCache.fetchedAt)
+      };
+    },
+
+    // Get HK cache status
+    async 'eod.getHKCacheStatus'() {
+      return {
+        hasCachedData: !!hkSymbolsCache.data,
+        symbolCount: hkSymbolsCache.data?.length || 0,
+        cachedAt: hkSymbolsCache.fetchedAt ? new Date(hkSymbolsCache.fetchedAt) : null,
+        expiresAt: hkSymbolsCache.fetchedAt
+          ? new Date(hkSymbolsCache.fetchedAt + hkSymbolsCache.CACHE_DURATION)
+          : null,
+        isExpired: hkSymbolsCache.fetchedAt
+          ? (Date.now() - hkSymbolsCache.fetchedAt) >= hkSymbolsCache.CACHE_DURATION
+          : true
+      };
+    },
+
+    // Refresh European bonds exchange symbols cache
+    async 'eod.refreshEUBONDSymbolsCache'() {
+      // Clear the cache
+      eubondSymbolsCache.data = null;
+      eubondSymbolsCache.fetchedAt = null;
+      // Refetch and return count
+      const symbols = await EODApiHelpers.getEUBONDExchangeSymbols();
+      return {
+        success: true,
+        count: symbols.length,
+        cachedAt: new Date(eubondSymbolsCache.fetchedAt)
+      };
+    },
+
+    // Get EUBOND cache status
+    async 'eod.getEUBONDCacheStatus'() {
+      return {
+        hasCachedData: !!eubondSymbolsCache.data,
+        symbolCount: eubondSymbolsCache.data?.length || 0,
+        cachedAt: eubondSymbolsCache.fetchedAt ? new Date(eubondSymbolsCache.fetchedAt) : null,
+        expiresAt: eubondSymbolsCache.fetchedAt
+          ? new Date(eubondSymbolsCache.fetchedAt + eubondSymbolsCache.CACHE_DURATION)
+          : null,
+        isExpired: eubondSymbolsCache.fetchedAt
+          ? (Date.now() - eubondSymbolsCache.fetchedAt) >= eubondSymbolsCache.CACHE_DURATION
+          : true
+      };
     },
 
     // Comprehensive stock details method - reduces API calls by combining multiple requests

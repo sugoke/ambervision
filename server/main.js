@@ -44,7 +44,7 @@ import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
 import { PasswordResetTokensCollection, PasswordResetHelpers } from '/imports/api/passwordResetTokens';
 import { EmailService } from '/imports/api/emailService';
 import './testEmailMethod'; // Test email functionality
-import { AllocationsCollection } from '/imports/api/allocations';
+import { AllocationsCollection, AllocationHelpers } from '/imports/api/allocations';
 import { NotificationsCollection, NotificationHelpers } from '/imports/api/notifications';
 import { CronJobLogsCollection } from '/imports/api/cronJobLogs';
 import { NewslettersCollection } from '/imports/api/newsletters';
@@ -71,11 +71,16 @@ import './migrations/migratePMSHoldingsVersioning';
 import './methods/securitiesMethods';
 import './methods/performanceMethods';
 import './methods/pdfGenerationMethods';
+import './methods/pmsPdfMethods';
+import './methods/riskAnalysisPdfMethods';
 import './methods/pmsLinkingMethods';
+import './methods/accountProfileMethods';
+import './methods/rmDashboardMethods';
 import './pdfAuth'; // PDF authentication middleware
 import './publications/underlyingsAnalysis';
 import './publications/bankConnections';
 import './publications/securitiesMetadata';
+import './publications/accountProfiles';
 import './publications'; // Import all publications from index.js
 
 // Complex product templates are now part of BUILT_IN_TEMPLATES in /imports/api/templates.js
@@ -1978,21 +1983,26 @@ Meteor.methods({
     check(newPassword, String);
     check(sessionId, String);
 
-    // CRITICAL: Verify caller is SUPERADMIN using sessionId-based auth
+    // CRITICAL: Verify caller is ADMIN or SUPERADMIN using sessionId-based auth
     const session = await SessionHelpers.validateSession(sessionId);
     if (!session || !session.userId) {
       throw new Meteor.Error('unauthorized', 'Invalid or expired session');
     }
 
     const currentUser = await UsersCollection.findOneAsync(session.userId);
-    if (!currentUser || currentUser.role !== USER_ROLES.SUPERADMIN) {
-      throw new Meteor.Error('unauthorized', 'Only superadmins can reset user passwords');
+    if (!currentUser || (currentUser.role !== USER_ROLES.SUPERADMIN && currentUser.role !== USER_ROLES.ADMIN)) {
+      throw new Meteor.Error('unauthorized', 'Only admins can reset user passwords');
     }
 
     // Validate target user exists
     const targetUser = await UsersCollection.findOneAsync(userId);
     if (!targetUser) {
       throw new Meteor.Error('user-not-found', 'Target user not found');
+    }
+
+    // Prevent ADMINs from resetting SUPERADMIN passwords
+    if (currentUser.role === USER_ROLES.ADMIN && targetUser.role === USER_ROLES.SUPERADMIN) {
+      throw new Meteor.Error('unauthorized', 'Admins cannot reset superadmin passwords');
     }
 
     // Validate password strength
@@ -2012,7 +2022,8 @@ Meteor.methods({
       await SessionHelpers.invalidateAllUserSessions(userId);
 
       // Log action for audit trail
-      console.log(`[ADMIN PASSWORD RESET] Superadmin ${currentUser.email} (${session.userId}) reset password for user ${targetUser.email} (${userId})`);
+      const adminType = currentUser.role === USER_ROLES.SUPERADMIN ? 'Superadmin' : 'Admin';
+      console.log(`[ADMIN PASSWORD RESET] ${adminType} ${currentUser.email} (${session.userId}) reset password for user ${targetUser.email} (${userId})`);
 
       return {
         success: true,
@@ -2115,18 +2126,19 @@ Meteor.methods({
   },
 
   // Bank account management methods
-  async 'bankAccounts.add'({ bankId, accountNumber, referenceCurrency, sessionId }) {
+  async 'bankAccounts.add'({ bankId, accountNumber, referenceCurrency, authorizedOverdraft, sessionId }) {
     console.log('Server: bankAccounts.add called with:', {
       bankId: bankId ? 'Present' : 'Missing',
       accountNumber: accountNumber ? 'Present' : 'Missing',
       referenceCurrency: referenceCurrency || 'None',
+      authorizedOverdraft: authorizedOverdraft || 'None',
       sessionId: sessionId ? 'Present' : 'Missing'
     });
 
     try {
       const user = await validateSessionAndGetUser(sessionId);
       console.log('Server: User validated successfully:', { userId: user._id, username: user.username });
-      const result = await BankAccountHelpers.addBankAccount(user._id, bankId, accountNumber, referenceCurrency);
+      const result = await BankAccountHelpers.addBankAccount(user._id, bankId, accountNumber, referenceCurrency, 'personal', 'direct', null, authorizedOverdraft);
       console.log('Server: Account added successfully:', result);
       return result;
     } catch (error) {
@@ -2135,7 +2147,7 @@ Meteor.methods({
     }
   },
 
-  async 'bankAccounts.create'({ userId, bankId, accountNumber, referenceCurrency, accountType = 'personal', accountStructure = 'direct', lifeInsuranceCompany, sessionId }) {
+  async 'bankAccounts.create'({ userId, bankId, accountNumber, referenceCurrency, accountType = 'personal', accountStructure = 'direct', lifeInsuranceCompany, authorizedOverdraft, sessionId }) {
     check(userId, String);
     check(bankId, String);
     check(accountNumber, String);
@@ -2144,11 +2156,11 @@ Meteor.methods({
     check(accountStructure, String);
     check(sessionId, String);
 
-    console.log('Server: bankAccounts.create called with:', { userId, bankId, accountNumber, referenceCurrency, accountType, accountStructure, lifeInsuranceCompany });
+    console.log('Server: bankAccounts.create called with:', { userId, bankId, accountNumber, referenceCurrency, accountType, accountStructure, lifeInsuranceCompany, authorizedOverdraft });
 
     // Validate session and get current user
     const currentUser = await validateSessionAndGetUser(sessionId);
-    
+
     // Only admins and superadmins can create bank accounts for users
     if (!currentUser || (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN)) {
       throw new Meteor.Error('not-authorized', 'Only administrators can create bank accounts for users');
@@ -2194,11 +2206,16 @@ Meteor.methods({
     if (accountStructure === 'life_insurance' && lifeInsuranceCompany) {
       bankAccountData.lifeInsuranceCompany = lifeInsuranceCompany;
     }
-    
+
+    // Add authorized overdraft (credit line) if provided
+    if (authorizedOverdraft && authorizedOverdraft > 0) {
+      bankAccountData.authorizedOverdraft = authorizedOverdraft;
+    }
+
     console.log('Server: Creating bank account with data:', bankAccountData);
     const bankAccountId = await BankAccountsCollection.insertAsync(bankAccountData);
     console.log('Server: Bank account created successfully with ID:', bankAccountId);
-    
+
     // Verify the account was created
     const createdAccount = await BankAccountsCollection.findOneAsync(bankAccountId);
     console.log('Server: Verification - created account:', createdAccount);
@@ -2208,13 +2225,19 @@ Meteor.methods({
 
   async 'bankAccounts.update'({ accountId, updates, sessionId }) {
     const user = await validateSessionAndGetUser(sessionId);
-    
-    // Verify account belongs to user
+
+    // Verify account exists
     const account = await BankAccountsCollection.findOneAsync(accountId);
-    if (!account || account.userId !== user._id) {
-      throw new Meteor.Error('not-authorized', 'Account not found or access denied');
+    if (!account) {
+      throw new Meteor.Error('not-found', 'Account not found');
     }
-    
+
+    // Allow admin/superadmin to update any account, users can only update their own
+    const isAdmin = user.role === USER_ROLES.ADMIN || user.role === USER_ROLES.SUPERADMIN;
+    if (!isAdmin && account.userId !== user._id) {
+      throw new Meteor.Error('not-authorized', 'Access denied');
+    }
+
     return await BankAccountHelpers.updateBankAccount(accountId, updates);
   },
 
@@ -2566,12 +2589,26 @@ Meteor.methods({
       console.log(`[PRODUCTS] Creating new product: ${enrichedProductData.title} (${enrichedProductData.isin || 'no ISIN'})`);
       const productId = await ProductsCollection.insertAsync(enrichedProductData);
       console.log(`[PRODUCTS] Successfully created product with ID: ${productId}`);
-      
+
       // Save chart data separately if present
       if (chartData) {
         await Meteor.callAsync('chartData.upsert', productId, chartData);
       }
-      
+
+      // Auto-create allocations from PMS holdings if product has ISIN
+      if (enrichedProductData.isin) {
+        Meteor.defer(async () => {
+          try {
+            const createdAllocations = await AllocationHelpers.autoCreateFromPMSHoldings(productId, enrichedProductData.isin);
+            if (createdAllocations.length > 0) {
+              console.log(`[PRODUCTS] Auto-created ${createdAllocations.length} allocations from PMS holdings`);
+            }
+          } catch (allocError) {
+            console.error('[PRODUCTS] Error auto-creating allocations:', allocError);
+          }
+        });
+      }
+
       return productId;
     } catch (error) {
       throw new Meteor.Error('save-failed', `Failed to save product: ${error.message}`);
@@ -2632,14 +2669,27 @@ Meteor.methods({
           updatedBy: user._id
         }
       });
-      
+
       // Update chart data separately if present
       if (chartData) {
         await Meteor.callAsync('chartData.upsert', productId, chartData);
       }
-      
-      // Rule engine removed: no formula cache to invalidate
-      
+
+      // Auto-create allocations from PMS holdings if ISIN was added/changed
+      const newIsin = productWithoutChartData.isin;
+      if (newIsin && newIsin !== product.isin) {
+        Meteor.defer(async () => {
+          try {
+            const createdAllocations = await AllocationHelpers.autoCreateFromPMSHoldings(productId, newIsin);
+            if (createdAllocations.length > 0) {
+              console.log(`[PRODUCTS] Auto-created ${createdAllocations.length} allocations from PMS holdings on update`);
+            }
+          } catch (allocError) {
+            console.error('[PRODUCTS] Error auto-creating allocations on update:', allocError);
+          }
+        });
+      }
+
       return true;
     } catch (error) {
       throw new Meteor.Error('update-failed', `Failed to update product: ${error.message}`);
@@ -6354,7 +6404,8 @@ Meteor.methods({
           username: 1,
           role: 1,
           profile: 1,
-          relationshipManagerId: 1
+          relationshipManagerId: 1,
+          reportingCurrency: 1
         },
         sort: { 'profile.lastName': 1, 'profile.firstName': 1 }
       }

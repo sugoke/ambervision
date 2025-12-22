@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import Dashboard from './Dashboard.jsx';
+import RMDashboard from './components/dashboard/RMDashboard.jsx';
 import StructuredProductInterface from './StructuredProductInterface.jsx';
 import { ProductForm } from './ProductForm.jsx';
 import { ProductList } from './ProductList.jsx';
@@ -24,10 +25,13 @@ import Schedule from './Schedule.jsx';
 import Dialog from './Dialog.jsx';
 import { useDialog } from './useDialog.js';
 import Intranet from './Intranet.jsx';
+import MarketNews from './MarketNews.jsx';
+import PortfolioManagementSystem from './PortfolioManagementSystem.jsx';
+import ClientsSection from './ClientsSection.jsx';
+import AlertCenter from './AlertCenter.jsx';
 
-const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibraryStateChange, currentRoute }) => {
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibraryStateChange, currentRoute, isMenuOpen, setIsMenuOpen, isSettingsOpen, setIsSettingsOpen, isMobile }) => {
+  // Use lifted menu and settings state from App.jsx (for mobile header integration)
   const { dialogState, showConfirm, showError, hideDialog } = useDialog();
   
   // Persist editing product across page refreshes
@@ -143,10 +147,10 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
     }
   };
 
-  const toggleSettings = () => {
-    setIsSettingsOpen(!isSettingsOpen);
-    // Close navigation menu when opening settings menu
-    if (!isSettingsOpen && isMenuOpen) {
+  const handleNavigateToAdmin = (section = 'administration') => {
+    handleNavigate(section);
+    // Close navigation menu if open
+    if (isMenuOpen) {
       setIsMenuOpen(false);
     }
   };
@@ -171,8 +175,28 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
   const renderContent = () => {
     switch (currentSection) {
       case 'dashboard':
+        // Show RMDashboard for RMs and Admins, regular Dashboard for clients
+        const role = getUserRole();
+        if (role === 'rm' || role === 'admin' || role === 'superadmin') {
+          return (
+            <RMDashboard
+              user={user}
+              onNavigate={(section, params) => {
+                if (section === 'report' && params?.productId) {
+                  setCurrentSection('report', params.productId);
+                } else if (section === 'client' && params?.clientId) {
+                  // Navigate to user details or profile
+                  setCurrentSection('user-management');
+                } else {
+                  setCurrentSection(section);
+                }
+              }}
+            />
+          );
+        }
         return (
-          <Dashboard 
+          <Dashboard
+            user={user}
             onCreateProduct={handleCreateProduct}
             onEditProduct={handleEditProduct}
             onViewReport={handleViewReport}
@@ -181,20 +205,33 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
           />
         );
       
+      case 'products':
+        // Structured Products Dashboard (the old Dashboard)
+        return (
+          <Dashboard
+            user={user}
+            onCreateProduct={handleCreateProduct}
+            onEditProduct={handleEditProduct}
+            onViewReport={handleViewReport}
+            onDeleteProduct={handleDeleteProduct}
+            onViewProductReport={handleViewProductReport}
+          />
+        );
+
       case 'create-product':
         if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
         return (
-          <div style={{ 
+          <div style={{
             minHeight: '100vh',
             backgroundColor: 'var(--bg-primary)',
             padding: '0'
           }}>
-            <StructuredProductInterface 
+            <StructuredProductInterface
               editingProduct={editingProduct}
               editingTemplate={editingTemplate}
               user={user}
               onSave={() => {
-                setCurrentSection('dashboard');
+                setCurrentSection('products');
                 setEditingTemplate(null); // Clear template after save
                 setEditingProduct(null); // Clear product after save
               }}
@@ -271,13 +308,29 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
         if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
         return <DirectEquitiesView user={user} />;
 
+      case 'pms':
+        if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
+        return <PortfolioManagementSystem user={user} />;
+
+      case 'market-news':
+        if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
+        return <MarketNews user={user} />;
+
       case 'schedule':
         if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
         return <Schedule user={user} />;
 
+      case 'alerts':
+        if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
+        return <AlertCenter user={user} />;
+
       case 'intranet':
         if (!isNonClient()) return <div>Access denied</div>;
         return <Intranet user={user} />;
+
+      case 'clients':
+        if (!isNonClient()) return <div>Access denied</div>;
+        return <ClientsSection user={user} />;
 
       case 'notifications':
         if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
@@ -285,10 +338,11 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
 
       default:
         return (
-          <Dashboard 
-            onCreateProduct={handleCreateProduct} 
-            onEditProduct={handleEditProduct} 
-            onViewReport={handleViewReport} 
+          <Dashboard
+            user={user}
+            onCreateProduct={handleCreateProduct}
+            onEditProduct={handleEditProduct}
+            onViewReport={handleViewReport}
             onDeleteProduct={handleDeleteProduct}
             onViewProductReport={handleViewProductReport}
           />
@@ -313,12 +367,16 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
         onNavigate={handleNavigate}
         currentSection={currentSection}
         userRole={getUserRole()}
+        isMobile={isMobile}
       />
 
-      {/* Right Settings Menu */}
+      {/* Right Settings Menu - Admin Navigation Button */}
       <RightSettingsMenu
+        onNavigateToAdmin={handleNavigateToAdmin}
+        isMobile={isMobile}
+        userRole={getUserRole()}
         isOpen={isSettingsOpen}
-        onToggle={toggleSettings}
+        onClose={() => setIsSettingsOpen(false)}
       />
 
       {/* Product Allocation Modal */}

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { useTracker } from 'meteor/react-meteor-data';
@@ -994,11 +994,8 @@ const StructuredProductInterface = ({
     valueDate: '',
     finalObservation: '',
     maturity: '',
-    productFamily: '',
     notional: 100,
-    denomination: 1000,
-    couponFrequency: 'quarterly',
-    underlyingMode: 'single'
+    denomination: 1000
   });
 
   // Structure state
@@ -1017,6 +1014,7 @@ const StructuredProductInterface = ({
         return {
           couponRate: 8.5,
           protectionBarrierLevel: 70,
+          strike: 100,
           memoryCoupon: true,
           memoryAutocall: false,
           couponFrequency: 'quarterly',
@@ -1048,7 +1046,8 @@ const StructuredProductInterface = ({
           strike: 100,
           cap: 0,
           capitalGuarantee: 100,
-          callableByIssuer: false
+          callableByIssuer: false,
+          issuerCallRebateType: 'fixed'
         };
       default:
         return {
@@ -1089,6 +1088,30 @@ const StructuredProductInterface = ({
   // Term sheet uploader collapse state
   const [isTermSheetExpanded, setIsTermSheetExpanded] = useState(false);
 
+  // Track productId from term sheet extraction to prevent duplicate creation
+  const [extractedProductId, setExtractedProductId] = useState(null);
+
+  // Track if template was locked from term sheet extraction
+  const [templateLockedFromExtraction, setTemplateLockedFromExtraction] = useState(false);
+
+  // Refs to track if product data has been loaded (prevents state reset on re-renders)
+  const hasLoadedProductRef = useRef(false);
+  const loadedProductIdRef = useRef(null);
+
+  // Ref to persist productDetails across re-renders (protects dates from being lost)
+  const productDetailsRef = useRef({
+    title: '',
+    isin: '',
+    issuer: '',
+    currency: 'USD',
+    tradeDate: '',
+    valueDate: '',
+    finalObservation: '',
+    maturity: '',
+    notional: 100,
+    denomination: 1000
+  });
+
   // Available baskets for dropdown components (computed from underlyings)
   const availableBaskets = useMemo(() => {
     if (basketMode === 'single' && underlyings.length > 0) {
@@ -1107,11 +1130,85 @@ const StructuredProductInterface = ({
     return [];
   }, [underlyings, basketMode]);
 
+  // Sync productDetails to ref whenever it changes (preserves values in memory)
+  useEffect(() => {
+    console.log('[DATE DEBUG] Syncing productDetails to ref:', {
+      tradeDate: productDetails.tradeDate,
+      valueDate: productDetails.valueDate,
+      finalObservation: productDetails.finalObservation,
+      maturity: productDetails.maturity
+    });
+    productDetailsRef.current = productDetails;
+  }, [productDetails]);
+
+  // Monitor for lost dates and restore from ref if needed
+  useEffect(() => {
+    const hasDatesinRef = productDetailsRef.current.tradeDate ||
+                          productDetailsRef.current.valueDate ||
+                          productDetailsRef.current.finalObservation ||
+                          productDetailsRef.current.maturity;
+
+    const hasDatesinState = productDetails.tradeDate ||
+                            productDetails.valueDate ||
+                            productDetails.finalObservation ||
+                            productDetails.maturity;
+
+    // If we have dates in ref but not in state, restore them
+    if (hasDatesinRef && !hasDatesinState) {
+      console.log('[DATE DEBUG] ⚠️ DATES LOST! Restoring from ref:', {
+        refDates: {
+          tradeDate: productDetailsRef.current.tradeDate,
+          valueDate: productDetailsRef.current.valueDate,
+          finalObservation: productDetailsRef.current.finalObservation,
+          maturity: productDetailsRef.current.maturity
+        },
+        stateDates: {
+          tradeDate: productDetails.tradeDate,
+          valueDate: productDetails.valueDate,
+          finalObservation: productDetails.finalObservation,
+          maturity: productDetails.maturity
+        }
+      });
+
+      setProductDetails(prev => ({
+        ...prev,
+        tradeDate: productDetailsRef.current.tradeDate || prev.tradeDate,
+        valueDate: productDetailsRef.current.valueDate || prev.valueDate,
+        finalObservation: productDetailsRef.current.finalObservation || prev.finalObservation,
+        maturity: productDetailsRef.current.maturity || prev.maturity
+      }));
+    }
+  }, [productDetails, activeTab]); // Monitor both productDetails and tab changes
+
+  // Log tab changes for debugging
+  useEffect(() => {
+    console.log('[DATE DEBUG] Tab changed to:', activeTab, 'Current dates:', {
+      tradeDate: productDetails.tradeDate,
+      valueDate: productDetails.valueDate,
+      finalObservation: productDetails.finalObservation,
+      maturity: productDetails.maturity
+    });
+  }, [activeTab, productDetails.tradeDate, productDetails.valueDate, productDetails.finalObservation, productDetails.maturity]);
+
   // Load editing product data
   useEffect(() => {
     if (editingProduct) {
+      // Check if we've already loaded this product to prevent state reset on re-renders
+      const productId = editingProduct._id;
+      const isNewProduct = !hasLoadedProductRef.current || loadedProductIdRef.current !== productId;
+
+      if (!isNewProduct) {
+        // Already loaded this product, don't reset state (preserves user edits when switching tabs)
+        console.log('StructuredProductInterface: Product already loaded, skipping state reset');
+        return;
+      }
+
       console.log('StructuredProductInterface: Loading editing product data');
-      
+
+      // Mark this product as loaded
+      hasLoadedProductRef.current = true;
+      loadedProductIdRef.current = productId;
+
       // Load basic product details
       setProductDetails({
         title: editingProduct.title || '',
@@ -1122,11 +1219,8 @@ const StructuredProductInterface = ({
         valueDate: editingProduct.valueDate || '',
         finalObservation: editingProduct.finalObservation || editingProduct.finalObservationDate || '',
         maturity: editingProduct.maturity || editingProduct.maturityDate || '',
-        productFamily: editingProduct.productFamily || '',
         notional: editingProduct.notional || 100,
-        denomination: editingProduct.denomination || 1000,
-        couponFrequency: editingProduct.couponFrequency || 'quarterly',
-        underlyingMode: editingProduct.underlyingMode || 'single'
+        denomination: editingProduct.denomination || 1000
       });
 
       // Load structure if it exists
@@ -1135,9 +1229,13 @@ const StructuredProductInterface = ({
         setDroppedItems(editingProduct.structure);
       }
 
-      // Load underlyings
+      // Load underlyings - ensure each has a unique ID for deletion to work properly
       if (editingProduct.underlyings) {
-        setUnderlyings(editingProduct.underlyings);
+        const underlyingsWithIds = editingProduct.underlyings.map((u, index) => ({
+          ...u,
+          id: u.id || Date.now() + index // Assign unique ID if missing
+        }));
+        setUnderlyings(underlyingsWithIds);
         if (editingProduct.underlyings.length > 1) {
           setBasketMode('basket');
         }
@@ -1203,12 +1301,18 @@ const StructuredProductInterface = ({
       
       // Load structure and schedule parameters if they exist
       if (editingProduct.structureParams) {
-        setStructureParams(editingProduct.structureParams);
+        // Unwrap double-nested structureParams if it exists (from old term sheet extractions)
+        const params = editingProduct.structureParams.structureParams || editingProduct.structureParams;
+        setStructureParams(params);
       }
       
       if (editingProduct.scheduleConfig) {
         setScheduleConfig(editingProduct.scheduleConfig);
       }
+    } else {
+      // No editing product - reset the refs for creating new products
+      hasLoadedProductRef.current = false;
+      loadedProductIdRef.current = null;
     }
   }, [editingProduct]);
 
@@ -1263,11 +1367,17 @@ const StructuredProductInterface = ({
 
   // Product details update handler
   const handleUpdateProductDetails = useCallback((field, value) => {
-    console.log('StructuredProductInterface: Updating product details:', field, value);
-    setProductDetails(prev => ({
-      ...prev,
-      [field]: value
-    }));
+    console.log('[DATE DEBUG] Updating product details:', field, '=', value);
+
+    setProductDetails(prev => {
+      const updated = {
+        ...prev,
+        [field]: value
+      };
+      // Also update the ref immediately to ensure it's in sync
+      productDetailsRef.current = updated;
+      return updated;
+    });
 
     // Sync finalObservation changes to finalObservationDate state
     if (field === 'finalObservation') {
@@ -1485,16 +1595,35 @@ const StructuredProductInterface = ({
     }
   }, [editingTemplateName, droppedItems, productDetails, user, showAlert, showSuccess, showError]);
 
-  const handleTemplateLoad = useCallback((template) => {
+  const handleTemplateLoad = useCallback(async (template) => {
     console.log('StructuredProductInterface: Loading template:', template.name);
-    
+
+    // Check if template is locked from extraction
+    if (templateLockedFromExtraction && selectedTemplateId && template._id !== selectedTemplateId) {
+      const confirmed = await showConfirm(
+        'Change Template?',
+        'This template was automatically selected from the term sheet extraction. Are you sure you want to change it?',
+        'Change Template',
+        'Cancel'
+      );
+
+      if (!confirmed) {
+        console.log('StructuredProductInterface: Template change cancelled by user');
+        return;
+      }
+
+      // User confirmed, unlock the template
+      setTemplateLockedFromExtraction(false);
+      console.log('StructuredProductInterface: Template unlocked by user');
+    }
+
     setSelectedTemplateId(template._id); // Highlight the selected template
-    
+
     // Load the template structure - check both structure and droppedItems
     const templateStructure = template.structure || template.droppedItems;
     if (templateStructure && templateStructure.length > 0) {
       console.log('Loading template structure with', templateStructure.length, 'components');
-      
+
       // Convert array structure to object structure expected by new interface
       if (Array.isArray(templateStructure)) {
         const structureBySection = {
@@ -1503,7 +1632,7 @@ const StructuredProductInterface = ({
           quarterly: [],
           setup: []
         };
-        
+
         templateStructure.forEach(item => {
           const section = item.column || item.section || 'setup';
           if (!structureBySection[section]) {
@@ -1511,29 +1640,47 @@ const StructuredProductInterface = ({
           }
           structureBySection[section].push(item);
         });
-        
+
         setDroppedItems(structureBySection);
       } else {
         setDroppedItems(templateStructure);
       }
-      
-      // Switch directly to Structure tab to configure parameters
-      setActiveTab('structure');
     }
-    
+
     if (template.productDetails) {
-      setProductDetails(prev => ({
-        ...prev,
-        ...template.productDetails
-      }));
+      setProductDetails(prev => {
+        // Preserve user-entered date fields when loading template
+        // Templates should not overwrite product-specific dates
+        const preservedDates = {
+          tradeDate: prev.tradeDate,
+          valueDate: prev.valueDate,
+          finalObservation: prev.finalObservation,
+          maturity: prev.maturity
+        };
+
+        console.log('[DATE DEBUG] Loading template, preserving dates:', preservedDates);
+
+        return {
+          ...prev,
+          ...template.productDetails,
+          // Restore preserved dates (only if they have values)
+          ...(preservedDates.tradeDate && { tradeDate: preservedDates.tradeDate }),
+          ...(preservedDates.valueDate && { valueDate: preservedDates.valueDate }),
+          ...(preservedDates.finalObservation && { finalObservation: preservedDates.finalObservation }),
+          ...(preservedDates.maturity && { maturity: preservedDates.maturity })
+        };
+      });
     }
-    
+
     // Initialize template-specific parameters
     const templateDefaults = getTemplateDefaults(template._id);
     console.log('Setting template-specific parameters for', template._id, ':', templateDefaults);
     setStructureParams(templateDefaults);
-    
-  }, []);
+
+    // Switch directly to Structure tab to configure parameters (for all templates)
+    setActiveTab('structure');
+
+  }, [templateLockedFromExtraction, selectedTemplateId, showConfirm]);
 
   // Get session ID for API calls
   const getSessionId = () => localStorage.getItem('sessionId');
@@ -1541,6 +1688,9 @@ const StructuredProductInterface = ({
   // Handle term sheet extraction success
   const handleTermSheetExtracted = useCallback(async (productId, extractedData) => {
     console.log('StructuredProductInterface: Term sheet extracted successfully, productId:', productId);
+
+    // Store the extracted productId so save operation updates instead of creates
+    setExtractedProductId(productId);
 
     try {
       // Fetch the full product from database to get all fields
@@ -1564,11 +1714,8 @@ const StructuredProductInterface = ({
         valueDate: product.valueDate || '',
         finalObservation: product.finalObservation || product.finalObservationDate || '',
         maturity: product.maturity || product.maturityDate || '',
-        productFamily: product.productFamily || '',
         notional: product.notional || 100,
-        denomination: product.denomination || 1000,
-        couponFrequency: product.couponFrequency || 'quarterly',
-        underlyingMode: product.underlyingMode || 'single'
+        denomination: product.denomination || 1000
       });
 
       // Load structure if it exists
@@ -1580,8 +1727,10 @@ const StructuredProductInterface = ({
       // Load underlyings and fetch current market prices
       if (product.underlyings) {
         // First, set the underlyings with their strike prices
-        const underlyingsWithStrikes = product.underlyings.map(u => ({
+        // IMPORTANT: Ensure each underlying has a unique ID for deletion to work properly
+        const underlyingsWithStrikes = product.underlyings.map((u, index) => ({
           ...u,
+          id: u.id || Date.now() + index, // Assign unique ID if missing
           // Ensure securityData exists but clear price field (we'll fetch fresh)
           securityData: u.securityData ? {
             ...u.securityData,
@@ -1593,6 +1742,12 @@ const StructuredProductInterface = ({
 
         if (product.underlyings.length > 1) {
           setBasketMode('basket');
+        }
+
+        // Set basketPerformanceType from extracted basketMode
+        if (product.basketMode && ['worst-of', 'best-of', 'average'].includes(product.basketMode)) {
+          setBasketPerformanceType(product.basketMode);
+          console.log('StructuredProductInterface: Set basketPerformanceType to', product.basketMode);
         }
 
         // Fetch current market prices for each underlying
@@ -1633,15 +1788,16 @@ const StructuredProductInterface = ({
         });
       }
 
-      // Load schedule configuration ONLY (not observation schedule)
-      // The ScheduleBuilder will auto-generate the observation schedule from scheduleConfig
-      // This ensures isCallable and other fields are properly set
+      // Load observation schedule if extracted from term sheet
+      // This respects the exact dates from the term sheet PDF instead of auto-generating
+      if (product.observationSchedule && product.observationSchedule.length > 0) {
+        console.log('[LoadProduct] Loading extracted observation schedule:', product.observationSchedule.length, 'observations');
+        setObservationSchedule(product.observationSchedule);
+      }
+
+      // Also load schedule configuration for UI display
       if (product.scheduleConfig) {
         setScheduleConfig(product.scheduleConfig);
-        // DO NOT load observationSchedule - let ScheduleBuilder generate it from scheduleConfig
-      } else if (product.observationSchedule) {
-        // Fallback for older products without scheduleConfig
-        setObservationSchedule(product.observationSchedule);
       }
 
       if (product.maturity || product.maturityDate) {
@@ -1661,11 +1817,15 @@ const StructuredProductInterface = ({
         setFinalObservationDate(finalObsDate);
       }
 
-      // Load template ID
+      // Load template ID and lock it since it came from term sheet extraction
       if (product.templateId) {
         setSelectedTemplateId(product.templateId);
+        setTemplateLockedFromExtraction(true);
+        console.log('StructuredProductInterface: Template locked from extraction:', product.templateId);
       } else if (product.template) {
         setSelectedTemplateId(product.template);
+        setTemplateLockedFromExtraction(true);
+        console.log('StructuredProductInterface: Template locked from extraction:', product.template);
       }
 
       // Load structure parameters
@@ -1689,28 +1849,46 @@ const StructuredProductInterface = ({
   const generateProductTitle = useCallback(() => {
     try {
       const parts = [];
+      const templateId = selectedTemplateId || productDetails.template || productDetails.templateId;
+      const isOrion = templateId && templateId.toLowerCase().includes('orion');
 
       // 1. Add underlyings
       if (underlyings && underlyings.length > 0) {
         const symbols = underlyings.map(u => u.symbol || u.ticker).filter(Boolean);
         if (symbols.length > 0) {
-          if (symbols.length === 1) {
+          // Special handling for Orion: always show first 2 + remaining count
+          if (isOrion && symbols.length > 2) {
+            parts.push(`${symbols.slice(0, 2).join('/')} +${symbols.length - 2}`);
+          } else if (symbols.length === 1) {
             parts.push(symbols[0]);
-          } else if (symbols.length <= 3) {
+          } else if (symbols.length === 2) {
+            parts.push(symbols.join('/'));
+          } else if (symbols.length === 3) {
             parts.push(symbols.join('/'));
           } else {
-            parts.push(`${symbols.slice(0, 2).join('/')}+${symbols.length - 2}`);
+            parts.push(`${symbols.slice(0, 2).join('/')} +${symbols.length - 2}`);
           }
         }
       }
 
       // 2. Add template type or product type
-      const templateName = selectedTemplateId || productDetails.template || productDetails.templateId;
-      if (templateName) {
-        const displayName = templateName
-          .replace(/_/g, ' ')
-          .replace(/\b\w/g, l => l.toUpperCase());
-        parts.push(displayName);
+      if (templateId) {
+        // Special handling for Orion: just use "Orion" instead of "Orion Memory"
+        if (isOrion) {
+          parts.push('Orion');
+        } else {
+          // Look up the template display name from BUILT_IN_TEMPLATES
+          const template = BUILT_IN_TEMPLATES.find(t => t._id === templateId);
+          if (template && template.name) {
+            parts.push(template.name);
+          } else {
+            // Fallback: Convert template ID to title case
+            const displayName = templateId
+              .replace(/_/g, ' ')
+              .replace(/\b\w/g, l => l.toUpperCase());
+            parts.push(displayName);
+          }
+        }
       }
 
       return parts.length > 0 ? parts.join(' ') : 'New Structured Product';
@@ -1720,15 +1898,16 @@ const StructuredProductInterface = ({
     }
   }, [underlyings, selectedTemplateId, productDetails]);
 
-  // Auto-update title when key fields change (only for new products, not editing)
+  // Auto-update title when key fields change (for both new and editing products)
   useEffect(() => {
-    if (!editingProduct && (!productDetails.title || productDetails.title === 'Untitled Product' || productDetails.title === 'New Structured Product')) {
-      const generatedTitle = generateProductTitle();
-      if (generatedTitle && generatedTitle !== 'New Structured Product') {
-        handleUpdateProductDetails('title', generatedTitle);
-      }
+    const generatedTitle = generateProductTitle();
+    // Only update if generated title is valid and different from current title
+    if (generatedTitle &&
+        generatedTitle !== 'New Structured Product' &&
+        generatedTitle !== productDetails.title) {
+      handleUpdateProductDetails('title', generatedTitle);
     }
-  }, [underlyings, selectedTemplateId, structureParams, maturityDate, editingProduct, generateProductTitle]);
+  }, [underlyings, selectedTemplateId, structureParams, maturityDate, generateProductTitle, productDetails.title, handleUpdateProductDetails]);
 
   // Save product handler
   const handleSaveProduct = useCallback(async () => {
@@ -1774,29 +1953,31 @@ const StructuredProductInterface = ({
         maturityDate: maturityDate || productDetails.maturity || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // Default to 1 year if no maturity set
         maturity: maturityDate || productDetails.maturity || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // Provide both formats for compatibility
         // Map structure data to expected validation format
-        structure: droppedItems,
         payoffStructure: payoffStructure,
         underlyings: underlyings,
         observationSchedule: observationSchedule,
         finalObservation: finalObservationDate,
         finalObservationDate: finalObservationDate, // Save both field names for compatibility
-        firstObservation: firstObservationDate,
-        basketMode: basketMode,
-        // Save structure and schedule configuration parameters
+        // Save structure parameters
         structureParams: structureParams,
-        scheduleConfig: scheduleConfig,
         // Save template ID for future editing
         templateId: selectedTemplateId,
-        template: selectedTemplateId, // Save both field names for compatibility
         createdAt: editingProduct ? editingProduct.createdAt : new Date(),
         updatedAt: new Date()
       };
       
       let result;
-      if (editingProduct) {
+      // Check if we're editing an existing product OR updating a term-sheet extracted product
+      if (editingProduct || extractedProductId) {
         // Update existing product
-        result = await Meteor.callAsync('products.update', editingProduct._id, productData, sessionId);
+        const productIdToUpdate = editingProduct?._id || extractedProductId;
+        result = await Meteor.callAsync('products.update', productIdToUpdate, productData, sessionId);
         showSuccess('Product updated successfully!');
+
+        // Clear extractedProductId after successful update
+        if (extractedProductId) {
+          setExtractedProductId(null);
+        }
       } else {
         // Create new product
         result = await Meteor.callAsync('products.save', productData, sessionId);
@@ -1972,6 +2153,7 @@ const StructuredProductInterface = ({
             onConfigChange={handleScheduleConfigChange}
             selectedTemplateId={selectedTemplateId}
             underlyings={underlyings}
+            existingSchedule={observationSchedule}
           />
         );
 
@@ -2050,8 +2232,17 @@ const StructuredProductInterface = ({
               { id: 'template', label: 'Template', icon: '📋' },
               { id: 'structure', label: 'Structure', icon: '🏗️' },
               { id: 'underlyings', label: 'Underlyings', icon: '📈' },
+              { id: 'schedule', label: 'Schedule', icon: '📅' },
               { id: 'summary', label: 'Summary', icon: '📊' }
-            ].map((tab) => (
+            ].filter(tab => {
+              // Hide schedule tab for templates that don't need custom observation schedules
+              // Orion Memory: only has start and final date
+              // Reverse Convertible Bond: uses fixed maturity date
+              if (tab.id === 'schedule' && (selectedTemplateId === 'reverse_convertible_bond' || selectedTemplateId === 'orion_memory')) {
+                return false;
+              }
+              return true;
+            }).map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => handleTabChange(tab.id)}
@@ -2137,6 +2328,22 @@ const StructuredProductInterface = ({
                 <span style={{ fontWeight: '600' }}>
                   {BUILT_IN_TEMPLATES.find(t => t._id === selectedTemplateId)?.name}
                 </span>
+                {templateLockedFromExtraction && (
+                  <span style={{
+                    background: 'var(--accent-color)',
+                    color: 'white',
+                    padding: '0.25rem 0.5rem',
+                    borderRadius: '4px',
+                    fontSize: '0.75rem',
+                    fontWeight: '600',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.25rem',
+                    marginLeft: '0.5rem'
+                  }}>
+                    🔒 Auto-selected
+                  </span>
+                )}
               </div>
             </div>
           )}

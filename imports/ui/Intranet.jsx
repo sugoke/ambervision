@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTheme } from './ThemeContext.jsx';
 import BirthdayCalendar from './BirthdayCalendar.jsx';
+import BondPriceQuery from './components/BondPriceQuery.jsx';
 
 // Mini-app: Email Tester
 const EmailTester = ({ isDark }) => {
@@ -598,6 +599,12 @@ const Intranet = ({ user }) => {
       description: 'Test email service configuration'
     },
     {
+      id: 'bond-price-query',
+      label: 'Bond Price Query',
+      icon: '💰',
+      description: 'Query bond prices via CBonds API'
+    },
+    {
       id: 'coming-soon-1',
       label: 'Coming Soon',
       icon: '🚀',
@@ -614,6 +621,8 @@ const Intranet = ({ user }) => {
         return <BirthdayCalendar user={user} />;
       case 'email-tester':
         return <EmailTester isDark={isDark} />;
+      case 'bond-price-query':
+        return <BondPriceQuery isDark={isDark} />;
       default:
         return (
           <div style={{

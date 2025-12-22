@@ -3,6 +3,7 @@ import { useFind, useSubscribe } from 'meteor/react-meteor-data';
 import { TickerPriceCacheCollection } from '/imports/api/tickerCache';
 import { getCurrencyFromTicker } from '/imports/utils/tickerUtils';
 import { getStockLogoUrl } from '/imports/utils/stockLogoUtils';
+import LiquidGlassCard from './components/LiquidGlassCard.jsx';
 
 // Base security metadata for display purposes (name, type)
 // Actual prices come from database via subscription
@@ -284,20 +285,32 @@ const MarketTicker = () => {
           height: 100%;
           gap: 0;
         }
+
+        /* Hide ticker on mobile devices */
+        @media (max-width: 768px) {
+          .ticker-container {
+            display: none !important;
+          }
+        }
       `}</style>
 
-      <div
-        className="ticker-container"
+      <LiquidGlassCard
+        borderRadius="0"
         style={{
-          height: '50px',
-          background: 'linear-gradient(90deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)',
-          borderBottom: '1px solid var(--border-color)',
           overflow: 'hidden',
-          position: 'relative',
-          display: 'flex',
-          alignItems: 'center'
+          height: '50px'
         }}
       >
+        <div
+          className="ticker-container"
+          style={{
+            height: '50px',
+            overflow: 'hidden',
+            position: 'relative',
+            display: 'flex',
+            alignItems: 'center'
+          }}
+        >
         <div className="ticker-content">
             {marketData.length > 0 && marketData.map((item, index) => (
               <div key={`${item.symbol}-${index}`} className="ticker-item">
@@ -440,7 +453,8 @@ const MarketTicker = () => {
           pointerEvents: 'none',
           zIndex: 1
         }} />
-      </div>
+        </div>
+      </LiquidGlassCard>
     </>
   );
 };

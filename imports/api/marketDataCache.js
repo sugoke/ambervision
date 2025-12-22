@@ -459,14 +459,23 @@ if (Meteor.isServer) {
     async 'marketData.refreshCache'(options = {}, sessionId = null) {
       check(options, Match.OneOf(Object, null, undefined));
       check(sessionId, Match.OneOf(String, null, undefined));
-      
-      // Get current user with session-based authentication
-      const currentUser = sessionId ? 
-        await Meteor.callAsync('auth.getCurrentUser', sessionId) : 
-        (this.userId ? await UsersCollection.findOneAsync(this.userId) : null);
-      
-      if (!currentUser) {
-        throw new Meteor.Error('not-authorized', 'Must be logged in to refresh cache');
+
+      // Check if this is a server-side system call (from cron jobs)
+      const isSystemCall = sessionId === 'system-cron' || sessionId === 'system';
+
+      // Get current user with session-based authentication (skip for system calls)
+      let currentUser = null;
+      if (!isSystemCall) {
+        currentUser = sessionId ?
+          await Meteor.callAsync('auth.getCurrentUser', sessionId) :
+          (this.userId ? await UsersCollection.findOneAsync(this.userId) : null);
+
+        if (!currentUser) {
+          throw new Meteor.Error('not-authorized', 'Must be logged in to refresh cache');
+        }
+      } else {
+        // System call - no authentication required
+        console.log('[MARKET DATA] System call detected - bypassing authentication');
       }
 
       const {

@@ -38,7 +38,8 @@ const MAIN_CURRENCY_PAIRS = [
   'NZDUSD.FOREX',  // NZD to USD (standard)
   'EURGBP.FOREX',  // EUR to GBP (standard - EUR is base)
   'EURJPY.FOREX',  // EUR to JPY (standard - EUR is base)
-  'GBPJPY.FOREX'   // GBP to JPY (standard - GBP is base)
+  'GBPJPY.FOREX',  // GBP to JPY (standard - GBP is base)
+  'EURILS.FOREX'   // EUR to ILS (Israeli Shekel)
 ];
 
 export const CurrencyCache = {

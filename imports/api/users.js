@@ -16,6 +16,7 @@ export const UsersCollection = new Mongo.Collection('customUsers');
 //     lastName: String,
 //     birthday: Date,
 //     preferredLanguage: String (en, fr, de, es, it, etc.),
+//     referenceCurrency: String (USD, EUR, GBP, CHF, ILS - client's preferred reporting currency),
 //     familyMembers: Array of {
 //       name: String,
 //       relationship: String (spouse, child, parent, sibling, etc.),

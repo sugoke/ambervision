@@ -61,7 +61,9 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
         const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
         if (bankAccount) {
           queryFilter.userId = bankAccount.userId;
-          queryFilter.portfolioCode = bankAccount.accountNumber;
+          // Match portfolioCode - strip suffix from bankAccount if present, use regex to match with/without suffix
+          const baseAccountNumber = bankAccount.accountNumber.split('-')[0];
+          queryFilter.portfolioCode = { $regex: `^${baseAccountNumber}(-|$)` };
           queryFilter.bankId = bankAccount.bankId;
         } else {
           // Account not found - return empty result
@@ -126,6 +128,21 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
 
     // Default: show only current latest versions
     queryFilter.isLatest = true;
+
+    // Diagnostic logging
+    const queryWithoutLatest = Object.fromEntries(Object.entries(queryFilter).filter(([key]) => key !== 'isLatest'));
+    const totalWithoutLatestFilter = await PMSHoldingsCollection.find(queryWithoutLatest).countAsync();
+    const totalWithLatestFilter = await PMSHoldingsCollection.find(queryFilter).countAsync();
+
+    console.log('[PMS_HOLDINGS] Publication diagnostic:', {
+      userId: currentUser._id,
+      role: currentUser.role,
+      queryFilter: JSON.stringify(queryFilter),
+      totalWithoutLatestFilter,
+      totalWithLatestFilter,
+      filteredOut: totalWithoutLatestFilter - totalWithLatestFilter
+    });
+
     return PMSHoldingsCollection.find(queryFilter, {
       sort: { securityName: 1 }
     });

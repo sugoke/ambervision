@@ -1,6 +1,6 @@
 import { Mongo } from 'meteor/mongo';
 import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
+import { check, Match } from 'meteor/check';
 import { SessionHelpers } from '/imports/api/sessions';
 import { UsersCollection } from '/imports/api/users';
 import { ProductsCollection } from '/imports/api/products';
@@ -9,11 +9,16 @@ import { OrionEvaluator } from '/imports/api/evaluators/orionEvaluator';
 import { HimalayaEvaluator } from '/imports/api/evaluators/himalayaEvaluator';
 import { SharkNoteEvaluator } from '/imports/api/evaluators/sharkNoteEvaluator';
 import { ParticipationNoteEvaluator } from '/imports/api/evaluators/participationNoteEvaluator';
+import { ReverseConvertibleEvaluator } from '/imports/api/evaluators/reverseConvertibleEvaluator';
+import { ReverseConvertibleBondEvaluator } from '/imports/api/evaluators/reverseConvertibleBondEvaluator';
 import { PhoenixChartBuilder } from '/imports/api/chartBuilders/phoenixChartBuilder';
 import { OrionChartBuilder } from '/imports/api/chartBuilders/orionChartBuilder';
 import { HimalayaChartBuilder } from '/imports/api/chartBuilders/himalayaChartBuilder';
 import { SharkNoteChartBuilder } from '/imports/api/chartBuilders/sharkNoteChartBuilder';
 import { ParticipationNoteChartBuilder } from '/imports/api/chartBuilders/participationNoteChartBuilder';
+import { ReverseConvertibleChartBuilder } from '/imports/api/chartBuilders/reverseConvertibleChartBuilder';
+import { ReverseConvertibleBondChartBuilder } from '/imports/api/chartBuilders/reverseConvertibleBondChartBuilder';
+import { ProcessingIssueCollector } from '/imports/api/processingIssueCollector';
 
 /**
  * Template-based Reports Collection
@@ -73,14 +78,57 @@ if (Meteor.isServer) {
     if (!user) {
       throw new Meteor.Error('not-authorized', 'User not found');
     }
-    
+
     return user;
+  };
+
+  /**
+   * Helper to update product processing issue status
+   * Called after report generation to persist issue information
+   *
+   * @param {string} productId - Product ID to update
+   * @param {ProcessingIssueCollector} issueCollector - The issue collector with results
+   */
+  const updateProductProcessingStatus = async (productId, issueCollector) => {
+    if (!productId || !issueCollector) return;
+
+    const summary = issueCollector.getSummary();
+
+    const updateFields = {
+      processingStatus: summary.processingStatus,
+      processingIssues: summary.processingIssues,
+      hasProcessingWarnings: summary.hasProcessingWarnings,
+      hasProcessingErrors: summary.hasProcessingErrors,
+      lastEvaluationDate: new Date()
+    };
+
+    // If successful, also update lastSuccessfulEvaluation
+    if (summary.processingStatus === 'success') {
+      updateFields.lastSuccessfulEvaluation = new Date();
+      // Clear any previous issues on success
+      updateFields.processingIssues = [];
+    }
+
+    try {
+      await ProductsCollection.updateAsync(
+        { _id: productId },
+        { $set: updateFields }
+      );
+
+      if (summary.hasProcessingErrors || summary.hasProcessingWarnings) {
+        console.log(`[templateReports] Updated processing status for ${productId}: ${summary.processingStatus} (${summary.errorCount} errors, ${summary.warningCount} warnings)`);
+      }
+    } catch (error) {
+      console.error(`[templateReports] Failed to update processing status for ${productId}:`, error);
+    }
   };
 
   // Publications
   Meteor.publish('templateReports.forProduct', function(productId) {
     check(productId, String);
-    
+
+    console.log(`[templateReports publication] Subscribed to reports for product: ${productId}`);
+
     return TemplateReportsCollection.find(
       { productId },
       {
@@ -98,14 +146,32 @@ if (Meteor.isServer) {
     async 'templateReports.create'(productData, sessionId) {
       check(productData, Object);
       check(sessionId, String);
-      
+
       const user = await validateSessionAndGetUser(sessionId);
-      
+
+      // Create issue collector to track processing issues
+      const issueCollector = new ProcessingIssueCollector(productData._id);
+
       const templateId = detectTemplateId(productData);
-      
+
       // Get template-specific report builder
       const reportBuilder = TemplateReportHelpers.getTemplateReportBuilder(templateId);
-      
+
+      // HIMALAYA-SPECIFIC: Normalize tickers before evaluation
+      if (templateId === 'himalaya' && productData.underlyings) {
+        console.log('🔧 HIMALAYA: Normalizing tickers before evaluation');
+        for (const underlying of productData.underlyings) {
+          const originalTicker = underlying.ticker;
+          // Normalize ticker to include .US suffix for US tickers
+          if (!originalTicker.includes('.')) {
+            underlying.ticker = `${originalTicker}.US`;
+            if (!underlying.securityData) underlying.securityData = {};
+            underlying.securityData.ticker = `${originalTicker}.US`;
+            console.log(`  ✅ Normalized ${originalTicker} → ${underlying.ticker}`);
+          }
+        }
+      }
+
       // Run template-specific evaluation
       const templateResults = await reportBuilder.generateReport(productData, {
         evaluationDate: new Date(),
@@ -155,6 +221,10 @@ if (Meteor.isServer) {
           available: false,
           error: chartError.message
         };
+        // Add chart generation issue
+        issueCollector.addIssue('CHART_GENERATION_FAILED', {
+          error: chartError.message
+        });
       }
 
       // DEBUG: Log underlyings with news before saving to database
@@ -167,13 +237,21 @@ if (Meteor.isServer) {
         })));
       }
 
+      const evaluationDate = new Date();
       const report = {
         productId: productData._id,
         productIsin: productData.isin,
         productName: productData.title || productData.productName || 'Unknown Product',
         templateId: templateId,
 
-        evaluationDate: new Date(),
+        evaluationDate: evaluationDate,
+        evaluationDateFormatted: evaluationDate.toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        }),
         evaluatedBy: user._id,
 
         // Template-specific results from the evaluator
@@ -195,13 +273,48 @@ if (Meteor.isServer) {
       };
 
       // Remove old reports for this product (keep only latest)
-      const removedCount = await TemplateReportsCollection.removeAsync({ productId: productData._id });
-      if (removedCount > 0) {
+      try {
+        const removedCount = await TemplateReportsCollection.removeAsync({ productId: productData._id });
+        console.log(`[templateReports.create] Removed ${removedCount} old reports for product ${productData._id}`);
+      } catch (removeError) {
+        console.error(`[templateReports.create] ❌ Error removing old reports:`, removeError);
+        // Continue anyway - this shouldn't block report creation
       }
-      
-      const reportId = await TemplateReportsCollection.insertAsync(report);
 
-      // Update product status based on template results
+      console.log(`[templateReports.create] Inserting new report for product ${productData._id}`);
+      console.log(`[templateReports.create] Report keys:`, Object.keys(report));
+      console.log(`[templateReports.create] Report size:`, JSON.stringify(report).length, 'bytes');
+
+      let reportId;
+      try {
+        reportId = await TemplateReportsCollection.insertAsync(report);
+        console.log(`[templateReports.create] ✅ Report inserted successfully with ID: ${reportId}`);
+
+        // Immediately verify the report exists in database
+        const verifyReport = await TemplateReportsCollection.findOneAsync(reportId);
+        if (verifyReport) {
+          console.log(`[templateReports.create] ✅ Verified report exists in DB with ID: ${reportId}`);
+          console.log(`[templateReports.create] ✅ Report productId: ${verifyReport.productId}, templateId: ${verifyReport.templateId}`);
+        } else {
+          console.error(`[templateReports.create] ❌ WARNING: Report was inserted but cannot be found immediately after!`);
+        }
+      } catch (insertError) {
+        console.error(`[templateReports.create] ❌ Error inserting report:`, insertError);
+        console.error(`[templateReports.create] ❌ Error details:`, {
+          message: insertError.message,
+          stack: insertError.stack,
+          name: insertError.name
+        });
+        // Add report insertion issue
+        issueCollector.addIssue('REPORT_INSERTION_FAILED', {
+          context: { error: insertError.message }
+        });
+        // Update product processing status even on failure
+        await updateProductProcessingStatus(productData._id, issueCollector);
+        throw new Meteor.Error('report-insertion-failed', 'Failed to insert report into database', insertError.message);
+      }
+
+      // Update product status and title based on template results
       if (templateResults.currentStatus && templateResults.currentStatus.productStatus) {
         const productUpdateFields = {
           productStatus: templateResults.currentStatus.productStatus,
@@ -211,6 +324,12 @@ if (Meteor.isServer) {
           updatedBy: user._id
         };
 
+        // Update product title if generatedProductName is available
+        if (templateResults.generatedProductName) {
+          productUpdateFields.title = templateResults.generatedProductName;
+          console.log(`[templateReports.create] Updating product title to: ${templateResults.generatedProductName}`);
+        }
+
         await ProductsCollection.updateAsync(
           { _id: productData._id },
           { $set: productUpdateFields }
@@ -218,6 +337,9 @@ if (Meteor.isServer) {
 
         console.log(`[templateReports.create] Updated product ${productData._id} status to: ${templateResults.currentStatus.productStatus}`);
       }
+
+      // Update product processing status (track any issues from evaluation)
+      await updateProductProcessingStatus(productData._id, issueCollector);
 
       return reportId;
     },
@@ -228,79 +350,114 @@ if (Meteor.isServer) {
      *
      * @param {Object} productData - Full product object
      * @param {String} triggeredBy - Who triggered the evaluation ('system-cron', 'manual', userId)
+     * @param {String} cronJobRunId - Optional ID for cron job run (for batching notifications)
      * @returns {String} - Report ID
      */
-    async 'templateReports.generate'(productData, triggeredBy = 'system') {
+    async 'templateReports.generate'(productData, triggeredBy = 'system', cronJobRunId = null) {
       check(productData, Object);
       check(triggeredBy, String);
+      check(cronJobRunId, Match.Maybe(String));
 
       console.log(`[templateReports.generate] Generating report for ${productData._id}, triggered by: ${triggeredBy}`);
 
-      // 1. Get previous report for event comparison
-      const previousReport = await TemplateReportsCollection.findOneAsync(
-        { productId: productData._id },
-        { sort: { createdAt: -1 } }
-      );
+      try {
+        // 1. Get previous report for event comparison
+        const previousReport = await TemplateReportsCollection.findOneAsync(
+          { productId: productData._id },
+          { sort: { createdAt: -1 } }
+        );
 
-      if (previousReport) {
-        console.log(`[templateReports.generate] Found previous report from ${previousReport.createdAt}`);
-      } else {
-        console.log(`[templateReports.generate] No previous report found (first evaluation)`);
-      }
-
-      // 2. Generate new report
-      // For system-triggered evaluations, use a system session
-      let sessionId;
-      if (triggeredBy === 'system-cron' || triggeredBy === 'system') {
-        // Find or create a system user session
-        const systemUser = await UsersCollection.findOneAsync({ role: 'superadmin' });
-        if (!systemUser) {
-          throw new Meteor.Error('system-error', 'No superadmin user found for system evaluation');
-        }
-
-        // Create a temporary session for system operations
-        const { SessionsCollection } = await import('./sessions.js');
-        const existingSession = await SessionsCollection.findOneAsync({ userId: systemUser._id });
-
-        if (existingSession) {
-          sessionId = existingSession._id;
+        if (previousReport) {
+          console.log(`[templateReports.generate] Found previous report from ${previousReport.createdAt}`);
         } else {
-          sessionId = await SessionsCollection.insertAsync({
-            userId: systemUser._id,
-            createdAt: new Date(),
-            lastActivityAt: new Date(),
-            ipAddress: 'system',
-            userAgent: 'cron-job'
-          });
+          console.log(`[templateReports.generate] No previous report found (first evaluation)`);
         }
-      } else {
-        // For manual triggers, triggeredBy should be a sessionId
-        sessionId = triggeredBy;
+
+        // 2. Generate new report
+        // For system-triggered evaluations, use a system session
+        let sessionId;
+        if (triggeredBy === 'system-cron' || triggeredBy === 'system' || triggeredBy === 'batch-process') {
+          // Find or create a system user session
+          const systemUser = await UsersCollection.findOneAsync({ role: 'superadmin' });
+          if (!systemUser) {
+            throw new Meteor.Error('system-error', 'No superadmin user found for system evaluation');
+          }
+
+          console.log(`[templateReports.generate] Found superadmin user: ${systemUser.email}`);
+
+          // Check for existing valid session
+          const { SessionsCollection } = await import('./sessions.js');
+          const existingSession = await SessionsCollection.findOneAsync({
+            userId: systemUser._id,
+            isActive: true,
+            expiresAt: { $gt: new Date() }
+          });
+
+          if (existingSession) {
+            // FIXED: Use sessionId field, not _id
+            sessionId = existingSession.sessionId;
+            console.log(`[templateReports.generate] Reusing existing session: ${sessionId}`);
+          } else {
+            // FIXED: Use SessionHelpers.createSession to create proper session with all required fields
+            const sessionData = await SessionHelpers.createSession(
+              systemUser._id,
+              true, // rememberMe = true for long-lived system session
+              'cron-job', // userAgent
+              'system' // ipAddress
+            );
+            sessionId = sessionData.sessionId;
+            console.log(`[templateReports.generate] Created new system session: ${sessionId}`);
+          }
+        } else {
+          // For manual triggers, triggeredBy should be a sessionId
+          sessionId = triggeredBy;
+        }
+
+        console.log(`[templateReports.generate] Using sessionId: ${sessionId}`);
+
+        const reportId = await Meteor.callAsync('templateReports.create', productData, sessionId);
+        const currentReport = await TemplateReportsCollection.findOneAsync(reportId);
+
+        console.log(`[templateReports.generate] New report created: ${reportId}`);
+
+        // 3. Detect events by comparing reports
+        const { EventDetector } = await import('./eventDetector.js');
+        const events = EventDetector.detectEvents(previousReport, currentReport, productData);
+
+        if (events && events.length > 0) {
+          console.log(`[templateReports.generate] Detected ${events.length} events:`, events.map(e => e.type));
+        } else {
+          console.log(`[templateReports.generate] No events detected`);
+        }
+
+        // 4. Process notifications
+        if (events && events.length > 0) {
+          const { NotificationService } = await import('./notificationService.js');
+          await NotificationService.processEvents(productData, events, triggeredBy, cronJobRunId);
+          console.log(`[templateReports.generate] Notifications processed${cronJobRunId ? ` for cron run ${cronJobRunId}` : ''}`);
+        }
+
+        return reportId;
+
+      } catch (error) {
+        console.error(`[templateReports.generate] ❌ ERROR generating report for ${productData._id}:`, {
+          productId: productData._id,
+          triggeredBy,
+          errorMessage: error.message,
+          errorStack: error.stack,
+          errorName: error.name
+        });
+
+        // Update product with error status for unhandled exceptions
+        const errorCollector = new ProcessingIssueCollector(productData._id);
+        errorCollector.addIssue('EVALUATION_ERROR', {
+          error: error.message,
+          context: { stack: error.stack }
+        });
+        await updateProductProcessingStatus(productData._id, errorCollector);
+
+        throw error;
       }
-
-      const reportId = await Meteor.callAsync('templateReports.create', productData, sessionId);
-      const currentReport = await TemplateReportsCollection.findOneAsync(reportId);
-
-      console.log(`[templateReports.generate] New report created: ${reportId}`);
-
-      // 3. Detect events by comparing reports
-      const { EventDetector } = await import('./eventDetector.js');
-      const events = EventDetector.detectEvents(previousReport, currentReport, productData);
-
-      if (events && events.length > 0) {
-        console.log(`[templateReports.generate] Detected ${events.length} events:`, events.map(e => e.type));
-      } else {
-        console.log(`[templateReports.generate] No events detected`);
-      }
-
-      // 4. Process notifications
-      if (events && events.length > 0) {
-        const { NotificationService } = await import('./notificationService.js');
-        await NotificationService.processEvents(productData, events, triggeredBy);
-        console.log(`[templateReports.generate] Notifications processed`);
-      }
-
-      return reportId;
     },
 
     /**
@@ -396,6 +553,19 @@ if (Meteor.isServer) {
       return 'orion_memory';
     }
 
+    // Look for Reverse Convertible indicators
+    // Characteristics: guaranteed coupon, capital protection barrier, no autocall, simple maturity structure
+    const isReverseConvertibleByName = productName.includes('reverse convertible');
+    const hasCapitalProtectionBarrier = structureParams.capitalProtectionBarrier ||
+                                        structureParams.protectionBarrier ||
+                                        structureParams.protectionBarrierLevel;
+    const hasCouponRate = structureParams.couponRate || structure.couponRate;
+
+    if (isReverseConvertibleByName || (hasCapitalProtectionBarrier && hasCouponRate && !hasObservationSchedule && !hasUpperBarrier && !hasAutocall)) {
+      console.log('[detectTemplateId] ✅ Detected REVERSE CONVERTIBLE (capital protection + coupon, no autocall)');
+      return 'reverse_convertible';
+    }
+
     // Look for Phoenix Autocallable indicators
     const hasAutocall = payoffStructure.some(item =>
       item.type === 'action' &&
@@ -458,6 +628,16 @@ const TEMPLATE_REGISTRY = {
     evaluator: ParticipationNoteEvaluator,
     chartBuilder: ParticipationNoteChartBuilder,
     uiComponent: 'ParticipationNoteReport'
+  },
+  reverse_convertible: {
+    evaluator: ReverseConvertibleEvaluator,
+    chartBuilder: ReverseConvertibleChartBuilder,
+    uiComponent: 'ReverseConvertibleReport'
+  },
+  reverse_convertible_bond: {
+    evaluator: ReverseConvertibleBondEvaluator,
+    chartBuilder: ReverseConvertibleBondChartBuilder,
+    uiComponent: 'ReverseConvertibleBondReport'
   },
   // Future templates can be added here
 };

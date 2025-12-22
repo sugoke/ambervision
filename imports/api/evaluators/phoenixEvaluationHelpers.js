@@ -130,11 +130,13 @@ export const PhoenixEvaluationHelpers = {
       };
     }
 
+    // Fallback to strike price - indicates price fetch failed
     const initialPrice = underlying.strike || (underlying.securityData?.tradeDatePrice?.price) || 0;
     return {
       price: initialPrice,
       source: 'initial_fallback',
-      date: product.tradeDate || product.valueDate
+      date: product.tradeDate || product.valueDate,
+      priceUnavailable: true  // Flag that current price could not be fetched
     };
   },
 
@@ -196,23 +198,50 @@ export const PhoenixEvaluationHelpers = {
         }
 
         if (!underlying.securityData.price) {
-          try {
-            const fullTicker = underlying.securityData?.ticker || `${underlying.ticker}.US`;
-            const cachedPrice = await MarketDataHelpers.getCurrentPrice(fullTicker);
+          // Build list of ticker variants to try (exchange suffixes)
+          const tickerVariants = [];
 
-            if (cachedPrice && cachedPrice.price) {
-              underlying.securityData.price = {
-                price: cachedPrice.price,
-                close: cachedPrice.price,
-                date: cachedPrice.date || new Date(),
-                source: 'market_data_cache'
-              };
-              console.log(`✅ Phoenix: Fetched current price for ${fullTicker}: $${cachedPrice.price}`);
-            } else {
-              console.warn(`⚠️ Phoenix: No current price available for ${fullTicker}, using initial price as fallback`);
+          // If ticker already has exchange suffix in securityData, try that first
+          if (underlying.securityData?.ticker) {
+            tickerVariants.push(underlying.securityData.ticker);
+          }
+
+          // Extract base ticker (without exchange suffix if present)
+          const baseTicker = (underlying.ticker || '').split('.')[0];
+          if (baseTicker) {
+            // Try common US exchanges
+            tickerVariants.push(`${baseTicker}.US`);
+            tickerVariants.push(`${baseTicker}.NASDAQ`);
+            tickerVariants.push(`${baseTicker}.NYSE`);
+          }
+
+          // Remove duplicates while preserving order
+          const uniqueVariants = [...new Set(tickerVariants)];
+
+          let priceFound = false;
+          for (const tickerVariant of uniqueVariants) {
+            try {
+              const cachedPrice = await MarketDataHelpers.getCurrentPrice(tickerVariant);
+
+              if (cachedPrice && cachedPrice.price) {
+                underlying.securityData.price = {
+                  price: cachedPrice.price,
+                  close: cachedPrice.price,
+                  date: cachedPrice.date || new Date(),
+                  source: 'market_data_cache',
+                  ticker: tickerVariant
+                };
+                console.log(`✅ Phoenix: Fetched price for ${tickerVariant}: ${cachedPrice.price}`);
+                priceFound = true;
+                break;
+              }
+            } catch (error) {
+              // Try next variant silently
             }
-          } catch (error) {
-            console.warn(`⚠️ Phoenix: Failed to fetch current price for ${underlying.ticker}:`, error.message);
+          }
+
+          if (!priceFound) {
+            console.error(`❌ Phoenix: Could not fetch price for ${underlying.ticker} after trying: ${uniqueVariants.join(', ')}`);
           }
         }
 

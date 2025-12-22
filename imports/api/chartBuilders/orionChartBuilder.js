@@ -49,31 +49,83 @@ export const OrionChartBuilder = {
         );
 
         // Check if barrier was hit and find first hit date
+        let crossingDate = null;
         if (underlying.hitUpperBarrier && performanceData && performanceData.length > 0) {
           const firstHit = performanceData.find(point => point.y >= upperBarrier);
           if (firstHit) {
+            crossingDate = firstHit.x;
             barrierHitPoints.push({
               ticker: underlying.ticker,
               date: firstHit.x,
-              yValue: firstHit.y,
+              yValue: upperBarrier,  // Dot should be ON the barrier line
               color: colors[index % colors.length]
             });
           }
         }
 
-        // Add underlying dataset
-        datasets.push({
-          label: `${underlying.ticker} (${underlying.name || underlying.companyName})`,
-          data: performanceData,
-          borderColor: colors[index % colors.length],
-          backgroundColor: 'transparent',
-          borderWidth: 3,
-          fill: false,
-          pointRadius: 0,
-          tension: 0.1,
-          isPercentage: true,
-          order: 1
-        });
+        // Split data if crossing occurred to show transparency after barrier hit
+        if (crossingDate) {
+          const beforeCrossing = [];
+          const afterCrossing = [];
+          let foundCrossing = false;
+
+          performanceData.forEach(point => {
+            if (!foundCrossing) {
+              beforeCrossing.push(point);
+              if (point.x === crossingDate) {
+                foundCrossing = true;
+                afterCrossing.push(point); // Include crossing point in both segments
+              }
+            } else {
+              afterCrossing.push(point);
+            }
+          });
+
+          // Before crossing - full opacity
+          datasets.push({
+            label: `${underlying.ticker} (${underlying.name || underlying.companyName})`,
+            data: beforeCrossing,
+            borderColor: colors[index % colors.length],
+            backgroundColor: 'transparent',
+            borderWidth: 3,
+            fill: false,
+            pointRadius: 0,
+            tension: 0.1,
+            isPercentage: true,
+            order: 1
+          });
+
+          // After crossing - 90% transparency (10% opacity)
+          if (afterCrossing.length > 0) {
+            const colorWithAlpha = colors[index % colors.length] + '1A'; // 10% opacity (90% transparency)
+            datasets.push({
+              label: null, // No label for the faded segment (avoids duplicate legend entries)
+              data: afterCrossing,
+              borderColor: colorWithAlpha,
+              backgroundColor: 'transparent',
+              borderWidth: 3,
+              fill: false,
+              pointRadius: 0,
+              tension: 0.1,
+              isPercentage: true,
+              order: 1
+            });
+          }
+        } else {
+          // No barrier hit - full opacity throughout
+          datasets.push({
+            label: `${underlying.ticker} (${underlying.name || underlying.companyName})`,
+            data: performanceData,
+            borderColor: colors[index % colors.length],
+            backgroundColor: 'transparent',
+            borderWidth: 3,
+            fill: false,
+            pointRadius: 0,
+            tension: 0.1,
+            isPercentage: true,
+            order: 1
+          });
+        }
       }
     }
 

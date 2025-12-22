@@ -3,7 +3,10 @@ import { Meteor } from 'meteor/meteor';
 import { useTracker, useSubscribe } from 'meteor/react-meteor-data';
 import { UnderlyingsAnalysisCollection } from '/imports/api/underlyingsAnalysis';
 import { RiskAnalysisReportsCollection } from '/imports/api/riskAnalysis';
+import { ProductsCollection } from '/imports/api/products';
+import { AllocationsCollection } from '/imports/api/allocations';
 import { useTheme } from './ThemeContext.jsx';
+import { useViewAs } from './ViewAsContext.jsx';
 import { Bubble } from 'react-chartjs-2';
 import RiskReportModal from './components/RiskReportModal.jsx';
 import {
@@ -20,6 +23,7 @@ ChartJS.register(LinearScale, PointElement, Tooltip, Legend, annotationPlugin);
 
 const UnderlyingsView = ({ user, onNavigateToReport }) => {
   const { isDarkMode } = useTheme();
+  const { viewAsFilter } = useViewAs();
   const [sortColumn, setSortColumn] = useState('symbol');
   const [sortDirection, setSortDirection] = useState('asc');
   const [searchTerm, setSearchTerm] = useState('');
@@ -33,9 +37,27 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
   const [isGeneratingRiskReport, setIsGeneratingRiskReport] = useState(false);
   const [riskReportId, setRiskReportId] = useState(null);
   const [riskReportError, setRiskReportError] = useState(null);
+  const [reportLanguage, setReportLanguage] = useState('en'); // 'en' or 'fr'
+  const [showLanguageSelector, setShowLanguageSelector] = useState(false);
 
   // Subscribe to the pre-computed analysis
   const isLoading = useSubscribe('phoenixUnderlyingsAnalysis');
+
+  // Subscribe to products/allocations for ViewAs filtering
+  const sessionId = useMemo(() => localStorage.getItem('sessionId'), []);
+  const { accessibleProductIds } = useTracker(() => {
+    // Subscribe with viewAsFilter
+    Meteor.subscribe('products', sessionId, viewAsFilter);
+    Meteor.subscribe('allAllocations', sessionId, viewAsFilter);
+
+    // Get allocations and extract product IDs
+    const allocs = AllocationsCollection.find().fetch();
+    const productIds = viewAsFilter
+      ? [...new Set(allocs.map(a => a.productId))]
+      : null; // null = show all products (no filter)
+
+    return { accessibleProductIds: productIds };
+  }, [sessionId, viewAsFilter]);
 
   // Get the analysis from database (NO client-side calculations)
   const analysisData = useTracker(() => {
@@ -44,18 +66,52 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
   }, []);
 
   // Extract data from analysis (all pre-computed server-side)
-  const underlyingsData = analysisData?.underlyings || [];
-  const summary = analysisData?.summary || {
-    totalRows: 0,
-    totalProducts: 0,
-    uniqueUnderlyings: 0,
-    positivePerformance: 0,
-    negativePerformance: 0,
-    withProtection: 0,
-    belowBarrier: 0,
-    warningZone: 0,
-    safeZone: 0
-  };
+  // Filter by accessible products if ViewAs is active
+  const allUnderlyingsData = analysisData?.underlyings || [];
+  const underlyingsData = useMemo(() => {
+    if (!viewAsFilter || !accessibleProductIds) {
+      return allUnderlyingsData; // Show all if no filter
+    }
+
+    // Filter to only show underlyings for accessible products
+    const filtered = allUnderlyingsData.filter(u => accessibleProductIds.includes(u.productId));
+    console.log('[UnderlyingsView] ViewAs active - filtering', allUnderlyingsData.length, 'underlyings to', filtered.length, 'for', accessibleProductIds.length, 'accessible products');
+    return filtered;
+  }, [allUnderlyingsData, accessibleProductIds, viewAsFilter]);
+
+  // Calculate summary stats from filtered data (respects ViewAs filter)
+  const summary = useMemo(() => {
+    if (!underlyingsData || underlyingsData.length === 0) {
+      return {
+        totalRows: 0,
+        totalProducts: 0,
+        uniqueUnderlyings: 0,
+        positivePerformance: 0,
+        negativePerformance: 0,
+        withProtection: 0,
+        belowBarrier: 0,
+        warningZone: 0,
+        safeZone: 0
+      };
+    }
+
+    // Calculate stats from filtered underlyings
+    const uniqueProducts = new Set(underlyingsData.map(u => u.productId)).size;
+    const uniqueSymbols = new Set(underlyingsData.map(u => u.ticker)).size;
+
+    return {
+      totalRows: underlyingsData.length,
+      totalProducts: uniqueProducts,
+      uniqueUnderlyings: uniqueSymbols,
+      positivePerformance: underlyingsData.filter(u => u.performance > 0).length,
+      negativePerformance: underlyingsData.filter(u => u.performance < 0).length,
+      withProtection: underlyingsData.filter(u => u.hasProtection).length,
+      belowBarrier: underlyingsData.filter(u => u.isBelowBarrier).length,
+      warningZone: underlyingsData.filter(u => u.isInWarningZone).length,
+      safeZone: underlyingsData.filter(u => !u.isInWarningZone && !u.isBelowBarrier).length
+    };
+  }, [underlyingsData]);
+
   const generatedAt = analysisData?.generatedAtFormatted || null;
 
   // Refresh handler - regenerate analysis on demand
@@ -84,8 +140,14 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
     return RiskAnalysisReportsCollection.findOne(riskReportId);
   }, [riskReportId]);
 
+  // Show language selector before generating report
+  const handleShowLanguageSelector = () => {
+    setShowLanguageSelector(true);
+  };
+
   // Risk Report Generation Handler
-  const handleGenerateRiskReport = async () => {
+  const handleGenerateRiskReport = async (language = 'en') => {
+    setShowLanguageSelector(false);
     setIsRiskReportModalOpen(true);
     setIsGeneratingRiskReport(true);
     setRiskReportError(null);
@@ -97,8 +159,8 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
         throw new Error('No valid session found. Please log in first.');
       }
 
-      console.log('Generating risk analysis report...');
-      const result = await Meteor.callAsync('riskAnalysis.generate', sessionId);
+      console.log(`Generating risk analysis report in ${language}...`);
+      const result = await Meteor.callAsync('riskAnalysis.generate', sessionId, language);
 
       console.log('Risk report generated:', result);
       setRiskReportId(result.reportId);
@@ -115,6 +177,11 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
     setIsRiskReportModalOpen(false);
     setRiskReportId(null);
     setRiskReportError(null);
+  };
+
+  // Close language selector
+  const handleCloseLanguageSelector = () => {
+    setShowLanguageSelector(false);
   };
 
   // Filter and sort data
@@ -210,152 +277,178 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
     };
   }, [underlyingsData]);
 
-  const bubbleChartOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    onClick: (event, elements, chart) => {
-      if (elements.length > 0) {
-        const elementIndex = elements[0].index;
-        const datasetIndex = elements[0].datasetIndex;
-        const clickedBubble = chart.data.datasets[datasetIndex].data[elementIndex];
+  const bubbleChartOptions = useMemo(() => {
+    // Calculate dynamic scale bounds to ensure all bubbles fit
+    const bubbles = bubbleChartData.datasets[0].data;
 
-        if (clickedBubble && clickedBubble.productId) {
-          // Use internal navigation instead of page reload
-          if (onNavigateToReport) {
-            onNavigateToReport({ _id: clickedBubble.productId });
-          } else {
-            // Fallback to URL navigation if handler not provided
-            window.location.href = `/report/${clickedBubble.productId}`;
-          }
-        }
-      }
-    },
-    plugins: {
-      legend: {
-        display: false
-      },
-      tooltip: {
-        backgroundColor: isDarkMode ? 'rgba(30, 30, 30, 0.95)' : 'rgba(255, 255, 255, 0.95)',
-        titleColor: isDarkMode ? '#fff' : '#000',
-        bodyColor: isDarkMode ? '#fff' : '#000',
-        borderColor: isDarkMode ? '#444' : '#ccc',
-        borderWidth: 1,
-        padding: 12,
-        callbacks: {
-          title: (context) => {
-            const point = context[0].raw;
-            return point.label;
-          },
-          label: (context) => {
-            const point = context.raw;
-            // Format currency
-            const currencySymbols = {
-              'USD': '$', 'EUR': '€', 'GBP': '£', 'JPY': '¥', 'CHF': 'Fr',
-              'CAD': 'C$', 'AUD': 'A$', 'HKD': 'HK$', 'SGD': 'S$', 'CNY': '¥'
-            };
-            const currencySymbol = currencySymbols[point.currency] || point.currency + ' ';
-            const formattedInvestment = `${currencySymbol}${point.notional.toLocaleString()}`;
+    // Find min/max values for X and Y axes
+    const xValues = bubbles.map(b => b.x);
+    const yValues = bubbles.map(b => b.y);
+    const radiuses = bubbles.map(b => b.r || 8);
 
-            return [
-              `Name: ${point.name}`,
-              `Investment: ${formattedInvestment}`,
-              `Performance: ${point.performance >= 0 ? '+' : ''}${point.performance.toFixed(2)}%`,
-              `Distance to Barrier: ${point.y >= 0 ? '+' : ''}${point.y.toFixed(1)}%`,
-              `Barrier Level: ${point.barrier}%`,
-              `Days to Final Obs: ${point.x}`,
-              `Product: ${point.productIsin}`,
-              `Title: ${point.productTitle}`,
-              ``,
-              `💡 Click to view product report`
-            ];
-          }
-        }
-      },
-      annotation: {
-        annotations: {
-          barrierLine: {
-            type: 'line',
-            yMin: 0,
-            yMax: 0,
-            borderColor: '#ef4444',
-            borderWidth: 2,
-            borderDash: [5, 5],
-            label: {
-              display: true,
-              content: 'Barrier Threshold',
-              position: 'end',
-              backgroundColor: '#ef4444',
-              color: '#fff',
-              padding: 4,
-              font: {
-                size: 11,
-                weight: '600'
-              }
-            }
-          },
-          warningZone: {
-            type: 'line',
-            yMin: 10,
-            yMax: 10,
-            borderColor: '#f97316',
-            borderWidth: 2,
-            borderDash: [10, 5],
-            label: {
-              display: true,
-              content: 'Warning Zone',
-              position: 'start',
-              backgroundColor: '#f97316',
-              color: '#fff',
-              padding: 4,
-              font: {
-                size: 11,
-                weight: '600'
-              }
+    const minX = Math.min(...xValues);
+    const maxX = Math.max(...xValues);
+    const minY = Math.min(...yValues);
+    const maxY = Math.max(...yValues);
+    const maxRadius = Math.max(...radiuses);
+
+    // Add padding based on largest bubble radius (convert radius to percentage of axis range)
+    const xRange = maxX - minX || 100;
+    const yRange = maxY - minY || 100;
+    const xPadding = Math.max(xRange * 0.1, maxRadius * 2); // 10% padding or 2x max bubble radius
+    const yPadding = Math.max(yRange * 0.15, maxRadius * 1.5); // 15% padding or 1.5x max bubble radius
+
+    return {
+      responsive: true,
+      maintainAspectRatio: false,
+      onClick: (event, elements, chart) => {
+        if (elements.length > 0) {
+          const elementIndex = elements[0].index;
+          const datasetIndex = elements[0].datasetIndex;
+          const clickedBubble = chart.data.datasets[datasetIndex].data[elementIndex];
+
+          if (clickedBubble && clickedBubble.productId) {
+            // Use internal navigation instead of page reload
+            if (onNavigateToReport) {
+              onNavigateToReport({ _id: clickedBubble.productId });
+            } else {
+              // Fallback to URL navigation if handler not provided
+              window.location.href = `/report/${clickedBubble.productId}`;
             }
           }
         }
-      }
-    },
-    scales: {
-      x: {
-        title: {
-          display: true,
-          text: 'Days to Final Observation',
-          color: '#ffffff',
-          font: { size: 14, weight: '600' }
+      },
+      plugins: {
+        legend: {
+          display: false
         },
-        border: {
-          color: '#ffffff'
+        tooltip: {
+          backgroundColor: isDarkMode ? 'rgba(30, 30, 30, 0.95)' : 'rgba(255, 255, 255, 0.95)',
+          titleColor: isDarkMode ? '#fff' : '#000',
+          bodyColor: isDarkMode ? '#fff' : '#000',
+          borderColor: isDarkMode ? '#444' : '#ccc',
+          borderWidth: 1,
+          padding: 12,
+          callbacks: {
+            title: (context) => {
+              const point = context[0].raw;
+              return point.label;
+            },
+            label: (context) => {
+              const point = context.raw;
+              // Format currency
+              const currencySymbols = {
+                'USD': '$', 'EUR': '€', 'GBP': '£', 'JPY': '¥', 'CHF': 'Fr',
+                'CAD': 'C$', 'AUD': 'A$', 'HKD': 'HK$', 'SGD': 'S$', 'CNY': '¥'
+              };
+              const currencySymbol = currencySymbols[point.currency] || point.currency + ' ';
+              const formattedInvestment = `${currencySymbol}${point.notional.toLocaleString()}`;
+
+              return [
+                `Name: ${point.name}`,
+                `Investment: ${formattedInvestment}`,
+                `Performance: ${point.performance >= 0 ? '+' : ''}${point.performance.toFixed(2)}%`,
+                `Distance to Barrier: ${point.y >= 0 ? '+' : ''}${point.y.toFixed(1)}%`,
+                `Barrier Level: ${point.barrier}%`,
+                `Days to Final Obs: ${point.x}`,
+                `Product: ${point.productIsin}`,
+                `Title: ${point.productTitle}`,
+                ``,
+                `💡 Click to view product report`
+              ];
+            }
+          }
         },
-        grid: {
-          color: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)'
-        },
-        ticks: {
-          color: '#ffffff'
+        annotation: {
+          annotations: {
+            barrierLine: {
+              type: 'line',
+              yMin: 0,
+              yMax: 0,
+              borderColor: '#ef4444',
+              borderWidth: 2,
+              borderDash: [5, 5],
+              label: {
+                display: true,
+                content: 'Barrier Threshold',
+                position: 'end',
+                backgroundColor: '#ef4444',
+                color: '#fff',
+                padding: 4,
+                font: {
+                  size: 11,
+                  weight: '600'
+                }
+              }
+            },
+            warningZone: {
+              type: 'line',
+              yMin: 10,
+              yMax: 10,
+              borderColor: '#f97316',
+              borderWidth: 2,
+              borderDash: [10, 5],
+              label: {
+                display: true,
+                content: 'Warning Zone',
+                position: 'start',
+                backgroundColor: '#f97316',
+                color: '#fff',
+                padding: 4,
+                font: {
+                  size: 11,
+                  weight: '600'
+                }
+              }
+            }
+          }
         }
       },
-      y: {
-        title: {
-          display: true,
-          text: 'Distance to Barrier (%)',
-          color: '#ffffff',
-          font: { size: 14, weight: '600' }
+      scales: {
+        x: {
+          min: minX - xPadding,
+          max: maxX + xPadding,
+          title: {
+            display: true,
+            text: 'Days to Final Observation',
+            color: '#ffffff',
+            font: { size: 14, weight: '600' }
+          },
+          border: {
+            color: '#ffffff'
+          },
+          grid: {
+            color: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)'
+          },
+          ticks: {
+            color: '#ffffff'
+          }
         },
-        border: {
-          color: '#ffffff'
-        },
-        grid: {
-          color: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)'
-        },
-        ticks: {
-          color: '#ffffff',
-          callback: function(value) {
-            return value >= 0 ? `+${value}%` : `${value}%`;
+        y: {
+          min: minY - yPadding,
+          max: maxY + yPadding,
+          title: {
+            display: true,
+            text: 'Distance to Barrier (%)',
+            color: '#ffffff',
+            font: { size: 14, weight: '600' }
+          },
+          border: {
+            color: '#ffffff'
+          },
+          grid: {
+            color: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)'
+          },
+          ticks: {
+            color: '#ffffff',
+            callback: function(value) {
+              return value >= 0 ? `+${value}%` : `${value}%`;
+            }
           }
         }
       }
-    }
-  };
+    };
+  }, [bubbleChartData, isDarkMode, onNavigateToReport]);
 
   if (isLoading()) {
     return (
@@ -428,11 +521,11 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
             {isRefreshing ? 'Refreshing...' : '↻ Refresh Analysis'}
           </button>
           <button
-            onClick={handleGenerateRiskReport}
-            disabled={summary.belowBarrier === 0 && summary.warningZone === 0}
+            onClick={handleShowLanguageSelector}
+            disabled={summary.totalProducts === 0}
             style={{
               padding: '0.75rem 1.5rem',
-              background: (summary.belowBarrier === 0 && summary.warningZone === 0)
+              background: (summary.totalProducts === 0)
                 ? 'var(--bg-tertiary)'
                 : 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
               color: '#fff',
@@ -440,16 +533,16 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
               borderRadius: '10px',
               fontSize: '0.95rem',
               fontWeight: '600',
-              cursor: (summary.belowBarrier === 0 && summary.warningZone === 0) ? 'not-allowed' : 'pointer',
+              cursor: (summary.totalProducts === 0) ? 'not-allowed' : 'pointer',
               transition: 'all 0.2s',
-              opacity: (summary.belowBarrier === 0 && summary.warningZone === 0) ? 0.6 : 1,
+              opacity: (summary.totalProducts === 0) ? 0.6 : 1,
               display: 'flex',
               alignItems: 'center',
               gap: '0.5rem'
             }}
             title={
-              (summary.belowBarrier === 0 && summary.warningZone === 0)
-                ? 'No underlyings currently at risk'
+              (summary.totalProducts === 0)
+                ? 'No products available'
                 : 'Generate AI-powered risk analysis report'
             }
           >
@@ -997,14 +1090,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
                     borderBottom: index < paginatedData.length - 1 ?
                       '1px solid rgba(148, 163, 184, 0.15)' : 'none',
                     background: 'transparent',
-                    transition: 'all 0.15s ease',
-                    cursor: 'pointer'
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = 'rgba(148, 163, 184, 0.05)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = 'transparent';
+                    transition: 'all 0.15s ease'
                   }}
                 >
                   {/* Symbol */}
@@ -1103,12 +1189,32 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
                   </div>
 
                   {/* Product ISIN and Title */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                  <div
+                    style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', cursor: 'pointer' }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (underlying.productId) {
+                        if (onNavigateToReport) {
+                          onNavigateToReport({ _id: underlying.productId });
+                        } else {
+                          window.location.href = `/report/${underlying.productId}`;
+                        }
+                      }
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.opacity = '0.7';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.opacity = '1';
+                    }}
+                    title="Click to view product report"
+                  >
                     <div style={{
                       fontSize: '0.75rem',
-                      color: 'var(--text-primary)',
+                      color: 'var(--accent-color)',
                       fontWeight: '600',
-                      fontFamily: 'monospace'
+                      fontFamily: 'monospace',
+                      textDecoration: 'underline'
                     }}>
                       {underlying.productIsin}
                     </div>
@@ -1187,6 +1293,112 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
           color: 'var(--text-secondary)'
         }}>
           Analysis generated: {generatedAt}
+        </div>
+      )}
+
+      {/* Language Selector Modal */}
+      {showLanguageSelector && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            backdropFilter: 'blur(4px)'
+          }}
+          onClick={handleCloseLanguageSelector}
+        >
+          <div
+            style={{
+              background: isDarkMode ? '#1f2937' : '#ffffff',
+              borderRadius: '16px',
+              padding: '2rem',
+              maxWidth: '400px',
+              width: '90%',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{
+              margin: '0 0 1.5rem 0',
+              fontSize: '1.25rem',
+              fontWeight: '700',
+              color: isDarkMode ? '#e5e7eb' : '#1f2937',
+              textAlign: 'center'
+            }}>
+              Select Report Language
+            </h3>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <button
+                onClick={() => handleGenerateRiskReport('en')}
+                style={{
+                  padding: '1rem 1.5rem',
+                  background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '12px',
+                  fontSize: '1rem',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '0.75rem',
+                  transition: 'all 0.2s'
+                }}
+              >
+                <span style={{ fontSize: '1.5rem' }}>🇬🇧</span>
+                English
+              </button>
+
+              <button
+                onClick={() => handleGenerateRiskReport('fr')}
+                style={{
+                  padding: '1rem 1.5rem',
+                  background: 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '12px',
+                  fontSize: '1rem',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '0.75rem',
+                  transition: 'all 0.2s'
+                }}
+              >
+                <span style={{ fontSize: '1.5rem' }}>🇫🇷</span>
+                Français
+              </button>
+
+              <button
+                onClick={handleCloseLanguageSelector}
+                style={{
+                  padding: '0.75rem 1.5rem',
+                  background: isDarkMode ? '#374151' : '#e5e7eb',
+                  color: isDarkMode ? '#e5e7eb' : '#1f2937',
+                  border: 'none',
+                  borderRadius: '12px',
+                  fontSize: '0.9rem',
+                  fontWeight: '500',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                  marginTop: '0.5rem'
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

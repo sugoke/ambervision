@@ -345,6 +345,24 @@ const DirectEquitiesView = ({ user }) => {
   const [csvPreviewData, setCsvPreviewData] = useState(null);
   const [csvSelectedBankAccountId, setCsvSelectedBankAccountId] = useState(null);
 
+  // Mobile detection
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
+  const [isTablet, setIsTablet] = useState(typeof window !== 'undefined' && window.innerWidth >= 768 && window.innerWidth < 1024);
+
+  useEffect(() => {
+    const handleResize = () => {
+      const mobile = window.innerWidth < 768;
+      const tablet = window.innerWidth >= 768 && window.innerWidth < 1024;
+      setIsMobile(mobile);
+      setIsTablet(tablet);
+    };
+
+    window.addEventListener('resize', handleResize);
+    handleResize();
+
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   // Initialize CSV bank account selection when modal opens
   useEffect(() => {
     if (isCsvUploadModalOpen && !csvSelectedBankAccountId) {
@@ -1838,7 +1856,7 @@ Check browser console for TTE currency details.`;
 
   return (
     <div style={{
-      padding: '1rem',
+      padding: isMobile ? '0.75rem' : '1rem',
       minHeight: '100vh',
       backgroundColor: 'var(--bg-primary)',
       color: 'var(--text-primary)'
@@ -1846,22 +1864,22 @@ Check browser console for TTE currency details.`;
       {/* Header */}
       <div style={{
         display: 'flex',
+        flexDirection: isMobile ? 'column' : 'row',
         justifyContent: 'space-between',
-        alignItems: 'center',
+        alignItems: isMobile ? 'stretch' : 'center',
         marginBottom: '1rem',
-        flexWrap: 'wrap',
-        gap: '0.5rem'
+        gap: isMobile ? '1rem' : '0.5rem'
       }}>
         <div>
           <h1 style={{
             margin: 0,
-            fontSize: '1.8rem',
+            fontSize: isMobile ? '1.5rem' : '1.8rem',
             fontWeight: '600',
             display: 'flex',
             alignItems: 'center',
             gap: '0.5rem'
           }}>
-            <span style={{ fontSize: '2.5rem' }}>📊</span>
+            <span style={{ fontSize: isMobile ? '2rem' : '2.5rem' }}>📊</span>
             <span style={{
               background: 'linear-gradient(135deg, #FF9800 0%, #F57C00 100%)',
               WebkitBackgroundClip: 'text',
@@ -1873,7 +1891,7 @@ Check browser console for TTE currency details.`;
           </h1>
           <p style={{
             margin: '0.25rem 0 0 0',
-            fontSize: '0.95rem',
+            fontSize: isMobile ? '0.85rem' : '0.95rem',
             color: 'var(--text-muted)'
           }}>
             Equity holdings management per bank account
@@ -1886,21 +1904,30 @@ Check browser console for TTE currency details.`;
           </p>
         </div>
 
-        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+        <div style={{
+          display: 'flex',
+          flexDirection: isMobile ? 'column' : 'row',
+          gap: isMobile ? '0.75rem' : '1rem',
+          alignItems: isMobile ? 'stretch' : 'center',
+          width: isMobile ? '100%' : 'auto'
+        }}>
           {/* Action Buttons */}
           <button
             onClick={handleAddStock}
             style={{
-              padding: '0.5rem 1rem',
+              padding: '0.75rem 1rem',
               borderRadius: '8px',
               border: 'none',
               backgroundColor: '#FF9800',
               color: 'white',
-              fontSize: '1rem',
+              fontSize: isMobile ? '0.9rem' : '1rem',
+              fontWeight: '600',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              gap: '0.5rem'
+              justifyContent: 'center',
+              gap: '0.5rem',
+              minHeight: '44px'
             }}
           >
             📈 Add Stock
@@ -1909,23 +1936,23 @@ Check browser console for TTE currency details.`;
           <button
             onClick={() => setIsCsvUploadModalOpen(true)}
             style={{
-              padding: '0.5rem 1rem',
+              padding: '0.75rem 1rem',
               borderRadius: '8px',
               border: 'none',
               backgroundColor: '#4CAF50',
               color: 'white',
-              fontSize: '1rem',
+              fontSize: isMobile ? '0.9rem' : '1rem',
+              fontWeight: '600',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              gap: '0.5rem'
+              justifyContent: 'center',
+              gap: '0.5rem',
+              minHeight: '44px'
             }}
           >
             📁 Upload CSV
           </button>
-
-
-
         </div>
       </div>
 
@@ -1990,7 +2017,7 @@ Check browser console for TTE currency details.`;
           </h2>
           <div style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+            gridTemplateColumns: isMobile ? '1fr' : (isTablet ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(200px, 1fr))'),
             gap: '1rem',
             marginBottom: '2rem'
           }}>
@@ -2449,8 +2476,8 @@ Check browser console for TTE currency details.`;
             </h2>
             <div style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-              gap: '1.5rem'
+              gridTemplateColumns: isMobile ? '1fr' : (isTablet ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(200px, 1fr))'),
+              gap: isMobile ? '1rem' : '1.5rem'
             }}>
               <div>
                 <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>
@@ -3506,10 +3533,10 @@ Check browser console for TTE currency details.`;
                   }}>Your Position</h3>
                   <div style={{
                     display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                    gridTemplateColumns: isMobile ? '1fr' : (isTablet ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(180px, 1fr))'),
                     gap: '1rem',
                     backgroundColor: 'var(--bg-secondary)',
-                    padding: '1.5rem',
+                    padding: isMobile ? '1rem' : '1.5rem',
                     borderRadius: '8px'
                   }}>
                     <div>
@@ -3710,10 +3737,10 @@ Check browser console for TTE currency details.`;
                     }}>Market Data</h3>
                     <div style={{
                       display: 'grid',
-                      gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+                      gridTemplateColumns: isMobile ? '1fr' : (isTablet ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(150px, 1fr))'),
                       gap: '1rem',
                       backgroundColor: 'var(--bg-secondary)',
-                      padding: '1.5rem',
+                      padding: isMobile ? '1rem' : '1.5rem',
                       borderRadius: '8px'
                     }}>
                       <div>

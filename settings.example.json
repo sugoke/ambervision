@@ -31,13 +31,30 @@
     "LOGO_DEV_API_TOKEN": "your_logo_dev_api_token_here",
     "ANTHROPIC_API_KEY": "your_anthropic_api_key_here",
 
+    "_comment_cbonds": "CBonds API configuration for bond price queries",
+    "CBONDS_API_LOGIN": "your_cbonds_login_here",
+    "CBONDS_API_PASSWORD": "your_cbonds_password_here",
+    "CBONDS_BASE_URL": "https://ws.cbonds.info/services/json",
+
     "_comment_mailersend": "MailerSend email service configuration",
     "MAILERSEND_API_TOKEN": "mlsn.your_mailersend_api_token_here",
     "MAILERSEND_FROM_EMAIL": "noreply@yourdomain.com",
     "MAILERSEND_FROM_NAME": "Amber Lake Partners",
     "APP_URL": "http://localhost:3000",
+    "EMAIL_NOTIFICATIONS_BCC": [],
+
+    "_comment_email_bcc": "Optional: Add email addresses to BCC on all product notification emails",
+
+    "_comment_daily_digest": "Daily digest email configuration",
+    "DAILY_DIGEST_ENABLED": true,
+    "DAILY_DIGEST_TEST_EMAIL": "sugoke@hotmail.com",
+    "_comment_digest_test": "When DAILY_DIGEST_TEST_EMAIL is set, digest will ONLY be sent to this email (for testing). Remove or set to empty string to send to all affected users (superadmins, admins, relationship managers).",
 
     "_comment_seeding": "Control demo data seeding on startup",
-    "seedDemoData": false
+    "seedDemoData": false,
+
+    "_comment_cron": "Cron job configuration",
+    "PRODUCT_EVAL_CONCURRENCY": 3,
+    "_comment_concurrency": "Number of products to evaluate in parallel during nightly re-evaluation. Default: 3. Increase if CPU/DB can handle more."
   }
 }

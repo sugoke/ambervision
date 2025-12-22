@@ -354,6 +354,28 @@ export const BUILT_IN_TEMPLATES = [
     createdAt: new Date(),
     updatedAt: new Date(),
     droppedItems: []
+  },
+  {
+    _id: "reverse_convertible",
+    name: "Reverse Convertible",
+    icon: "🔄",
+    category: "yield_enhancement",
+    description: "Guaranteed coupon at maturity with capital protection barrier. Above barrier: full capital return. Below barrier: geared downside exposure (1/barrier ratio).",
+    isBuiltIn: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    droppedItems: []
+  },
+  {
+    _id: "reverse_convertible_bond",
+    name: "Reverse Convertible (Bond)",
+    icon: "📜",
+    category: "yield_enhancement",
+    description: "Guaranteed coupon at maturity with capital protection barrier on bond underlyings. Above barrier: full capital return. Below barrier: geared downside exposure (1/barrier ratio).",
+    isBuiltIn: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    droppedItems: []
   }
 ];
 

@@ -29,19 +29,24 @@ export const HimalayaEvaluator = {
       });
     }
 
-    // 3. Extract underlying assets with pricing
-    const underlyings = HimalayaEvaluationHelpers.extractUnderlyingAssetsData(product);
+    // 3. Extract underlying assets with pricing (now fetches current prices)
+    const underlyings = await HimalayaEvaluationHelpers.extractUnderlyingAssetsData(product);
 
-    // 4. Calculate Himalaya-specific logic (use product.underlyings which has observationPrices)
-    const himalayaCalculation = this.calculateHimalayaPerformance(product, params, product.underlyings || underlyings);
+    // 4. Calculate Himalaya-specific logic (use enriched underlyings with current prices)
+    const himalayaCalculation = this.calculateHimalayaPerformance(product, params, underlyings);
 
     // 5. Build product status
     const status = HimalayaEvaluationHelpers.buildProductStatus(product);
 
-    // 6. Return standardized report structure
+    // 6. Generate normalized product name
+    const generatedProductName = HimalayaEvaluationHelpers.generateProductName(product, underlyings, params);
+
+    // 7. Return standardized report structure
     return {
       templateType: 'himalaya',
       templateVersion: '1.0.0',
+
+      generatedProductName: generatedProductName,
 
       features: {
         hasFloor: params.floor < 100,
@@ -58,13 +63,16 @@ export const HimalayaEvaluator = {
 
       himalayaCalculation: himalayaCalculation,
 
-      // Final performance and payout
-      finalPerformance: himalayaCalculation.averagePerformance,
-      finalPerformanceFormatted: `${himalayaCalculation.averagePerformance >= 0 ? '+' : ''}${himalayaCalculation.averagePerformance.toFixed(2)}%`,
+      // Performance and payout (indicative for live products, final for matured)
+      averagePerformance: himalayaCalculation.averagePerformance,
+      averagePerformanceFormatted: `${himalayaCalculation.averagePerformance >= 0 ? '+' : ''}${himalayaCalculation.averagePerformance.toFixed(2)}%`,
       flooredPerformance: himalayaCalculation.flooredPerformance,
       flooredPerformanceFormatted: `${himalayaCalculation.flooredPerformance >= 0 ? '+' : ''}${himalayaCalculation.flooredPerformance.toFixed(2)}%`,
-      finalPayout: himalayaCalculation.finalPayout,
-      finalPayoutFormatted: `${himalayaCalculation.finalPayout.toFixed(2)}%`
+      totalPayout: himalayaCalculation.finalPayout,
+      totalPayoutFormatted: `${himalayaCalculation.finalPayout.toFixed(2)}%`,
+
+      // Product lifecycle status
+      isLive: !status.hasMatured
     };
   },
 
@@ -103,10 +111,31 @@ export const HimalayaEvaluator = {
     const availableUnderlyings = [...underlyings]; // Clone array
 
     // Process each observation date
+    const now = new Date();
     observationDates.forEach((observation, index) => {
       if (availableUnderlyings.length === 0) return;
 
-      console.log(`\n🏔️ HIMALAYA Observation ${index + 1} - Date: ${observation.date}`);
+      // Check if observation has occurred by comparing to current date
+      // Primary check: Is the observation date in the past?
+      // Strip time components for date-only comparison
+      const obsDate = new Date(observation.date);
+      const obsDateOnly = new Date(obsDate.getFullYear(), obsDate.getMonth(), obsDate.getDate());
+      const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      // Market closes on observation date, but prices are only available the NEXT day
+      const isDateInPast = obsDateOnly < nowDateOnly;
+
+      // Secondary check: Do we have historical price data for this date?
+      const hasHistoricalData = availableUnderlyings.some(u => {
+        const dateStr = typeof observation.date === 'string'
+          ? observation.date.split('T')[0]
+          : new Date(observation.date).toISOString().split('T')[0];
+        return !!u.securityData?.observationPrices?.[dateStr];
+      });
+
+      // Observation has passed if the date is in the past (calendar check takes priority)
+      const hasPassed = isDateInPast;
+
+      console.log(`\n🏔️ HIMALAYA Observation ${index + 1} - Date: ${observation.date} ${hasPassed ? '(PASSED - FROZEN)' : '(FUTURE - LIVE)'}`);
       console.log(`📊 Available underlyings: ${availableUnderlyings.map(u => u.ticker).join(', ')}`);
 
       // Find best performing underlying from available ones AT THIS OBSERVATION DATE
@@ -146,7 +175,9 @@ export const HimalayaEvaluator = {
         initialLevel: bestUnderlying.initialPrice || bestUnderlying.strike,
         initialLevelFormatted: bestUnderlying.initialPriceFormatted || bestUnderlying.strikeFormatted,
         finalLevel: priceAtDate,
-        finalLevelFormatted: priceAtDate ? `${priceAtDate.toFixed(2)}` : 'N/A'
+        finalLevelFormatted: priceAtDate ? `${priceAtDate.toFixed(2)}` : 'N/A',
+        hasPassed: hasPassed,
+        status: hasPassed ? 'frozen' : 'pending'
       });
 
       // Remove selected underlying from future observations
@@ -200,12 +231,14 @@ export const HimalayaEvaluator = {
       ? observationDate.split('T')[0]
       : observationDate.toISOString().split('T')[0];
 
-    // Try to get price from observationPrices
+    // Check if we have historical observation price for this date
+    // If we have it, the market has closed and we should use historical data
     if (underlying.securityData?.observationPrices?.[dateStr]) {
       return underlying.securityData.observationPrices[dateStr];
     }
 
-    // Fallback to current price if observation price not available
-    return underlying.currentPrice || 0;
+    // No historical observation price available - use current price
+    // This handles both future dates and today before market close
+    return underlying.currentPrice || underlying.initialPrice || 0;
   }
 };

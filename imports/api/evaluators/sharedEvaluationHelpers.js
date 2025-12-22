@@ -7,14 +7,25 @@ import { EODApiHelpers } from '/imports/api/eodApi';
  * Common utility functions used across all template evaluators.
  * These functions handle pricing, status calculations, and data extraction
  * that are generic to all structured product templates.
+ *
+ * These helpers accept an optional `issueCollector` parameter to track
+ * processing issues (missing data, stale prices, etc.) during evaluation.
  */
+
+// Threshold for stale data warning (in days)
+const STALE_DATA_THRESHOLD_DAYS = 5;
 export const SharedEvaluationHelpers = {
   /**
    * Set redemption prices for redeemed products
    * This logic determines if the product has matured or been early autocalled
    * and sets the appropriate redemption/final observation prices
+   *
+   * @param {Object} product - The product to process
+   * @param {Object} options - Optional parameters
+   * @param {ProcessingIssueCollector} options.issueCollector - Optional issue collector
    */
-  async setRedemptionPricesForProduct(product) {
+  async setRedemptionPricesForProduct(product, options = {}) {
+    const { issueCollector } = options;
     if (!product.underlyings || !Array.isArray(product.underlyings)) {
       return;
     }
@@ -23,9 +34,22 @@ export const SharedEvaluationHelpers = {
     const finalObsDate = product.finalObservation || product.finalObservationDate;
     const maturityDate = product.maturity || product.maturityDate;
 
+    // Strip time components for date-only comparison
+    const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
     // Check if product has reached final observation (which means it's redeemed)
-    const isFinalObsPassed = finalObsDate && new Date(finalObsDate) <= now;
-    const isMaturityPassed = maturityDate && new Date(maturityDate) <= now;
+    // Final observation is a market date - data only available the NEXT day
+    const isFinalObsPassed = finalObsDate && (() => {
+      const finalObsDateOnly = new Date(new Date(finalObsDate).getFullYear(), new Date(finalObsDate).getMonth(), new Date(finalObsDate).getDate());
+      return finalObsDateOnly < nowDateOnly;
+    })();
+
+    // Maturity is settlement date - product has matured ON or after this date
+    const isMaturityPassed = maturityDate && (() => {
+      const maturityDateOnly = new Date(new Date(maturityDate).getFullYear(), new Date(maturityDate).getMonth(), new Date(maturityDate).getDate());
+      return maturityDateOnly <= nowDateOnly;
+    })();
+
     const isRedeemed = isFinalObsPassed || isMaturityPassed;
 
     if (!isRedeemed) {
@@ -85,9 +109,24 @@ export const SharedEvaluationHelpers = {
           };
         } else {
           console.warn(`No market data found in cache for ${underlying.ticker} on ${redemptionDateStr}`);
+          // Add issue if collector provided
+          if (issueCollector) {
+            issueCollector.addIssue('MISSING_PRICE_DATA', {
+              ticker: underlying.ticker,
+              underlying: underlying.ticker
+            });
+          }
         }
       } catch (error) {
         console.error(`Failed to fetch redemption price from cache for ${underlying.ticker}:`, error);
+        // Add issue if collector provided
+        if (issueCollector) {
+          issueCollector.addIssue('INVALID_PRICE_VALUE', {
+            ticker: underlying.ticker,
+            value: error.message,
+            underlying: underlying.ticker
+          });
+        }
       }
 
       // Final fallback only if market data cache query failed
@@ -178,8 +217,14 @@ export const SharedEvaluationHelpers = {
   /**
    * Extract underlying assets data with proper pricing hierarchy
    * Generic extraction logic that works for all template types
+   *
+   * @param {Object} product - The product to extract underlyings from
+   * @param {Object} options - Optional parameters
+   * @param {ProcessingIssueCollector} options.issueCollector - Optional issue collector
+   * @returns {Array} - Array of underlying data objects
    */
-  async extractUnderlyingAssetsData(product) {
+  async extractUnderlyingAssetsData(product, options = {}) {
+    const { issueCollector } = options;
     const underlyings = [];
     const currency = product.currency || 'USD';
 
@@ -199,22 +244,38 @@ export const SharedEvaluationHelpers = {
         let performance = initialPrice > 0 ?
           ((currentPrice - initialPrice) / initialPrice) * 100 : 0;
 
-        // No mock data - if no real market data is available, performance stays at 0
-        if (performance === 0 && evaluationPriceInfo.source === 'initial_fallback') {
-          // Silent - no mock data
-        }
+        // Issue detection for missing/stale price data
+        if (issueCollector) {
+          // Check for missing price data (using fallback)
+          if (evaluationPriceInfo.source === 'initial_fallback') {
+            issueCollector.addIssue('MISSING_PRICE_DATA', {
+              ticker: underlying.ticker,
+              underlying: underlying.ticker
+            });
+          }
 
-        // Fetch latest news for this underlying
-        let news = [];
-        try {
-          const fullTicker = underlying.securityData?.ticker || `${underlying.ticker}.US`;
-          const [symbol, exchange] = fullTicker.includes('.') ? fullTicker.split('.') : [fullTicker, null];
+          // Check for missing initial price
+          if (!initialPrice || initialPrice === 0) {
+            issueCollector.addIssue('MISSING_INITIAL_PRICE', {
+              ticker: underlying.ticker,
+              underlying: underlying.ticker
+            });
+          }
 
-          // Fetch 2 latest news articles from EOD API
-          news = await EODApiHelpers.getSecurityNews(symbol, exchange, 2);
-        } catch (error) {
-          console.warn(`Failed to fetch news for ${underlying.ticker}:`, error.message);
-          news = []; // Graceful fallback - empty array
+          // Check for stale price data (only if we have a price date)
+          if (evaluationPriceInfo.date && evaluationPriceInfo.source === 'live') {
+            const priceDate = new Date(evaluationPriceInfo.date);
+            const now = new Date();
+            const daysSinceUpdate = Math.floor((now - priceDate) / (1000 * 60 * 60 * 24));
+
+            if (daysSinceUpdate > STALE_DATA_THRESHOLD_DAYS) {
+              issueCollector.addIssue('STALE_PRICE_DATA', {
+                ticker: underlying.ticker,
+                days: daysSinceUpdate,
+                underlying: underlying.ticker
+              });
+            }
+          }
         }
 
         const underlyingData = {
@@ -248,10 +309,7 @@ export const SharedEvaluationHelpers = {
           lastUpdated: new Date().toISOString(),
 
           // Full ticker for API calls
-          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`,
-
-          // Latest news articles
-          news: news
+          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`
         };
 
         underlyings.push(underlyingData);
@@ -264,11 +322,26 @@ export const SharedEvaluationHelpers = {
   /**
    * Build product status information
    * Determines if product is live, autocalled, or matured
+   *
+   * @param {Object} product - The product to check
+   * @param {Object} options - Optional parameters
+   * @param {ProcessingIssueCollector} options.issueCollector - Optional issue collector
+   * @returns {Object} - Status information
    */
-  buildProductStatus(product) {
+  buildProductStatus(product, options = {}) {
+    const { issueCollector } = options;
     const now = new Date();
     const finalObsDate = product.finalObservation || product.finalObservationDate;
     const maturityDate = product.maturity || product.maturityDate;
+
+    // Validate date configuration
+    if (issueCollector) {
+      if (!maturityDate) {
+        issueCollector.addIssue('INVALID_DATE_CONFIGURATION', {
+          field: 'maturityDate'
+        });
+      }
+    }
 
     const isFinalObsPassed = finalObsDate && new Date(finalObsDate) <= now;
     const isMaturityPassed = maturityDate && new Date(maturityDate) <= now;

@@ -279,7 +279,7 @@ export const SFTPService = {
       username,
       password = null,
       privateKeyPath = null,
-      timeout = 60000
+      timeout = 120000  // 2 minutes (increased from 60s for large files)
     } = config;
 
     return new Promise((resolve, reject) => {
@@ -396,7 +396,7 @@ export const SFTPService = {
       username,
       password = null,
       privateKeyPath = null,
-      timeout = 60000
+      timeout = 120000  // 2 minutes (increased from 60s for large files)
     } = config;
 
     return new Promise((resolve, reject) => {

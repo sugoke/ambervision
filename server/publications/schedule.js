@@ -121,22 +121,48 @@ Meteor.publish("schedule.observations", async function (sessionId = null, viewAs
 
   console.log('[SCHEDULE] Found', products.length, 'products with observationSchedule');
 
-  // Fetch reports to get observation outcomes
-  const { ReportsCollection } = await import('/imports/api/reports');
+  // Fetch template reports to get observation outcomes and predictions
+  const { TemplateReportsCollection } = await import('/imports/api/templateReports');
   const productIds = products.map(p => p._id);
-  const reports = await ReportsCollection.find({
+  const reports = await TemplateReportsCollection.find({
     productId: { $in: productIds }
   }).fetchAsync();
 
-  // Create a map of productId -> observation analysis
+  // Create a map of productId -> observation analysis, next observation prediction, and redemption status
   const reportMap = {};
+  const nextObservationPredictionMap = {};
+  const productStatusMap = {}; // Track if product is called/matured
   reports.forEach(report => {
+    console.log(`[SCHEDULE] Report for product ${report.productId}:`, {
+      hasTemplateResults: !!report.templateResults,
+      hasObservationAnalysis: !!report.templateResults?.observationAnalysis,
+      hasNextPrediction: !!report.templateResults?.observationAnalysis?.nextObservationPrediction,
+      predictionData: report.templateResults?.observationAnalysis?.nextObservationPrediction
+    });
+
     if (report.templateResults?.observationAnalysis?.observations) {
       reportMap[report.productId] = report.templateResults.observationAnalysis.observations;
+    }
+    if (report.templateResults?.observationAnalysis?.nextObservationPrediction) {
+      nextObservationPredictionMap[report.productId] = report.templateResults.observationAnalysis.nextObservationPrediction;
+      console.log(`[SCHEDULE] ✅ Mapped prediction for product ${report.productId}:`, nextObservationPredictionMap[report.productId]);
+    } else {
+      console.log(`[SCHEDULE] ❌ No prediction found for product ${report.productId}`);
+    }
+    // Track product redemption/maturity status
+    const obsAnalysis = report.templateResults?.observationAnalysis;
+    if (obsAnalysis) {
+      productStatusMap[report.productId] = {
+        isEarlyAutocall: obsAnalysis.isEarlyAutocall || false,
+        isMaturedAtFinal: obsAnalysis.isMaturedAtFinal || false,
+        productCalled: obsAnalysis.productCalled || false
+      };
     }
   });
 
   console.log('[SCHEDULE] Found', reports.length, 'reports for observation outcomes');
+  console.log('[SCHEDULE] Found', Object.keys(nextObservationPredictionMap).length, 'next observation predictions');
+  console.log('[SCHEDULE] Prediction map keys:', Object.keys(nextObservationPredictionMap));
 
   if (products.length > 0) {
     console.log('[SCHEDULE] Sample product:', {
@@ -243,6 +269,19 @@ Meteor.publish("schedule.observations", async function (sessionId = null, viewAs
         console.log('[SCHEDULE] No report observations for product or index out of bounds');
       }
 
+      // Get next observation prediction for this product
+      const nextObservationPrediction = nextObservationPredictionMap[product._id] || null;
+      // Get product redemption status
+      const productStatus = productStatusMap[product._id] || { isEarlyAutocall: false, isMaturedAtFinal: false, productCalled: false };
+
+      if (index === 0) {
+        console.log(`[SCHEDULE PUB] Product ${product._id} has prediction:`, {
+          hasData: !!nextObservationPrediction,
+          outcomeType: nextObservationPrediction?.outcomeType,
+          displayText: nextObservationPrediction?.displayText
+        });
+      }
+
       // Include ALL observations (both past and future) with pre-calculated values
       observations.push({
         _id: `${product._id}_obs_${index}`, // Unique ID for reactivity
@@ -263,7 +302,14 @@ Meteor.publish("schedule.observations", async function (sessionId = null, viewAs
         isToday: isToday,
         isPast: isPast,
         // Observation outcome data (from report)
-        outcome: outcome
+        outcome: outcome,
+        // Next observation prediction (same for all observations of this product)
+        // Only include if product is not already redeemed/called
+        nextObservationPrediction: productStatus.isEarlyAutocall || productStatus.isMaturedAtFinal || productStatus.productCalled
+          ? null
+          : nextObservationPrediction,
+        // Product redemption status flags
+        productStatus: productStatus
       });
     });
   });

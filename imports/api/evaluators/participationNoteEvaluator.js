@@ -60,6 +60,16 @@ export const ParticipationNoteEvaluator = {
     // Build formatted timeline dates
     const timeline = this.buildTimeline(product);
 
+    // Calculate indicative maturity value (current theoretical product value)
+    const indicativeMaturityValue = this.calculateIndicativeMaturityValue(
+      underlyings,
+      participationParams,
+      basketPerformance,
+      redemptionCalc,
+      status,
+      product
+    );
+
     // Generate report structure
     const report = {
       // Template metadata
@@ -99,6 +109,8 @@ export const ParticipationNoteEvaluator = {
         callPriceFormatted: callStatus.callPriceFormatted,
         rebate: callStatus.rebate,
         rebateFormatted: callStatus.rebateFormatted,
+        rebateType: callStatus.rebateType,
+        rebateCalculationDetails: callStatus.rebateCalculationDetails,
         status: callStatus.isCalled
           ? '✅ Called by Issuer'
           : callStatus.hasCallOption
@@ -156,6 +168,10 @@ export const ParticipationNoteEvaluator = {
       // Timeline
       timeline: timeline,
 
+      // Observation Schedule (for early redemption dates)
+      observationSchedule: product.observationSchedule || [],
+      hasObservationSchedule: !!(product.observationSchedule && product.observationSchedule.length > 0),
+
       // Product details (pre-formatted)
       productDetails: {
         isin: product.isin || 'N/A',
@@ -167,6 +183,9 @@ export const ParticipationNoteEvaluator = {
           product.currency || 'USD'
         )
       },
+
+      // Indicative maturity value (current theoretical product value)
+      indicativeMaturityValue,
 
       // Generate a descriptive product name
       generatedProductName: this.generateProductName(underlyings, participationParams)
@@ -249,18 +268,90 @@ export const ParticipationNoteEvaluator = {
   },
 
   /**
-   * Generate a descriptive product name
+   * Generate a descriptive product name (concise version)
    */
   generateProductName(underlyings, params) {
     if (!underlyings || underlyings.length === 0) {
-      return `Participation Note (${params.participationRate.toFixed(0)}%)`;
+      return 'Participation Note';
     }
 
     const tickers = underlyings.map(u => u.ticker).join('/');
-    const basketLabel = underlyings.length > 1
-      ? ` ${params.referencePerformance} basket`
-      : '';
+    return `${tickers} Participation Note`;
+  },
 
-    return `${tickers}${basketLabel} Participation Note (${params.participationRate.toFixed(0)}% participation)`;
+  /**
+   * Calculate indicative maturity value for Participation Note products
+   * Shows what the product would return if it matured today
+   */
+  calculateIndicativeMaturityValue(underlyings, participationParams, basketPerformance, redemptionCalc, status, product) {
+    const now = new Date();
+
+    // For Participation Notes:
+    // Total return = 100% + (basket performance × participation rate / 100)
+    const participationRate = participationParams.participationRate || 100;
+    const rawPerformance = basketPerformance || 0;
+    const participatedPerformance = (rawPerformance * participationRate) / 100;
+    const totalValue = 100 + participatedPerformance;
+
+    // Find worst and best performers
+    const performances = underlyings.map(u => u.performance || 0);
+    const worstPerformer = Math.min(...performances);
+    const bestPerformer = Math.max(...performances);
+
+    // Determine which underlying is driving the basket performance
+    let drivingUnderlying = null;
+    if (participationParams.referencePerformance === 'worst-of') {
+      drivingUnderlying = underlyings.find(u => u.performance === worstPerformer);
+    } else if (participationParams.referencePerformance === 'best-of') {
+      drivingUnderlying = underlyings.find(u => u.performance === bestPerformer);
+    }
+
+    return {
+      isLive: !status.hasMatured && !status.isCalled,
+      isMatured: status.hasMatured,
+      isCalled: status.isCalled,
+
+      // Raw basket performance
+      rawPerformance,
+      rawPerformanceFormatted: `${rawPerformance >= 0 ? '+' : ''}${rawPerformance.toFixed(2)}%`,
+
+      // Participation rate
+      participationRate,
+      participationRateFormatted: `${participationRate.toFixed(0)}%`,
+
+      // Participated performance (after applying participation rate)
+      participatedPerformance,
+      participatedPerformanceFormatted: `${participatedPerformance >= 0 ? '+' : ''}${participatedPerformance.toFixed(2)}%`,
+
+      // Reference performance type
+      referencePerformance: participationParams.referencePerformance,
+      referencePerformanceLabel: this.getReferencePerformanceLabel(participationParams.referencePerformance),
+
+      // Worst/Best performers
+      worstPerformer,
+      worstPerformerFormatted: `${worstPerformer >= 0 ? '+' : ''}${worstPerformer.toFixed(2)}%`,
+      bestPerformer,
+      bestPerformerFormatted: `${bestPerformer >= 0 ? '+' : ''}${bestPerformer.toFixed(2)}%`,
+
+      // Driving underlying (for worst-of/best-of baskets)
+      drivingUnderlyingTicker: drivingUnderlying?.ticker || null,
+
+      // Total value
+      totalValue,
+      totalValueFormatted: `${totalValue.toFixed(2)}%`,
+
+      // Performance indicator
+      isPositive: totalValue >= 100,
+
+      // Evaluation timestamp
+      evaluationDate: now,
+      evaluationDateFormatted: now.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+    };
   }
 };

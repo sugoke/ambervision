@@ -206,7 +206,10 @@ if (Meteor.isServer) {
         console.log('🏔️ Generating Himalaya evaluation');
 
         // Fetch observation prices for Himalaya before evaluation
+        console.log('🔧 ABOUT TO CALL populateHimalayaObservationPrices - CHECK IF THIS APPEARS!');
         await populateHimalayaObservationPrices(productData);
+        console.log('🔧 FINISHED CALLING populateHimalayaObservationPrices');
+
 
         templateResults = await HimalayaEvaluator.generateReport(productData, {
           evaluationDate: new Date()
@@ -566,11 +569,16 @@ if (Meteor.isServer) {
       const paymentDate = new Date(obs.valueDate);
       const today = new Date();
       
+      // Check if observation has occurred (date is before today)
+      const obsDateOnly = new Date(obsDate.getFullYear(), obsDate.getMonth(), obsDate.getDate());
+      const todayOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const hasOccurred = obsDateOnly < todayOnly;
+
       console.log(`\n🔍 Processing observation ${i + 1}/${observationSchedule.length}: ${formatDate(obsDate)}`);
       console.log('📋 Observation details:', {
         date: formatDate(obsDate),
         paymentDate: formatDate(paymentDate),
-        hasOccurred: obsDate <= today,
+        hasOccurred: hasOccurred,
         isCallable: obs.isCallable || false,
         autocallLevel: obs.isCallable ? obs.autocallLevel + '%' : 'N/A',
         couponBarrier: (obs.couponBarrier || phoenixParams.protectionBarrier) + '%'
@@ -588,8 +596,8 @@ if (Meteor.isServer) {
         couponBarrier: obs.couponBarrier || phoenixParams.protectionBarrier,
         couponBarrierFormatted: `${obs.couponBarrier || phoenixParams.protectionBarrier}%`,
         isCallable: obs.isCallable || false,
-        hasOccurred: obsDate <= today,
-        
+        hasOccurred: hasOccurred,
+
         // Results (to be calculated)
         productCalled: false,
         couponPaid: 0,
@@ -1610,6 +1618,28 @@ if (Meteor.isServer) {
       return;
     }
 
+    // Refresh market data cache for all tickers before evaluation
+    console.log('🔄 Refreshing market data cache for all underlyings...');
+    const tickers = product.underlyings.map(u => {
+      const ticker = u.securityData?.ticker || u.ticker;
+      // Ensure US tickers have .US suffix for cache lookup
+      const normalizedTicker = ticker.includes('.') ? ticker : `${ticker}.US`;
+      return normalizedTicker;
+    });
+    console.log(`📊 Normalized tickers for cache refresh: ${tickers.join(', ')}`);
+    try {
+      const systemSession = await getSystemSession();
+      await Meteor.callAsync('marketData.refreshCache', {
+        mode: 'specific_tickers',
+        symbols: tickers,
+        updateToDate: true
+      }, systemSession._id);
+      console.log('✅ Market data cache refreshed');
+    } catch (error) {
+      console.warn('⚠️ Failed to refresh market data cache:', error.message);
+      console.warn('⚠️ Continuing with existing cache data');
+    }
+
     const { MarketDataCacheCollection } = await import('./marketDataCache.js');
 
     // Get trade date for initial price
@@ -1620,11 +1650,17 @@ if (Meteor.isServer) {
     for (const underlying of product.underlyings) {
       console.log(`📈 Fetching prices for ${underlying.ticker}...`);
 
-      // Get full ticker with exchange
-      const fullTicker = underlying.securityData?.ticker || underlying.ticker;
+      // Get full ticker with exchange - ensure .US suffix for US tickers
+      let fullTicker = underlying.securityData?.ticker || underlying.ticker;
+      if (!fullTicker.includes('.')) {
+        fullTicker = `${fullTicker}.US`;
+      }
+      console.log(`  🔍 Looking up cache with normalized ticker: ${fullTicker}`);
 
-      // Initialize observationPrices object
+      // Initialize observationPrices object and store normalized ticker
       if (!underlying.securityData) underlying.securityData = {};
+      underlying.securityData.ticker = fullTicker; // Store normalized ticker in securityData
+      underlying.ticker = fullTicker;              // Also update main ticker field for consistency
       if (!underlying.securityData.observationPrices) underlying.securityData.observationPrices = {};
 
       // Fetch data from cache - try both structures (history and cache.history)
@@ -1684,6 +1720,30 @@ if (Meteor.isServer) {
         } else {
           console.log(`  ⚠️ ${obsDateStr}: Not found in cache`);
         }
+      }
+
+      // Get current/latest price from cache for live evaluation
+      if (history.length > 0) {
+        // Sort by date descending to get latest price
+        const sortedHistory = [...history].sort((a, b) => new Date(b.date) - new Date(a.date));
+        const latestData = sortedHistory[0];
+        const latestPrice = latestData.adjustedClose || latestData.close;
+
+        if (!underlying.securityData.price) {
+          underlying.securityData.price = {};
+        }
+        underlying.securityData.price.price = latestPrice;
+        underlying.securityData.price.date = latestData.date;
+        underlying.securityData.price.source = 'market_data_cache';
+
+        console.log(`  📊 Current price: $${latestPrice.toFixed(2)} (${latestData.date})`);
+      }
+
+      // Verify price was loaded successfully
+      if (underlying.securityData.price?.price) {
+        console.log(`  ✅ Price successfully loaded for ${underlying.ticker}: $${underlying.securityData.price.price.toFixed(2)}`);
+      } else {
+        console.log(`  ⚠️ WARNING: No current price loaded for ${underlying.ticker} - will use initial price fallback`);
       }
     }
 

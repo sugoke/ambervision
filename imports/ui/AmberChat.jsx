@@ -4,6 +4,124 @@ import { useTracker } from 'meteor/react-meteor-data';
 import { AmberConversationsCollection } from '../api/amberConversations';
 
 /**
+ * Simple markdown renderer for chat messages
+ * Converts **bold**, *italic*, ### headers, and - bullet lists
+ */
+const renderMarkdown = (text) => {
+  if (!text) return null;
+
+  // Split by lines to handle headers and lists
+  const lines = text.split('\n');
+  const elements = [];
+  let currentList = [];
+
+  const flushList = () => {
+    if (currentList.length > 0) {
+      elements.push(
+        <ul key={`list-${elements.length}`} style={{ margin: '0.5rem 0', paddingLeft: '1.25rem' }}>
+          {currentList.map((item, i) => (
+            <li key={i} style={{ marginBottom: '0.25rem' }}>{renderInlineMarkdown(item)}</li>
+          ))}
+        </ul>
+      );
+      currentList = [];
+    }
+  };
+
+  const renderInlineMarkdown = (line) => {
+    // Process inline formatting: **bold** and *italic*
+    const parts = [];
+    let remaining = line;
+    let key = 0;
+
+    while (remaining.length > 0) {
+      // Check for **bold**
+      const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
+      if (boldMatch && boldMatch.index === 0) {
+        parts.push(<strong key={key++}>{boldMatch[1]}</strong>);
+        remaining = remaining.slice(boldMatch[0].length);
+        continue;
+      }
+
+      // Check for *italic* (but not **)
+      const italicMatch = remaining.match(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/);
+      if (italicMatch && italicMatch.index === 0) {
+        parts.push(<em key={key++}>{italicMatch[1]}</em>);
+        remaining = remaining.slice(italicMatch[0].length);
+        continue;
+      }
+
+      // Find next formatting marker
+      const nextBold = remaining.indexOf('**');
+      const nextItalic = remaining.search(/(?<!\*)\*(?!\*)/);
+      let nextMarker = -1;
+
+      if (nextBold !== -1 && (nextItalic === -1 || nextBold < nextItalic)) {
+        nextMarker = nextBold;
+      } else if (nextItalic !== -1) {
+        nextMarker = nextItalic;
+      }
+
+      if (nextMarker === -1) {
+        parts.push(remaining);
+        break;
+      } else if (nextMarker > 0) {
+        parts.push(remaining.slice(0, nextMarker));
+        remaining = remaining.slice(nextMarker);
+      } else {
+        // No match at start, move one character
+        parts.push(remaining[0]);
+        remaining = remaining.slice(1);
+      }
+    }
+
+    return parts;
+  };
+
+  lines.forEach((line, index) => {
+    // Check for headers
+    if (line.startsWith('### ')) {
+      flushList();
+      elements.push(
+        <div key={index} style={{ fontWeight: '600', fontSize: '0.9rem', marginTop: '0.75rem', marginBottom: '0.25rem' }}>
+          {renderInlineMarkdown(line.slice(4))}
+        </div>
+      );
+    } else if (line.startsWith('## ')) {
+      flushList();
+      elements.push(
+        <div key={index} style={{ fontWeight: '600', fontSize: '0.95rem', marginTop: '0.75rem', marginBottom: '0.25rem' }}>
+          {renderInlineMarkdown(line.slice(3))}
+        </div>
+      );
+    } else if (line.startsWith('# ')) {
+      flushList();
+      elements.push(
+        <div key={index} style={{ fontWeight: '700', fontSize: '1rem', marginTop: '0.75rem', marginBottom: '0.25rem' }}>
+          {renderInlineMarkdown(line.slice(2))}
+        </div>
+      );
+    } else if (line.match(/^[-•]\s/)) {
+      // Bullet list item
+      currentList.push(line.slice(2));
+    } else if (line.trim() === '') {
+      flushList();
+      elements.push(<div key={index} style={{ height: '0.5rem' }} />);
+    } else {
+      flushList();
+      elements.push(
+        <div key={index} style={{ marginBottom: '0.25rem' }}>
+          {renderInlineMarkdown(line)}
+        </div>
+      );
+    }
+  });
+
+  flushList();
+  return elements;
+};
+
+/**
  * AmberChat Component
  *
  * Chat interface for Amber AI assistant with:
@@ -324,10 +442,9 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
               color: msg.role === 'user' ? 'white' : 'var(--text-primary)',
               fontSize: '0.85rem',
               lineHeight: '1.5',
-              whiteSpace: 'pre-wrap',
               wordBreak: 'break-word'
             }}>
-              {msg.content}
+              {msg.role === 'assistant' ? renderMarkdown(msg.content) : msg.content}
             </div>
             <div style={{
               fontSize: '0.65rem',

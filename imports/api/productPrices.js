@@ -15,7 +15,14 @@ export const ProductPricesCollection = new Mongo.Collection('productPrices');
 //   uploadedBy: String (userId of who uploaded),
 //   source: String (filename or source identifier),
 //   isActive: Boolean (for soft delete),
-//   metadata: Object (additional data like volume, market, etc.)
+//   metadata: Object (additional data like volume, market, etc.),
+//
+//   // Unified pricing system fields
+//   priceSource: String ('manual_upload' | 'bank_file' | 'api'),
+//   confidence: String ('high' | 'medium' | 'low'),
+//   replacedPriceId: String (if this price overrode another),
+//   replacementReason: String (why the override happened),
+//   bankFileDate: Date (if from bank file, the file's data date)
 // }
 
 // Helper functions for product price management
@@ -387,6 +394,120 @@ export const ProductPriceHelpers = {
         deactivatedAt: new Date()
       }
     }, { multi: true });
+  },
+
+  // Unified price upsert with priority logic
+  // Bank file prices (high confidence) override manual uploads (medium confidence)
+  async upsertProductPrice(priceData) {
+    const {
+      isin,
+      price,
+      currency = 'USD',
+      priceDate,
+      priceSource, // 'manual_upload' | 'bank_file' | 'api'
+      uploadedBy,
+      sourceFile,
+      bankFileDate,
+      metadata = {}
+    } = priceData;
+
+    check(isin, String);
+    check(price, Number);
+    check(priceDate, Date);
+    check(priceSource, String);
+
+    const cleanIsin = isin.toUpperCase();
+
+    // Determine confidence level based on source
+    const confidenceMap = {
+      'bank_file': 'high',
+      'api': 'medium',
+      'manual_upload': 'medium'
+    };
+    const confidence = confidenceMap[priceSource] || 'low';
+
+    // Check for existing price on same date
+    const startOfDay = new Date(priceDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(priceDate);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const existingPrice = await ProductPricesCollection.findOneAsync({
+      isin: cleanIsin,
+      priceDate: { $gte: startOfDay, $lte: endOfDay },
+      isActive: true
+    });
+
+    const newPriceData = {
+      isin: cleanIsin,
+      price: parseFloat(price),
+      currency: currency.toUpperCase(),
+      priceDate: new Date(priceDate),
+      uploadDate: new Date(),
+      uploadedBy: uploadedBy || 'system',
+      source: sourceFile || priceSource,
+      priceSource,
+      confidence,
+      isActive: true,
+      metadata
+    };
+
+    if (bankFileDate) {
+      newPriceData.bankFileDate = bankFileDate;
+    }
+
+    if (!existingPrice) {
+      // No existing price - insert new
+      const insertedId = await ProductPricesCollection.insertAsync(newPriceData);
+      console.log(`[PRICE_UPSERT] Inserted new price for ${cleanIsin}: ${price} (${priceSource})`);
+      return { action: 'inserted', _id: insertedId };
+    }
+
+    // Existing price found - apply priority rules
+    const existingConfidence = existingPrice.confidence || 'low';
+    const existingSource = existingPrice.priceSource || 'manual_upload';
+
+    // Priority: bank_file (high) > api (medium) > manual_upload (medium)
+    const shouldOverride = (
+      (confidence === 'high' && existingConfidence !== 'high') || // Bank file always wins unless existing is also bank file
+      (confidence === 'high' && existingConfidence === 'high' && newPriceData.uploadDate > existingPrice.uploadDate) || // Newer bank file
+      (confidence === existingConfidence && newPriceData.uploadDate > existingPrice.uploadDate) // Same confidence, newer timestamp
+    );
+
+    if (shouldOverride) {
+      // Override existing price
+      newPriceData.replacedPriceId = existingPrice._id;
+      newPriceData.replacementReason = `Overriding ${existingSource} (${existingConfidence}) with ${priceSource} (${confidence})`;
+
+      // Deactivate old price
+      await ProductPricesCollection.updateAsync(existingPrice._id, {
+        $set: { isActive: false, replacedAt: new Date(), replacedBy: newPriceData._id }
+      });
+
+      // Insert new price
+      const insertedId = await ProductPricesCollection.insertAsync(newPriceData);
+
+      console.log(`[PRICE_UPSERT] Overrode ${existingSource} price for ${cleanIsin}: ${existingPrice.price} → ${price} (${priceSource})`);
+
+      return {
+        action: 'overridden',
+        _id: insertedId,
+        oldPrice: existingPrice.price,
+        newPrice: price,
+        reason: newPriceData.replacementReason
+      };
+    }
+
+    // Keep existing price (higher or equal confidence)
+    console.log(`[PRICE_UPSERT] Keeping existing ${existingSource} price for ${cleanIsin}: ${existingPrice.price} (not overriding with ${priceSource})`);
+
+    return {
+      action: 'kept_existing',
+      _id: existingPrice._id,
+      existingPrice: existingPrice.price,
+      attemptedPrice: price,
+      reason: `Existing ${existingSource} (${existingConfidence}) has higher or equal priority to ${priceSource} (${confidence})`
+    };
   }
 };
 

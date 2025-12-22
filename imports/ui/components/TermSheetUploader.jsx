@@ -28,7 +28,9 @@ const TermSheetUploader = ({ onProductExtracted, sessionId }) => {
     { id: 'phoenix_autocallable', name: 'Phoenix Autocallable', icon: '🔥' },
     { id: 'orion_memory', name: 'Orion', icon: '⭐' },
     { id: 'himalaya', name: 'Himalaya', icon: '🏔️' },
-    { id: 'shark_note', name: 'Shark Note', icon: '🦈' }
+    { id: 'shark_note', name: 'Shark Note', icon: '🦈' },
+    { id: 'participation_note', name: 'Participation Note', icon: '📈' },
+    { id: 'reverse_convertible', name: 'Reverse Convertible', icon: '🔄' }
   ];
 
   // Progress stages with percentage milestones
@@ -159,7 +161,9 @@ const TermSheetUploader = ({ onProductExtracted, sessionId }) => {
             setProgressStage('');
 
             // User-friendly error messages
-            if (error.error === 'anthropic-auth-failed') {
+            if (error.error === 'duplicate-isin') {
+              setError(error.reason || 'A product with this ISIN already exists in the database.');
+            } else if (error.error === 'anthropic-auth-failed') {
               setError('Authentication failed. Please check API configuration.');
             } else if (error.error === 'anthropic-rate-limit') {
               setError('Rate limit exceeded. Please wait a moment and try again.');

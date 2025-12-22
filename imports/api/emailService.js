@@ -21,7 +21,8 @@ export const EmailService = {
         apiToken: settings.MAILERSEND_API_TOKEN,
         fromEmail: settings.MAILERSEND_FROM_EMAIL,
         fromName: settings.MAILERSEND_FROM_NAME,
-        appUrl: settings.APP_URL
+        appUrl: settings.APP_URL,
+        notificationsBcc: settings.EMAIL_NOTIFICATIONS_BCC || []
       };
 
       // Validate required fields
@@ -47,6 +48,23 @@ export const EmailService = {
     return new MailerSend({
       apiKey: config.apiToken
     });
+  },
+
+  /**
+   * Get BCC recipients from settings
+   * @returns {Array} Array of Recipient objects for BCC
+   */
+  getBccRecipients() {
+    const config = this.getConfig();
+    const bcc = [];
+
+    if (config.notificationsBcc && Array.isArray(config.notificationsBcc)) {
+      config.notificationsBcc.forEach(bccEmail => {
+        bcc.push(new Recipient(bccEmail, bccEmail));
+      });
+    }
+
+    return bcc;
   },
 
   /**
@@ -462,6 +480,12 @@ Amber Lake Partners Team
         .setHtml(htmlContent)
         .setText(textContent);
 
+      // Add BCC recipients if configured
+      const bcc = this.getBccRecipients();
+      if (bcc.length > 0) {
+        emailParams.setBcc(bcc);
+      }
+
       const response = await mailerSend.email.send(emailParams);
       console.log(`Coupon paid email sent to ${email}`);
 
@@ -602,6 +626,12 @@ Amber Lake Partners Team
         .setSubject(`[Ambervision] Autocall Triggered - ${product.title || product.productName}`)
         .setHtml(htmlContent)
         .setText(textContent);
+
+      // Add BCC recipients if configured
+      const bcc = this.getBccRecipients();
+      if (bcc.length > 0) {
+        emailParams.setBcc(bcc);
+      }
 
       const response = await mailerSend.email.send(emailParams);
       console.log(`Autocall email sent to ${email}`);
@@ -744,6 +774,12 @@ Amber Lake Partners Team
         .setHtml(htmlContent)
         .setText(textContent);
 
+      // Add BCC recipients if configured
+      const bcc = this.getBccRecipients();
+      if (bcc.length > 0) {
+        emailParams.setBcc(bcc);
+      }
+
       const response = await mailerSend.email.send(emailParams);
       console.log(`Barrier breach email sent to ${email}`);
 
@@ -879,6 +915,12 @@ Amber Lake Partners Team
         .setSubject(`[Ambervision] Near Barrier Warning - ${product.title || product.productName}`)
         .setHtml(htmlContent)
         .setText(textContent);
+
+      // Add BCC recipients if configured
+      const bcc = this.getBccRecipients();
+      if (bcc.length > 0) {
+        emailParams.setBcc(bcc);
+      }
 
       const response = await mailerSend.email.send(emailParams);
       console.log(`Barrier near email sent to ${email}`);
@@ -1016,6 +1058,12 @@ Amber Lake Partners Team
         .setHtml(htmlContent)
         .setText(textContent);
 
+      // Add BCC recipients if configured
+      const bcc = this.getBccRecipients();
+      if (bcc.length > 0) {
+        emailParams.setBcc(bcc);
+      }
+
       const response = await mailerSend.email.send(emailParams);
       console.log(`Final observation email sent to ${email}`);
 
@@ -1132,6 +1180,12 @@ Amber Lake Partners Team
         .setSubject(`[Ambervision] Product Matured - ${product.title || product.productName}`)
         .setHtml(htmlContent)
         .setText(textContent);
+
+      // Add BCC recipients if configured
+      const bcc = this.getBccRecipients();
+      if (bcc.length > 0) {
+        emailParams.setBcc(bcc);
+      }
 
       const response = await mailerSend.email.send(emailParams);
       console.log(`Product matured email sent to ${email}`);
@@ -1269,6 +1323,12 @@ Amber Lake Partners Team
         .setHtml(htmlContent)
         .setText(textContent);
 
+      // Add BCC recipients if configured
+      const bcc = this.getBccRecipients();
+      if (bcc.length > 0) {
+        emailParams.setBcc(bcc);
+      }
+
       const response = await mailerSend.email.send(emailParams);
       console.log(`Memory coupon email sent to ${email}`);
 
@@ -1405,12 +1465,310 @@ Amber Lake Partners Team
         .setHtml(htmlContent)
         .setText(textContent);
 
+      // Add BCC recipients if configured
+      const bcc = this.getBccRecipients();
+      if (bcc.length > 0) {
+        emailParams.setBcc(bcc);
+      }
+
       const response = await mailerSend.email.send(emailParams);
       console.log(`Barrier recovered email sent to ${email}`);
 
       return { success: true, messageId: response.data?.id || 'unknown' };
     } catch (error) {
       console.error('Error sending barrier recovered email:', error);
+      return { success: false, error: error.message };
+    }
+  },
+
+  /**
+   * Send daily summary email with all notifications
+   * @param {Array} notifications - Array of enriched notification objects
+   * @param {String} recipientEmail - Email address to send to
+   */
+  async sendDailySummaryEmail(notifications, recipientEmail) {
+    if (!Meteor.isServer) {
+      throw new Meteor.Error('server-only', 'This method can only be called on the server');
+    }
+
+    if (!notifications || notifications.length === 0) {
+      console.log('[EmailService] No notifications to send in daily summary');
+      return { success: true, message: 'No notifications to send' };
+    }
+
+    try {
+      const config = this.getConfig();
+      const mailerSend = this.getMailerSendClient();
+
+      const sentFrom = new Sender(config.fromEmail, config.fromName);
+      const recipients = [new Recipient(recipientEmail, recipientEmail)];
+
+      // Import event priority for sorting
+      const { EVENT_PRIORITY, EVENT_TYPE_NAMES } = await import('./notifications');
+
+      // Sort notifications by priority
+      const sortedNotifications = notifications.sort((a, b) => {
+        const priorityA = EVENT_PRIORITY[a.eventType] || 10;
+        const priorityB = EVENT_PRIORITY[b.eventType] || 10;
+        return priorityA - priorityB;
+      });
+
+      // Group notifications by product
+      const productGroups = {};
+      sortedNotifications.forEach(notif => {
+        if (!productGroups[notif.productId]) {
+          productGroups[notif.productId] = [];
+        }
+        productGroups[notif.productId].push(notif);
+      });
+
+      const productCount = Object.keys(productGroups).length;
+      const eventCount = notifications.length;
+      const today = new Date().toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+
+      // Helper function to get event icon and color
+      const getEventStyle = (eventType) => {
+        const styles = {
+          'coupon_paid': { icon: '💰', color: '#10b981', bgColor: '#d1fae5', borderColor: '#10b981' },
+          'autocall_triggered': { icon: '🎯', color: '#3b82f6', bgColor: '#dbeafe', borderColor: '#3b82f6' },
+          'barrier_breached': { icon: '⚠️', color: '#ef4444', bgColor: '#fee2e2', borderColor: '#ef4444' },
+          'barrier_near': { icon: '⚠️', color: '#f59e0b', bgColor: '#fef3c7', borderColor: '#f59e0b' },
+          'final_observation': { icon: '📊', color: '#8b5cf6', bgColor: '#ede9fe', borderColor: '#8b5cf6' },
+          'product_matured': { icon: '✓', color: '#6366f1', bgColor: '#e0e7ff', borderColor: '#6366f1' },
+          'memory_coupon_added': { icon: '💾', color: '#a855f7', bgColor: '#f3e8ff', borderColor: '#a855f7' },
+          'barrier_recovered': { icon: '✓', color: '#10b981', bgColor: '#d1fae5', borderColor: '#10b981' }
+        };
+        return styles[eventType] || { icon: '📢', color: '#6b7280', bgColor: '#f3f4f6', borderColor: '#6b7280' };
+      };
+
+      // Helper function to format currency
+      const formatCurrency = (amount, currency = 'CHF') => {
+        return new Intl.NumberFormat('en-CH', {
+          style: 'currency',
+          currency: currency,
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 0
+        }).format(amount);
+      };
+
+      // Build event cards HTML
+      let eventCardsHtml = '';
+      for (const productId in productGroups) {
+        const productNotifications = productGroups[productId];
+        const firstNotif = productNotifications[0];
+        const productName = firstNotif.productName;
+        const productIsin = firstNotif.productIsin;
+        const totalInvested = firstNotif.allocation?.totalNominalInvested || 0;
+        const clientCount = firstNotif.allocation?.clientCount || 0;
+        const currency = firstNotif.allocation?.currency || 'CHF';
+        const productUrl = `${config.appUrl}/#products/${productId}`;
+
+        // Build events list for this product
+        let eventsListHtml = '';
+        productNotifications.forEach(notif => {
+          const style = getEventStyle(notif.eventType);
+          const eventName = EVENT_TYPE_NAMES[notif.eventType] || notif.eventType;
+
+          eventsListHtml += `
+            <tr>
+              <td style="padding: 12px 0; border-bottom: 1px solid #e5e7eb;">
+                <div style="display: flex; align-items: flex-start;">
+                  <span style="font-size: 20px; margin-right: 12px;">${style.icon}</span>
+                  <div style="flex: 1;">
+                    <div style="font-weight: 600; color: ${style.color}; margin-bottom: 4px;">${eventName}</div>
+                    <div style="color: #6b7280; font-size: 14px; line-height: 1.5;">${notif.summary}</div>
+                  </div>
+                </div>
+              </td>
+            </tr>
+          `;
+        });
+
+        eventCardsHtml += `
+          <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 24px; background-color: #ffffff; border-radius: 8px; border: 1px solid #e5e7eb; overflow: hidden;">
+            <!-- Product Header -->
+            <tr>
+              <td style="padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                <h2 style="margin: 0 0 8px; color: #ffffff; font-size: 18px; font-weight: 600;">${productName}</h2>
+                <p style="margin: 0 0 4px; color: #e0e7ff; font-size: 14px;">ISIN: ${productIsin}</p>
+                <p style="margin: 0; color: #e0e7ff; font-size: 14px;">
+                  ${formatCurrency(totalInvested, currency)} invested · ${clientCount} client${clientCount !== 1 ? 's' : ''}
+                </p>
+              </td>
+            </tr>
+
+            <!-- Events List -->
+            <tr>
+              <td style="padding: 0 20px;">
+                <table width="100%" cellpadding="0" cellspacing="0">
+                  ${eventsListHtml}
+                </table>
+              </td>
+            </tr>
+
+            <!-- View Button -->
+            <tr>
+              <td style="padding: 20px;" align="center">
+                <a href="${productUrl}" style="display: inline-block; padding: 12px 24px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; font-size: 14px; font-weight: 600; border-radius: 6px;">
+                  View Product Report →
+                </a>
+              </td>
+            </tr>
+          </table>
+        `;
+      }
+
+      const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Daily Product Notifications</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f3f4f6;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f3f4f6; padding: 40px 20px;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.07); overflow: hidden;">
+          <!-- Header -->
+          <tr>
+            <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 40px 32px; text-align: center;">
+              <h1 style="margin: 0 0 8px; color: #ffffff; font-size: 28px; font-weight: 700;">Daily Product Notifications</h1>
+              <p style="margin: 0; color: #e0e7ff; font-size: 16px;">${today}</p>
+            </td>
+          </tr>
+
+          <!-- Summary Banner -->
+          <tr>
+            <td style="padding: 24px 40px; background: linear-gradient(to right, #ede9fe, #dbeafe); border-bottom: 1px solid #e5e7eb;">
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td align="center" style="padding: 8px;">
+                    <div style="font-size: 32px; font-weight: 700; color: #4c1d95; margin-bottom: 4px;">${eventCount}</div>
+                    <div style="font-size: 13px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px;">Event${eventCount !== 1 ? 's' : ''}</div>
+                  </td>
+                  <td align="center" style="padding: 8px;">
+                    <div style="font-size: 32px; font-weight: 700; color: #1e40af; margin-bottom: 4px;">${productCount}</div>
+                    <div style="font-size: 13px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px;">Product${productCount !== 1 ? 's' : ''}</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Content -->
+          <tr>
+            <td style="padding: 32px 40px;">
+              <p style="margin: 0 0 24px; color: #374151; font-size: 15px; line-height: 1.6;">
+                Here's your daily summary of structured product notifications. Review the events below and click through to view detailed product reports.
+              </p>
+
+              ${eventCardsHtml}
+
+              <div style="margin-top: 24px; padding: 16px; background-color: #f9fafb; border-left: 4px solid #667eea; border-radius: 4px;">
+                <p style="margin: 0; color: #4b5563; font-size: 14px; line-height: 1.5;">
+                  <strong>📊 Need Help?</strong> For questions about these notifications or product performance, please contact your relationship manager.
+                </p>
+              </div>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding: 32px 40px; background-color: #f9fafb; border-top: 1px solid #e5e7eb;">
+              <p style="margin: 0 0 8px; color: #6b7280; font-size: 14px; text-align: center;">
+                <strong>Amber Lake Partners</strong>
+              </p>
+              <p style="margin: 0; color: #9ca3af; font-size: 12px; text-align: center;">
+                This is an automated daily digest. Please do not reply to this email.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+      `;
+
+      // Build plain text version
+      let textContent = `
+Daily Product Notifications - ${today}
+
+${eventCount} event${eventCount !== 1 ? 's' : ''} across ${productCount} product${productCount !== 1 ? 's' : ''}
+
+`;
+
+      for (const productId in productGroups) {
+        const productNotifications = productGroups[productId];
+        const firstNotif = productNotifications[0];
+        const productUrl = `${config.appUrl}/#products/${productId}`;
+
+        textContent += `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${firstNotif.productName}
+ISIN: ${firstNotif.productIsin}
+Total Invested: ${formatCurrency(firstNotif.allocation?.totalNominalInvested || 0, firstNotif.allocation?.currency || 'CHF')}
+Clients: ${firstNotif.allocation?.clientCount || 0}
+
+`;
+        productNotifications.forEach(notif => {
+          const eventName = EVENT_TYPE_NAMES[notif.eventType] || notif.eventType;
+          textContent += `  • ${eventName}: ${notif.summary}\n`;
+        });
+
+        textContent += `\nView Report: ${productUrl}\n`;
+      }
+
+      textContent += `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Best regards,
+Amber Lake Partners Team
+
+This is an automated daily digest. Please do not reply to this email.
+      `;
+
+      const emailParams = new EmailParams()
+        .setFrom(sentFrom)
+        .setTo(recipients)
+        .setSubject(`[Ambervision] Daily Digest - ${eventCount} Notification${eventCount !== 1 ? 's' : ''}`)
+        .setHtml(htmlContent)
+        .setText(textContent);
+
+      // Add BCC recipients if configured
+      const bcc = this.getBccRecipients();
+      if (bcc.length > 0) {
+        emailParams.setBcc(bcc);
+      }
+
+      const response = await mailerSend.email.send(emailParams);
+      console.log(`[EmailService] Daily summary email sent to ${recipientEmail} with ${eventCount} notifications`);
+
+      return {
+        success: true,
+        messageId: response.data?.id || 'unknown',
+        notificationCount: eventCount,
+        productCount: productCount
+      };
+
+    } catch (error) {
+      console.error('[EmailService] Error sending daily summary email:', error);
+
+      if (error.response) {
+        console.error('MailerSend API error:', {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: error.response.data
+        });
+      }
+
       return { success: false, error: error.message };
     }
   }

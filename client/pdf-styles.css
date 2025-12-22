@@ -1,0 +1,821 @@
+/**
+ * PDF-Specific Print Styles
+ *
+ * These styles are applied when generating PDFs to ensure proper
+ * page breaks, table handling, and overall layout quality.
+ */
+
+/* Apply print styles when printing or in print mode */
+body[data-pdf-mode="true"],
+body[data-print-mode="true"],
+@media print {
+  /* Page setup with margins */
+  @page {
+    size: A4;
+    margin: 15mm 10mm;
+  }
+
+  /* General page setup */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+
+  body {
+    background: white !important;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica', 'Arial', sans-serif;
+    font-size: 9pt;
+    line-height: 1.3;
+    color: #1f2937;
+    margin: 0;
+    padding: 0;
+  }
+
+  /* Main container adjustments */
+  #root,
+  .app-container,
+  .main-content {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Page break control */
+  .page-break {
+    page-break-after: always;
+    break-after: page;
+  }
+
+  .page-break-before {
+    page-break-before: always;
+    break-before: page;
+  }
+
+  .page-break-inside-avoid {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* Avoid breaking these elements */
+  h1, h2, h3, h4, h5, h6 {
+    page-break-after: avoid;
+    break-after: avoid;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* Tables - improved handling to prevent cutting */
+  table {
+    page-break-inside: auto !important;
+    break-inside: auto !important;
+    border-collapse: collapse !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin-bottom: 0.75rem !important;
+    font-size: 8pt !important;
+    table-layout: fixed !important;
+  }
+
+  /* Prevent table rows from breaking */
+  tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* Table cells - prevent overflow */
+  td, th {
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    word-wrap: break-word !important;
+    padding: 0.25rem 0.4rem !important;
+  }
+
+  /* Repeat table headers on each page */
+  thead {
+    display: table-header-group !important;
+  }
+
+  tfoot {
+    display: table-footer-group !important;
+  }
+
+  thead tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* Ensure table wrapper doesn't overflow */
+  .table-container,
+  .table-wrapper {
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow: visible !important;
+  }
+
+  /* Card containers */
+  .liquid-glass-card,
+  .report-section,
+  .metric-card {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    margin-bottom: 1rem;
+    background: white !important;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 1rem;
+  }
+
+  /* Hide interactive elements in PDF */
+  button:not(.pdf-visible),
+  .no-print,
+  nav,
+  .navigation,
+  .sidebar,
+  .menu,
+  .left-nav,
+  .right-nav,
+  .header,
+  .footer,
+  input[type="button"],
+  input[type="submit"],
+  .back-button,
+  .toggle-button,
+  .download-button,
+  .pdf-download-button {
+    display: none !important;
+  }
+
+  /* Hide side panels and navigation */
+  .left-navigation-menu,
+  .right-navigation-menu,
+  .notification-pane,
+  .amber-chat-pane {
+    display: none !important;
+  }
+
+  /* Expand all collapsible sections in PDF mode */
+  .collapsible-content,
+  .collapsed-section,
+  details summary ~ * {
+    display: block !important;
+    max-height: none !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+  }
+
+  details {
+    display: block !important;
+  }
+
+  details[open],
+  details {
+    display: block !important;
+  }
+
+  /* Hide collapse/expand buttons */
+  .collapse-button,
+  .expand-button,
+  details summary::marker,
+  details summary::-webkit-details-marker {
+    display: none !important;
+  }
+
+  /* Chart containers */
+  canvas,
+  .chart-container {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    max-width: 100% !important;
+    height: auto !important;
+    margin: 0.5rem 0 !important;
+  }
+
+  /* Scale down charts to fit page width */
+  canvas {
+    max-height: 250px !important;
+  }
+
+  /* Chart wrapper */
+  .chart-wrapper,
+  .recharts-wrapper {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  /* Risk assessment boxes */
+  .risk-box,
+  .critical-risk,
+  .at-risk {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    border: 2px solid #ef4444;
+    padding: 0.75rem;
+    margin: 0.5rem 0;
+    border-radius: 6px;
+  }
+
+  /* Underlying list */
+  .underlying-item {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
+  }
+
+  /* Metrics grid - simplified for print */
+  .metrics-grid {
+    display: grid !important;
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 0.5rem !important;
+    margin-bottom: 1rem !important;
+  }
+
+  .metric-item {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    font-size: 8pt !important;
+  }
+
+  /* Grid layouts - ensure they don't overflow */
+  .grid,
+  [class*="grid-"] {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  /* Typography */
+  h1 {
+    font-size: 20pt;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    color: #1f2937;
+  }
+
+  h2 {
+    font-size: 16pt;
+    font-weight: 600;
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+    color: #374151;
+  }
+
+  h3 {
+    font-size: 13pt;
+    font-weight: 600;
+    margin-top: 1rem;
+    margin-bottom: 0.5rem;
+    color: #4b5563;
+  }
+
+  /* Links */
+  a {
+    color: #2563eb;
+    text-decoration: none;
+  }
+
+  a[href]:after {
+    content: " (" attr(href) ")";
+    font-size: 8pt;
+    color: #6b7280;
+  }
+
+  /* Status badges */
+  .status-badge,
+  .badge {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 9pt;
+    font-weight: 500;
+  }
+
+  .critical-badge {
+    background-color: #fef2f2 !important;
+    color: #dc2626 !important;
+    border: 1px solid #fca5a5;
+  }
+
+  .at-risk-badge {
+    background-color: #fffbeb !important;
+    color: #d97706 !important;
+    border: 1px solid #fcd34d;
+  }
+
+  /* Executive summary box */
+  .executive-summary {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    background-color: #fef3c7 !important;
+    border-left: 4px solid #f59e0b;
+    padding: 1rem;
+    margin: 1.5rem 0;
+    font-size: 10pt;
+    line-height: 1.6;
+  }
+
+  /* Data tables */
+  table.data-table {
+    font-size: 7pt !important;
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  table.data-table th {
+    background-color: #f3f4f6 !important;
+    color: #374151 !important;
+    font-weight: 600 !important;
+    padding: 0.3rem 0.4rem !important;
+    text-align: left !important;
+    border-bottom: 2px solid #d1d5db !important;
+    font-size: 7pt !important;
+  }
+
+  table.data-table td {
+    padding: 0.25rem 0.4rem !important;
+    border-bottom: 1px solid #e5e7eb !important;
+    font-size: 7pt !important;
+  }
+
+  table.data-table tr:nth-child(even) {
+    background-color: #f9fafb !important;
+  }
+
+  /* Ensure all tables fit on page */
+  table * {
+    max-width: 100% !important;
+  }
+
+  /* Remove shadows and blur effects */
+  * {
+    box-shadow: none !important;
+    text-shadow: none !important;
+    backdrop-filter: none !important;
+  }
+
+  /* Ensure backgrounds print */
+  .print-background {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Footer information */
+  .pdf-footer {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid #d1d5db;
+    font-size: 8pt;
+    color: #6b7280;
+  }
+
+  /* Widows and orphans control */
+  p {
+    widows: 3;
+    orphans: 3;
+  }
+
+  /* Performance metrics */
+  .performance-metric {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* Barrier information */
+  .barrier-info {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    background-color: #f0fdf4 !important;
+    border: 1px solid #bbf7d0;
+    padding: 0.75rem;
+    margin: 0.5rem 0;
+    border-radius: 4px;
+  }
+
+  /* Time remaining indicators */
+  .time-indicator {
+    display: inline-block;
+    padding: 2px 6px;
+    background-color: #eff6ff !important;
+    border: 1px solid #bfdbfe;
+    border-radius: 3px;
+    font-size: 8pt;
+  }
+
+  /* Remove animations */
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* Special class to force page breaks */
+.pdf-page-break {
+  page-break-after: always !important;
+  break-after: page !important;
+  height: 0;
+  margin: 0;
+  padding: 0;
+}
+
+/* Container for PDF content */
+.pdf-container {
+  max-width: 210mm; /* A4 width */
+  margin: 0 auto;
+  padding: 0;
+}
+
+/* ===== Phoenix Report PDF Styles ===== */
+
+/* Hide news section in PDF mode only */
+body[data-pdf-mode="true"] .underlying-news-section,
+body[data-pdf-mode="true"] .no-print {
+  display: none !important;
+}
+
+/* Phoenix report cards - prevent breaking inside */
+.page-break-inside-avoid {
+  page-break-inside: avoid !important;
+  break-inside: avoid !important;
+}
+
+/* Phoenix underlying card */
+body[data-pdf-mode="true"] [style*="background: var(--bg-tertiary)"] {
+  background: #f9fafb !important;
+  border: 1px solid #e5e7eb !important;
+}
+
+/* Performance bar containers */
+body[data-pdf-mode="true"] .performance-bar-container {
+  page-break-inside: avoid !important;
+  break-inside: avoid !important;
+}
+
+/* Observation schedule - allow page breaks but not within rows */
+.observation-schedule-section {
+  page-break-inside: auto !important;
+}
+
+.observation-schedule-section table {
+  page-break-inside: auto !important;
+}
+
+.observation-schedule-section tr {
+  page-break-inside: avoid !important;
+  break-inside: avoid !important;
+}
+
+.observation-schedule-section thead {
+  display: table-header-group !important;
+}
+
+/* Structured product chart - ensure it fits on page */
+.structured-product-chart {
+  page-break-inside: avoid !important;
+  break-inside: avoid !important;
+}
+
+.structured-product-chart canvas {
+  max-height: 350px !important;
+}
+
+/* Hide scrollbars in PDF */
+body[data-pdf-mode="true"] ::-webkit-scrollbar {
+  display: none !important;
+}
+
+body[data-pdf-mode="true"] * {
+  scrollbar-width: none !important;
+}
+
+/* Ensure card backgrounds print correctly */
+body[data-pdf-mode="true"] [style*="background: var(--bg-primary)"] {
+  background: white !important;
+  border: 1px solid #e5e7eb !important;
+}
+
+/* Status badges in PDF */
+body[data-pdf-mode="true"] [style*="background: #10b981"],
+body[data-pdf-mode="true"] [style*="background: #ef4444"],
+body[data-pdf-mode="true"] [style*="background: #f59e0b"] {
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+
+/* Fix text colors in PDF */
+body[data-pdf-mode="true"] [style*="color: var(--text-primary)"] {
+  color: #1f2937 !important;
+}
+
+body[data-pdf-mode="true"] [style*="color: var(--text-secondary)"] {
+  color: #4b5563 !important;
+}
+
+body[data-pdf-mode="true"] [style*="color: var(--text-muted)"] {
+  color: #6b7280 !important;
+}
+
+/* Indicative value card gradient background */
+body[data-pdf-mode="true"] [style*="linear-gradient(135deg, rgba(99, 102, 241"] {
+  background: #f0f4ff !important;
+  border: 2px solid #6366f1 !important;
+}
+
+/* Hide interactive elements */
+body[data-pdf-mode="true"] .pdf-download-button,
+body[data-pdf-mode="true"] button:not(.pdf-visible),
+body[data-pdf-mode="true"] .left-navigation-menu,
+body[data-pdf-mode="true"] .right-navigation-menu {
+  display: none !important;
+}
+
+/* ===== PDF Page Break Controls ===== */
+
+/* Force page break BEFORE each major card */
+body[data-pdf-mode="true"] .pdf-page-break-before {
+  page-break-before: always !important;
+  break-before: page !important;
+}
+
+/* Exception: Don't break before the FIRST card */
+body[data-pdf-mode="true"] .pdf-card:first-of-type {
+  page-break-before: auto !important;
+  break-before: auto !important;
+}
+
+/* Prevent breaking INSIDE cards */
+body[data-pdf-mode="true"] .pdf-card {
+  page-break-inside: avoid !important;
+  break-inside: avoid !important;
+}
+
+/* ===== Print-Friendly Colors ===== */
+
+/* Card backgrounds - white with light border */
+body[data-pdf-mode="true"] .pdf-card {
+  background: white !important;
+  border: 1px solid #e5e7eb !important;
+  box-shadow: none !important;
+}
+
+/* All text in cards - dark gray for readability */
+body[data-pdf-mode="true"] .pdf-card,
+body[data-pdf-mode="true"] .pdf-card * {
+  color: #1f2937 !important;
+}
+
+/* Secondary text override - slightly lighter */
+body[data-pdf-mode="true"] .pdf-card [style*="text-secondary"],
+body[data-pdf-mode="true"] .pdf-card [style*="text-muted"],
+body[data-pdf-mode="true"] .pdf-card [style*="color: var(--text-secondary)"],
+body[data-pdf-mode="true"] .pdf-card [style*="color: var(--text-muted)"] {
+  color: #4b5563 !important;
+}
+
+/* Positive values - darker green for print */
+body[data-pdf-mode="true"] [style*="color: #10b981"],
+body[data-pdf-mode="true"] [style*="color: rgb(16, 185, 129)"] {
+  color: #047857 !important;
+}
+
+/* Negative values - darker red for print */
+body[data-pdf-mode="true"] [style*="color: #ef4444"],
+body[data-pdf-mode="true"] [style*="color: rgb(239, 68, 68)"] {
+  color: #b91c1c !important;
+}
+
+/* Warning/amber - darker orange for print */
+body[data-pdf-mode="true"] [style*="color: #f59e0b"],
+body[data-pdf-mode="true"] [style*="color: rgb(245, 158, 11)"] {
+  color: #b45309 !important;
+}
+
+/* Status badges - light backgrounds with dark text */
+body[data-pdf-mode="true"] [style*="background: #10b981"],
+body[data-pdf-mode="true"] [style*="background-color: #10b981"],
+body[data-pdf-mode="true"] [style*="background: rgb(16, 185, 129)"] {
+  background: #d1fae5 !important;
+  color: #047857 !important;
+}
+
+body[data-pdf-mode="true"] [style*="background: #ef4444"],
+body[data-pdf-mode="true"] [style*="background-color: #ef4444"],
+body[data-pdf-mode="true"] [style*="background: rgb(239, 68, 68)"] {
+  background: #fee2e2 !important;
+  color: #b91c1c !important;
+}
+
+body[data-pdf-mode="true"] [style*="background: #f59e0b"],
+body[data-pdf-mode="true"] [style*="background-color: #f59e0b"],
+body[data-pdf-mode="true"] [style*="background: rgb(245, 158, 11)"] {
+  background: #fef3c7 !important;
+  color: #b45309 !important;
+}
+
+/* Nested card backgrounds (tertiary/secondary) */
+body[data-pdf-mode="true"] .pdf-card [style*="background: var(--bg-tertiary)"],
+body[data-pdf-mode="true"] .pdf-card [style*="background: var(--bg-secondary)"] {
+  background: #f9fafb !important;
+  border: 1px solid #e5e7eb !important;
+}
+
+/* Performance bars - ensure visible borders */
+body[data-pdf-mode="true"] .performance-bar-container {
+  border: 1px solid #d1d5db !important;
+}
+
+/* Tables in PDF cards - clean borders */
+body[data-pdf-mode="true"] .pdf-card table {
+  border-collapse: collapse !important;
+}
+
+body[data-pdf-mode="true"] .pdf-card th {
+  background: #f3f4f6 !important;
+  color: #374151 !important;
+  border-bottom: 2px solid #d1d5db !important;
+}
+
+body[data-pdf-mode="true"] .pdf-card td {
+  border-bottom: 1px solid #e5e7eb !important;
+}
+
+/* ===== PMS Portfolio Report PDF Styles ===== */
+
+/* PMS Report - Landscape orientation */
+@page pms-landscape {
+  size: A4 landscape;
+  margin: 10mm 15mm;
+}
+
+body[data-pdf-mode="true"] .pms-pdf-report {
+  page: pms-landscape;
+}
+
+/* PMS Report container */
+body[data-pdf-mode="true"] .pms-pdf-report {
+  background: white !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica', 'Arial', sans-serif !important;
+  color: #1e293b !important;
+  font-size: 10pt !important;
+  line-height: 1.4 !important;
+}
+
+/* PMS section cards - prevent page breaks inside */
+body[data-pdf-mode="true"] .pms-pdf-section {
+  page-break-inside: avoid !important;
+  break-inside: avoid !important;
+  background: white !important;
+  border: 1px solid #e5e7eb !important;
+  margin-bottom: 1rem !important;
+}
+
+/* Force page break before transactions section */
+body[data-pdf-mode="true"] .pms-pdf-transactions {
+  page-break-before: always !important;
+  break-before: page !important;
+}
+
+/* PMS table styling */
+body[data-pdf-mode="true"] .pms-pdf-table {
+  width: 100% !important;
+  border-collapse: collapse !important;
+  font-size: 8pt !important;
+}
+
+body[data-pdf-mode="true"] .pms-pdf-table th {
+  background: #f3f4f6 !important;
+  color: #374151 !important;
+  font-weight: 600 !important;
+  font-size: 7pt !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.5px !important;
+  padding: 6px 8px !important;
+  border-bottom: 2px solid #e5e7eb !important;
+  text-align: left !important;
+}
+
+body[data-pdf-mode="true"] .pms-pdf-table td {
+  padding: 6px 8px !important;
+  border-bottom: 1px solid #e5e7eb !important;
+  color: #1e293b !important;
+}
+
+/* PMS table numeric columns */
+body[data-pdf-mode="true"] .pms-pdf-table td.numeric {
+  text-align: right !important;
+  font-family: monospace !important;
+}
+
+/* PMS group headers */
+body[data-pdf-mode="true"] .pms-pdf-table tr.group-header {
+  background: #f8fafc !important;
+  font-weight: 600 !important;
+}
+
+/* PMS subtotal rows */
+body[data-pdf-mode="true"] .pms-pdf-table tr.subtotal {
+  background: #f1f5f9 !important;
+  font-weight: 600 !important;
+  border-top: 2px solid #cbd5e1 !important;
+}
+
+/* PMS summary cards grid */
+body[data-pdf-mode="true"] .pms-pdf-summary-grid {
+  display: grid !important;
+  grid-template-columns: repeat(4, 1fr) !important;
+  gap: 1rem !important;
+  margin-bottom: 1rem !important;
+}
+
+body[data-pdf-mode="true"] .pms-pdf-summary-card {
+  background: #f8fafc !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 8px !important;
+  padding: 1rem !important;
+  text-align: center !important;
+  page-break-inside: avoid !important;
+}
+
+body[data-pdf-mode="true"] .pms-pdf-summary-label {
+  font-size: 7pt !important;
+  color: #64748b !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.5px !important;
+  margin-bottom: 0.5rem !important;
+}
+
+body[data-pdf-mode="true"] .pms-pdf-summary-value {
+  font-size: 12pt !important;
+  font-weight: 700 !important;
+  color: #1e293b !important;
+}
+
+/* PMS section titles */
+body[data-pdf-mode="true"] .pms-pdf-section-header {
+  font-size: 11pt !important;
+  font-weight: 600 !important;
+  color: #0f172a !important;
+  margin-bottom: 0.75rem !important;
+  padding-bottom: 0.5rem !important;
+  border-bottom: 2px solid #1e3a5f !important;
+}
+
+/* PMS positive values (darker green for print) */
+body[data-pdf-mode="true"] .pms-pdf-report .positive,
+body[data-pdf-mode="true"] .pms-pdf-report [style*="color: #10b981"],
+body[data-pdf-mode="true"] .pms-pdf-report [style*="color: #047857"] {
+  color: #047857 !important;
+}
+
+/* PMS negative values (darker red for print) */
+body[data-pdf-mode="true"] .pms-pdf-report .negative,
+body[data-pdf-mode="true"] .pms-pdf-report [style*="color: #ef4444"],
+body[data-pdf-mode="true"] .pms-pdf-report [style*="color: #b91c1c"] {
+  color: #b91c1c !important;
+}
+
+/* PMS positive badges */
+body[data-pdf-mode="true"] .pms-pdf-report [style*="background: #d1fae5"],
+body[data-pdf-mode="true"] .pms-pdf-report [style*="background: rgba(16, 185, 129"] {
+  background: #d1fae5 !important;
+  color: #047857 !important;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+
+/* PMS negative badges */
+body[data-pdf-mode="true"] .pms-pdf-report [style*="background: #fee2e2"],
+body[data-pdf-mode="true"] .pms-pdf-report [style*="background: rgba(239, 68, 68"] {
+  background: #fee2e2 !important;
+  color: #b91c1c !important;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+
+/* PMS asset allocation chart container */
+body[data-pdf-mode="true"] .pms-pdf-report canvas {
+  max-height: 300px !important;
+  page-break-inside: avoid !important;
+}
+
+/* PMS prevent rows from breaking */
+body[data-pdf-mode="true"] .pms-pdf-report tr {
+  page-break-inside: avoid !important;
+  break-inside: avoid !important;
+}
+
+/* PMS header styling */
+body[data-pdf-mode="true"] .pms-pdf-report h1 {
+  font-size: 16pt !important;
+  color: #0f172a !important;
+}
+
+body[data-pdf-mode="true"] .pms-pdf-report h2 {
+  font-size: 12pt !important;
+  color: #1e293b !important;
+}

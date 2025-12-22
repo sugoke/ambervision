@@ -64,6 +64,10 @@ Meteor.publish("products", async function (sessionId = null, viewAsFilter = null
       }
 
       return ProductsCollection.find({ _id: { $in: productIds } });
+    } else {
+      // ViewAs filter is active but couldn't determine target client - return empty
+      console.log(`[PRODUCTS] ViewAs filter active but no valid target client found - returning empty`);
+      return this.ready();
     }
   }
 
@@ -132,17 +136,36 @@ Meteor.publish("products.single", async function (productId, sessionId = null) {
 
   if (effectiveSessionId) {
     try {
-      const session = await SessionHelpers.validateSession(effectiveSessionId);
-      if (session && session.userId) {
-        currentUser = await UsersCollection.findOneAsync(session.userId);
+      // Check if this is a PDF temporary session
+      if (effectiveSessionId.startsWith('pdf-temp-')) {
+        const pdfToken = effectiveSessionId.replace('pdf-temp-', '');
+        // Find user with this PDF token
+        const userWithToken = await UsersCollection.findOneAsync({
+          'services.pdfAccess.token': pdfToken
+        });
+        if (userWithToken) {
+          const expiresAt = userWithToken.services?.pdfAccess?.expiresAt;
+          if (!expiresAt || new Date(expiresAt) >= new Date()) {
+            currentUser = userWithToken;
+            console.log('[products.single] PDF auth successful for user:', currentUser._id);
+          }
+        }
+      } else {
+        // Normal session validation
+        const session = await SessionHelpers.validateSession(effectiveSessionId);
+        if (session && session.userId) {
+          currentUser = await UsersCollection.findOneAsync(session.userId);
+        }
       }
     } catch (error) {
       // Session validation failed
+      console.error('[products.single] Session validation error:', error.message);
     }
   }
 
   // If no authenticated user, return empty
   if (!currentUser) {
+    console.log('[products.single] No authenticated user, returning empty');
     return this.ready();
   }
 
@@ -264,7 +287,7 @@ Meteor.publish("productAllocations", async function (productId, sessionId = null
 });
 
 // Publish all allocations with role-based access control
-Meteor.publish("allAllocations", async function (sessionId = null) {
+Meteor.publish("allAllocations", async function (sessionId = null, viewAsFilter = null) {
   // Get the current user making the subscription request
   const effectiveSessionId = sessionId || this.connection.headers?.sessionid || this.connection.id;
   let currentUser = null;
@@ -288,7 +311,34 @@ Meteor.publish("allAllocations", async function (sessionId = null) {
   }
 
   try {
-    // SuperAdmin and Admin see all allocations
+    // Handle View As filter for admins
+    if (viewAsFilter && (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN)) {
+      console.log(`[ALLOCATIONS] Admin ${currentUser.email} viewing as:`, viewAsFilter);
+
+      // Determine the client ID to filter by
+      let targetClientId = null;
+
+      if (viewAsFilter.type === 'client') {
+        targetClientId = viewAsFilter.id;
+      } else if (viewAsFilter.type === 'account') {
+        // Find the user associated with this bank account
+        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
+        if (bankAccount) {
+          targetClientId = bankAccount.userId;
+        }
+      }
+
+      if (targetClientId) {
+        console.log(`[ALLOCATIONS] Filtering to allocations for client ${targetClientId}`);
+        return AllocationsCollection.find({ clientId: targetClientId });
+      } else {
+        // ViewAs filter is active but couldn't determine target client - return empty
+        console.log(`[ALLOCATIONS] ViewAs filter active but no valid target client found - returning empty`);
+        return this.ready();
+      }
+    }
+
+    // SuperAdmin and Admin see all allocations (when not using View As)
     if (currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.ADMIN) {
       return AllocationsCollection.find();
     }
@@ -325,3 +375,34 @@ Meteor.publish("allAllocations", async function (sessionId = null) {
 
 
 
+
+
+// Special publication for RMs to see all products (when "Show All" toggle is ON)
+Meteor.publish("products.all", async function (sessionId = null) {
+  const effectiveSessionId = sessionId || this.connection.headers?.sessionid || this.connection.id;
+  let currentUser = null;
+
+  // Try to get user from session
+  if (effectiveSessionId) {
+    try {
+      const session = await SessionHelpers.validateSession(effectiveSessionId);
+      if (session && session.userId) {
+        currentUser = await UsersCollection.findOneAsync(session.userId);
+      }
+    } catch (error) {
+      // Session validation failed
+    }
+  }
+
+  // Only allow RMs, admins, and superadmins to access all products
+  if (!currentUser || (currentUser.role !== USER_ROLES.RELATIONSHIP_MANAGER &&
+                       currentUser.role !== USER_ROLES.ADMIN &&
+                       currentUser.role !== USER_ROLES.SUPERADMIN)) {
+    return this.ready();
+  }
+
+  console.log(`[PRODUCTS.ALL] ${currentUser.role} ${currentUser.email} viewing all products`);
+
+  // Return all products without any filtering
+  return ProductsCollection.find();
+});

@@ -370,6 +370,30 @@ export const PhoenixChartBuilder = {
         const performance = callObservation.basketPerformance || 0;
         const autocallLevel = callObservation.autocallLevel || 100;
 
+        // Add vertical line for redemption date
+        annotations['redemption_line'] = {
+          type: 'line',
+          xMin: callDateISO,
+          xMax: callDateISO,
+          borderColor: '#fbbf24', // Gold color
+          borderWidth: 3,
+          borderDash: [5, 5],
+          label: {
+            display: true,
+            content: 'REDEEMED',
+            position: 'start',
+            yAdjust: -10,
+            backgroundColor: '#fbbf24',
+            color: '#000000',
+            padding: 6,
+            font: {
+              size: 11,
+              weight: 'bold'
+            },
+            borderRadius: 4
+          }
+        };
+
         // Add a spectacular star-burst indicator at the autocall level
         annotations['autocall_event'] = {
           type: 'point',
@@ -392,6 +416,40 @@ export const PhoenixChartBuilder = {
               weight: 'bold'
             },
             borderRadius: 6
+          }
+        };
+      }
+    }
+
+    // Add maturity redemption line if product has matured (not autocalled)
+    if (!observationAnalysis?.productCalled) {
+      const currentStatus = evaluation.currentStatus;
+      const hasMatured = currentStatus?.hasMatured || currentStatus?.productStatus === 'matured';
+
+      if (hasMatured && currentStatus?.statusDetails?.maturedDate) {
+        const maturityDateISO = new Date(currentStatus.statusDetails.maturedDate).toISOString().split('T')[0];
+
+        // Add vertical line for maturity redemption date
+        annotations['redemption_line'] = {
+          type: 'line',
+          xMin: maturityDateISO,
+          xMax: maturityDateISO,
+          borderColor: '#6366f1', // Blue color for maturity
+          borderWidth: 3,
+          borderDash: [5, 5],
+          label: {
+            display: true,
+            content: 'MATURED',
+            position: 'start',
+            yAdjust: -10,
+            backgroundColor: '#6366f1',
+            color: '#ffffff',
+            padding: 6,
+            font: {
+              size: 11,
+              weight: 'bold'
+            },
+            borderRadius: 4
           }
         };
       }

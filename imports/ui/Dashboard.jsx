@@ -6,15 +6,173 @@ import { ProductPricesCollection } from '/imports/api/productPrices';
 import { AllocationsCollection } from '/imports/api/allocations';
 import { useTheme } from './ThemeContext.jsx';
 import { useViewAs } from './ViewAsContext.jsx';
+import LiquidGlassCard from './components/LiquidGlassCard.jsx';
 
-const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProduct, onViewProductReport }) => {
+/**
+ * Processing Issue Indicator Component
+ * Shows a warning icon when a product has processing issues
+ * Displays tooltip with issue details on hover
+ */
+const ProcessingIssueIndicator = ({ product }) => {
+  const [showTooltip, setShowTooltip] = useState(false);
+
+  const { processingStatus, processingIssues, hasProcessingErrors, hasProcessingWarnings } = product;
+
+  // Don't show anything if no issues
+  if (processingStatus === 'success' || (!hasProcessingErrors && !hasProcessingWarnings)) {
+    return null;
+  }
+
+  const issueCount = processingIssues?.length || 0;
+  const errorCount = processingIssues?.filter(i => i.severity === 'error').length || 0;
+  const warningCount = processingIssues?.filter(i => i.severity === 'warning').length || 0;
+
+  // Determine colors based on severity - using amber/orange tones (less aggressive than red)
+  const iconColor = hasProcessingErrors ? '#d97706' : '#f59e0b';
+  const bgColor = hasProcessingErrors ? 'rgba(217, 119, 6, 0.15)' : 'rgba(245, 158, 11, 0.15)';
+  const borderColor = hasProcessingErrors ? 'rgba(217, 119, 6, 0.3)' : 'rgba(245, 158, 11, 0.3)';
+
+  return (
+    <div
+      style={{ position: 'relative', display: 'inline-flex', marginLeft: '6px' }}
+      onMouseEnter={() => setShowTooltip(true)}
+      onMouseLeave={() => setShowTooltip(false)}
+    >
+      {/* Warning Icon */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: '20px',
+          height: '20px',
+          borderRadius: '50%',
+          background: bgColor,
+          border: `1px solid ${borderColor}`,
+          cursor: 'help'
+        }}
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke={iconColor}
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          {hasProcessingErrors ? (
+            // Exclamation circle for errors
+            <>
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </>
+          ) : (
+            // Triangle warning for warnings
+            <>
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </>
+          )}
+        </svg>
+      </div>
+
+      {/* Tooltip */}
+      {showTooltip && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '100%',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            marginTop: '8px',
+            padding: '10px 12px',
+            background: 'var(--bg-primary)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '8px',
+            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)',
+            zIndex: 1000,
+            minWidth: '220px',
+            maxWidth: '300px',
+            whiteSpace: 'normal'
+          }}
+        >
+          <div style={{
+            fontWeight: '600',
+            fontSize: '0.8rem',
+            marginBottom: '6px',
+            color: iconColor
+          }}>
+            {hasProcessingErrors ? 'Processing Errors' : 'Processing Warnings'}
+          </div>
+          <ul style={{
+            margin: 0,
+            padding: '0 0 0 14px',
+            fontSize: '0.75rem',
+            color: 'var(--text-secondary)'
+          }}>
+            {processingIssues?.slice(0, 5).map((issue, idx) => (
+              <li key={idx} style={{ marginBottom: '3px' }}>
+                <span style={{ color: issue.severity === 'error' ? '#d97706' : '#f59e0b' }}>
+                  {issue.message}
+                </span>
+                {issue.underlying && (
+                  <span style={{ color: 'var(--text-tertiary)', marginLeft: '4px' }}>
+                    ({issue.underlying})
+                  </span>
+                )}
+              </li>
+            ))}
+            {issueCount > 5 && (
+              <li style={{ color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+                ...and {issueCount - 5} more
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDeleteProduct, onViewProductReport }) => {
   const { theme } = useTheme();
   const { viewAsFilter } = useViewAs();
 
-  // Responsive detection
-  const [isMobile, setIsMobile] = useState(false);
-  const [isTablet, setIsTablet] = useState(false);
-  
+  // Determine default currency based on user role, viewAsFilter, and preferences
+  const getDefaultCurrency = () => {
+    if (!user) return 'USD';
+
+    // If viewing as a specific client/account, use their currency
+    if (viewAsFilter) {
+      if (viewAsFilter.type === 'account' && viewAsFilter.data?.referenceCurrency) {
+        return viewAsFilter.data.referenceCurrency;
+      }
+      if (viewAsFilter.type === 'client' && viewAsFilter.data?.reportingCurrency) {
+        return viewAsFilter.data.reportingCurrency;
+      }
+    }
+
+    // For admin and superadmin: default to EUR
+    if (user.role === 'admin' || user.role === 'superadmin') {
+      return 'EUR';
+    }
+
+    // For regular users: use their reporting currency from profile, or default to USD
+    return user.reportingCurrency || 'USD';
+  };
+
+  // Responsive detection - initialize immediately with window size, includes landscape mode detection
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    const smallestDimension = Math.min(window.innerWidth, window.innerHeight);
+    return smallestDimension < 600; // 600px threshold catches phones but not tablets/laptops
+  });
+  const [isTablet, setIsTablet] = useState(typeof window !== 'undefined' && window.innerWidth >= 768 && window.innerWidth < 1024);
+
   // State for search and sorting
   const [searchTerm, setSearchTerm] = useState('');
   const [sortField, setSortField] = useState('createdAt');
@@ -22,16 +180,55 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
   const [showLiveOnly, setShowLiveOnly] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [productsPerPage, setProductsPerPage] = useState(10);
-  const [referenceCurrency, setReferenceCurrency] = useState('USD'); // TODO: Get from user preferences
+  const [referenceCurrency, setReferenceCurrency] = useState(() => {
+    const saved = localStorage.getItem("dashboardCurrency");
+    return saved || getDefaultCurrency();
+  });
   const [exchangeRates, setExchangeRates] = useState({}); // Cache for exchange rates
+  const [filtersExpanded, setFiltersExpanded] = useState(true); // Always start expanded, then collapse on mobile
+  const [expandedProducts, setExpandedProducts] = useState({}); // Track which products are expanded on mobile
+  const [showAllProducts, setShowAllProducts] = useState(false); // Toggle for relationship managers to see all products
 
-  // Responsive detection effect
+  // Update currency when user or viewAsFilter changes
+  useEffect(() => {
+    if (user) {
+      const defaultCurrency = getDefaultCurrency();
+      // When viewAsFilter changes, always update to the new perimeter's currency
+      if (viewAsFilter) {
+        setReferenceCurrency(defaultCurrency);
+      } else {
+        // No viewAsFilter: only reset to default if no saved preference exists
+        const savedCurrency = localStorage.getItem('dashboardCurrency');
+        if (!savedCurrency) {
+          setReferenceCurrency(defaultCurrency);
+        }
+      }
+    }
+  }, [user, viewAsFilter]);
+
+  // Save currency preference to localStorage when it changes
+  useEffect(() => {
+    if (referenceCurrency) {
+      localStorage.setItem('dashboardCurrency', referenceCurrency);
+    }
+  }, [referenceCurrency]);
+
+  // Responsive detection effect - includes landscape mode detection
   useEffect(() => {
     const checkScreenSize = () => {
-      setIsMobile(window.innerWidth < 768);
-      setIsTablet(window.innerWidth >= 768 && window.innerWidth < 1024);
+      // Check if either dimension is below mobile threshold (catches both portrait and landscape)
+      const smallestDimension = Math.min(window.innerWidth, window.innerHeight);
+      const mobile = smallestDimension < 600; // 600px threshold catches phones but not tablets/laptops
+      const tablet = window.innerWidth >= 768 && window.innerWidth < 1024;
+
+      setIsMobile(mobile);
+      setIsTablet(tablet);
+      // Collapse filters on mobile by default (only on initial load)
+      if (mobile && filtersExpanded) {
+        setFiltersExpanded(false);
+      }
     };
-    
+
     checkScreenSize();
     window.addEventListener('resize', checkScreenSize);
     return () => window.removeEventListener('resize', checkScreenSize);
@@ -182,22 +379,43 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
   // Stable sessionId
   const sessionId = useMemo(() => localStorage.getItem('sessionId'), []);
   
+  // Check if user is a relationship manager
+  const isRelationshipManager = user && user.role === 'rm';
+
   // Use useTracker for more stable subscription handling
   const { products, allocations, productPrices, isLoading } = useTracker(() => {
+    // Determine the effective filter based on showAllProducts toggle
+    // If relationship manager has toggled "show all", don't apply viewAsFilter
+    const effectiveFilter = (isRelationshipManager && showAllProducts) ? null : viewAsFilter;
+
     // Subscribe to all required data with view-as filter
-    const productsHandle = Meteor.subscribe('products', sessionId, viewAsFilter);
-    const allocationsHandle = Meteor.subscribe('allAllocations', sessionId);
+    const productsHandle = (isRelationshipManager && showAllProducts)
+      ? Meteor.subscribe('products.all', sessionId)
+      : Meteor.subscribe('products', sessionId, effectiveFilter);
+    const allocationsHandle = Meteor.subscribe('allAllocations', sessionId, effectiveFilter);
     const pricesHandle = Meteor.subscribe('productPrices', sessionId);
 
     const loading = !productsHandle.ready() || !allocationsHandle.ready() || !pricesHandle.ready();
 
+    // Get allocations first (correctly filtered by server)
+    const allocs = AllocationsCollection.find().fetch();
+
+    // If effectiveFilter is active, only show products that have allocations
+    // This ensures client-side cache coherence with server-side filtering
+    let productsQuery = {};
+    if (effectiveFilter) {
+      const productIdsWithAllocations = [...new Set(allocs.map(a => a.productId))];
+      productsQuery = { _id: { $in: productIdsWithAllocations } };
+      console.log('[Dashboard] ViewAs active - filtering to', productIdsWithAllocations.length, 'products with allocations');
+    }
+
     return {
-      products: ProductsCollection.find({}, { sort: { createdAt: -1 } }).fetch(),
-      allocations: AllocationsCollection.find().fetch(),
+      products: ProductsCollection.find(productsQuery, { sort: { createdAt: -1 } }).fetch(),
+      allocations: allocs,
       productPrices: ProductPricesCollection.find({ isActive: true }).fetch(),
       isLoading: loading
     };
-  }, [sessionId, viewAsFilter]);
+  }, [sessionId, viewAsFilter, showAllProducts, isRelationshipManager]);
 
   // Calculate nominal totals per product (memoized for performance)
   const nominalByProduct = useMemo(() => {
@@ -211,9 +429,11 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
   }, [allocations]);
 
   // Create price map for efficient lookup
+  // Prices are stored as percentages (96.77 = 96.77%)
   const priceMap = useMemo(() => {
     const map = new Map();
     productPrices.forEach(priceRecord => {
+      // Prices are already in percentage format
       map.set(priceRecord.isin, priceRecord.price);
     });
     return map;
@@ -338,6 +558,58 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
     }
   };
 
+  // Helper function to format numbers with k/M suffixes
+  const formatNominal = (value) => {
+    if (!value || value === 0) return '-';
+
+    const absValue = Math.abs(value);
+
+    if (absValue >= 1000000) {
+      // Format as millions (M)
+      const millions = value / 1000000;
+      return `${millions.toFixed(1)}M`.replace('.0M', 'M');
+    } else if (absValue >= 1000) {
+      // Format as thousands (k)
+      const thousands = value / 1000;
+      return `${thousands.toFixed(1)}k`.replace('.0k', 'k');
+    } else {
+      // Display as is for values < 1000
+      return value.toLocaleString(undefined, {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0
+      });
+    }
+  };
+
+  // Toggle product expansion on mobile
+  const toggleProductExpansion = (productId) => {
+    setExpandedProducts(prev => ({
+      ...prev,
+      [productId]: !prev[productId]
+    }));
+  };
+
+  // Helper function to format maturity date as MM/YY
+  const formatMaturity = (maturity) => {
+    if (!maturity) return '-';
+
+    try {
+      // Try to parse the date
+      const date = new Date(maturity);
+
+      // Check if the date is valid
+      if (isNaN(date.getTime())) return maturity; // Return original if invalid
+
+      // Format as MM/YY
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = String(date.getFullYear()).slice(-2);
+
+      return `${month}/${year}`;
+    } catch (error) {
+      return maturity; // Return original if parsing fails
+    }
+  };
+
   // Generate a display title for products without a title
   const getProductDisplayTitle = (product) => {
     // If product has a title, use it
@@ -395,9 +667,9 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
   }
 
   return (
-    <div style={{ 
-      maxWidth: '1200px', 
-      margin: '0 auto', 
+    <div style={{
+      maxWidth: '1400px',
+      margin: '0 auto',
       padding: isMobile ? '1rem' : '2rem',
       backgroundColor: 'transparent',
       transition: 'all 0.3s ease'
@@ -409,388 +681,494 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
         justifyContent: 'space-between',
         alignItems: isMobile ? 'stretch' : 'center',
         gap: isMobile ? '1rem' : '0',
-        marginBottom: '2rem',
+        marginBottom: isMobile ? '1.5rem' : '2rem',
         padding: isMobile ? '1rem 0' : '1.5rem 0',
         borderBottom: '2px solid var(--border-color)'
       }}>
         <div>
           <h1 style={{
-            margin: '0 0 0.5rem 0',
-            fontSize: isMobile ? '1.5rem' : '2rem',
+            margin: 0,
+            fontSize: isMobile ? '1.8rem' : '2rem',
             fontWeight: '700',
             color: 'var(--text-primary)'
           }}>
-            Product Dashboard
+            {isMobile ? 'Dashboard' : 'Product Dashboard'}
           </h1>
-          <p style={{
-            margin: 0,
-            color: 'var(--text-secondary)',
-            fontSize: isMobile ? '0.9rem' : '1rem'
-          }}>
-            Manage and overview your structured products
-          </p>
         </div>
-        <button
-          onClick={onCreateProduct}
-          style={{
-            background: 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
-            color: 'white',
-            border: 'none',
-            padding: isMobile ? '10px 20px' : '12px 24px',
-            borderRadius: '8px',
-            fontSize: isMobile ? '0.9rem' : '1rem',
-            fontWeight: '600',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '8px',
-            transition: 'all 0.3s ease',
-            boxShadow: '0 2px 8px rgba(0, 123, 255, 0.3)',
-            width: isMobile ? '100%' : 'auto'
-          }}
-          onMouseEnter={(e) => {
-            e.target.style.transform = 'translateY(-2px)';
-            e.target.style.boxShadow = '0 4px 12px rgba(0, 123, 255, 0.4)';
-          }}
-          onMouseLeave={(e) => {
-            e.target.style.transform = 'translateY(0)';
-            e.target.style.boxShadow = '0 2px 8px rgba(0, 123, 255, 0.3)';
-          }}
-        >
-          <span>➕</span>
-          Create New Product
-        </button>
+        {/* Hide New Product button on mobile */}
+        {!isMobile && (
+          <button
+            onClick={onCreateProduct}
+            style={{
+              background: 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+              color: 'white',
+              border: 'none',
+              padding: '0',
+              minHeight: isMobile ? '52px' : 'auto',
+              paddingLeft: isMobile ? '24px' : '24px',
+              paddingRight: isMobile ? '24px' : '24px',
+              borderRadius: '8px',
+              fontSize: isMobile ? '1.05rem' : '1rem',
+              fontWeight: '600',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px',
+              transition: 'all 0.3s ease',
+              boxShadow: '0 2px 8px rgba(0, 123, 255, 0.3)',
+              width: isMobile ? '100%' : 'auto'
+            }}
+            onMouseEnter={(e) => {
+              if (!isMobile) {
+                e.target.style.transform = 'translateY(-2px)';
+                e.target.style.boxShadow = '0 4px 12px rgba(0, 123, 255, 0.4)';
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (!isMobile) {
+                e.target.style.transform = 'translateY(0)';
+                e.target.style.boxShadow = '0 2px 8px rgba(0, 123, 255, 0.3)';
+              }
+            }}
+          >
+            <span style={{ fontSize: isMobile ? '1.2rem' : '1rem' }}>{isMobile ? '➕' : '➕'}</span>
+            {isMobile ? 'New Product' : 'Create New Product'}
+          </button>
+        )}
       </div>
 
       {/* Filter Controls */}
       <div style={{
-        marginBottom: '2rem',
-        display: 'flex',
-        flexDirection: isMobile ? 'column' : 'row',
-        justifyContent: 'space-between',
-        alignItems: isMobile ? 'stretch' : 'center',
-        gap: isMobile ? '1rem' : '0'
+        marginBottom: '1rem',
+        background: isMobile ? 'var(--bg-secondary)' : 'transparent',
+        border: isMobile ? '1px solid var(--border-color)' : 'none',
+        borderRadius: isMobile ? '8px' : '0',
+        overflow: 'hidden'
       }}>
-        <div style={{ 
-          display: 'flex', 
-          flexDirection: isMobile ? 'column' : 'row',
-          alignItems: isMobile ? 'stretch' : 'center',
-          gap: isMobile ? '1rem' : '0'
-        }}>
-        {/* Live Products Toggle */}
+        {/* Filter Toggle Button - Mobile Only */}
+        {isMobile && (
+          <button
+            onClick={() => setFiltersExpanded(!filtersExpanded)}
+            style={{
+              width: '100%',
+              padding: '16px 20px',
+              minHeight: '52px',
+              background: 'var(--bg-tertiary)',
+              border: 'none',
+              borderBottom: filtersExpanded ? '1px solid var(--border-color)' : 'none',
+              color: 'var(--text-primary)',
+              fontSize: '1.05rem',
+              fontWeight: '600',
+              cursor: 'pointer',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <span>Filters & Settings</span>
+            <span style={{
+              fontSize: '1rem',
+              transform: filtersExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+              transition: 'transform 0.2s ease'
+            }}>
+              ▼
+            </span>
+          </button>
+        )}
+
+        {/* Filter Content */}
         <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '10px',
-          padding: '8px 16px',
-          border: '2px solid var(--border-color)',
-          borderRadius: '10px',
-          background: 'var(--bg-secondary)',
-          cursor: 'pointer',
-          transition: 'all 0.3s ease',
-          userSelect: 'none'
-        }}
-        onClick={() => setShowLiveOnly(!showLiveOnly)}
-        >
+          display: filtersExpanded || !isMobile ? 'flex' : 'none',
+          flexDirection: isMobile ? 'column' : 'row',
+          justifyContent: 'space-between',
+          alignItems: isMobile ? 'stretch' : 'center',
+          gap: isMobile ? '0.75rem' : '0',
+          padding: isMobile ? '1rem' : '0',
+          marginBottom: isMobile ? '0' : '1rem'
+        }}>
           <div style={{
-            width: '20px',
-            height: '20px',
-            border: '2px solid var(--accent-color)',
-            borderRadius: '4px',
-            background: showLiveOnly ? 'var(--accent-color)' : 'transparent',
+            display: 'flex',
+            flexDirection: isMobile ? 'column' : 'row',
+            alignItems: isMobile ? 'stretch' : 'center',
+            gap: isMobile ? '0.75rem' : '12px',
+            flexWrap: 'wrap'
+          }}>
+            {/* Show All Products Toggle - Only for Relationship Managers */}
+            {isRelationshipManager && (
+              <LiquidGlassCard
+                borderRadius={isMobile ? '8px' : '10px'}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  padding: isMobile ? '14px 18px' : '8px 16px',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  minHeight: isMobile ? '52px' : 'auto'
+                }}
+                onClick={() => setShowAllProducts(!showAllProducts)}
+              >
+                {/* Apple-style toggle switch */}
+                <div style={{
+                  position: 'relative',
+                  width: isMobile ? '51px' : '44px',
+                  height: isMobile ? '31px' : '26px',
+                  borderRadius: isMobile ? '15.5px' : '13px',
+                  background: showAllProducts ? '#34C759' : '#E5E5EA',
+                  transition: 'background 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                  flexShrink: 0
+                }}>
+                  <div style={{
+                    position: 'absolute',
+                    top: isMobile ? '2px' : '2px',
+                    left: showAllProducts ? (isMobile ? '22px' : '20px') : '2px',
+                    width: isMobile ? '27px' : '22px',
+                    height: isMobile ? '27px' : '22px',
+                    borderRadius: '50%',
+                    background: '#FFFFFF',
+                    boxShadow: '0 2px 4px rgba(0, 0, 0, 0.2), 0 0 2px rgba(0, 0, 0, 0.1)',
+                    transition: 'left 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
+                  }}></div>
+                </div>
+                <span style={{
+                  color: 'var(--text-primary)',
+                  fontSize: isMobile ? '1rem' : '0.95rem',
+                  fontWeight: '500'
+                }}>
+                  Show All Products
+                </span>
+              </LiquidGlassCard>
+            )}
+
+            {/* Live Products Toggle */}
+            <LiquidGlassCard
+              borderRadius={isMobile ? '8px' : '10px'}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                padding: isMobile ? '14px 18px' : '8px 16px',
+                cursor: 'pointer',
+                userSelect: 'none',
+                minHeight: isMobile ? '52px' : 'auto'
+              }}
+              onClick={() => setShowLiveOnly(!showLiveOnly)}
+            >
+              {/* Apple-style toggle switch */}
+              <div style={{
+                position: 'relative',
+                width: isMobile ? '51px' : '44px',
+                height: isMobile ? '31px' : '26px',
+                borderRadius: isMobile ? '15.5px' : '13px',
+                background: showLiveOnly ? '#34C759' : '#E5E5EA',
+                transition: 'background 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                flexShrink: 0
+              }}>
+                <div style={{
+                  position: 'absolute',
+                  top: isMobile ? '2px' : '2px',
+                  left: showLiveOnly ? (isMobile ? '22px' : '20px') : '2px',
+                  width: isMobile ? '27px' : '22px',
+                  height: isMobile ? '27px' : '22px',
+                  borderRadius: '50%',
+                  background: '#FFFFFF',
+                  boxShadow: '0 2px 4px rgba(0, 0, 0, 0.2), 0 0 2px rgba(0, 0, 0, 0.1)',
+                  transition: 'left 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
+                }}></div>
+              </div>
+              <span style={{
+                color: 'var(--text-primary)',
+                fontSize: isMobile ? '1rem' : '0.95rem',
+                fontWeight: '500'
+              }}>
+                Show Live Products Only
+              </span>
+            </LiquidGlassCard>
+
+            {/* Products Per Page */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+              padding: isMobile ? '0 4px' : '0'
+            }}>
+              <span style={{
+                color: 'var(--text-primary)',
+                fontSize: isMobile ? '1rem' : '0.95rem',
+                fontWeight: '500'
+              }}>
+                {isMobile ? 'Per page:' : 'Show'}
+              </span>
+              <select
+                value={productsPerPage}
+                onChange={(e) => {
+                  setProductsPerPage(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                style={{
+                  padding: isMobile ? '12px 14px' : '6px 12px',
+                  border: '2px solid var(--border-color)',
+                  borderRadius: '6px',
+                  background: isMobile ? 'var(--bg-primary)' : 'var(--bg-secondary)',
+                  color: 'var(--text-primary)',
+                  fontSize: isMobile ? '1rem' : '0.9rem',
+                  cursor: 'pointer',
+                  transition: 'all 0.3s ease',
+                  minHeight: isMobile ? '52px' : 'auto',
+                  flex: isMobile ? '1' : '0'
+                }}
+              >
+                <option value={5}>5</option>
+                <option value={10}>10</option>
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+              {!isMobile && (
+                <span style={{
+                  color: 'var(--text-primary)',
+                  fontSize: '0.95rem',
+                  fontWeight: '500'
+                }}>
+                  products per page
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Reference Currency Selector */}
+          <div style={{
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'center',
-            transition: 'all 0.3s ease'
+            gap: '12px',
+            padding: isMobile ? '0 4px' : '0'
           }}>
-            {showLiveOnly && (
-              <span style={{
-                color: 'white',
-                fontSize: '12px',
-                fontWeight: 'bold'
-              }}>
-                ✓
-              </span>
-            )}
+            <span style={{
+              color: 'var(--text-primary)',
+              fontSize: isMobile ? '1rem' : '0.95rem',
+              fontWeight: '500'
+            }}>
+              {isMobile ? 'Currency:' : 'Reference Currency'}
+            </span>
+            <select
+              value={referenceCurrency}
+              onChange={(e) => setReferenceCurrency(e.target.value)}
+              style={{
+                padding: isMobile ? '12px 14px' : '6px 12px',
+                border: '2px solid var(--border-color)',
+                borderRadius: '6px',
+                background: isMobile ? 'var(--bg-primary)' : 'var(--bg-secondary)',
+                color: 'var(--text-primary)',
+                fontSize: isMobile ? '1rem' : '0.9rem',
+                cursor: 'pointer',
+                transition: 'all 0.3s ease',
+                minWidth: isMobile ? 'auto' : '80px',
+                minHeight: isMobile ? '52px' : 'auto',
+                flex: isMobile ? '1' : '0'
+              }}
+            >
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
+              <option value="GBP">GBP</option>
+              <option value="CHF">CHF</option>
+              <option value="JPY">JPY</option>
+              <option value="CAD">CAD</option>
+              <option value="AUD">AUD</option>
+            </select>
           </div>
-          <span style={{
-            color: 'var(--text-primary)',
-            fontSize: '0.95rem',
-            fontWeight: '500'
-          }}>
-            Show Live Products Only
-          </span>
-        </div>
-
-        {/* Products Per Page */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '10px',
-          marginLeft: isMobile ? '0' : '20px'
-        }}>
-          <span style={{
-            color: 'var(--text-primary)',
-            fontSize: '0.95rem',
-            fontWeight: '500'
-          }}>
-            Show
-          </span>
-          <select
-            value={productsPerPage}
-            onChange={(e) => {
-              setProductsPerPage(Number(e.target.value));
-              setCurrentPage(1); // Reset to first page when changing per page
-            }}
-            style={{
-              padding: '6px 12px',
-              border: '2px solid var(--border-color)',
-              borderRadius: '6px',
-              background: 'var(--bg-secondary)',
-              color: 'var(--text-primary)',
-              fontSize: '0.9rem',
-              cursor: 'pointer',
-              transition: 'all 0.3s ease'
-            }}
-          >
-            <option value={5}>5</option>
-            <option value={10}>10</option>
-            <option value={20}>20</option>
-            <option value={50}>50</option>
-            <option value={100}>100</option>
-          </select>
-          <span style={{
-            color: 'var(--text-primary)',
-            fontSize: '0.95rem',
-            fontWeight: '500'
-          }}>
-            products per page
-          </span>
-        </div>
-        </div>
-
-        {/* Reference Currency Selector - Right aligned */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '10px'
-        }}>
-          <span style={{
-            color: 'var(--text-primary)',
-            fontSize: '0.95rem',
-            fontWeight: '500'
-          }}>
-            Reference Currency
-          </span>
-          <select
-            value={referenceCurrency}
-            onChange={(e) => setReferenceCurrency(e.target.value)}
-            style={{
-              padding: '6px 12px',
-              border: '2px solid var(--border-color)',
-              borderRadius: '6px',
-              background: 'var(--bg-secondary)',
-              color: 'var(--text-primary)',
-              fontSize: '0.9rem',
-              cursor: 'pointer',
-              transition: 'all 0.3s ease',
-              minWidth: '80px'
-            }}
-          >
-            <option value="USD">USD</option>
-            <option value="EUR">EUR</option>
-            <option value="GBP">GBP</option>
-            <option value="CHF">CHF</option>
-            <option value="JPY">JPY</option>
-            <option value="CAD">CAD</option>
-            <option value="AUD">AUD</option>
-          </select>
         </div>
       </div>
 
       {/* Statistics Cards */}
+      {!(isRelationshipManager && showAllProducts) && (
       <div style={{
-        display: 'grid',
-        gridTemplateColumns: isMobile ? '1fr 1fr' : isTablet ? 'repeat(3, 1fr)' : 'repeat(5, 1fr)',
-        gap: isMobile ? '0.75rem' : '1.5rem',
-        marginBottom: '2rem'
+        display: isMobile ? 'flex' : 'grid',
+        gridTemplateColumns: isMobile ? 'none' : isTablet ? 'repeat(3, 1fr)' : '1fr 1.6fr 0.8fr 0.8fr 0.8fr',
+        gap: isMobile ? '0.5rem' : '1.5rem',
+        marginBottom: isMobile ? '1rem' : '2rem',
+        overflowX: isMobile ? 'auto' : 'visible',
+        WebkitOverflowScrolling: 'touch',
+        scrollbarWidth: 'none',
+        msOverflowStyle: 'none'
       }}>
-        <div style={{
-          background: 'linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)',
-          border: '1px solid var(--border-color)',
-          borderRadius: '12px',
-          padding: isMobile ? '1rem' : '1.5rem',
-          textAlign: 'center',
-          boxShadow: '0 2px 4px var(--shadow)',
-          display: 'flex',
-          flexDirection: isMobile ? 'row' : 'column',
-          alignItems: 'center',
-          justifyContent: isMobile ? 'space-between' : 'center',
-          gap: isMobile ? '0.5rem' : '0'
-        }}>
+        <LiquidGlassCard
+          borderRadius={isMobile ? '8px' : '12px'}
+          style={{
+            padding: isMobile ? '0.75rem 1rem' : '1.5rem',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: isMobile ? '0.25rem' : '0.5rem',
+            minWidth: isMobile ? '140px' : 'auto',
+            flexShrink: isMobile ? 0 : 1
+          }}
+        >
           <div style={{
-            color: 'var(--text-secondary)',
-            fontSize: isMobile ? '0.85rem' : '0.9rem',
-            fontWeight: '500',
-            textTransform: 'uppercase',
-            letterSpacing: '0.5px',
-            order: isMobile ? 1 : 2
-          }}>
-            Total Products
-          </div>
-          <div style={{
-            fontSize: isMobile ? '1.1rem' : '1.3rem',
+            fontSize: isMobile ? '1.8rem' : '2.5rem',
             fontWeight: '700',
             color: 'var(--accent-color)',
-            marginBottom: isMobile ? '0' : '0.5rem',
-            order: isMobile ? 2 : 1
+            lineHeight: '1'
           }}>
             {products.length}
           </div>
-        </div>
-
-        <div style={{
-          background: 'linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)',
-          border: '1px solid var(--border-color)',
-          borderRadius: '12px',
-          padding: isMobile ? '1rem' : '1.5rem',
-          textAlign: 'center',
-          boxShadow: '0 2px 4px var(--shadow)',
-          display: 'flex',
-          flexDirection: isMobile ? 'row' : 'column',
-          alignItems: 'center',
-          justifyContent: isMobile ? 'space-between' : 'center',
-          gap: isMobile ? '0.5rem' : '0'
-        }}>
           <div style={{
             color: 'var(--text-secondary)',
-            fontSize: isMobile ? '0.85rem' : '0.9rem',
-            fontWeight: '500',
+            fontSize: isMobile ? '0.7rem' : '0.85rem',
+            fontWeight: '600',
             textTransform: 'uppercase',
             letterSpacing: '0.5px',
-            order: isMobile ? 1 : 2
+            textAlign: 'center',
+            lineHeight: '1.2'
+          }}>
+            Total{isMobile ? <br /> : ' '}Products
+          </div>
+        </LiquidGlassCard>
+
+        <LiquidGlassCard
+          borderRadius={isMobile ? '8px' : '12px'}
+          style={{
+            padding: isMobile ? '0.75rem 1rem' : '1.5rem',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: isMobile ? '0.25rem' : '0.5rem',
+            minWidth: isMobile ? '160px' : 'auto',
+            flexShrink: isMobile ? 0 : 1
+          }}
+        >
+          <div style={{
+            fontSize: isMobile ? '1.1rem' : '1.4rem',
+            fontWeight: '700',
+            color: 'var(--success-color)',
+            wordBreak: 'break-word',
+            lineHeight: '1',
+            textAlign: 'center'
+          }}>
+            {referenceCurrency} {portfolioTotalValue.toLocaleString(undefined, {
+              minimumFractionDigits: 0,
+              maximumFractionDigits: 0
+            })}
+          </div>
+          <div style={{
+            color: 'var(--text-secondary)',
+            fontSize: isMobile ? '0.7rem' : '0.85rem',
+            fontWeight: '600',
+            textTransform: 'uppercase',
+            letterSpacing: '0.5px',
+            textAlign: 'center',
+            lineHeight: '1.2'
           }}>
             Portfolio Value
           </div>
-          <div style={{
-            fontSize: isMobile ? '0.95rem' : '1.1rem',
-            fontWeight: '700',
-            color: 'var(--success-color)',
-            marginBottom: isMobile ? '0' : '0.5rem',
-            wordBreak: 'break-word',
-            lineHeight: '1.2',
-            order: isMobile ? 2 : 1
-          }}>
-            {referenceCurrency} {portfolioTotalValue.toLocaleString(undefined, {
-              minimumFractionDigits: isMobile ? 0 : 2,
-              maximumFractionDigits: isMobile ? 0 : 2
-            })}
-          </div>
-        </div>
+        </LiquidGlassCard>
 
-        <div style={{
-          background: 'linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)',
-          border: '1px solid var(--border-color)',
-          borderRadius: '12px',
-          padding: isMobile ? '1rem' : '1.5rem',
-          textAlign: 'center',
-          boxShadow: '0 2px 4px var(--shadow)',
-          display: 'flex',
-          flexDirection: isMobile ? 'row' : 'column',
-          alignItems: 'center',
-          justifyContent: isMobile ? 'space-between' : 'center',
-          gap: isMobile ? '0.5rem' : '0'
-        }}>
+        <LiquidGlassCard
+          borderRadius={isMobile ? '8px' : '12px'}
+          style={{
+            padding: isMobile ? '0.75rem 1rem' : '1.5rem',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: isMobile ? '0.25rem' : '0.5rem',
+            minWidth: isMobile ? '140px' : 'auto',
+            flexShrink: isMobile ? 0 : 1
+          }}
+        >
           <div style={{
-            color: 'var(--text-secondary)',
-            fontSize: isMobile ? '0.85rem' : '0.9rem',
-            fontWeight: '500',
-            textTransform: 'uppercase',
-            letterSpacing: '0.5px',
-            order: isMobile ? 1 : 2
-          }}>
-            Live Products
-          </div>
-          <div style={{
-            fontSize: isMobile ? '1.1rem' : '1.3rem',
+            fontSize: isMobile ? '1.8rem' : '2.5rem',
             fontWeight: '700',
             color: 'var(--warning-color)',
-            marginBottom: isMobile ? '0' : '0.5rem',
-            order: isMobile ? 2 : 1
+            lineHeight: '1'
           }}>
             {products.filter(p => getStandardizedProductStatus(p) === 'live').length}
           </div>
-        </div>
-
-        <div style={{
-          background: 'linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)',
-          border: '1px solid var(--border-color)',
-          borderRadius: '12px',
-          padding: isMobile ? '1rem' : '1.5rem',
-          textAlign: 'center',
-          boxShadow: '0 2px 4px var(--shadow)',
-          display: isMobile ? 'none' : 'flex', // Hide on mobile to save space
-          flexDirection: isMobile ? 'row' : 'column',
-          alignItems: 'center',
-          justifyContent: isMobile ? 'space-between' : 'center',
-          gap: isMobile ? '0.5rem' : '0'
-        }}>
           <div style={{
             color: 'var(--text-secondary)',
-            fontSize: isMobile ? '0.85rem' : '0.9rem',
-            fontWeight: '500',
+            fontSize: isMobile ? '0.7rem' : '0.85rem',
+            fontWeight: '600',
             textTransform: 'uppercase',
             letterSpacing: '0.5px',
-            order: isMobile ? 1 : 2
+            textAlign: 'center',
+            lineHeight: '1.2'
           }}>
-            Autocalled
+            Live{isMobile ? <br /> : ' '}Products
           </div>
+        </LiquidGlassCard>
+
+        <LiquidGlassCard
+          borderRadius={isMobile ? '8px' : '12px'}
+          style={{
+            padding: isMobile ? '0.75rem 1rem' : '1.5rem',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: isMobile ? '0.25rem' : '0.5rem',
+            minWidth: isMobile ? '140px' : 'auto',
+            flexShrink: isMobile ? 0 : 1
+          }}
+        >
           <div style={{
-            fontSize: isMobile ? '1.1rem' : '1.3rem',
+            fontSize: isMobile ? '1.8rem' : '2.5rem',
             fontWeight: '700',
             color: '#0284c7',
-            marginBottom: isMobile ? '0' : '0.5rem',
-            order: isMobile ? 2 : 1
+            lineHeight: '1'
           }}>
             {products.filter(p => getStandardizedProductStatus(p) === 'autocalled').length}
           </div>
-        </div>
-
-        <div style={{
-          background: 'linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)',
-          border: '1px solid var(--border-color)',
-          borderRadius: '12px',
-          padding: isMobile ? '1rem' : '1.5rem',
-          textAlign: 'center',
-          boxShadow: '0 2px 4px var(--shadow)',
-          display: isMobile ? 'none' : 'flex', // Hide on mobile to save space
-          flexDirection: isMobile ? 'row' : 'column',
-          alignItems: 'center',
-          justifyContent: isMobile ? 'space-between' : 'center',
-          gap: isMobile ? '0.5rem' : '0'
-        }}>
           <div style={{
             color: 'var(--text-secondary)',
-            fontSize: isMobile ? '0.85rem' : '0.9rem',
-            fontWeight: '500',
+            fontSize: isMobile ? '0.7rem' : '0.85rem',
+            fontWeight: '600',
             textTransform: 'uppercase',
             letterSpacing: '0.5px',
-            order: isMobile ? 1 : 2
+            textAlign: 'center',
+            lineHeight: '1.2'
           }}>
-            Matured
+            Autocalled
           </div>
+        </LiquidGlassCard>
+
+        <LiquidGlassCard
+          borderRadius={isMobile ? '8px' : '12px'}
+          style={{
+            padding: isMobile ? '0.75rem 1rem' : '1.5rem',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: isMobile ? '0.25rem' : '0.5rem',
+            minWidth: isMobile ? '140px' : 'auto',
+            flexShrink: isMobile ? 0 : 1
+          }}
+        >
           <div style={{
-            fontSize: isMobile ? '1.1rem' : '1.3rem',
+            fontSize: isMobile ? '1.8rem' : '2.5rem',
             fontWeight: '700',
             color: '#6b7280',
-            marginBottom: isMobile ? '0' : '0.5rem',
-            order: isMobile ? 2 : 1
+            lineHeight: '1'
           }}>
             {products.filter(p => getStandardizedProductStatus(p) === 'matured').length}
           </div>
-        </div>
+          <div style={{
+            color: 'var(--text-secondary)',
+            fontSize: isMobile ? '0.7rem' : '0.85rem',
+            fontWeight: '600',
+            textTransform: 'uppercase',
+            letterSpacing: '0.5px',
+            textAlign: 'center',
+            lineHeight: '1.2'
+          }}>
+            Matured
+          </div>
+        </LiquidGlassCard>
       </div>
+      )}
 
       {/* Products Display */}
       {filteredAndSortedProducts.length === 0 ? (
@@ -860,45 +1238,44 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
             const currentPrice = priceMap.get(product.isin) || 100.00;
             const positionValue = nominal ? (nominal * currentPrice / 100) : 0;
             const convertedValue = positionValue > 0 ? convertCurrency(positionValue, product.currency || 'USD') : 0;
+            const isExpanded = expandedProducts[product._id];
 
             return (
-              <div
+              <LiquidGlassCard
                 key={product._id}
-                onClick={() => onViewProductReport ? onViewProductReport(product) : onEditProduct(product)}
+                borderRadius="8px"
                 style={{
-                  background: 'var(--bg-secondary)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '12px',
-                  padding: '1rem',
+                  padding: '0',
                   cursor: 'pointer',
-                  transition: 'all 0.2s ease',
-                  boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)'
-                }}
-                onTouchStart={(e) => {
-                  e.currentTarget.style.transform = 'scale(0.98)';
-                  e.currentTarget.style.boxShadow = '0 2px 8px rgba(0, 123, 255, 0.2)';
-                }}
-                onTouchEnd={(e) => {
-                  e.currentTarget.style.transform = 'scale(1)';
-                  e.currentTarget.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.1)';
+                  overflow: 'hidden'
                 }}
               >
-                {/* Header Row: Title and Status */}
-                <div style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'flex-start',
-                  marginBottom: '0.75rem',
-                  gap: '0.5rem'
-                }}>
-                  <div style={{
+                {/* Clickable Header: Title, Status, and Expand/Collapse */}
+                <div
+                  style={{
                     display: 'flex',
+                    justifyContent: 'space-between',
                     alignItems: 'center',
-                    gap: '0.5rem',
-                    flex: 1,
-                    minWidth: 0
-                  }}>
-                    <span style={{ fontSize: '1.5rem', flexShrink: 0 }}>
+                    padding: '1rem',
+                    gap: '0.75rem',
+                    borderBottom: isExpanded ? '1px solid var(--border-color)' : 'none',
+                    background: 'var(--bg-secondary)',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  {/* Clickable area to navigate to report */}
+                  <div
+                    onClick={() => onViewProductReport ? onViewProductReport(product) : onEditProduct(product)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.75rem',
+                      flex: 1,
+                      minWidth: 0,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <span style={{ fontSize: '1.3rem', flexShrink: 0 }}>
                       {(() => {
                         const templateId = product.templateId || product.template || '';
                         switch(templateId) {
@@ -912,54 +1289,92 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                       })()}
                     </span>
                     <div style={{
-                      fontSize: '1rem',
+                      fontSize: '0.95rem',
                       fontWeight: '600',
                       color: 'var(--text-primary)',
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
-                      display: '-webkit-box',
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: 'vertical'
+                      whiteSpace: 'nowrap',
+                      lineHeight: '1.3'
                     }}>
                       {getProductDisplayTitle(product)}
                     </div>
                   </div>
-                  <span style={{
-                    display: 'inline-block',
-                    padding: '4px 8px',
-                    borderRadius: '8px',
-                    fontSize: '0.7rem',
-                    fontWeight: '600',
-                    textTransform: 'uppercase',
-                    background: getStatusColor(status),
-                    color: 'white',
-                    whiteSpace: 'nowrap',
-                    flexShrink: 0
-                  }}>
-                    {status.length > 10 ? status.substring(0, 10) + '...' : status}
-                  </span>
+
+                  {/* Status badge and expand/collapse button */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                    <div style={{ display: 'inline-flex', alignItems: 'center' }}>
+                      <span style={{
+                        display: 'inline-block',
+                        padding: '4px 8px',
+                        borderRadius: '4px',
+                        fontSize: '0.7rem',
+                        fontWeight: '600',
+                        textTransform: 'uppercase',
+                        background: getStatusColor(status),
+                        color: 'white',
+                        whiteSpace: 'nowrap'
+                      }}>
+                        {status.length > 6 ? status.substring(0, 6) : status}
+                      </span>
+                      <ProcessingIssueIndicator product={product} />
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleProductExpansion(product._id);
+                      }}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        padding: '0.25rem',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        minWidth: '32px',
+                        minHeight: '32px'
+                      }}
+                    >
+                      <span style={{
+                        fontSize: '1.2rem',
+                        transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                        transition: 'transform 0.2s ease',
+                        color: 'var(--text-secondary)'
+                      }}>
+                        ▼
+                      </span>
+                    </button>
+                  </div>
                 </div>
 
-                {/* Info Grid */}
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: '1fr 1fr',
-                  gap: '0.75rem',
-                  marginBottom: '0.75rem'
-                }}>
+                {/* Collapsible Details Section */}
+                {isExpanded && (
+                  <div style={{
+                    padding: '1rem',
+                    background: 'var(--bg-primary)',
+                    animation: 'slideDown 0.2s ease'
+                  }}>
+                    {/* Info Grid */}
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 1fr',
+                      gap: '0.75rem',
+                      marginBottom: '0.75rem'
+                    }}>
                   <div>
                     <div style={{
-                      fontSize: '0.7rem',
+                      fontSize: '0.8rem',
                       color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
                       fontWeight: '600',
-                      marginBottom: '0.25rem',
+                      marginBottom: '0.375rem',
                       letterSpacing: '0.5px'
                     }}>
                       ISIN
                     </div>
                     <div style={{
-                      fontSize: '0.85rem',
+                      fontSize: '0.95rem',
                       fontFamily: 'monospace',
                       color: 'var(--text-primary)',
                       fontWeight: '500'
@@ -970,17 +1385,17 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
 
                   <div>
                     <div style={{
-                      fontSize: '0.7rem',
+                      fontSize: '0.8rem',
                       color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
                       fontWeight: '600',
-                      marginBottom: '0.25rem',
+                      marginBottom: '0.375rem',
                       letterSpacing: '0.5px'
                     }}>
                       Currency
                     </div>
                     <div style={{
-                      fontSize: '0.85rem',
+                      fontSize: '0.95rem',
                       color: 'var(--text-primary)',
                       fontWeight: '500'
                     }}>
@@ -990,17 +1405,17 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
 
                   <div>
                     <div style={{
-                      fontSize: '0.7rem',
+                      fontSize: '0.8rem',
                       color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
                       fontWeight: '600',
-                      marginBottom: '0.25rem',
+                      marginBottom: '0.375rem',
                       letterSpacing: '0.5px'
                     }}>
                       Price
                     </div>
                     <div style={{
-                      fontSize: '0.85rem',
+                      fontSize: '0.95rem',
                       color: 'var(--text-primary)',
                       fontWeight: '600'
                     }}>
@@ -1010,21 +1425,21 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
 
                   <div>
                     <div style={{
-                      fontSize: '0.7rem',
+                      fontSize: '0.8rem',
                       color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
                       fontWeight: '600',
-                      marginBottom: '0.25rem',
+                      marginBottom: '0.375rem',
                       letterSpacing: '0.5px'
                     }}>
                       Maturity
                     </div>
                     <div style={{
-                      fontSize: '0.85rem',
+                      fontSize: '0.95rem',
                       color: 'var(--text-primary)',
                       fontWeight: '500'
                     }}>
-                      {product.maturity || '-'}
+                      {formatMaturity(product.maturity)}
                     </div>
                   </div>
                 </div>
@@ -1033,48 +1448,45 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                 <div style={{
                   display: 'grid',
                   gridTemplateColumns: '1fr 1fr',
-                  gap: '0.75rem',
-                  padding: '0.75rem',
+                  gap: '0.875rem',
+                  padding: '0.875rem',
                   background: 'var(--bg-tertiary)',
                   borderRadius: '8px',
-                  marginBottom: '0.75rem'
+                  marginBottom: '0.875rem'
                 }}>
                   <div>
                     <div style={{
-                      fontSize: '0.7rem',
+                      fontSize: '0.8rem',
                       color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
                       fontWeight: '600',
-                      marginBottom: '0.25rem',
+                      marginBottom: '0.375rem',
                       letterSpacing: '0.5px'
                     }}>
                       Nominal
                     </div>
                     <div style={{
-                      fontSize: '0.9rem',
+                      fontSize: '1rem',
                       color: 'var(--text-primary)',
                       fontWeight: '700'
                     }}>
-                      {nominal ? nominal.toLocaleString(undefined, {
-                        minimumFractionDigits: 0,
-                        maximumFractionDigits: 0
-                      }) : '-'}
+                      {formatNominal(nominal)}
                     </div>
                   </div>
 
                   <div>
                     <div style={{
-                      fontSize: '0.7rem',
+                      fontSize: '0.8rem',
                       color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
                       fontWeight: '600',
-                      marginBottom: '0.25rem',
+                      marginBottom: '0.375rem',
                       letterSpacing: '0.5px'
                     }}>
                       Position Value
                     </div>
                     <div style={{
-                      fontSize: '0.9rem',
+                      fontSize: '1rem',
                       color: 'var(--success-color)',
                       fontWeight: '700'
                     }}>
@@ -1089,7 +1501,7 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                 {/* Action Buttons */}
                 <div style={{
                   display: 'flex',
-                  gap: '0.5rem',
+                  gap: '0.625rem',
                   justifyContent: 'stretch'
                 }}>
                   <button
@@ -1099,15 +1511,19 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                     }}
                     style={{
                       flex: 1,
-                      padding: '0.75rem',
+                      padding: '0',
+                      minHeight: '52px',
                       background: 'var(--accent-color)',
                       color: 'white',
                       border: 'none',
                       borderRadius: '8px',
-                      fontSize: '0.85rem',
+                      fontSize: '1rem',
                       fontWeight: '600',
                       cursor: 'pointer',
-                      transition: 'all 0.2s ease'
+                      transition: 'all 0.2s ease',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
                     }}
                   >
                     Edit
@@ -1119,23 +1535,29 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                         onDeleteProduct(product);
                       }}
                       style={{
-                        padding: '0.75rem',
+                        padding: '0',
+                        minHeight: '52px',
+                        minWidth: '52px',
                         background: '#dc3545',
                         color: 'white',
                         border: 'none',
                         borderRadius: '8px',
-                        fontSize: '1rem',
+                        fontSize: '1.2rem',
                         fontWeight: '700',
                         cursor: 'pointer',
                         transition: 'all 0.2s ease',
-                        minWidth: '48px'
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
                       }}
                     >
                       ✕
                     </button>
                   )}
                 </div>
-              </div>
+                  </div>
+                )}
+              </LiquidGlassCard>
             );
           })}
         </div>
@@ -1158,14 +1580,14 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                 borderBottom: '2px solid var(--border-color)'
               }}>
                 {[
-                  { field: 'title', label: 'Product Title', width: '24%' },
-                  { field: 'isin', label: 'ISIN', width: '10%' },
+                  { field: 'title', label: 'Product Title', width: '32%' },
+                  { field: 'isin', label: 'ISIN', width: '9%' },
                   { field: 'currency', label: 'Cur', width: '4%' },
-                  { field: 'nominal', label: 'Nominal', width: '9%' },
+                  { field: 'nominal', label: 'Nom', width: '8%' },
                   { field: 'price', label: 'Price', width: '6%' },
-                  { field: 'position', label: 'Position', width: '11%' },
-                  { field: 'status', label: 'Status', width: '9%' },
-                  { field: 'maturity', label: 'Maturity', width: '9%' }
+                  { field: 'position', label: 'Position', width: '10%' },
+                  { field: 'status', label: 'Status', width: '8%' },
+                  { field: 'maturity', label: 'Maturity', width: '7%' }
                 ].map(column => (
                   <th
                     key={column.field}
@@ -1290,13 +1712,7 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                     color: 'var(--text-primary)',
                     textAlign: 'right'
                   }}>
-                    {nominalByProduct[product._id] ?
-                      nominalByProduct[product._id].toLocaleString(undefined, {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2
-                      }) :
-                      '-'
-                    }
+                    {formatNominal(nominalByProduct[product._id])}
                   </td>
                   <td style={{
                     padding: '14px 16px',
@@ -1351,18 +1767,21 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                       };
 
                       return (
-                        <span style={{
-                          display: 'inline-block',
-                          padding: '4px 12px',
-                          borderRadius: '12px',
-                          fontSize: '0.75rem',
-                          fontWeight: '600',
-                          textTransform: 'uppercase',
-                          background: getStatusColor(status),
-                          color: 'white'
-                        }}>
-                          {status}
-                        </span>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <span style={{
+                            display: 'inline-block',
+                            padding: '4px 12px',
+                            borderRadius: '12px',
+                            fontSize: '0.75rem',
+                            fontWeight: '600',
+                            textTransform: 'uppercase',
+                            background: getStatusColor(status),
+                            color: 'white'
+                          }}>
+                            {status}
+                          </span>
+                          <ProcessingIssueIndicator product={product} />
+                        </div>
                       );
                     })()}
                   </td>
@@ -1373,7 +1792,7 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                     width: '120px',
                     textAlign: 'center'
                   }}>
-                    {product.maturity || '-'}
+                    {formatMaturity(product.maturity)}
                   </td>
                   <td style={{
                     padding: '10px 12px',
@@ -1448,20 +1867,20 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
 
       {/* Pagination - Common for all layouts */}
       {filteredAndSortedProducts.length > 0 && (
-        <div style={{
-          padding: isMobile ? '12px' : '16px',
-          background: 'var(--bg-secondary)',
-          borderRadius: '12px',
-          border: '1px solid var(--border-color)',
-          marginTop: isMobile ? '1rem' : '0',
-          display: 'flex',
-          flexDirection: isMobile ? 'column' : 'row',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          gap: isMobile ? '1rem' : '0'
-        }}>
+        <LiquidGlassCard
+          borderRadius="12px"
+          style={{
+            padding: isMobile ? '16px' : '16px',
+            marginTop: isMobile ? '1rem' : '0',
+            display: 'flex',
+            flexDirection: isMobile ? 'column' : 'row',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: isMobile ? '1rem' : '0'
+          }}
+        >
           <div style={{
-            fontSize: isMobile ? '0.8rem' : '0.85rem',
+            fontSize: isMobile ? '0.95rem' : '0.85rem',
             color: 'var(--text-secondary)',
             textAlign: isMobile ? 'center' : 'left'
           }}>
@@ -1472,7 +1891,7 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
             <div style={{
               display: 'flex',
               alignItems: 'center',
-              gap: isMobile ? '8px' : '10px',
+              gap: isMobile ? '10px' : '10px',
               flexWrap: 'nowrap',
               justifyContent: 'center'
             }}>
@@ -1480,22 +1899,23 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                 onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
                 disabled={currentPage === 1}
                 style={{
-                  padding: isMobile ? '8px 14px' : '8px 16px',
+                  padding: isMobile ? '12px 18px' : '8px 16px',
                   border: '1px solid var(--border-color)',
                   borderRadius: '6px',
                   background: currentPage === 1 ? 'var(--bg-muted)' : 'var(--bg-secondary)',
                   color: currentPage === 1 ? 'var(--text-muted)' : 'var(--text-primary)',
                   cursor: currentPage === 1 ? 'not-allowed' : 'pointer',
-                  fontSize: isMobile ? '0.8rem' : '0.85rem',
+                  fontSize: isMobile ? '0.95rem' : '0.85rem',
                   fontWeight: '500',
-                  transition: 'all 0.2s ease'
+                  transition: 'all 0.2s ease',
+                  minHeight: isMobile ? '52px' : 'auto'
                 }}
               >
                 {isMobile ? '←' : 'Previous'}
               </button>
 
               <span style={{
-                fontSize: isMobile ? '0.8rem' : '0.85rem',
+                fontSize: isMobile ? '0.95rem' : '0.85rem',
                 color: 'var(--text-primary)',
                 padding: '0 8px',
                 fontWeight: '600'
@@ -1507,22 +1927,23 @@ const Dashboard = ({ onCreateProduct, onEditProduct, onViewReport, onDeleteProdu
                 onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
                 disabled={currentPage === totalPages}
                 style={{
-                  padding: isMobile ? '8px 14px' : '8px 16px',
+                  padding: isMobile ? '12px 18px' : '8px 16px',
                   border: '1px solid var(--border-color)',
                   borderRadius: '6px',
                   background: currentPage === totalPages ? 'var(--bg-muted)' : 'var(--bg-secondary)',
                   color: currentPage === totalPages ? 'var(--text-muted)' : 'var(--text-primary)',
                   cursor: currentPage === totalPages ? 'not-allowed' : 'pointer',
-                  fontSize: isMobile ? '0.8rem' : '0.85rem',
+                  fontSize: isMobile ? '0.95rem' : '0.85rem',
                   fontWeight: '500',
-                  transition: 'all 0.2s ease'
+                  transition: 'all 0.2s ease',
+                  minHeight: isMobile ? '52px' : 'auto'
                 }}
               >
                 {isMobile ? '→' : 'Next'}
               </button>
             </div>
           )}
-        </div>
+        </LiquidGlassCard>
       )}
     </div>
   );
