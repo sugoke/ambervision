@@ -14,6 +14,9 @@ import { BankOperationParser } from '../../imports/api/bankOperationParser.js';
 import { BankFileStructureHelpers } from '../../imports/api/bankFileStructures.js';
 import { NotificationHelpers } from '../../imports/api/notifications.js';
 import { AccountProfilesCollection, aggregateToFourCategories } from '../../imports/api/accountProfiles.js';
+import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetadata.js';
+import { CurrencyRateCacheCollection } from '../../imports/api/currencyCache.js';
+import { checkNegativeCash, buildRatesMap } from '../../imports/api/helpers/cashCalculator.js';
 import path from 'path';
 
 /**
@@ -81,9 +84,10 @@ Meteor.methods({
   /**
    * Process latest position file for a bank connection
    */
-  async 'bankPositions.processLatest'({ connectionId, sessionId }) {
+  async 'bankPositions.processLatest'({ connectionId, sessionId, forceReprocess = false }) {
     check(connectionId, String);
     check(sessionId, String);
+    check(forceReprocess, Match.Maybe(Boolean));
 
     // Validate admin access
     const user = await validateAdminSession(sessionId);
@@ -165,6 +169,16 @@ Meteor.methods({
       const { positions, filename, fileDate, totalRecords, content, parser } = parseResult;
 
       console.log(`[BANK_POSITIONS] Parsed ${totalRecords} positions from ${filename}`);
+
+      // Force reprocess: Delete existing records for this date before inserting new ones
+      if (forceReprocess && fileDate) {
+        console.log(`[BANK_POSITIONS] Force reprocess enabled - deleting existing records for ${fileDate.toISOString().split('T')[0]}`);
+        const deleteResult = await PMSHoldingsCollection.removeAsync({
+          bankId: connection.bankId,
+          snapshotDate: fileDate
+        });
+        console.log(`[BANK_POSITIONS] Force reprocess: Deleted ${deleteResult} records for bankId=${connection.bankId}, date=${fileDate.toISOString().split('T')[0]}`);
+      }
 
       // Check for CSV structure changes
       if (content && parser) {
@@ -591,80 +605,43 @@ Meteor.methods({
             bankId: connection.bankId
           }, { sort: { snapshotDate: -1 } });
 
-          // CHECK FOR NEGATIVE CASH BALANCE FIRST (doesn't require account profile)
-          // Check PMSHoldings directly for cash positions with negative values
-          // Note: assetClass is stored in lowercase ('cash', not 'CASH')
-          const cashHoldings = await PMSHoldingsCollection.find({
-            portfolioCode,
-            bankId: connection.bankId,
-            isLatest: true,
-            $or: [
-              { assetClass: 'cash' },
-              { assetClass: { $regex: /^cash$/i } },
-              { securityType: 'CASH' },
-              { securityType: { $regex: /cash/i } }
-            ]
-          }).fetchAsync();
-
-          // Also get ALL holdings to check for any negative values
+          // CHECK FOR NEGATIVE CASH BALANCE using shared calculator (same as Cash Monitor)
+          // Get ALL holdings for this portfolio
           const allHoldings = await PMSHoldingsCollection.find({
             portfolioCode,
             bankId: connection.bankId,
             isLatest: true
           }).fetchAsync();
 
-          const totalCashFromHoldings = cashHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+          // Get currency rates for EUR conversion (same as Cash Monitor)
+          const currencyRates = await CurrencyRateCacheCollection.find({
+            expiresAt: { $gt: new Date() }
+          }).fetchAsync();
+          const ratesMap = buildRatesMap(currencyRates);
 
-          // Log detailed info about cash holdings
-          console.log(`[CASH_CHECK] Portfolio ${portfolioCode}: found ${cashHoldings.length} cash holdings, total=${totalCashFromHoldings}, snapshot cash=${snapshot?.cashBalance}`);
+          // Get ISINs classified as cash equivalents (monetary products, time deposits)
+          const cashEquivalentMetadata = await SecuritiesMetadataCollection.find({
+            assetClass: { $in: ['monetary_products', 'time_deposit'] }
+          }).fetchAsync();
+          const cashEquivalentISINs = new Set(cashEquivalentMetadata.map(m => m.isin));
 
-          // Log each cash holding for debugging
-          cashHoldings.forEach(h => {
-            console.log(`[CASH_DETAIL] - ${h.securityName || h.isin}: assetClass=${h.assetClass}, securityType=${h.securityType}, marketValue=${h.marketValue}, currency=${h.currency}`);
-          });
+          // Use shared cash calculator (identical to Cash Monitor logic)
+          const cashResult = checkNegativeCash(
+            allHoldings,
+            ratesMap,
+            cashEquivalentISINs,
+            bankAccount.authorizedOverdraft || 0,
+            bankAccount.referenceCurrency || 'EUR'
+          );
 
-          // Check ALL holdings for negative values
-          const negativeHoldings = allHoldings.filter(h => (h.marketValue || 0) < 0);
-          if (negativeHoldings.length > 0) {
-            console.log(`[NEGATIVE_VALUES] Portfolio ${portfolioCode}: ${negativeHoldings.length} holdings with negative marketValue:`);
-            negativeHoldings.forEach(h => {
-              console.log(`[NEGATIVE_VALUES] - ${h.securityName || h.isin}: assetClass=${h.assetClass}, securityType=${h.securityType}, marketValue=${h.marketValue}`);
-            });
-          }
+          // Log for debugging (using EUR values now)
+          console.log(`[CASH_CHECK] Portfolio ${portfolioCode}: pureCashEUR=${cashResult.pureCashEUR.toFixed(2)}, authorizedOverdraftEUR=${cashResult.authorizedOverdraftEUR.toFixed(2)}, exceedsOverdraft=${cashResult.exceedsOverdraft}`);
 
-          // Log unique asset classes in portfolio for debugging
-          const assetClasses = [...new Set(allHoldings.map(h => h.assetClass))];
-          console.log(`[ASSET_CLASSES] Portfolio ${portfolioCode} has asset classes: ${assetClasses.join(', ')}`);
-
-          // Aggregate cash holdings by currency to get NET cash position per currency
-          // This prevents double-counting when multiple cash entries exist for the same currency
-          const cashByCurrency = {};
-          for (const h of cashHoldings) {
-            const currency = h.currency || 'EUR';
-            if (!cashByCurrency[currency]) {
-              cashByCurrency[currency] = { currency, totalValue: 0, holdings: [] };
-            }
-            cashByCurrency[currency].totalValue += (h.marketValue || 0);
-            cashByCurrency[currency].holdings.push(h);
-          }
-
-          // Find currencies with negative NET balance
-          const negativeCurrencies = Object.values(cashByCurrency).filter(c => c.totalValue < 0);
-
-          // Log aggregated cash by currency for debugging
-          Object.values(cashByCurrency).forEach(c => {
-            console.log(`[CASH_AGGREGATED] ${c.currency}: ${c.holdings.length} entries, net value: ${c.totalValue.toLocaleString()}`);
-          });
-
-          // Get the authorized overdraft (credit line) for this account
+          // Extract values for notification compatibility
+          const negativeCurrencies = cashResult.negativeCurrencies;
           const authorizedOverdraft = bankAccount.authorizedOverdraft || 0;
-
-          // Calculate total negative cash amount (as positive number for comparison) from NET balances
-          const totalNegativeCash = negativeCurrencies.reduce((sum, c) => sum + Math.abs(c.totalValue), 0);
-
-          // Only alert if negative cash EXCEEDS authorized overdraft
-          const excessOverdraft = totalNegativeCash - authorizedOverdraft;
-          const shouldAlert = negativeCurrencies.length > 0 && excessOverdraft > 0;
+          const excessOverdraft = cashResult.excessAmount;
+          const shouldAlert = cashResult.exceedsOverdraft;
 
           if (shouldAlert) {
             // Get client info for notification
@@ -696,11 +673,12 @@ Meteor.methods({
               clientName: clientNameForCash,
               negativeCashPositions: negativeCurrencies.map(c => ({
                 currency: c.currency,
-                amount: c.totalValue
+                amount: c.totalValue,
+                amountEUR: c.eurValue
               })),
-              totalCashBalance: totalCashFromHoldings,
-              authorizedOverdraft,
-              excessOverdraft,
+              totalCashBalanceEUR: cashResult.pureCashEUR,  // Now in EUR for consistency with Cash Monitor
+              authorizedOverdraftEUR: cashResult.authorizedOverdraftEUR,
+              excessOverdraftEUR: excessOverdraft,
               severity: 'critical'
             };
 
@@ -741,7 +719,7 @@ Meteor.methods({
             }
           } else if (negativeCurrencies.length > 0 && excessOverdraft <= 0) {
             // Negative cash within authorized overdraft - log but don't alert
-            console.log(`[NEGATIVE_CASH] Account ${bankAccount.accountNumber} has negative cash (${totalNegativeCash.toLocaleString()}) within authorized overdraft limit (${authorizedOverdraft.toLocaleString()})`);
+            console.log(`[NEGATIVE_CASH] Account ${bankAccount.accountNumber} has negative cash (EUR ${cashResult.totalNegativeCashEUR.toLocaleString()}) within authorized overdraft limit (${authorizedOverdraft.toLocaleString()})`);
             // Resolve any existing alerts since the overdraft is now within limits
             await NotificationHelpers.resolveUserNotifications('unauthorized_overdraft', {
               bankAccountId: bankAccount._id
@@ -2252,6 +2230,159 @@ Meteor.methods({
       regenerated,
       errors,
       remaining: missingDates.length - datesToProcess.length
+    };
+  },
+
+  /**
+   * Get data freshness status for all banks for a user or across all users (admin)
+   * Returns freshness info per bank connection showing if data is current or stale
+   */
+  async 'pms.getDataFreshness'({ sessionId, userId }) {
+    check(sessionId, String);
+    check(userId, Match.Maybe(String));
+
+    // Validate session
+    const session = await SessionsCollection.findOneAsync({
+      sessionId,
+      isActive: true
+    });
+
+    if (!session) {
+      throw new Meteor.Error('not-authorized', 'Invalid session');
+    }
+
+    const currentUser = await UsersCollection.findOneAsync(session.userId);
+    if (!currentUser) {
+      throw new Meteor.Error('not-authorized', 'User not found');
+    }
+
+    const isAdmin = currentUser.role === 'admin' || currentUser.role === 'superadmin';
+
+    // Determine target user
+    let targetUserId;
+    if (userId && isAdmin) {
+      targetUserId = userId;
+    } else if (isAdmin && !userId) {
+      // Admin without specific user - get all data
+      targetUserId = null;
+    } else {
+      // Regular user - only their own data
+      targetUserId = session.userId;
+    }
+
+    // Import freshness helper
+    const { checkDataFreshness, formatDataDate, getFreshnessIcon } = await import('../../imports/api/helpers/dataFreshness.js');
+
+    // Get all bank accounts for the user(s)
+    const bankAccountQuery = targetUserId ? { userId: targetUserId } : {};
+    console.log('[DataFreshness] bankAccountQuery:', bankAccountQuery, 'targetUserId:', targetUserId);
+    const bankAccounts = await BankAccountsCollection.find(bankAccountQuery).fetchAsync();
+    console.log('[DataFreshness] Found bankAccounts:', bankAccounts.length);
+
+    // Get portfolio codes from bank accounts
+    const portfolioCodes = bankAccounts.map(a => a.accountNumber).filter(Boolean);
+    console.log('[DataFreshness] portfolioCodes:', portfolioCodes);
+
+    // Build holdings query - if we have portfolio codes, use them; otherwise get all latest holdings
+    // This ensures we show freshness even when bank accounts aren't properly linked
+    let holdingsQuery;
+    if (portfolioCodes.length > 0) {
+      holdingsQuery = { portfolioCode: { $in: portfolioCodes }, isLatest: true };
+    } else {
+      // Fallback: get all latest holdings (for admin or if no bank accounts linked)
+      console.log('[DataFreshness] No portfolio codes found, using fallback query for all holdings');
+      holdingsQuery = { isLatest: true };
+    }
+
+    const allHoldings = await PMSHoldingsCollection.find(holdingsQuery, {
+      fields: { bankId: 1, snapshotDate: 1, fileDate: 1, portfolioCode: 1 }
+    }).fetchAsync();
+
+    console.log('[DataFreshness] Found holdings:', allHoldings.length);
+
+    // Group by bankId to find unique banks and their latest data dates
+    const bankDataMap = {};
+    for (const holding of allHoldings) {
+      const bankId = holding.bankId;
+      if (!bankId) continue;
+
+      const dataDate = holding.snapshotDate || holding.fileDate;
+      if (!bankDataMap[bankId] || (dataDate && dataDate > bankDataMap[bankId].dataDate)) {
+        bankDataMap[bankId] = {
+          bankId,
+          dataDate,
+          portfolioCode: holding.portfolioCode
+        };
+      }
+    }
+
+    const uniqueBankIds = Object.keys(bankDataMap);
+    console.log('[DataFreshness] Unique banks from holdings:', uniqueBankIds);
+
+    if (uniqueBankIds.length === 0) {
+      console.log('[DataFreshness] No holdings found with bankId');
+      return { banks: [], hasStaleData: false, hasErrors: false };
+    }
+
+    // Get banks info
+    const banks = await BanksCollection.find({ _id: { $in: uniqueBankIds } }).fetchAsync();
+    const bankMap = Object.fromEntries(banks.map(b => [b._id, b]));
+    console.log('[DataFreshness] Found banks:', banks.map(b => b.name));
+
+    // Optionally get connections for error status (if available)
+    const connections = await BankConnectionsCollection.find({
+      bankId: { $in: uniqueBankIds }
+    }).fetchAsync();
+    const connectionMap = Object.fromEntries(connections.map(c => [c.bankId, c]));
+
+    // Build freshness results
+    const freshnessResults = [];
+
+    for (const bankId of uniqueBankIds) {
+      const bank = bankMap[bankId];
+      const bankData = bankDataMap[bankId];
+      const connection = connectionMap[bankId];
+
+      if (!bank) {
+        console.log('[DataFreshness] Bank not found for bankId:', bankId);
+        continue;
+      }
+
+      const dataDate = bankData.dataDate;
+      const freshness = checkDataFreshness(dataDate);
+
+      // Check for sync errors from connection (if exists)
+      const hasError = connection && connection.lastError && connection.status === 'error';
+
+      freshnessResults.push({
+        bankId,
+        bankName: bank.name,
+        connectionId: connection?._id || bankId,
+        connectionName: connection?.connectionName || bank.name,
+        dataDate,
+        dataDateFormatted: formatDataDate(dataDate),
+        status: hasError ? 'error' : freshness.status,
+        statusIcon: getFreshnessIcon(hasError ? 'error' : freshness.status),
+        message: hasError ? (connection.lastError || 'Sync failed') : freshness.message,
+        businessDaysOld: freshness.businessDaysOld,
+        lastProcessedAt: connection?.lastProcessedAt,
+        lastError: connection?.lastError
+      });
+    }
+
+    // Sort by status (errors first, then stale, then fresh)
+    const statusOrder = { error: 0, old: 1, stale: 2, fresh: 3 };
+    freshnessResults.sort((a, b) => (statusOrder[a.status] || 99) - (statusOrder[b.status] || 99));
+
+    // Calculate overall status
+    const hasErrors = freshnessResults.some(r => r.status === 'error');
+    const hasStaleData = freshnessResults.some(r => r.status === 'stale' || r.status === 'old');
+
+    return {
+      banks: freshnessResults,
+      hasStaleData,
+      hasErrors,
+      expectedDate: formatDataDate(new Date()) // Today's expected data date
     };
   }
 });

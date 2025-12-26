@@ -7,6 +7,8 @@ import { MarketDataHelpers } from '/imports/api/marketDataCache';
 import { ProductsCollection } from '/imports/api/products';
 import { BankConnectionsCollection } from '/imports/api/bankConnections';
 import { conditionalUpdate, updateMarketTickerPrices } from './updateMarketTicker';
+import { EmailService } from '/imports/api/emailService';
+import { NotificationsCollection } from '/imports/api/notifications';
 
 /**
  * Cron Jobs Configuration
@@ -484,15 +486,21 @@ async function productRevaluationJob(options = {}) {
  * Runs daily at 03:00 CET
  * For SFTP connections: Downloads bank files and processes for PMS
  * For Local connections: Skips download (files already uploaded by bank), processes directly
- * Skips execution on weekends and holidays
+ * Skips execution on weekends and holidays (unless bypassWeekendCheck is true)
  */
-async function bankFileSyncJob(triggerSource = 'cron') {
-  // Check if today is a weekend or holiday
-  const tradingDayCheck = isWeekendOrHoliday();
-  if (tradingDayCheck.isNonTradingDay) {
-    console.log(`[CRON] Bank File Sync skipped: ${tradingDayCheck.reason}`);
-    scheduleInfo.bankFileSync.nextScheduledRun = getNextRunTime(scheduleInfo.bankFileSync.schedule);
-    return { skipped: true, reason: tradingDayCheck.reason };
+async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
+  const { bypassWeekendCheck = false, forceReprocess = false } = options;
+
+  // Check if today is a weekend or holiday (skip check for manual triggers with bypass)
+  if (!bypassWeekendCheck) {
+    const tradingDayCheck = isWeekendOrHoliday();
+    if (tradingDayCheck.isNonTradingDay) {
+      console.log(`[CRON] Bank File Sync skipped: ${tradingDayCheck.reason}`);
+      scheduleInfo.bankFileSync.nextScheduledRun = getNextRunTime(scheduleInfo.bankFileSync.schedule);
+      return { skipped: true, reason: tradingDayCheck.reason };
+    }
+  } else {
+    console.log(`[CRON] Bank File Sync: Bypassing weekend/holiday check (manual trigger)`);
   }
 
   const logId = await CronJobLogHelpers.startJob('bankFileSync', triggerSource);
@@ -593,7 +601,7 @@ async function bankFileSyncJob(triggerSource = 'cron') {
         // Note: bankPositions.processLatest handles BOTH positions and operations
         const processResult = await Meteor.callAsync(
           'bankPositions.processLatest',
-          { connectionId: connection._id, sessionId: 'system-cron' }
+          { connectionId: connection._id, sessionId: 'system-cron', forceReprocess }
         );
 
         if (processResult.success) {
@@ -659,6 +667,26 @@ async function bankFileSyncJob(triggerSource = 'cron') {
     // Log completion
     await CronJobLogHelpers.completeJob(logId, results);
     console.log(`[CRON] Bank File Sync completed: ${results.connectionsSucceeded}/${results.connectionsProcessed} connections`);
+
+    // Send bank sync completion email with notifications
+    try {
+      // Collect notifications generated during this sync (within the last 10 minutes)
+      const syncStartTime = new Date(Date.now() - 10 * 60 * 1000);
+      const syncNotifications = await NotificationsCollection.find({
+        createdAt: { $gte: syncStartTime },
+        eventType: { $in: ['unauthorized_overdraft', 'allocation_breach', 'unknown_structured_product', 'auto_allocation_created', 'price_override'] }
+      }).fetchAsync();
+
+      await EmailService.sendBankSyncCompletionEmail(
+        'mf@amberlakepartners.com',
+        results,
+        syncNotifications
+      );
+      console.log(`[CRON] Bank sync completion email sent with ${syncNotifications.length} notifications`);
+    } catch (emailError) {
+      // Don't fail the job if email fails, just log the error
+      console.error('[CRON] Failed to send bank sync completion email:', emailError.message);
+    }
 
     return { success: true, ...results };
 
@@ -830,9 +858,15 @@ if (Meteor.isServer) {
 
     /**
      * Manually trigger bank file sync
+     * @param {String} sessionId - User session ID
+     * @param {Object} options - Optional parameters
+     * @param {Boolean} options.forceReprocess - If true, deletes existing records for latest date and reprocesses
      */
-    async 'cronJobs.triggerBankFileSync'(sessionId) {
+    async 'cronJobs.triggerBankFileSync'(sessionId, options = {}) {
       check(sessionId, String);
+      check(options, Match.Maybe(Object));
+
+      const { forceReprocess = false } = options;
 
       // Authenticate user - only superadmin
       const currentUser = await Meteor.callAsync('auth.getCurrentUser', sessionId);
@@ -840,10 +874,11 @@ if (Meteor.isServer) {
         throw new Meteor.Error('access-denied', 'Superadmin privileges required');
       }
 
-      console.log(`[MANUAL] Bank File Sync triggered by ${currentUser.email}`);
+      console.log(`[MANUAL] Bank File Sync triggered by ${currentUser.email}${forceReprocess ? ' (FORCE REPROCESS)' : ''}`);
 
       try {
-        const result = await bankFileSyncJob('manual');
+        // Bypass weekend/holiday check for manual triggers - superadmin explicitly wants to run it
+        const result = await bankFileSyncJob('manual', { bypassWeekendCheck: true, forceReprocess });
         return { success: true, result };
       } catch (error) {
         throw new Meteor.Error('job-execution-failed', error.message);
