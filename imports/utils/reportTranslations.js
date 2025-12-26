@@ -71,6 +71,7 @@ export const translations = {
     paid: 'PAID',
     overdue: 'OVERDUE',
     pending: 'PENDING',
+    redeemed: 'REDEEMED',
     allFlagged: 'All Flagged',
 
     // Next observation prediction
@@ -233,6 +234,7 @@ export const translations = {
     paid: 'PAYÉ',
     overdue: 'EN RETARD',
     pending: 'EN ATTENTE',
+    redeemed: 'REMBOURSÉ',
     allFlagged: 'Tous Marqués',
 
     // Next observation prediction

@@ -9,6 +9,8 @@
  * File format: Comma-delimited CSV with header row
  */
 
+import { SECURITY_TYPES } from '../constants/instrumentTypes';
+
 export const EDRMonacoParser = {
   /**
    * Bank identifier
@@ -111,6 +113,7 @@ export const EDRMonacoParser = {
    * - 215: ETF
    * - 270: Certificate
    * - 408, 409: Term Deposit
+   * Uses SECURITY_TYPES constants from instrumentTypes.js
    */
   mapSecurityType(genre, mb004) {
     // Remove quotes if present
@@ -119,27 +122,27 @@ export const EDRMonacoParser = {
 
     // mb004 = 4 indicates cash-related record
     if (cleanMb004 === '4') {
-      return 'CASH';
+      return SECURITY_TYPES.CASH;
     }
 
     // mb004 = 3 indicates term deposit
     if (cleanMb004 === '3') {
-      return 'TERM_DEPOSIT';
+      return SECURITY_TYPES.TERM_DEPOSIT;
     }
 
     const typeMap = {
-      '001': 'CASH',
-      '002': 'CASH', // Overdraft
-      '100': 'BOND',
-      '123': 'STRUCTURED_PRODUCT',
-      '200': 'EQUITY',
-      '215': 'ETF',
-      '270': 'CERTIFICATE',
-      '408': 'TERM_DEPOSIT',
-      '409': 'TERM_DEPOSIT'
+      '001': SECURITY_TYPES.CASH,
+      '002': SECURITY_TYPES.CASH, // Overdraft
+      '100': SECURITY_TYPES.BOND,
+      '123': SECURITY_TYPES.STRUCTURED_PRODUCT,
+      '200': SECURITY_TYPES.EQUITY,
+      '215': SECURITY_TYPES.ETF,
+      '270': SECURITY_TYPES.CERTIFICATE,
+      '408': SECURITY_TYPES.TERM_DEPOSIT,
+      '409': SECURITY_TYPES.TERM_DEPOSIT
     };
 
-    return typeMap[cleanGenre] || 'UNKNOWN';
+    return typeMap[cleanGenre] || SECURITY_TYPES.UNKNOWN;
   },
 
   /**
@@ -224,26 +227,33 @@ export const EDRMonacoParser = {
   /**
    * Determine if price is in percentage format
    * For bonds and structured products, prices are typically in percentage (e.g., 92.86 = 92.86%)
+   * Uses SECURITY_TYPES constants from instrumentTypes.js
    */
   isPercentagePrice(genre, securityType) {
-    const percentageTypes = ['BOND', 'STRUCTURED_PRODUCT', 'CERTIFICATE', 'TERM_DEPOSIT'];
+    const percentageTypes = [
+      SECURITY_TYPES.BOND,
+      SECURITY_TYPES.STRUCTURED_PRODUCT,
+      SECURITY_TYPES.CERTIFICATE,
+      SECURITY_TYPES.TERM_DEPOSIT
+    ];
     return percentageTypes.includes(securityType);
   },
 
   /**
    * Normalize price to decimal format
    * Converts percentage prices (92.86) to decimal (0.9286)
+   * Uses SECURITY_TYPES constants from instrumentTypes.js
    */
   normalizePrice(rawValue, securityType) {
     if (!rawValue && rawValue !== 0) return null;
 
     // For equities and ETFs, price is absolute (share price)
-    if (securityType === 'EQUITY' || securityType === 'ETF') {
+    if (securityType === SECURITY_TYPES.EQUITY || securityType === SECURITY_TYPES.ETF) {
       return rawValue;
     }
 
     // For cash positions, no price normalization needed
-    if (securityType === 'CASH') {
+    if (securityType === SECURITY_TYPES.CASH) {
       return rawValue;
     }
 

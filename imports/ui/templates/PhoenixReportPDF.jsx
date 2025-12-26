@@ -836,19 +836,50 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                       {obs.hasMemory || observationAnalysis.hasMemoryCoupon ? 'Yes' : 'No'}
                     </td>
                     <td style={{...styles.td, textAlign: 'center'}}>
-                      <span style={{
-                        padding: '2px 8px',
-                        borderRadius: '4px',
-                        fontSize: '0.7rem',
-                        fontWeight: 500,
-                        background: obs.status === 'completed' ? (obs.couponEarned ? '#d1fae5' : '#fee2e2') :
-                                   obs.isNext ? '#fef3c7' : '#f3f4f6',
-                        color: obs.status === 'completed' ? (obs.couponEarned ? '#047857' : '#b91c1c') :
-                               obs.isNext ? '#b45309' : '#6b7280'
-                      }}>
-                        {obs.status === 'completed' ? (obs.couponEarned ? 'Paid' : 'Missed') :
-                         obs.isNext ? 'Next' : 'Pending'}
-                      </span>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'center' }}>
+                        {/* Coupon Payment Status */}
+                        {obs.couponPaid > 0 && obs.hasOccurred && (
+                          <span style={{
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            fontSize: '0.65rem',
+                            fontWeight: 600,
+                            background: obs.paymentConfirmed ? '#d1fae5' : obs.isPastDue ? '#fee2e2' : '#f3f4f6',
+                            color: obs.paymentConfirmed ? '#047857' : obs.isPastDue ? '#b91c1c' : '#6b7280'
+                          }}>
+                            {obs.paymentConfirmed ? '✓ Paid' : obs.isPastDue ? '⚠ Due' : '? Cpn'}
+                          </span>
+                        )}
+                        {/* Redemption Status - for autocalled observations */}
+                        {obs.autocalled && obs.hasOccurred && (
+                          <span style={{
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            fontSize: '0.65rem',
+                            fontWeight: 600,
+                            background: obs.redemptionConfirmed ? '#dbeafe' : obs.redemptionIsPastDue ? '#fed7aa' : '#f3f4f6',
+                            color: obs.redemptionConfirmed ? '#1d4ed8' : obs.redemptionIsPastDue ? '#c2410c' : '#6b7280'
+                          }}>
+                            {obs.redemptionConfirmed ? '✓ Redeemed' : obs.redemptionIsPastDue ? '⚠ Redeem' : '? Redeem'}
+                          </span>
+                        )}
+                        {/* Fallback for observations without coupon payment */}
+                        {(!obs.couponPaid || obs.couponPaid === 0 || !obs.hasOccurred) && !obs.autocalled && (
+                          <span style={{
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            fontSize: '0.7rem',
+                            fontWeight: 500,
+                            background: obs.status === 'completed' ? (obs.couponEarned ? '#d1fae5' : '#fee2e2') :
+                                       obs.isNext ? '#fef3c7' : '#f3f4f6',
+                            color: obs.status === 'completed' ? (obs.couponEarned ? '#047857' : '#b91c1c') :
+                                   obs.isNext ? '#b45309' : '#6b7280'
+                          }}>
+                            {obs.status === 'completed' ? (obs.couponEarned ? 'Paid' : 'Missed') :
+                             obs.isNext ? 'Next' : 'Pending'}
+                          </span>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );

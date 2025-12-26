@@ -11,8 +11,24 @@ import { BanksCollection } from '/imports/api/banks';
 import { ProductsCollection } from '/imports/api/products';
 import { AllocationsCollection } from '/imports/api/allocations';
 import { useViewAs } from './ViewAsContext.jsx';
-import { getAssetClassLabel, getGranularCategoryLabel, SecuritiesMetadataCollection } from '/imports/api/securitiesMetadata';
+import {
+  getAssetClassLabel,
+  getGranularCategoryLabel,
+  SecuritiesMetadataCollection,
+  buildHierarchicalStructuredProductBreakdown,
+  getUnderlyingTypeLabel,
+  getProtectionTypeLabel as getProtectionTypeLabelFromMetadata
+} from '/imports/api/securitiesMetadata';
+import {
+  SECURITY_TYPES,
+  ASSET_CLASSES,
+  getAssetClassFromSecurityType as getAssetClassFromSecurityTypeBase,
+  getAssetSubClass as getAssetSubClassBase
+} from '/imports/api/constants/instrumentTypes';
 import PDFDownloadButton from './components/PDFDownloadButton.jsx';
+import NestedDoughnutChart from './components/NestedDoughnutChart.jsx';
+import { DataFreshnessPanel } from './components/DataFreshnessIndicator.jsx';
+import { checkDataFreshness } from '/imports/api/helpers/dataFreshness.js';
 
 // Local collection for snapshot dates (synthetic collection from publication)
 const PMSHoldingsSnapshotDatesCollection = new Mongo.Collection('pmsHoldingsSnapshotDates');
@@ -104,15 +120,26 @@ const getProtectionTypeLabel = (protectionType) => {
   return labels[protectionType] || 'Others';
 };
 
-// Helper function to get display label for underlying type
-const getUnderlyingTypeLabel = (underlyingType) => {
-  const labels = {
+// Helper function to get display label for structured product subclass
+// Handles both underlying types (equity_linked) and protection types (capital_guaranteed_100)
+const getStructuredProductSubclassLabel = (subClass) => {
+  // Underlying type labels
+  const underlyingLabels = {
     'equity_linked': 'Equity Linked',
     'fixed_income_linked': 'Fixed Income Linked',
     'credit_linked': 'Credit Linked',
     'commodities_linked': 'Commodities Linked'
   };
-  return labels[underlyingType] || 'Not Specified';
+
+  // Protection type labels
+  const protectionLabels = {
+    'capital_guaranteed_100': '100% Capital Guaranteed',
+    'capital_guaranteed_partial': 'Capital Partially Guaranteed',
+    'capital_protected_conditional': 'Capital Protected Conditionally',
+    'other_protection': 'Others'
+  };
+
+  return underlyingLabels[subClass] || protectionLabels[subClass] || 'Other';
 };
 
 // Helper function to get product type icon based on template ID
@@ -133,55 +160,68 @@ const getProductTypeIcon = (templateId) => {
 };
 
 // Helper function to determine asset class from security type
+// Uses centralized mapping from instrumentTypes.js with additional name-based fallback
 const getAssetClassFromSecurityType = (securityType, securityName = '', productTags = null) => {
   const type = String(securityType || '').trim().toUpperCase();
   const name = (securityName || '').toLowerCase();
 
-  // Map security types to new asset class structure
-  if (type === '1' || type === 'EQUITY' || type === 'STOCK') {
-    return 'equity';
+  // First try the standardized mapping from central constants
+  // This handles all standard SECURITY_TYPES values
+  const baseResult = getAssetClassFromSecurityTypeBase(type, securityName);
+
+  // If we got a valid result that's not 'other', use it
+  if (baseResult && baseResult !== ASSET_CLASSES.OTHER) {
+    return baseResult;
   }
-  if (type === '2' || type === 'BOND' || name.includes('bond') || name.includes('treasury')) {
-    return 'fixed_income';
-  }
-  if (type === '4' || type === 'CASH') {
-    return 'cash';
-  }
-  if (type === 'TERM_DEPOSIT' || type === 'TIME_DEPOSIT') {
-    return 'time_deposit';
-  }
-  if (type === 'FX_FORWARD') {
-    return 'fx_forward';
+
+  // Legacy numeric codes from some banks
+  if (type === '1') return ASSET_CLASSES.EQUITY;
+  if (type === '2') return ASSET_CLASSES.FIXED_INCOME;
+  if (type === '4') return ASSET_CLASSES.CASH;
+
+  // Name-based fallback for unclassified securities
+  if (name.includes('bond') || name.includes('treasury')) {
+    return ASSET_CLASSES.FIXED_INCOME;
   }
   if (name.includes('money market') || name.includes('t-bill') || name.includes('commercial paper')) {
-    return 'monetary_products';
+    return ASSET_CLASSES.MONETARY_PRODUCTS;
   }
   if (name.includes('gold') || name.includes('silver') || name.includes('commodity') || name.includes('metal') || name.includes('oil')) {
-    return 'commodities';
+    return ASSET_CLASSES.COMMODITIES;
   }
   if (name.includes('capital guaranteed') || name.includes('cap.prot') || name.includes('capital protection')) {
-    return 'structured_product';
+    return ASSET_CLASSES.STRUCTURED_PRODUCT;
   }
   if (name.includes('autocallable') || name.includes('barrier') || name.includes('certificate') || name.includes('cert.')) {
-    return 'structured_product';
+    return ASSET_CLASSES.STRUCTURED_PRODUCT;
   }
 
   // Default to structured_product for unknown types
-  return 'structured_product';
+  return ASSET_CLASSES.STRUCTURED_PRODUCT;
 };
 
 // Helper function to get asset sub-class
+// Uses centralized mapping from instrumentTypes.js
 const getAssetSubClass = (assetClass, securityType, securityName = '', productTags = null) => {
+  // First try the standardized mapping from central constants
+  const baseResult = getAssetSubClassBase(assetClass, securityType, securityName);
+
+  // If we got a valid result, use it
+  if (baseResult) {
+    return baseResult;
+  }
+
+  // Additional name-based fallback for edge cases
   const name = (securityName || '').toLowerCase();
 
-  if (assetClass === 'equity') {
+  if (assetClass === ASSET_CLASSES.EQUITY) {
     if (name.includes('fund') || name.includes('etf')) {
       return 'equity_fund';
     }
     return 'direct_equity';
   }
 
-  if (assetClass === 'fixed_income') {
+  if (assetClass === ASSET_CLASSES.FIXED_INCOME) {
     if (name.includes('fund')) {
       return 'fixed_income_fund';
     }
@@ -385,6 +425,12 @@ const PortfolioManagementSystem = ({ user }) => {
   const [chartLoading, setChartLoading] = useState(false);
   const [lastFetchedRange, setLastFetchedRange] = useState(null);
   const [assetAllocation, setAssetAllocation] = useState(null);
+  const [structuredProductHierarchy, setStructuredProductHierarchy] = useState({
+    hasData: false,
+    level1: [],
+    level2: [],
+    totalStructuredValue: 0
+  });
   const [currencyAllocation, setCurrencyAllocation] = useState(null);
   const [selectedTimeRange, setSelectedTimeRange] = useState('1Y');
 
@@ -579,6 +625,7 @@ const PortfolioManagementSystem = ({ user }) => {
         portfolioCurrency: holding.portfolioCurrency || null,  // Add portfolioCurrency from holding for fallback
         priceType: holding.priceType || 'absolute',
         isin: holding.isin,
+        bankId: holding.bankId,
         bankName: holding.bankName,
         portfolioCode: holding.portfolioCode,
         dataDate: holding.dataDate,
@@ -749,6 +796,74 @@ const PortfolioManagementSystem = ({ user }) => {
       snapshotDate: selectedDate || new Date()
     });
   }, [filteredHoldings, selectedDate]);
+
+  // Calculate hierarchical structured product breakdown for nested chart
+  React.useEffect(() => {
+    if (!filteredHoldings || filteredHoldings.length === 0) {
+      setStructuredProductHierarchy({
+        hasData: false,
+        level1: [],
+        level2: [],
+        totalStructuredValue: 0
+      });
+      return;
+    }
+
+    // Filter to structured products only
+    const structuredHoldings = filteredHoldings.filter(h => h.assetClass === 'structured_product');
+
+    if (structuredHoldings.length === 0) {
+      setStructuredProductHierarchy({
+        hasData: false,
+        level1: [],
+        level2: [],
+        totalStructuredValue: 0
+      });
+      return;
+    }
+
+    // Build hierarchical grouping using helper function
+    const { level1Totals, level2Totals } = buildHierarchicalStructuredProductBreakdown(structuredHoldings);
+
+    const totalStructuredValue = Object.values(level1Totals).reduce((a, b) => a + b, 0);
+
+    // Convert Level 1 to array format
+    const level1Data = Object.entries(level1Totals)
+      .map(([type, value]) => ({
+        key: type,
+        name: getUnderlyingTypeLabel(type),
+        value,
+        percentage: totalStructuredValue > 0 ? (value / totalStructuredValue) * 100 : 0
+      }))
+      .sort((a, b) => b.value - a.value);
+
+    // Convert Level 2 to array format with parent reference
+    const level2Data = Object.entries(level2Totals)
+      .map(([key, data]) => ({
+        key,
+        name: getProtectionTypeLabelFromMetadata(data.type),
+        value: data.value,
+        parent: data.parent,
+        type: data.type,
+        percentage: totalStructuredValue > 0 ? (data.value / totalStructuredValue) * 100 : 0
+      }))
+      .sort((a, b) => {
+        // Sort by parent first (keep together), then by value within parent
+        const parentIdxA = level1Data.findIndex(l => l.key === a.parent);
+        const parentIdxB = level1Data.findIndex(l => l.key === b.parent);
+        if (parentIdxA !== parentIdxB) {
+          return parentIdxA - parentIdxB;
+        }
+        return b.value - a.value;
+      });
+
+    setStructuredProductHierarchy({
+      hasData: true,
+      level1: level1Data,
+      level2: level2Data,
+      totalStructuredValue
+    });
+  }, [filteredHoldings]);
 
   // Calculate currency allocation from filtered holdings
   React.useEffect(() => {
@@ -960,13 +1075,24 @@ const PortfolioManagementSystem = ({ user }) => {
       };
     }
 
-    // For structured products, group by product type (Phoenix, Autocallable, etc.)
+    // For structured products, group by underlying type -> protection type (two-level hierarchy)
     if (assetClass === 'structured_product') {
-      const subClass = position.productType || position.structuredProductType || 'Other';
-      if (!groups[assetClass].subGroups[subClass]) {
-        groups[assetClass].subGroups[subClass] = [];
+      const underlyingType = position.structuredProductUnderlyingType || 'other';
+      const protectionType = position.structuredProductProtectionType || 'other';
+
+      // Initialize level 1 (underlying type) if needed
+      if (!groups[assetClass].subGroups[underlyingType]) {
+        groups[assetClass].subGroups[underlyingType] = {
+          positions: [],
+          subGroups: {}
+        };
       }
-      groups[assetClass].subGroups[subClass].push(position);
+
+      // Initialize level 2 (protection type) and add position
+      if (!groups[assetClass].subGroups[underlyingType].subGroups[protectionType]) {
+        groups[assetClass].subGroups[underlyingType].subGroups[protectionType] = [];
+      }
+      groups[assetClass].subGroups[underlyingType].subGroups[protectionType].push(position);
     }
     // For equity and fixed income, group by sub-class (direct vs funds)
     else if ((assetClass === 'equity' || assetClass === 'fixed_income') && position.assetSubClass) {
@@ -984,73 +1110,90 @@ const PortfolioManagementSystem = ({ user }) => {
     return groups;
   }, {});
 
-  // Calculate subtotals for each asset class and sub-asset class
-  const assetClassSubtotals = Object.keys(groupedPositions).reduce((totals, assetClass) => {
-    const group = groupedPositions[assetClass];
-
-    // Collect all positions from all sub-groups
-    const allPositions = [
-      ...group.positions,
-      ...Object.values(group.subGroups).flat()
-    ];
-
-    const marketValue = allPositions.reduce((sum, p) => sum + p.marketValue, 0);
-    const costBasis = allPositions.reduce((sum, p) => sum + p.costBasis, 0);
+  // Helper function to calculate totals for a list of positions
+  const calculatePositionsTotals = (positions) => {
+    const marketValue = positions.reduce((sum, p) => sum + p.marketValue, 0);
+    const costBasis = positions.reduce((sum, p) => sum + p.costBasis, 0);
     const gainLoss = marketValue - costBasis;
     const gainLossPercent = costBasis > 0 ? (gainLoss / costBasis) * 100 : 0;
     const percentage = totalPortfolioValue > 0 ? (marketValue / totalPortfolioValue) * 100 : 0;
 
-    // Determine dominant currency (most common in this asset class)
-    const currencyCounts = allPositions.reduce((counts, p) => {
+    const currencyCounts = positions.reduce((counts, p) => {
       counts[p.currency] = (counts[p.currency] || 0) + 1;
       return counts;
     }, {});
-    const dominantCurrency = Object.keys(currencyCounts).reduce((a, b) =>
-      currencyCounts[a] > currencyCounts[b] ? a : b, 'USD'
-    );
-    const hasMixedCurrencies = Object.keys(currencyCounts).length > 1;
+    const dominantCurrency = Object.keys(currencyCounts).length > 0
+      ? Object.keys(currencyCounts).reduce((a, b) => currencyCounts[a] > currencyCounts[b] ? a : b, 'USD')
+      : 'USD';
 
-    totals[assetClass] = {
+    return {
       marketValue,
       costBasis,
       gainLoss,
       gainLossPercent,
       percentage,
-      count: allPositions.length,
+      count: positions.length,
       currency: dominantCurrency,
-      hasMixedCurrencies
+      hasMixedCurrencies: Object.keys(currencyCounts).length > 1
     };
+  };
+
+  // Calculate subtotals for each asset class and sub-asset class
+  const assetClassSubtotals = Object.keys(groupedPositions).reduce((totals, assetClass) => {
+    const group = groupedPositions[assetClass];
+
+    // Collect all positions from all sub-groups (handling nested structure for structured products)
+    let allPositions = [...group.positions];
+
+    if (assetClass === 'structured_product') {
+      // Nested structure: subGroups[underlyingType].subGroups[protectionType] = [positions]
+      Object.values(group.subGroups).forEach(level1Group => {
+        allPositions = allPositions.concat(level1Group.positions || []);
+        Object.values(level1Group.subGroups || {}).forEach(level2Positions => {
+          allPositions = allPositions.concat(level2Positions);
+        });
+      });
+    } else {
+      // Simple structure: subGroups[subClass] = [positions]
+      allPositions = allPositions.concat(Object.values(group.subGroups).flat());
+    }
+
+    totals[assetClass] = calculatePositionsTotals(allPositions);
 
     // Calculate subtotals for sub-asset classes
     if (Object.keys(group.subGroups).length > 0) {
-      totals[assetClass].subTotals = Object.keys(group.subGroups).reduce((subTotals, subClass) => {
-        const subPositions = group.subGroups[subClass];
-        const subMarketValue = subPositions.reduce((sum, p) => sum + p.marketValue, 0);
-        const subCostBasis = subPositions.reduce((sum, p) => sum + p.costBasis, 0);
-        const subGainLoss = subMarketValue - subCostBasis;
-        const subGainLossPercent = subCostBasis > 0 ? (subGainLoss / subCostBasis) * 100 : 0;
-        const subPercentage = totalPortfolioValue > 0 ? (subMarketValue / totalPortfolioValue) * 100 : 0;
+      if (assetClass === 'structured_product') {
+        // Nested subtotals for structured products (level 1: underlying type)
+        totals[assetClass].subTotals = Object.keys(group.subGroups).reduce((subTotals, underlyingType) => {
+          const level1Group = group.subGroups[underlyingType];
 
-        const subCurrencyCounts = subPositions.reduce((counts, p) => {
-          counts[p.currency] = (counts[p.currency] || 0) + 1;
-          return counts;
+          // Collect all positions in this underlying type
+          let level1Positions = [...(level1Group.positions || [])];
+          Object.values(level1Group.subGroups || {}).forEach(level2Positions => {
+            level1Positions = level1Positions.concat(level2Positions);
+          });
+
+          subTotals[underlyingType] = calculatePositionsTotals(level1Positions);
+
+          // Calculate level 2 subtotals (protection type)
+          if (Object.keys(level1Group.subGroups || {}).length > 0) {
+            subTotals[underlyingType].subTotals = Object.keys(level1Group.subGroups).reduce((level2Totals, protectionType) => {
+              const level2Positions = level1Group.subGroups[protectionType];
+              level2Totals[protectionType] = calculatePositionsTotals(level2Positions);
+              return level2Totals;
+            }, {});
+          }
+
+          return subTotals;
         }, {});
-        const subDominantCurrency = Object.keys(subCurrencyCounts).reduce((a, b) =>
-          subCurrencyCounts[a] > subCurrencyCounts[b] ? a : b, 'USD'
-        );
-
-        subTotals[subClass] = {
-          marketValue: subMarketValue,
-          costBasis: subCostBasis,
-          gainLoss: subGainLoss,
-          gainLossPercent: subGainLossPercent,
-          percentage: subPercentage,
-          count: subPositions.length,
-          currency: subDominantCurrency,
-          hasMixedCurrencies: Object.keys(subCurrencyCounts).length > 1
-        };
-        return subTotals;
-      }, {});
+      } else {
+        // Simple subtotals for other asset classes
+        totals[assetClass].subTotals = Object.keys(group.subGroups).reduce((subTotals, subClass) => {
+          const subPositions = group.subGroups[subClass];
+          subTotals[subClass] = calculatePositionsTotals(subPositions);
+          return subTotals;
+        }, {});
+      }
     }
 
     return totals;
@@ -1071,6 +1214,19 @@ const PortfolioManagementSystem = ({ user }) => {
           const subSectionKey = `${assetClass}_${subClass}`;
           if (!(subSectionKey in expandedSections)) {
             initial[subSectionKey] = false; // Start collapsed
+          }
+
+          // For structured products, also initialize level 2 (protection type) sections
+          if (assetClass === 'structured_product') {
+            const level1Group = group.subGroups[subClass];
+            if (level1Group.subGroups && Object.keys(level1Group.subGroups).length > 0) {
+              Object.keys(level1Group.subGroups).forEach(protectionType => {
+                const level2Key = `${assetClass}_${subClass}_${protectionType}`;
+                if (!(level2Key in expandedSections)) {
+                  initial[level2Key] = false; // Start collapsed
+                }
+              });
+            }
           }
         });
       }
@@ -1866,6 +2022,10 @@ const PortfolioManagementSystem = ({ user }) => {
               const positionKey = `pos_${position.id}`;
               const isPositionExpanded = expandedSections[positionKey];
 
+              // Check data freshness for this position
+              const positionFreshness = checkDataFreshness(position.dataDate);
+              const isStale = positionFreshness.status === 'stale' || positionFreshness.status === 'old';
+
               return (
                 <div key={position.id}>
                   {/* Main Row - P&L Dominant Layout with horizontal scroll on mobile */}
@@ -1912,8 +2072,16 @@ const PortfolioManagementSystem = ({ user }) => {
                               </a>
                             ) : position.name}
                           </div>
-                          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
                             {position.isin || 'N/A'}
+                            {isStale && (
+                              <span
+                                title={`Data is ${positionFreshness.businessDaysOld} business day(s) old`}
+                                style={{ cursor: 'help', fontSize: '0.8rem' }}
+                              >
+                                ⚠️
+                              </span>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -2069,7 +2237,131 @@ const PortfolioManagementSystem = ({ user }) => {
                     background: 'var(--bg-secondary)'
                   }}>
                     {/* Sub-Groups */}
-                    {hasSubGroups && Object.keys(group.subGroups).map((subClass, subIdx) => {
+                    {hasSubGroups && assetClass === 'structured_product' && Object.keys(group.subGroups).map((underlyingType, subIdx) => {
+                      // Structured products have nested structure: underlyingType -> protectionType
+                      const level1Group = group.subGroups[underlyingType];
+                      const level1Total = subtotal.subTotals[underlyingType];
+                      const level1Key = `${assetClass}_${underlyingType}`;
+                      const isLevel1Expanded = expandedSections[level1Key];
+
+                      return (
+                        <div key={level1Key}>
+                          {/* Level 1 Header - Underlying Type (e.g., Equity Linked) */}
+                          <div
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleSection(level1Key);
+                            }}
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              padding: '0.625rem 1rem',
+                              paddingLeft: '1.5rem',
+                              background: theme === 'light' ? 'rgba(16, 185, 129, 0.05)' : 'rgba(16, 185, 129, 0.08)',
+                              borderBottom: '1px solid var(--border-color)',
+                              borderLeft: '3px solid rgba(16, 185, 129, 0.4)',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                {isLevel1Expanded ? '▼' : '▶'}
+                              </span>
+                              <div>
+                                <div style={{ fontWeight: '500', color: 'var(--text-primary)', fontSize: '0.85rem' }}>
+                                  {getUnderlyingTypeLabel(underlyingType)}
+                                </div>
+                                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                                  {level1Total.count} position{level1Total.count !== 1 ? 's' : ''}
+                                </div>
+                              </div>
+                            </div>
+                            <div style={{ textAlign: 'right' }}>
+                              <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.9rem', fontVariantNumeric: 'tabular-nums' }}>
+                                {formatCurrency(level1Total.marketValue, portfolioCurrency)}
+                              </div>
+                              <div style={{
+                                fontSize: '0.75rem',
+                                color: level1Total.gainLoss >= 0 ? '#10b981' : '#ef4444',
+                                fontVariantNumeric: 'tabular-nums'
+                              }}>
+                                {level1Total.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(level1Total.gainLoss), portfolioCurrency)}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Level 2 - Protection Types within this Underlying Type */}
+                          {isLevel1Expanded && Object.keys(level1Group.subGroups || {}).map((protectionType, level2Idx) => {
+                            const level2Positions = level1Group.subGroups[protectionType];
+                            const level2Total = level1Total.subTotals?.[protectionType];
+                            const level2Key = `${assetClass}_${underlyingType}_${protectionType}`;
+                            const isLevel2Expanded = expandedSections[level2Key];
+
+                            if (!level2Total) return null;
+
+                            return (
+                              <div key={level2Key}>
+                                {/* Level 2 Header - Protection Type (e.g., 100% Capital Guaranteed) */}
+                                <div
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleSection(level2Key);
+                                  }}
+                                  style={{
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    padding: '0.5rem 1rem',
+                                    paddingLeft: '2.5rem',
+                                    background: theme === 'light' ? 'rgba(59, 130, 246, 0.03)' : 'rgba(59, 130, 246, 0.05)',
+                                    borderBottom: '1px solid var(--border-color)',
+                                    borderLeft: '3px solid rgba(59, 130, 246, 0.3)',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                                      {isLevel2Expanded ? '▼' : '▶'}
+                                    </span>
+                                    <div>
+                                      <div style={{ fontWeight: '500', color: 'var(--text-primary)', fontSize: '0.8rem' }}>
+                                        {getProtectionTypeLabel(protectionType)}
+                                      </div>
+                                      <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>
+                                        {level2Total.count} position{level2Total.count !== 1 ? 's' : ''}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div style={{ textAlign: 'right' }}>
+                                    <div style={{ fontWeight: '500', color: 'var(--text-primary)', fontSize: '0.85rem', fontVariantNumeric: 'tabular-nums' }}>
+                                      {formatCurrency(level2Total.marketValue, portfolioCurrency)}
+                                    </div>
+                                    <div style={{
+                                      fontSize: '0.7rem',
+                                      color: level2Total.gainLoss >= 0 ? '#10b981' : '#ef4444',
+                                      fontVariantNumeric: 'tabular-nums'
+                                    }}>
+                                      {level2Total.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(level2Total.gainLoss), portfolioCurrency)}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Level 2 Positions */}
+                                {isLevel2Expanded && (
+                                  <div style={{ paddingLeft: '1.5rem' }}>
+                                    {level2Positions.map((pos, idx) => renderPositionRow(pos, idx === level2Positions.length - 1))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+
+                    {/* Sub-Groups for non-structured products (equity, fixed income) */}
+                    {hasSubGroups && assetClass !== 'structured_product' && Object.keys(group.subGroups).map((subClass, subIdx) => {
                       const subPositions = group.subGroups[subClass];
                       const subTotal = subtotal.subTotals[subClass];
                       const subSectionKey = `${assetClass}_${subClass}`;
@@ -2101,7 +2393,11 @@ const PortfolioManagementSystem = ({ user }) => {
                               </span>
                               <div>
                                 <div style={{ fontWeight: '500', color: 'var(--text-primary)', fontSize: '0.85rem' }}>
-                                  {subClass}
+                                  {subClass === 'direct_equity' ? 'Direct'
+                                    : subClass === 'equity_fund' ? 'Funds'
+                                    : subClass === 'direct_bond' ? 'Direct'
+                                    : subClass === 'fixed_income_fund' ? 'Funds'
+                                    : subClass}
                                 </div>
                                 <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
                                   {subTotal.count} position{subTotal.count !== 1 ? 's' : ''}
@@ -2241,7 +2537,7 @@ const PortfolioManagementSystem = ({ user }) => {
                         fontWeight: '400',
                         fontSize: '0.75rem'
                       }}>
-                        {transaction.type}
+                        {transaction.typeName || transaction.type}
                       </span>
                     </td>
                     <td style={{ padding: '0.75rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
@@ -2709,6 +3005,107 @@ const PortfolioManagementSystem = ({ user }) => {
           )}
         </div>
       </LiquidGlassCard>
+
+      {/* Structured Products Breakdown - Hierarchical View */}
+      {structuredProductHierarchy.hasData && (
+        <LiquidGlassCard style={{
+          marginTop: '1rem',
+          background: theme === 'light' ? '#6b7280' : '#0f172a',
+          backdropFilter: 'none'
+        }}>
+          <div style={{ padding: '1rem' }}>
+            <h3 style={{
+              margin: '0 0 1rem 0',
+              fontSize: '1.1rem',
+              fontWeight: '400',
+              color: 'var(--text-primary)'
+            }}>
+              Structured Products Breakdown
+            </h3>
+
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(min(280px, 100%), 1fr))',
+              gap: '1.5rem',
+              alignItems: 'start'
+            }}>
+              {/* Nested Doughnut Chart */}
+              <div style={{ maxWidth: '350px', margin: '0 auto', width: '100%' }}>
+                <NestedDoughnutChart
+                  level1Data={structuredProductHierarchy.level1}
+                  level2Data={structuredProductHierarchy.level2}
+                  theme={theme}
+                  formatCurrency={formatCurrency}
+                  currency={portfolioCurrency}
+                  totalValue={structuredProductHierarchy.totalStructuredValue}
+                />
+              </div>
+
+              {/* Hierarchical Legend */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {structuredProductHierarchy.level1.map((level1Item) => {
+                  const level1Colors = {
+                    'equity_linked': '#3b82f6',
+                    'fixed_income_linked': '#f59e0b',
+                    'credit_linked': '#8b5cf6',
+                    'commodities_linked': '#ec4899',
+                    'other': '#64748b'
+                  };
+                  const color = level1Colors[level1Item.key] || '#64748b';
+                  const childItems = structuredProductHierarchy.level2.filter(l2 => l2.parent === level1Item.key);
+
+                  return (
+                    <div key={level1Item.key}>
+                      {/* Level 1 Header (Underlying Type) */}
+                      <div style={{
+                        padding: '0.6rem',
+                        background: 'var(--bg-tertiary)',
+                        borderRadius: '6px',
+                        borderLeft: `4px solid ${color}`,
+                        marginBottom: '0.25rem'
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div style={{ fontWeight: '700', color: 'var(--text-primary)', fontSize: '0.85rem' }}>
+                            {level1Item.name}
+                          </div>
+                          <div style={{ fontSize: '0.9rem', fontWeight: '700', color }}>
+                            {level1Item.percentage.toFixed(1)}%
+                          </div>
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                          {formatCurrency(level1Item.value, portfolioCurrency)}
+                        </div>
+                      </div>
+
+                      {/* Level 2 Children (Protection Types - indented) */}
+                      {childItems.map((level2Item) => (
+                        <div key={level2Item.key} style={{
+                          padding: '0.4rem 0.6rem',
+                          marginLeft: '1rem',
+                          background: 'var(--bg-secondary)',
+                          borderRadius: '4px',
+                          borderLeft: `2px solid ${color}80`,
+                          marginBottom: '0.15rem',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center'
+                        }}>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                            {level2Item.name}
+                          </div>
+                          <div style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>
+                            {level2Item.percentage.toFixed(1)}%
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </LiquidGlassCard>
+      )}
 
       {/* Currency Allocation */}
       <LiquidGlassCard style={{
@@ -3581,6 +3978,23 @@ const PortfolioManagementSystem = ({ user }) => {
           </button>
         </div>
       )}
+
+      {/* Data Freshness Panel - Show when viewing latest data, scoped to visible banks */}
+      {!selectedDate && holdings.length > 0 && (() => {
+        const visibleBankIds = [...new Set(holdings.map(h => h.bankId).filter(Boolean))];
+        console.log('[PMS] Visible bank IDs for freshness panel:', visibleBankIds, 'from', holdings.length, 'holdings');
+        return (
+          <div style={{ marginBottom: '1rem' }}>
+            <DataFreshnessPanel
+              sessionId={typeof window !== 'undefined' ? localStorage.getItem('sessionId') : null}
+              userId={user?._id || viewAsFilter}
+              showWarning={true}
+              compact={false}
+              visibleBankIds={visibleBankIds}
+            />
+          </div>
+        );
+      })()}
 
       {/* Tab Navigation */}
       <LiquidGlassCard style={{ marginBottom: '2rem' }}>

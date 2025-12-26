@@ -72,7 +72,7 @@ const EmailTester = ({ isDark }) => {
             fontSize: '0.95rem',
             color: 'var(--text-muted)'
           }}>
-            Test your MailerSend email configuration
+            Test your SendPulse email configuration
           </p>
         </div>
 
@@ -218,7 +218,7 @@ const EmailTester = ({ isDark }) => {
         }}>
           <strong style={{ color: 'var(--text-secondary)' }}>ℹ️ How it works:</strong>
           <ul style={{ margin: '0.5rem 0 0 1.25rem', padding: 0 }}>
-            <li>Sends a test email using the MailerSend service</li>
+            <li>Sends a test email using the SendPulse service</li>
             <li>Verifies your email configuration is working</li>
             <li>Returns the message ID for tracking</li>
             <li>Check your spam folder if you don't see it</li>

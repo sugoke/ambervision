@@ -12,6 +12,8 @@
  * Price type indicated by column R (index 17): 0=absolute, 1=percentage
  */
 
+import { SECURITY_TYPES } from '../constants/instrumentTypes';
+
 export const CFMParser = {
   /**
    * Bank identifier
@@ -187,18 +189,19 @@ export const CFMParser = {
 
   /**
    * Map security type from CFM code to standard type
+   * Uses SECURITY_TYPES constants from instrumentTypes.js
    */
   mapSecurityType(code, description) {
     // First try mapping by code
     const codeMap = {
-      '423': 'FUND',           // PART FDS CT - GROUPE (Fund shares)
-      '421': 'FUND',           // PART FDS CT - SICAV
-      '410': 'EQUITY',         // Actions
-      '411': 'EQUITY',         // Actions privilégiées
-      '200': 'BOND',           // Obligations
-      '201': 'BOND',           // Obligations convertibles
-      '300': 'STRUCTURED_PRODUCT', // Produits structurés
-      '100': 'CASH',           // Liquidités
+      '423': SECURITY_TYPES.FUND,           // PART FDS CT - GROUPE (Fund shares)
+      '421': SECURITY_TYPES.FUND,           // PART FDS CT - SICAV
+      '410': SECURITY_TYPES.EQUITY,         // Actions
+      '411': SECURITY_TYPES.EQUITY,         // Actions privilégiées
+      '200': SECURITY_TYPES.BOND,           // Obligations
+      '201': SECURITY_TYPES.BOND,           // Obligations convertibles
+      '300': SECURITY_TYPES.STRUCTURED_PRODUCT, // Produits structurés
+      '100': SECURITY_TYPES.CASH,           // Liquidités
     };
 
     if (code && codeMap[code]) {
@@ -208,19 +211,19 @@ export const CFMParser = {
     // Try mapping by description keywords
     const descLower = (description || '').toLowerCase();
     if (descLower.includes('fonds') || descLower.includes('fund') || descLower.includes('sicav') || descLower.includes('part fds')) {
-      return 'FUND';
+      return SECURITY_TYPES.FUND;
     }
     if (descLower.includes('action') || descLower.includes('equity') || descLower.includes('stock')) {
-      return 'EQUITY';
+      return SECURITY_TYPES.EQUITY;
     }
     if (descLower.includes('oblig') || descLower.includes('bond')) {
-      return 'BOND';
+      return SECURITY_TYPES.BOND;
     }
     if (descLower.includes('structur')) {
-      return 'STRUCTURED_PRODUCT';
+      return SECURITY_TYPES.STRUCTURED_PRODUCT;
     }
 
-    return code || 'UNKNOWN';
+    return code || SECURITY_TYPES.UNKNOWN;
   },
 
   /**
@@ -340,7 +343,7 @@ export const CFMParser = {
   /**
    * Map CFM CSV row to standardized schema
    */
-  mapToStandardSchema(row, bankId, bankName, sourceFile, fileDate, userId) {
+  mapToStandardSchema(row, bankId, bankName, sourceFile, fileDate, userId, fxRates = {}) {
     const c = this.columns;
 
     // Get price type indicator (0=absolute, 1=percentage)
@@ -451,7 +454,12 @@ export const CFMParser = {
       // Metadata
       userId,
       isActive: true,
-      version: 1
+      version: 1,
+
+      // Bank-provided FX rates (currency → EUR rate)
+      // Used by cash calculator to ensure amounts match bank statements
+      // CFM rates are "units of currency per 1 EUR", so to convert: EUR = amount / rate
+      bankFxRates: fxRates,
     };
   },
 
@@ -459,7 +467,7 @@ export const CFMParser = {
    * Parse entire file
    * Returns array of standardized position objects
    */
-  parse(csvContent, { bankId, bankName, sourceFile, fileDate, userId }) {
+  parse(csvContent, { bankId, bankName, sourceFile, fileDate, userId, fxRates = {} }) {
     console.log(`[CFM_PARSER] Parsing CFM file: ${sourceFile}`);
 
     // Parse CSV to array of arrays (no header row)
@@ -473,7 +481,7 @@ export const CFMParser = {
         const isin = row[this.columns.ISIN];
         return isin && isin.trim().length > 0;
       })
-      .map(row => this.mapToStandardSchema(row, bankId, bankName, sourceFile, fileDate, userId));
+      .map(row => this.mapToStandardSchema(row, bankId, bankName, sourceFile, fileDate, userId, fxRates));
 
     console.log(`[CFM_PARSER] Mapped ${positions.length} positions (${rows.length - positions.length} skipped - no ISIN)`);
 
@@ -549,9 +557,10 @@ export const CFMParser = {
     const balance = balanceOriginal;
 
     // Determine security type based on account type
+    // Uses SECURITY_TYPES constants from instrumentTypes.js
     const isCash = accountType.toUpperCase().includes('COMPTE COURANT');
     const isFxForward = accountType.toUpperCase().includes('CHANGE A TERME');
-    const securityType = isCash ? 'CASH' : (isFxForward ? 'FX_FORWARD' : 'CASH');
+    const securityType = isCash ? SECURITY_TYPES.CASH : (isFxForward ? SECURITY_TYPES.FX_FORWARD : SECURITY_TYPES.CASH);
 
     // Build ticker and security name based on type
     let ticker, securityName;
@@ -648,7 +657,12 @@ export const CFMParser = {
       // Metadata
       userId,
       isActive: true,
-      version: 1
+      version: 1,
+
+      // Bank-provided FX rates (currency → EUR rate)
+      // Used by cash calculator to ensure amounts match bank statements
+      // CFM rates are "units of currency per 1 EUR", so to convert: EUR = amount / rate
+      bankFxRates: fxRates,
     };
   },
 

@@ -1721,6 +1721,70 @@ const PhoenixReport = ({ results, productId }) => {
                             )}
                           </>
                         )}
+                        {/* Redemption Confirmation Badge - shows when product was autocalled */}
+                        {obs.autocalled && obs.hasOccurred && (
+                          <>
+                            {obs.redemptionConfirmed ? (
+                              <span
+                                style={{
+                                  background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                                  color: '#ffffff',
+                                  padding: '0.25rem 0.5rem',
+                                  borderRadius: '6px',
+                                  fontSize: '0.65rem',
+                                  fontWeight: '700',
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.5px',
+                                  boxShadow: '0 2px 6px rgba(59, 130, 246, 0.3)',
+                                  cursor: 'help',
+                                  whiteSpace: 'nowrap'
+                                }}
+                                title={obs.confirmedRedemption ?
+                                  `Redemption Confirmed\nAmount: ${obs.confirmedRedemption.actualAmount?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${obs.confirmedRedemption.currency || ''}\nDate: ${new Date(obs.confirmedRedemption.actualDate).toLocaleDateString('en-GB')}\nConfidence: ${obs.redemptionMatchConfidence}`
+                                  : 'Redemption Confirmed'}
+                              >
+                                ✓ {tr.redeemed}
+                              </span>
+                            ) : obs.redemptionIsPastDue ? (
+                              <span
+                                style={{
+                                  background: 'linear-gradient(135deg, #f97316 0%, #ea580c 100%)',
+                                  color: '#ffffff',
+                                  padding: '0.25rem 0.5rem',
+                                  borderRadius: '6px',
+                                  fontSize: '0.65rem',
+                                  fontWeight: '700',
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.5px',
+                                  boxShadow: '0 2px 6px rgba(249, 115, 22, 0.3)',
+                                  cursor: 'help',
+                                  whiteSpace: 'nowrap'
+                                }}
+                                title="Redemption past due - not found in PMS operations"
+                              >
+                                ⚠ {tr.redeemed}
+                              </span>
+                            ) : (
+                              <span
+                                style={{
+                                  background: 'rgba(148, 163, 184, 0.2)',
+                                  color: '#64748b',
+                                  padding: '0.25rem 0.5rem',
+                                  borderRadius: '6px',
+                                  fontSize: '0.65rem',
+                                  fontWeight: '700',
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.5px',
+                                  cursor: 'help',
+                                  whiteSpace: 'nowrap'
+                                }}
+                                title={obs.redemptionMatchMessage || 'Redemption status unknown'}
+                              >
+                                ? {tr.redeemed}
+                              </span>
+                            )}
+                          </>
+                        )}
                       </div>
 
                       {/* Observation Type - Badge Style */}

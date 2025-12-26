@@ -17,38 +17,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Build and Analysis
 - `meteor --production --extra-packages bundle-visualizer` or `npm run visualize` - Analyze bundle size in production mode
 
-## Recent Updates (January 2025)
-
-### MarketTicker Enhancements
-- **Hover to Pause**: MarketTicker now pauses scrolling when hovering over it using CSS `animation-play-state: paused`
-- **Smooth Animation**: Fixed scrolling issues with proper CSS keyframes and viewport-based positioning
-- **Live Price Integration**: Enhanced server-side price fetching with proper EOD API integration and fallback handling
-- **Performance**: Reduced server logging noise and improved client-side data processing
-
-### Direct Equities Portfolio Management
-- **Styled Confirmation Modals**: Replaced browser default `confirm()` with custom styled modals matching app theme
-- **Holdings Management**: Added modify, buy more, and sell functionality for equity positions
-- **Real-time Price Updates**: Integrated with market data cache for live price updates
-- **Portfolio Analytics**: Enhanced return calculations and performance tracking
-
-### Infrastructure Improvements
-- **Logging Cleanup**: Removed verbose [EQUITY PUB] and server logs that were flooding console
-- **Cache Optimization**: Improved ticker price caching with 15-minute refresh intervals
-- **Error Handling**: Better handling of "NA" values from EOD API responses
-- **Database Optimization**: Enhanced query performance for equity holdings and market data
-
-### Database Access
-To access the MongoDB database directly (when MCP is not available):
-1. Use Node.js with MongoDB driver: `const { MongoClient } = require('mongodb');`
-2. Connection string is stored in `settings.json` under `private.MONGO_URL` (excluded from version control)
-3. Database name: `amberlake`
-4. Key collections: `customUsers`, `products`, `templates`, `sessions`, `banks`, `bankAccounts`, `issuers`
-
-### MongoDB Atlas API Credentials
-For MCP MongoDB Atlas access (Service Account):
-- Credentials are stored in `.claude/settings.local.json` (excluded from version control)
-- Note: Service account returns 401 Unauthorized - may need additional permissions or configuration
-
 ## Project Architecture
 
 This is a Meteor.js application with React frontend, following the standard Meteor project structure:
@@ -229,6 +197,172 @@ The parser uses value-range heuristics to detect the correct format:
 
 **The parser is the ONLY place where bank-specific formatting logic should exist.**
 
+### Bank-Provided FX Rates Implementation
+
+**🚨 CRITICAL: Store Bank FX Rates in Each Holding for Cash Monitoring Consistency 🚨**
+
+When banks provide FX rates in their files, we store them in each holding's `bankFxRates` field. This ensures cash calculations match bank statements exactly.
+
+#### FX Rate Architecture Overview
+
+| Source | Storage | Priority |
+|--------|---------|----------|
+| **Bank-provided rates** | `PMSHoldings.bankFxRates` field | **First** (used if available) |
+| **EOD API rates** | `CurrencyRateCacheCollection` | Fallback (if bank rate missing) |
+
+#### Required `bankFxRates` Field Format
+
+Every parser must add a `bankFxRates` field to each holding:
+
+```javascript
+// In mapToStandardSchema() return object:
+bankFxRates: {
+  'USD': 1.0850,  // Rate for converting USD to EUR
+  'GBP': 0.8520,  // Rate for converting GBP to EUR
+  'ILS': 3.7793   // Rate for converting ILS to EUR
+}
+```
+
+**Rate Format**: All rates must be stored in "divide" format:
+- `EUR = amount / rate`
+- Example: 100 USD / 1.085 = 92.17 EUR
+
+The cash calculator automatically converts these to "multiply" format internally.
+
+#### How FX Rates Flow Through the System
+
+```
+Bank File (CSV)           Parser                    PMSHoldings              Cash Calculator
+  ┌──────────────┐       ┌──────────────┐          ┌──────────────┐         ┌──────────────┐
+  │ FX rate file │ ───▶  │ parseFxRates()│ ───▶    │ bankFxRates  │ ───▶    │ extractBank- │
+  │ or CSV field │       │              │          │ { USD: 1.08 }│         │ FxRates()    │
+  └──────────────┘       └──────────────┘          └──────────────┘         └──────────────┘
+                                                                                    │
+                                                                                    ▼
+  EOD API                                                                   ┌──────────────┐
+  ┌──────────────┐                                                          │ mergeRates-  │
+  │ FOREX pairs  │ ─────────────────────────────────────────────────────▶   │ Maps()       │
+  └──────────────┘                                                          │ (bank wins)  │
+                                                                            └──────────────┘
+```
+
+#### Implementation by Bank
+
+**1. CMB Monaco** - Separate FX rates file (`curry_xchng`)
+```javascript
+// In parseFxRates():
+// Returns: { 'USD': { 'EUR': 1.0850 }, 'GBP': { 'EUR': 0.8520 } }
+
+// In mapToStandardSchema():
+bankFxRates: Object.keys(fxRates).reduce((acc, currency) => {
+  if (fxRates[currency] && fxRates[currency]['EUR']) {
+    acc[currency] = fxRates[currency]['EUR'];
+  }
+  return acc;
+}, {}),
+```
+
+**2. CFM (Indosuez)** - Separate FX rates file (`crsc`)
+```javascript
+// In parseFxRates():
+// Returns: { 'ILS': 3.779, 'GBP': 0.823 } (units per 1 EUR)
+
+// In mapToStandardSchema():
+bankFxRates: fxRates,  // Already in correct format
+```
+
+**3. Julius Baer** - Per-position exchange rates in CSV
+```javascript
+// CSV fields: PTF_POS_CCY_EXCH, PRICE_EXCH_RATE, COST_EXCH_RATE
+
+// In mapToStandardSchema():
+bankFxRates: (() => {
+  const positionCurrency = row.POS_PRICE_CCY_ISO || row.INSTR_REF_CCY_ISO;
+  const exchangeRate = this.parseNumber(row.PTF_POS_CCY_EXCH);
+  if (positionCurrency && exchangeRate && positionCurrency !== 'EUR') {
+    return { [positionCurrency]: exchangeRate };
+  }
+  return {};
+})(),
+```
+
+**4. Andbank** - Per-position exchange rates in CSV (MULTIPLY format)
+```javascript
+// CSV fields: EXCH_RATE_PTF, EXCH_RATE_CUST
+// ⚠️ Andbank uses MULTIPLY format, must convert to DIVIDE format!
+
+// In mapToStandardSchema():
+bankFxRates: (() => {
+  const positionCurrency = row.ROW_CCY;
+  const rate = this.parseNumber(row.EXCH_RATE_PTF);
+  if (positionCurrency && rate && rate !== 0 && positionCurrency !== 'EUR') {
+    // Store inverse: Andbank rate is "multiply", convert to "divide" format
+    return { [positionCurrency]: 1 / rate };
+  }
+  return {};
+})(),
+```
+
+#### When Adding a New Bank Parser
+
+**Step 7: Implement Bank FX Rates** (add to existing checklist)
+
+1. **Identify FX Rate Source**:
+   - Separate FX rates file? (like CMB Monaco `curry_xchng`, CFM `crsc`)
+   - Per-position exchange rate fields? (like Julius Baer, Andbank)
+   - Derived from market values? (calculate from value in two currencies)
+
+2. **Determine Rate Format**:
+   - **"Divide" format**: `EUR = amount / rate` (CMB Monaco, CFM, Julius Baer)
+   - **"Multiply" format**: `EUR = amount * rate` (Andbank - must convert!)
+
+3. **Implement `parseFxRates()` if Separate File**:
+   ```javascript
+   parseFxRates(csvContent) {
+     const rates = {};
+     // Parse file, extract currency → rate pairs
+     // Return: { 'USD': 1.085, 'GBP': 0.852, ... }
+     return rates;
+   }
+   ```
+
+4. **Add `bankFxRates` to Holdings Output**:
+   ```javascript
+   // In mapToStandardSchema() return object, add:
+   bankFxRates: {
+     // Map of currency → EUR rate (in DIVIDE format)
+     // If bank uses multiply format, store 1/rate
+   },
+   ```
+
+5. **Test FX Conversion**:
+   - Verify cash monitoring shows correct EUR amounts
+   - Compare with bank statement values
+   - Check logs for `[CashCalculator] Using bank-provided rate for {currency}`
+
+#### Key Files for FX Rate Implementation
+
+| File | Purpose |
+|------|---------|
+| `imports/api/helpers/cashCalculator.js` | `extractBankFxRates()`, `mergeRatesMaps()` |
+| `imports/api/parsers/{bank}Parser.js` | `parseFxRates()`, `bankFxRates` field |
+| `imports/api/currencyCache.js` | EOD API fallback rates |
+| `server/methods/bankPositionMethods.js` | Calls cash calculator |
+
+#### Verification Logs
+
+When bank rates are used, you'll see:
+```
+[CashCalculator] Using bank-provided rate for ILS: 0.264589
+[CashCalculator] Using bank-provided rate for USD: 0.921659
+[CASH_CHECK] Portfolio 640131: pureCashEUR=-600000.00...
+```
+
+When bank rates are missing (falls back to EOD):
+```
+[CashCalculator] No EUR rate found for SEK, using value as-is
+```
+
 ### Technology Stack
 - **Framework**: Meteor.js
 - **Frontend**: React 18 with functional components and hooks
@@ -252,237 +386,51 @@ The parser uses value-range heuristics to detect the correct format:
 - Standard React patterns for state management and event handling
 - Complex drag-and-drop interactions using react-dnd hooks (useDrag, useDrop)
 
-### 🚨 MANDATORY DEVELOPMENT RULE - NEVER VIOLATE 🚨
-**ABSOLUTE PROHIBITION: NEVER HARD-CODE PRODUCT-SPECIFIC RULES OR LOGIC**
+## Template-Specific Product Architecture
 
-This is the most critical rule in the entire codebase. Violation of this rule will break the core architecture.
+### Core Philosophy: Template-Based Product Evaluation
 
-#### WHAT IS FORBIDDEN:
-- ❌ **NO product type checks** (e.g., `if (productType === 'reverse_convertible')`)
-- ❌ **NO hardcoded product names** (reverse convertible, autocallable, barrier reverse convertible, etc.)
-- ❌ **NO assumptions about payoff structure** based on product names
-- ❌ **NO special case handling** for "known" structured products
-- ❌ **NO predefined logic flows** for specific product categories
+Our structured products application uses a **template-specific architecture** where each product type has dedicated evaluators and chart builders. The drag-and-drop interface is used for template design, while evaluation is handled by template-specific code.
 
-#### WHAT IS REQUIRED:
-- ✅ **PURE COMPONENT ANALYSIS**: Examine only the actual drag-and-drop components present
-- ✅ **MATHEMATICAL EVALUATION**: Base all logic on mathematical formulas and relationships
-- ✅ **GENERIC INTERPRETATION**: Process payoff structures through universal algorithms
-- ✅ **DYNAMIC ADAPTATION**: The rule engine must work for ANY custom payoff users create
-- ✅ **COMPOSITIONAL FLEXIBILITY**: Support unlimited combinations of timing, conditions, actions, and continuations
+### Architecture Components
 
-#### MANDATORY APPROACH:
-1. **Analyze Structure, Not Names**: Look at what components exist, not what the product is called
-2. **Process Components Generically**: Every component type has one universal evaluator function
-3. **Mathematical Relationships Only**: Use formulas, not business rules for specific products
-4. **Universal Logic Tree**: Convert drag-and-drop to executable logic without product assumptions
-5. **Infinite Extensibility**: New payoff structures should work without code changes
+#### Evaluators (`/imports/api/evaluators/`)
+Each product template has a dedicated evaluator:
+- `phoenixEvaluator.js` + `phoenixEvaluationHelpers.js`
+- `orionEvaluator.js` + `orionEvaluationHelpers.js`
+- `himalayaEvaluator.js` + `himalayaEvaluationHelpers.js`
+- `sharkNoteEvaluator.js` + `sharkNoteEvaluationHelpers.js`
+- `participationNoteEvaluator.js` + `participationNoteEvaluationHelpers.js`
+- `reverseConvertibleEvaluator.js` + `reverseConvertibleEvaluationHelpers.js`
+- `reverseConvertibleBondEvaluator.js` + `reverseConvertibleBondEvaluationHelpers.js`
+- `sharedEvaluationHelpers.js` - Common utilities across evaluators
 
-#### EXAMPLES OF CORRECT THINKING:
-- Instead of: "This is a reverse convertible, so it has protection at maturity"
-- Think: "This structure has a BARRIER component at 100% in the maturity section"
-- Instead of: "Autocallables need quarterly observations"
-- Think: "This structure has OBSERVATION components with quarterly frequency"
-- Instead of: "Phoenix products step down barriers"
-- Think: "This structure has BARRIER components with decreasing values over time"
+#### Chart Builders (`/imports/api/chartBuilders/`)
+Template-specific chart generation for each product type, creating pre-calculated Chart.js configurations.
 
-#### THE ACID TEST:
-**Can a user create a completely novel payoff structure that has never existed before, and will the system evaluate it correctly without any code changes?**
+#### Supporting Infrastructure
+- `/imports/api/productTypeAnalyzer.js` - Detects product features from structure
+- `/imports/api/evaluationContext.js` - Manages market data and evaluation state
+- `/imports/api/genericComponentLibrary.js` - Generic component definitions for drag-and-drop interface
+- `/imports/api/mathematicalPrimitives.js` - Mathematical building blocks for calculations
 
-If the answer is NO, then the implementation violates this rule and must be rewritten.
+#### Report Components (`/imports/ui/templates/`)
+Template-specific report rendering:
+- `PhoenixReport.jsx` / `PhoenixReportPDF.jsx`
+- `OrionReport.jsx` / `OrionReportPDF.jsx`
+- `HimalayaReport.jsx`
+- `SharkNoteReport.jsx`
+- `ParticipationNoteReport.jsx` / `ParticipationNoteReportPDF.jsx`
+- `ReverseConvertibleReport.jsx`
+- `ReverseConvertibleBondReport.jsx`
 
-#### CONSEQUENCES OF VIOLATION:
-- The system becomes rigid and cannot handle innovative payoff structures
-- Every new product type requires code changes instead of just drag-and-drop configuration
-- The generic rule engine architecture collapses
-- Users cannot experiment with novel structured product ideas
+### Adding New Product Templates
 
-## Generic Rule Engine Architecture
-
-### Core Philosophy: Universal Payoff Composition
-
-Our structured products application implements a **universal, product-agnostic rule engine** that can evaluate ANY payoff structure created through the drag-and-drop interface. This is not just a design choice - it's the fundamental architecture that enables infinite innovation.
-
-**The system must treat every payoff as a unique composition of generic building blocks.**
-
-**Core Architectural Principles:**
-- **Pure Component-Based Logic**: All payoff structures are built from generic, reusable components that have no knowledge of product types
-- **Mathematical Formula Evaluation**: Logic is based exclusively on mathematical formulas and component relationships, never business rules
-- **Infinite Compositional Freedom**: Users can combine timing, conditions, actions, and continuations in unlimited ways
-- **Zero-Configuration Extensibility**: New payoff structures work immediately without any code changes
-- **Universal Evaluation Engine**: One rule engine handles all possible structured product variations - past, present, and future
-
-**Innovation Enablement:**
-This architecture specifically enables users to:
-- Invent completely novel payoff structures that don't exist in traditional finance
-- Experiment with hybrid combinations of existing structured product features
-- Create asymmetric payoffs with complex conditional logic
-- Design multi-stage products with evolving terms
-- Compose products with unlimited underlying assets and barrier configurations
-
-### Three-Phase Processing Pipeline
-
-#### Phase 1: Structure Creation (Drag-and-Drop Interface)
-Users build products by dragging components from the library into timeline columns:
-- **Timing Components**: Define when evaluations occur (observation dates, maturity, barriers)
-- **Condition Components**: Logic operators (IF/ELSE), comparisons, barriers, underlyings
-- **Action Components**: Outcomes (autocall, coupons, returns, exposure)
-- **Continuation Components**: Whether product continues or terminates
-
-#### Phase 2: Generic Interpretation (Domain Specific Language)
-The drag-and-drop structure is converted into an executable logic tree:
-- Components are stored as generic objects with `type`, `column`, `section`, and `value` properties
-- Relationships between components are preserved through `rowIndex` and `sortOrder`
-- The PayoffInterpreter converts this structure into evaluable logic
-- No product names or hard-coded rules - only component analysis
-
-#### Phase 3: Dynamic Report Generation (Widget Creation)
-Based on detected components, the system automatically generates appropriate report widgets:
-- **Feature Detection**: Analyzes components to identify barriers, coupons, protection levels
-- **Widget Mapping**: Creates standardized report cards based on detected features
-- **Standardized Objects**: Common data structures for charts, monitors, and analysis tools
-
-### Rule Engine Components
-
-#### PayoffInterpreter (`/imports/api/payoffInterpreter.js`)
-The core interpreter converts drag-and-drop structures to executable logic:
-- Parses component relationships and dependencies
-- Builds evaluation trees from IF/ELSE chains
-- Handles timing-based evaluations (life vs maturity)
-- Processes barrier touches, comparisons, and actions generically
-
-#### ComponentEvaluators (`/imports/api/componentEvaluators.js`)
-Generic evaluation functions for each component type:
-- **Timing Evaluators**: Process observation dates, maturity, live monitoring
-- **Comparison Evaluators**: Handle above/below, touched/not touched, ranges
-- **Barrier Evaluators**: Calculate autocall levels, protection barriers, caps
-- **Action Evaluators**: Execute autocalls, coupons, returns, exposures
-- **Logic Evaluators**: Process IF/ELSE conditional chains
-
-### Domain Specific Language (DSL)
-
-#### Generic Logic Flow
-All products follow the same evaluation pattern:
-1. **Timing Check**: Is this timing condition met?
-2. **Condition Evaluation**: Process IF/ELSE chains with comparisons
-3. **Action Execution**: Execute appropriate actions based on conditions
-4. **Continuation Decision**: Determine if product continues or terminates
-
-### Key Architecture Principles
-
-#### Universal Component Evaluation
-Every component is evaluated through generic functions that work regardless of product type:
-
-```javascript
-// Generic barrier evaluation - works for any barrier type
-const evaluateBarrier = (underlying, barrier, comparison) => {
-  const currentLevel = underlying.performance;
-  const barrierLevel = barrier.level;
-  
-  switch(comparison.type) {
-    case 'at_or_above': return currentLevel >= barrierLevel;
-    case 'above': return currentLevel > barrierLevel;
-    case 'at_or_below': return currentLevel <= barrierLevel;
-    case 'below': return currentLevel < barrierLevel;
-  }
-};
-```
-
-#### Mathematical Formula-Based Logic
-All calculations use mathematical relationships rather than product-specific rules:
-
-```javascript
-// Generic performance calculation
-const calculatePerformance = (current, strike) => {
-  return ((current - strike) / strike) * 100;
-};
-
-// Generic payoff calculation  
-const calculatePayoff = (performance, structure) => {
-  if (structure.hasProtection && performance >= structure.protectionLevel) {
-    return 100 + structure.couponRate;
-  } else if (structure.hasProtection) {
-    return Math.max(100 + performance, structure.minReturn) + structure.couponRate;
-  }
-  return 100 + performance + structure.couponRate;
-};
-```
-
-#### Dynamic Feature Detection
-The system identifies product characteristics by analyzing actual components:
-
-```javascript
-const analyzeProduct = (components) => {
-  return {
-    hasBarriers: components.some(c => c.type === 'BARRIER'),
-    hasCoupons: components.some(c => c.type === 'ACTION' && c.value.includes('coupon')),
-    hasProtection: components.some(c => c.type === 'BARRIER' && c.barrier_type === 'protection'),
-    hasAutocall: components.some(c => c.type === 'ACTION' && c.value.includes('autocall')),
-    underlyingCount: components.filter(c => c.type === 'BASKET').length,
-    observationFrequency: detectFrequency(components.filter(c => c.type === 'OBSERVATION'))
-  };
-};
-```
-
-### Developer Guidelines
-
-#### Adding New Components
-When creating new draggable components, follow the universal design pattern:
-
-1. **Define Generic Properties**: Use `type`, `defaultValue`, `icon` - never product-specific names or references
-2. **Create Universal Evaluator Function**: Add to `componentEvaluators.js` with purely mathematical logic that works in any context
-3. **Update Generic Feature Detection**: Modify feature detection in `ProductTypeAnalyzer` to recognize the component's mathematical properties
-4. **Test Infinite Combinations**: Ensure component works in any payoff combination, including with components that don't exist yet
-5. **Verify Compositional Independence**: The component must function correctly regardless of what other components are present
-
-**Component Design Acid Test:**
-- Can this component be combined with any other component?
-- Does it make mathematical sense in isolation?
-- Can users create novel payoffs using this component in ways you never imagined?
-- Does the component evaluation depend only on market data and mathematical relationships?
-
-If any answer is NO, redesign the component.
-
-#### Extending Report Widgets  
-When adding new widget types, maintain generic flexibility:
-
-1. **Identify Mathematical Triggers**: What mathematical properties or component relationships trigger this widget?
-2. **Create Universal Config**: Define configuration that works for any payoff structure, not specific product types
-3. **Implement Adaptive Rendering**: Widget must dynamically adjust to any underlying/barrier/timing combination
-4. **Add to Generic Registry**: Register in `ProductTypeAnalyzer.viewRegistry` with mathematical detection logic
-5. **Test Novel Compositions**: Verify the widget works with payoff structures that don't exist yet
-
-**Widget Design Requirements:**
-- Must work with any number of underlyings (1 to unlimited)
-- Must adapt to any barrier configuration (protection, autocall, coupon, caps, floors)
-- Must handle any timing structure (daily, weekly, monthly, quarterly, custom dates)
-- Must support any combination of conditions and actions
-- Must render meaningful information for payoffs that have never been created before
-
-### Technical Implementation
-
-#### File Organization
-- `/imports/api/ruleEngine.js`: Main engine entry point and orchestration
-- `/imports/api/payoffInterpreter.js`: Converts drag-and-drop to executable logic
-- `/imports/api/componentEvaluators.js`: Generic evaluation functions for each component type
-- `/imports/api/evaluationContext.js`: Market data and calculation environment
-- `/imports/api/reportGenerator.js`: Creates widgets based on detected features
-- `/imports/api/productTypeAnalyzer.js`: Analyzes structures and recommends widgets
-- `/imports/ui/ProductReport.jsx`: Renders generated widgets in the report interface
-
-#### Performance Considerations
-- **Lazy Evaluation**: Only calculate required scenarios and timeframes
-- **Caching Strategy**: Cache market data and intermediate calculations
-- **Incremental Updates**: Update only changed components when market data refreshes
-- **Efficient Rendering**: Use React memoization for expensive widget calculations
-
-#### Error Handling and Validation
-- **Graceful Degradation**: Show partial results when some data is unavailable
-- **Structure Validation**: Verify component relationships and required dependencies  
-- **User-Friendly Messages**: Convert technical errors to actionable user guidance
-- **Fallback Logic**: Provide reasonable defaults when components are misconfigured
-
-This architecture ensures our application can handle any structured product configuration while maintaining performance, reliability, and ease of development.
+1. Create evaluator: `/imports/api/evaluators/{templateName}Evaluator.js`
+2. Create helpers: `/imports/api/evaluators/{templateName}EvaluationHelpers.js`
+3. Create chart builder: `/imports/api/chartBuilders/{templateName}ChartBuilder.js`
+4. Create report component: `/imports/ui/templates/{TemplateName}Report.jsx`
+5. Register in productTypeAnalyzer.js
 
 ## Report Architecture and Data Flow
 
@@ -491,7 +439,7 @@ This architecture ensures our application can handle any structured product conf
 **🚨 CRITICAL ARCHITECTURAL RULE - NEVER VIOLATE 🚨**
 **ABSOLUTE PROHIBITION: NO CALCULATIONS IN REPORTING COMPONENTS**
 
-The report page (`ProductReport.jsx`, `TemplateProductReport.jsx`) performs **ZERO calculations, computations, or data transformations**. All data comes pre-calculated from the report object stored in the database.
+The report page (`TemplateProductReport.jsx` and template-specific report components in `/imports/ui/templates/`) performs **ZERO calculations, computations, or data transformations**. All data comes pre-calculated from the report object stored in the database.
 
 #### WHAT IS FORBIDDEN IN REPORTS:
 - ❌ **NO mathematical operations** (addition, subtraction, multiplication, division)
@@ -558,7 +506,7 @@ const isPositive = underlying.isPositive; // true/false
 - Violation of separation of concerns architecture
 - Makes testing and debugging more complex
 
-**ORIGINAL CRITICAL RULE**: The report page (`ProductReport.jsx`) performs **ZERO calculations**. All data comes pre-calculated from the report object stored in the database.
+**ORIGINAL CRITICAL RULE**: The report pages (`TemplateProductReport.jsx` and template-specific components) perform **ZERO calculations**. All data comes pre-calculated from the report object stored in the database.
 
 #### Data Flow:
 1. **Processing Stage** (Rule Engine): All calculations, evaluations, and data transformations happen during product evaluation

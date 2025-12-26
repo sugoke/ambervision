@@ -628,85 +628,134 @@ Meteor.methods({
         console.log(`[BANK_CONNECTIONS] Created folder: ${bankFolderPath}`);
       }
 
-      // List all files on SFTP server
-      const files = await SFTPService.listFiles({
-        host: connection.host,
-        port: connection.port || 22,
-        username: connection.username,
-        password: connection.password,
-        privateKeyPath: connection.privateKeyPath
-      }, connection.remotePath || '/');
-
-      // Filter out directories (only download files)
-      const filesList = files.filter(f => !f.isDirectory);
-
-      console.log(`[BANK_CONNECTIONS] Found ${filesList.length} files on server`);
-
       // Track results
-      const newFiles = [];
-      const skippedFiles = [];
-      const failedFiles = [];
+      let newFiles = [];
+      let skippedFiles = [];
+      let failedFiles = [];
+      let filesList = [];
 
-      // Download each file
-      for (const file of filesList) {
-        const localFilePath = path.join(bankFolderPath, file.name);
-        const remoteFilePath = path.join(connection.remotePath || '/', file.name).replace(/\\/g, '/');
+      // Check if this is CMB Monaco (requires atomic download to prevent file deletion)
+      const isCMBMonaco = bank.name?.toLowerCase().includes('cmb') ||
+                          connection.host?.toLowerCase().includes('cmb');
 
-        try {
-          // Check if file already exists
-          if (fs.existsSync(localFilePath)) {
-            console.log(`[BANK_CONNECTIONS] Skipping existing file: ${file.name}`);
-            skippedFiles.push(file.name);
-            continue;
+      if (isCMBMonaco) {
+        // CMB Monaco: Use atomic download (list + download in single SFTP session)
+        // This prevents files from being deleted between list and download operations
+        console.log(`[BANK_CONNECTIONS] Using ATOMIC download for CMB Monaco (prevents file deletion)`);
+
+        // Get list of existing files to skip
+        const existingFiles = new Set();
+        if (fs.existsSync(bankFolderPath)) {
+          fs.readdirSync(bankFolderPath).forEach(f => existingFiles.add(f));
+        }
+
+        const result = await SFTPService.downloadAllFilesAtomic(
+          {
+            host: connection.host,
+            port: connection.port || 22,
+            username: connection.username,
+            password: connection.password,
+            privateKeyPath: connection.privateKeyPath
+          },
+          connection.remotePath || '/',
+          bankFolderPath,
+          (filename) => {
+            // Only download CSV files that don't already exist locally
+            if (!filename.toLowerCase().endsWith('.csv')) {
+              return false;
+            }
+            if (existingFiles.has(filename)) {
+              skippedFiles.push(filename);
+              return false;
+            }
+            return true;
           }
+        );
 
-          // Download new file with retry logic
-          const MAX_RETRIES = 3;
-          const RETRY_DELAY = 2000; // 2 seconds
-          let downloadSuccess = false;
+        newFiles = result.downloadedFiles;
+        failedFiles = result.errors.map(e => ({ name: e.file, error: e.error }));
+        filesList = []; // Not used for atomic - set to empty
 
-          for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-            try {
-              console.log(`[BANK_CONNECTIONS] Downloading ${file.name} (attempt ${attempt}/${MAX_RETRIES})`);
-              await SFTPService.downloadFile({
-                host: connection.host,
-                port: connection.port || 22,
-                username: connection.username,
-                password: connection.password,
-                privateKeyPath: connection.privateKeyPath
-              }, remoteFilePath, localFilePath);
+        console.log(`[BANK_CONNECTIONS] CMB Monaco atomic download complete: ${newFiles.length} new, ${skippedFiles.length} skipped, ${failedFiles.length} failed`);
 
-              newFiles.push(file.name);
-              console.log(`[BANK_CONNECTIONS] Downloaded: ${file.name}`);
-              downloadSuccess = true;
-              break; // Success, exit retry loop
-            } catch (retryError) {
-              console.warn(`[BANK_CONNECTIONS] Attempt ${attempt}/${MAX_RETRIES} failed for ${file.name}: ${retryError.message}`);
+      } else {
+        // Standard two-stage download for other banks
 
-              if (attempt === MAX_RETRIES) {
-                // Final attempt failed - log detailed error
-                const errorDetails = {
-                  name: file.name,
-                  error: retryError.message,
-                  errorCode: retryError.code || 'UNKNOWN',
-                  remotePath: remoteFilePath,
-                  fileSize: file.size || 'unknown',
-                  attempts: attempt
-                };
-                console.error(`[BANK_CONNECTIONS] Failed to download ${file.name} after ${MAX_RETRIES} attempts:`, errorDetails);
-                failedFiles.push(errorDetails);
-              } else {
-                // Wait before retrying
-                console.log(`[BANK_CONNECTIONS] Waiting ${RETRY_DELAY}ms before retry...`);
-                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+        // List all files on SFTP server
+        const files = await SFTPService.listFiles({
+          host: connection.host,
+          port: connection.port || 22,
+          username: connection.username,
+          password: connection.password,
+          privateKeyPath: connection.privateKeyPath
+        }, connection.remotePath || '/');
+
+        // Filter out directories (only download files)
+        filesList = files.filter(f => !f.isDirectory);
+
+        console.log(`[BANK_CONNECTIONS] Found ${filesList.length} files on server`);
+
+        // Download each file
+        for (const file of filesList) {
+          const localFilePath = path.join(bankFolderPath, file.name);
+          const remoteFilePath = path.join(connection.remotePath || '/', file.name).replace(/\\/g, '/');
+
+          try {
+            // Check if file already exists
+            if (fs.existsSync(localFilePath)) {
+              console.log(`[BANK_CONNECTIONS] Skipping existing file: ${file.name}`);
+              skippedFiles.push(file.name);
+              continue;
+            }
+
+            // Download new file with retry logic
+            const MAX_RETRIES = 3;
+            const RETRY_DELAY = 2000; // 2 seconds
+            let downloadSuccess = false;
+
+            for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+              try {
+                console.log(`[BANK_CONNECTIONS] Downloading ${file.name} (attempt ${attempt}/${MAX_RETRIES})`);
+                await SFTPService.downloadFile({
+                  host: connection.host,
+                  port: connection.port || 22,
+                  username: connection.username,
+                  password: connection.password,
+                  privateKeyPath: connection.privateKeyPath
+                }, remoteFilePath, localFilePath);
+
+                newFiles.push(file.name);
+                console.log(`[BANK_CONNECTIONS] Downloaded: ${file.name}`);
+                downloadSuccess = true;
+                break; // Success, exit retry loop
+              } catch (retryError) {
+                console.warn(`[BANK_CONNECTIONS] Attempt ${attempt}/${MAX_RETRIES} failed for ${file.name}: ${retryError.message}`);
+
+                if (attempt === MAX_RETRIES) {
+                  // Final attempt failed - log detailed error
+                  const errorDetails = {
+                    name: file.name,
+                    error: retryError.message,
+                    errorCode: retryError.code || 'UNKNOWN',
+                    remotePath: remoteFilePath,
+                    fileSize: file.size || 'unknown',
+                    attempts: attempt
+                  };
+                  console.error(`[BANK_CONNECTIONS] Failed to download ${file.name} after ${MAX_RETRIES} attempts:`, errorDetails);
+                  failedFiles.push(errorDetails);
+                } else {
+                  // Wait before retrying
+                  console.log(`[BANK_CONNECTIONS] Waiting ${RETRY_DELAY}ms before retry...`);
+                  await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+                }
               }
             }
-          }
 
-        } catch (fileError) {
-          // Catch any unexpected errors outside the retry loop
-          console.error(`[BANK_CONNECTIONS] Unexpected error for ${file.name}: ${fileError.message}`);
-          failedFiles.push({ name: file.name, error: fileError.message, unexpected: true });
+          } catch (fileError) {
+            // Catch any unexpected errors outside the retry loop
+            console.error(`[BANK_CONNECTIONS] Unexpected error for ${file.name}: ${fileError.message}`);
+            failedFiles.push({ name: file.name, error: fileError.message, unexpected: true });
+          }
         }
       }
 

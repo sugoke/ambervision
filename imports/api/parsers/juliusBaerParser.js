@@ -7,6 +7,8 @@
  * Example: DDS03632510_DAILY_POS_JB.20251114.050635.EAM3632510.CSV
  */
 
+import { SECURITY_TYPES } from '../constants/instrumentTypes';
+
 export const JuliusBaerParser = {
   /**
    * Bank identifier
@@ -16,7 +18,7 @@ export const JuliusBaerParser = {
   /**
    * Filename pattern for Julius Baer position files
    */
-  filenamePattern: /DDS\d+_DAILY_POS_JB\.(\d{8})\.(\d{6})\.EAM\d+\.CSV/i,
+  filenamePattern: /^DDS\d+_DAILY_POS_JB\.(\d{8})\.(\d{6})\.EAM\d+\.CSV$/i,
 
   /**
    * Check if filename matches Julius Baer pattern
@@ -74,29 +76,30 @@ export const JuliusBaerParser = {
 
   /**
    * Map security type from Julius Baer to standard type
+   * Uses SECURITY_TYPES constants from instrumentTypes.js
    */
   mapSecurityType(jbType) {
     const typeMap = {
       // Text-based types
-      'Stock': 'EQUITY',
-      'Bond': 'BOND',
-      'Fund': 'FUND',
-      'ETF': 'ETF',
-      'Cash': 'CASH',
-      'Option': 'OPTION',
-      'Future': 'FUTURE',
-      'Warrant': 'WARRANT',
+      'Stock': SECURITY_TYPES.EQUITY,
+      'Bond': SECURITY_TYPES.BOND,
+      'Fund': SECURITY_TYPES.FUND,
+      'ETF': SECURITY_TYPES.ETF,
+      'Cash': SECURITY_TYPES.CASH,
+      'Option': SECURITY_TYPES.OPTION,
+      'Future': SECURITY_TYPES.FUTURE,
+      'Warrant': SECURITY_TYPES.WARRANT,
       // Numeric codes used by Julius Baer
-      '1': 'EQUITY',
-      '2': 'BOND',
-      '3': 'FUND',
-      '4': 'CASH',
-      '5': 'OPTION',
-      '6': 'FUTURE',
-      '7': 'WARRANT'
+      '1': SECURITY_TYPES.EQUITY,
+      '2': SECURITY_TYPES.BOND,
+      '3': SECURITY_TYPES.FUND,
+      '4': SECURITY_TYPES.CASH,
+      '5': SECURITY_TYPES.OPTION,
+      '6': SECURITY_TYPES.FUTURE,
+      '7': SECURITY_TYPES.WARRANT
     };
 
-    return typeMap[jbType] || jbType || 'UNKNOWN';
+    return typeMap[jbType] || jbType || SECURITY_TYPES.UNKNOWN;
   },
 
   /**
@@ -383,7 +386,20 @@ export const JuliusBaerParser = {
       // Metadata
       userId,
       isActive: true,
-      version: 1
+      version: 1,
+
+      // Bank-provided FX rates (currency → EUR rate)
+      // Julius Baer provides per-position exchange rates
+      // Rate meaning: units of original currency per 1 portfolio currency (divide to convert)
+      // Build a map of the position's currency to its exchange rate
+      bankFxRates: (() => {
+        const positionCurrency = row.POS_PRICE_CCY_ISO || row.INSTR_REF_CCY_ISO || row.POS_CCY_ISO;
+        const exchangeRate = this.parseNumber(row.PTF_POS_CCY_EXCH) || this.parseNumber(row.COST_EXCH_RATE);
+        if (positionCurrency && exchangeRate && positionCurrency !== (row.PTF_CCY_ISO || 'EUR')) {
+          return { [positionCurrency]: exchangeRate };
+        }
+        return {};
+      })(),
     };
   },
 

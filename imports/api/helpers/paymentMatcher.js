@@ -225,6 +225,198 @@ export function matchScheduledPayment(product, observation, pmsOperations = null
 }
 
 /**
+ * Match a redemption transaction for an autocalled observation
+ *
+ * When a product is autocalled (redeemed), there are typically TWO transactions:
+ * 1. Coupon payment (handled by matchScheduledPayment)
+ * 2. Redemption/principal return (handled by this function)
+ *
+ * @param {Object} product - Product object with ISIN
+ * @param {Object} observation - Observation schedule entry with paymentDate and autocalled flag
+ * @param {Array} redemptionOperations - Array of PMS operations filtered for redemptions
+ * @returns {Object} - { confirmed: Boolean, operation: Object|null, matchConfidence: String }
+ */
+export function matchRedemptionTransaction(product, observation, redemptionOperations = null) {
+  // Only check if this observation triggered an autocall or is a final maturity redemption
+  if (!observation.autocalled && !observation.isFinal) {
+    return {
+      confirmed: false,
+      operation: null,
+      matchConfidence: 'not-redemption-event',
+      message: 'This observation is not an autocall or maturity event'
+    };
+  }
+
+  // For non-autocalled final observations, we need hasOccurred to be true
+  if (observation.isFinal && !observation.autocalled && !observation.hasOccurred) {
+    return {
+      confirmed: false,
+      operation: null,
+      matchConfidence: 'future-maturity',
+      message: 'Maturity has not occurred yet'
+    };
+  }
+
+  // Validation
+  if (!product || !product.isin) {
+    return {
+      confirmed: false,
+      operation: null,
+      matchConfidence: 'no-product-isin',
+      error: 'Product missing ISIN'
+    };
+  }
+
+  if (!observation || !observation.paymentDate) {
+    return {
+      confirmed: false,
+      operation: null,
+      matchConfidence: 'no-payment-date',
+      error: 'Observation missing payment date'
+    };
+  }
+
+  let operations = redemptionOperations;
+  if (!operations) {
+    // Query redemption-like operations
+    operations = PMSOperationsCollection.find({
+      isin: product.isin,
+      isActive: true,
+      $or: [
+        { operationType: 'REDEMPTION' },
+        { operationType: 'SELL' },
+        { quantity: { $lt: 0 } }
+      ]
+    }).fetch();
+  }
+
+  if (!operations || operations.length === 0) {
+    return {
+      confirmed: false,
+      operation: null,
+      matchConfidence: 'no-redemption-operations',
+      message: 'No redemption operations found for this ISIN'
+    };
+  }
+
+  // Try to find matching redemption operation
+  const paymentDate = new Date(observation.paymentDate);
+
+  let bestMatch = null;
+  let bestMatchScore = 0;
+
+  for (const operation of operations) {
+    let score = 0;
+    let matchDetails = {
+      dateMatch: false,
+      typeMatch: false,
+      quantityMatch: false,
+      detailsMatch: false
+    };
+
+    // Check date match (same 7-day tolerance as coupon payments)
+    if (operation.valueDate && datesMatch(paymentDate, operation.valueDate, 7)) {
+      matchDetails.dateMatch = true;
+
+      const scheduled = new Date(paymentDate);
+      const actual = new Date(operation.valueDate);
+      const daysDiff = Math.floor((actual - scheduled) / (1000 * 60 * 60 * 24));
+
+      if (daysDiff === 0) {
+        score += 50; // Same day - perfect match
+      } else if (daysDiff <= 3) {
+        score += 40; // 1-3 days late - very good
+      } else {
+        score += 30; // 4-7 days late - acceptable
+      }
+    }
+
+    // Check operation type
+    if (operation.operationType === 'REDEMPTION') {
+      score += 30;
+      matchDetails.typeMatch = true;
+    } else if (operation.operationType === 'SELL') {
+      score += 15; // SELL can indicate redemption
+      matchDetails.typeMatch = true;
+    }
+
+    // Check details field for redemption keywords
+    const details = (operation.details || '').toLowerCase();
+    if (details.includes('redemption') || details.includes('call for redemption') ||
+        details.includes('maturity') || details.includes('early call')) {
+      score += 20;
+      matchDetails.detailsMatch = true;
+    }
+
+    // Check for negative quantity (position sold/redeemed)
+    if (operation.quantity && operation.quantity < 0) {
+      score += 10;
+      matchDetails.quantityMatch = true;
+    }
+
+    // Check price around 1.00 (100% of nominal) - typical for redemptions
+    if (operation.price && operation.price >= 0.95 && operation.price <= 1.05) {
+      score += 10;
+    }
+
+    // Also check operation date for additional confidence
+    if (operation.operationDate && datesMatch(paymentDate, operation.operationDate, 7)) {
+      score += 10;
+    }
+
+    if (score > bestMatchScore) {
+      bestMatchScore = score;
+      bestMatch = {
+        operation,
+        matchDetails
+      };
+    }
+  }
+
+  // Determine match confidence based on score
+  let matchConfidence = 'none';
+  let confirmed = false;
+
+  if (bestMatchScore >= 80) {
+    matchConfidence = 'high';
+    confirmed = true;
+  } else if (bestMatchScore >= 50) {
+    matchConfidence = 'medium';
+    confirmed = true;
+  } else if (bestMatchScore >= 30) {
+    matchConfidence = 'low';
+    confirmed = false;
+  }
+
+  if (!bestMatch) {
+    return {
+      confirmed: false,
+      operation: null,
+      matchConfidence: 'none',
+      message: 'No matching redemption operation found'
+    };
+  }
+
+  return {
+    confirmed,
+    operation: bestMatch.operation,
+    matchConfidence,
+    matchScore: bestMatchScore,
+    matchDetails: bestMatch.matchDetails,
+    confirmedRedemption: confirmed ? {
+      operationId: bestMatch.operation._id,
+      actualAmount: bestMatch.operation.netAmount || bestMatch.operation.grossAmount,
+      actualDate: bestMatch.operation.valueDate,
+      transactionRef: bestMatch.operation.uniqueKey || bestMatch.operation._id,
+      operationDate: bestMatch.operation.operationDate,
+      quantity: bestMatch.operation.quantity,
+      price: bestMatch.operation.price,
+      currency: bestMatch.operation.instrumentCurrency || product.currency
+    } : null
+  };
+}
+
+/**
  * Match all observations in a schedule with PMS operations
  * Optimized to query operations once and reuse for all observations
  *
@@ -255,46 +447,83 @@ export async function matchAllScheduledPayments(product, observations) {
     }));
   }
 
-  // Query all operations with positive amounts for this product once
-  // Match ANY operation with the same ISIN and positive amount (incoming payment)
-  // Don't rely on operationType classification as banks differ
-  const operations = await PMSOperationsCollection.find({
+  // Query ALL operations for this product once (not just positive amounts)
+  // We need both coupon payments (positive) and redemptions (negative/sell)
+  const allOperations = await PMSOperationsCollection.find({
     isin: product.isin,
-    isActive: true,
-    $or: [
-      { grossAmount: { $gt: 0 } },
-      { netAmount: { $gt: 0 } }
-    ]
+    isActive: true
   }).fetchAsync();
+
+  // Separate operations into coupon (positive amounts) and redemption candidates
+  const couponOperations = allOperations.filter(op =>
+    (op.grossAmount && op.grossAmount > 0) ||
+    (op.netAmount && op.netAmount > 0)
+  );
+
+  const redemptionOperations = allOperations.filter(op =>
+    op.operationType === 'REDEMPTION' ||
+    op.operationType === 'SELL' ||
+    (op.quantity && op.quantity < 0) ||
+    (op.details && op.details.toLowerCase().includes('redemption'))
+  );
 
   // Match each observation
   const enhancedObservations = observations.map(obs => {
     const paymentDate = new Date(obs.paymentDate);
 
-    // Skip coupons before PMS history cutoff (no data available before Dec 2025)
+    // Skip payments before PMS history cutoff (no data available before Dec 2025)
     if (paymentDate < PMS_HISTORY_CUTOFF) {
       return {
         ...obs,
         paymentConfirmed: false,
         matchConfidence: 'skipped-before-cutoff',
-        matchMessage: 'Payment date before PMS history availability (Dec 2025)'
+        matchMessage: 'Payment date before PMS history availability (Dec 2025)',
+        // Redemption fields
+        redemptionConfirmed: false,
+        redemptionMatchConfidence: 'skipped-before-cutoff'
       };
     }
 
-    const matchResult = matchScheduledPayment(product, obs, operations);
+    // Match coupon payment (existing logic)
+    const couponMatchResult = matchScheduledPayment(product, obs, couponOperations);
 
-    // Determine if payment is past due (scheduled date passed but not confirmed)
+    // Determine if coupon payment is past due
     const today = new Date();
-    const isPastDue = paymentDate < today && !matchResult.confirmed && obs.couponPaid > 0;
+    const isPastDue = paymentDate < today && !couponMatchResult.confirmed && obs.couponPaid > 0;
+
+    // Match redemption transaction (NEW logic)
+    // Only check if this is an autocall or final maturity observation
+    let redemptionResult = {
+      confirmed: false,
+      matchConfidence: 'not-applicable',
+      message: null
+    };
+
+    if (obs.autocalled || (obs.isFinal && obs.hasOccurred)) {
+      redemptionResult = matchRedemptionTransaction(product, obs, redemptionOperations);
+    }
+
+    // Determine if redemption is past due
+    const redemptionIsPastDue = paymentDate < today &&
+      !redemptionResult.confirmed &&
+      (obs.autocalled || (obs.isFinal && obs.hasOccurred));
 
     return {
       ...obs,
-      paymentConfirmed: matchResult.confirmed,
-      confirmedPayment: matchResult.confirmedPayment,
-      matchConfidence: matchResult.matchConfidence,
-      matchScore: matchResult.matchScore,
+      // Coupon payment fields (existing)
+      paymentConfirmed: couponMatchResult.confirmed,
+      confirmedPayment: couponMatchResult.confirmedPayment,
+      matchConfidence: couponMatchResult.matchConfidence,
+      matchScore: couponMatchResult.matchScore,
       isPastDue,
-      matchMessage: matchResult.message || matchResult.error || null
+      matchMessage: couponMatchResult.message || couponMatchResult.error || null,
+      // Redemption fields (NEW)
+      redemptionConfirmed: redemptionResult.confirmed,
+      confirmedRedemption: redemptionResult.confirmedRedemption,
+      redemptionMatchConfidence: redemptionResult.matchConfidence,
+      redemptionMatchScore: redemptionResult.matchScore,
+      redemptionIsPastDue,
+      redemptionMatchMessage: redemptionResult.message || redemptionResult.error || null
     };
   });
 
@@ -303,6 +532,7 @@ export async function matchAllScheduledPayments(product, observations) {
 
 export const PaymentMatcherHelpers = {
   matchScheduledPayment,
+  matchRedemptionTransaction,
   matchAllScheduledPayments,
   datesMatch,
   amountsMatch

@@ -19,7 +19,7 @@ export const AndbankOperationParser = {
   /**
    * Filename pattern for Andbank operation files
    */
-  filenamePattern: /EX00(\d{8})_MVT_MNC\.csv/i,
+  filenamePattern: /^EX00(\d{8})_MVT_MNC\.csv$/i,
 
   /**
    * Column mapping from header names to internal keys
@@ -288,6 +288,7 @@ export const AndbankOperationParser = {
       userId, // Will be mapped from portfolioCode
 
       // Dates
+      operationDate: transactionDate || valueDate || fileDate, // Required field for PMSOperations
       transactionDate,
       valueDate,
       maturityDate,
@@ -304,6 +305,8 @@ export const AndbankOperationParser = {
       // Operation details
       operationType,
       operationCategory,
+      operationCode: row.TRANSACTION_TYPE_CODE || row.MOVEMENT_TYPE || 'UNKNOWN', // For unique key generation
+      instrumentCode: row.ISIN || row.INTERNAL_ASSET_CODE || null, // For unique key generation
       transactionRef: row.TRANSACTION_REF || null,
       transactionLabel: row.TRANSACTION_LABEL || null,
       transactionTypeCode: row.TRANSACTION_TYPE_CODE || null,
