@@ -15,7 +15,8 @@ import { TickerPriceCacheCollection } from '../../imports/api/tickerCache.js';
 import { NotificationsCollection } from '../../imports/api/notifications.js';
 import { MarketDataCacheCollection } from '../../imports/api/marketDataCache.js';
 import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetadata.js';
-import { CurrencyRateCacheCollection } from '../../imports/api/currencyCache.js';
+import { CurrencyRateCacheCollection, CurrencyCache } from '../../imports/api/currencyCache.js';
+import { calculateCashForHoldings } from '../../imports/api/helpers/cashCalculator.js';
 import { INVESTMENT_QUOTES } from '../quotesData.js';
 
 // Database collections for quotes system
@@ -892,9 +893,24 @@ Meteor.methods({
       allBanks.forEach(b => { bankMap[b._id] = b; });
 
       // Get currency rates for conversion to EUR
-      const currencyRates = await CurrencyRateCacheCollection.find({
+      let currencyRates = await CurrencyRateCacheCollection.find({
         expiresAt: { $gt: new Date() }
       }).fetchAsync();
+
+      // If cache is empty (e.g., first request after startup), trigger refresh
+      if (currencyRates.length === 0) {
+        console.log('[CashMonitoring] FX rate cache empty, triggering on-demand refresh...');
+        try {
+          await CurrencyCache.refreshCurrencyRates();
+          currencyRates = await CurrencyRateCacheCollection.find({
+            expiresAt: { $gt: new Date() }
+          }).fetchAsync();
+          console.log(`[CashMonitoring] FX rate refresh complete, ${currencyRates.length} rates available`);
+        } catch (fxError) {
+          console.error('[CashMonitoring] FX rate refresh failed:', fxError.message);
+        }
+      }
+
       const ratesMap = buildRatesMap(currencyRates);
 
       // Get ISINs classified as monetary_products or time_deposit
@@ -915,53 +931,13 @@ Meteor.methods({
           isActive: { $ne: false }
         }).fetchAsync();
 
-        // DUAL-LOGIC CASH CALCULATION:
-        // - For NEGATIVE cash: Only pure CASH holdings (requires immediate action)
-        // - For HIGH cash: Include monetary products & time deposits (investment opportunity)
-
-        // Calculate PURE CASH (only securityType === 'CASH') for negative balance detection
-        let pureCashEUR = 0;
-        const pureCashBreakdown = [];
-
-        // Calculate TOTAL CASH EQUIVALENTS (including money market, time deposits) for high cash detection
-        let totalCashEquivalentEUR = 0;
-        const allCashBreakdown = [];
-
-        for (const holding of holdings) {
-          // Check if pure cash (for negative cash alerts)
-          const isPureCash = holding.securityType === 'CASH' ||
-            (holding.securityType && /cash/i.test(holding.securityType));
-
-          // Check if cash equivalent (for high cash alerts - includes money market funds, time deposits)
-          const isCashEquivalent = isPureCash ||
-            (holding.isin && cashEquivalentISINs.has(holding.isin));
-
-          if (isPureCash || isCashEquivalent) {
-            // Use marketValue (already in portfolio currency) or quantity for cash
-            const value = holding.marketValue || holding.quantity || 0;
-            const currency = holding.portfolioCurrency || holding.currency || 'EUR';
-            const eurValue = convertToEUR(value, currency, ratesMap);
-
-            const breakdownItem = {
-              name: holding.securityName || `Cash ${holding.currency}`,
-              type: holding.securityType,
-              currency: holding.currency,
-              originalValue: value,
-              eurValue,
-              isPureCash
-            };
-
-            if (isPureCash) {
-              pureCashEUR += eurValue;
-              pureCashBreakdown.push(breakdownItem);
-            }
-
-            if (isCashEquivalent) {
-              totalCashEquivalentEUR += eurValue;
-              allCashBreakdown.push(breakdownItem);
-            }
-          }
-        }
+        // Use shared cash calculator for consistent values across the app
+        // Pass local convertToEUR function which uses the FOREX pairs Map format
+        const cashResult = calculateCashForHoldings(holdings, ratesMap, cashEquivalentISINs, convertToEUR);
+        const pureCashEUR = cashResult.pureCashEUR;
+        const totalCashEquivalentEUR = cashResult.totalCashEquivalentEUR;
+        const pureCashBreakdown = cashResult.pureCashBreakdown;
+        const allCashBreakdown = cashResult.allCashBreakdown;
 
         // Get client info
         const accountUser = await UsersCollection.findOneAsync(account.userId);

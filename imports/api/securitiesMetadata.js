@@ -1,5 +1,6 @@
 import { Mongo } from 'meteor/mongo';
 import { check } from 'meteor/check';
+import { ASSET_CLASSES as ASSET_CLASS_VALUES } from './constants/instrumentTypes';
 
 export const SecuritiesMetadataCollection = new Mongo.Collection('securitiesMetadata');
 
@@ -8,21 +9,27 @@ export const SecuritiesMetadataCollection = new Mongo.Collection('securitiesMeta
  *
  * Stores classification and metadata for securities from PMS holdings.
  * One document per unique ISIN.
+ *
+ * NOTE: The asset class values below MUST align with ASSET_CLASSES in
+ * /imports/api/constants/instrumentTypes.js. When adding new asset classes,
+ * update both files to maintain consistency.
  */
 
 // Asset class options with hierarchical structure
+// Values align with ASSET_CLASSES in /imports/api/constants/instrumentTypes.js
 export const ASSET_CLASSES = [
   { value: '', label: 'Not Classified' },
-  { value: 'structured_product', label: 'Structured Products' },
-  { value: 'equity', label: 'Equity' },
-  { value: 'fixed_income', label: 'Fixed Income' },
-  { value: 'private_equity', label: 'Private Equity' },
-  { value: 'private_debt', label: 'Private Debt' },
-  { value: 'commodities', label: 'Commodities' },
-  { value: 'cash', label: 'Cash' },
-  { value: 'time_deposit', label: 'Term Deposit' },
-  { value: 'monetary_products', label: 'Monetary Products' },
-  { value: 'other', label: 'Other' }
+  { value: ASSET_CLASS_VALUES.STRUCTURED_PRODUCT, label: 'Structured Products' },
+  { value: ASSET_CLASS_VALUES.EQUITY, label: 'Equity' },
+  { value: ASSET_CLASS_VALUES.FIXED_INCOME, label: 'Fixed Income' },
+  { value: ASSET_CLASS_VALUES.PRIVATE_EQUITY, label: 'Private Equity' },
+  { value: ASSET_CLASS_VALUES.PRIVATE_DEBT, label: 'Private Debt' },
+  { value: ASSET_CLASS_VALUES.COMMODITIES, label: 'Commodities' },
+  { value: ASSET_CLASS_VALUES.CASH, label: 'Cash' },
+  { value: ASSET_CLASS_VALUES.TIME_DEPOSIT, label: 'Term Deposit' },
+  { value: ASSET_CLASS_VALUES.MONETARY_PRODUCTS, label: 'Monetary Products' },
+  { value: ASSET_CLASS_VALUES.DERIVATIVES, label: 'Derivatives' },
+  { value: ASSET_CLASS_VALUES.OTHER, label: 'Other' }
 ];
 
 // Structured Product sub-classes by underlying type
@@ -194,6 +201,68 @@ export function getGranularCategoryLabel(categoryKey) {
   // Fallback: try to create a readable label
   const parts = categoryKey.split('_');
   return parts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+}
+
+/**
+ * Get underlying type label for structured products
+ * @param {string} type - Underlying type value (e.g., 'equity_linked')
+ * @returns {string} Display label (e.g., 'Equity Linked')
+ */
+export function getUnderlyingTypeLabel(type) {
+  const labels = {
+    'equity_linked': 'Equity Linked',
+    'fixed_income_linked': 'Fixed Income Linked',
+    'credit_linked': 'Credit Linked',
+    'commodities_linked': 'Commodities Linked',
+    'other': 'Other'
+  };
+  return labels[type] || type || 'Unclassified';
+}
+
+/**
+ * Get protection type label for structured products
+ * @param {string} type - Protection type value (e.g., 'capital_guaranteed_100')
+ * @returns {string} Display label (e.g., '100% Capital Guaranteed')
+ */
+export function getProtectionTypeLabel(type) {
+  const labels = {
+    'capital_guaranteed_100': '100% Capital Guaranteed',
+    'capital_guaranteed_partial': 'Partially Guaranteed',
+    'capital_protected_conditional': 'Conditionally Guaranteed',
+    'other_protection': 'Other Protection'
+  };
+  return labels[type] || type || 'Unclassified';
+}
+
+/**
+ * Build hierarchical structured product breakdown from holdings
+ * Returns data for nested charts with Level 1 (underlying) and Level 2 (protection)
+ * @param {Array} holdings - Array of holdings with structuredProductUnderlyingType and structuredProductProtectionType
+ * @returns {Object} { level1Totals: {underlyingType -> value}, level2Totals: {key -> {value, parent, type}} }
+ */
+export function buildHierarchicalStructuredProductBreakdown(holdings) {
+  const level1Totals = {}; // underlyingType -> total value
+  const level2Totals = {}; // key -> { value, parent, type }
+
+  holdings.forEach(h => {
+    if (h.assetClass !== 'structured_product') return;
+
+    const underlying = h.structuredProductUnderlyingType || 'other';
+    const protection = h.structuredProductProtectionType || 'other_protection';
+    const value = h.marketValue || 0;
+
+    // Level 1 aggregation (underlying type)
+    level1Totals[underlying] = (level1Totals[underlying] || 0) + value;
+
+    // Level 2 aggregation (protection type within underlying)
+    const key = `${underlying}|${protection}`;
+    if (!level2Totals[key]) {
+      level2Totals[key] = { value: 0, parent: underlying, type: protection };
+    }
+    level2Totals[key].value += value;
+  });
+
+  return { level1Totals, level2Totals };
 }
 
 // Helper functions for Securities Metadata management

@@ -258,7 +258,7 @@ const RightSettingsMenu = ({ onNavigateToAdmin, isMobile, userRole, isOpen, onCl
   // Desktop: render floating admin button
   return (
     <button
-      onClick={onNavigateToAdmin}
+      onClick={() => onNavigateToAdmin()}
       title="Administration"
       style={{
         position: 'fixed',

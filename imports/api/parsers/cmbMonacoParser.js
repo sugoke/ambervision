@@ -9,6 +9,8 @@
  * Date format in CSV: DDMMYYYY (e.g., 12122025 = December 12, 2025)
  */
 
+import { SECURITY_TYPES } from '../constants/instrumentTypes';
+
 export const CMBMonacoParser = {
   /**
    * Bank identifier
@@ -18,27 +20,27 @@ export const CMBMonacoParser = {
   /**
    * Filename pattern for CMB Monaco position files
    */
-  filenamePattern: /TAM_mba_eam_pos_list_bu_mc_(\d{8})\.csv/i,
+  filenamePattern: /^TAM_mba_eam_pos_list_bu_mc_(\d{8})\.csv$/i,
 
   /**
    * Filename pattern for CMB Monaco operations/events files
    */
-  operationsPattern: /TAM_mba_eam_evt_list_bu_mc_(\d{8})\.csv/i,
+  operationsPattern: /^TAM_mba_eam_evt_list_bu_mc_(\d{8})\.csv$/i,
 
   /**
    * Filename pattern for CMB Monaco FX rates files
    */
-  fxRatesPattern: /TAM_mba_eam_curry_xchng_bu_mc_(\d{8})\.csv/i,
+  fxRatesPattern: /^TAM_mba_eam_curry_xchng_bu_mc_(\d{8})\.csv$/i,
 
   /**
    * Filename pattern for CMB Monaco asset list files
    */
-  assetListPattern: /TAM_mba_eam_asset_list_bu_mc_(\d{8})\.csv/i,
+  assetListPattern: /^TAM_mba_eam_asset_list_bu_mc_(\d{8})\.csv$/i,
 
   /**
    * Filename pattern for CMB Monaco business partner files
    */
-  businessPartnerPattern: /TAM_mba_eam_bp_list_bu_mc_(\d{8})\.csv/i,
+  businessPartnerPattern: /^TAM_mba_eam_bp_list_bu_mc_(\d{8})\.csv$/i,
 
   /**
    * Check if filename matches CMB Monaco position pattern
@@ -123,33 +125,34 @@ export const CMBMonacoParser = {
 
   /**
    * Map security type from CMB Monaco Asset_Type_ID to standard type
+   * Uses SECURITY_TYPES constants from instrumentTypes.js
    */
   mapSecurityType(assetTypeId, assetClassId) {
     // First check Asset_Class_ID for cash - this is the most reliable indicator
     // Cash positions may have various Asset_Type_ID values but Asset_Class_ID is always 'cash'
     if (assetClassId === 'cash') {
-      return 'CASH';
+      return SECURITY_TYPES.CASH;
     }
 
     const typeMap = {
       // Shares
-      'shs_ord': 'EQUITY',
-      'shs_reg': 'EQUITY',
+      'shs_ord': SECURITY_TYPES.EQUITY,
+      'shs_reg': SECURITY_TYPES.EQUITY,
       // Bonds
-      'bond_fix': 'BOND',
-      'bond_var': 'BOND',
+      'bond_fix': SECURITY_TYPES.BOND,
+      'bond_var': SECURITY_TYPES.BOND,
       // Funds
-      'fd_var': 'FUND',
-      'fd_shs': 'FUND',
-      'fd_mm': 'MONEY_MARKET_FUND',
+      'fd_var': SECURITY_TYPES.FUND,
+      'fd_shs': SECURITY_TYPES.FUND,
+      'fd_mm': SECURITY_TYPES.MONEY_MARKET,  // Standardized from MONEY_MARKET_FUND
       // Cash (fallback if Asset_Class_ID check missed it)
-      'cash_acc': 'CASH',
+      'cash_acc': SECURITY_TYPES.CASH,
       // Other (to be skipped in filtering)
       'lmt_std': 'LIMIT',
       'sdbc': 'SAFE_DEPOSIT',
     };
 
-    return typeMap[assetTypeId] || assetClassId?.toUpperCase() || 'UNKNOWN';
+    return typeMap[assetTypeId] || assetClassId?.toUpperCase() || SECURITY_TYPES.UNKNOWN;
   },
 
   /**
@@ -497,6 +500,15 @@ export const CMBMonacoParser = {
 
       // Metadata
       userId,
+
+      // Bank-provided FX rates (flattened to currency → EUR rate)
+      // Used by cash calculator to ensure amounts match bank statements
+      bankFxRates: Object.keys(fxRates).reduce((acc, currency) => {
+        if (fxRates[currency] && fxRates[currency]['EUR']) {
+          acc[currency] = fxRates[currency]['EUR'];
+        }
+        return acc;
+      }, {}),
     };
   },
 
@@ -601,12 +613,13 @@ export const CMBMonacoParser = {
 
       // Transaction Details
       operationType: row.Order_Type_ID || null,
-      operationTypeName: row.Order_Type || null,
+      operationTypeName: row.Internal_Booking_Text || row.Order_Type || null,
       transactionCategory: row.Meta_Type_ID || null,
       transactionCategoryName: row.Meta_Type || null,
       description: row.Internal_Booking_Text || null,
 
-      // Dates
+      // Dates - operationDate is REQUIRED by schema validation
+      operationDate: transactionDate || valueDate || verificationDate || fileDate,
       transactionDate: transactionDate,
       valueDate: valueDate,
       verificationDate: verificationDate,

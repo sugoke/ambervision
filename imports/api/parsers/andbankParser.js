@@ -13,6 +13,8 @@
  * Updated Nov 2025: Added header row support
  */
 
+import { SECURITY_TYPES } from '../constants/instrumentTypes';
+
 export const AndbankParser = {
   /**
    * Bank identifier
@@ -22,7 +24,7 @@ export const AndbankParser = {
   /**
    * Filename pattern for Andbank position files
    */
-  filenamePattern: /EX00(\d{8})_POS_MNC\.csv/i,
+  filenamePattern: /^EX00(\d{8})_POS_MNC\.csv$/i,
 
   /**
    * Column indices (0-indexed, no headers)
@@ -125,32 +127,35 @@ export const AndbankParser = {
   /**
    * Map security type from Andbank official codes to standard type
    * Based on official Andbank Datafeed documentation
+   * Uses SECURITY_TYPES constants from instrumentTypes.js
    */
   mapSecurityType(code) {
     const codeNum = parseInt(code) || 0;
 
-    // Bonds: 100-109, 177
-    if (codeNum >= 100 && codeNum < 110) return 'BOND';
-    if (codeNum === 177) return 'BOND'; // US Treasury
-
     // Structured Products: 105, 106, 108, 110, 111, 600
-    if (codeNum === 105 || codeNum === 106 || codeNum === 108) return 'STRUCTURED_PRODUCT';
-    if (codeNum === 110 || codeNum === 111) return 'STRUCTURED_PRODUCT';
-    if (codeNum === 600) return 'STRUCTURED_PRODUCT';
+    // Check these first as they overlap with bond range
+    if (codeNum === 105 || codeNum === 106 || codeNum === 108) return SECURITY_TYPES.STRUCTURED_PRODUCT;
+    if (codeNum === 110 || codeNum === 111) return SECURITY_TYPES.STRUCTURED_PRODUCT;
+    if (codeNum === 600) return SECURITY_TYPES.STRUCTURED_PRODUCT;
+
+    // Bonds: 100-109, 177
+    if (codeNum >= 100 && codeNum < 110) return SECURITY_TYPES.BOND;
+    if (codeNum === 177) return SECURITY_TYPES.BOND; // US Treasury
 
     // Equities: 200-259
-    if (codeNum >= 200 && codeNum < 260) return 'EQUITY';
+    if (codeNum >= 200 && codeNum < 260) return SECURITY_TYPES.EQUITY;
 
     // Derivatives: 300-374
-    if (codeNum >= 300 && codeNum < 375) return 'DERIVATIVE';
+    // Map to most common derivative type (OPTION) as default
+    if (codeNum >= 300 && codeNum < 375) return SECURITY_TYPES.OPTION;
 
     // Commodities/Currencies: 401-440
-    if (codeNum >= 401 && codeNum < 450) return 'COMMODITY';
+    if (codeNum >= 401 && codeNum < 450) return SECURITY_TYPES.COMMODITY;
 
     // Funds: 500-530
-    if (codeNum >= 500 && codeNum < 531) return 'FUND';
+    if (codeNum >= 500 && codeNum < 531) return SECURITY_TYPES.FUND;
 
-    return 'UNKNOWN';
+    return SECURITY_TYPES.UNKNOWN;
   },
 
   /**
@@ -345,13 +350,14 @@ export const AndbankParser = {
     const marketValuePortfolioCurrency = this.parseNumber(row.MKT_VAL_PTF);
 
     // Determine security type for standardized output
+    // Uses SECURITY_TYPES constants from instrumentTypes.js
     let securityType;
     if (isCash) {
-      securityType = 'CASH';
+      securityType = SECURITY_TYPES.CASH;
     } else if (isDeposit) {
-      securityType = 'DEPOSIT';
+      securityType = SECURITY_TYPES.TERM_DEPOSIT;  // Standardized from DEPOSIT
     } else if (isForex) {
-      securityType = 'FOREX';
+      securityType = SECURITY_TYPES.FX_FORWARD;    // Standardized from FOREX
     } else {
       securityType = this.mapSecurityType(securityTypeCode);
     }
@@ -450,7 +456,23 @@ export const AndbankParser = {
       // Metadata
       userId,
       isActive: true,
-      version: 1
+      version: 1,
+
+      // Bank-provided FX rates (currency → EUR rate)
+      // Andbank provides per-position exchange rates
+      // Rate meaning: how many portfolio currency units per 1 position currency (multiply to convert)
+      // NOTE: Andbank uses MULTIPLICATION, unlike JB/CMB/CFM which use division
+      // For uniformity, we store the INVERSE so all rates work with division: EUR = amount / rate
+      bankFxRates: (() => {
+        const positionCurrency = row.ROW_CCY;
+        const portfolioCurrency = row.PORTFOLIO_CCY || 'EUR';
+        const rate = this.parseNumber(row.EXCH_RATE_PTF);
+        if (positionCurrency && rate && rate !== 0 && positionCurrency !== portfolioCurrency) {
+          // Store inverse: Andbank rate is "multiply", convert to "divide" format
+          return { [positionCurrency]: 1 / rate };
+        }
+        return {};
+      })(),
     };
   },
 

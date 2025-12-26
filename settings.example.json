@@ -36,10 +36,11 @@
     "CBONDS_API_PASSWORD": "your_cbonds_password_here",
     "CBONDS_BASE_URL": "https://ws.cbonds.info/services/json",
 
-    "_comment_mailersend": "MailerSend email service configuration",
-    "MAILERSEND_API_TOKEN": "mlsn.your_mailersend_api_token_here",
-    "MAILERSEND_FROM_EMAIL": "noreply@yourdomain.com",
-    "MAILERSEND_FROM_NAME": "Amber Lake Partners",
+    "_comment_sendpulse": "SendPulse email service configuration",
+    "SENDPULSE_CLIENT_ID": "your_sendpulse_client_id_here",
+    "SENDPULSE_CLIENT_SECRET": "your_sendpulse_client_secret_here",
+    "SENDPULSE_FROM_EMAIL": "noreply@yourdomain.com",
+    "SENDPULSE_FROM_NAME": "Amber Lake Partners",
     "APP_URL": "http://localhost:3000",
     "EMAIL_NOTIFICATIONS_BCC": [],
 
