@@ -1,5 +1,5 @@
 import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
+import { check, Match } from 'meteor/check';
 import cron from 'node-cron';
 import pLimit from 'p-limit';
 import { CronJobLogHelpers, CronJobLogsCollection } from '/imports/api/cronJobLogs';
@@ -9,6 +9,8 @@ import { BankConnectionsCollection } from '/imports/api/bankConnections';
 import { conditionalUpdate, updateMarketTickerPrices } from './updateMarketTicker';
 import { EmailService } from '/imports/api/emailService';
 import { NotificationsCollection } from '/imports/api/notifications';
+import { checkDataFreshness, formatDataDate } from '/imports/api/helpers/dataFreshness.js';
+import { PMSHoldingsCollection } from '/imports/api/pmsHoldings.js';
 
 /**
  * Cron Jobs Configuration
@@ -17,6 +19,8 @@ import { NotificationsCollection } from '/imports/api/notifications';
  * 1. Market Data Refresh - Daily at 00:00 CET (midnight) - Skip weekends & holidays
  * 2. Product Re-evaluation - Daily at 00:30 CET (30 min after data refresh) - Skip weekends & holidays
  * 3. Market Ticker Update - Every 15 minutes (conditional on user activity) - Skip weekends & holidays
+ * 4. Bank File Sync - Daily at 07:30 CET (all banks)
+ * 5. CMB File Sync - Daily at 09:00 CET (CMB only - uploads files later than other banks)
  */
 
 /**
@@ -90,7 +94,8 @@ let cronJobs = {
   marketDataRefresh: null,
   productRevaluation: null,
   marketTickerUpdate: null,
-  bankFileSync: null
+  bankFileSync: null,
+  cmbFileSync: null  // CMB-specific sync (runs later due to late file uploads)
 };
 
 // Store next run times for the dashboard
@@ -115,11 +120,38 @@ let scheduleInfo = {
   },
   bankFileSync: {
     name: 'bankFileSync',
-    schedule: '30 7 * * *', // 07:30 CET daily (French time)
+    schedule: '30 7 * * *', // 07:30 CET daily
+    lastFinishedAt: null,
+    nextScheduledRun: null
+  },
+  cmbFileSync: {
+    name: 'cmbFileSync',
+    schedule: '0 9 * * *', // 09:00 CET daily (CMB uploads files later than other banks)
     lastFinishedAt: null,
     nextScheduledRun: null
   }
 };
+
+/**
+ * Initialize lastFinishedAt from database logs
+ * This ensures dashboard shows correct "Last Run" even after server restart
+ */
+async function initializeScheduleInfoFromLogs() {
+  const jobNames = Object.keys(scheduleInfo);
+
+  for (const jobName of jobNames) {
+    // Find the most recent completed log for this job (success or error)
+    const lastLog = await CronJobLogsCollection.findOneAsync(
+      { jobName, status: { $in: ['success', 'error'] } },
+      { sort: { endTime: -1 } }
+    );
+
+    if (lastLog && lastLog.endTime) {
+      scheduleInfo[jobName].lastFinishedAt = lastLog.endTime;
+      console.log(`[CRON] Restored lastFinishedAt for ${jobName}: ${lastLog.endTime.toISOString()}`);
+    }
+  }
+}
 
 /**
  * Calculate next scheduled run time based on cron expression
@@ -483,25 +515,14 @@ async function productRevaluationJob(options = {}) {
 
 /**
  * JOB 4: Bank File Sync & PMS Processing
- * Runs daily at 03:00 CET
+ * Runs daily at 07:30 CET
  * For SFTP connections: Downloads bank files and processes for PMS
  * For Local connections: Skips download (files already uploaded by bank), processes directly
- * Skips execution on weekends and holidays (unless bypassWeekendCheck is true)
  */
 async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
-  const { bypassWeekendCheck = false, forceReprocess = false } = options;
+  const { forceReprocess = false } = options;
 
-  // Check if today is a weekend or holiday (skip check for manual triggers with bypass)
-  if (!bypassWeekendCheck) {
-    const tradingDayCheck = isWeekendOrHoliday();
-    if (tradingDayCheck.isNonTradingDay) {
-      console.log(`[CRON] Bank File Sync skipped: ${tradingDayCheck.reason}`);
-      scheduleInfo.bankFileSync.nextScheduledRun = getNextRunTime(scheduleInfo.bankFileSync.schedule);
-      return { skipped: true, reason: tradingDayCheck.reason };
-    }
-  } else {
-    console.log(`[CRON] Bank File Sync: Bypassing weekend/holiday check (manual trigger)`);
-  }
+  // Note: No weekend check - bank files may arrive any day
 
   const logId = await CronJobLogHelpers.startJob('bankFileSync', triggerSource);
   console.log(`[CRON] Bank File Sync started (triggered by: ${triggerSource})`);
@@ -517,8 +538,9 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
     const results = {
       triggerSource,
       connectionsProcessed: 0,
-      connectionsSucceeded: 0,
+      connectionsSucceeded: 0,  // Now only counts fresh data
       connectionsFailed: 0,
+      connectionsWithStaleData: 0,  // Processed successfully but data is stale
       filesDownloaded: 0,
       positionsProcessed: 0,
       operationsProcessed: 0,
@@ -545,26 +567,24 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
         operationsFile: null,
         operationsProcessed: 0,
         success: false,
-        error: null
+        error: null,
+        freshness: null  // Will be populated after processing
       };
 
       try {
-        // Step 1: Download files (SFTP only, skip for local connections)
-        if (connection.connectionType !== 'local') {
-          const downloadResult = await Meteor.callAsync(
-            'bankConnections.downloadAllFiles',
-            { connectionId: connection._id, sessionId: 'system-cron' }
-          );
+        // Step 1: Check for new files (downloads for SFTP, detects unprocessed for local)
+        const downloadResult = await Meteor.callAsync(
+          'bankConnections.downloadAllFiles',
+          { connectionId: connection._id, sessionId: 'system-cron' }
+        );
 
-          if (downloadResult.success) {
-            results.filesDownloaded += downloadResult.newFiles?.length || 0;
-            connectionFileDetails.downloadedFiles = downloadResult.newFiles || [];
-            connectionFileDetails.skippedFiles = downloadResult.skippedFiles || [];
-            connectionFileDetails.failedFiles = downloadResult.failedFiles || [];
-            console.log(`[CRON] Downloaded ${downloadResult.newFiles?.length || 0} new files for ${connection.connectionName}: ${(downloadResult.newFiles || []).join(', ') || 'none'}`);
-          }
-        } else {
-          console.log(`[CRON] Skipping download for local connection: ${connection.connectionName} (files already in bankfiles/${connection.localFolderName})`);
+        if (downloadResult.success) {
+          results.filesDownloaded += downloadResult.newFiles?.length || 0;
+          connectionFileDetails.downloadedFiles = downloadResult.newFiles || [];
+          connectionFileDetails.skippedFiles = downloadResult.skippedFiles || [];
+          connectionFileDetails.failedFiles = downloadResult.failedFiles || [];
+          const action = connection.connectionType === 'local' ? 'Detected' : 'Downloaded';
+          console.log(`[CRON] ${action} ${downloadResult.newFiles?.length || 0} new files for ${connection.connectionName}: ${(downloadResult.newFiles || []).join(', ') || 'none'}`);
         }
 
         // Step 2: Process ALL missing dates FIRST in chronological order
@@ -609,7 +629,6 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
           const opCount = processResult.operations?.newRecords || 0;
           results.positionsProcessed += posCount;
           results.operationsProcessed += opCount;
-          results.connectionsSucceeded++;
 
           connectionFileDetails.positionsFile = processResult.positions?.filename || null;
           connectionFileDetails.positionsProcessed = posCount;
@@ -617,7 +636,32 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
           connectionFileDetails.operationsProcessed = opCount;
           connectionFileDetails.success = true;
 
-          console.log(`[CRON] ✓ ${connection.connectionName}: ${posCount} positions from ${processResult.positions?.filename || 'unknown'}, ${opCount} operations`);
+          // Check data freshness for this connection
+          // Note: connection.bankId is the BanksCollection._id, not connection._id
+          const latestHolding = await PMSHoldingsCollection.findOneAsync(
+            { bankId: connection.bankId, isLatest: true },
+            { sort: { snapshotDate: -1 }, fields: { snapshotDate: 1, fileDate: 1 } }
+          );
+
+          const dataDate = latestHolding?.snapshotDate || latestHolding?.fileDate;
+          const freshnessResult = checkDataFreshness(dataDate);
+
+          connectionFileDetails.freshness = {
+            status: freshnessResult.status,
+            dataDate: dataDate,
+            formattedDate: formatDataDate(dataDate),
+            businessDaysOld: freshnessResult.businessDaysOld,
+            message: freshnessResult.message
+          };
+
+          // Only count as succeeded if data is fresh
+          if (freshnessResult.status === 'fresh') {
+            results.connectionsSucceeded++;
+            console.log(`[CRON] ✓ ${connection.connectionName}: ${posCount} positions, data is fresh (${formatDataDate(dataDate)})`);
+          } else {
+            results.connectionsWithStaleData++;
+            console.log(`[CRON] ⚠ ${connection.connectionName}: ${posCount} positions, but data is ${freshnessResult.message} (${formatDataDate(dataDate)})`);
+          }
         }
 
         // Step 4: Regenerate any missing portfolio snapshots
@@ -666,7 +710,8 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
 
     // Log completion
     await CronJobLogHelpers.completeJob(logId, results);
-    console.log(`[CRON] Bank File Sync completed: ${results.connectionsSucceeded}/${results.connectionsProcessed} connections`);
+    const staleWarning = results.connectionsWithStaleData > 0 ? ` (${results.connectionsWithStaleData} with stale data)` : '';
+    console.log(`[CRON] Bank File Sync completed: ${results.connectionsSucceeded}/${results.connectionsProcessed} fresh${staleWarning}`);
 
     // Send bank sync completion email with notifications
     try {
@@ -697,14 +742,192 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
   }
 }
 
-export function initializeCronJobs() {
+/**
+ * CMB-specific Bank File Sync Job
+ *
+ * CMB Monaco uploads their files later than other banks (typically after 08:00 CET).
+ * This job runs at 09:00 CET to catch CMB files that weren't available during the main sync.
+ * Only processes the CMB connection, skips all others.
+ */
+async function cmbFileSyncJob(triggerSource = 'cron') {
+  const logId = await CronJobLogHelpers.startJob('cmbFileSync', triggerSource);
+  console.log(`[CRON] CMB File Sync started (triggered by: ${triggerSource})`);
+
+  try {
+    // Find the active CMB connection
+    const cmbConnection = await BankConnectionsCollection.findOneAsync({
+      connectionName: 'CMB',
+      isActive: true
+    });
+
+    if (!cmbConnection) {
+      console.log('[CRON] CMB File Sync: No active CMB connection found, skipping');
+      await CronJobLogHelpers.completeJob(logId, { skipped: true, reason: 'No active CMB connection' });
+      return { success: true, skipped: true };
+    }
+
+    const results = {
+      triggerSource,
+      connectionsProcessed: 1,
+      connectionsSucceeded: 0,  // Now only counts fresh data
+      connectionsFailed: 0,
+      connectionsWithStaleData: 0,  // Processed successfully but data is stale
+      filesDownloaded: 0,
+      positionsProcessed: 0,
+      operationsProcessed: 0,
+      errors: [],
+      fileDetails: []
+    };
+
+    const connectionFileDetails = {
+      connectionId: cmbConnection._id,
+      connectionName: cmbConnection.connectionName,
+      connectionType: cmbConnection.connectionType,
+      downloadedFiles: [],
+      skippedFiles: [],
+      failedFiles: [],
+      positionsFile: null,
+      positionsProcessed: 0,
+      operationsFile: null,
+      operationsProcessed: 0,
+      success: false,
+      error: null,
+      freshness: null  // Will be populated after processing
+    };
+
+    try {
+      // Step 1: Download files from CMB SFTP
+      const downloadResult = await Meteor.callAsync(
+        'bankConnections.downloadAllFiles',
+        { connectionId: cmbConnection._id, sessionId: 'system-cron' }
+      );
+
+      if (downloadResult.success) {
+        results.filesDownloaded += downloadResult.newFiles?.length || 0;
+        connectionFileDetails.downloadedFiles = downloadResult.newFiles || [];
+        connectionFileDetails.skippedFiles = downloadResult.skippedFiles || [];
+        connectionFileDetails.failedFiles = downloadResult.failedFiles || [];
+        console.log(`[CRON-CMB] Downloaded ${downloadResult.newFiles?.length || 0} new files: ${(downloadResult.newFiles || []).join(', ') || 'none'}`);
+      }
+
+      // Step 2: Process any missing dates
+      const { missingDates } = await Meteor.callAsync('bankPositions.getMissingDates', {
+        connectionId: cmbConnection._id,
+        sessionId: 'system-cron'
+      });
+
+      if (missingDates.length > 0) {
+        console.log(`[CRON-CMB] Processing ${missingDates.length} unprocessed dates...`);
+        await Meteor.callAsync('bankPositions.processMissingDates', {
+          connectionId: cmbConnection._id,
+          sessionId: 'system-cron',
+          maxDates: 999
+        });
+      }
+
+      // Step 3: Process latest files
+      const processResult = await Meteor.callAsync(
+        'bankPositions.processLatest',
+        { connectionId: cmbConnection._id, sessionId: 'system-cron' }
+      );
+
+      if (processResult.success) {
+        const posCount = processResult.positions?.newRecords || 0;
+        const opCount = processResult.operations?.newRecords || 0;
+        results.positionsProcessed += posCount;
+        results.operationsProcessed += opCount;
+
+        connectionFileDetails.positionsFile = processResult.positions?.filename || null;
+        connectionFileDetails.positionsProcessed = posCount;
+        connectionFileDetails.operationsFile = processResult.operations?.filename || null;
+        connectionFileDetails.operationsProcessed = opCount;
+        connectionFileDetails.success = true;
+
+        // Check data freshness for CMB connection
+        // Note: cmbConnection.bankId is the BanksCollection._id, not cmbConnection._id
+        const latestHolding = await PMSHoldingsCollection.findOneAsync(
+          { bankId: cmbConnection.bankId, isLatest: true },
+          { sort: { snapshotDate: -1 }, fields: { snapshotDate: 1, fileDate: 1 } }
+        );
+
+        const dataDate = latestHolding?.snapshotDate || latestHolding?.fileDate;
+        const freshnessResult = checkDataFreshness(dataDate);
+
+        connectionFileDetails.freshness = {
+          status: freshnessResult.status,
+          dataDate: dataDate,
+          formattedDate: formatDataDate(dataDate),
+          businessDaysOld: freshnessResult.businessDaysOld,
+          message: freshnessResult.message
+        };
+
+        // Only count as succeeded if data is fresh
+        if (freshnessResult.status === 'fresh') {
+          results.connectionsSucceeded++;
+          console.log(`[CRON-CMB] ✓ CMB: ${posCount} positions, data is fresh (${formatDataDate(dataDate)})`);
+        } else {
+          results.connectionsWithStaleData++;
+          console.log(`[CRON-CMB] ⚠ CMB: ${posCount} positions, but data is ${freshnessResult.message} (${formatDataDate(dataDate)})`);
+        }
+      }
+
+    } catch (error) {
+      results.connectionsFailed++;
+      connectionFileDetails.error = error.message;
+      results.errors.push({
+        connectionId: cmbConnection._id,
+        connectionName: 'CMB',
+        error: error.message
+      });
+      console.error(`[CRON-CMB] ✗ CMB: ${error.message}`);
+    }
+
+    results.fileDetails.push(connectionFileDetails);
+
+    // Update schedule info
+    scheduleInfo.cmbFileSync.lastFinishedAt = new Date();
+    scheduleInfo.cmbFileSync.nextScheduledRun = getNextRunTime(scheduleInfo.cmbFileSync.schedule);
+
+    // Log completion
+    await CronJobLogHelpers.completeJob(logId, results);
+    const staleWarning = results.connectionsWithStaleData > 0 ? ' (stale data)' : '';
+    console.log(`[CRON] CMB File Sync completed: ${results.connectionsSucceeded}/1 fresh${staleWarning}`);
+
+    // Send email notification if new files were processed
+    if (results.filesDownloaded > 0 || results.positionsProcessed > 0) {
+      try {
+        await EmailService.sendBankSyncCompletionEmail(
+          'mf@amberlakepartners.com',
+          results,
+          [] // No notifications for CMB-only sync
+        );
+        console.log('[CRON-CMB] CMB sync completion email sent');
+      } catch (emailError) {
+        console.error('[CRON-CMB] Failed to send email:', emailError.message);
+      }
+    }
+
+    return { success: true, ...results };
+
+  } catch (error) {
+    console.error('[CRON] CMB File Sync failed:', error);
+    await CronJobLogHelpers.failJob(logId, error);
+    throw error;
+  }
+}
+
+export async function initializeCronJobs() {
   console.log('Initializing cron jobs...');
+
+  // Restore lastFinishedAt from database logs (survives server restarts)
+  await initializeScheduleInfoFromLogs();
 
   // Calculate initial next run times
   scheduleInfo.marketDataRefresh.nextScheduledRun = getNextRunTime(scheduleInfo.marketDataRefresh.schedule);
   scheduleInfo.productRevaluation.nextScheduledRun = getNextRunTime(scheduleInfo.productRevaluation.schedule);
   scheduleInfo.marketTickerUpdate.nextScheduledRun = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes from now
   scheduleInfo.bankFileSync.nextScheduledRun = getNextRunTime(scheduleInfo.bankFileSync.schedule);
+  scheduleInfo.cmbFileSync.nextScheduledRun = getNextRunTime(scheduleInfo.cmbFileSync.schedule);
 
   // Schedule Market Data Refresh - Daily at midnight CET
   cronJobs.marketDataRefresh = cron.schedule('0 0 * * *', Meteor.bindEnvironment(async () => {
@@ -762,7 +985,7 @@ export function initializeCronJobs() {
 
   console.log('✓ Market Ticker Update scheduled every 15 minutes (conditional on activity)');
 
-  // Schedule Bank File Sync - Daily at 07:30 CET (French time)
+  // Schedule Bank File Sync - Daily at 07:30 CET
   cronJobs.bankFileSync = cron.schedule('30 7 * * *', Meteor.bindEnvironment(async () => {
     console.log('[CRON] ========================================');
     console.log('[CRON] Bank File Sync CRON trigger fired at:', new Date().toISOString());
@@ -777,7 +1000,24 @@ export function initializeCronJobs() {
     timezone: "Europe/Zurich"
   });
 
-  console.log('✓ Bank File Sync scheduled for 07:30 CET daily (French time)');
+  console.log('✓ Bank File Sync scheduled for daily at 07:30 CET');
+
+  // Schedule CMB File Sync - Daily at 09:00 CET (CMB uploads files later than other banks)
+  cronJobs.cmbFileSync = cron.schedule('0 9 * * *', Meteor.bindEnvironment(async () => {
+    console.log('[CRON] ========================================');
+    console.log('[CRON] CMB File Sync CRON trigger fired at:', new Date().toISOString());
+    console.log('[CRON] ========================================');
+    try {
+      await cmbFileSyncJob();
+    } catch (error) {
+      console.error('[CRON] CMB File Sync job error:', error);
+    }
+  }), {
+    scheduled: true,
+    timezone: "Europe/Zurich"
+  });
+
+  console.log('✓ CMB File Sync scheduled for daily at 09:00 CET');
 
   console.log('✓ Cron jobs initialized and started');
   console.log('✓ All jobs configured for Europe/Zurich timezone (CET/CEST)');
@@ -877,8 +1117,7 @@ if (Meteor.isServer) {
       console.log(`[MANUAL] Bank File Sync triggered by ${currentUser.email}${forceReprocess ? ' (FORCE REPROCESS)' : ''}`);
 
       try {
-        // Bypass weekend/holiday check for manual triggers - superadmin explicitly wants to run it
-        const result = await bankFileSyncJob('manual', { bypassWeekendCheck: true, forceReprocess });
+        const result = await bankFileSyncJob('manual', { forceReprocess });
         return { success: true, result };
       } catch (error) {
         throw new Meteor.Error('job-execution-failed', error.message);
@@ -917,6 +1156,11 @@ if (Meteor.isServer) {
           name: scheduleInfo.bankFileSync.name,
           nextScheduledRun: scheduleInfo.bankFileSync.nextScheduledRun,
           lastFinishedAt: scheduleInfo.bankFileSync.lastFinishedAt
+        },
+        {
+          name: scheduleInfo.cmbFileSync.name,
+          nextScheduledRun: scheduleInfo.cmbFileSync.nextScheduledRun,
+          lastFinishedAt: scheduleInfo.cmbFileSync.lastFinishedAt
         }
       ];
     }
