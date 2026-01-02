@@ -5,10 +5,53 @@
  * Banks upload files after midnight with previous business day's balances.
  *
  * Freshness Rules:
- * - Fresh (🟢): Data is from expected date (previous business day)
+ * - Fresh (🟢): Data is from expected date (previous business day, excluding holidays)
  * - Stale (🟡): Data is 1+ business days older than expected
  * - Error (🔴): Last sync failed
  */
+
+/**
+ * List of Swiss holidays and major market closure dates (YYYY-MM-DD format)
+ * Banks don't upload data on these days, so we skip them when calculating expected date
+ */
+const MARKET_HOLIDAYS = [
+  // 2025 Swiss holidays
+  '2025-01-01', // New Year's Day
+  '2025-01-02', // New Year's Day observed
+  '2025-04-18', // Good Friday
+  '2025-04-21', // Easter Monday
+  '2025-05-01', // Labour Day
+  '2025-05-29', // Ascension Day
+  '2025-06-09', // Whit Monday
+  '2025-08-01', // Swiss National Day
+  '2025-12-25', // Christmas Day
+  '2025-12-26', // Boxing Day
+
+  // 2026 Swiss holidays
+  '2026-01-01', // New Year's Day
+  '2026-01-02', // New Year's Day observed
+  '2026-04-03', // Good Friday
+  '2026-04-06', // Easter Monday
+  '2026-05-01', // Labour Day
+  '2026-05-14', // Ascension Day
+  '2026-05-25', // Whit Monday
+  '2026-08-01', // Swiss National Day
+  '2026-12-25', // Christmas Day
+  '2026-12-26', // Boxing Day
+];
+
+/**
+ * Check if a date is a holiday
+ * @param {Date} date
+ * @returns {boolean}
+ */
+const isHoliday = (date) => {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const dateString = `${year}-${month}-${day}`;
+  return MARKET_HOLIDAYS.includes(dateString);
+};
 
 /**
  * Check if a date is a weekend (Saturday or Sunday)
@@ -16,12 +59,22 @@
  * @returns {boolean}
  */
 const isWeekend = (date) => {
-  const day = date.getDay();
+  const day = date.getUTCDay();
   return day === 0 || day === 6; // Sunday = 0, Saturday = 6
 };
 
 /**
+ * Check if a date is a non-trading day (weekend or holiday)
+ * @param {Date} date
+ * @returns {boolean}
+ */
+const isNonTradingDay = (date) => {
+  return isWeekend(date) || isHoliday(date);
+};
+
+/**
  * Get the previous business day from a given date
+ * Skips weekends AND holidays
  * @param {Date} fromDate - The reference date
  * @returns {Date} - The previous business day (midnight UTC)
  */
@@ -32,8 +85,8 @@ export const getPreviousBusinessDay = (fromDate = new Date()) => {
   // Go back one day
   date.setUTCDate(date.getUTCDate() - 1);
 
-  // If it's a weekend, keep going back
-  while (isWeekend(date)) {
+  // If it's a non-trading day (weekend or holiday), keep going back
+  while (isNonTradingDay(date)) {
     date.setUTCDate(date.getUTCDate() - 1);
   }
 
@@ -52,9 +105,10 @@ export const getExpectedDataDate = (today = new Date()) => {
 
 /**
  * Calculate business days between two dates
+ * Excludes weekends AND holidays
  * @param {Date} startDate - Earlier date
  * @param {Date} endDate - Later date
- * @returns {number} - Number of business days between (excluding weekends)
+ * @returns {number} - Number of business days between (excluding weekends and holidays)
  */
 export const getBusinessDaysBetween = (startDate, endDate) => {
   const start = new Date(startDate);
@@ -67,7 +121,7 @@ export const getBusinessDaysBetween = (startDate, endDate) => {
 
   while (current < end) {
     current.setUTCDate(current.getUTCDate() + 1);
-    if (!isWeekend(current)) {
+    if (!isNonTradingDay(current)) {
       count++;
     }
   }

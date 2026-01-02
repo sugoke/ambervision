@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Mongo } from 'meteor/mongo';
@@ -471,17 +471,17 @@ const PortfolioManagementSystem = ({ user }) => {
         if (viewAsFilter) {
           if (viewAsFilter.type === 'client') {
             // Filter alerts for the selected client
+            // Check: alert belongs to client (metadata.clientId) OR client is in sentToUsers
             alerts = alerts.filter(alert =>
-              alert.userId === viewAsFilter.id ||
+              alert.metadata?.clientId === viewAsFilter.id ||
               (alert.sentToUsers && alert.sentToUsers.includes(viewAsFilter.id))
             );
           } else if (viewAsFilter.type === 'account') {
             // Filter alerts for the selected account
+            // portfolioCode in metadata is the account number
             const accountNumber = viewAsFilter.data?.accountNumber;
-            const accountUserId = viewAsFilter.data?.userId;
             alerts = alerts.filter(alert =>
-              (alert.metadata?.accountNumber === accountNumber) ||
-              (alert.userId === accountUserId && !alert.metadata?.accountNumber)
+              alert.metadata?.portfolioCode === accountNumber
             );
           }
         }
@@ -540,8 +540,6 @@ const PortfolioManagementSystem = ({ user }) => {
     // PMS shows ALL bank holdings - no filtering by allocations
     // Bank holdings are the source of truth from bank files
     // Allocations are a separate internal tracking system
-    console.log(`[PMS] Total holdings from bank: ${rawHoldings.length}`);
-
     const filteredHoldings = rawHoldings; // No filtering - show everything from bank
 
 
@@ -641,6 +639,11 @@ const PortfolioManagementSystem = ({ user }) => {
 
     return { holdings: transformedHoldings, isLoading: false };
   }, [viewAsFilter, selectedDate, refreshKey]);
+
+  // Memoize visible bank IDs for freshness panel (avoids recalculating on every render)
+  const visibleBankIds = useMemo(() => {
+    return [...new Set(holdings.map(h => h.bankId).filter(Boolean))];
+  }, [holdings]);
 
   const dummyPositions = holdings;
 
@@ -1244,12 +1247,11 @@ const PortfolioManagementSystem = ({ user }) => {
   }, [Object.keys(groupedPositions).join(',')]);
 
   // Reset performance data when viewAsFilter changes
+  // Must reset unconditionally so data refreshes when returning to performance tab
   React.useEffect(() => {
-    if (activeTab === 'performance') {
-      setPerformancePeriods(null);
-      setChartData(null);
-      setLastFetchedRange(null); // Reset so chart refetches with new filter
-    }
+    setPerformancePeriods(null);
+    setChartData(null);
+    setLastFetchedRange(null);
   }, [viewAsFilter]);
 
   // Helper function to calculate start date based on time range
@@ -3980,21 +3982,17 @@ const PortfolioManagementSystem = ({ user }) => {
       )}
 
       {/* Data Freshness Panel - Show when viewing latest data, scoped to visible banks */}
-      {!selectedDate && holdings.length > 0 && (() => {
-        const visibleBankIds = [...new Set(holdings.map(h => h.bankId).filter(Boolean))];
-        console.log('[PMS] Visible bank IDs for freshness panel:', visibleBankIds, 'from', holdings.length, 'holdings');
-        return (
-          <div style={{ marginBottom: '1rem' }}>
-            <DataFreshnessPanel
-              sessionId={typeof window !== 'undefined' ? localStorage.getItem('sessionId') : null}
-              userId={user?._id || viewAsFilter}
-              showWarning={true}
-              compact={false}
-              visibleBankIds={visibleBankIds}
-            />
-          </div>
-        );
-      })()}
+      {!selectedDate && holdings.length > 0 && (
+        <div style={{ marginBottom: '1rem' }}>
+          <DataFreshnessPanel
+            sessionId={typeof window !== 'undefined' ? localStorage.getItem('sessionId') : null}
+            userId={user?._id || viewAsFilter}
+            showWarning={true}
+            compact={false}
+            visibleBankIds={visibleBankIds}
+          />
+        </div>
+      )}
 
       {/* Tab Navigation */}
       <LiquidGlassCard style={{ marginBottom: '2rem' }}>

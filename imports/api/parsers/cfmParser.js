@@ -5,8 +5,8 @@
  * - POTI (Positions Titres) - Securities positions
  * - POES (Positions Espèces) - Cash and FX forward positions
  *
- * Filename format: YYYYMMDD-L#######-LU-W#-{type}.csv
- * Example: 20251203-L0303591-LU-W5-poti.csv
+ * Filename format: YYYYMMDD-X#######-LU-W#-{type}.csv (X = letter prefix like L or A)
+ * Example: 20251203-L0303591-LU-W5-poti.csv or 20260101-A0115523-LU-W5-poti.csv
  *
  * File format: Semicolon-delimited CSV with NO header row
  * Price type indicated by column R (index 17): 0=absolute, 1=percentage
@@ -23,17 +23,17 @@ export const CFMParser = {
   /**
    * Filename pattern for CFM position files (poti = Positions Titres)
    */
-  filenamePattern: /^(\d{8})-L\d+-[A-Z]{2}-W\d+-poti\.csv$/i,
+  filenamePattern: /^(\d{8})-[A-Z]\d+-[A-Z]{2}-W\d+-poti\.csv$/i,
 
   /**
    * Filename pattern for CFM cash/FX position files (poes = Positions Espèces)
    */
-  cashFilenamePattern: /^(\d{8})-L\d+-[A-Z]{2}-W\d+-poes\.csv$/i,
+  cashFilenamePattern: /^(\d{8})-[A-Z]\d+-[A-Z]{2}-W\d+-poes\.csv$/i,
 
   /**
    * Filename pattern for CFM FX rates files (crsc = Cours de Change)
    */
-  fxRatesFilenamePattern: /^(\d{8})-L\d+-[A-Z]{2}-W\d+-crsc\.csv$/i,
+  fxRatesFilenamePattern: /^(\d{8})-[A-Z]\d+-[A-Z]{2}-W\d+-crsc\.csv$/i,
 
   /**
    * Check if filename matches CFM position file pattern
@@ -190,18 +190,63 @@ export const CFMParser = {
   /**
    * Map security type from CFM code to standard type
    * Uses SECURITY_TYPES constants from instrumentTypes.js
+   *
+   * CFM security type codes (Genre de titre):
+   * - 410, 411: Equities
+   * - 420-429: Funds (421=SICAV, 423=Fund shares)
+   * - 200-209: Bonds (200=standard, 201=convertible)
+   * - 300-399: Structured Products
+   * - 100-199: Cash/Money market
+   * - 500-599: Derivatives
    */
   mapSecurityType(code, description) {
     // First try mapping by code
     const codeMap = {
-      '423': SECURITY_TYPES.FUND,           // PART FDS CT - GROUPE (Fund shares)
-      '421': SECURITY_TYPES.FUND,           // PART FDS CT - SICAV
+      // Equities
       '410': SECURITY_TYPES.EQUITY,         // Actions
       '411': SECURITY_TYPES.EQUITY,         // Actions privilégiées
+      '412': SECURITY_TYPES.EQUITY,         // ADRs
+
+      // ETFs (often in fund range but check description first)
+      '430': SECURITY_TYPES.ETF,            // ETF
+      '431': SECURITY_TYPES.ETF,            // ETF indices
+
+      // Funds
+      '420': SECURITY_TYPES.FUND,           // General fund
+      '421': SECURITY_TYPES.FUND,           // PART FDS CT - SICAV
+      '422': SECURITY_TYPES.FUND,           // UCITS
+      '423': SECURITY_TYPES.FUND,           // PART FDS CT - GROUPE (Fund shares)
+      '424': SECURITY_TYPES.MONEY_MARKET,   // Money market fund
+      '425': SECURITY_TYPES.FUND,           // Alternative fund
+
+      // Bonds
       '200': SECURITY_TYPES.BOND,           // Obligations
       '201': SECURITY_TYPES.BOND,           // Obligations convertibles
+      '202': SECURITY_TYPES.BOND,           // Zero-coupon
+      '203': SECURITY_TYPES.BOND,           // Perpetual
+
+      // Structured Products
       '300': SECURITY_TYPES.STRUCTURED_PRODUCT, // Produits structurés
+      '301': SECURITY_TYPES.STRUCTURED_PRODUCT, // Notes
+      '302': SECURITY_TYPES.STRUCTURED_PRODUCT, // Certificates
+      '303': SECURITY_TYPES.CERTIFICATE,    // Tracker certificates
+      '310': SECURITY_TYPES.STRUCTURED_PRODUCT, // Autocallable
+      '320': SECURITY_TYPES.STRUCTURED_PRODUCT, // Reverse convertible
+
+      // Cash and deposits
       '100': SECURITY_TYPES.CASH,           // Liquidités
+      '101': SECURITY_TYPES.TERM_DEPOSIT,   // Dépôt à terme
+      '102': SECURITY_TYPES.TERM_DEPOSIT,   // Fiduciaire
+
+      // Derivatives
+      '500': SECURITY_TYPES.OPTION,         // Options
+      '510': SECURITY_TYPES.FUTURE,         // Futures
+      '520': SECURITY_TYPES.WARRANT,        // Warrants
+      '530': SECURITY_TYPES.FX_FORWARD,     // FX Forwards
+
+      // Private investments
+      '600': SECURITY_TYPES.PRIVATE_EQUITY, // Private equity
+      '610': SECURITY_TYPES.PRIVATE_DEBT,   // Private debt
     };
 
     if (code && codeMap[code]) {
@@ -210,6 +255,11 @@ export const CFMParser = {
 
     // Try mapping by description keywords
     const descLower = (description || '').toLowerCase();
+
+    // Check for ETF first (before fund)
+    if (descLower.includes('etf') || descLower.includes('tracker')) {
+      return SECURITY_TYPES.ETF;
+    }
     if (descLower.includes('fonds') || descLower.includes('fund') || descLower.includes('sicav') || descLower.includes('part fds')) {
       return SECURITY_TYPES.FUND;
     }
@@ -219,11 +269,24 @@ export const CFMParser = {
     if (descLower.includes('oblig') || descLower.includes('bond')) {
       return SECURITY_TYPES.BOND;
     }
-    if (descLower.includes('structur')) {
+    if (descLower.includes('structur') || descLower.includes('note') || descLower.includes('certificat') ||
+        descLower.includes('autocall') || descLower.includes('express') || descLower.includes('phoenix') ||
+        descLower.includes('reverse') || descLower.includes('barrier')) {
       return SECURITY_TYPES.STRUCTURED_PRODUCT;
     }
+    if (descLower.includes('private equity') || descLower.includes('pe ')) {
+      return SECURITY_TYPES.PRIVATE_EQUITY;
+    }
+    if (descLower.includes('dépôt') || descLower.includes('depot') || descLower.includes('term')) {
+      return SECURITY_TYPES.TERM_DEPOSIT;
+    }
 
-    return code || SECURITY_TYPES.UNKNOWN;
+    // Log unknown codes for investigation
+    if (code && code !== SECURITY_TYPES.UNKNOWN) {
+      console.warn(`[CFM_PARSER] Unknown security type code: ${code}, description: ${description}`);
+    }
+
+    return SECURITY_TYPES.UNKNOWN;
   },
 
   /**
@@ -408,7 +471,12 @@ export const CFMParser = {
       isin: row[c.ISIN] || null,
       ticker: row[c.SECURITY_NUMBER] || null, // Telekurs number
       securityName: row[c.SECURITY_NAME] || null,
-      securityType: this.mapSecurityType(row[c.SECURITY_TYPE_CODE], row[c.SECURITY_TYPE_DESC]),
+      // securityType is now resolved by SecurityResolver from SecuritiesMetadata (single source of truth)
+      // Set to null here - will be populated after parsing by bankPositionMethods.js
+      securityType: null,
+      // Store raw bank codes for classification hints
+      securityTypeCode: row[c.SECURITY_TYPE_CODE] || null,
+      securityTypeDesc: row[c.SECURITY_TYPE_DESC] || null,
 
       // Position Data
       quantity: quantity,
