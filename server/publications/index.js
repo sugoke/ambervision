@@ -18,6 +18,8 @@ import './schedule';
 import './viewAsData';
 import './riskAnalysis';
 import './productCommentary';
+import './serverLogs';
+import './clientDocuments';
 
 
 

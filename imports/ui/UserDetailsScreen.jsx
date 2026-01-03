@@ -7,6 +7,7 @@ import { BanksCollection } from '../api/banks.js';
 import { AccountProfilesCollection, PROFILE_TEMPLATES, aggregateToFourCategories } from '../api/accountProfiles.js';
 import { PortfolioSnapshotsCollection } from '../api/portfolioSnapshots.js';
 import LiquidGlassCard from './components/LiquidGlassCard.jsx';
+import ClientDocumentManager from './components/ClientDocumentManager.jsx';
 import { useTheme } from './ThemeContext.jsx';
 
 // Map bank names to their logo files in public/images/logos_banks/
@@ -66,7 +67,8 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
     referenceCurrency: 'USD',
     accountType: 'personal',
     accountStructure: 'direct',
-    lifeInsuranceCompany: ''
+    lifeInsuranceCompany: '',
+    comment: ''
   });
 
   // Bank account edit state
@@ -90,6 +92,9 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
     maxEquities: 0,
     maxAlternative: 0
   });
+
+  // Tab navigation state
+  const [activeTab, setActiveTab] = useState('info');
 
   // Subscribe to data
   const { user, bankAccounts, relationshipManagers, banks, currentUser, accountProfiles, portfolioSnapshots, isLoading } = useTracker(() => {
@@ -268,7 +273,8 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
         referenceCurrency: 'USD',
         accountType: 'personal',
         accountStructure: 'direct',
-        lifeInsuranceCompany: ''
+        lifeInsuranceCompany: '',
+        comment: ''
       });
       setShowAddAccount(false);
 
@@ -319,7 +325,8 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
     setEditBankAccountData({
       referenceCurrency: account.referenceCurrency || 'EUR',
       accountType: account.accountType || 'personal',
-      authorizedOverdraft: account.authorizedOverdraft || ''
+      authorizedOverdraft: account.authorizedOverdraft || '',
+      comment: account.comment || ''
     });
   };
 
@@ -334,7 +341,8 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
         updates: {
           referenceCurrency: editBankAccountData.referenceCurrency,
           accountType: editBankAccountData.accountType,
-          authorizedOverdraft: overdraftValue
+          authorizedOverdraft: overdraftValue,
+          comment: editBankAccountData.comment || ''
         },
         sessionId
       });
@@ -916,6 +924,63 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
         </div>
       </LiquidGlassCard>
 
+      {/* Tab Navigation */}
+      {(() => {
+        const tabs = [
+          { id: 'info', label: 'Information', icon: '👤' },
+          { id: 'accounts', label: 'Accounts', icon: '🏦', clientOnly: true },
+          { id: 'documents', label: 'Documents', icon: '📋', clientOnly: true },
+          { id: 'family', label: 'Family', icon: '👨‍👩‍👧‍👦', clientOnly: true },
+          { id: 'password', label: 'Password', icon: '🔒', adminOnly: true }
+        ];
+
+        const isAdmin = currentUser?.role === USER_ROLES.ADMIN || currentUser?.role === USER_ROLES.SUPERADMIN;
+        const isViewingClient = user.role === USER_ROLES.CLIENT;
+
+        const visibleTabs = tabs.filter(tab => {
+          // Admins see everything when viewing a client
+          if (isAdmin && isViewingClient) return true;
+          // Client-only tabs shown for clients viewing their own profile
+          if (tab.clientOnly && !isViewingClient) return false;
+          // Admin-only tabs shown only for admins
+          if (tab.adminOnly && !isAdmin) return false;
+          return true;
+        });
+
+        return (
+          <div style={{
+            display: 'flex',
+            gap: '8px',
+            marginBottom: '20px',
+            flexWrap: 'wrap'
+          }}>
+            {visibleTabs.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                style={{
+                  padding: '10px 20px',
+                  border: 'none',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  backgroundColor: activeTab === tab.id ? 'var(--accent-color)' : 'var(--bg-secondary)',
+                  color: activeTab === tab.id ? 'white' : 'var(--text-primary)',
+                  fontWeight: activeTab === tab.id ? '600' : '400',
+                  transition: 'all 0.2s ease',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  fontSize: '0.9rem'
+                }}
+              >
+                <span>{tab.icon}</span>
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        );
+      })()}
+
       {/* Main Content Grid */}
       <div style={{
         display: 'grid',
@@ -925,8 +990,9 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
         {/* Left Column - Main Content */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? '1rem' : '1.5rem' }}>
 
-          {/* Basic Information */}
-          <LiquidGlassCard borderRadius="12px" style={{ padding: isMobile ? '1.5rem' : '1.5rem' }}>
+          {/* Basic Information (info tab) */}
+          {activeTab === 'info' && (
+            <LiquidGlassCard borderRadius="12px" style={{ padding: isMobile ? '1.5rem' : '1.5rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isMobile ? '1rem' : '1.5rem', borderBottom: '2px solid var(--border-color)', paddingBottom: '1rem' }}>
               <h2 style={{
                 margin: 0,
@@ -1356,9 +1422,10 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
               </div>
             )}
           </LiquidGlassCard>
+          )}
 
-          {/* Bank Accounts (CLIENT only) */}
-          {user.role === USER_ROLES.CLIENT && (
+          {/* Bank Accounts - accounts tab (when viewing a client profile) */}
+          {activeTab === 'accounts' && user.role === USER_ROLES.CLIENT && (
             <LiquidGlassCard style={{ padding: '24px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
                 <h2 style={{
@@ -1557,6 +1624,42 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                     </div>
                   </div>
 
+                  {/* Comment / Description field */}
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{
+                      display: 'block',
+                      marginBottom: '8px',
+                      color: isDarkMode ? '#e5e7eb' : '#374151',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.5px'
+                    }}>
+                      Description
+                    </label>
+                    <select
+                      value={newAccount.comment}
+                      onChange={(e) => setNewAccount({ ...newAccount, comment: e.target.value })}
+                      style={{
+                        width: '100%',
+                        padding: '12px',
+                        background: 'var(--bg-secondary)',
+                        border: '2px solid var(--border-color)',
+                        borderRadius: '8px',
+                        color: 'var(--text-primary)',
+                        fontSize: '15px',
+                        outline: 'none',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <option value="">Select description...</option>
+                      <option value="Investments">Investments</option>
+                      <option value="Credit line">Credit line</option>
+                      <option value="Credit card">Credit card</option>
+                      <option value="Spending">Spending</option>
+                    </select>
+                  </div>
+
                   <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '16px' }}>
                     <button
                       onClick={() => {
@@ -1567,7 +1670,8 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                           referenceCurrency: 'USD',
                           accountType: 'personal',
                           accountStructure: 'direct',
-                          lifeInsuranceCompany: ''
+                          lifeInsuranceCompany: '',
+                          comment: ''
                         });
                       }}
                       style={{
@@ -1768,6 +1872,25 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                                       width: '100px'
                                     }}
                                   />
+                                  <select
+                                    value={editBankAccountData.comment || ''}
+                                    onChange={(e) => setEditBankAccountData(prev => ({ ...prev, comment: e.target.value }))}
+                                    style={{
+                                      padding: '4px 8px',
+                                      borderRadius: '6px',
+                                      border: '1px solid var(--border-color)',
+                                      background: 'var(--bg-secondary)',
+                                      color: 'var(--text-primary)',
+                                      fontSize: '12px',
+                                      fontWeight: '600'
+                                    }}
+                                  >
+                                    <option value="">Description...</option>
+                                    <option value="Investments">Investments</option>
+                                    <option value="Credit line">Credit line</option>
+                                    <option value="Credit card">Credit card</option>
+                                    <option value="Spending">Spending</option>
+                                  </select>
                                 </div>
                               ) : (
                                 <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
@@ -1807,6 +1930,19 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                                       fontWeight: '600'
                                     }}>
                                       Credit: {account.referenceCurrency} {account.authorizedOverdraft.toLocaleString()}
+                                    </span>
+                                  )}
+                                  {account.comment && (
+                                    <span style={{
+                                      padding: '2px 8px',
+                                      borderRadius: '6px',
+                                      background: isDarkMode ? 'rgba(251, 191, 36, 0.15)' : 'rgba(251, 191, 36, 0.15)',
+                                      color: '#f59e0b',
+                                      fontSize: '12px',
+                                      fontWeight: '500',
+                                      fontStyle: 'italic'
+                                    }}>
+                                      {account.comment}
                                     </span>
                                   )}
                                 </div>
@@ -1932,8 +2068,8 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
             </LiquidGlassCard>
           )}
 
-          {/* Per-Account Investment Profiles & Allocations (CLIENT only) */}
-          {user.role === USER_ROLES.CLIENT && bankAccounts.length > 0 && (
+          {/* Per-Account Investment Profiles & Allocations - accounts tab (when viewing a client profile) */}
+          {activeTab === 'accounts' && user.role === USER_ROLES.CLIENT && bankAccounts.length > 0 && (
             <LiquidGlassCard style={{ padding: '24px' }}>
               <h2 style={{
                 margin: '0 0 24px',
@@ -2286,8 +2422,16 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
             </LiquidGlassCard>
           )}
 
-          {/* Family Members (CLIENT only) */}
-          {user.role === USER_ROLES.CLIENT && (
+          {/* Documents - documents tab (when viewing a client profile) */}
+          {activeTab === 'documents' && user.role === USER_ROLES.CLIENT && (
+            <ClientDocumentManager
+              userId={userId}
+              familyMembers={user.profile?.familyMembers || []}
+            />
+          )}
+
+          {/* Family Members - family tab (when viewing a client profile) */}
+          {activeTab === 'family' && user.role === USER_ROLES.CLIENT && (
             <LiquidGlassCard style={{ padding: '24px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
                 <h2 style={{
@@ -2658,8 +2802,8 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
             </LiquidGlassCard>
           )}
 
-          {/* Password Reset (ADMIN and SUPERADMIN - but ADMINs cannot reset SUPERADMIN passwords) */}
-          {(currentUser?.role === USER_ROLES.SUPERADMIN ||
+          {/* Password Reset (ADMIN and SUPERADMIN - but ADMINs cannot reset SUPERADMIN passwords) - password tab */}
+          {activeTab === 'password' && (currentUser?.role === USER_ROLES.SUPERADMIN ||
             (currentUser?.role === USER_ROLES.ADMIN && user?.role !== USER_ROLES.SUPERADMIN)) && (
             <LiquidGlassCard style={{ padding: '24px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
