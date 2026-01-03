@@ -7,7 +7,7 @@ import { BankAccountsCollection } from '../../imports/api/bankAccounts.js';
 import { SessionsCollection } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
 import { PMSHoldingsHelpers, PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
-import { PMSOperationsHelpers } from '../../imports/api/pmsOperations.js';
+import { PMSOperationsHelpers, PMSOperationsCollection } from '../../imports/api/pmsOperations.js';
 import { PortfolioSnapshotHelpers, PortfolioSnapshotsCollection } from '../../imports/api/portfolioSnapshots.js';
 import { BankPositionParser } from '../../imports/api/bankPositionParser.js';
 import { BankOperationParser } from '../../imports/api/bankOperationParser.js';
@@ -17,7 +17,82 @@ import { AccountProfilesCollection, aggregateToFourCategories } from '../../impo
 import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetadata.js';
 import { CurrencyRateCacheCollection } from '../../imports/api/currencyCache.js';
 import { checkNegativeCash, buildRatesMap } from '../../imports/api/helpers/cashCalculator.js';
+import { SecurityResolver } from '../../imports/api/helpers/securityResolver.js';
 import path from 'path';
+
+/**
+ * Check if ISIN needs re-enrichment from AmbervisionDB
+ * Returns cached enrichment data if still valid, null if needs fresh lookup
+ *
+ * Optimization: Avoids redundant ProductsCollection queries when:
+ * 1. Position was already enriched previously
+ * 2. Source product hasn't been modified since last enrichment
+ *
+ * @param {string} isin - The ISIN to check
+ * @param {Map} enrichmentCache - In-memory cache for current file processing
+ * @returns {Object|null} Cached enrichment data or null if fresh lookup needed
+ */
+async function getCachedEnrichment(isin, enrichmentCache) {
+  // Check in-memory cache first (same file processing - most efficient)
+  if (enrichmentCache.has(isin)) {
+    return enrichmentCache.get(isin);
+  }
+
+  // Check existing PMSHolding for this ISIN to see if already enriched
+  const existingHolding = await PMSHoldingsCollection.findOneAsync({
+    isin: isin,
+    'bankSpecificData.autoEnriched': true
+  }, {
+    fields: {
+      securityName: 1,
+      assetClass: 1,
+      structuredProductUnderlyingType: 1,
+      structuredProductProtectionType: 1,
+      bankSpecificData: 1
+    },
+    sort: { 'bankSpecificData.enrichedAt': -1 }
+  });
+
+  if (!existingHolding?.bankSpecificData?.autoEnriched) {
+    return null; // Never enriched, needs fresh lookup
+  }
+
+  // Check if source product was updated after last enrichment
+  const { ProductsCollection } = await import('../../imports/api/products.js');
+  const sourceProduct = await ProductsCollection.findOneAsync(
+    { isin: isin.toUpperCase() },
+    { fields: { updatedAt: 1, title: 1 } }
+  );
+
+  if (!sourceProduct) {
+    return null; // Product no longer exists in AmbervisionDB
+  }
+
+  const enrichedAt = existingHolding.bankSpecificData.enrichedAt;
+  const productUpdatedAt = sourceProduct.updatedAt;
+
+  // Re-enrich if product was updated after last enrichment
+  if (productUpdatedAt && enrichedAt < productUpdatedAt) {
+    console.log(`[BANK_POSITIONS] Re-enriching ${isin}: product updated since last enrichment`);
+    return null;
+  }
+
+  // Return cached enrichment data - product hasn't changed
+  return {
+    source: 'cached',
+    data: {
+      securityName: existingHolding.bankSpecificData.ambervisionTitle || existingHolding.securityName,
+      assetClass: existingHolding.assetClass || 'structured_product',
+      structuredProductUnderlyingType: existingHolding.structuredProductUnderlyingType,
+      structuredProductProtectionType: existingHolding.structuredProductProtectionType,
+      productType: existingHolding.bankSpecificData.productType,
+      issuer: existingHolding.bankSpecificData.issuer,
+      capitalGuaranteed100: existingHolding.bankSpecificData.capitalGuaranteed100,
+      capitalGuaranteedPartial: existingHolding.bankSpecificData.capitalGuaranteedPartial,
+      barrierProtected: existingHolding.bankSpecificData.barrierProtected
+    }
+  };
+}
 
 /**
  * Validate session and ensure user is admin
@@ -78,6 +153,40 @@ async function findUserIdForPortfolioCode(portfolioCode, bankId) {
   });
 
   return bankAccount ? bankAccount.userId : null;
+}
+
+/**
+ * Build portfolio code to userId mapping for a bank (single DB query)
+ * Replaces N individual queries with 1 bulk query + in-memory lookups
+ * @param {string} bankId - Bank ID
+ * @returns {Map<string, string>} - Map of portfolioCode → userId
+ */
+async function buildPortfolioUserMap(bankId) {
+  const bankAccounts = await BankAccountsCollection.find({
+    bankId: bankId,
+    isActive: true
+  }).fetchAsync();
+
+  const map = new Map();
+  for (const account of bankAccounts) {
+    if (account.accountNumber && account.userId) {
+      map.set(account.accountNumber, account.userId);
+    }
+  }
+  return map;
+}
+
+/**
+ * Get userId from pre-built portfolio map (with portfolio code normalization)
+ * @param {string} portfolioCode - Portfolio code from bank file
+ * @param {Map} portfolioUserMap - Pre-built map from buildPortfolioUserMap()
+ * @returns {string|null} - userId if found, null otherwise
+ */
+function getUserIdFromMap(portfolioCode, portfolioUserMap) {
+  if (!portfolioCode) return null;
+  // Normalize: strip "-N" suffix (e.g., "5040217-1" → "5040217")
+  const normalizedCode = portfolioCode.split('-')[0];
+  return portfolioUserMap.get(normalizedCode) || null;
 }
 
 Meteor.methods({
@@ -145,14 +254,6 @@ Meteor.methods({
       if (!fs.existsSync(bankFolderPath)) {
         console.error(`[BANK_POSITIONS] Directory does not exist: ${bankFolderPath}`);
         throw new Meteor.Error('directory-not-found', `Bank files directory not found: ${bankFolderPath}`);
-      }
-
-      // List files in directory for debugging
-      try {
-        const files = fs.readdirSync(bankFolderPath);
-        console.log(`[BANK_POSITIONS] Found ${files.length} files in directory:`, files.slice(0, 10));
-      } catch (err) {
-        console.error(`[BANK_POSITIONS] Error reading directory: ${err.message}`);
       }
 
       // Parse latest file (without userId - will be matched later)
@@ -252,34 +353,36 @@ Meteor.methods({
       const allPosPortfolioCodes = [...new Set(positions.map(pos => pos.portfolioCode))];
       console.log(`[BANK_POSITIONS] Found ${allPosPortfolioCodes.length} unique portfolio codes in positions file: ${allPosPortfolioCodes.join(', ')}`);
 
-      // Get all bank accounts for this bank to help with debugging
-      const bankAccounts = await BankAccountsCollection.find({
-        bankId: connection.bankId,
-        isActive: true
-      }).fetchAsync();
-      console.log(`[BANK_POSITIONS] Found ${bankAccounts.length} active bank accounts for bankId=${connection.bankId}`);
-      console.log(`[BANK_POSITIONS] Bank account numbers: ${bankAccounts.map(ba => ba.accountNumber).join(', ')}`);
+      // Build portfolio → userId map once (avoids N+1 queries)
+      const portfolioUserMap = await buildPortfolioUserMap(connection.bankId);
+      console.log(`[BANK_POSITIONS] Built portfolio map with ${portfolioUserMap.size} accounts for bankId=${connection.bankId}`);
+
+      // PRE-PROCESSING CLEANUP: Mark ALL existing isLatest=true for this bank as isLatest=false
+      // This prevents duplicate isLatest=true records if the same file is processed multiple times
+      // or if there's concurrent processing. The upsertHolding will create fresh isLatest=true records.
+      const preCleanupResult = await PMSHoldingsCollection.updateAsync(
+        { bankId: connection.bankId, isLatest: true },
+        { $set: { isLatest: false, replacedAt: new Date() } },
+        { multi: true }
+      );
+      console.log(`[BANK_POSITIONS] Pre-cleanup: Marked ${preCleanupResult} existing records as isLatest=false for bankId=${connection.bankId}`);
+
+      // In-memory cache for enrichment during this file's processing
+      // Avoids redundant lookups when same ISIN appears multiple times in file
+      const enrichmentCache = new Map();
 
       for (const position of positions) {
         try {
-          // Match portfolio code to bank account to find userId
-          const userId = await findUserIdForPortfolioCode(position.portfolioCode, connection.bankId);
+          // Match portfolio code to bank account to find userId (in-memory lookup)
+          const userId = getUserIdFromMap(position.portfolioCode, portfolioUserMap);
 
           if (!userId) {
-            // Skip positions without matching account - with detailed logging
-            console.warn(`[BANK_POSITIONS] ❌ SKIPPING unmapped position:`);
-            console.warn(`  - Portfolio Code: ${position.portfolioCode}`);
-            console.warn(`  - ISIN: ${position.isin || 'N/A'}`);
-            console.warn(`  - Security: ${position.securityName || 'N/A'}`);
-            console.warn(`  - Bank ID: ${connection.bankId}`);
-            console.warn(`  - Reason: No bank account found with accountNumber matching this portfolioCode`);
+            // Skip positions without matching account
             unmappedPortfolioCodes.add(position.portfolioCode);
             unmappedPositions++;
             skippedRecords++;
             continue;
           }
-
-          console.log(`[BANK_POSITIONS] ✓ Matched position portfolio=${position.portfolioCode} to userId=${userId}`);
 
           // Set the matched userId
           position.userId = userId;
@@ -291,11 +394,26 @@ Meteor.methods({
           // Auto-enrich with internal product data if ISIN matches
           if (position.isin) {
             try {
-              const { ISINClassifierHelpers } = await import('../../imports/api/isinClassifier.js');
-              const productInfo = await ISINClassifierHelpers.extractProductClassification(position.isin);
+              // Check cached enrichment first (avoids redundant DB queries)
+              let productInfo = await getCachedEnrichment(position.isin, enrichmentCache);
 
-              if (productInfo && productInfo.source === 'internal_product') {
-                console.log(`[BANK_POSITIONS] Auto-enriching ${position.isin} from internal product DB: ${productInfo.data.securityName}`);
+              if (!productInfo) {
+                // Fresh lookup needed - either never enriched or product was updated
+                const { ISINClassifierHelpers } = await import('../../imports/api/isinClassifier.js');
+                productInfo = await ISINClassifierHelpers.extractProductClassification(position.isin);
+
+                // Cache for other positions in same file
+                if (productInfo) {
+                  enrichmentCache.set(position.isin, productInfo);
+                }
+              }
+
+              if (productInfo && (productInfo.source === 'internal_product' || productInfo.source === 'cached')) {
+                if (productInfo.source === 'cached') {
+                  console.log(`[BANK_POSITIONS] Using cached enrichment for ${position.isin}: ${productInfo.data.securityName}`);
+                } else {
+                  console.log(`[BANK_POSITIONS] Auto-enriching ${position.isin} from internal product DB: ${productInfo.data.securityName}`);
+                }
 
                 // ALWAYS override with Ambervision product title for internal products
                 // Bank-provided names are generic; Ambervision titles are our official product names
@@ -416,6 +534,44 @@ Meteor.methods({
             } catch (enrichError) {
               console.error(`[BANK_POSITIONS] Error enriching position: ${enrichError.message}`);
               // Continue without enrichment - don't fail the whole import
+            }
+          }
+
+          // CENTRALIZED CLASSIFICATION: Use SecurityResolver for all positions
+          // This ensures consistent classification from SecuritiesMetadata (single source of truth)
+          if (position.isin) {
+            try {
+              // Check if already enriched from internal product
+              const alreadyEnriched = position.bankSpecificData?.autoEnriched === true;
+
+              if (!alreadyEnriched) {
+                // Get classification from SecurityResolver (SecuritiesMetadata -> AI fallback)
+                const classification = await SecurityResolver.resolveSecurityType(
+                  position.isin,
+                  {
+                    securityName: position.securityName,
+                    currency: position.currency
+                  }
+                );
+
+                if (classification && classification.isClassified) {
+                  // Apply classification from SecuritiesMetadata
+                  position.securityType = classification.securityType;
+                  position.assetClass = classification.assetClass;
+                  position.structuredProductUnderlyingType = classification.structuredProductUnderlyingType || '';
+                  position.structuredProductProtectionType = classification.structuredProductProtectionType || '';
+
+                  // Store classification source in bankSpecificData
+                  position.bankSpecificData = position.bankSpecificData || {};
+                  position.bankSpecificData.classificationSource = classification.classificationSource || 'securities_metadata';
+                  position.bankSpecificData.classificationConfidence = classification.confidence;
+
+                  console.log(`[BANK_POSITIONS] Classified ${position.isin} via SecurityResolver: ${classification.assetClass} (${classification.securityType})`);
+                }
+              }
+            } catch (classifyError) {
+              console.error(`[BANK_POSITIONS] SecurityResolver error for ${position.isin}: ${classifyError.message}`);
+              // Continue with parser-assigned type - don't fail the import
             }
           }
 
@@ -560,6 +716,14 @@ Meteor.methods({
           return groups;
         }, {});
 
+      // Pre-fetch transfer operations ONCE for all portfolios (avoid repeated DB queries)
+      const portfolioUserIds = [...new Set(Object.values(positionsByPortfolio).map(positions => positions[0]?.userId).filter(Boolean))];
+      const transferOpsCache = await PMSOperationsCollection.find({
+        userId: { $in: portfolioUserIds },
+        operationType: 'TRANSFER',
+        operationCategory: 'CASH'
+      }).fetchAsync();
+
       // Create snapshot for each portfolio
       for (const [portfolioCode, portfolioPositions] of Object.entries(positionsByPortfolio)) {
         try {
@@ -576,7 +740,8 @@ Meteor.methods({
             snapshotDate: fileDate,
             fileDate,
             sourceFile: filename,
-            holdings: portfolioPositions
+            holdings: portfolioPositions,
+            transferOpsCache  // Pass pre-fetched operations
           });
         } catch (snapshotError) {
           console.error(`[BANK_POSITIONS] Error creating snapshot for ${portfolioCode}: ${snapshotError.message}`);
@@ -872,49 +1037,54 @@ Meteor.methods({
       );
 
       // AUTO-LINK holdings to products and allocations
-      console.log(`[PMS_AUTO_LINK] Starting auto-linking for bankId=${connection.bankId}, fileDate=${fileDate.toISOString()}`);
-      try {
-        const linkingResult = await Meteor.callAsync('pmsHoldings.autoLinkOnImport', {
-          bankId: connection.bankId,
-          fileDate
-        });
+      // Only run if there are new or updated holdings (avoids unnecessary work)
+      if (newRecords > 0 || updatedRecords > 0) {
+        console.log(`[PMS_AUTO_LINK] Starting auto-linking for bankId=${connection.bankId}, fileDate=${fileDate.toISOString()}`);
+        try {
+          const linkingResult = await Meteor.callAsync('pmsHoldings.autoLinkOnImport', {
+            bankId: connection.bankId,
+            fileDate
+          });
 
-        if (linkingResult.success) {
-          console.log(
-            `[PMS_AUTO_LINK] Auto-linking complete: ` +
-            `${linkingResult.linked} linked, ${linkingResult.noMatch} no match, ${linkingResult.failed} failed`
-          );
+          if (linkingResult.success) {
+            console.log(
+              `[PMS_AUTO_LINK] Auto-linking complete: ` +
+              `${linkingResult.linked} linked, ${linkingResult.noMatch} no match, ${linkingResult.failed} failed`
+            );
 
-          // Log auto-linking summary
+            // Log auto-linking summary
+            await BankConnectionLogHelpers.logConnectionAttempt({
+              connectionId,
+              bankId: connection.bankId,
+              connectionName: connection.connectionName,
+              action: 'auto_link_holdings',
+              status: 'success',
+              message: `Auto-linked ${linkingResult.linked} holdings to products/allocations`,
+              metadata: {
+                totalHoldings: linkingResult.total,
+                linked: linkingResult.linked,
+                noMatch: linkingResult.noMatch,
+                failed: linkingResult.failed,
+                fileDate: fileDate.toISOString()
+              },
+              userId: user._id
+            });
+          }
+        } catch (linkingError) {
+          console.error(`[PMS_AUTO_LINK] Auto-linking failed: ${linkingError.message}`);
+        // Don't fail the import - linking can be done manually later
           await BankConnectionLogHelpers.logConnectionAttempt({
             connectionId,
             bankId: connection.bankId,
             connectionName: connection.connectionName,
             action: 'auto_link_holdings',
-            status: 'success',
-            message: `Auto-linked ${linkingResult.linked} holdings to products/allocations`,
-            metadata: {
-              totalHoldings: linkingResult.total,
-              linked: linkingResult.linked,
-              noMatch: linkingResult.noMatch,
-              failed: linkingResult.failed,
-              fileDate: fileDate.toISOString()
-            },
+            status: 'failed',
+            error: linkingError.message,
             userId: user._id
           });
         }
-      } catch (linkingError) {
-        console.error(`[PMS_AUTO_LINK] Auto-linking failed: ${linkingError.message}`);
-        // Don't fail the import - linking can be done manually later
-        await BankConnectionLogHelpers.logConnectionAttempt({
-          connectionId,
-          bankId: connection.bankId,
-          connectionName: connection.connectionName,
-          action: 'auto_link_holdings',
-          status: 'failed',
-          error: linkingError.message,
-          userId: user._id
-        });
+      } else {
+        console.log(`[PMS_AUTO_LINK] Skipping auto-link (no new/updated holdings)`);
       }
 
       // ALSO PROCESS OPERATIONS
@@ -947,35 +1117,21 @@ Meteor.methods({
           const allOpPortfolioCodes = [...new Set(operations.map(op => op.portfolioCode))];
           console.log(`[BANK_OPERATIONS] Found ${allOpPortfolioCodes.length} unique portfolio codes in operations file: ${allOpPortfolioCodes.join(', ')}`);
 
-          // Get all bank accounts for this bank to help with debugging
-          const bankAccounts = await BankAccountsCollection.find({
-            bankId: connection.bankId,
-            isActive: true
-          }).fetchAsync();
-          console.log(`[BANK_OPERATIONS] Found ${bankAccounts.length} active bank accounts for bankId=${connection.bankId}`);
-          console.log(`[BANK_OPERATIONS] Bank account numbers: ${bankAccounts.map(ba => ba.accountNumber).join(', ')}`);
+          // Reuse portfolioUserMap from positions processing (or build if not available)
+          const opPortfolioUserMap = portfolioUserMap || await buildPortfolioUserMap(connection.bankId);
 
           for (const operation of operations) {
             try {
-              // Match portfolio code to bank account to find userId
-              const userId = await findUserIdForPortfolioCode(operation.portfolioCode, connection.bankId);
+              // Match portfolio code to bank account to find userId (in-memory lookup)
+              const userId = getUserIdFromMap(operation.portfolioCode, opPortfolioUserMap);
 
               if (!userId) {
-                // Skip operations without matching account - with detailed logging
-                console.warn(`[BANK_OPERATIONS] ❌ SKIPPING unmapped operation:`);
-                console.warn(`  - Portfolio Code: ${operation.portfolioCode}`);
-                console.warn(`  - Operation Type: ${operation.operationType}`);
-                console.warn(`  - Operation Date: ${operation.operationDate}`);
-                console.warn(`  - Instrument: ${operation.instrumentCode || operation.isin || 'N/A'}`);
-                console.warn(`  - Bank ID: ${connection.bankId}`);
-                console.warn(`  - Reason: No bank account found with accountNumber matching this portfolioCode`);
+                // Skip operations without matching account
                 opUnmappedPortfolioCodes.add(operation.portfolioCode);
                 opUnmapped++;
                 opSkipped++;
                 continue;
               }
-
-              console.log(`[BANK_OPERATIONS] ✓ Matched operation portfolio=${operation.portfolioCode} to userId=${userId}`);
 
               // Set the matched userId
               operation.userId = userId;
@@ -1237,16 +1393,18 @@ Meteor.methods({
       return { missingDates: [], availableDates: [], processedDates: [], connectionId };
     }
 
-    // Get all processed snapshot dates from PMSHoldings for this bank
+    // Get all processed FILE dates from PMSHoldings for this bank
+    // Note: We compare against fileDate (from filename) not snapshotDate (from content)
+    // because some banks (like CFM) name files with tomorrow's date but contain today's data
     // We use rawCollection for distinct() since Meteor's collection doesn't have it
-    const processedSnapshots = await PMSHoldingsCollection.rawCollection().distinct(
-      'snapshotDate',
+    const processedFileDates = await PMSHoldingsCollection.rawCollection().distinct(
+      'fileDate',
       { bankId: connection.bankId, isLatest: true }
     );
 
     // Normalize processed dates to YYYY-MM-DD strings for comparison
     const processedDateStrings = new Set(
-      processedSnapshots.map(d => new Date(d).toISOString().split('T')[0])
+      processedFileDates.map(d => new Date(d).toISOString().split('T')[0])
     );
 
     // Find missing dates (available in files but not processed)
@@ -1255,7 +1413,7 @@ Meteor.methods({
       return !processedDateStrings.has(dateStr);
     });
 
-    console.log(`[BANK_POSITIONS] getMissingDates for ${connection.connectionName}: ${availableDates.length} file dates, ${processedSnapshots.length} processed, ${missingDates.length} missing`);
+    console.log(`[BANK_POSITIONS] getMissingDates for ${connection.connectionName}: ${availableDates.length} file dates, ${processedFileDates.length} processed, ${missingDates.length} missing`);
 
     return {
       missingDates: missingDates.map(d => d.toISOString()),
@@ -1346,10 +1504,17 @@ Meteor.methods({
       const processedUniqueKeys = new Set();
       const processedPortfolioCodes = new Set();
 
+      // In-memory cache for enrichment during this file's processing
+      const enrichmentCache = new Map();
+
+      // Build portfolio → userId map once (avoids N+1 queries)
+      const portfolioUserMap = await buildPortfolioUserMap(connection.bankId);
+      console.log(`[BANK_POSITIONS] Built portfolio map with ${portfolioUserMap.size} accounts for historical processing`);
+
       for (const position of positions) {
         try {
-          // Match portfolio code to bank account to find userId
-          const userId = await findUserIdForPortfolioCode(position.portfolioCode, connection.bankId);
+          // Match portfolio code to bank account to find userId (using pre-built map)
+          const userId = getUserIdFromMap(position.portfolioCode, portfolioUserMap);
 
           if (!userId) {
             unmappedPortfolioCodes.add(position.portfolioCode);
@@ -1365,11 +1530,26 @@ Meteor.methods({
           // Auto-enrich with internal product data if ISIN matches
           if (position.isin) {
             try {
-              const { ISINClassifierHelpers } = await import('../../imports/api/isinClassifier.js');
-              const productInfo = await ISINClassifierHelpers.extractProductClassification(position.isin);
+              // Check cached enrichment first (avoids redundant DB queries)
+              let productInfo = await getCachedEnrichment(position.isin, enrichmentCache);
 
-              if (productInfo && productInfo.source === 'internal_product') {
-                console.log(`[BANK_POSITIONS] Auto-enriching ${position.isin} from internal product DB: ${productInfo.data.securityName}`);
+              if (!productInfo) {
+                // Fresh lookup needed - either never enriched or product was updated
+                const { ISINClassifierHelpers } = await import('../../imports/api/isinClassifier.js');
+                productInfo = await ISINClassifierHelpers.extractProductClassification(position.isin);
+
+                // Cache for other positions in same file
+                if (productInfo) {
+                  enrichmentCache.set(position.isin, productInfo);
+                }
+              }
+
+              if (productInfo && (productInfo.source === 'internal_product' || productInfo.source === 'cached')) {
+                if (productInfo.source === 'cached') {
+                  console.log(`[BANK_POSITIONS] Using cached enrichment for ${position.isin}: ${productInfo.data.securityName}`);
+                } else {
+                  console.log(`[BANK_POSITIONS] Auto-enriching ${position.isin} from internal product DB: ${productInfo.data.securityName}`);
+                }
 
                 // ALWAYS override with Ambervision product title for internal products
                 position.securityName = productInfo.data.securityName;
@@ -1387,6 +1567,36 @@ Meteor.methods({
               }
             } catch (enrichError) {
               console.error(`[BANK_POSITIONS] Error enriching position: ${enrichError.message}`);
+            }
+          }
+
+          // CENTRALIZED CLASSIFICATION: Use SecurityResolver for all positions
+          if (position.isin) {
+            try {
+              const alreadyEnriched = position.bankSpecificData?.autoEnriched === true;
+
+              if (!alreadyEnriched) {
+                const classification = await SecurityResolver.resolveSecurityType(
+                  position.isin,
+                  {
+                    securityName: position.securityName,
+                    currency: position.currency
+                  }
+                );
+
+                if (classification && classification.isClassified) {
+                  position.securityType = classification.securityType;
+                  position.assetClass = classification.assetClass;
+                  position.structuredProductUnderlyingType = classification.structuredProductUnderlyingType || '';
+                  position.structuredProductProtectionType = classification.structuredProductProtectionType || '';
+
+                  position.bankSpecificData = position.bankSpecificData || {};
+                  position.bankSpecificData.classificationSource = classification.classificationSource || 'securities_metadata';
+                  position.bankSpecificData.classificationConfidence = classification.confidence;
+                }
+              }
+            } catch (classifyError) {
+              console.error(`[BANK_POSITIONS] SecurityResolver error for ${position.isin}: ${classifyError.message}`);
             }
           }
 
@@ -1440,6 +1650,14 @@ Meteor.methods({
           return groups;
         }, {});
 
+      // Pre-fetch transfer operations ONCE for all portfolios (avoid repeated DB queries)
+      const portfolioUserIds = [...new Set(Object.values(positionsByPortfolio).map(positions => positions[0]?.userId).filter(Boolean))];
+      const transferOpsCache = await PMSOperationsCollection.find({
+        userId: { $in: portfolioUserIds },
+        operationType: 'TRANSFER',
+        operationCategory: 'CASH'
+      }).fetchAsync();
+
       for (const [portfolioCode, portfolioPositions] of Object.entries(positionsByPortfolio)) {
         try {
           const portfolioUserId = portfolioPositions[0].userId;
@@ -1454,7 +1672,8 @@ Meteor.methods({
             snapshotDate: fileDate,
             fileDate,
             sourceFile: filename,
-            holdings: portfolioPositions
+            holdings: portfolioPositions,
+            transferOpsCache  // Pass pre-fetched operations
           });
         } catch (snapshotError) {
           console.error(`[BANK_POSITIONS] Error creating snapshot for ${portfolioCode}: ${snapshotError.message}`);
@@ -1546,11 +1765,12 @@ Meteor.methods({
 
     // Limit the number of dates to process
     const datesToProcess = missingDates.slice(0, maxDates);
-    const results = [];
-    let successCount = 0;
-    let failCount = 0;
 
-    // Process in chronological order (oldest first - array is already sorted)
+    // Process dates SEQUENTIALLY to avoid race conditions
+    // Parallel processing caused duplicate version writes for the same holdings
+    console.log(`[BANK_POSITIONS] Processing ${datesToProcess.length} missing dates sequentially`);
+
+    const results = [];
     for (const dateStr of datesToProcess) {
       try {
         console.log(`[BANK_POSITIONS] Processing missing date: ${dateStr}`);
@@ -1568,7 +1788,6 @@ Meteor.methods({
           updatedRecords: result.updatedRecords,
           totalRecords: result.totalRecords
         });
-        successCount++;
 
       } catch (error) {
         console.error(`[BANK_POSITIONS] Failed to process ${dateStr}: ${error.message}`);
@@ -1577,10 +1796,11 @@ Meteor.methods({
           success: false,
           error: error.message
         });
-        failCount++;
-        // Continue with next date, don't stop on errors
       }
     }
+
+    const successCount = results.filter(r => r.success).length;
+    const failCount = results.filter(r => !r.success).length;
 
     console.log(`[BANK_POSITIONS] Missing dates processing complete: ${successCount} succeeded, ${failCount} failed, ${Math.max(0, missingDates.length - maxDates)} remaining`);
 
@@ -1672,6 +1892,31 @@ Meteor.methods({
           position.connectionId = 'TEST';
           position.sourceFilePath = path.join(bankFolderPath, filename);
 
+          // CENTRALIZED CLASSIFICATION: Use SecurityResolver for all positions
+          if (position.isin) {
+            try {
+              const classification = await SecurityResolver.resolveSecurityType(
+                position.isin,
+                {
+                  securityName: position.securityName,
+                  currency: position.currency
+                }
+              );
+
+              if (classification && classification.isClassified) {
+                position.securityType = classification.securityType;
+                position.assetClass = classification.assetClass;
+                position.structuredProductUnderlyingType = classification.structuredProductUnderlyingType || '';
+                position.structuredProductProtectionType = classification.structuredProductProtectionType || '';
+
+                position.bankSpecificData = position.bankSpecificData || {};
+                position.bankSpecificData.classificationSource = classification.classificationSource || 'securities_metadata';
+              }
+            } catch (classifyError) {
+              console.error(`[BANK_POSITIONS_TEST] SecurityResolver error: ${classifyError.message}`);
+            }
+          }
+
           // Upsert position
           const result = await PMSHoldingsHelpers.upsertHolding(position);
 
@@ -1708,6 +1953,14 @@ Meteor.methods({
           return groups;
         }, {});
 
+      // Pre-fetch transfer operations ONCE for all portfolios (avoid repeated DB queries)
+      const portfolioUserIds = [...new Set(Object.values(positionsByPortfolio).map(positions => positions[0]?.userId).filter(Boolean))];
+      const transferOpsCache = await PMSOperationsCollection.find({
+        userId: { $in: portfolioUserIds },
+        operationType: 'TRANSFER',
+        operationCategory: 'CASH'
+      }).fetchAsync();
+
       // Create snapshot for each portfolio
       for (const [portfolioCode, portfolioPositions] of Object.entries(positionsByPortfolio)) {
         try {
@@ -1724,7 +1977,8 @@ Meteor.methods({
             snapshotDate: fileDate,
             fileDate,
             sourceFile: filename,
-            holdings: portfolioPositions
+            holdings: portfolioPositions,
+            transferOpsCache  // Pass pre-fetched operations
           });
         } catch (snapshotError) {
           console.error(`[BANK_POSITIONS_TEST] Error creating snapshot for ${portfolioCode}: ${snapshotError.message}`);
@@ -2167,6 +2421,14 @@ Meteor.methods({
 
     console.log(`[REGENERATE_SNAPSHOTS] Regenerating ${datesToProcess.length} missing snapshots (of ${missingDates.length} total)`);
 
+    // Pre-fetch transfer operations ONCE for all users to be processed
+    const userIds = [...new Set(datesToProcess.map(d => d.userId))];
+    const transferOpsCache = await PMSOperationsCollection.find({
+      userId: { $in: userIds },
+      operationType: 'TRANSFER',
+      operationCategory: 'CASH'
+    }).fetchAsync();
+
     let regenerated = 0;
     const errors = [];
 
@@ -2207,7 +2469,8 @@ Meteor.methods({
           snapshotDate,
           fileDate: holdings[0]?.fileDate || snapshotDate,
           sourceFile: `regenerated_from_holdings_${missing.snapshotDate}`,
-          holdings
+          holdings,
+          transferOpsCache  // Pass pre-fetched operations
         });
 
         regenerated++;
