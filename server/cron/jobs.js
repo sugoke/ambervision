@@ -514,6 +514,123 @@ async function productRevaluationJob(options = {}) {
 }
 
 /**
+ * Create consolidated holdings for all users
+ * Merges holdings with same ISIN across all accounts for each user
+ * Stored with portfolioCode='CONSOLIDATED' for easy filtering in UI
+ */
+async function createConsolidatedHoldings() {
+  console.log('[CRON] Creating consolidated holdings...');
+
+  try {
+    // Get all unique userIds that have latest holdings (excluding existing CONSOLIDATED)
+    const usersWithHoldings = await PMSHoldingsCollection.rawCollection().distinct('userId', {
+      isLatest: true,
+      portfolioCode: { $ne: 'CONSOLIDATED' }
+    });
+
+    console.log(`[CRON] Found ${usersWithHoldings.length} users with holdings to consolidate`);
+
+    let totalConsolidated = 0;
+
+    for (const userId of usersWithHoldings) {
+      if (!userId) continue;
+
+      // Get all latest holdings for this user (excluding CONSOLIDATED)
+      const holdings = await PMSHoldingsCollection.find({
+        userId,
+        isLatest: true,
+        portfolioCode: { $ne: 'CONSOLIDATED' }
+      }).fetchAsync();
+
+      if (holdings.length === 0) continue;
+
+      // Find the most recent snapshotDate among all holdings
+      const latestSnapshotDate = holdings.reduce((latest, h) => {
+        if (!latest || (h.snapshotDate && h.snapshotDate > latest)) {
+          return h.snapshotDate;
+        }
+        return latest;
+      }, null);
+
+      // Group by ISIN/ticker (merge same securities across accounts)
+      const consolidated = {};
+
+      holdings.forEach(pos => {
+        // Key by ISIN if available, otherwise ticker, otherwise securityName
+        const key = pos.isin || pos.ticker || pos.securityName;
+        if (!key) return; // Skip positions without identifier
+
+        if (!consolidated[key]) {
+          // First occurrence - clone the position as base
+          consolidated[key] = {
+            ...pos,
+            _id: undefined, // Will be generated on insert
+            portfolioCode: 'CONSOLIDATED',
+            accountNumber: 'CONSOLIDATED',
+            originalPortfolioCode: 'CONSOLIDATED',
+            quantity: 0,
+            marketValue: 0,
+            marketValueOriginalCurrency: 0,
+            bookValue: 0,
+            costBasisOriginalCurrency: 0,
+            costBasisPortfolioCurrency: 0,
+            unrealizedPnL: 0,
+            sourceAccounts: [],
+            snapshotDate: latestSnapshotDate,
+            processedAt: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date()
+          };
+        }
+
+        // Accumulate values
+        consolidated[key].quantity += pos.quantity || 0;
+        consolidated[key].marketValue += pos.marketValue || 0;
+        consolidated[key].marketValueOriginalCurrency += pos.marketValueOriginalCurrency || 0;
+        consolidated[key].bookValue += pos.bookValue || 0;
+        consolidated[key].costBasisOriginalCurrency += pos.costBasisOriginalCurrency || 0;
+        consolidated[key].costBasisPortfolioCurrency += pos.costBasisPortfolioCurrency || 0;
+        consolidated[key].unrealizedPnL += pos.unrealizedPnL || 0;
+        consolidated[key].sourceAccounts.push(pos.portfolioCode);
+      });
+
+      // Calculate unrealizedPnLPercent for consolidated positions
+      Object.values(consolidated).forEach(pos => {
+        if (pos.costBasisPortfolioCurrency && pos.costBasisPortfolioCurrency !== 0) {
+          pos.unrealizedPnLPercent = ((pos.marketValue - pos.costBasisPortfolioCurrency) / Math.abs(pos.costBasisPortfolioCurrency)) * 100;
+        } else {
+          pos.unrealizedPnLPercent = 0;
+        }
+      });
+
+      // Mark existing CONSOLIDATED holdings as not latest
+      await PMSHoldingsCollection.updateAsync(
+        { userId, portfolioCode: 'CONSOLIDATED', isLatest: true },
+        { $set: { isLatest: false, replacedAt: new Date() } },
+        { multi: true }
+      );
+
+      // Insert new consolidated holdings
+      const consolidatedPositions = Object.values(consolidated);
+      for (const pos of consolidatedPositions) {
+        // Generate unique key for consolidated position
+        pos.uniqueKey = `CONSOLIDATED_${userId}_${pos.isin || pos.ticker || pos.securityName}`;
+        await PMSHoldingsCollection.insertAsync(pos);
+      }
+
+      totalConsolidated += consolidatedPositions.length;
+    }
+
+    console.log(`[CRON] Created ${totalConsolidated} consolidated holdings for ${usersWithHoldings.length} users`);
+    return { success: true, usersProcessed: usersWithHoldings.length, holdingsCreated: totalConsolidated };
+
+  } catch (error) {
+    console.error('[CRON] Error creating consolidated holdings:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
  * JOB 4: Bank File Sync & PMS Processing
  * Runs daily at 07:30 CET
  * For SFTP connections: Downloads bank files and processes for PMS
@@ -713,6 +830,15 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
     const staleWarning = results.connectionsWithStaleData > 0 ? ` (${results.connectionsWithStaleData} with stale data)` : '';
     console.log(`[CRON] Bank File Sync completed: ${results.connectionsSucceeded}/${results.connectionsProcessed} fresh${staleWarning}`);
 
+    // Create consolidated holdings for all users (merge same securities across accounts)
+    try {
+      const consolidationResult = await createConsolidatedHoldings();
+      results.consolidation = consolidationResult;
+    } catch (consolidationError) {
+      console.error('[CRON] Consolidation error:', consolidationError.message);
+      results.consolidation = { success: false, error: consolidationError.message };
+    }
+
     // Send bank sync completion email with notifications
     try {
       // Collect notifications generated during this sync (within the last 10 minutes)
@@ -892,6 +1018,17 @@ async function cmbFileSyncJob(triggerSource = 'cron') {
     await CronJobLogHelpers.completeJob(logId, results);
     const staleWarning = results.connectionsWithStaleData > 0 ? ' (stale data)' : '';
     console.log(`[CRON] CMB File Sync completed: ${results.connectionsSucceeded}/1 fresh${staleWarning}`);
+
+    // Update consolidated holdings after CMB processing
+    if (results.positionsProcessed > 0) {
+      try {
+        const consolidationResult = await createConsolidatedHoldings();
+        results.consolidation = consolidationResult;
+      } catch (consolidationError) {
+        console.error('[CRON-CMB] Consolidation error:', consolidationError.message);
+        results.consolidation = { success: false, error: consolidationError.message };
+      }
+    }
 
     // Send email notification if new files were processed
     if (results.filesDownloaded > 0 || results.positionsProcessed > 0) {

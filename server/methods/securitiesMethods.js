@@ -1,11 +1,12 @@
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { SecuritiesMetadataCollection, SecuritiesMetadataHelpers } from '../../imports/api/securitiesMetadata.js';
-import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
+import { PMSHoldingsCollection, PMSHoldingsHelpers } from '../../imports/api/pmsHoldings.js';
 import { SessionsCollection } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
 import { ISINClassifierHelpers } from '../../imports/api/isinClassifier.js';
 import { ProductsCollection } from '../../imports/api/products.js';
+import { mapAssetClassToSecurityType } from '../../imports/api/helpers/securityResolver.js';
 
 /**
  * Validate session and ensure user is admin
@@ -74,6 +75,29 @@ Meteor.methods({
       const result = await SecuritiesMetadataHelpers.upsertSecurityMetadata(dataToSave);
 
       console.log(`[SECURITIES_METADATA] ${result.updated ? 'Updated' : 'Created'} metadata for ${isin}`);
+
+      // Propagate classification changes to all PMSHoldings with this ISIN
+      // This ensures that when admin changes classification in SecuritiesBase,
+      // all existing holdings are updated to reflect the new classification
+      try {
+        // Map assetClass to securityType using the same logic as SecurityResolver
+        const securityType = mapAssetClassToSecurityType(
+          dataToSave.assetClass,
+          dataToSave.securityName || ''
+        );
+
+        const propagationResult = await PMSHoldingsHelpers.reclassifyByIsin(isin, {
+          securityType,
+          assetClass: dataToSave.assetClass,
+          structuredProductUnderlyingType: dataToSave.structuredProductUnderlyingType,
+          structuredProductProtectionType: dataToSave.structuredProductProtectionType,
+          classifiedBy: 'admin'
+        });
+        console.log(`[SECURITIES_METADATA] Propagated classification to ${propagationResult.modifiedCount} PMSHoldings (securityType: ${securityType})`);
+      } catch (propError) {
+        // Log but don't fail the main operation - metadata saved successfully
+        console.error(`[SECURITIES_METADATA] Warning: Failed to propagate to PMSHoldings: ${propError.message}`);
+      }
 
       return {
         success: true,

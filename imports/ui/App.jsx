@@ -3,6 +3,8 @@ import Login from './Login.jsx';
 import MainContent from './MainContent.jsx';
 import PasswordReset from './PasswordReset.jsx';
 import PrintableProductReport from './PrintableProductReport.jsx';
+import LandingPage from './LandingPage.jsx';
+import InfinePage from './InfinePage.jsx';
 import PhoenixReportPDF from './templates/PhoenixReportPDF.jsx';
 import OrionReportPDF from './templates/OrionReportPDF.jsx';
 import ParticipationNoteReportPDF from './templates/ParticipationNoteReportPDF.jsx';
@@ -778,7 +780,7 @@ const AppContent = () => {
         }} />}
 
         {/* Loading state during authentication check - Exclude PDF modes as they handle their own loading */}
-        {isAuthLoading && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && (
+        {isAuthLoading && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'landing' && currentSection !== 'infine' && (
           <div style={{
             display: 'flex',
             justifyContent: 'center',
@@ -827,6 +829,16 @@ const AppContent = () => {
           <RiskAnalysisPDF />
         )}
 
+        {/* Landing Page - Public marketing page, no authentication required */}
+        {currentSection === 'landing' && (
+          <LandingPage />
+        )}
+
+        {/* Infine Loan Calculator - Public page, no authentication required */}
+        {currentSection === 'infine' && (
+          <InfinePage />
+        )}
+
         {/* Password Reset Page - Show regardless of login state */}
         {!isAuthLoading && currentSection === 'reset-password' && (
           <PasswordReset
@@ -840,7 +852,7 @@ const AppContent = () => {
         )}
 
         {/* Login Form Section - Only show when not logged in, not loading, not on reset password page, and not in PDF mode */}
-        {!user && !isAuthLoading && currentSection !== 'reset-password' && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && (
+        {!user && !isAuthLoading && currentSection !== 'reset-password' && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'landing' && currentSection !== 'infine' && (
           <section style={{
             padding: '0 1rem',
             background: theme === 'light' ? 'transparent' : 'transparent'
@@ -860,7 +872,7 @@ const AppContent = () => {
 
 
         {/* Main Content - Protected (or PDF mode) */}
-        {(user || isPDFMode) && currentSection !== 'reset-password' && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && <MainContent user={user} currentSection={currentSection} setCurrentSection={handleSectionChange} onComponentLibraryStateChange={setIsComponentLibraryOpen} currentRoute={currentRoute} isMenuOpen={isMenuOpen} setIsMenuOpen={setIsMenuOpen} isSettingsOpen={isSettingsOpen} setIsSettingsOpen={setIsSettingsOpen} isMobile={isMobile} />}
+        {(user || isPDFMode) && currentSection !== 'reset-password' && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'landing' && currentSection !== 'infine' && <MainContent user={user} currentSection={currentSection} setCurrentSection={handleSectionChange} onComponentLibraryStateChange={setIsComponentLibraryOpen} currentRoute={currentRoute} isMenuOpen={isMenuOpen} setIsMenuOpen={setIsMenuOpen} isSettingsOpen={isSettingsOpen} setIsSettingsOpen={setIsSettingsOpen} isMobile={isMobile} />}
 
         {/* Spacer to prevent content from being hidden behind fixed bottom bar - Hide on mobile */}
         {user && !isMobile && <div style={{ height: '40px' }} />}

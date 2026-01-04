@@ -533,6 +533,25 @@ export const BankPositionParser = {
 
     console.log(`[BANK_PARSER] Total positions parsed: ${allPositions.length}`);
 
+    // If no primary file was set (only FX rates files), use FX rates file date
+    // This prevents null fileDate errors in downstream processing
+    if (!primaryFileDate && fxRatesFiles.length > 0) {
+      primaryFileDate = fxRatesFiles[0].fileDate;
+      primaryFilename = fxRatesFiles[0].filename;
+      console.log(`[BANK_PARSER] Using FX rates file date as primary: ${primaryFilename}`);
+    }
+
+    // Safety check: if we still have no fileDate but have files, this is an error
+    if (!primaryFileDate && latestFiles.length > 0) {
+      return {
+        positions: [],
+        filename: null,
+        fileDate: null,
+        totalRecords: 0,
+        error: 'Failed to parse any position files - all files returned errors'
+      };
+    }
+
     return {
       positions: allPositions,
       filename: primaryFilename,

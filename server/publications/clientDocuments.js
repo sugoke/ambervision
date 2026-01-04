@@ -9,39 +9,32 @@ import { SessionsCollection } from '/imports/api/sessions.js';
 
 /**
  * Publish documents for a specific client
- * Uses session-based authentication (sync for reactivity)
+ * Uses async session validation with manual publish for Meteor 3.x compatibility
  */
-Meteor.publish('clientDocuments', function (userId, sessionId) {
+Meteor.publish('clientDocuments', async function (userId, sessionId) {
   check(userId, Match.Maybe(String));
   check(sessionId, Match.Maybe(String));
 
-  console.log('[clientDocuments pub] Called with userId:', userId, 'sessionId:', sessionId?.substring(0, 8) + '...');
+  console.log('[clientDocuments pub] ====== SUBSCRIPTION CALLED ======');
+  console.log('[clientDocuments pub] userId:', userId, 'sessionId:', sessionId?.substring(0, 8) + '...');
 
-  // Session-based authentication
-  if (!sessionId) {
-    console.log('[clientDocuments pub] No sessionId, returning ready()');
+  // Quick validation
+  if (!sessionId || !userId) {
+    console.log('[clientDocuments pub] Missing params, returning ready()');
     return this.ready();
   }
 
-  // Use sync findOne to maintain reactivity
-  const session = SessionsCollection.findOne({
-    sessionId,
-    isActive: true
-  });
-
+  // Async session validation for Meteor 3.x
+  const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
   if (!session) {
     console.log('[clientDocuments pub] No valid session found');
     return this.ready();
   }
+  console.log('[clientDocuments pub] Session valid for user:', session.userId);
 
-  if (!userId) {
-    console.log('[clientDocuments pub] No userId, returning ready()');
-    return this.ready();
-  }
-
-  // Check what documents exist for this user
-  const docCount = ClientDocumentsCollection.find({ userId }).count();
-  console.log('[clientDocuments pub] Found', docCount, 'documents for userId:', userId);
+  // Return documents cursor for the specified user
+  const docCount = await ClientDocumentsCollection.find({ userId }).countAsync();
+  console.log('[clientDocuments pub] Returning', docCount, 'documents for userId:', userId);
 
   return ClientDocumentsCollection.find({ userId });
 });

@@ -19,6 +19,10 @@ import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { WebApp } from 'meteor/webapp';
 import { MongoInternals } from 'meteor/mongo';
+
+// Server log capture - must be early to capture all logs
+import './logCapture';
+
 import { LinksCollection } from '/imports/api/links';
 import { ProductsCollection } from '/imports/api/products';
 import { ChartDataCollection } from '/imports/api/chartData';
@@ -68,6 +72,8 @@ import './methods/bankConnectionMethods';
 import './methods/bankPositionMethods';
 import './methods/pmsMigrationMethods';
 import './migrations/migratePMSHoldingsVersioning';
+import './migrations/cleanupDuplicateVersions';
+import './migrations/cleanupDuplicateHoldings';
 import './methods/securitiesMethods';
 import './methods/performanceMethods';
 import './methods/pdfGenerationMethods';
@@ -76,6 +82,8 @@ import './methods/riskAnalysisPdfMethods';
 import './methods/pmsLinkingMethods';
 import './methods/accountProfileMethods';
 import './methods/rmDashboardMethods';
+import './methods/landingMethods';
+import './methods/clientDocumentMethods';
 import './pdfAuth'; // PDF authentication middleware
 import './publications/underlyingsAnalysis';
 import './publications/bankConnections';
@@ -283,7 +291,7 @@ Meteor.startup(async () => {
   // Initialize cron jobs for nightly operations
   console.log('⏰ Initializing cron jobs...');
   try {
-    initializeCronJobs();
+    await initializeCronJobs();
     console.log('✅ Cron jobs initialized successfully');
   } catch (error) {
     console.error('❌ Error initializing cron jobs:', error);
@@ -2147,7 +2155,7 @@ Meteor.methods({
     }
   },
 
-  async 'bankAccounts.create'({ userId, bankId, accountNumber, referenceCurrency, accountType = 'personal', accountStructure = 'direct', lifeInsuranceCompany, authorizedOverdraft, sessionId }) {
+  async 'bankAccounts.create'({ userId, bankId, accountNumber, referenceCurrency, accountType = 'personal', accountStructure = 'direct', lifeInsuranceCompany, authorizedOverdraft, comment, sessionId }) {
     check(userId, String);
     check(bankId, String);
     check(accountNumber, String);
@@ -2156,7 +2164,7 @@ Meteor.methods({
     check(accountStructure, String);
     check(sessionId, String);
 
-    console.log('Server: bankAccounts.create called with:', { userId, bankId, accountNumber, referenceCurrency, accountType, accountStructure, lifeInsuranceCompany, authorizedOverdraft });
+    console.log('Server: bankAccounts.create called with:', { userId, bankId, accountNumber, referenceCurrency, accountType, accountStructure, lifeInsuranceCompany, authorizedOverdraft, comment });
 
     // Validate session and get current user
     const currentUser = await validateSessionAndGetUser(sessionId);
@@ -2210,6 +2218,11 @@ Meteor.methods({
     // Add authorized overdraft (credit line) if provided
     if (authorizedOverdraft && authorizedOverdraft > 0) {
       bankAccountData.authorizedOverdraft = authorizedOverdraft;
+    }
+
+    // Add comment/description if provided
+    if (comment && comment.trim()) {
+      bankAccountData.comment = comment.trim();
     }
 
     console.log('Server: Creating bank account with data:', bankAccountData);
@@ -6412,10 +6425,14 @@ Meteor.methods({
     ).fetchAsync();
 
     // Search bank accounts (limit to 5 results for performance)
+    // Search by account number OR comment/description field
     const bankAccounts = await BankAccountsCollection.find(
       {
         isActive: true,
-        accountNumber: searchRegex
+        $or: [
+          { accountNumber: searchRegex },
+          { comment: searchRegex }
+        ]
       },
       {
         limit: 5,
@@ -6586,6 +6603,75 @@ WebApp.connectHandlers.use('/termsheets', async (req, res, next) => {
 
   } catch (error) {
     console.error('Error serving termsheet:', error);
+    res.writeHead(500, { 'Content-Type': 'text/plain' });
+    res.end('Internal server error');
+  }
+});
+
+// Server-side routing for client documents (fichier_central) from persistent volume
+WebApp.connectHandlers.use('/fichier_central', async (req, res, next) => {
+  // URL format: /fichier_central/{userId}/{filename}
+  const urlParts = req.url.split('/').filter(p => p);
+
+  // If we're in development (no FICHIER_CENTRAL_PATH), let Meteor serve from public/
+  if (!process.env.FICHIER_CENTRAL_PATH) {
+    return next();
+  }
+
+  if (urlParts.length !== 2) {
+    return next();
+  }
+
+  const [userId, filename] = urlParts;
+
+  try {
+    // Construct file path from FICHIER_CENTRAL_PATH
+    const filePath = path.join(process.env.FICHIER_CENTRAL_PATH, userId, filename);
+
+    // Security: Prevent directory traversal
+    const normalizedPath = path.normalize(filePath);
+    if (!normalizedPath.startsWith(process.env.FICHIER_CENTRAL_PATH)) {
+      console.error('Security: Attempted directory traversal:', req.url);
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Forbidden');
+      return;
+    }
+
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      console.log(`Document not found: ${filePath}`);
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Document not found');
+      return;
+    }
+
+    // Read and serve the file
+    const fileBuffer = fs.readFileSync(filePath);
+    const stat = fs.statSync(filePath);
+
+    // Determine content type from filename extension
+    const ext = path.extname(filename).toLowerCase();
+    const contentTypes = {
+      '.pdf': 'application/pdf',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.gif': 'image/gif'
+    };
+    const contentType = contentTypes[ext] || 'application/octet-stream';
+
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': stat.size,
+      'Content-Disposition': `inline; filename="${filename}"`,
+      'Cache-Control': 'private, max-age=3600' // Cache for 1 hour
+    });
+
+    res.end(fileBuffer);
+    console.log(`Served client document: ${userId}/${filename} (${stat.size} bytes)`);
+
+  } catch (error) {
+    console.error('Error serving client document:', error);
     res.writeHead(500, { 'Content-Type': 'text/plain' });
     res.end('Internal server error');
   }

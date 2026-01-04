@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Security Data Check</title>
+  <style>
+    body {
+      font-family: 'Courier New', monospace;
+      max-width: 900px;
+      margin: 20px auto;
+      padding: 20px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+    }
+    pre {
+      background: #2d2d2d;
+      padding: 15px;
+      border-radius: 4px;
+      overflow-x: auto;
+    }
+    .loading {
+      color: #4fc1ff;
+    }
+  </style>
+</head>
+<body>
+  <h1>Security Data Diagnostic</h1>
+  <div id="output" class="loading">Running diagnostic...</div>
+
+  <script>
+    setTimeout(() => {
+      // Simulate DDP method call
+      fetch('http://localhost:3000/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          msg: 'method',
+          method: 'test.checkSecurityData',
+          params: [],
+          id: '1'
+        })
+      })
+      .then(response => response.json())
+      .then(data => {
+        document.getElementById('output').innerHTML = '<pre>Check browser console (F12) for detailed output</pre>';
+        console.log('=== SECURITY DATA CHECK RESULT ===');
+        console.log(data);
+      })
+      .catch(error => {
+        document.getElementById('output').innerHTML = `<pre>Error: ${error.message}\n\nOpen browser console (F12) and run:\nMeteor.call('test.checkSecurityData')</pre>`;
+        console.error(error);
+      });
+    }, 1000);
+  </script>
+</body>
+</html>

@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clear Invalid Price Cache</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 16px;
+      background: #f5f5f5;
+    }
+    .container {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #333;
+      margin-bottom: 16px;
+      font-size: 1.5rem;
+      word-break: break-word;
+    }
+    p {
+      font-size: 14px;
+      line-height: 1.5;
+      margin-bottom: 16px;
+    }
+    button {
+      background: #3b82f6;
+      color: white;
+      border: none;
+      padding: 12px 16px;
+      font-size: 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin: 5px 5px 5px 0;
+      width: 100%;
+      max-width: 100%;
+      touch-action: manipulation;
+    }
+    button:hover {
+      background: #2563eb;
+    }
+    button:active {
+      transform: scale(0.98);
+    }
+    button:disabled {
+      background: #9ca3af;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .result {
+      margin-top: 20px;
+      padding: 12px;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 400px;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .success {
+      background: #d1fae5;
+      border: 1px solid #10b981;
+      color: #065f46;
+    }
+    .error {
+      background: #fee2e2;
+      border: 1px solid #ef4444;
+      color: #991b1b;
+    }
+    .info {
+      background: #e0f2fe;
+      border: 1px solid #0284c7;
+      color: #075985;
+    }
+
+    @media (min-width: 640px) {
+      body {
+        padding: 50px 20px;
+      }
+      .container {
+        padding: 30px;
+      }
+      h1 {
+        font-size: 2rem;
+        margin-bottom: 20px;
+      }
+      p {
+        font-size: 16px;
+        margin-bottom: 20px;
+      }
+      button {
+        width: auto;
+        font-size: 16px;
+        padding: 12px 24px;
+        margin-right: 10px;
+      }
+      .result {
+        font-size: 13px;
+        padding: 15px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🧹 Clear Invalid Price Cache</h1>
+    <p>This tool will remove cache entries with invalid prices (undefined, null, or ≤ 0) from the ticker price cache.</p>
+
+    <button id="clearBtn" onclick="clearInvalidPrices()">Clear Invalid Cache Entries</button>
+    <button id="testBtn" onclick="testTickers()">Test ABNB.US & EL.US Prices</button>
+
+    <div id="result"></div>
+  </div>
+
+  <script>
+    function showResult(message, type = 'info') {
+      const resultDiv = document.getElementById('result');
+      resultDiv.className = `result ${type}`;
+      resultDiv.textContent = message;
+    }
+
+    function clearInvalidPrices() {
+      const btn = document.getElementById('clearBtn');
+      btn.disabled = true;
+      showResult('Clearing invalid cache entries...', 'info');
+
+      Meteor.call('tickerCache.clearInvalidPrices', (error, result) => {
+        btn.disabled = false;
+
+        if (error) {
+          showResult(`Error: ${error.message}`, 'error');
+        } else {
+          const message = `✅ Success!\n\n${result.message}\n\nRemoved: ${result.removedCount} entries`;
+          showResult(message, 'success');
+        }
+      });
+    }
+
+    function testTickers() {
+      const btn = document.getElementById('testBtn');
+      btn.disabled = true;
+      showResult('Fetching prices for ABNB.US and EL.US...', 'info');
+
+      const tickers = ['ABNB.US', 'EL.US'];
+      const results = [];
+      let completed = 0;
+
+      tickers.forEach(ticker => {
+        Meteor.call('eod.getRealTimePrice', ticker.replace('.US', ''), 'US', (error, price) => {
+          completed++;
+
+          if (error) {
+            results.push(`❌ ${ticker}: Error - ${error.message}`);
+          } else {
+            const priceValue = typeof price === 'number' ? price : (price?.close || price?.price || 'N/A');
+            const status = priceValue && priceValue !== 'N/A' ? '✅' : '❌';
+            results.push(`${status} ${ticker}: $${priceValue}`);
+          }
+
+          if (completed === tickers.length) {
+            btn.disabled = false;
+            const message = results.join('\n');
+            const type = results.every(r => r.startsWith('✅')) ? 'success' : 'error';
+            showResult(message, type);
+          }
+        });
+      });
+    }
+
+    // Auto-clear on page load
+    window.addEventListener('load', () => {
+      showResult('Page loaded. Click "Clear Invalid Cache Entries" to remove corrupted cache entries.', 'info');
+    });
+  </script>
+</body>
+</html>

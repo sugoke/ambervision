@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ABNB Diagnosis</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 16px;
+      background: #f5f5f5;
+    }
+    .container {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #333;
+      margin-bottom: 16px;
+      font-size: 1.5rem;
+      word-break: break-word;
+    }
+    h3 {
+      font-size: 1rem;
+      margin: 0 0 10px 0;
+    }
+    button {
+      background: #3b82f6;
+      color: white;
+      border: none;
+      padding: 12px 16px;
+      font-size: 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin: 5px 5px 5px 0;
+      width: 100%;
+      max-width: 100%;
+      touch-action: manipulation;
+    }
+    button:hover {
+      background: #2563eb;
+    }
+    button:active {
+      transform: scale(0.98);
+    }
+    .result {
+      margin-top: 20px;
+      padding: 12px;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #f3f4f6;
+      border: 1px solid #d1d5db;
+      max-height: 400px;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .test-section {
+      margin: 16px 0;
+      padding: 12px;
+      background: #f9fafb;
+      border-radius: 6px;
+    }
+
+    @media (min-width: 640px) {
+      body {
+        padding: 50px 20px;
+      }
+      .container {
+        padding: 30px;
+      }
+      h1 {
+        font-size: 2rem;
+        margin-bottom: 20px;
+      }
+      h3 {
+        font-size: 1.125rem;
+        margin-bottom: 12px;
+      }
+      button {
+        width: auto;
+        font-size: 16px;
+        padding: 12px 24px;
+      }
+      .result {
+        font-size: 13px;
+        padding: 15px;
+      }
+      .test-section {
+        margin: 20px 0;
+        padding: 15px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔍 ABNB.US Diagnostic Tool</h1>
+
+    <div class="test-section">
+      <h3>Test 1: Direct EOD API Test</h3>
+      <button onclick="testDirectAPI('ABNB.US')">Test Direct API (ABNB.US)</button>
+    </div>
+
+    <div class="test-section">
+      <h3>Test 2: Fetch Real-Time Price</h3>
+      <button onclick="testRealTimePrice('ABNB', 'US')">Test getRealTimePrice('ABNB', 'US')</button>
+    </div>
+
+    <div class="test-section">
+      <h3>Test 3: Fetch Batch Prices</h3>
+      <button onclick="testBatchPrices()">Test tickerCache.getPrices(['ABNB.US'])</button>
+    </div>
+
+    <div class="test-section">
+      <h3>Test 4: Clear Cache & Refetch</h3>
+      <button onclick="clearAndRefetch()">Clear Cache → Fetch Fresh</button>
+    </div>
+
+    <div class="test-section">
+      <h3>Test 5: Clear ABNB.US Specifically</h3>
+      <button onclick="clearSpecificTicker()">Clear ABNB.US from Cache</button>
+    </div>
+
+    <div id="result" class="result">Results will appear here...</div>
+  </div>
+
+  <script>
+    function log(message) {
+      const resultDiv = document.getElementById('result');
+      resultDiv.textContent += message + '\n';
+    }
+
+    function clearLog() {
+      document.getElementById('result').textContent = '';
+    }
+
+    function testDirectAPI(symbol) {
+      clearLog();
+      log(`🔍 Testing direct EOD API call for ${symbol}...\n`);
+
+      Meteor.call('test.eodDirectCall', symbol, (error, result) => {
+        if (error) {
+          log(`❌ Error: ${error.message}`);
+        } else {
+          log('✅ Direct API Response:');
+          log(JSON.stringify(result, null, 2));
+
+          if (result.success && result.parsedData) {
+            log(`\n📊 Extracted Price: $${result.parsedData.price}`);
+            log(`Change: ${result.parsedData.change}`);
+            log(`Change %: ${result.parsedData.changePercent}%`);
+          }
+        }
+      });
+    }
+
+    function clearSpecificTicker() {
+      clearLog();
+      log('🔍 Clearing ABNB.US from cache...\n');
+
+      Meteor.call('tickerCache.clear', 'ABNB.US', (error, result) => {
+        if (error) {
+          log(`❌ Error: ${error.message}`);
+        } else {
+          log(`✅ ${result.message}`);
+          log(`\nRemoved: ${result.removedCount} entries`);
+        }
+      });
+    }
+
+    function testRealTimePrice(symbol, exchange) {
+      clearLog();
+      log(`🔍 Testing getRealTimePrice('${symbol}', '${exchange}')...\n`);
+
+      Meteor.call('eod.getRealTimePrice', symbol, exchange, (error, result) => {
+        if (error) {
+          log(`❌ Error: ${error.message}`);
+          log(`Error details: ${JSON.stringify(error, null, 2)}`);
+        } else {
+          log('✅ Success! Raw response:');
+          log(JSON.stringify(result, null, 2));
+
+          const price = typeof result === 'number' ? result : (result?.close || result?.price || result?.last);
+          log(`\nExtracted price: $${price}`);
+        }
+      });
+    }
+
+    function testBatchPrices() {
+      clearLog();
+      log('🔍 Testing batch price fetch for ABNB.US...\n');
+
+      const tickers = ['ABNB.US'];
+      Meteor.call('tickerCache.getPrices', tickers, (error, result) => {
+        if (error) {
+          log(`❌ Error: ${error.message}`);
+        } else {
+          log('✅ Batch fetch result:');
+          log(JSON.stringify(result, null, 2));
+
+          if (result && result.prices && result.prices['ABNB.US']) {
+            const price = result.prices['ABNB.US'];
+            log(`\n📊 ABNB.US Results:`);
+            log(`Price: $${price.price || 'N/A'}`);
+            log(`Change: ${price.change || 'N/A'}`);
+            log(`Change %: ${price.changePercent || 'N/A'}%`);
+            log(`Source: ${price.source || 'N/A'}`);
+          } else {
+            log('\n⚠️ ABNB.US not found in batch result');
+            log('This means the API returned no valid price data');
+          }
+        }
+      });
+    }
+
+    function clearAndRefetch() {
+      clearLog();
+      log('🔍 Step 1: Clearing invalid cache entries...\n');
+
+      Meteor.call('tickerCache.clearInvalidPrices', (error, result) => {
+        if (error) {
+          log(`❌ Error clearing cache: ${error.message}`);
+          return;
+        }
+
+        log(`✅ Cleared ${result.removedCount} invalid entries\n`);
+        log('🔍 Step 2: Clearing ABNB.US specifically...\n');
+
+        Meteor.call('tickerCache.clear', 'ABNB.US', (error2, clearResult) => {
+          if (error2) {
+            log(`❌ Error clearing ABNB.US: ${error2.message}`);
+            return;
+          }
+
+          log(`✅ ${clearResult.message}\n`);
+          log('🔍 Step 3: Fetching fresh price...\n');
+
+          Meteor.call('eod.getRealTimePrice', 'ABNB', 'US', (error3, price) => {
+            if (error3) {
+              log(`❌ Error fetching: ${error3.message}`);
+            } else {
+              log('✅ Fresh price fetched:');
+              log(JSON.stringify(price, null, 2));
+
+              const priceValue = typeof price === 'number' ? price : (price?.close || price?.price);
+              log(`\n💰 Final price: $${priceValue}`);
+
+              if (priceValue && priceValue > 0) {
+                log('\n✅ SUCCESS! ABNB.US is now working correctly.');
+                log('Refresh the MarketTicker to see the updated price.');
+              }
+            }
+          });
+        });
+      });
+    }
+
+    // Auto-run info message on load
+    window.addEventListener('load', () => {
+      clearLog();
+      log('🔍 ABNB.US Diagnostic Tool Ready\n');
+      log('Click "Clear Cache → Fetch Fresh" to fix the undefined price issue.\n');
+      log('Or run each test individually to diagnose the problem.');
+    });
+  </script>
+</body>
+</html>

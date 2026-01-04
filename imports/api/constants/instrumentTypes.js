@@ -292,3 +292,115 @@ export function normalizeSecurityType(type) {
   // Return unknown if no match
   return SECURITY_TYPES.UNKNOWN;
 }
+
+// =============================================================================
+// SECONDARY CLASSIFICATION (Fallback for UNKNOWN types)
+// =============================================================================
+
+/**
+ * Structured product issuers - securities from these issuers are almost always structured products.
+ */
+const STRUCTURED_PRODUCT_ISSUERS = [
+  'leonteq', 'vontobel', 'ubs', 'credit suisse', 'cs', 'julius baer',
+  'societe generale', 'sg issuer', 'bnp paribas', 'barclays',
+  'raiffeisen', 'zurcher kantonalbank', 'zkb', 'citigroup', 'morgan stanley',
+  'goldman sachs', 'jpmorgan', 'hsbc', 'natixis', 'commerzbank', 'eba'
+];
+
+/**
+ * Keywords that indicate structured products in security names.
+ */
+const STRUCTURED_PRODUCT_KEYWORDS = [
+  'autocall', 'phoenix', 'express', 'reverse conv', 'rev conv', 'revconv',
+  'barrier', 'cap prot', 'capital prot', 'bar.cap', 'cap.prot',
+  'certificate', 'cert.', 'tracker', 'bonus', 'discount',
+  'memory coupon', 'snowball', 'worst of', 'best of',
+  'participation', 'yield enhancement', 'income note', 'linked note',
+  'knock-in', 'knock-out', 'twin-win', 'athena', 'callable'
+];
+
+/**
+ * Secondary classification function that applies heuristics when parser returns UNKNOWN.
+ * This provides fallback classification based on:
+ * 1. Security name keywords
+ * 2. ISIN prefix patterns
+ * 3. Known issuer names
+ *
+ * @param {object} holding - Holding object with isin, securityName, securityType, etc.
+ * @returns {string} Best-effort security type classification
+ */
+export function classifyWithFallback(holding) {
+  const currentType = holding.securityType || holding.type;
+
+  // If already classified (not UNKNOWN), use existing classification
+  if (currentType && currentType !== SECURITY_TYPES.UNKNOWN) {
+    return currentType;
+  }
+
+  const isin = (holding.isin || '').toUpperCase();
+  const name = (holding.securityName || holding.name || '').toLowerCase();
+  const issuer = (holding.issuer || holding.bankSpecificData?.instrumentIssuer?.name || '').toLowerCase();
+
+  // 1. NAME-BASED DETECTION: Structured Products
+  for (const keyword of STRUCTURED_PRODUCT_KEYWORDS) {
+    if (name.includes(keyword)) {
+      console.log(`[CLASSIFY] ${isin}: Detected STRUCTURED_PRODUCT via keyword "${keyword}"`);
+      return SECURITY_TYPES.STRUCTURED_PRODUCT;
+    }
+  }
+
+  // 2. ISSUER-BASED DETECTION: Known structured product issuers
+  for (const spIssuer of STRUCTURED_PRODUCT_ISSUERS) {
+    if (name.includes(spIssuer) || issuer.includes(spIssuer)) {
+      // Check if it has product-like characteristics (certificates, notes)
+      if (name.includes('cert') || name.includes('note') || name.includes('bdc') ||
+          name.includes('issue') || /\d{4}[-/]\d{2}[-/]\d{2}/.test(name)) { // Date pattern = maturity
+        console.log(`[CLASSIFY] ${isin}: Detected STRUCTURED_PRODUCT via issuer "${spIssuer}"`);
+        return SECURITY_TYPES.STRUCTURED_PRODUCT;
+      }
+    }
+  }
+
+  // 3. NAME-BASED DETECTION: ETFs
+  if (name.includes('etf') || name.includes('exchange traded') ||
+      name.includes('ishares') || name.includes('spdr') || name.includes('vanguard') ||
+      name.includes('lyxor') || name.includes('amundi index') || name.includes('xtrackers')) {
+    console.log(`[CLASSIFY] ${isin}: Detected ETF via name`);
+    return SECURITY_TYPES.ETF;
+  }
+
+  // 4. NAME-BASED DETECTION: Funds
+  if (name.includes('fund') || name.includes('fonds') || name.includes('sicav') ||
+      name.includes('ucits') || name.includes('fcp') || name.includes('plc')) {
+    console.log(`[CLASSIFY] ${isin}: Detected FUND via name`);
+    return SECURITY_TYPES.FUND;
+  }
+
+  // 5. NAME-BASED DETECTION: Bonds
+  if (name.includes('bond') || name.includes('oblig') || name.includes('treasury') ||
+      name.includes('note ') && name.match(/\d{4}/) ||  // "Note 2025" pattern
+      name.includes('tbill') || name.includes('gilt')) {
+    console.log(`[CLASSIFY] ${isin}: Detected BOND via name`);
+    return SECURITY_TYPES.BOND;
+  }
+
+  // 6. NAME-BASED DETECTION: Private Equity
+  if (name.includes('private equity') || name.includes('buyout') ||
+      name.includes('venture capital') || name.includes('pe fund') ||
+      name.includes('growth equity')) {
+    console.log(`[CLASSIFY] ${isin}: Detected PRIVATE_EQUITY via name`);
+    return SECURITY_TYPES.PRIVATE_EQUITY;
+  }
+
+  // 7. ISIN PREFIX DETECTION (limited reliability, use as last resort)
+  // XS prefix is common for structured products (Eurobond clearing)
+  if (isin.startsWith('XS') && (name.includes('cert') || name.includes('note') ||
+      name.includes('cap') || /\d{4}/.test(name))) {
+    console.log(`[CLASSIFY] ${isin}: Detected STRUCTURED_PRODUCT via XS prefix + keywords`);
+    return SECURITY_TYPES.STRUCTURED_PRODUCT;
+  }
+
+  // 8. If we still can't classify, return UNKNOWN
+  console.log(`[CLASSIFY] ${isin}: Unable to classify, returning UNKNOWN`);
+  return SECURITY_TYPES.UNKNOWN;
+}
