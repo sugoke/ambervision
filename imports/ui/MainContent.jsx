@@ -19,7 +19,6 @@ import NotificationsPage from './NotificationsPage.jsx';
 import { USER_ROLES } from '/imports/api/users';
 import TestInput from './TestInput.jsx';
 import UnderlyingsView from './UnderlyingsView.jsx';
-import DirectEquitiesView from './DirectEquitiesView.jsx';
 import TemplateProductReport from './TemplateProductReport.jsx';
 import Schedule from './Schedule.jsx';
 import Dialog from './Dialog.jsx';
@@ -304,10 +303,6 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
       case 'underlyings':
         return <UnderlyingsView user={user} onNavigateToReport={handleViewProductReport} />;
       
-      case 'direct-equities':
-        if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
-        return <DirectEquitiesView user={user} />;
-
       case 'pms':
         if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
         return <PortfolioManagementSystem user={user} />;
