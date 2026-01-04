@@ -95,6 +95,7 @@ export const EmailService = {
    * @param {string} emailData.text - Plain text content
    * @param {Array} emailData.to - Array of {email, name} recipients
    * @param {Array} emailData.bcc - Optional array of {email, name} BCC recipients
+   * @param {Array} emailData.attachments - Optional array of {name, content, type} attachments
    */
   async sendEmail(emailData) {
     const config = this.getConfig();
@@ -117,6 +118,17 @@ export const EmailService = {
     // Add BCC if provided
     if (emailData.bcc && emailData.bcc.length > 0) {
       payload.email.bcc = emailData.bcc.map(r => ({ name: r.name || r.email, email: r.email }));
+    }
+
+    // Add attachments if provided
+    // SendPulse expects: attachments: { "filename.txt": "base64content", ... }
+    if (emailData.attachments && emailData.attachments.length > 0) {
+      payload.email.attachments = {};
+      emailData.attachments.forEach(att => {
+        // If content is already base64, use as-is; otherwise encode it
+        const content = att.isBase64 ? att.content : Buffer.from(att.content).toString('base64');
+        payload.email.attachments[att.name] = content;
+      });
     }
 
     try {
@@ -1801,6 +1813,7 @@ This is an automated daily digest. Please do not reply to this email.
         connectionsProcessed = 0,
         connectionsSucceeded = 0,
         connectionsFailed = 0,
+        connectionsWithStaleData = 0,
         filesDownloaded = 0,
         positionsProcessed = 0,
         operationsProcessed = 0,
@@ -1808,23 +1821,65 @@ This is an automated daily digest. Please do not reply to this email.
         fileDetails = []
       } = syncResults;
 
-      // Status colors and icons
+      // Status colors and icons - now considers stale data
       const hasErrors = connectionsFailed > 0 || errors.length > 0;
-      const statusColor = hasErrors ? '#ef4444' : '#10b981';
-      const statusIcon = hasErrors ? '⚠️' : '✓';
-      const statusText = hasErrors ? 'Completed with Errors' : 'Completed Successfully';
-      const headerGradient = hasErrors
-        ? 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)'
-        : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+      const hasStaleData = connectionsWithStaleData > 0;
+      const allFresh = !hasErrors && !hasStaleData && connectionsSucceeded === connectionsProcessed;
+
+      let statusColor, statusIcon, statusText, headerGradient;
+      if (hasErrors) {
+        statusColor = '#ef4444';  // Red
+        statusIcon = '⚠️';
+        statusText = 'Completed with Errors';
+        headerGradient = 'linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)';
+      } else if (hasStaleData) {
+        statusColor = '#f59e0b';  // Orange
+        statusIcon = '⚠️';
+        statusText = `${connectionsSucceeded}/${connectionsProcessed} Fresh Data`;
+        headerGradient = 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)';
+      } else {
+        statusColor = '#10b981';  // Green
+        statusIcon = '✓';
+        statusText = 'All Data Fresh';
+        headerGradient = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+      }
 
       // Build connection details rows
       let connectionRowsHtml = '';
       fileDetails.forEach(detail => {
         const statusIcon = detail.success ? '✓' : '✗';
         const statusColor = detail.success ? '#10b981' : '#ef4444';
-        const filesText = detail.downloadedFiles?.length > 0
+        // For local connections, only show files if positions were actually processed
+        // (otherwise it shows ALL available files every time)
+        const hasNewActivity = detail.positionsProcessed > 0 || (detail.connectionType === 'sftp' && detail.downloadedFiles?.length > 0);
+        const filesText = hasNewActivity && detail.downloadedFiles?.length > 0
           ? detail.downloadedFiles.join(', ')
           : (detail.success ? 'No new files' : detail.error || 'Failed');
+
+        // Freshness indicator
+        const freshness = detail.freshness || {};
+        let freshnessIcon, freshnessColor, freshnessText;
+        if (!detail.success) {
+          freshnessIcon = '❌';
+          freshnessColor = '#ef4444';
+          freshnessText = 'Error';
+        } else if (freshness.status === 'fresh') {
+          freshnessIcon = '🟢';
+          freshnessColor = '#10b981';
+          freshnessText = freshness.formattedDate || 'Fresh';
+        } else if (freshness.status === 'stale') {
+          freshnessIcon = '🟡';
+          freshnessColor = '#eab308';
+          freshnessText = `${freshness.formattedDate} (1 day old)`;
+        } else if (freshness.status === 'old') {
+          freshnessIcon = '🟠';
+          freshnessColor = '#f59e0b';
+          freshnessText = `${freshness.formattedDate} (${freshness.businessDaysOld} days old)`;
+        } else {
+          freshnessIcon = '⚪';
+          freshnessColor = '#6b7280';
+          freshnessText = 'No data';
+        }
 
         connectionRowsHtml += `
           <tr class="table-row">
@@ -1834,7 +1889,9 @@ This is an automated daily digest. Please do not reply to this email.
               <span class="text-muted" style="color: #9ca3af; font-size: 13px; margin-left: 8px;">(${detail.connectionType})</span>
             </td>
             <td class="table-cell" style="padding: 12px 16px; border-bottom: 1px solid #4a4a4a; text-align: center; color: #c0c0c0;">${detail.positionsProcessed || 0}</td>
-            <td class="table-cell" style="padding: 12px 16px; border-bottom: 1px solid #4a4a4a; text-align: center; color: #c0c0c0;">${detail.operationsProcessed || 0}</td>
+            <td class="table-cell" style="padding: 12px 16px; border-bottom: 1px solid #4a4a4a; text-align: center; color: ${freshnessColor}; font-size: 13px;">
+              ${freshnessIcon} ${freshnessText}
+            </td>
             <td class="table-cell" style="padding: 12px 16px; border-bottom: 1px solid #4a4a4a; color: ${detail.success ? '#6b7280' : '#ef4444'}; font-size: 13px;">${filesText}</td>
           </tr>
         `;
@@ -2013,8 +2070,8 @@ This is an automated daily digest. Please do not reply to this email.
                   </td>
                   <td width="12"></td>
                   <td align="center" class="stat-card" style="padding: 16px; background-color: #3a3a3a; border-radius: 8px;">
-                    <div style="font-size: 36px; font-weight: 700; color: #06b6d4;">${operationsProcessed}</div>
-                    <div class="text-muted" style="font-size: 13px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;">Operations</div>
+                    <div style="font-size: 36px; font-weight: 700; color: ${connectionsWithStaleData > 0 ? '#f59e0b' : '#10b981'};">${connectionsSucceeded}/${connectionsProcessed}</div>
+                    <div class="text-muted" style="font-size: 13px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;">Data Fresh</div>
                   </td>
                 </tr>
               </table>
@@ -2030,7 +2087,7 @@ This is an automated daily digest. Please do not reply to this email.
                   <tr class="table-header" style="background-color: #3a3a3a;">
                     <th class="table-cell" style="padding: 12px 16px; text-align: left; font-size: 13px; font-weight: 600; color: #c0c0c0; border-bottom: 1px solid #4a4a4a;">Connection</th>
                     <th class="table-cell" style="padding: 12px 16px; text-align: center; font-size: 13px; font-weight: 600; color: #c0c0c0; border-bottom: 1px solid #4a4a4a;">Positions</th>
-                    <th class="table-cell" style="padding: 12px 16px; text-align: center; font-size: 13px; font-weight: 600; color: #c0c0c0; border-bottom: 1px solid #4a4a4a;">Operations</th>
+                    <th class="table-cell" style="padding: 12px 16px; text-align: center; font-size: 13px; font-weight: 600; color: #c0c0c0; border-bottom: 1px solid #4a4a4a;">Data Freshness</th>
                     <th class="table-cell" style="padding: 12px 16px; text-align: left; font-size: 13px; font-weight: 600; color: #c0c0c0; border-bottom: 1px solid #4a4a4a;">Files</th>
                   </tr>
                 </thead>
@@ -2074,7 +2131,8 @@ Trigger: ${triggerSource === 'cron' ? 'Automatic (Cron)' : 'Manual'}
 
 SUMMARY
 -------
-Connections: ${connectionsSucceeded}/${connectionsProcessed} succeeded
+Data Fresh: ${connectionsSucceeded}/${connectionsProcessed}
+Stale Data: ${connectionsWithStaleData}
 Files Downloaded: ${filesDownloaded}
 Positions Processed: ${positionsProcessed}
 Operations Processed: ${operationsProcessed}
@@ -2084,9 +2142,16 @@ CONNECTION DETAILS
 `;
 
       fileDetails.forEach(detail => {
+        const freshnessText = detail.freshness?.status === 'fresh' ? `🟢 ${detail.freshness.formattedDate}`
+          : detail.freshness?.status === 'stale' ? `🟡 ${detail.freshness.formattedDate} (1 day old)`
+          : detail.freshness?.status === 'old' ? `🟠 ${detail.freshness.formattedDate} (${detail.freshness.businessDaysOld} days old)`
+          : '⚪ No data';
+
         textContent += `${detail.success ? '✓' : '✗'} ${detail.connectionName} (${detail.connectionType}): `;
-        textContent += `${detail.positionsProcessed || 0} positions, ${detail.operationsProcessed || 0} operations\n`;
-        if (detail.downloadedFiles?.length > 0) {
+        textContent += `${detail.positionsProcessed || 0} positions | ${freshnessText}\n`;
+        // For local connections, only show files if positions were actually processed
+        const hasNewActivity = detail.positionsProcessed > 0 || (detail.connectionType === 'sftp' && detail.downloadedFiles?.length > 0);
+        if (hasNewActivity && detail.downloadedFiles?.length > 0) {
           textContent += `  Files: ${detail.downloadedFiles.join(', ')}\n`;
         }
         if (detail.error) {
@@ -2116,13 +2181,24 @@ Ambervision - Amber Lake Partners
 This is an automated bank sync report.
       `;
 
-      // Send email via SendPulse
-      const response = await this.sendEmail({
-        subject: `[Ambervision] Bank Sync Report - ${connectionsSucceeded}/${connectionsProcessed} connections ${hasErrors ? '(with errors)' : 'OK'}`,
+      // Build email data - subject reflects freshness status
+      let subjectStatus;
+      if (hasErrors) {
+        subjectStatus = `⚠️ Errors`;
+      } else if (hasStaleData) {
+        subjectStatus = `⚠️ ${connectionsSucceeded}/${connectionsProcessed} Fresh`;
+      } else {
+        subjectStatus = `✓ All Fresh`;
+      }
+      const emailData = {
+        subject: `[Ambervision] Bank Sync - ${subjectStatus}`,
         html: htmlContent,
         text: textContent,
         to: recipients
-      });
+      };
+
+      // Send email via SendPulse
+      const response = await this.sendEmail(emailData);
 
       console.log(`[EmailService] Bank sync completion email sent to ${recipientEmail}`);
 

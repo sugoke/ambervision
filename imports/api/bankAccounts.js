@@ -14,6 +14,7 @@ export const BankAccountsCollection = new Mongo.Collection('bankAccounts');
 //   accountStructure: String (direct, life_insurance),
 //   lifeInsuranceCompany: String (only if accountStructure is life_insurance),
 //   authorizedOverdraft: Number (optional, credit line amount in reference currency),
+//   comment: String (optional, user notes like "Investment Account", "Credit Card", etc.),
 //   isActive: Boolean,
 //   createdAt: Date,
 //   updatedAt: Date
@@ -28,7 +29,7 @@ export const BankAccountHelpers = {
   },
 
   // Add a new bank account for a user
-  async addBankAccount(userId, bankId, accountNumber, referenceCurrency, accountType = 'personal', accountStructure = 'direct', lifeInsuranceCompany = null, authorizedOverdraft = null) {
+  async addBankAccount(userId, bankId, accountNumber, referenceCurrency, accountType = 'personal', accountStructure = 'direct', lifeInsuranceCompany = null, authorizedOverdraft = null, comment = null) {
     check(userId, String);
     check(bankId, String);
     check(accountNumber, String);
@@ -69,6 +70,11 @@ export const BankAccountHelpers = {
       accountData.authorizedOverdraft = authorizedOverdraft;
     }
 
+    // Add comment/description if provided
+    if (comment && comment.trim()) {
+      accountData.comment = comment.trim();
+    }
+
     const bankAccountId = await BankAccountsCollection.insertAsync(accountData);
 
     return bankAccountId;
@@ -79,7 +85,7 @@ export const BankAccountHelpers = {
     check(accountId, String);
     check(updates, Object);
 
-    const allowedFields = ['bankId', 'accountNumber', 'referenceCurrency', 'authorizedOverdraft'];
+    const allowedFields = ['bankId', 'accountNumber', 'referenceCurrency', 'accountType', 'accountStructure', 'lifeInsuranceCompany', 'authorizedOverdraft', 'comment'];
     const filteredUpdates = {};
 
     allowedFields.forEach(field => {

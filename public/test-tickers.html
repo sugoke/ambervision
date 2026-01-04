@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Ticker Diagnosis Tool</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      max-width: 1200px;
+      margin: 20px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    h1 {
+      color: #333;
+      border-bottom: 3px solid #4CAF50;
+      padding-bottom: 10px;
+    }
+    .loading {
+      text-align: center;
+      padding: 40px;
+      font-size: 18px;
+      color: #666;
+    }
+    .spinner {
+      display: inline-block;
+      animation: spin 1s linear infinite;
+      font-size: 32px;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .summary {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      margin: 20px 0;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+      margin-top: 15px;
+    }
+    .summary-item {
+      padding: 15px;
+      border-radius: 6px;
+      text-align: center;
+    }
+    .summary-item.total { background: #e3f2fd; }
+    .summary-item.valid { background: #e8f5e9; }
+    .summary-item.invalid { background: #ffebee; }
+    .summary-item .number {
+      font-size: 32px;
+      font-weight: bold;
+      margin: 10px 0;
+    }
+    .summary-item .label {
+      color: #666;
+      font-size: 14px;
+    }
+    .section {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      margin: 20px 0;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .section h2 {
+      margin-top: 0;
+      color: #333;
+    }
+    .ticker-list {
+      margin-top: 15px;
+    }
+    .ticker-item {
+      padding: 12px;
+      margin: 8px 0;
+      border-radius: 6px;
+      border-left: 4px solid;
+    }
+    .ticker-item.valid {
+      background: #f1f8f4;
+      border-left-color: #4CAF50;
+    }
+    .ticker-item.invalid {
+      background: #fef5f5;
+      border-left-color: #f44336;
+    }
+    .ticker-symbol {
+      font-weight: bold;
+      font-family: 'Courier New', monospace;
+      font-size: 16px;
+    }
+    .ticker-name {
+      color: #666;
+      margin-left: 10px;
+    }
+    .ticker-price {
+      float: right;
+      color: #4CAF50;
+      font-weight: bold;
+    }
+    .ticker-error {
+      color: #f44336;
+      font-size: 14px;
+      margin-top: 5px;
+    }
+    .ticker-suggestion {
+      color: #ff9800;
+      font-size: 13px;
+      margin-top: 3px;
+    }
+    .ticker-product {
+      color: #999;
+      font-size: 12px;
+      margin-top: 5px;
+    }
+    .error {
+      background: #ffebee;
+      color: #c62828;
+      padding: 20px;
+      border-radius: 8px;
+      border-left: 4px solid #f44336;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔍 Ticker Diagnosis Tool</h1>
+
+  <div id="loading" class="loading">
+    <div class="spinner">⚡</div>
+    <p>Running ticker diagnosis...</p>
+    <p style="font-size: 14px; color: #999;">This will check all tickers in your products against the EOD API</p>
+  </div>
+
+  <div id="results" style="display: none;"></div>
+
+  <script>
+    // Wait for DDP connection
+    setTimeout(() => {
+      console.log('Running ticker diagnosis...');
+
+      // Call the diagnosis method
+      fetch('http://localhost:3000/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          msg: 'method',
+          method: 'test.diagnoseTickers',
+          params: [],
+          id: '1'
+        })
+      })
+      .then(response => response.json())
+      .then(data => {
+        console.log('Diagnosis complete:', data);
+        displayResults(data.result);
+      })
+      .catch(error => {
+        console.error('Error:', error);
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('results').innerHTML = `
+          <div class="error">
+            <h2>❌ Error Running Diagnosis</h2>
+            <p>${error.message}</p>
+            <p style="margin-top: 15px;">Try opening the browser console (F12) and running:</p>
+            <pre style="background: #f5f5f5; padding: 10px; border-radius: 4px; margin-top: 10px;">Meteor.call('test.diagnoseTickers', (err, result) => console.log(result))</pre>
+          </div>
+        `;
+        document.getElementById('results').style.display = 'block';
+      });
+    }, 1000);
+
+    function displayResults(data) {
+      document.getElementById('loading').style.display = 'none';
+
+      const html = `
+        <div class="summary">
+          <h2>📊 Summary</h2>
+          <div class="summary-grid">
+            <div class="summary-item total">
+              <div class="number">${data.totalProducts}</div>
+              <div class="label">Products</div>
+            </div>
+            <div class="summary-item total">
+              <div class="number">${data.totalTickers}</div>
+              <div class="label">Unique Tickers</div>
+            </div>
+            <div class="summary-item valid">
+              <div class="number">${data.validCount}</div>
+              <div class="label">Valid Tickers</div>
+            </div>
+            <div class="summary-item invalid">
+              <div class="number">${data.invalidCount}</div>
+              <div class="label">Invalid Tickers</div>
+            </div>
+          </div>
+        </div>
+
+        ${data.validCount > 0 ? `
+        <div class="section">
+          <h2>✅ Valid Tickers (${data.validCount})</h2>
+          <div class="ticker-list">
+            ${data.valid.map(t => `
+              <div class="ticker-item valid">
+                <span class="ticker-symbol">${t.ticker}</span>
+                <span class="ticker-name">${t.name}</span>
+                <span class="ticker-price">$${t.price.toFixed(2)}</span>
+                ${t.original !== t.ticker ? `
+                  <div class="ticker-suggestion">Normalized from: ${t.original}</div>
+                ` : ''}
+                <div class="ticker-product">From: ${t.product}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+        ` : ''}
+
+        ${data.invalidCount > 0 ? `
+        <div class="section">
+          <h2>❌ Invalid Tickers (${data.invalidCount})</h2>
+          <p style="color: #666;">These tickers need attention. They may have incorrect exchange suffixes or be invalid symbols.</p>
+          <div class="ticker-list">
+            ${data.invalid.map(t => `
+              <div class="ticker-item invalid">
+                <span class="ticker-symbol">${t.ticker}</span>
+                <span class="ticker-name">${t.name}</span>
+                <div class="ticker-error">❌ ${t.reason}</div>
+                ${t.original !== t.ticker ? `
+                  <div class="ticker-suggestion">💡 Normalized from: ${t.original}</div>
+                ` : ''}
+                <div class="ticker-product">From: ${t.product}</div>
+              </div>
+            `).join('')}
+          </div>
+
+          <div style="margin-top: 20px; padding: 15px; background: #fff3cd; border-radius: 6px; border-left: 4px solid #ff9800;">
+            <h3 style="margin-top: 0;">💡 Next Steps</h3>
+            <p>To fix invalid tickers, run the migration script in your browser console:</p>
+            <pre style="background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; margin: 10px 0;">Meteor.call('migration.auditProductTickers', (err, report) => console.log(report))</pre>
+            <p style="margin-top: 10px;">Then review and apply fixes:</p>
+            <pre style="background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; margin: 10px 0;">Meteor.call('migration.fixProductTickers', (err, report) => console.log(report))</pre>
+          </div>
+        </div>
+        ` : `
+        <div class="section" style="background: #e8f5e9; border-left: 4px solid #4CAF50;">
+          <h2>🎉 All Tickers Valid!</h2>
+          <p>All ${data.validCount} tickers in your products are properly formatted and working with the EOD API.</p>
+        </div>
+        `}
+      `;
+
+      document.getElementById('results').innerHTML = html;
+      document.getElementById('results').style.display = 'block';
+    }
+  </script>
+</body>
+</html>

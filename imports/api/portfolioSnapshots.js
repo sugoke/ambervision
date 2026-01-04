@@ -96,33 +96,49 @@ export const PortfolioSnapshotHelpers = {
   /**
    * Calculate total capital invested from cash flow operations
    * Sums deposits (CREDIT) minus withdrawals (DEBIT) up to a specific date
+   *
+   * @param {Object} params
+   * @param {string} params.userId - User ID
+   * @param {string} params.portfolioCode - Portfolio code
+   * @param {Date} params.upToDate - Calculate up to this date
+   * @param {Array} [params.transferOpsCache] - Optional pre-fetched transfer operations to avoid repeated DB queries
    */
-  async calculateTotalCapitalInvested({ userId, portfolioCode, upToDate }) {
-    console.log(`[CAPITAL_INVESTED] Calculating for userId: ${userId}, portfolio: ${portfolioCode}, upTo: ${upToDate}`);
-
+  async calculateTotalCapitalInvested({ userId, portfolioCode, upToDate, transferOpsCache }) {
     try {
-      // Query for TRANSFER operations (deposits/withdrawals)
-      const query = {
-        userId,
-        operationType: 'TRANSFER',
-        operationCategory: 'CASH'
-      };
+      let operations;
 
-      // Filter by portfolio if specified
-      if (portfolioCode) {
-        query.portfolioCode = portfolioCode;
+      if (transferOpsCache) {
+        // Use pre-fetched cache - filter by userId, portfolioCode, and date
+        operations = transferOpsCache.filter(op => {
+          if (op.userId !== userId) return false;
+          if (portfolioCode && op.portfolioCode !== portfolioCode) return false;
+          if (upToDate && op.operationDate > upToDate) return false;
+          return true;
+        }).sort((a, b) => a.operationDate - b.operationDate);
+      } else {
+        // No cache - query database (legacy path)
+        console.log(`[CAPITAL_INVESTED] Calculating for userId: ${userId}, portfolio: ${portfolioCode}, upTo: ${upToDate}`);
+
+        const query = {
+          userId,
+          operationType: 'TRANSFER',
+          operationCategory: 'CASH'
+        };
+
+        if (portfolioCode) {
+          query.portfolioCode = portfolioCode;
+        }
+
+        if (upToDate) {
+          query.operationDate = { $lte: upToDate };
+        }
+
+        operations = await PMSOperationsCollection.find(query, {
+          sort: { operationDate: 1 }
+        }).fetchAsync();
+
+        console.log(`[CAPITAL_INVESTED] Found ${operations.length} transfer operations`);
       }
-
-      // Filter by date if specified
-      if (upToDate) {
-        query.operationDate = { $lte: upToDate };
-      }
-
-      const operations = await PMSOperationsCollection.find(query, {
-        sort: { operationDate: 1 }
-      }).fetchAsync();
-
-      console.log(`[CAPITAL_INVESTED] Found ${operations.length} transfer operations`);
 
       // Calculate cumulative capital invested
       let totalCapitalInvested = 0;
@@ -135,16 +151,15 @@ export const PortfolioSnapshotHelpers = {
         // DEBIT = money OUT (withdrawal) → subtract from capital invested
         if (debitCredit === 'CREDIT') {
           totalCapitalInvested += amount;
-          console.log(`[CAPITAL_INVESTED] + ${amount} (CREDIT) on ${op.operationDate} → Total: ${totalCapitalInvested}`);
         } else if (debitCredit === 'DEBIT') {
           totalCapitalInvested -= amount;
-          console.log(`[CAPITAL_INVESTED] - ${amount} (DEBIT) on ${op.operationDate} → Total: ${totalCapitalInvested}`);
-        } else {
-          console.log(`[CAPITAL_INVESTED] Unknown debit/credit type: ${debitCredit}, skipping`);
         }
       }
 
-      console.log(`[CAPITAL_INVESTED] Final total capital invested: ${totalCapitalInvested}`);
+      // Only log when there are actual operations (transfers are rare)
+      if (operations.length > 0) {
+        console.log(`[CAPITAL_INVESTED] ${portfolioCode}: ${operations.length} transfers → total: ${totalCapitalInvested}`);
+      }
 
       return totalCapitalInvested;
     } catch (error) {
@@ -156,6 +171,8 @@ export const PortfolioSnapshotHelpers = {
 
   /**
    * Create a portfolio snapshot from current holdings
+   * @param {Object} params
+   * @param {Array} [params.transferOpsCache] - Optional pre-fetched transfer operations to avoid repeated DB queries
    */
   async createSnapshot({
     userId,
@@ -167,7 +184,8 @@ export const PortfolioSnapshotHelpers = {
     snapshotDate,
     fileDate,
     sourceFile,
-    holdings = []  // Array of position objects
+    holdings = [],  // Array of position objects
+    transferOpsCache = null  // Pre-fetched transfer operations for capital invested calculation
   }) {
     // Separate cash positions from investment holdings
     const cashHoldings = holdings.filter(h => {
@@ -351,7 +369,8 @@ export const PortfolioSnapshotHelpers = {
     const totalCapitalInvested = await this.calculateTotalCapitalInvested({
       userId,
       portfolioCode,
-      upToDate: snapshotDate
+      upToDate: snapshotDate,
+      transferOpsCache  // Pass through pre-fetched operations if available
     });
 
     // Create snapshot object

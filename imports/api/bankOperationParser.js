@@ -29,25 +29,22 @@ export const BankOperationParser = {
         return { error: `Directory not found: ${directoryPath}` };
       }
 
-      // Get all operation files (DAILY_OPE pattern)
+      // Get all CSV files and filter for operation files using early-exit pattern matching
       const files = fs.readdirSync(directoryPath);
-      console.log(`[BANK_OPERATIONS] All files in directory (${files.length}):`, files);
 
       const operationFiles = files.filter(f => {
-        // Julius Baer pattern: DAILY_OPE
-        const isJuliusBaer = f.includes('DAILY_OPE');
-        // Andbank pattern: EX00YYYYMMDD_MVT_MNC.csv
-        const isAndbank = AndbankOperationParser.matchesPattern(f);
-        // CFM pattern: YYYYMMDD-L#######-LU-W#-mtit.csv
-        const isCFM = CFMOperationParser.matchesPattern(f);
-        // CMB Monaco pattern: TAM_mba_eam_evt_list_bu_mc_YYYYMMDD.csv
-        const isCMBMonaco = CMBMonacoParser.matchesOperationsPattern(f);
-        const hasExtension = f.toLowerCase().endsWith('.csv');
-        console.log(`[BANK_OPERATIONS] File: ${f}, isJuliusBaer: ${isJuliusBaer}, isAndbank: ${isAndbank}, isCFM: ${isCFM}, isCMBMonaco: ${isCMBMonaco}, hasExtension: ${hasExtension}`);
-        return (isJuliusBaer || isAndbank || isCFM || isCMBMonaco) && hasExtension;
+        if (!f.toLowerCase().endsWith('.csv')) return false;
+
+        // Early-exit pattern matching - check most specific patterns first
+        if (CMBMonacoParser.matchesOperationsPattern(f)) return true;  // TAM_mba_eam_evt_list_bu_mc_YYYYMMDD.csv
+        if (AndbankOperationParser.matchesPattern(f)) return true;      // EX00YYYYMMDD_MVT_MNC.csv
+        if (CFMOperationParser.matchesPattern(f)) return true;          // YYYYMMDD-L#######-LU-W#-mtit.csv
+        if (f.includes('DAILY_OPE')) return true;                       // Julius Baer: DAILY_OPE
+
+        return false;
       });
 
-      console.log(`[BANK_OPERATIONS] Filtered operation files (${operationFiles.length}):`, operationFiles);
+      console.log(`[BANK_OPERATIONS] Found ${operationFiles.length} operation files in ${path.basename(directoryPath)}`);
 
       if (operationFiles.length === 0) {
         console.warn(`[BANK_OPERATIONS] No operation files found in directory: ${directoryPath}`);

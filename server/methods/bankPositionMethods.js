@@ -357,15 +357,11 @@ Meteor.methods({
       const portfolioUserMap = await buildPortfolioUserMap(connection.bankId);
       console.log(`[BANK_POSITIONS] Built portfolio map with ${portfolioUserMap.size} accounts for bankId=${connection.bankId}`);
 
-      // PRE-PROCESSING CLEANUP: Mark ALL existing isLatest=true for this bank as isLatest=false
-      // This prevents duplicate isLatest=true records if the same file is processed multiple times
-      // or if there's concurrent processing. The upsertHolding will create fresh isLatest=true records.
-      const preCleanupResult = await PMSHoldingsCollection.updateAsync(
-        { bankId: connection.bankId, isLatest: true },
-        { $set: { isLatest: false, replacedAt: new Date() } },
-        { multi: true }
-      );
-      console.log(`[BANK_POSITIONS] Pre-cleanup: Marked ${preCleanupResult} existing records as isLatest=false for bankId=${connection.bankId}`);
+      // NOTE: Pre-processing cleanup was REMOVED to prevent isLatest flag corruption.
+      // The upsertHolding() function in pmsHoldings.js handles per-uniqueKey versioning correctly:
+      // - It marks old versions of THAT specific uniqueKey as isLatest=false
+      // - It inserts new version with isLatest=true
+      // This is atomic per-holding and cannot leave orphaned records if processing is interrupted.
 
       // In-memory cache for enrichment during this file's processing
       // Avoids redundant lookups when same ISIN appears multiple times in file
@@ -1035,6 +1031,34 @@ Meteor.methods({
         `${newRecords} new, ${updatedRecords} updated, ${unchangedRecords} unchanged, ${skippedRecords} skipped` +
         (soldPositionsCount > 0 ? `, ${soldPositionsCount} sold` : '')
       );
+
+      // POST-PROCESSING VALIDATION: Verify isLatest flags are correct for processed uniqueKeys
+      // This is a safety net to detect if upsertHolding had issues
+      if (processedUniqueKeys.size > 0) {
+        try {
+          const orphanedKeys = [];
+          for (const uniqueKey of processedUniqueKeys) {
+            const latestCount = await PMSHoldingsCollection.find({
+              uniqueKey,
+              isLatest: true
+            }).countAsync();
+
+            if (latestCount === 0) {
+              orphanedKeys.push(uniqueKey);
+            }
+          }
+
+          if (orphanedKeys.length > 0) {
+            console.error(`[BANK_POSITIONS] WARNING: ${orphanedKeys.length} uniqueKeys have NO isLatest=true record! This should not happen.`);
+            console.error(`[BANK_POSITIONS] Orphaned keys (first 5): ${orphanedKeys.slice(0, 5).join(', ')}`);
+            // Log for investigation but don't fail
+          } else {
+            console.log(`[BANK_POSITIONS] Validation passed: All ${processedUniqueKeys.size} processed uniqueKeys have isLatest=true records`);
+          }
+        } catch (validationError) {
+          console.error(`[BANK_POSITIONS] Error during isLatest validation: ${validationError.message}`);
+        }
+      }
 
       // AUTO-LINK holdings to products and allocations
       // Only run if there are new or updated holdings (avoids unnecessary work)

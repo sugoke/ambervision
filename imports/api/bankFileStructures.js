@@ -172,6 +172,12 @@ export const BankFileStructureHelpers = {
       return null;
     }
 
+    // Safety check for null dates
+    if (!currentFileDate || !previousRecord.fileDate) {
+      console.warn('[FILE_STRUCTURE] Missing date for structure comparison');
+      return null;
+    }
+
     const previousDateStr = previousRecord.fileDate.toISOString().split('T')[0];
     const currentDateStr = currentFileDate.toISOString().split('T')[0];
 

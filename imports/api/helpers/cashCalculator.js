@@ -46,15 +46,26 @@ export const extractBankFxRates = (holdings) => {
  */
 export const mergeRatesMaps = (eodRatesMap, bankRatesMap) => {
   const merged = { ...eodRatesMap };
+  let bankRatesUsed = 0;
+  const newCurrencies = [];
 
   for (const [currency, rate] of Object.entries(bankRatesMap)) {
     if (rate && rate !== 0) {
       if (!merged[currency]) {
-        console.log(`[CashCalculator] Using bank-provided rate for ${currency}: ${rate.toFixed(6)}`);
+        newCurrencies.push(currency);
       }
       // Bank rate takes priority
       merged[currency] = rate;
+      bankRatesUsed++;
     }
+  }
+
+  // Log summary instead of individual rates
+  if (bankRatesUsed > 0) {
+    const newCurrenciesInfo = newCurrencies.length > 0
+      ? ` (${newCurrencies.length} new: ${newCurrencies.slice(0, 5).join(', ')}${newCurrencies.length > 5 ? '...' : ''})`
+      : '';
+    console.log(`[CashCalculator] Merged ${bankRatesUsed} bank-provided FX rates${newCurrenciesInfo}`);
   }
 
   return merged;
@@ -191,12 +202,15 @@ export const calculateCashForHoldings = (holdings, ratesMap, cashEquivalentISINs
       const currency = holding.portfolioCurrency || holding.currency || 'EUR';
       const eurValue = toEUR(value, currency, ratesMap);
 
+      // Get the value in the position's original/native currency for display purposes
+      const originalCurrencyValue = holding.marketValueOriginalCurrency ?? holding.marketValue ?? holding.quantity ?? 0;
+
       const breakdownItem = {
         name: holding.securityName || `Cash ${holding.currency}`,
         type: holding.securityType,
         assetClass: holding.assetClass,
         currency: holding.currency,
-        originalValue: value,
+        originalValue: originalCurrencyValue,  // Value in native currency (not portfolio currency)
         eurValue,
         isPureCash,
         isCashEquivalent
@@ -207,11 +221,14 @@ export const calculateCashForHoldings = (holdings, ratesMap, cashEquivalentISINs
         pureCashBreakdown.push(breakdownItem);
 
         // Aggregate by currency for pure cash
+        // Use holding.currency (native currency) as the key
         const curr = holding.currency || 'EUR';
         if (!cashByCurrency[curr]) {
           cashByCurrency[curr] = { currency: curr, totalValue: 0, eurValue: 0, holdings: [] };
         }
-        cashByCurrency[curr].totalValue += value;
+        // Use originalCurrencyValue (defined above) for the per-currency total
+        // This ensures the notification shows the correct value in the native currency
+        cashByCurrency[curr].totalValue += originalCurrencyValue;
         cashByCurrency[curr].eurValue += eurValue;
         cashByCurrency[curr].holdings.push(holding);
       }

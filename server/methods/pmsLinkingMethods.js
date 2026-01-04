@@ -67,16 +67,29 @@ Meteor.methods({
         details: []
       };
 
+      // Build ISIN → product map with single batch query (avoids N+1 pattern)
+      const uniqueIsins = [...new Set(unlinkedHoldings.map(h => h.isin).filter(Boolean))];
+      const matchingProducts = await ProductsCollection.find({
+        isin: { $in: uniqueIsins }
+      }, {
+        sort: { createdAt: -1 } // Most recent first
+      }).fetchAsync();
+
+      const productsByIsin = new Map();
+      for (const product of matchingProducts) {
+        // Only store the first (most recent) product for each ISIN
+        if (!productsByIsin.has(product.isin)) {
+          productsByIsin.set(product.isin, product);
+        }
+      }
+      console.log(`[PMS AUTO-LINK] Built product map: ${productsByIsin.size} products for ${uniqueIsins.length} unique ISINs`);
+
       for (const holding of unlinkedHoldings) {
         try {
-          // Find products with matching ISIN
-          const matchingProducts = await ProductsCollection.find({
-            isin: holding.isin
-          }, {
-            sort: { createdAt: -1 } // Most recent first
-          }).fetchAsync();
+          // Lookup product from pre-built map (no DB query)
+          const product = productsByIsin.get(holding.isin);
 
-          if (matchingProducts.length === 0) {
+          if (!product) {
             linkResults.noMatch++;
             linkResults.details.push({
               holdingId: holding._id,
@@ -86,9 +99,6 @@ Meteor.methods({
             });
             continue;
           }
-
-          // Use most recent product if multiple matches
-          const product = matchingProducts[0];
 
           // Find allocation for this product + user
           const allocation = await AllocationsCollection.findOneAsync({

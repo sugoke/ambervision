@@ -19,6 +19,7 @@ module.exports = {
       MONGO_URL: 'mongodb+srv://sugoke:sugoke14@cluster0.ixanxcb.mongodb.net/amberlake?retryWrites=true&w=majority&appName=Cluster0',
       BANKFILES_PATH: '/data/bankfiles',
       TERMSHEETS_PATH: '/data/termsheets',
+      FICHIER_CENTRAL_PATH: '/data/fichier_central',
       // Puppeteer configuration - use system Chromium
       PUPPETEER_EXECUTABLE_PATH: '/usr/bin/chromium',
       PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: 'true'
@@ -36,10 +37,11 @@ module.exports = {
       buildInstructions: [
         'RUN apt-get update && apt-get install -y --no-install-recommends chromium fonts-liberation fonts-noto-color-emoji libappindicator3-1 libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 libdrm2 libgbm1 libgtk-3-0 libnspr4 libnss3 libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 xdg-utils && rm -rf /var/lib/apt/lists/*'
       ],
-      // Mount Hetzner persistent volumes for bank files and termsheets
+      // Mount Hetzner persistent volumes for bank files, termsheets, and client documents
       args: [
         '-v', '/mnt/HC_Volume_103962382/bankfiles:/data/bankfiles',
-        '-v', '/mnt/HC_Volume_103962382/termsheets:/data/termsheets'
+        '-v', '/mnt/HC_Volume_103962382/termsheets:/data/termsheets',
+        '-v', '/mnt/HC_Volume_103962382/fichier_central:/data/fichier_central'
       ],
       prepareBundle: true,
       useBuildKit: true

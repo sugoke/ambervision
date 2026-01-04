@@ -8,7 +8,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(0);
-  const [searchResults, setSearchResults] = useState({ clients: [], bankAccounts: [] });
+  const [searchResults, setSearchResults] = useState({ clients: [] });
   const [isSearching, setIsSearching] = useState(false);
   const dropdownRef = useRef(null);
   const inputRef = useRef(null);
@@ -27,7 +27,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
 
     // Don't search if term is too short or if a filter is already selected
     if (!searchTerm || searchTerm.trim().length < 2 || viewAsFilter) {
-      setSearchResults({ clients: [], bankAccounts: [] });
+      setSearchResults({ clients: [] });
       return;
     }
 
@@ -41,7 +41,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
         setSearchResults(results);
       } catch (error) {
         console.error('ViewAs search error:', error);
-        setSearchResults({ clients: [], bankAccounts: [] });
+        setSearchResults({ clients: [] });
       } finally {
         setIsSearching(false);
       }
@@ -54,11 +54,42 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
     };
   }, [searchTerm, viewAsFilter]);
 
-  // Combine results
-  const allResults = [
-    ...searchResults.clients.map(c => ({ type: 'client', data: c })),
-    ...searchResults.bankAccounts.map(a => ({ type: 'account', data: a }))
-  ];
+  // Build results: clients from direct search + clients from account number search
+  const allResults = React.useMemo(() => {
+    const results = [];
+    const addedClientIds = new Set();
+
+    // Add clients from direct name/email search
+    (searchResults.clients || []).forEach(c => {
+      if (!addedClientIds.has(c._id)) {
+        results.push({ type: 'client', data: c, matchedBy: 'name' });
+        addedClientIds.add(c._id);
+      }
+    });
+
+    // Add clients from account number search (if not already added)
+    (searchResults.bankAccounts || []).forEach(acc => {
+      if (acc.userId && !addedClientIds.has(acc.userId)) {
+        // Create a client-like object from the account's user info
+        results.push({
+          type: 'client',
+          data: {
+            _id: acc.userId,
+            email: acc.userEmail,
+            profile: {
+              firstName: acc.userName?.split(' ')[0] || '',
+              lastName: acc.userName?.split(' ').slice(1).join(' ') || ''
+            }
+          },
+          matchedBy: 'account',
+          matchedAccount: acc.accountNumber
+        });
+        addedClientIds.add(acc.userId);
+      }
+    });
+
+    return results;
+  }, [searchResults]);
 
   // Handle click outside
   useEffect(() => {
@@ -105,11 +136,9 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
 
   const handleSelect = (result) => {
     const filter = {
-      type: result.type,
+      type: 'client',
       id: result.data._id || result.data.userId,
-      label: result.type === 'client'
-        ? `${result.data.profile?.firstName || ''} ${result.data.profile?.lastName || ''}`.trim()
-        : `${result.data.accountNumber} - ${result.data.userName}`,
+      label: `${result.data.profile?.firstName || ''} ${result.data.profile?.lastName || ''}`.trim(),
       data: result.data
     };
     setFilter(filter);
@@ -135,11 +164,9 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
       removeFavorite(id);
     } else {
       const favoriteItem = {
-        type: result.type,
+        type: 'client',
         id: id,
-        label: result.type === 'client'
-          ? `${result.data.profile?.firstName || ''} ${result.data.profile?.lastName || ''}`.trim()
-          : `${result.data.accountNumber} - ${result.data.userName}`,
+        label: `${result.data.profile?.firstName || ''} ${result.data.profile?.lastName || ''}`.trim(),
         data: result.data
       };
       addFavorite(favoriteItem);
@@ -160,8 +187,11 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
     }
   };
 
+  // Filter favorites to only show clients (in case old account favorites exist)
+  const clientFavorites = favorites.filter(f => f.type === 'client');
+
   // Show favorites when focused with no search term and no active filter
-  const showFavorites = isOpen && !viewAsFilter && !searchTerm && favorites.length > 0;
+  const showFavorites = isOpen && !viewAsFilter && !searchTerm && clientFavorites.length > 0;
 
   const displayValue = viewAsFilter
     ? viewAsFilter.label
@@ -197,7 +227,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
               // Open dropdown on focus - for search results or favorites
               if (!viewAsFilter) setIsOpen(true);
             }}
-            placeholder={viewAsFilter ? '' : 'Search clients or accounts...'}
+            placeholder={viewAsFilter ? '' : 'Search clients...'}
             disabled={false}
             style={{
               width: '100%',
@@ -296,9 +326,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                     marginBottom: '0.25rem'
                   }}>
                     {/* Icon */}
-                    <span style={{ fontSize: '1rem' }}>
-                      {result.type === 'client' ? '👤' : '🏦'}
-                    </span>
+                    <span style={{ fontSize: '1rem' }}>👤</span>
 
                     {/* Main text */}
                     <span style={{
@@ -307,10 +335,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                       color: 'var(--text-primary)',
                       flex: 1
                     }}>
-                      {result.type === 'client'
-                        ? `${result.data.profile?.firstName || ''} ${result.data.profile?.lastName || ''}`.trim()
-                        : result.data.accountNumber
-                      }
+                      {`${result.data.profile?.firstName || ''} ${result.data.profile?.lastName || ''}`.trim()}
                     </span>
 
                     {/* Badge */}
@@ -318,12 +343,12 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                       fontSize: '0.65rem',
                       padding: '0.15rem 0.4rem',
                       borderRadius: '4px',
-                      background: result.type === 'client' ? '#dbeafe' : '#fef3c7',
-                      color: result.type === 'client' ? '#1e40af' : '#92400e',
+                      background: '#dbeafe',
+                      color: '#1e40af',
                       fontWeight: '600',
                       textTransform: 'uppercase'
                     }}>
-                      {result.type === 'client' ? 'Client' : 'Account'}
+                      Client
                     </span>
 
                     {/* Favorite star button */}
@@ -344,16 +369,20 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                     </button>
                   </div>
 
-                  {/* Secondary text */}
+                  {/* Secondary text - Email or Account match */}
                   <div style={{
                     fontSize: '0.75rem',
                     color: 'var(--text-muted)',
                     paddingLeft: '1.5rem'
                   }}>
-                    {result.type === 'client'
-                      ? result.data.email
-                      : `${result.data.userName} • ${result.data.bankName}`
-                    }
+                    {result.matchedBy === 'account' ? (
+                      <span>
+                        <span style={{ color: '#10b981', fontWeight: '500' }}>Account: {result.matchedAccount}</span>
+                        {result.data.email && <span> • {result.data.email}</span>}
+                      </span>
+                    ) : (
+                      result.data.email
+                    )}
                   </div>
                 </div>
               ))}
@@ -397,7 +426,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
               </div>
 
               {/* Favorite items */}
-              {favorites.map((favorite, index) => (
+              {clientFavorites.map((favorite, index) => (
                 <div
                   key={`fav-${favorite.id}`}
                   onClick={() => handleSelectFavorite(favorite)}
@@ -405,7 +434,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                     padding: '0.75rem 1rem',
                     cursor: 'pointer',
                     background: 'transparent',
-                    borderBottom: index < favorites.length - 1 ? '1px solid var(--border-color)' : 'none',
+                    borderBottom: index < clientFavorites.length - 1 ? '1px solid var(--border-color)' : 'none',
                     transition: 'background 0.15s'
                   }}
                   onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(59, 130, 246, 0.1)'}
@@ -417,9 +446,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                     gap: '0.5rem'
                   }}>
                     {/* Icon */}
-                    <span style={{ fontSize: '1rem' }}>
-                      {favorite.type === 'client' ? '👤' : '🏦'}
-                    </span>
+                    <span style={{ fontSize: '1rem' }}>👤</span>
 
                     {/* Label */}
                     <span style={{
@@ -436,12 +463,12 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                       fontSize: '0.65rem',
                       padding: '0.15rem 0.4rem',
                       borderRadius: '4px',
-                      background: favorite.type === 'client' ? '#dbeafe' : '#fef3c7',
-                      color: favorite.type === 'client' ? '#1e40af' : '#92400e',
+                      background: '#dbeafe',
+                      color: '#1e40af',
                       fontWeight: '600',
                       textTransform: 'uppercase'
                     }}>
-                      {favorite.type === 'client' ? 'Client' : 'Account'}
+                      Client
                     </span>
 
                     {/* Remove from favorites */}
@@ -507,7 +534,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
               fontSize: '0.875rem',
               zIndex: 1000
             }}>
-              No clients or accounts found
+              No clients found
             </div>
           )}
         </div>

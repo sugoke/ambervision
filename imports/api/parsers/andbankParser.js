@@ -351,16 +351,17 @@ export const AndbankParser = {
 
     // Determine security type for standardized output
     // Uses SECURITY_TYPES constants from instrumentTypes.js
-    let securityType;
+    // NOTE: Cash, deposits, and forex don't have ISINs, so we assign type directly
+    // For positions with ISINs, securityType is resolved by SecurityResolver from SecuritiesMetadata
+    let securityType = null;
     if (isCash) {
       securityType = SECURITY_TYPES.CASH;
     } else if (isDeposit) {
       securityType = SECURITY_TYPES.TERM_DEPOSIT;  // Standardized from DEPOSIT
     } else if (isForex) {
       securityType = SECURITY_TYPES.FX_FORWARD;    // Standardized from FOREX
-    } else {
-      securityType = this.mapSecurityType(securityTypeCode);
     }
+    // For positions with ISINs, leave securityType null - will be populated by SecurityResolver
 
     // Determine price type based on quotation unit
     const isPercentage = this.isPercentagePricing(quotationUnit);

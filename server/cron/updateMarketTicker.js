@@ -35,6 +35,15 @@ const BASE_SECURITIES = [
  */
 async function hasRecentActivity(minutes = 30) {
   try {
+    // First check: Are there ANY active Meteor WebSocket connections?
+    // WebSocket connections close when browser closes - accurate check
+    const activeConnections = Meteor.server.sessions?.size || 0;
+    if (activeConnections === 0) {
+      console.log('[MarketTicker] No active WebSocket connections - skipping');
+      return false;
+    }
+
+    // Second check: Recent session activity (existing logic for extra safety)
     const cutoffTime = new Date(Date.now() - minutes * 60 * 1000);
     const count = await SessionsCollection.find({
       lastUsed: { $gt: cutoffTime },

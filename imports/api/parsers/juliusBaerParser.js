@@ -77,10 +77,136 @@ export const JuliusBaerParser = {
   /**
    * Map security type from Julius Baer to standard type
    * Uses SECURITY_TYPES constants from instrumentTypes.js
+   *
+   * Julius Baer uses multiple fields for classification:
+   * - INST_NAT_E: Basic instrument nature (1=Stock, 2=Fixed Income, 4=Cash, 13=Fund, 19=Convertible Bond)
+   * - INSTR_FICAT_GRP_CODE: Financial category group code (most accurate for structured products)
+   * - INSTR_SUBTYPE_NAME: Subtype description
+   *
+   * CRITICAL: INST_NAT_E alone is NOT reliable for structured products:
+   * - Code 1 (Stock) often contains Capital Protected Certificates
+   * - Code 19 (Convertible Bond) often contains Express Certificates, Autocallables
+   * - Code 2 (Fixed Income) often contains Reverse Convertibles
    */
-  mapSecurityType(jbType) {
-    const typeMap = {
+  mapSecurityType(row) {
+    // If called with just a string (legacy), use basic mapping
+    if (typeof row === 'string') {
+      return this._mapBasicSecurityType(row);
+    }
+
+    const instNatE = row.INST_NAT_E;
+    const ficatGrpCode = row.INSTR_FICAT_GRP_CODE;
+    const ficatGrpName = (row.INSTR_FICAT_GRP_NAME || '').toLowerCase();
+    const subtypeName = (row.INSTR_SUBTYPE_NAME || '').toLowerCase();
+    const instrName = (row.INSTR_NAME || '').toLowerCase();
+
+    // PRIMARY: Use INSTR_FICAT_GRP_CODE for most accurate classification
+    // Structured Products codes (from Julius Baer documentation)
+    const structuredProductCodes = [
+      '25', // Strukturierte Produkte mit Aktie als Basiswert / Partizipation
+      '76', // Strukturierte Produkte mit Aktien als Basiswert / Zinsoptimierung (Reverse Convertibles)
+      '77', // Strukturierte Produkte mit Aktien als Basiswert / Kapitalschutz (Capital Protected)
+      '79', // Strukturierte Produkte mit Obligation als Basiswert / Zinsoptimierung
+      '95', // Strukturierte Produkte mit Edelmetall als Basiswert / Kapitalschutz
+      '108' // Fonds-basierte Strukturierte Produkte / Partizipation
+    ];
+
+    if (structuredProductCodes.includes(ficatGrpCode)) {
+      return SECURITY_TYPES.STRUCTURED_PRODUCT;
+    }
+
+    // Private Equity codes
+    if (ficatGrpCode === '31' || ficatGrpName.includes('private equity')) {
+      return SECURITY_TYPES.PRIVATE_EQUITY;
+    }
+
+    // Non-traditional/Alternative funds
+    if (ficatGrpCode === '29') {
+      // Could be private equity or hedge funds - check name
+      if (instrName.includes('private') || instrName.includes('pe ') || instrName.includes('buyout')) {
+        return SECURITY_TYPES.PRIVATE_EQUITY;
+      }
+      return SECURITY_TYPES.FUND;
+    }
+
+    // Equity funds and ETFs
+    if (ficatGrpCode === '24' || ficatGrpCode === '41') {
+      // Check if it's actually an ETF
+      if (instrName.includes('etf') || instrName.includes('ucits etf') || subtypeName.includes('etf')) {
+        return SECURITY_TYPES.ETF;
+      }
+      return SECURITY_TYPES.FUND;
+    }
+
+    // Precious metal funds
+    if (ficatGrpCode === '39') {
+      if (instrName.includes('gold') || instrName.includes('silver') || instrName.includes('precious')) {
+        return SECURITY_TYPES.COMMODITY;
+      }
+      return SECURITY_TYPES.FUND;
+    }
+
+    // Cash
+    if (ficatGrpCode === '71' || ficatGrpCode === '2') {
+      return SECURITY_TYPES.CASH;
+    }
+
+    // Bonds
+    if (ficatGrpCode === '12' || ficatGrpCode === '15') {
+      return SECURITY_TYPES.BOND;
+    }
+
+    // SECONDARY: Use INSTR_SUBTYPE_NAME for detection
+    if (subtypeName.includes('cert') || subtypeName.includes('index cert')) {
+      return SECURITY_TYPES.STRUCTURED_PRODUCT;
+    }
+
+    // TERTIARY: Use INST_NAT_E with smart fallback
+    const instNatEMap = {
+      '1': SECURITY_TYPES.EQUITY,     // Stock (but check for certs above)
+      '2': SECURITY_TYPES.BOND,       // Fixed Income (but check for structured above)
+      '3': SECURITY_TYPES.FUND,       // Fund
+      '4': SECURITY_TYPES.CASH,       // Cash Account
+      '5': SECURITY_TYPES.OPTION,     // Option
+      '6': SECURITY_TYPES.FUTURE,     // Future
+      '7': SECURITY_TYPES.WARRANT,    // Warrant
+      '13': SECURITY_TYPES.FUND,      // Fund Share
+      '19': SECURITY_TYPES.STRUCTURED_PRODUCT, // Convertible Bond → Usually structured product in JB
       // Text-based types
+      'Stock': SECURITY_TYPES.EQUITY,
+      'Bond': SECURITY_TYPES.BOND,
+      'Fund': SECURITY_TYPES.FUND,
+      'ETF': SECURITY_TYPES.ETF,
+      'Cash': SECURITY_TYPES.CASH,
+      'Cash Account': SECURITY_TYPES.CASH,
+      'Fund Share': SECURITY_TYPES.FUND,
+      'Convertible Bond': SECURITY_TYPES.STRUCTURED_PRODUCT,
+      'Fixed Income': SECURITY_TYPES.BOND,
+      'Option': SECURITY_TYPES.OPTION,
+      'Future': SECURITY_TYPES.FUTURE,
+      'Warrant': SECURITY_TYPES.WARRANT
+    };
+
+    const mappedType = instNatEMap[instNatE];
+    if (mappedType) {
+      return mappedType;
+    }
+
+    // QUATERNARY: Name-based detection for structured products
+    const structuredKeywords = ['express', 'autocall', 'phoenix', 'reverse', 'barrier', 'cap.prot', 'bar.cap'];
+    if (structuredKeywords.some(kw => instrName.includes(kw))) {
+      return SECURITY_TYPES.STRUCTURED_PRODUCT;
+    }
+
+    console.warn(`[JB_PARSER] Unknown security type - INST_NAT_E: ${instNatE}, FICAT: ${ficatGrpCode}, Name: ${row.INSTR_NAME}`);
+    return SECURITY_TYPES.UNKNOWN;
+  },
+
+  /**
+   * Legacy basic security type mapping (for backward compatibility)
+   */
+  _mapBasicSecurityType(jbType) {
+    const typeMap = {
       'Stock': SECURITY_TYPES.EQUITY,
       'Bond': SECURITY_TYPES.BOND,
       'Fund': SECURITY_TYPES.FUND,
@@ -89,7 +215,6 @@ export const JuliusBaerParser = {
       'Option': SECURITY_TYPES.OPTION,
       'Future': SECURITY_TYPES.FUTURE,
       'Warrant': SECURITY_TYPES.WARRANT,
-      // Numeric codes used by Julius Baer
       '1': SECURITY_TYPES.EQUITY,
       '2': SECURITY_TYPES.BOND,
       '3': SECURITY_TYPES.FUND,
@@ -100,6 +225,21 @@ export const JuliusBaerParser = {
     };
 
     return typeMap[jbType] || jbType || SECURITY_TYPES.UNKNOWN;
+  },
+
+  /**
+   * Check if a row represents a cash position
+   * Cash positions don't have valid ISINs and must be identified by the parser
+   * (they can't be classified by SecurityResolver which requires an ISIN)
+   */
+  isCashPosition(row) {
+    // FICAT Group Code 71 = Cash
+    if (row.INSTR_FICAT_GRP_CODE === '71') return true;
+    // INST_NAT_E 4 = Cash Account (numeric or text)
+    if (row.INST_NAT_E === '4' || row.INST_NAT_E === 'Cash Account') return true;
+    // FICAT Group Code 2 can also be cash in some cases
+    if (row.INSTR_FICAT_GRP_CODE === '2' && !row.INSTR_ISIN_CODE) return true;
+    return false;
   },
 
   /**
@@ -286,7 +426,12 @@ export const JuliusBaerParser = {
       isin: row.INSTR_ISIN_CODE || null,
       ticker: row.INSTR_SAT_CODE || null,
       securityName: row.INSTR_NAME || null,
-      securityType: this.mapSecurityType(row.INST_NAT_E),
+      // securityType: For positions WITH valid ISINs, set to null for SecurityResolver classification
+      // For cash positions (no ISIN), set directly since SecurityResolver can't classify them
+      securityType: this.isCashPosition(row) ? SECURITY_TYPES.CASH : null,
+      // Store raw bank codes for classification hints (used by SecurityResolver if needed)
+      securityTypeCode: row.INST_NAT_E || null, // Bank's raw code (1, 2, 13, 19, etc.)
+      securityTypeDesc: row.INSTR_SUBTYPE_NAME || null, // Bank's description
 
       // Position Data
       quantity: this.parseNumber(row.QUANTITY),
@@ -350,6 +495,12 @@ export const JuliusBaerParser = {
 
       // Bank-Specific Fields (store all additional data)
       bankSpecificData: {
+        // Raw bank security type codes (preserved for audit/debugging)
+        rawSecurityTypeCode: row.INST_NAT_E || null,
+        rawFicatGroupCode: row.INSTR_FICAT_GRP_CODE || null,
+        rawFicatGroupName: row.INSTR_FICAT_GRP_NAME || null,
+        rawSubtypeName: row.INSTR_SUBTYPE_NAME || null,
+
         instrumentCode: row.INSTR_CODE,
         instrumentSubtype: row.INSTR_SUBTYPE_NAME,
         instrumentDenomination: row.INSTR_DENOM,

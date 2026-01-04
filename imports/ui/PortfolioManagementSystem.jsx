@@ -411,8 +411,8 @@ const PortfolioManagementSystem = ({ user }) => {
   const [filterTxType, setFilterTxType] = useState('all');
   const [filterTxCategory, setFilterTxCategory] = useState('all');
 
-  // Account view filter
-  const [selectedAccountId, setSelectedAccountId] = useState('all'); // 'all' or specific account ID
+  // Account tab layer - Consolidated or specific account
+  const [activeAccountTab, setActiveAccountTab] = useState('consolidated');
 
   // Historical date selector - null means "latest"
   const [selectedDate, setSelectedDate] = useState(null);
@@ -695,48 +695,123 @@ const PortfolioManagementSystem = ({ user }) => {
   }, [viewAsFilter]);
 
   // Fetch user's bank accounts for account filter dropdown
+  // Filtered by selected client when viewAsFilter is set
   const { bankAccounts, isLoadingAccounts } = useTracker(() => {
     const sessionId = typeof window !== 'undefined' ? localStorage.getItem('sessionId') : null;
-    const accountsHandle = Meteor.subscribe('userBankAccounts', sessionId);
+    const accountsHandle = Meteor.subscribe('userBankAccounts', sessionId, viewAsFilter);
     const banksHandle = Meteor.subscribe('banks');
 
     if (!accountsHandle.ready() || !banksHandle.ready()) {
       return { bankAccounts: [], isLoadingAccounts: true };
     }
 
-    const accounts = BankAccountsCollection.find({ isActive: true }, { sort: { accountNumber: 1 } }).fetch();
+    // Build query - filter by selected client's userId if viewAsFilter is set
+    const query = { isActive: true };
+    if (viewAsFilter && viewAsFilter.type === 'client' && viewAsFilter.id) {
+      query.userId = viewAsFilter.id;
+    }
+
+    const accounts = BankAccountsCollection.find(query, { sort: { accountNumber: 1 } }).fetch();
     const banks = BanksCollection.find({ isActive: true }).fetch();
 
-    // Enrich accounts with bank country code
+    // Enrich accounts with bank info (name, country code)
     const enrichedAccounts = accounts.map(account => {
       const bank = banks.find(b => b._id === account.bankId);
       return {
         ...account,
-        bankCountryCode: bank?.countryCode || 'N/A'
+        bankCountryCode: bank?.countryCode || 'N/A',
+        bankName: bank?.name || bank?.shortName || 'Unknown Bank',
+        bankShortName: bank?.shortName || bank?.name || 'Unknown'
       };
     });
 
     return { bankAccounts: enrichedAccounts, isLoadingAccounts: false };
-  }, []);
+  }, [viewAsFilter]);
+
+  // Account description order (for tab sorting) and icons
+  const ACCOUNT_DESCRIPTION_CONFIG = {
+    'Investments': { icon: '📈', order: 1 },
+    'Spending': { icon: '💰', order: 2 },
+    'Credit line': { icon: '💳', order: 3 },
+    'Credit card': { icon: '💳', order: 4 }
+  };
+
+  // Build account tabs from BankAccounts
+  const accountTabs = useMemo(() => {
+    if (!bankAccounts.length) return [{ id: 'consolidated', label: 'Consolidated', icon: '📊' }];
+
+    // Sort by comment/description (Investments first, then Spending, Credit line, Credit card)
+    const sortedAccounts = [...bankAccounts].sort((a, b) => {
+      const orderA = ACCOUNT_DESCRIPTION_CONFIG[a.comment]?.order || 99;
+      const orderB = ACCOUNT_DESCRIPTION_CONFIG[b.comment]?.order || 99;
+      return orderA - orderB;
+    });
+
+    return [
+      { id: 'consolidated', label: 'Consolidated', caption: null, icon: '📊' },
+      ...sortedAccounts.map(acc => {
+        const descConfig = ACCOUNT_DESCRIPTION_CONFIG[acc.comment] || { icon: '📁', order: 99 };
+
+        return {
+          id: acc._id,
+          label: `${acc.bankShortName} - ${acc.accountNumber}`,
+          caption: acc.comment || null,
+          icon: descConfig.icon,
+          accountNumber: acc.accountNumber,
+          bankId: acc.bankId,
+          accountType: acc.accountType
+        };
+      })
+    ];
+  }, [bankAccounts]);
 
   const dummyTransactions = operations;
 
-  // Filter holdings and operations by selected account (if not 'all')
-  const filteredHoldings = selectedAccountId === 'all'
-    ? dummyPositions
-    : dummyPositions.filter(pos => {
-        const selectedAccount = bankAccounts.find(acc => acc._id === selectedAccountId);
-        if (!selectedAccount) return false;
-        return pos.portfolioCode === selectedAccount.accountNumber && pos.bankName === selectedAccount.bankId;
-      });
+  // Filter holdings by active account tab
+  // 'consolidated' shows pre-aggregated holdings with portfolioCode='CONSOLIDATED'
+  // Specific accounts filter by account number and bank
+  const filteredHoldings = useMemo(() => {
+    if (activeAccountTab === 'consolidated') {
+      // Try consolidated holdings first (pre-computed by CRON job)
+      const consolidatedHoldings = dummyPositions.filter(pos => pos.portfolioCode === 'CONSOLIDATED');
+      // Fallback: if no consolidated holdings exist yet, show all non-consolidated
+      if (consolidatedHoldings.length === 0) {
+        return dummyPositions.filter(pos => pos.portfolioCode !== 'CONSOLIDATED');
+      }
+      return consolidatedHoldings;
+    }
 
-  const filteredOperations = selectedAccountId === 'all'
-    ? dummyTransactions
-    : dummyTransactions.filter(op => {
-        const selectedAccount = bankAccounts.find(acc => acc._id === selectedAccountId);
-        if (!selectedAccount) return false;
-        return op.portfolioCode === selectedAccount.accountNumber && op.bankName === selectedAccount.bankId;
-      });
+    // Find the selected account tab details
+    const selectedTab = accountTabs.find(tab => tab.id === activeAccountTab);
+    if (!selectedTab || !selectedTab.accountNumber) {
+      // Fallback: show all positions if account not found
+      return dummyPositions.filter(pos => pos.portfolioCode !== 'CONSOLIDATED');
+    }
+
+    return dummyPositions.filter(pos =>
+      pos.portfolioCode === selectedTab.accountNumber &&
+      pos.bankId === selectedTab.bankId &&
+      pos.portfolioCode !== 'CONSOLIDATED'
+    );
+  }, [dummyPositions, activeAccountTab, accountTabs]);
+
+  // Filter operations by active account tab
+  const filteredOperations = useMemo(() => {
+    if (activeAccountTab === 'consolidated') {
+      // For consolidated view, show all operations (operations don't consolidate)
+      return dummyTransactions;
+    }
+
+    const selectedTab = accountTabs.find(tab => tab.id === activeAccountTab);
+    if (!selectedTab || !selectedTab.accountNumber) {
+      return dummyTransactions;
+    }
+
+    return dummyTransactions.filter(op =>
+      op.portfolioCode === selectedTab.accountNumber &&
+      op.bankName === selectedTab.bankId
+    );
+  }, [dummyTransactions, activeAccountTab, accountTabs]);
 
   // Use filtered data for display
   const displayPositions = filteredHoldings;
@@ -1015,47 +1090,44 @@ const PortfolioManagementSystem = ({ user }) => {
     return null;
   };
 
-  // If viewAsFilter is active, prioritize the selected client/account currency
-  if (viewAsFilter) {
-    if (viewAsFilter.type === 'account' && viewAsFilter.data?.referenceCurrency) {
-      portfolioCurrency = viewAsFilter.data.referenceCurrency;
-    } else if (viewAsFilter.type === 'client' && viewAsFilter.data?.reportingCurrency) {
-      portfolioCurrency = viewAsFilter.data.reportingCurrency;
-    } else {
-      // viewAsFilter is active but missing currency - try to get from holdings
-      const holdingsCurrency = getHoldingsPortfolioCurrency();
-      if (holdingsCurrency) {
-        portfolioCurrency = holdingsCurrency;
-      }
-    }
-  } else if (selectedAccountId !== 'all') {
-    // Use the selected account's reference currency
-    const selectedAccount = bankAccounts.find(acc => acc._id === selectedAccountId);
+  // Determine portfolio currency - Priority order:
+  // 1. Selected account tab's referenceCurrency (when specific account selected)
+  // 2. Client's profile.referenceCurrency (when client selected via viewAs)
+  // 3. Most common bank account referenceCurrency
+  // 4. Fall back to USD
+
+  if (activeAccountTab !== 'consolidated') {
+    // Priority 1: Use the selected account tab's reference currency
+    const selectedAccount = bankAccounts.find(acc => acc._id === activeAccountTab);
     if (selectedAccount && selectedAccount.referenceCurrency) {
       portfolioCurrency = selectedAccount.referenceCurrency;
-    } else {
-      // Account selected but no referenceCurrency - try holdings
-      const holdingsCurrency = getHoldingsPortfolioCurrency();
-      if (holdingsCurrency) {
-        portfolioCurrency = holdingsCurrency;
-      }
     }
-  } else {
-    // No filter, no specific account - try holdings first, then bank accounts
-    const holdingsCurrency = getHoldingsPortfolioCurrency();
-    if (holdingsCurrency) {
-      portfolioCurrency = holdingsCurrency;
+  } else if (viewAsFilter && viewAsFilter.type === 'client') {
+    // Priority 2: Client's profile.referenceCurrency
+    const clientCurrency = viewAsFilter.data?.profile?.referenceCurrency || viewAsFilter.data?.referenceCurrency;
+    if (clientCurrency) {
+      portfolioCurrency = clientCurrency;
     } else if (bankAccounts.length > 0) {
-      // Fall back to most common bank account reference currency
+      // Fall back to most common bank account currency for this client
       const refCurrencyCounts = bankAccounts.reduce((counts, acc) => {
-        const curr = acc.referenceCurrency || 'USD';
+        const curr = acc.referenceCurrency || 'EUR';
         counts[curr] = (counts[curr] || 0) + 1;
         return counts;
       }, {});
       portfolioCurrency = Object.keys(refCurrencyCounts).reduce((a, b) =>
-        refCurrencyCounts[a] > refCurrencyCounts[b] ? a : b, 'USD'
+        refCurrencyCounts[a] > refCurrencyCounts[b] ? a : b, 'EUR'
       );
     }
+  } else if (bankAccounts.length > 0) {
+    // Priority 3: Most common bank account reference currency
+    const refCurrencyCounts = bankAccounts.reduce((counts, acc) => {
+      const curr = acc.referenceCurrency || 'EUR';
+      counts[curr] = (counts[curr] || 0) + 1;
+      return counts;
+    }, {});
+    portfolioCurrency = Object.keys(refCurrencyCounts).reduce((a, b) =>
+      refCurrencyCounts[a] > refCurrencyCounts[b] ? a : b, 'EUR'
+    );
   }
 
   // Check if portfolio has mixed instrument currencies
@@ -1246,12 +1318,17 @@ const PortfolioManagementSystem = ({ user }) => {
     }
   }, [Object.keys(groupedPositions).join(',')]);
 
-  // Reset performance data when viewAsFilter changes
+  // Reset performance data when viewAsFilter or account tab changes
   // Must reset unconditionally so data refreshes when returning to performance tab
   React.useEffect(() => {
     setPerformancePeriods(null);
     setChartData(null);
     setLastFetchedRange(null);
+  }, [viewAsFilter, activeAccountTab]);
+
+  // Reset account tab to consolidated when viewAsFilter changes
+  React.useEffect(() => {
+    setActiveAccountTab('consolidated');
   }, [viewAsFilter]);
 
   // Helper function to calculate start date based on time range
@@ -3809,13 +3886,13 @@ const PortfolioManagementSystem = ({ user }) => {
             </h1>
             {/* PDF Report Download Button - Next to title */}
             <PDFDownloadButton
-              reportId={selectedAccountId}
+              reportId={activeAccountTab}
               reportType="pms"
               filename={`Portfolio_Report_${new Date().toISOString().split('T')[0]}`}
               title="Report PDF"
               options={{
                 viewAsFilter: viewAsFilter ? JSON.stringify(viewAsFilter) : null,
-                accountFilter: selectedAccountId
+                accountFilter: activeAccountTab
               }}
               style={{
                 marginTop: '0.75rem',
@@ -3991,6 +4068,76 @@ const PortfolioManagementSystem = ({ user }) => {
             compact={false}
             visibleBankIds={visibleBankIds}
           />
+        </div>
+      )}
+
+      {/* Account Tab Layer - Only show when a client is selected and has multiple accounts */}
+      {viewAsFilter && accountTabs.length > 1 && (
+        <div style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '0.5rem',
+          marginBottom: '1rem',
+          padding: '0.5rem',
+          background: theme === 'light'
+            ? 'rgba(255, 255, 255, 0.6)'
+            : 'rgba(30, 41, 59, 0.4)',
+          borderRadius: '12px',
+          border: '1px solid var(--border-color)'
+        }}>
+          {accountTabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveAccountTab(tab.id)}
+              style={{
+                padding: '0.5rem 0.875rem',
+                background: activeAccountTab === tab.id
+                  ? 'linear-gradient(135deg, #1e3a5f 0%, #2d4a6f 100%)'
+                  : 'transparent',
+                color: activeAccountTab === tab.id ? 'white' : 'var(--text-secondary)',
+                border: activeAccountTab === tab.id ? 'none' : '1px solid var(--border-color)',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: '600',
+                fontSize: '0.8rem',
+                transition: 'all 0.2s ease',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'flex-start',
+                gap: '0.15rem',
+                whiteSpace: 'nowrap',
+                boxShadow: activeAccountTab === tab.id ? '0 2px 6px rgba(30, 58, 95, 0.3)' : 'none'
+              }}
+              onMouseEnter={(e) => {
+                if (activeAccountTab !== tab.id) {
+                  e.currentTarget.style.background = 'var(--bg-tertiary)';
+                  e.currentTarget.style.borderColor = 'var(--accent-color)';
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (activeAccountTab !== tab.id) {
+                  e.currentTarget.style.background = 'transparent';
+                  e.currentTarget.style.borderColor = 'var(--border-color)';
+                }
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                <span style={{ fontSize: '0.9rem' }}>{tab.icon}</span>
+                <span>{tab.label}</span>
+              </div>
+              {tab.caption && (
+                <span style={{
+                  fontSize: '0.65rem',
+                  fontWeight: '400',
+                  opacity: 0.7,
+                  fontStyle: 'italic',
+                  paddingLeft: '1.25rem'
+                }}>
+                  {tab.caption}
+                </span>
+              )}
+            </button>
+          ))}
         </div>
       )}
 

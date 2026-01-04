@@ -5,13 +5,8 @@ import { check } from 'meteor/check';
 // import { InvestorProfilesCollection } from '/imports/api/investorProfiles'; // Commented out - module doesn't exist
 import { UsersCollection, USER_ROLES } from '/imports/api/users';
 
-Meteor.publish('clientDocuments', function(clientId) {
-  check(clientId, String);
-  if (!this.userId) return this.ready();
-
-  const { ClientDocumentsCollection } = require('/imports/api/clientDocuments');
-  return ClientDocumentsCollection.find({ clientId: clientId });
-});
+// NOTE: 'clientDocuments' publication moved to server/publications/clientDocuments.js
+// with proper session-based authentication and userId field
 
 Meteor.publish('clientMeetings', function(clientId) {
   check(clientId, String);

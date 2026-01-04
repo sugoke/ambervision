@@ -18,6 +18,82 @@ export const CMBMonacoParser = {
   bankName: 'CMB Monaco',
 
   /**
+   * Portfolio Reference Currency Cache
+   * Populated during parsing by detectPortfolioReferenceCurrencies()
+   * Maps Portfolio_Number (stripped) → detected reference currency
+   */
+  detectedReferenceCurrencies: {},
+
+  /**
+   * Manual override for portfolio reference currencies
+   * Format: Portfolio_Number (stripped) → reference currency
+   * These take precedence over auto-detection
+   */
+  portfolioReferenceCurrencyOverrides: {
+    // Example overrides:
+    // '302894.001': 'USD',
+    // '304435.001': 'EUR',
+  },
+
+  /**
+   * Detect portfolio reference currencies from cash positions
+   *
+   * When Position_Value === Cost_Value_in_Ref_Ccy for a cash position,
+   * that position's currency IS the portfolio's reference currency.
+   *
+   * @param {Array} rows - Parsed CSV rows
+   * @returns {Object} Map of portfolioNumber → referenceCurrency
+   */
+  detectPortfolioReferenceCurrencies(rows) {
+    const detected = {};
+
+    for (const row of rows) {
+      // Only check cash positions
+      if (row.Asset_Class_ID !== 'cash') continue;
+
+      const portfolioNumber = this.stripLeadingZeros(row.Portfolio_Number);
+      const positionCurrency = row.Ccy;
+      const positionValue = this.parseNumber(row.Position_Value);
+      const costRefValue = this.parseNumber(row.Cost_Value_in_Ref_Ccy);
+
+      // Skip zero or null values
+      if (!positionValue || positionValue === 0) continue;
+
+      // If Position_Value equals Cost_Value_in_Ref_Ccy (within 0.01 tolerance for rounding),
+      // this currency is the reference currency
+      if (Math.abs(positionValue - costRefValue) < 0.01) {
+        if (!detected[portfolioNumber]) {
+          detected[portfolioNumber] = positionCurrency;
+          console.log(`[CMB_PARSER] Auto-detected reference currency for ${portfolioNumber}: ${positionCurrency}`);
+        }
+      }
+    }
+
+    return detected;
+  },
+
+  /**
+   * Get portfolio reference currency
+   * Priority: 1) Manual override, 2) Auto-detected, 3) Default EUR
+   */
+  getPortfolioReferenceCurrency(portfolioNumber) {
+    const stripped = this.stripLeadingZeros(portfolioNumber);
+
+    // Check manual override first
+    if (this.portfolioReferenceCurrencyOverrides[stripped]) {
+      return this.portfolioReferenceCurrencyOverrides[stripped];
+    }
+
+    // Check auto-detected
+    if (this.detectedReferenceCurrencies[stripped]) {
+      return this.detectedReferenceCurrencies[stripped];
+    }
+
+    // Default to EUR
+    return 'EUR';
+  },
+
+  /**
    * Filename pattern for CMB Monaco position files
    */
   filenamePattern: /^TAM_mba_eam_pos_list_bu_mc_(\d{8})\.csv$/i,
@@ -126,33 +202,221 @@ export const CMBMonacoParser = {
   /**
    * Map security type from CMB Monaco Asset_Type_ID to standard type
    * Uses SECURITY_TYPES constants from instrumentTypes.js
+   *
+   * CMB Monaco Asset_Type_ID values:
+   * - shs_ord, shs_reg: Equities (ordinary/registered shares)
+   * - bond_fix, bond_var: Bonds (fixed/variable rate)
+   * - fd_var, fd_shs: Funds (variable/shares)
+   * - fd_mm: Money market funds
+   * - fd_etf: ETFs
+   * - struct_*: Structured products
+   * - cert_*: Certificates
+   * - opt_*, war_*, fut_*: Derivatives
+   * - pe_*, priv_eq_*: Private equity
+   * - pd_*, priv_debt_*: Private debt
+   * - dep_term, td_*: Term deposits
+   * - fx_fwd, fwd_*: FX forwards
+   * - cash_acc: Cash accounts
    */
-  mapSecurityType(assetTypeId, assetClassId) {
+  mapSecurityType(row) {
+    // Allow both old API (two strings) and new API (row object)
+    let assetTypeId, assetClassId, assetName;
+    if (typeof row === 'object' && row !== null && !Array.isArray(row)) {
+      assetTypeId = (row.Asset_Type_ID || '').toLowerCase();
+      assetClassId = (row.Asset_Class_ID || '').toLowerCase();
+      assetName = (row.Asset || row.Position || '').toLowerCase();
+    } else {
+      // Legacy: mapSecurityType(assetTypeId, assetClassId)
+      assetTypeId = (arguments[0] || '').toString().toLowerCase();
+      assetClassId = (arguments[1] || '').toString().toLowerCase();
+      assetName = '';
+    }
+
     // First check Asset_Class_ID for cash - this is the most reliable indicator
-    // Cash positions may have various Asset_Type_ID values but Asset_Class_ID is always 'cash'
     if (assetClassId === 'cash') {
       return SECURITY_TYPES.CASH;
     }
 
+    // PRIMARY: Explicit Asset_Type_ID mapping
     const typeMap = {
-      // Shares
+      // Equities
       'shs_ord': SECURITY_TYPES.EQUITY,
       'shs_reg': SECURITY_TYPES.EQUITY,
+      'shs_prf': SECURITY_TYPES.EQUITY,    // Preferred shares
+      'shares': SECURITY_TYPES.EQUITY,
+      'equity': SECURITY_TYPES.EQUITY,
+
+      // ETFs (check before general funds)
+      'fd_etf': SECURITY_TYPES.ETF,
+      'etf': SECURITY_TYPES.ETF,
+      'etf_eq': SECURITY_TYPES.ETF,
+      'etf_bd': SECURITY_TYPES.ETF,
+
       // Bonds
       'bond_fix': SECURITY_TYPES.BOND,
       'bond_var': SECURITY_TYPES.BOND,
+      'bond_cvt': SECURITY_TYPES.BOND,     // Convertible bonds (actual bonds, not structured)
+      'bond_zero': SECURITY_TYPES.BOND,    // Zero-coupon bonds
+      'bonds': SECURITY_TYPES.BOND,
+
       // Funds
       'fd_var': SECURITY_TYPES.FUND,
       'fd_shs': SECURITY_TYPES.FUND,
-      'fd_mm': SECURITY_TYPES.MONEY_MARKET,  // Standardized from MONEY_MARKET_FUND
+      'fd_ucits': SECURITY_TYPES.FUND,
+      'fund': SECURITY_TYPES.FUND,
+
+      // Money Market
+      'fd_mm': SECURITY_TYPES.MONEY_MARKET,
+      'mm_fund': SECURITY_TYPES.MONEY_MARKET,
+
+      // Structured Products (critical - these were missing!)
+      'struct': SECURITY_TYPES.STRUCTURED_PRODUCT,
+      'struct_note': SECURITY_TYPES.STRUCTURED_PRODUCT,
+      'struct_prod': SECURITY_TYPES.STRUCTURED_PRODUCT,
+      'structured': SECURITY_TYPES.STRUCTURED_PRODUCT,
+      'sp_eq': SECURITY_TYPES.STRUCTURED_PRODUCT,       // Equity-linked
+      'sp_bd': SECURITY_TYPES.STRUCTURED_PRODUCT,       // Bond-linked
+      'sp_idx': SECURITY_TYPES.STRUCTURED_PRODUCT,      // Index-linked
+      'note': SECURITY_TYPES.STRUCTURED_PRODUCT,
+      'autocall': SECURITY_TYPES.STRUCTURED_PRODUCT,
+      'phoenix': SECURITY_TYPES.STRUCTURED_PRODUCT,
+      'reverse_conv': SECURITY_TYPES.STRUCTURED_PRODUCT,
+      'rev_conv': SECURITY_TYPES.STRUCTURED_PRODUCT,
+
+      // Certificates
+      'cert': SECURITY_TYPES.CERTIFICATE,
+      'cert_idx': SECURITY_TYPES.CERTIFICATE,
+      'cert_trk': SECURITY_TYPES.CERTIFICATE,           // Tracker certificates
+      'cert_bonus': SECURITY_TYPES.CERTIFICATE,
+      'certificate': SECURITY_TYPES.CERTIFICATE,
+
+      // Derivatives
+      'opt_call': SECURITY_TYPES.OPTION,
+      'opt_put': SECURITY_TYPES.OPTION,
+      'option': SECURITY_TYPES.OPTION,
+      'fut': SECURITY_TYPES.FUTURE,
+      'future': SECURITY_TYPES.FUTURE,
+      'war': SECURITY_TYPES.WARRANT,
+      'warrant': SECURITY_TYPES.WARRANT,
+
+      // FX Forwards
+      'fx_fwd': SECURITY_TYPES.FX_FORWARD,
+      'fwd': SECURITY_TYPES.FX_FORWARD,
+      'forward': SECURITY_TYPES.FX_FORWARD,
+
+      // Term Deposits
+      'dep_term': SECURITY_TYPES.TERM_DEPOSIT,
+      'td': SECURITY_TYPES.TERM_DEPOSIT,
+      'term_deposit': SECURITY_TYPES.TERM_DEPOSIT,
+      'fiduciary': SECURITY_TYPES.TERM_DEPOSIT,
+
+      // Private Equity
+      'pe': SECURITY_TYPES.PRIVATE_EQUITY,
+      'priv_eq': SECURITY_TYPES.PRIVATE_EQUITY,
+      'private_equity': SECURITY_TYPES.PRIVATE_EQUITY,
+
+      // Private Debt
+      'pd': SECURITY_TYPES.PRIVATE_DEBT,
+      'priv_debt': SECURITY_TYPES.PRIVATE_DEBT,
+      'private_debt': SECURITY_TYPES.PRIVATE_DEBT,
+
+      // Commodities
+      'comm': SECURITY_TYPES.COMMODITY,
+      'commodity': SECURITY_TYPES.COMMODITY,
+      'gold': SECURITY_TYPES.COMMODITY,
+      'precious': SECURITY_TYPES.COMMODITY,
+
       // Cash (fallback if Asset_Class_ID check missed it)
       'cash_acc': SECURITY_TYPES.CASH,
+      'cash': SECURITY_TYPES.CASH,
+
       // Other (to be skipped in filtering)
       'lmt_std': 'LIMIT',
       'sdbc': 'SAFE_DEPOSIT',
     };
 
-    return typeMap[assetTypeId] || assetClassId?.toUpperCase() || SECURITY_TYPES.UNKNOWN;
+    // Check explicit mapping first
+    if (typeMap[assetTypeId]) {
+      return typeMap[assetTypeId];
+    }
+
+    // SECONDARY: Partial matching for asset type ID
+    if (assetTypeId.includes('struct') || assetTypeId.includes('sp_')) {
+      return SECURITY_TYPES.STRUCTURED_PRODUCT;
+    }
+    if (assetTypeId.includes('cert')) {
+      return SECURITY_TYPES.CERTIFICATE;
+    }
+    if (assetTypeId.includes('etf')) {
+      return SECURITY_TYPES.ETF;
+    }
+    if (assetTypeId.includes('opt') || assetTypeId.includes('option')) {
+      return SECURITY_TYPES.OPTION;
+    }
+    if (assetTypeId.includes('fut') || assetTypeId.includes('future')) {
+      return SECURITY_TYPES.FUTURE;
+    }
+    if (assetTypeId.includes('war') || assetTypeId.includes('warrant')) {
+      return SECURITY_TYPES.WARRANT;
+    }
+    if (assetTypeId.includes('fwd') || assetTypeId.includes('forward')) {
+      return SECURITY_TYPES.FX_FORWARD;
+    }
+    if (assetTypeId.includes('priv') && assetTypeId.includes('eq')) {
+      return SECURITY_TYPES.PRIVATE_EQUITY;
+    }
+    if (assetTypeId.includes('priv') && assetTypeId.includes('debt')) {
+      return SECURITY_TYPES.PRIVATE_DEBT;
+    }
+
+    // TERTIARY: Name-based detection for structured products
+    if (assetName) {
+      const structuredKeywords = [
+        'express', 'autocall', 'phoenix', 'reverse conv', 'barrier',
+        'cap.prot', 'bar.cap', 'capital protected', 'yield enhancement',
+        'certificate', 'cert.', 'structured note', 'linked note'
+      ];
+      if (structuredKeywords.some(kw => assetName.includes(kw))) {
+        return SECURITY_TYPES.STRUCTURED_PRODUCT;
+      }
+
+      // ETF detection by name
+      if (assetName.includes('etf') || assetName.includes('exchange traded')) {
+        return SECURITY_TYPES.ETF;
+      }
+
+      // Private equity detection by name
+      if (assetName.includes('private equity') || assetName.includes('buyout') ||
+          assetName.includes('venture capital') || assetName.includes('pe fund')) {
+        return SECURITY_TYPES.PRIVATE_EQUITY;
+      }
+    }
+
+    // FALLBACK: Use Asset_Class_ID if no specific mapping
+    if (assetClassId) {
+      const classMap = {
+        'equity': SECURITY_TYPES.EQUITY,
+        'equities': SECURITY_TYPES.EQUITY,
+        'bond': SECURITY_TYPES.BOND,
+        'bonds': SECURITY_TYPES.BOND,
+        'fixed_income': SECURITY_TYPES.BOND,
+        'fund': SECURITY_TYPES.FUND,
+        'funds': SECURITY_TYPES.FUND,
+        'structured': SECURITY_TYPES.STRUCTURED_PRODUCT,
+        'derivatives': SECURITY_TYPES.OPTION,
+        'alternative': SECURITY_TYPES.FUND,
+      };
+      if (classMap[assetClassId]) {
+        return classMap[assetClassId];
+      }
+    }
+
+    // Log unknown types for investigation
+    if (assetTypeId && assetTypeId !== 'unknown') {
+      console.warn(`[CMB_PARSER] Unknown security type - Asset_Type_ID: ${assetTypeId}, Asset_Class_ID: ${assetClassId}, Name: ${assetName}`);
+    }
+
+    return SECURITY_TYPES.UNKNOWN;
   },
 
   /**
@@ -167,9 +431,19 @@ export const CMBMonacoParser = {
    * Check if asset type uses percentage pricing
    */
   isPercentagePricing(assetTypeId) {
-    // Bonds use percentage pricing (99.43 = 99.43%)
-    const percentageTypes = ['bond_fix', 'bond_var'];
-    return percentageTypes.includes(assetTypeId);
+    // Bonds and structured products often use percentage pricing (99.43 = 99.43%)
+    const percentageTypes = [
+      'bond_fix', 'bond_var', 'bond_cvt', 'bond_zero',
+      'struct', 'struct_note', 'struct_prod', 'structured',
+      'sp_eq', 'sp_bd', 'sp_idx', 'note', 'autocall', 'phoenix',
+      'reverse_conv', 'rev_conv',
+      'cert', 'cert_idx', 'cert_trk', 'cert_bonus', 'certificate'
+    ];
+    const lowerAssetTypeId = (assetTypeId || '').toLowerCase();
+    return percentageTypes.includes(lowerAssetTypeId) ||
+           lowerAssetTypeId.includes('struct') ||
+           lowerAssetTypeId.includes('cert') ||
+           lowerAssetTypeId.includes('bond');
   },
 
   /**
@@ -299,34 +573,48 @@ export const CMBMonacoParser = {
   /**
    * Generate unique key for position
    *
-   * IMPORTANT: Uses Position_Number as primary identifier when available.
-   * This ensures stable keys regardless of cash detection logic changes.
-   * Without this, changing isCash detection would generate different keys
-   * for the same position, causing duplicates instead of updates.
+   * IMPORTANT: For positions WITH ISIN, use ISIN as primary identifier.
+   * ISIN is stable across file versions while Position_Number can change.
+   * This prevents duplicate holdings when Position_Number changes between files.
+   *
+   * For cash positions (no ISIN), use instrumentCode + currency as identifier.
+   * Position_Number can vary for the same cash account across files.
+   *
+   * NOTE: portfolioCode is normalized to base client number (without .001/.002 suffix)
+   * to handle inconsistent Portfolio_Number formats across different CMB files.
+   * Some files have "00302894", others have "00302894.001" for the same portfolio.
    */
   generateUniqueKey(portfolioCode, isin, instrumentCode, currency, positionNumber) {
     const crypto = require('crypto');
 
-    // Use Position_Number as primary identifier when available
-    // This ensures stable keys regardless of cash detection logic
-    if (positionNumber) {
-      const key = `cmb-monaco|${portfolioCode}|${positionNumber}`;
-      return crypto.createHash('sha256').update(key).digest('hex');
-    }
+    // Normalize portfolioCode to base client number (strip .XXX suffix)
+    // This ensures consistent uniqueKeys regardless of file format variations
+    // "302894.001" -> "302894", "302894" -> "302894"
+    const basePortfolioCode = portfolioCode ? portfolioCode.split('.')[0] : portfolioCode;
 
-    // Fallback for positions without Position_Number
+    // For positions WITH ISIN: Use ISIN as primary identifier (most stable)
+    // ISIN doesn't change between file versions, unlike Position_Number
     if (isin) {
-      const key = `cmb-monaco|${portfolioCode}|${isin}`;
+      const key = `cmb-monaco|${basePortfolioCode}|${isin}`;
       return crypto.createHash('sha256').update(key).digest('hex');
     }
 
+    // For cash positions (no ISIN): Use instrumentCode + currency as identifier
+    // Position_Number can vary for the same cash account, but instrumentCode is stable
+    // This prevents duplicate cash holdings when Position_Number changes between files
     if (instrumentCode) {
-      const key = `cmb-monaco|${portfolioCode}|${instrumentCode}|${currency}`;
+      const key = `cmb-monaco|${basePortfolioCode}|${instrumentCode}|${currency}`;
+      return crypto.createHash('sha256').update(key).digest('hex');
+    }
+
+    // Fallback: Use Position_Number if no instrumentCode available
+    if (positionNumber) {
+      const key = `cmb-monaco|${basePortfolioCode}|${positionNumber}`;
       return crypto.createHash('sha256').update(key).digest('hex');
     }
 
     // Last resort fallback
-    const key = `cmb-monaco|${portfolioCode}|unknown`;
+    const key = `cmb-monaco|${basePortfolioCode}|unknown`;
     return crypto.createHash('sha256').update(key).digest('hex');
   },
 
@@ -369,39 +657,58 @@ export const CMBMonacoParser = {
     );
 
     // Get values from CSV
-    // Position_Value is in SECURITY currency (e.g., SEK for SEK stocks)
+    // Position_Value is in SECURITY currency (e.g., EUR for Airbus, SEK for SEK stocks)
     const marketValueSecCcy = this.parseNumber(row.Position_Value);
-    // Cost_Value_in_Ref_Ccy is in REFERENCE currency (EUR - portfolio base currency)
+    // Cost_Value_in_Ref_Ccy is in portfolio REFERENCE currency (USD for USD portfolios, EUR for EUR portfolios)
     const costBasisRefCcy = this.parseNumber(row.Cost_Value_in_Ref_Ccy);
 
     // Calculate cost basis in SECURITY currency (quantity × normalized cost price)
     // This allows proper P&L calculation (apples to apples comparison)
     const costBasisSecCcy = this.calculateCostBasis(quantity, normalizedCostPrice);
 
-    // Convert market value to EUR using FX rates
-    // FX rates format: CCY;EUR;Date;Quote where Quote is DIVIDE to get EUR
-    // Example: USD;EUR;1.1755 means $1 / 1.1755 = €0.85
-    const currency = row.Ccy || 'EUR';
-    let marketValueRefCcy = marketValueSecCcy; // Default: same currency if EUR or no rate available
+    // Get portfolio reference currency (USD, EUR, CHF, etc.)
+    // Use Portfolio_Number (sub-account) for lookup, not Client_Number
+    const portfolioRefCurrency = this.getPortfolioReferenceCurrency(row.Portfolio_Number);
 
-    if (currency !== 'EUR' && marketValueSecCcy !== null && marketValueSecCcy !== undefined) {
-      if (fxRates[currency] && fxRates[currency]['EUR']) {
-        const fxRate = fxRates[currency]['EUR'];
+    // Convert market value from position currency to portfolio reference currency
+    // FX rates format: CCY;TO_CCY;Date;Quote where Quote is DIVIDE to convert
+    // Example: EUR;USD;0.850629 means €1 / 0.850629 = $1.1756
+    // Example: USD;EUR;1.1756 means $1 / 1.1756 = €0.85
+    const positionCurrency = row.Ccy || 'EUR';
+    let marketValueRefCcy = marketValueSecCcy; // Default: same if currencies match or no rate available
+
+    if (positionCurrency !== portfolioRefCurrency && marketValueSecCcy !== null && marketValueSecCcy !== undefined) {
+      // Look for direct rate: positionCurrency → portfolioRefCurrency
+      if (fxRates[positionCurrency] && fxRates[positionCurrency][portfolioRefCurrency]) {
+        const fxRate = fxRates[positionCurrency][portfolioRefCurrency];
         marketValueRefCcy = marketValueSecCcy / fxRate;
         // Only log for non-trivial conversions
         if (Math.abs(marketValueSecCcy) > 100) {
-          console.log(`[CMB_PARSER] FX: ${marketValueSecCcy.toFixed(2)} ${currency} / ${fxRate} = ${marketValueRefCcy.toFixed(2)} EUR`);
+          console.log(`[CMB_PARSER] FX: ${marketValueSecCcy.toFixed(2)} ${positionCurrency} / ${fxRate} = ${marketValueRefCcy.toFixed(2)} ${portfolioRefCurrency}`);
         }
-      } else {
-        console.warn(`[CMB_PARSER] No FX rate for ${currency}→EUR, using unconverted value`);
+      }
+      // Fallback: try inverse rate (portfolioRefCurrency → positionCurrency)
+      else if (fxRates[portfolioRefCurrency] && fxRates[portfolioRefCurrency][positionCurrency]) {
+        const inverseRate = fxRates[portfolioRefCurrency][positionCurrency];
+        // Inverse rate: divide becomes multiply
+        marketValueRefCcy = marketValueSecCcy * (1 / inverseRate);
+        if (Math.abs(marketValueSecCcy) > 100) {
+          console.log(`[CMB_PARSER] FX (inverse): ${marketValueSecCcy.toFixed(2)} ${positionCurrency} * (1/${inverseRate}) = ${marketValueRefCcy.toFixed(2)} ${portfolioRefCurrency}`);
+        }
+      }
+      else {
+        console.warn(`[CMB_PARSER] No FX rate for ${positionCurrency}→${portfolioRefCurrency}, using unconverted value`);
       }
     }
 
     // Determine price type
     const priceType = this.isPercentagePricing(assetTypeId) ? 'percentage' : 'absolute';
 
-    // Normalize portfolio code (strip leading zeros: 00302894 -> 302894)
-    const portfolioCode = this.stripLeadingZeros(row.Client_Number) || '';
+    // Normalize portfolio code from Portfolio_Number (sub-account)
+    // Strip leading zeros: 00302894.001 -> 302894.001
+    // Each sub-account is treated as a separate portfolio in the PMS
+    const portfolioCode = this.stripLeadingZeros(row.Portfolio_Number) || '';
+    const clientCode = this.stripLeadingZeros(row.Client_Number) || '';
 
     // For cash positions, the ISIN column contains an internal instrument code (like "61482"), not a real ISIN
     // We need to handle this specially for proper unique key generation and data mapping
@@ -431,7 +738,9 @@ export const CMBMonacoParser = {
       processingDate: new Date(),
 
       // Account & Portfolio Information
+      // portfolioCode is the sub-account (e.g., "302894.001") - each treated as separate portfolio
       portfolioCode: portfolioCode,
+      clientCode: clientCode, // Parent client code (e.g., "302894")
       accountNumber: row.Portfolio_Number || null,
       thirdPartyCode: row.EAM_Key || null,
 
@@ -439,16 +748,21 @@ export const CMBMonacoParser = {
       isin: realIsin,
       ticker: ticker,
       securityName: row.Asset || null,
-      securityType: this.mapSecurityType(assetTypeId, assetClassId),
+      // securityType: For positions WITH valid ISINs, set to null for SecurityResolver classification
+      // For cash positions (no ISIN), set directly since SecurityResolver can't classify them
+      securityType: isCash ? SECURITY_TYPES.CASH : null,
+      // Store raw bank codes for classification hints (used by SecurityResolver if needed)
+      securityTypeCode: row.Asset_Type_ID || null, // Bank's raw code
+      securityTypeDesc: row.Asset_Class || null, // Bank's description
 
       // Position Data
       quantity: quantity,
-      marketValue: marketValueRefCcy,              // In portfolio currency (EUR) - used by UI for Portfolio Value column
+      marketValue: marketValueRefCcy,              // In portfolio reference currency - used by UI for Portfolio Value column
       marketValueOriginalCurrency: marketValueSecCcy, // Position_Value is in security currency - used by UI for Market Value column
-      marketValueRefCcy: marketValueRefCcy,        // Alias: Market value converted to EUR
-      marketValuePortfolioCurrency: marketValueRefCcy, // Alias: Market value in EUR for display
+      marketValueRefCcy: marketValueRefCcy,        // Alias: Market value converted to portfolio reference currency
+      marketValuePortfolioCurrency: marketValueRefCcy, // Alias: Market value in portfolio currency for display
       currency: row.Ccy || null,
-      portfolioCurrency: 'EUR', // CMB Monaco reference currency is EUR
+      portfolioCurrency: portfolioRefCurrency, // Portfolio reference currency (USD, EUR, CHF, etc.)
 
       // Pricing Information
       priceType: priceType,
@@ -465,7 +779,7 @@ export const CMBMonacoParser = {
       costBasisOriginalCurrency: costBasisSecCcy,
       costBasisPortfolioCurrency: costBasisRefCcy,
 
-      // Performance Metrics - calculated in PORTFOLIO currency (EUR) for UI consistency
+      // Performance Metrics - calculated in portfolio reference currency for UI consistency
       // Other parsers (Julius Baer, Andbank) also calculate P&L in portfolio currency
       unrealizedPnL: this.calculateUnrealizedPnL(marketValueRefCcy, costBasisRefCcy),
       unrealizedPnLPercent: this.calculateUnrealizedPnLPercent(marketValueRefCcy, costBasisRefCcy),
@@ -501,11 +815,18 @@ export const CMBMonacoParser = {
       // Metadata
       userId,
 
-      // Bank-provided FX rates (flattened to currency → EUR rate)
+      // Bank-provided FX rates (flattened to currency → portfolio reference currency rate)
       // Used by cash calculator to ensure amounts match bank statements
-      bankFxRates: Object.keys(fxRates).reduce((acc, currency) => {
-        if (fxRates[currency] && fxRates[currency]['EUR']) {
-          acc[currency] = fxRates[currency]['EUR'];
+      // Format: { 'EUR': 0.850629, 'GBP': 0.78, ... } for USD portfolio
+      bankFxRates: Object.keys(fxRates).reduce((acc, fromCurrency) => {
+        // Store rate for converting fromCurrency → portfolioRefCurrency
+        if (fxRates[fromCurrency] && fxRates[fromCurrency][portfolioRefCurrency]) {
+          acc[fromCurrency] = fxRates[fromCurrency][portfolioRefCurrency];
+        }
+        // Also try storing inverse (portfolioRefCurrency → fromCurrency inverted)
+        else if (fxRates[portfolioRefCurrency] && fxRates[portfolioRefCurrency][fromCurrency]) {
+          // Inverse: if rate is "divide", inverted is 1/rate
+          acc[fromCurrency] = 1 / fxRates[portfolioRefCurrency][fromCurrency];
         }
         return acc;
       }, {}),
@@ -524,7 +845,13 @@ export const CMBMonacoParser = {
     const rows = this.parseCSV(csvContent);
     console.log(`[CMB_PARSER] Found ${rows.length} rows`);
 
-    // Filter and map rows
+    // FIRST PASS: Detect portfolio reference currencies from cash positions
+    // When Position_Value === Cost_Value_in_Ref_Ccy for a cash position,
+    // that currency is the portfolio's reference currency
+    this.detectedReferenceCurrencies = this.detectPortfolioReferenceCurrencies(rows);
+    console.log(`[CMB_PARSER] Detected reference currencies:`, this.detectedReferenceCurrencies);
+
+    // SECOND PASS: Filter and map rows
     const positions = [];
     let skippedNonPosition = 0;
     let skippedEmpty = 0;
@@ -601,8 +928,10 @@ export const CMBMonacoParser = {
       operationId: row.Order || null,
       externalReference: row.Order,
 
-      // Account Information (strip leading zeros: 00302894 -> 302894)
-      portfolioCode: this.stripLeadingZeros(row.Client_Number) || '',
+      // Account Information (strip leading zeros: 00302894.001 -> 302894.001)
+      // Use Portfolio_Number for portfolioCode to match bank account format (302894.001)
+      portfolioCode: this.stripLeadingZeros(row.Portfolio_Number) || '',
+      clientCode: this.stripLeadingZeros(row.Client_Number) || '',
       accountNumber: row.Portfolio_Number || null,
       positionNumber: row.Position_Number || null,
 

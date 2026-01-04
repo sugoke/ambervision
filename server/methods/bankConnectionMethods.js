@@ -548,6 +548,7 @@ Meteor.methods({
     console.log(`[BANK_CONNECTIONS] Starting download all files for: ${connection.connectionName}`);
 
     // Handle local connections - files are already in place, no download needed
+    // But we still need to detect which files are NEW (unprocessed)
     if (connection.connectionType === 'local') {
       const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
       const folderPath = path.join(bankfilesRoot, connection.localFolderName);
@@ -559,10 +560,56 @@ Meteor.methods({
       }
 
       // List existing files
-      const files = fs.readdirSync(folderPath).filter(f => {
+      const allFiles = fs.readdirSync(folderPath).filter(f => {
         const stat = fs.statSync(path.join(folderPath, f));
         return stat.isFile();
       });
+
+      // Import BankPositionParser to detect file dates
+      const { BankPositionParser } = require('../../imports/api/bankPositionParser.js');
+      const { PMSHoldingsCollection } = require('../../imports/api/pmsHoldings.js');
+
+      // Get parsed position files with dates
+      const positionFiles = BankPositionParser.findPositionFiles(folderPath);
+
+      // Get already processed FILE dates for this bank
+      // Note: We compare fileDate (from filename) not snapshotDate (from content)
+      // because CFM files are named with tomorrow's date but contain today's data
+      const processedFileDates = await PMSHoldingsCollection.rawCollection().distinct(
+        'fileDate',
+        { bankId: connection.bankId, isLatest: true }
+      );
+      const processedDateStrings = new Set(
+        processedFileDates.map(d => new Date(d).toISOString().split('T')[0])
+      );
+
+      // Determine which files are "new" (their date hasn't been processed)
+      const newFiles = [];
+      const skippedFiles = [];
+      const seenDates = new Set();
+
+      positionFiles.forEach(f => {
+        const dateStr = f.fileDate.toISOString().split('T')[0];
+        if (!processedDateStrings.has(dateStr) && !seenDates.has(dateStr)) {
+          newFiles.push(f.filename);
+          seenDates.add(dateStr);
+        } else {
+          skippedFiles.push(f.filename);
+        }
+      });
+
+      // Also include non-position files in skipped
+      const positionFileNames = new Set(positionFiles.map(f => f.filename));
+      allFiles.forEach(f => {
+        if (!positionFileNames.has(f) && !skippedFiles.includes(f)) {
+          skippedFiles.push(f);
+        }
+      });
+
+      console.log(`[BANK_CONNECTIONS] Local connection ${connection.connectionName}: ${newFiles.length} new files (unprocessed dates), ${skippedFiles.length} already processed`);
+      if (newFiles.length > 0) {
+        console.log(`[BANK_CONNECTIONS] New files: ${newFiles.join(', ')}`);
+      }
 
       // Log success
       await BankConnectionLogHelpers.logConnectionAttempt({
@@ -571,8 +618,8 @@ Meteor.methods({
         connectionName: connection.connectionName,
         action: 'download_all',
         status: 'success',
-        message: `Local folder - ${files.length} files already in place`,
-        metadata: { totalFiles: files.length, folderPath },
+        message: `Local folder - ${newFiles.length} new files, ${skippedFiles.length} already processed`,
+        metadata: { totalFiles: allFiles.length, newFiles: newFiles.length, folderPath },
         userId: user._id
       });
 
@@ -585,12 +632,14 @@ Meteor.methods({
 
       return {
         success: true,
-        totalFiles: files.length,
-        newFiles: [],
-        skippedFiles: files,
+        totalFiles: allFiles.length,
+        newFiles: newFiles,
+        skippedFiles: skippedFiles,
         failedFiles: [],
         bankFolderPath: connection.localFolderName,
-        message: 'Local folder - files already in place'
+        message: newFiles.length > 0
+          ? `Local folder - ${newFiles.length} new files to process`
+          : 'Local folder - all files already processed'
       };
     }
 
