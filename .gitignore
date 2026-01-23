@@ -58,6 +58,7 @@ settings.json
 settings-development.json
 settings-production.json
 settings.local.json
+settings-local.json
 
 # Bank files (sensitive - do not commit)
 bankfiles/
