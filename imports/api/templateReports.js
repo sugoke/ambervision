@@ -19,6 +19,7 @@ import { ParticipationNoteChartBuilder } from '/imports/api/chartBuilders/partic
 import { ReverseConvertibleChartBuilder } from '/imports/api/chartBuilders/reverseConvertibleChartBuilder';
 import { ReverseConvertibleBondChartBuilder } from '/imports/api/chartBuilders/reverseConvertibleBondChartBuilder';
 import { ProcessingIssueCollector } from '/imports/api/processingIssueCollector';
+import { MarketDataHelpers } from '/imports/api/marketDataCache';
 
 /**
  * Template-based Reports Collection
@@ -168,6 +169,35 @@ if (Meteor.isServer) {
             if (!underlying.securityData) underlying.securityData = {};
             underlying.securityData.ticker = `${originalTicker}.US`;
             console.log(`  ✅ Normalized ${originalTicker} → ${underlying.ticker}`);
+          }
+        }
+      }
+
+      // Refresh market data cache for product underlyings before evaluation
+      // This ensures historical price data is available for observation calculations
+      if (productData.underlyings && productData.underlyings.length > 0) {
+        const tickers = productData.underlyings.map(u => {
+          return u.fullTicker || u.securityData?.ticker || `${u.ticker}.US`;
+        }).filter(Boolean);
+
+        if (tickers.length > 0) {
+          console.log(`📊 [templateReports] Refreshing market data for: ${tickers.join(', ')}`);
+          const tradeDate = productData.tradeDate ? new Date(productData.tradeDate) : new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);
+          // Add 30-day buffer before trade date
+          const fromDate = new Date(tradeDate);
+          fromDate.setDate(fromDate.getDate() - 30);
+
+          try {
+            for (const ticker of tickers) {
+              await MarketDataHelpers.fetchAndCacheHistoricalData(ticker, fromDate, new Date());
+            }
+            console.log(`✅ [templateReports] Market data refreshed for ${tickers.length} underlyings`);
+          } catch (marketDataError) {
+            console.warn(`⚠️ [templateReports] Failed to refresh market data:`, marketDataError.message);
+            issueCollector.addIssue('MARKET_DATA_REFRESH_FAILED', {
+              error: marketDataError.message,
+              tickers
+            });
           }
         }
       }

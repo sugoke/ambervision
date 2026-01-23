@@ -83,6 +83,12 @@ Meteor.publish("products", async function (sessionId = null, viewAsFilter = null
     return ProductsCollection.find();
   }
 
+  // Compliance sees everything (for compliance review purposes)
+  if (currentUser.role === USER_ROLES.COMPLIANCE) {
+    console.log(`[PRODUCTS] Compliance ${currentUser.email} accessing products`);
+    return ProductsCollection.find();
+  }
+
   // Relationship Manager sees products of their assigned clients
   if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
     // Get all clients assigned to this RM
@@ -176,7 +182,7 @@ Meteor.publish("products.single", async function (productId, sessionId = null) {
   }
 
   // Apply same access control as products publication
-  if (currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.ADMIN) {
+  if (currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.COMPLIANCE) {
     return ProductsCollection.find({ _id: productId });
   }
 
@@ -394,10 +400,11 @@ Meteor.publish("products.all", async function (sessionId = null) {
     }
   }
 
-  // Only allow RMs, admins, and superadmins to access all products
+  // Only allow RMs, admins, superadmins, and compliance to access all products
   if (!currentUser || (currentUser.role !== USER_ROLES.RELATIONSHIP_MANAGER &&
                        currentUser.role !== USER_ROLES.ADMIN &&
-                       currentUser.role !== USER_ROLES.SUPERADMIN)) {
+                       currentUser.role !== USER_ROLES.SUPERADMIN &&
+                       currentUser.role !== USER_ROLES.COMPLIANCE)) {
     return this.ready();
   }
 

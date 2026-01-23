@@ -192,12 +192,22 @@ export const PhoenixEvaluationHelpers = {
                            (underlying.securityData?.tradeDatePrice?.price) ||
                            (underlying.securityData?.tradeDatePrice?.close) || 0;
 
-        // Fetch current price from market data cache if not already present
+        // Fetch current price from market data cache if not already present or stale
         if (!underlying.securityData) {
           underlying.securityData = {};
         }
 
-        if (!underlying.securityData.price) {
+        // Check if we need to fetch a fresh price:
+        // 1. No price exists, OR
+        // 2. Price exists but is stale (no date or date is not today)
+        const existingPrice = underlying.securityData.price;
+        const today = new Date();
+        const todayStr = today.toISOString().split('T')[0];
+        const existingPriceDate = existingPrice?.date ? new Date(existingPrice.date).toISOString().split('T')[0] : null;
+        const needsFreshPrice = !existingPrice || !existingPriceDate || existingPriceDate !== todayStr;
+
+        if (needsFreshPrice) {
+          console.log(`📊 Phoenix: Fetching fresh price for ${underlying.ticker} (existing price date: ${existingPriceDate || 'none'}, today: ${todayStr})`);
           // Build list of ticker variants to try (exchange suffixes)
           const tickerVariants = [];
 

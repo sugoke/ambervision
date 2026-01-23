@@ -1,6 +1,8 @@
 import { Mongo } from 'meteor/mongo';
 import { check } from 'meteor/check';
 import crypto from 'crypto';
+import { getAssetClassFromSecurityType } from './constants/instrumentTypes.js';
+import { SecuritiesMetadataCollection } from './securitiesMetadata.js';
 
 export const PMSHoldingsCollection = new Mongo.Collection('pmsHoldings');
 
@@ -58,6 +60,47 @@ export const PMSHoldingsHelpers = {
     check(holdingData.bankId, String);
     check(holdingData.portfolioCode, String);
     check(holdingData.fileDate, Date);
+
+    // IMPORTANT: Derive assetClass from securityType if not already set
+    // This ensures all holdings have a valid assetClass for UI filtering
+    if (!holdingData.assetClass && holdingData.securityType) {
+      holdingData.assetClass = getAssetClassFromSecurityType(
+        holdingData.securityType,
+        holdingData.securityName || ''
+      );
+    }
+
+    // If still no assetClass but has ISIN, try to enrich from securitiesMetadata
+    // This handles cases where admin has classified a security but parser didn't provide assetClass
+    if (!holdingData.assetClass && holdingData.isin) {
+      try {
+        const metadata = await SecuritiesMetadataCollection.findOneAsync({ isin: holdingData.isin });
+        if (metadata?.assetClass) {
+          holdingData.assetClass = metadata.assetClass;
+          // Also copy securityType if missing and metadata has it
+          if (!holdingData.securityType && metadata.securityType) {
+            holdingData.securityType = metadata.securityType;
+          }
+        }
+      } catch (e) {
+        // Silently continue - metadata lookup is optional enrichment
+        console.warn(`[PMSHoldings] Could not lookup metadata for ISIN ${holdingData.isin}:`, e.message);
+      }
+    }
+
+    // Normalize field names (different parsers use different names)
+    // balance: some parsers use 'quantity', some use 'balance'
+    if (holdingData.balance === undefined && holdingData.quantity !== undefined) {
+      holdingData.balance = holdingData.quantity;
+    }
+    // instrumentName: some parsers use 'securityName', some use 'instrumentName'
+    if (!holdingData.instrumentName && holdingData.securityName) {
+      holdingData.instrumentName = holdingData.securityName;
+    }
+    // marketValuePortfolioCurrency: some use 'marketValue', some use 'marketValuePortfolioCurrency'
+    if (holdingData.marketValuePortfolioCurrency === undefined && holdingData.marketValue !== undefined) {
+      holdingData.marketValuePortfolioCurrency = holdingData.marketValue;
+    }
 
     // Use parser's uniqueKey if provided, otherwise generate one
     // This allows bank-specific parsers to define their own uniqueKey logic
@@ -213,6 +256,13 @@ export const PMSHoldingsHelpers = {
           { multi: true }
         );
 
+        // STEP 4: Post-insert race condition check
+        // If concurrent processing created multiple isLatest=true records, fix it immediately
+        const raceCheck = await this.checkAndFixDuplicatesForKey(uniqueKey);
+        if (raceCheck.hadDuplicates) {
+          console.log(`[PMS_HOLDINGS] Fixed ${raceCheck.fixedCount} duplicate(s) for ${holdingData.securityName} after insert`);
+        }
+
         console.log(`[PMS_HOLDINGS] Created version ${(existing.version || 0) + 1} for ${holdingData.securityName}`);
         return { _id: newHoldingId, isNew: false, updated: true, versioned: true };
       } else {
@@ -301,6 +351,12 @@ export const PMSHoldingsHelpers = {
           linkedBy: existingByIdentifier.linkedBy
         });
 
+        // Post-insert race condition check
+        const raceCheck = await this.checkAndFixDuplicatesForKey(uniqueKey);
+        if (raceCheck.hadDuplicates) {
+          console.log(`[PMS_HOLDINGS] Fixed ${raceCheck.fixedCount} duplicate(s) for ${holdingData.securityName} (key migration)`);
+        }
+
         return { _id: newHoldingId, isNew: false, updated: true, versioned: true, keyMigrated: true };
       }
 
@@ -322,6 +378,13 @@ export const PMSHoldingsHelpers = {
         linkedAt: null,
         linkedBy: null
       });
+
+      // Post-insert race condition check for concurrent first-inserts
+      const raceCheck = await this.checkAndFixDuplicatesForKey(uniqueKey);
+      if (raceCheck.hadDuplicates) {
+        console.log(`[PMS_HOLDINGS] Fixed ${raceCheck.fixedCount} duplicate(s) for ${holdingData.securityName} (concurrent first inserts)`);
+      }
+
       console.log(`[PMS_HOLDINGS] Created initial version for ${holdingData.securityName}`);
       return { _id: holdingId, isNew: true, updated: false, versioned: false };
     }
@@ -550,6 +613,620 @@ export const PMSHoldingsHelpers = {
       uniqueKeysFixed: fixedCount,
       totalRecords,
       fixedRecordIds: dryRun ? latestIds.map(id => id.toString()).slice(0, 20) : [], // Only include sample in dry run
+      dryRun,
+      elapsed
+    };
+  },
+
+  /**
+   * Clean up duplicate isLatest=true records caused by race conditions
+   * When concurrent file processing creates multiple "latest" records for the same uniqueKey,
+   * this method keeps only the newest one (by snapshotDate, then version) and marks others as false.
+   *
+   * @param {object} options - Cleanup options
+   * @param {string} [options.bankId] - Limit cleanup to specific bank
+   * @param {string} [options.portfolioCode] - Limit cleanup to specific portfolio
+   * @param {boolean} [options.dryRun=true] - If true, only report duplicates without fixing
+   * @returns {Promise<{duplicateKeysFound: number, recordsFixed: number, details: array}>}
+   */
+  async cleanupDuplicateLatest(options = {}) {
+    const { bankId, portfolioCode, dryRun = true } = options;
+    const startTime = Date.now();
+
+    console.log(`[PMS_HOLDINGS] cleanupDuplicateLatest started (dryRun=${dryRun}, bankId=${bankId || 'all'}, portfolio=${portfolioCode || 'all'})`);
+
+    // Build match query for filtering
+    const matchQuery = { isLatest: true };
+    if (bankId) matchQuery.bankId = bankId;
+    if (portfolioCode) matchQuery.portfolioCode = portfolioCode;
+
+    // Aggregation pipeline to find uniqueKeys with multiple isLatest=true records
+    const pipeline = [
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: '$uniqueKey',
+          count: { $sum: 1 },
+          records: {
+            $push: {
+              _id: '$_id',
+              snapshotDate: '$snapshotDate',
+              version: '$version',
+              securityName: '$securityName',
+              portfolioCode: '$portfolioCode'
+            }
+          }
+        }
+      },
+      { $match: { count: { $gt: 1 } } }, // Only uniqueKeys with duplicates
+      { $sort: { count: -1 } } // Most duplicates first
+    ];
+
+    const rawCollection = PMSHoldingsCollection.rawCollection();
+    const duplicateGroups = await rawCollection.aggregate(pipeline).toArray();
+
+    console.log(`[PMS_HOLDINGS] Found ${duplicateGroups.length} uniqueKeys with duplicate isLatest=true records`);
+
+    if (duplicateGroups.length === 0) {
+      return {
+        duplicateKeysFound: 0,
+        recordsFixed: 0,
+        details: [],
+        dryRun,
+        elapsed: Date.now() - startTime
+      };
+    }
+
+    const details = [];
+    let totalRecordsFixed = 0;
+
+    for (const group of duplicateGroups) {
+      // Sort records: newest snapshotDate first, then highest version
+      const sortedRecords = group.records.sort((a, b) => {
+        const dateA = new Date(a.snapshotDate).getTime();
+        const dateB = new Date(b.snapshotDate).getTime();
+        if (dateB !== dateA) return dateB - dateA; // Newest date first
+        return (b.version || 0) - (a.version || 0); // Highest version first
+      });
+
+      const keepRecord = sortedRecords[0];
+      const fixRecords = sortedRecords.slice(1);
+
+      const detail = {
+        uniqueKey: group._id.substring(0, 16) + '...',
+        securityName: keepRecord.securityName,
+        portfolioCode: keepRecord.portfolioCode,
+        duplicateCount: group.count,
+        keepId: keepRecord._id.toString(),
+        keepDate: keepRecord.snapshotDate,
+        fixIds: fixRecords.map(r => r._id.toString())
+      };
+      details.push(detail);
+
+      if (!dryRun) {
+        // Mark all but the newest as isLatest: false
+        const idsToFix = fixRecords.map(r => r._id);
+        const now = new Date();
+
+        await PMSHoldingsCollection.updateAsync(
+          { _id: { $in: idsToFix } },
+          {
+            $set: {
+              isLatest: false,
+              replacedAt: now,
+              replacedBy: keepRecord._id,
+              updatedAt: now
+            }
+          },
+          { multi: true }
+        );
+
+        totalRecordsFixed += fixRecords.length;
+        console.log(`[PMS_HOLDINGS] Fixed ${fixRecords.length} duplicate records for ${keepRecord.securityName} (keeping ${keepRecord.snapshotDate})`);
+      } else {
+        totalRecordsFixed += fixRecords.length;
+        console.log(`[PMS_HOLDINGS] DRY RUN: Would fix ${fixRecords.length} duplicates for ${keepRecord.securityName}`);
+      }
+    }
+
+    const elapsed = Date.now() - startTime;
+    console.log(`[PMS_HOLDINGS] cleanupDuplicateLatest completed in ${elapsed}ms: ${duplicateGroups.length} keys with duplicates, ${totalRecordsFixed} records ${dryRun ? 'would be ' : ''}fixed`);
+
+    return {
+      duplicateKeysFound: duplicateGroups.length,
+      recordsFixed: totalRecordsFixed,
+      details: details.slice(0, 50), // Limit details to first 50 for readability
+      dryRun,
+      elapsed
+    };
+  },
+
+  /**
+   * Check and fix duplicate isLatest records for a specific uniqueKey
+   * Called after insert to detect and handle race conditions immediately
+   *
+   * @param {string} uniqueKey - The uniqueKey to check
+   * @returns {Promise<{hadDuplicates: boolean, fixedCount: number}>}
+   */
+  async checkAndFixDuplicatesForKey(uniqueKey) {
+    const latestRecords = await PMSHoldingsCollection.find({
+      uniqueKey,
+      isLatest: true
+    }, {
+      sort: { snapshotDate: -1, version: -1 }
+    }).fetchAsync();
+
+    if (latestRecords.length <= 1) {
+      return { hadDuplicates: false, fixedCount: 0 };
+    }
+
+    // Race condition detected! Keep only the newest
+    console.log(`[PMS_HOLDINGS] Race condition detected: ${latestRecords.length} isLatest=true records for same uniqueKey`);
+
+    const keepRecord = latestRecords[0];
+    const fixRecords = latestRecords.slice(1);
+    const now = new Date();
+
+    await PMSHoldingsCollection.updateAsync(
+      { _id: { $in: fixRecords.map(r => r._id) } },
+      {
+        $set: {
+          isLatest: false,
+          replacedAt: now,
+          replacedBy: keepRecord._id,
+          updatedAt: now
+        }
+      },
+      { multi: true }
+    );
+
+    console.log(`[PMS_HOLDINGS] Fixed race condition: kept ${keepRecord.snapshotDate}, marked ${fixRecords.length} as not latest`);
+
+    return { hadDuplicates: true, fixedCount: fixRecords.length };
+  },
+
+  /**
+   * Clean up duplicate positions that have different uniqueKeys but represent the same holding
+   * This happens when parser uniqueKey logic changes (e.g., from positionNumber to ISIN-based)
+   *
+   * Identifies duplicates by: bankId + portfolioCode (base) + isin
+   * Keeps the newest record (by snapshotDate) as isLatest=true
+   * Marks older records as isLatest=false
+   *
+   * @param {object} options - Cleanup options
+   * @param {string} [options.bankId] - Limit to specific bank
+   * @param {boolean} [options.dryRun=true] - If true, only report without fixing
+   * @returns {Promise<{duplicateGroupsFound: number, recordsFixed: number, details: array}>}
+   */
+  async cleanupDuplicatesByIdentity(options = {}) {
+    const { bankId, dryRun = true } = options;
+    const startTime = Date.now();
+
+    console.log(`[PMS_HOLDINGS] cleanupDuplicatesByIdentity started (dryRun=${dryRun}, bankId=${bankId || 'all'})`);
+
+    // Build match query - only look at isLatest=true records with ISIN
+    const matchQuery = { isLatest: true, isin: { $ne: null, $exists: true } };
+    if (bankId) matchQuery.bankId = bankId;
+
+    // Aggregation to find same (bankId, basePortfolioCode, isin) with different uniqueKeys
+    const pipeline = [
+      { $match: matchQuery },
+      // Normalize portfolioCode to base (strip .XXX suffix)
+      {
+        $addFields: {
+          basePortfolioCode: {
+            $arrayElemAt: [{ $split: ['$portfolioCode', '.'] }, 0]
+          }
+        }
+      },
+      // Group by identity (bankId + basePortfolio + isin)
+      {
+        $group: {
+          _id: {
+            bankId: '$bankId',
+            basePortfolioCode: '$basePortfolioCode',
+            isin: '$isin'
+          },
+          count: { $sum: 1 },
+          uniqueKeys: { $addToSet: '$uniqueKey' },
+          records: {
+            $push: {
+              _id: '$_id',
+              uniqueKey: '$uniqueKey',
+              snapshotDate: '$snapshotDate',
+              version: '$version',
+              securityName: '$securityName',
+              portfolioCode: '$portfolioCode'
+            }
+          }
+        }
+      },
+      // Only groups with multiple uniqueKeys (the problem case)
+      {
+        $match: {
+          $expr: { $gt: [{ $size: '$uniqueKeys' }, 1] }
+        }
+      },
+      { $sort: { count: -1 } }
+    ];
+
+    const rawCollection = PMSHoldingsCollection.rawCollection();
+    const duplicateGroups = await rawCollection.aggregate(pipeline).toArray();
+
+    console.log(`[PMS_HOLDINGS] Found ${duplicateGroups.length} positions with multiple uniqueKeys (same bankId/portfolio/isin)`);
+
+    if (duplicateGroups.length === 0) {
+      return {
+        duplicateGroupsFound: 0,
+        recordsFixed: 0,
+        details: [],
+        dryRun,
+        elapsed: Date.now() - startTime
+      };
+    }
+
+    const details = [];
+    let totalRecordsFixed = 0;
+
+    for (const group of duplicateGroups) {
+      // Sort records: newest snapshotDate first, then highest version
+      const sortedRecords = group.records.sort((a, b) => {
+        const dateA = new Date(a.snapshotDate).getTime();
+        const dateB = new Date(b.snapshotDate).getTime();
+        if (dateB !== dateA) return dateB - dateA;
+        return (b.version || 0) - (a.version || 0);
+      });
+
+      const keepRecord = sortedRecords[0];
+      const fixRecords = sortedRecords.slice(1);
+
+      const detail = {
+        isin: group._id.isin,
+        basePortfolioCode: group._id.basePortfolioCode,
+        securityName: keepRecord.securityName,
+        totalRecords: group.count,
+        uniqueKeysCount: group.uniqueKeys.length,
+        keepDate: keepRecord.snapshotDate,
+        keepUniqueKey: keepRecord.uniqueKey.substring(0, 12) + '...',
+        fixCount: fixRecords.length
+      };
+      details.push(detail);
+
+      if (!dryRun) {
+        const idsToFix = fixRecords.map(r => r._id);
+        const now = new Date();
+
+        // Mark duplicate records as not latest
+        await PMSHoldingsCollection.updateAsync(
+          { _id: { $in: idsToFix } },
+          {
+            $set: {
+              isLatest: false,
+              replacedAt: now,
+              replacedBy: keepRecord._id,
+              updatedAt: now
+            }
+          },
+          { multi: true }
+        );
+
+        // ALSO: Deactivate ALL records with stale uniqueKeys (not just the isLatest ones)
+        // This ensures historical queries don't show duplicates
+        const staleUniqueKeys = [...new Set(fixRecords.map(r => r.uniqueKey))];
+        if (staleUniqueKeys.length > 0) {
+          const deactivateResult = await PMSHoldingsCollection.updateAsync(
+            { uniqueKey: { $in: staleUniqueKeys } },
+            {
+              $set: {
+                isActive: false,
+                isLatest: false,
+                replacedAt: now,
+                replacedBy: keepRecord._id,
+                updatedAt: now
+              }
+            },
+            { multi: true }
+          );
+          console.log(`[PMS_HOLDINGS] Deactivated ${deactivateResult} records with stale uniqueKeys for ${keepRecord.securityName}`);
+        }
+
+        totalRecordsFixed += fixRecords.length;
+        console.log(`[PMS_HOLDINGS] Fixed ${fixRecords.length} duplicate(s) for ${keepRecord.securityName} (${group._id.isin}) - kept ${keepRecord.snapshotDate}`);
+      } else {
+        totalRecordsFixed += fixRecords.length;
+        console.log(`[PMS_HOLDINGS] DRY RUN: Would fix ${fixRecords.length} duplicate(s) for ${keepRecord.securityName} (${group._id.isin})`);
+      }
+    }
+
+    const elapsed = Date.now() - startTime;
+    console.log(`[PMS_HOLDINGS] cleanupDuplicatesByIdentity completed in ${elapsed}ms: ${duplicateGroups.length} groups, ${totalRecordsFixed} records ${dryRun ? 'would be ' : ''}fixed`);
+
+    return {
+      duplicateGroupsFound: duplicateGroups.length,
+      recordsFixed: totalRecordsFixed,
+      details: details.slice(0, 50),
+      dryRun,
+      elapsed
+    };
+  },
+
+  /**
+   * Deactivate records with stale uniqueKeys - for positions that have already been partially cleaned
+   * This method looks at ALL records (not just isLatest=true) to find and deactivate stale uniqueKeys
+   *
+   * @param {object} options - Cleanup options
+   * @param {string} [options.bankId] - Limit to specific bank
+   * @param {boolean} [options.dryRun=true] - If true, only report without fixing
+   * @returns {Promise<{staleKeysFound: number, recordsDeactivated: number, details: array}>}
+   */
+  async deactivateStaleUniqueKeys(options = {}) {
+    const { bankId, dryRun = true } = options;
+    const startTime = Date.now();
+
+    console.log(`[PMS_HOLDINGS] deactivateStaleUniqueKeys started (dryRun=${dryRun}, bankId=${bankId || 'all'})`);
+
+    // Build match query - look at ALL records with ISIN (not just isLatest=true)
+    const matchQuery = { isin: { $ne: null, $exists: true }, isActive: true };
+    if (bankId) matchQuery.bankId = bankId;
+
+    // Find positions with multiple uniqueKeys
+    const pipeline = [
+      { $match: matchQuery },
+      {
+        $addFields: {
+          basePortfolioCode: {
+            $arrayElemAt: [{ $split: ['$portfolioCode', '.'] }, 0]
+          }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            bankId: '$bankId',
+            basePortfolioCode: '$basePortfolioCode',
+            isin: '$isin'
+          },
+          uniqueKeys: { $addToSet: '$uniqueKey' },
+          totalCount: { $sum: 1 },
+          latestRecord: {
+            $max: {
+              snapshotDate: '$snapshotDate',
+              uniqueKey: '$uniqueKey',
+              securityName: '$securityName'
+            }
+          },
+          recordsByKey: {
+            $push: {
+              uniqueKey: '$uniqueKey',
+              snapshotDate: '$snapshotDate',
+              isLatest: '$isLatest'
+            }
+          }
+        }
+      },
+      {
+        $match: {
+          $expr: { $gt: [{ $size: '$uniqueKeys' }, 1] }
+        }
+      },
+      { $sort: { totalCount: -1 } }
+    ];
+
+    const rawCollection = PMSHoldingsCollection.rawCollection();
+    const duplicateGroups = await rawCollection.aggregate(pipeline).toArray();
+
+    console.log(`[PMS_HOLDINGS] Found ${duplicateGroups.length} positions with multiple active uniqueKeys`);
+
+    if (duplicateGroups.length === 0) {
+      return {
+        staleKeysFound: 0,
+        recordsDeactivated: 0,
+        details: [],
+        dryRun,
+        elapsed: Date.now() - startTime
+      };
+    }
+
+    const details = [];
+    let totalRecordsDeactivated = 0;
+    let totalStaleKeys = 0;
+
+    for (const group of duplicateGroups) {
+      // Find the "correct" uniqueKey - the one with the newest snapshotDate
+      const keyDates = {};
+      for (const rec of group.recordsByKey) {
+        const date = new Date(rec.snapshotDate).getTime();
+        if (!keyDates[rec.uniqueKey] || date > keyDates[rec.uniqueKey]) {
+          keyDates[rec.uniqueKey] = date;
+        }
+      }
+
+      // Sort keys by newest date
+      const sortedKeys = Object.entries(keyDates).sort((a, b) => b[1] - a[1]);
+      const correctKey = sortedKeys[0][0];
+      const staleKeys = sortedKeys.slice(1).map(([key]) => key);
+
+      if (staleKeys.length === 0) continue;
+
+      const detail = {
+        isin: group._id.isin,
+        basePortfolioCode: group._id.basePortfolioCode,
+        securityName: group.latestRecord.securityName,
+        correctKey: correctKey.substring(0, 12) + '...',
+        staleKeysCount: staleKeys.length,
+        totalRecords: group.totalCount
+      };
+      details.push(detail);
+      totalStaleKeys += staleKeys.length;
+
+      if (!dryRun) {
+        const now = new Date();
+        const deactivateResult = await PMSHoldingsCollection.updateAsync(
+          { uniqueKey: { $in: staleKeys }, isActive: true },
+          {
+            $set: {
+              isActive: false,
+              isLatest: false,
+              replacedAt: now,
+              updatedAt: now
+            }
+          },
+          { multi: true }
+        );
+
+        totalRecordsDeactivated += deactivateResult;
+        console.log(`[PMS_HOLDINGS] Deactivated ${deactivateResult} records with stale uniqueKeys for ${group.latestRecord.securityName} (${group._id.isin})`);
+      } else {
+        // Count how many would be deactivated
+        const wouldDeactivate = await PMSHoldingsCollection.find({
+          uniqueKey: { $in: staleKeys },
+          isActive: true
+        }).countAsync();
+        totalRecordsDeactivated += wouldDeactivate;
+        console.log(`[PMS_HOLDINGS] DRY RUN: Would deactivate ${wouldDeactivate} records for ${group.latestRecord.securityName} (${group._id.isin})`);
+      }
+    }
+
+    const elapsed = Date.now() - startTime;
+    console.log(`[PMS_HOLDINGS] deactivateStaleUniqueKeys completed in ${elapsed}ms: ${totalStaleKeys} stale keys, ${totalRecordsDeactivated} records ${dryRun ? 'would be ' : ''}deactivated`);
+
+    return {
+      staleKeysFound: totalStaleKeys,
+      recordsDeactivated: totalRecordsDeactivated,
+      details: details.slice(0, 50),
+      dryRun,
+      elapsed
+    };
+  },
+
+  /**
+   * Deactivate ALL historical records for positions that have been marked as sold
+   *
+   * Problem: When an FX forward (or any position) is closed/sold, only the isLatest=true record
+   * gets marked isActive=false. Historical records (same uniqueKey, isLatest=false) keep isActive=true.
+   * This causes historical snapshot queries to show closed positions.
+   *
+   * Solution: Find all uniqueKeys where isLatest=true AND isActive=false AND soldAt exists,
+   * then mark ALL records with those uniqueKeys as isActive=false.
+   *
+   * @param {object} options - Cleanup options
+   * @param {string} [options.bankId] - Limit to specific bank
+   * @param {string} [options.portfolioCode] - Limit to specific portfolio
+   * @param {boolean} [options.dryRun=true] - If true, only report without fixing
+   * @returns {Promise<{soldPositionsFound: number, historicalRecordsFixed: number, details: array}>}
+   */
+  async deactivateSoldPositions(options = {}) {
+    const { bankId, portfolioCode, dryRun = true } = options;
+    const startTime = Date.now();
+
+    console.log(`[PMS_HOLDINGS] deactivateSoldPositions started (dryRun=${dryRun}, bankId=${bankId || 'all'}, portfolio=${portfolioCode || 'all'})`);
+
+    // Build match query for finding sold positions (isLatest=true, isActive=false, soldAt exists)
+    const soldQuery = {
+      isLatest: true,
+      isActive: false,
+      soldAt: { $exists: true, $ne: null }
+    };
+    if (bankId) soldQuery.bankId = bankId;
+    if (portfolioCode) soldQuery.portfolioCode = portfolioCode;
+
+    // Find all sold positions
+    const soldPositions = await PMSHoldingsCollection.find(soldQuery, {
+      fields: { uniqueKey: 1, securityName: 1, portfolioCode: 1, soldAt: 1 }
+    }).fetchAsync();
+
+    console.log(`[PMS_HOLDINGS] Found ${soldPositions.length} sold positions (isLatest=true, isActive=false)`);
+
+    if (soldPositions.length === 0) {
+      return {
+        soldPositionsFound: 0,
+        historicalRecordsFixed: 0,
+        details: [],
+        dryRun,
+        elapsed: Date.now() - startTime
+      };
+    }
+
+    // Collect all uniqueKeys from sold positions
+    const soldUniqueKeys = soldPositions.map(p => p.uniqueKey);
+
+    // Find historical records that are still active (isActive=true or undefined) for these uniqueKeys
+    const historicalQuery = {
+      uniqueKey: { $in: soldUniqueKeys },
+      isLatest: { $ne: true },  // Historical records only
+      $or: [
+        { isActive: true },
+        { isActive: { $exists: false } }
+      ]
+    };
+
+    const historicalRecords = await PMSHoldingsCollection.find(historicalQuery, {
+      fields: { _id: 1, uniqueKey: 1, securityName: 1, portfolioCode: 1, snapshotDate: 1 }
+    }).fetchAsync();
+
+    console.log(`[PMS_HOLDINGS] Found ${historicalRecords.length} historical records still marked as active`);
+
+    // Group by uniqueKey for detailed reporting
+    const recordsByKey = {};
+    for (const rec of historicalRecords) {
+      if (!recordsByKey[rec.uniqueKey]) {
+        recordsByKey[rec.uniqueKey] = {
+          securityName: rec.securityName,
+          portfolioCode: rec.portfolioCode,
+          records: []
+        };
+      }
+      recordsByKey[rec.uniqueKey].records.push({
+        _id: rec._id,
+        snapshotDate: rec.snapshotDate
+      });
+    }
+
+    const details = [];
+    for (const [uniqueKey, data] of Object.entries(recordsByKey)) {
+      const soldPosition = soldPositions.find(p => p.uniqueKey === uniqueKey);
+      details.push({
+        uniqueKey: uniqueKey.substring(0, 16) + '...',
+        securityName: data.securityName,
+        portfolioCode: data.portfolioCode,
+        soldAt: soldPosition?.soldAt,
+        historicalRecordsToFix: data.records.length
+      });
+    }
+
+    let totalRecordsFixed = 0;
+
+    if (!dryRun && historicalRecords.length > 0) {
+      const now = new Date();
+
+      // Bulk update all historical records to isActive=false
+      const idsToFix = historicalRecords.map(r => r._id);
+
+      const result = await PMSHoldingsCollection.updateAsync(
+        { _id: { $in: idsToFix } },
+        {
+          $set: {
+            isActive: false,
+            updatedAt: now
+          }
+        },
+        { multi: true }
+      );
+
+      totalRecordsFixed = result;
+      console.log(`[PMS_HOLDINGS] Fixed ${totalRecordsFixed} historical records (marked isActive=false)`);
+    } else if (dryRun) {
+      totalRecordsFixed = historicalRecords.length;
+      console.log(`[PMS_HOLDINGS] DRY RUN: Would fix ${totalRecordsFixed} historical records`);
+    }
+
+    const elapsed = Date.now() - startTime;
+    console.log(`[PMS_HOLDINGS] deactivateSoldPositions completed in ${elapsed}ms: ${soldPositions.length} sold positions, ${totalRecordsFixed} historical records ${dryRun ? 'would be ' : ''}fixed`);
+
+    return {
+      soldPositionsFound: soldPositions.length,
+      historicalRecordsFixed: totalRecordsFixed,
+      details: details.slice(0, 50),
       dryRun,
       elapsed
     };

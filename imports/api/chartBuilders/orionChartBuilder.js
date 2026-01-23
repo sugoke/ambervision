@@ -1,4 +1,5 @@
 import { MarketDataCacheCollection } from '/imports/api/marketDataCache';
+import { CurrencyNormalization } from '/imports/utils/currencyNormalization';
 
 /**
  * Orion Chart Builder
@@ -41,11 +42,14 @@ export const OrionChartBuilder = {
         const underlying = underlyingData[index];
 
         // Generate performance data using actual stock prices rebased to 100
+        // Use strike price (initialPrice from evaluation) as the rebasing reference
+        const strikePrice = underlying.initialPrice || 100;
         const performanceData = await this.generateRebasedStockData(
           underlying.fullTicker || `${underlying.ticker}.US`,
           tradeDate,
           maturityDate,
-          today
+          today,
+          strikePrice
         );
 
         // Check if barrier was hit and find first hit date
@@ -363,9 +367,14 @@ export const OrionChartBuilder = {
   },
 
   /**
-   * Generate rebased stock data (normalized to 100 at trade date)
+   * Generate rebased stock data (normalized to 100 at strike price)
+   * @param {string} ticker - Full ticker symbol
+   * @param {Date} tradeDate - Product trade date
+   * @param {Date} maturityDate - Product maturity date
+   * @param {Date} today - Current date
+   * @param {number} strikePrice - Strike price from product (initial reference level)
    */
-  async generateRebasedStockData(ticker, tradeDate, maturityDate, today) {
+  async generateRebasedStockData(ticker, tradeDate, maturityDate, today, strikePrice = 100) {
     try {
       const tradeDateStr = tradeDate.toISOString().split('T')[0];
       const maturityDateStr = maturityDate.toISOString().split('T')[0];
@@ -386,7 +395,7 @@ export const OrionChartBuilder = {
         return this.generateSyntheticData(tradeDate, maturityDate, today);
       }
 
-      const history = cacheDoc.history.filter(record => {
+      let history = cacheDoc.history.filter(record => {
         const recordDate = new Date(record.date).toISOString().split('T')[0];
         return recordDate >= tradeDateStr && recordDate <= maturityDateStr;
       });
@@ -395,10 +404,22 @@ export const OrionChartBuilder = {
         return this.generateSyntheticData(tradeDate, maturityDate, today);
       }
 
-      const initialPriceRecord = history.find(p =>
-        new Date(p.date).toISOString().split('T')[0] === tradeDateStr
-      ) || history[0];
-      const initialPrice = initialPriceRecord?.adjustedClose || initialPriceRecord?.close || 100;
+      // Use strike price as initial reference (matches table calculation)
+      // Fall back to market cache only if strike is not available
+      const initialPrice = strikePrice || (() => {
+        const initialPriceRecord = history.find(p =>
+          new Date(p.date).toISOString().split('T')[0] === tradeDateStr
+        ) || history[0];
+        return initialPriceRecord?.adjustedClose || initialPriceRecord?.close || 100;
+      })();
+
+      // Normalize GBp to GBP for LSE stocks
+      // LSE prices are quoted in pence, but strike prices are in pounds
+      history = CurrencyNormalization.normalizeHistoricalPrices(
+        history,
+        initialPrice,
+        ticker
+      );
 
       return history.map(record => ({
         x: new Date(record.date).toISOString().split('T')[0],

@@ -32,7 +32,7 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
       label: 'Create Product',
       icon: '➕',
       description: 'Design new products',
-      role: 'client'
+      role: 'rm'
     },
     {
       id: 'profile',
@@ -95,7 +95,7 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
   ];
 
   const getRoleLevel = (role) => {
-    const levels = { client: 1, rm: 2, admin: 2, superadmin: 3 };
+    const levels = { client: 1, compliance: 2, rm: 2, admin: 2, superadmin: 3 };
     return levels[role] || 0;
   };
 

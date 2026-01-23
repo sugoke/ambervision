@@ -304,6 +304,45 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                       </span>
                     </div>
                   </label>
+
+                  <label style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.75rem',
+                    cursor: 'pointer',
+                    padding: '0.5rem',
+                    borderRadius: '6px',
+                    background: 'var(--bg-primary)',
+                    transition: 'background-color 0.2s ease'
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={structureParams?.guaranteedCoupon === true}
+                      style={{
+                        width: '18px',
+                        height: '18px',
+                        accentColor: 'var(--accent-color)'
+                      }}
+                      onChange={(e) => onParamChange && onParamChange('guaranteedCoupon', e.target.checked)}
+                    />
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                      <span style={{
+                        fontSize: '0.9rem',
+                        color: 'var(--text-primary)',
+                        fontWeight: '500'
+                      }}>
+                        💰 Guaranteed Coupon - Paid regardless of performance
+                      </span>
+                      <span style={{
+                        fontSize: '0.75rem',
+                        color: 'var(--text-muted)',
+                        fontWeight: '400',
+                        fontStyle: 'italic'
+                      }}>
+                        Coupon is paid at each observation as long as the product is alive
+                      </span>
+                    </div>
+                  </label>
                 </div>
               </div>
             </div>

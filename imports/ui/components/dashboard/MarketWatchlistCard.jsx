@@ -41,36 +41,74 @@ const MarketWatchlistCard = ({ watchlist, onTickerClick }) => {
       color: 'var(--text-muted)',
       marginLeft: 'auto'
     },
-    grid: {
-      display: 'grid',
-      gridTemplateColumns: 'repeat(2, 1fr)',
-      gap: '8px',
+    tableContainer: {
       flex: 1,
       overflow: 'auto',
       maxHeight: '220px'
     },
-    tickerItem: {
+    table: {
+      width: '100%',
+      borderCollapse: 'collapse',
+      fontSize: '13px'
+    },
+    th: {
+      textAlign: 'left',
+      padding: '8px 12px',
+      fontSize: '11px',
+      fontWeight: '600',
+      color: 'var(--text-muted)',
+      textTransform: 'uppercase',
+      letterSpacing: '0.5px',
+      borderBottom: '1px solid var(--border-color)',
+      position: 'sticky',
+      top: 0,
+      backgroundColor: 'var(--bg-secondary)'
+    },
+    thRight: {
+      textAlign: 'right',
+      padding: '8px 12px',
+      fontSize: '11px',
+      fontWeight: '600',
+      color: 'var(--text-muted)',
+      textTransform: 'uppercase',
+      letterSpacing: '0.5px',
+      borderBottom: '1px solid var(--border-color)',
+      position: 'sticky',
+      top: 0,
+      backgroundColor: 'var(--bg-secondary)'
+    },
+    tr: {
+      cursor: 'pointer',
+      transition: 'background-color 0.15s'
+    },
+    td: {
+      padding: '10px 12px',
+      borderBottom: '1px solid var(--border-color)',
+      color: 'var(--text-primary)'
+    },
+    tdRight: {
+      padding: '10px 12px',
+      borderBottom: '1px solid var(--border-color)',
+      textAlign: 'right'
+    },
+    tickerCell: {
       display: 'flex',
       alignItems: 'center',
-      gap: '10px',
-      padding: '10px',
-      borderRadius: '8px',
-      backgroundColor: 'var(--bg-tertiary)',
-      cursor: 'pointer',
-      transition: 'transform 0.15s, background-color 0.15s'
+      gap: '10px'
     },
     logo: {
-      width: '32px',
-      height: '32px',
-      borderRadius: '8px',
+      width: '28px',
+      height: '28px',
+      borderRadius: '6px',
       backgroundColor: 'var(--bg-primary)',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      fontSize: '12px',
+      fontSize: '10px',
       fontWeight: '700',
       color: 'var(--text-muted)',
-      overflow: 'hidden'
+      overflow: 'hidden',
+      flexShrink: 0
     },
     logoImg: {
       width: '100%',
@@ -78,7 +116,6 @@ const MarketWatchlistCard = ({ watchlist, onTickerClick }) => {
       objectFit: 'contain'
     },
     tickerInfo: {
-      flex: 1,
       minWidth: 0
     },
     symbol: {
@@ -86,17 +123,20 @@ const MarketWatchlistCard = ({ watchlist, onTickerClick }) => {
       fontWeight: '600',
       color: 'var(--text-primary)'
     },
-    price: {
+    tickerCode: {
       fontSize: '11px',
       color: 'var(--text-muted)',
-      marginTop: '2px'
+      marginTop: '1px'
+    },
+    price: {
+      fontSize: '13px',
+      color: 'var(--text-primary)',
+      fontWeight: '500'
     },
     change: (isPositive) => ({
-      fontSize: '12px',
+      fontSize: '13px',
       fontWeight: '600',
-      color: isPositive ? '#10b981' : '#ef4444',
-      textAlign: 'right',
-      whiteSpace: 'nowrap'
+      color: isPositive ? '#10b981' : '#ef4444'
     }),
     emptyState: {
       display: 'flex',
@@ -106,8 +146,7 @@ const MarketWatchlistCard = ({ watchlist, onTickerClick }) => {
       padding: '30px 20px',
       color: 'var(--text-muted)',
       textAlign: 'center',
-      flex: 1,
-      gridColumn: '1 / -1'
+      flex: 1
     },
     emptyIcon: {
       width: '40px',
@@ -138,51 +177,69 @@ const MarketWatchlistCard = ({ watchlist, onTickerClick }) => {
         <span style={styles.subtitle}>from client holdings</span>
       </div>
 
-      <div style={styles.grid}>
-        {!watchlist || watchlist.length === 0 ? (
-          <div style={styles.emptyState}>
-            <svg style={styles.emptyIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-            </svg>
-            <span>No securities in watchlist</span>
-          </div>
-        ) : (
-          watchlist.map((ticker, idx) => (
-            <div
-              key={idx}
-              style={styles.tickerItem}
-              onClick={() => onTickerClick?.(ticker)}
-              onMouseOver={(e) => {
-                e.currentTarget.style.transform = 'scale(1.02)';
-                e.currentTarget.style.backgroundColor = 'var(--bg-primary)';
-              }}
-              onMouseOut={(e) => {
-                e.currentTarget.style.transform = 'scale(1)';
-                e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)';
-              }}
-            >
-              <div style={styles.logo}>
-                <img
-                  src={getLogoUrl(ticker.fullTicker)}
-                  alt={ticker.symbol}
-                  style={styles.logoImg}
-                  onError={(e) => {
-                    e.target.style.display = 'none';
-                    e.target.parentElement.textContent = getTickerInitials(ticker.symbol);
+      {!watchlist || watchlist.length === 0 ? (
+        <div style={styles.emptyState}>
+          <svg style={styles.emptyIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+          </svg>
+          <span>No securities in watchlist</span>
+        </div>
+      ) : (
+        <div style={styles.tableContainer}>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th style={styles.th}>Security</th>
+                <th style={styles.thRight}>Price</th>
+                <th style={styles.thRight}>Daily</th>
+              </tr>
+            </thead>
+            <tbody>
+              {watchlist.map((ticker, idx) => (
+                <tr
+                  key={idx}
+                  style={styles.tr}
+                  onClick={() => onTickerClick?.(ticker)}
+                  onMouseOver={(e) => {
+                    e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)';
                   }}
-                />
-              </div>
-              <div style={styles.tickerInfo}>
-                <div style={styles.symbol} title={ticker.symbol}>{ticker.name || ticker.symbol}</div>
-                <div style={styles.price}>{ticker.symbol} · {formatPrice(ticker.price)}</div>
-              </div>
-              <div style={styles.change(ticker.changePercent >= 0)}>
-                {formatChange(ticker.changePercent)}
-              </div>
-            </div>
-          ))
-        )}
-      </div>
+                  onMouseOut={(e) => {
+                    e.currentTarget.style.backgroundColor = 'transparent';
+                  }}
+                >
+                  <td style={styles.td}>
+                    <div style={styles.tickerCell}>
+                      <div style={styles.logo}>
+                        <img
+                          src={getLogoUrl(ticker.fullTicker)}
+                          alt={ticker.symbol}
+                          style={styles.logoImg}
+                          onError={(e) => {
+                            e.target.style.display = 'none';
+                            e.target.parentElement.textContent = getTickerInitials(ticker.symbol);
+                          }}
+                        />
+                      </div>
+                      <div style={styles.tickerInfo}>
+                        <div style={styles.symbol}>{ticker.name || ticker.symbol}</div>
+                        <div style={styles.tickerCode}>{ticker.symbol}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td style={styles.tdRight}>
+                    <span style={styles.price}>{formatPrice(ticker.price)}</span>
+                  </td>
+                  <td style={styles.tdRight}>
+                    <span style={styles.change(ticker.changePercent >= 0)}>
+                      {formatChange(ticker.changePercent)}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 };

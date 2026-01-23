@@ -376,9 +376,9 @@ const RiskAnalysisPDF = () => {
                 </div>
               </div>
 
-              {/* AI Analysis */}
+              {/* Amberlake Comment */}
               <div style={styles.aiAnalysisBox}>
-                <h4 style={styles.aiAnalysisTitle}>{lang === 'fr' ? 'Analyse IA' : 'AI Analysis'}</h4>
+                <h4 style={styles.aiAnalysisTitle}>{lang === 'fr' ? 'Commentaire Amberlake' : 'Amberlake Comment'}</h4>
                 <div style={styles.aiAnalysisText}>
                   {analysis.analysis}
                 </div>
@@ -419,8 +419,8 @@ const RiskAnalysisPDF = () => {
         <div style={styles.footer}>
           <p style={{ margin: '0 0 0.5rem 0' }}>
             {lang === 'fr'
-              ? 'Ce rapport a été généré en utilisant l\'analyse IA alimentée par Claude (Anthropic)'
-              : 'This report was generated using AI analysis powered by Claude (Anthropic)'}
+              ? 'Ce rapport a été généré en utilisant l\'analyse Amberlake'
+              : 'This report was generated using Amberlake analysis'}
           </p>
           <p style={{ margin: 0 }}>
             {tr.generatedBy} - {formatShortDate(new Date(), lang)}

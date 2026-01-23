@@ -1,4 +1,4 @@
-import React, { useMemo, memo } from 'react';
+import React, { useMemo, memo, useRef, useEffect, useState } from 'react';
 import { useFind, useSubscribe } from 'meteor/react-meteor-data';
 import { TickerPriceCacheCollection } from '/imports/api/tickerCache';
 import { getCurrencyFromTicker } from '/imports/utils/tickerUtils';
@@ -163,7 +163,28 @@ const TickerLogo = ({ symbol, name, type }) => {
   );
 };
 
+// Fixed scroll speed in pixels per second (lower value = longer duration = slower scroll)
+// 15px/sec is comfortable reading speed for ticker ribbons
+const SCROLL_SPEED_PX_PER_SEC = 15;
+
 const MarketTicker = () => {
+  // Ref to measure content width for dynamic animation duration
+  const contentRef = useRef(null);
+  const animationDurationRef = useRef(200); // Default 200s for slow readable speed
+  const [isReady, setIsReady] = useState(false);
+
+  // Hide/show state with localStorage persistence
+  const [isHidden, setIsHidden] = useState(() => {
+    const saved = localStorage.getItem('marketTickerHidden');
+    return saved === 'true';
+  });
+
+  const toggleTicker = () => {
+    const newValue = !isHidden;
+    setIsHidden(newValue);
+    localStorage.setItem('marketTickerHidden', newValue.toString());
+  };
+
   // Subscribe to ticker prices from database (updated by cron job)
   const tickerPricesLoading = useSubscribe('tickerPrices');
 
@@ -200,6 +221,46 @@ const MarketTicker = () => {
       };
     });
   }, [tickerPricesFromDB]);
+
+  // Calculate animation duration once when content is first rendered
+  // Use ref to avoid triggering re-renders which restart the animation
+  useEffect(() => {
+    if (contentRef.current && marketData.length > 0 && !isReady) {
+      // Use requestAnimationFrame + small delay to ensure content is fully rendered and laid out
+      const measureAndSetDuration = () => {
+        requestAnimationFrame(() => {
+          const contentWidth = contentRef.current?.scrollWidth || 0;
+
+          // Safety check: if content width is too small, wait and retry
+          // Minimum expected width = items * ~200px each * 2 (for duplicate)
+          const minExpectedWidth = marketData.length * 200 * 2;
+          if (contentWidth < minExpectedWidth && contentWidth > 0) {
+            // Content not fully rendered yet, retry in 200ms
+            setTimeout(measureAndSetDuration, 200);
+            return;
+          }
+
+          // Total distance: scroll one full set of content (duplicated for seamless loop)
+          // Animation goes from 0% to -50% (half the duplicated content width)
+          const totalDistance = contentWidth / 2;
+          const duration = totalDistance / SCROLL_SPEED_PX_PER_SEC;
+
+          // Minimum 60 seconds for comfortable reading, cap at 300 seconds
+          animationDurationRef.current = Math.min(Math.max(duration, 60), 300);
+
+          // Set CSS custom property for animation duration
+          if (contentRef.current) {
+            contentRef.current.style.setProperty('--ticker-duration', `${animationDurationRef.current}s`);
+          }
+          setIsReady(true);
+        });
+      };
+
+      // Initial delay to let React finish rendering
+      const timer = setTimeout(measureAndSetDuration, 150);
+      return () => clearTimeout(timer);
+    }
+  }, [marketData.length, isReady]);
 
   const formatPrice = (price, type, loading, currency) => {
     if (loading) return '...';
@@ -240,15 +301,70 @@ const MarketTicker = () => {
     return changePercent >= 0 ? `+${changePercent.toFixed(2)}%` : `${changePercent.toFixed(2)}%`;
   };
 
+  // If hidden, show minimal collapsed bar with toggle button
+  if (isHidden) {
+    return (
+      <div
+        style={{
+          height: '24px',
+          background: 'var(--bg-secondary)',
+          borderBottom: '1px solid var(--border-color)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          position: 'relative'
+        }}
+        className="ticker-collapsed"
+      >
+        <style>{`
+          @media (max-width: 768px) {
+            .ticker-collapsed {
+              display: none !important;
+            }
+          }
+        `}</style>
+        <button
+          onClick={toggleTicker}
+          style={{
+            background: 'none',
+            border: 'none',
+            cursor: 'pointer',
+            padding: '2px 12px',
+            fontSize: '0.7rem',
+            color: 'var(--text-secondary)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            borderRadius: '4px',
+            transition: 'all 0.2s ease'
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = 'var(--bg-tertiary)';
+            e.currentTarget.style.color = 'var(--text-primary)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = 'none';
+            e.currentTarget.style.color = 'var(--text-secondary)';
+          }}
+          title="Show market ticker"
+        >
+          <span>📈</span>
+          <span>Show Market Ticker</span>
+          <span>▼</span>
+        </button>
+      </div>
+    );
+  }
+
   return (
     <>
       <style>{`
         @keyframes ticker-scroll {
           0% {
-            transform: translateX(100vw);
+            transform: translateX(0);
           }
           100% {
-            transform: translateX(-100%);
+            transform: translateX(-50%);
           }
         }
 
@@ -261,13 +377,17 @@ const MarketTicker = () => {
 
         .ticker-content {
           display: flex;
-          animation: ticker-scroll 180s linear infinite;
+          /* Default 200s for slow readable speed; overridden by JS measurement */
+          animation: ticker-scroll var(--ticker-duration, 200s) linear infinite;
           white-space: nowrap;
           width: max-content;
           will-change: transform;
-          position: absolute;
+          position: relative;
           height: 100%;
           align-items: center;
+          /* GPU acceleration for smooth animation */
+          transform: translateZ(0);
+          backface-visibility: hidden;
         }
 
         .ticker-container:hover .ticker-content {
@@ -286,9 +406,41 @@ const MarketTicker = () => {
           gap: 0;
         }
 
+        .ticker-toggle-btn {
+          position: absolute;
+          right: 60px;
+          top: 50%;
+          transform: translateY(-50%);
+          z-index: 10;
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-color);
+          border-radius: 4px;
+          padding: 4px 8px;
+          cursor: pointer;
+          font-size: 0.7rem;
+          color: var(--text-secondary);
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          transition: all 0.2s ease;
+          opacity: 0;
+        }
+
+        .ticker-wrapper:hover .ticker-toggle-btn {
+          opacity: 1;
+        }
+
+        .ticker-toggle-btn:hover {
+          background: var(--bg-tertiary);
+          color: var(--text-primary);
+        }
+
         /* Hide ticker on mobile devices */
         @media (max-width: 768px) {
           .ticker-container {
+            display: none !important;
+          }
+          .ticker-wrapper {
             display: none !important;
           }
         }
@@ -298,8 +450,10 @@ const MarketTicker = () => {
         borderRadius="0"
         style={{
           overflow: 'hidden',
-          height: '50px'
+          height: '50px',
+          position: 'relative'
         }}
+        className="ticker-wrapper"
       >
         <div
           className="ticker-container"
@@ -311,7 +465,7 @@ const MarketTicker = () => {
             alignItems: 'center'
           }}
         >
-        <div className="ticker-content">
+        <div className="ticker-content" ref={contentRef}>
             {marketData.length > 0 && marketData.map((item, index) => (
               <div key={`${item.symbol}-${index}`} className="ticker-item">
                 <TickerLogo symbol={item.symbol} name={item.name} type={item.type} />
@@ -453,6 +607,16 @@ const MarketTicker = () => {
           pointerEvents: 'none',
           zIndex: 1
         }} />
+
+        {/* Hide toggle button - appears on hover */}
+        <button
+          className="ticker-toggle-btn"
+          onClick={toggleTicker}
+          title="Hide market ticker"
+        >
+          <span>▲</span>
+          <span>Hide</span>
+        </button>
         </div>
       </LiquidGlassCard>
     </>

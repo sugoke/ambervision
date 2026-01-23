@@ -70,6 +70,8 @@ const ClientsSection = ({ user: currentUser, theme }) => {
         return { label: 'Super Admin', color: '#dc2626', bg: 'rgba(220, 38, 38, 0.1)' };
       case USER_ROLES.ADMIN:
         return { label: 'Admin', color: '#9333ea', bg: 'rgba(147, 51, 234, 0.1)' };
+      case USER_ROLES.COMPLIANCE:
+        return { label: 'Compliance', color: '#0891b2', bg: 'rgba(8, 145, 178, 0.1)' };
       case USER_ROLES.RELATIONSHIP_MANAGER:
         return { label: 'RM', color: '#2563eb', bg: 'rgba(37, 99, 235, 0.1)' };
       case USER_ROLES.CLIENT:
@@ -83,9 +85,10 @@ const ClientsSection = ({ user: currentUser, theme }) => {
     switch (role) {
       case USER_ROLES.SUPERADMIN: return 1;
       case USER_ROLES.ADMIN: return 2;
-      case USER_ROLES.RELATIONSHIP_MANAGER: return 3;
-      case USER_ROLES.CLIENT: return 4;
-      default: return 5;
+      case USER_ROLES.COMPLIANCE: return 3;
+      case USER_ROLES.RELATIONSHIP_MANAGER: return 4;
+      case USER_ROLES.CLIENT: return 5;
+      default: return 6;
     }
   };
 
@@ -370,6 +373,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                 >
                   <option value={USER_ROLES.CLIENT}>Client</option>
                   <option value={USER_ROLES.RELATIONSHIP_MANAGER}>Relationship Manager</option>
+                  <option value={USER_ROLES.COMPLIANCE}>Compliance</option>
                   <option value={USER_ROLES.ADMIN}>Admin</option>
                   {currentUser?.role === USER_ROLES.SUPERADMIN && (
                     <option value={USER_ROLES.SUPERADMIN}>Super Admin</option>

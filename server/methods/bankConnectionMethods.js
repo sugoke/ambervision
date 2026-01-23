@@ -6,6 +6,8 @@ import { BanksCollection } from '../../imports/api/banks.js';
 import { SessionsCollection } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
 import { SFTPService } from '../../imports/api/sftpService.js';
+import { isSGZipFile, extractSGZipFile, findNewSGZipFiles } from '../../imports/utils/zipUtils.js';
+import { decryptAllGpgFiles, isGpgAvailable } from '../../imports/utils/gpgUtils.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -548,7 +550,7 @@ Meteor.methods({
     console.log(`[BANK_CONNECTIONS] Starting download all files for: ${connection.connectionName}`);
 
     // Handle local connections - files are already in place, no download needed
-    // But we still need to detect which files are NEW (unprocessed)
+    // Detect which files are NEW (haven't been seen before) - matches SFTP behavior
     if (connection.connectionType === 'local') {
       const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
       const folderPath = path.join(bankfilesRoot, connection.localFolderName);
@@ -559,57 +561,218 @@ Meteor.methods({
         throw new Meteor.Error('folder-not-found', `Local folder not found: ${folderPath}`);
       }
 
-      // List existing files
+      // Check if this is Societe Generale (requires ZIP extraction)
+      const isSocieteGenerale = bank.name?.toLowerCase().includes('société générale') ||
+                                 bank.name?.toLowerCase().includes('societe generale') ||
+                                 bank.name?.toLowerCase().includes('sg monaco') ||
+                                 connection.localFolderName?.includes('sg/');
+
+      if (isSocieteGenerale) {
+        // Societe Generale: Handle ZIP file extraction
+        console.log(`[BANK_CONNECTIONS] Societe Generale detected - checking for ZIP files`);
+
+        // Find new ZIP files that haven't been processed
+        const seenLocalFiles = connection.seenLocalFiles || [];
+        const newZipFiles = findNewSGZipFiles(folderPath, seenLocalFiles);
+
+        if (newZipFiles.length === 0) {
+          console.log(`[BANK_CONNECTIONS] SG: No new ZIP files to process`);
+
+          // Log success (no new files)
+          await BankConnectionLogHelpers.logConnectionAttempt({
+            connectionId,
+            bankId: connection.bankId,
+            connectionName: connection.connectionName,
+            action: 'download_all',
+            status: 'success',
+            message: `SG: No new ZIP files to process`,
+            metadata: { totalZipFiles: 0, folderPath },
+            userId: user._id
+          });
+
+          return {
+            success: true,
+            totalFiles: 0,
+            newFiles: [],
+            skippedFiles: seenLocalFiles,
+            failedFiles: [],
+            bankFolderPath: connection.localFolderName,
+            message: 'SG: All ZIP files already processed'
+          };
+        }
+
+        console.log(`[BANK_CONNECTIONS] SG: Found ${newZipFiles.length} new ZIP file(s) to process`);
+
+        // Process each new ZIP file
+        // Flow: Extract ZIP to temp -> Decrypt GPG files directly to decrypted/ -> Clean up temp
+        const decryptedFilesAll = [];
+        const processedZips = [];
+        const failedZips = [];
+        const decryptionErrors = [];
+
+        // Determine folder paths
+        const baseDir = path.join(bankfilesRoot, path.dirname(connection.localFolderName));
+        const decryptedBasePath = path.join(baseDir, 'decrypted');
+        const tempExtractPath = path.join(baseDir, 'temp_extract');
+
+        // Ensure decrypted folder exists
+        if (!fs.existsSync(decryptedBasePath)) {
+          fs.mkdirSync(decryptedBasePath, { recursive: true });
+          console.log(`[BANK_CONNECTIONS] SG: Created decrypted folder: ${decryptedBasePath}`);
+        }
+
+        // Check if GPG is available for decryption
+        const gpgAvailable = isGpgAvailable();
+        if (!gpgAvailable) {
+          console.error(`[BANK_CONNECTIONS] SG: GPG not available - cannot process SG files without GPG`);
+          throw new Meteor.Error('gpg-not-available', 'GPG is required to process Societe Generale files');
+        }
+
+        for (const zipInfo of newZipFiles) {
+          try {
+            console.log(`[BANK_CONNECTIONS] SG: Processing ZIP: ${zipInfo.filename}`);
+
+            // Step 1: Extract ZIP to temp folder
+            console.log(`[BANK_CONNECTIONS] SG: Step 1 - Extracting to temp...`);
+            const extractResult = extractSGZipFile(zipInfo.fullPath, tempExtractPath);
+
+            console.log(`[BANK_CONNECTIONS] SG: Extracted ${extractResult.totalExtracted} files`);
+            console.log(`[BANK_CONNECTIONS] SG: GPG files: ${extractResult.gpgFiles.length}, Other files: ${extractResult.otherFiles.length}`);
+
+            // Step 2: Decrypt GPG files directly to decrypted folder
+            if (extractResult.gpgFiles.length > 0) {
+              console.log(`[BANK_CONNECTIONS] SG: Step 2 - Decrypting ${extractResult.gpgFiles.length} GPG files...`);
+
+              // The extracted files are in a date-based subfolder
+              const extractedSubDir = path.join(tempExtractPath, extractResult.folderName);
+
+              const decryptResult = decryptAllGpgFiles(extractedSubDir, decryptedBasePath, {
+                preserveStructure: false, // Flatten to single directory
+                overwrite: false // Idempotent - skip existing files
+              });
+
+              // Collect results
+              decryptedFilesAll.push(...decryptResult.decrypted.map(d => d.outputPath));
+
+              if (decryptResult.failed.length > 0) {
+                decryptionErrors.push(...decryptResult.failed.map(f => ({
+                  zipFile: zipInfo.filename,
+                  gpgFile: path.basename(f.inputPath),
+                  error: f.error
+                })));
+              }
+
+              console.log(`[BANK_CONNECTIONS] SG: Decryption complete - ${decryptResult.decryptedCount} decrypted, ${decryptResult.skippedCount} skipped, ${decryptResult.failedCount} failed`);
+            }
+
+            // Step 3: Clean up temp extracted files (we don't need encrypted files)
+            try {
+              const extractedSubDir = path.join(tempExtractPath, extractResult.folderName);
+              if (fs.existsSync(extractedSubDir)) {
+                fs.rmSync(extractedSubDir, { recursive: true, force: true });
+                console.log(`[BANK_CONNECTIONS] SG: Cleaned up temp folder: ${extractedSubDir}`);
+              }
+            } catch (cleanupErr) {
+              console.warn(`[BANK_CONNECTIONS] SG: Failed to clean up temp folder: ${cleanupErr.message}`);
+            }
+
+            processedZips.push(zipInfo.filename);
+
+          } catch (zipError) {
+            console.error(`[BANK_CONNECTIONS] SG: Failed to process ${zipInfo.filename}: ${zipError.message}`);
+            failedZips.push({ filename: zipInfo.filename, error: zipError.message });
+          }
+        }
+
+        // Clean up temp_extract folder if empty
+        try {
+          if (fs.existsSync(tempExtractPath) && fs.readdirSync(tempExtractPath).length === 0) {
+            fs.rmdirSync(tempExtractPath);
+          }
+        } catch (e) { /* ignore */ }
+
+        // Update seenLocalFiles with processed ZIP filenames
+        const updatedSeenFiles = [...seenLocalFiles, ...processedZips];
+        await BankConnectionsCollection.updateAsync(connectionId, {
+          $set: { seenLocalFiles: updatedSeenFiles }
+        });
+
+        // Determine overall status
+        const hasErrors = failedZips.length > 0 || decryptionErrors.length > 0;
+
+        // Log success
+        await BankConnectionLogHelpers.logConnectionAttempt({
+          connectionId,
+          bankId: connection.bankId,
+          connectionName: connection.connectionName,
+          action: 'download_all',
+          status: hasErrors ? 'partial' : 'success',
+          message: `SG: Processed ${processedZips.length} ZIP(s), decrypted ${decryptedFilesAll.length} files`,
+          metadata: {
+            processedZips,
+            failedZips,
+            decryptedFiles: decryptedFilesAll.length,
+            decryptionErrors: decryptionErrors.length,
+            decryptedBasePath,
+            gpgAvailable
+          },
+          userId: user._id
+        });
+
+        // Update lastDownloadAt
+        const latestFileDate = getLatestFileModificationDate(connection.localFolderName);
+        if (latestFileDate) {
+          await BankConnectionHelpers.updateActivityTimestamps(connectionId, { downloadedAt: latestFileDate });
+        }
+
+        return {
+          success: true,
+          totalFiles: processedZips.length,
+          newFiles: processedZips,
+          decryptedFiles: decryptedFilesAll,
+          skippedFiles: seenLocalFiles,
+          failedFiles: failedZips,
+          decryptionErrors: decryptionErrors,
+          bankFolderPath: connection.localFolderName,
+          decryptedPath: decryptedBasePath,
+          gpgAvailable,
+          message: `SG: Processed ${processedZips.length} ZIP(s), decrypted ${decryptedFilesAll.length} files`
+        };
+      }
+
+      // Generic local connection handling (CFM, etc.)
+      // List all files in folder
       const allFiles = fs.readdirSync(folderPath).filter(f => {
         const stat = fs.statSync(path.join(folderPath, f));
         return stat.isFile();
       });
 
-      // Import BankPositionParser to detect file dates
-      const { BankPositionParser } = require('../../imports/api/bankPositionParser.js');
-      const { PMSHoldingsCollection } = require('../../imports/api/pmsHoldings.js');
+      // Get previously seen files from connection record (matches SFTP behavior)
+      // A file is "new" only if it hasn't been seen before, not based on database processing
+      const seenLocalFiles = new Set(connection.seenLocalFiles || []);
 
-      // Get parsed position files with dates
-      const positionFiles = BankPositionParser.findPositionFiles(folderPath);
-
-      // Get already processed FILE dates for this bank
-      // Note: We compare fileDate (from filename) not snapshotDate (from content)
-      // because CFM files are named with tomorrow's date but contain today's data
-      const processedFileDates = await PMSHoldingsCollection.rawCollection().distinct(
-        'fileDate',
-        { bankId: connection.bankId, isLatest: true }
-      );
-      const processedDateStrings = new Set(
-        processedFileDates.map(d => new Date(d).toISOString().split('T')[0])
-      );
-
-      // Determine which files are "new" (their date hasn't been processed)
+      // Determine which files are "new" (haven't been seen before)
       const newFiles = [];
       const skippedFiles = [];
-      const seenDates = new Set();
 
-      positionFiles.forEach(f => {
-        const dateStr = f.fileDate.toISOString().split('T')[0];
-        if (!processedDateStrings.has(dateStr) && !seenDates.has(dateStr)) {
-          newFiles.push(f.filename);
-          seenDates.add(dateStr);
+      allFiles.forEach(filename => {
+        if (!seenLocalFiles.has(filename)) {
+          newFiles.push(filename);
         } else {
-          skippedFiles.push(f.filename);
+          skippedFiles.push(filename);
         }
       });
 
-      // Also include non-position files in skipped
-      const positionFileNames = new Set(positionFiles.map(f => f.filename));
-      allFiles.forEach(f => {
-        if (!positionFileNames.has(f) && !skippedFiles.includes(f)) {
-          skippedFiles.push(f);
-        }
-      });
-
-      console.log(`[BANK_CONNECTIONS] Local connection ${connection.connectionName}: ${newFiles.length} new files (unprocessed dates), ${skippedFiles.length} already processed`);
+      console.log(`[BANK_CONNECTIONS] Local connection ${connection.connectionName}: ${newFiles.length} new files, ${skippedFiles.length} already seen`);
       if (newFiles.length > 0) {
         console.log(`[BANK_CONNECTIONS] New files: ${newFiles.join(', ')}`);
       }
+
+      // Update the seen files list with all current files
+      // This ensures future syncs won't report these as new
+      await BankConnectionsCollection.updateAsync(connectionId, {
+        $set: { seenLocalFiles: allFiles }
+      });
 
       // Log success
       await BankConnectionLogHelpers.logConnectionAttempt({
@@ -618,7 +781,7 @@ Meteor.methods({
         connectionName: connection.connectionName,
         action: 'download_all',
         status: 'success',
-        message: `Local folder - ${newFiles.length} new files, ${skippedFiles.length} already processed`,
+        message: `Local folder - ${newFiles.length} new files, ${skippedFiles.length} already seen`,
         metadata: { totalFiles: allFiles.length, newFiles: newFiles.length, folderPath },
         userId: user._id
       });
@@ -636,10 +799,10 @@ Meteor.methods({
         newFiles: newFiles,
         skippedFiles: skippedFiles,
         failedFiles: [],
-        bankFolderPath: connection.localFolderName,
+        bankFolderName: connection.localFolderName,
         message: newFiles.length > 0
           ? `Local folder - ${newFiles.length} new files to process`
-          : 'Local folder - all files already processed'
+          : 'Local folder - all files already seen'
       };
     }
 

@@ -10,6 +10,7 @@
  */
 
 import { SECURITY_TYPES } from '../constants/instrumentTypes';
+import crypto from 'crypto';
 
 export const EDRMonacoParser = {
   /**
@@ -350,7 +351,37 @@ export const EDRMonacoParser = {
       securityName = `Term Deposit ${positionCurrency}`;
     }
 
+    // Clean up rubrique for uniqueKey
+    const rubrique = row.rub ? String(row.rub).replace(/"/g, '').trim() : '000';
+    const cleanGenre = String(row.genre).replace(/"/g, '').trim();
+    const portfolioCode = String(row.kn005).replace(/"/g, '').trim();
+    const cleanIsin = row.isin ? String(row.isin).replace(/"/g, '').trim() : null;
+
+    // Generate custom uniqueKey for EDR
+    // For securities with ISIN: bankId|portfolioCode|isin
+    // For cash/deposits without ISIN: bankId|portfolioCode|CASH_currency|rubrique
+    // This prevents multiple EUR cash entries with different rubriques from overwriting each other
+    let uniqueKeyIdentifier;
+    if (cleanIsin) {
+      uniqueKeyIdentifier = cleanIsin;
+    } else if (securityType === 'CASH') {
+      // Include rubrique to differentiate between main cash (000) and other entries (002, etc.)
+      uniqueKeyIdentifier = `CASH_${positionCurrency}_${rubrique}`;
+    } else if (securityType === 'TERM_DEPOSIT') {
+      // For term deposits, include id_cat to differentiate multiple deposits
+      const idCat = row.id_cat ? String(row.id_cat).replace(/"/g, '').trim() : '000000';
+      uniqueKeyIdentifier = `DEPOSIT_${positionCurrency}_${idCat}`;
+    } else {
+      uniqueKeyIdentifier = `${cleanGenre}_${positionCurrency}_${rubrique}`;
+    }
+
+    // Create deterministic uniqueKey using crypto hash
+    const uniqueKeyData = `${bankId}|${portfolioCode}|${uniqueKeyIdentifier}`;
+    const uniqueKey = crypto.createHash('sha256').update(uniqueKeyData).digest('hex');
+
     return {
+      // Custom uniqueKey to prevent collisions
+      uniqueKey,
       // Source Information
       bankId,
       bankName,

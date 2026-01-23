@@ -543,7 +543,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
             title={
               (summary.totalProducts === 0)
                 ? 'No products available'
-                : 'Generate AI-powered risk analysis report'
+                : 'Generate Amberlake risk analysis report'
             }
           >
             <span>⚠️</span> Generate Risk Report

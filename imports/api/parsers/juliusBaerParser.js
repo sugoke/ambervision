@@ -239,6 +239,17 @@ export const JuliusBaerParser = {
     if (row.INST_NAT_E === '4' || row.INST_NAT_E === 'Cash Account') return true;
     // FICAT Group Code 2 can also be cash in some cases
     if (row.INSTR_FICAT_GRP_CODE === '2' && !row.INSTR_ISIN_CODE) return true;
+
+    // Detect cash by name pattern - account numbers like "5032826200001 EUR"
+    // These are cash positions without proper FICAT codes but identifiable by name format
+    const instrName = (row.INSTR_NAME || '').trim();
+    if (instrName && !row.INSTR_ISIN_CODE) {
+      // Pattern: 8+ digits followed by currency code (e.g., "5032826200001 EUR", "1234567890 CHF")
+      if (/^\d{8,}\s+[A-Z]{3}$/.test(instrName)) return true;
+      // Pattern: currency code followed by 8+ digits
+      if (/^[A-Z]{3}\s+\d{8,}$/.test(instrName)) return true;
+    }
+
     return false;
   },
 

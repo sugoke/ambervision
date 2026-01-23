@@ -1849,12 +1849,18 @@ This is an automated daily digest. Please do not reply to this email.
       fileDetails.forEach(detail => {
         const statusIcon = detail.success ? '✓' : '✗';
         const statusColor = detail.success ? '#10b981' : '#ef4444';
-        // For local connections, only show files if positions were actually processed
-        // (otherwise it shows ALL available files every time)
-        const hasNewActivity = detail.positionsProcessed > 0 || (detail.connectionType === 'sftp' && detail.downloadedFiles?.length > 0);
-        const filesText = hasNewActivity && detail.downloadedFiles?.length > 0
-          ? detail.downloadedFiles.join(', ')
-          : (detail.success ? 'No new files' : detail.error || 'Failed');
+        // Show files for SFTP (downloaded) or local (deposited) connections
+        // For local, show skipped files if no new files (to show what's available)
+        const hasNewFiles = detail.downloadedFiles?.length > 0;
+        const hasSkippedFiles = detail.skippedFiles?.length > 0;
+        let filesText;
+        if (!detail.success) {
+          filesText = detail.error || 'Failed';
+        } else if (hasNewFiles) {
+          filesText = detail.downloadedFiles.join(', ');
+        } else {
+          filesText = 'No new files';
+        }
 
         // Freshness indicator
         const freshness = detail.freshness || {};
@@ -2053,15 +2059,15 @@ This is an automated daily digest. Please do not reply to this email.
               <table width="100%" cellpadding="0" cellspacing="0">
                 <tr>
                   <td align="center" class="stat-card" style="padding: 16px; background-color: #3a3a3a; border-radius: 8px; margin-right: 12px;">
-                    <div style="font-size: 36px; font-weight: 700; color: ${connectionsSucceeded === connectionsProcessed ? '#10b981' : '#f59e0b'};">
-                      ${connectionsSucceeded}/${connectionsProcessed}
+                    <div style="font-size: 36px; font-weight: 700; color: ${connectionsFailed === 0 ? '#10b981' : '#ef4444'};">
+                      ${connectionsProcessed - connectionsFailed}/${connectionsProcessed}
                     </div>
-                    <div class="text-muted" style="font-size: 13px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;">Connections</div>
+                    <div class="text-muted" style="font-size: 13px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;">Connected</div>
                   </td>
                   <td width="12"></td>
                   <td align="center" class="stat-card" style="padding: 16px; background-color: #3a3a3a; border-radius: 8px;">
                     <div style="font-size: 36px; font-weight: 700; color: #3b82f6;">${filesDownloaded}</div>
-                    <div class="text-muted" style="font-size: 13px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;">Files Downloaded</div>
+                    <div class="text-muted" style="font-size: 13px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;">New Files</div>
                   </td>
                   <td width="12"></td>
                   <td align="center" class="stat-card" style="padding: 16px; background-color: #3a3a3a; border-radius: 8px;">
@@ -2070,7 +2076,7 @@ This is an automated daily digest. Please do not reply to this email.
                   </td>
                   <td width="12"></td>
                   <td align="center" class="stat-card" style="padding: 16px; background-color: #3a3a3a; border-radius: 8px;">
-                    <div style="font-size: 36px; font-weight: 700; color: ${connectionsWithStaleData > 0 ? '#f59e0b' : '#10b981'};">${connectionsSucceeded}/${connectionsProcessed}</div>
+                    <div style="font-size: 36px; font-weight: 700; color: ${connectionsSucceeded === connectionsProcessed ? '#10b981' : (connectionsSucceeded > 0 ? '#f59e0b' : '#ef4444')};">${connectionsSucceeded}/${connectionsProcessed}</div>
                     <div class="text-muted" style="font-size: 13px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;">Data Fresh</div>
                   </td>
                 </tr>
@@ -2131,9 +2137,10 @@ Trigger: ${triggerSource === 'cron' ? 'Automatic (Cron)' : 'Manual'}
 
 SUMMARY
 -------
+Connected: ${connectionsProcessed - connectionsFailed}/${connectionsProcessed}
 Data Fresh: ${connectionsSucceeded}/${connectionsProcessed}
 Stale Data: ${connectionsWithStaleData}
-Files Downloaded: ${filesDownloaded}
+New Files: ${filesDownloaded}
 Positions Processed: ${positionsProcessed}
 Operations Processed: ${operationsProcessed}
 
@@ -2181,14 +2188,15 @@ Ambervision - Amber Lake Partners
 This is an automated bank sync report.
       `;
 
-      // Build email data - subject reflects freshness status
+      // Build email data - subject reflects both connection and freshness status
+      const connectionsWorked = connectionsProcessed - connectionsFailed;
       let subjectStatus;
       if (hasErrors) {
-        subjectStatus = `⚠️ Errors`;
+        subjectStatus = `⚠️ ${connectionsWorked}/${connectionsProcessed} Synced, Errors`;
       } else if (hasStaleData) {
-        subjectStatus = `⚠️ ${connectionsSucceeded}/${connectionsProcessed} Fresh`;
+        subjectStatus = `⚠️ ${connectionsWorked}/${connectionsProcessed} Synced, ${connectionsSucceeded}/${connectionsProcessed} Fresh`;
       } else {
-        subjectStatus = `✓ All Fresh`;
+        subjectStatus = `✓ ${connectionsWorked}/${connectionsProcessed} Synced, All Fresh`;
       }
       const emailData = {
         subject: `[Ambervision] Bank Sync - ${subjectStatus}`,

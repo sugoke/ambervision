@@ -7,13 +7,20 @@ import UpcomingEventsCard from './UpcomingEventsCard.jsx';
 import MarketWatchlistCard from './MarketWatchlistCard.jsx';
 import RecentActivityCard from './RecentActivityCard.jsx';
 import CashMonitoringCard from './CashMonitoringCard.jsx';
+import AUMMiniChart from './AUMMiniChart.jsx';
 import { useViewAs } from '../../ViewAsContext.jsx';
 
 const RMDashboard = ({ user, onNavigate }) => {
   const { setFilter } = useViewAs();
+
+  // Detect if user is a client (shows personalized dashboard without RM-specific features)
+  const isClient = user?.role === 'client';
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [dailyQuote, setDailyQuote] = useState(null);
+  const [dashboardCurrency, setDashboardCurrency] = useState(() => {
+    return localStorage.getItem('dashboardCurrency') || 'EUR';
+  });
   const [data, setData] = useState({
     alerts: [],
     summary: null,
@@ -45,7 +52,7 @@ const RMDashboard = ({ user, onNavigate }) => {
     }
   };
 
-  const loadDashboardData = async () => {
+  const loadDashboardData = async (currency = dashboardCurrency) => {
     const sessionId = localStorage.getItem('sessionId');
     if (!sessionId) {
       setError('No session found');
@@ -57,10 +64,10 @@ const RMDashboard = ({ user, onNavigate }) => {
       setLoading(true);
       setError(null);
 
-      // Load all data in parallel
+      // Load all data in parallel (pass currency to getPortfolioSummary for AUM conversion)
       const [alerts, summary, birthdays, events, watchlist, activity, cashMonitoring] = await Promise.all([
         Meteor.callAsync('rmDashboard.getAlerts', sessionId),
-        Meteor.callAsync('rmDashboard.getPortfolioSummary', sessionId),
+        Meteor.callAsync('rmDashboard.getPortfolioSummary', sessionId, currency),
         Meteor.callAsync('rmDashboard.getBirthdays', sessionId),
         Meteor.callAsync('rmDashboard.getUpcomingEvents', sessionId, 2),
         Meteor.callAsync('rmDashboard.getWatchlist', sessionId),
@@ -74,6 +81,23 @@ const RMDashboard = ({ user, onNavigate }) => {
       setError(err.reason || err.message || 'Failed to load dashboard');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Handle currency change from PortfolioSummaryCard - refresh only the summary
+  const handleCurrencyChange = async (newCurrency) => {
+    setDashboardCurrency(newCurrency);
+    localStorage.setItem('dashboardCurrency', newCurrency);
+
+    const sessionId = localStorage.getItem('sessionId');
+    if (!sessionId) return;
+
+    try {
+      // Only refresh the summary with the new currency
+      const summary = await Meteor.callAsync('rmDashboard.getPortfolioSummary', sessionId, newCurrency);
+      setData(prev => ({ ...prev, summary }));
+    } catch (err) {
+      console.error('[RMDashboard] Error refreshing portfolio summary:', err);
     }
   };
 
@@ -117,12 +141,13 @@ const RMDashboard = ({ user, onNavigate }) => {
 
   const handleCashAccountClick = (account) => {
     if (account.clientId && onNavigate) {
-      // Set view-as filter to this account
+      // Set view-as filter to the CLIENT (shows all their accounts)
+      // Pass selectedAccountId to auto-select that specific account tab
       setFilter({
-        type: 'account',
-        id: account.accountId,
-        label: `${account.clientName} - ${account.accountNumber}`,
-        data: account
+        type: 'client',
+        id: account.clientId,
+        label: account.clientName,
+        selectedAccountId: account.accountId
       });
       // Navigate to PMS
       onNavigate('pms');
@@ -220,18 +245,19 @@ const RMDashboard = ({ user, onNavigate }) => {
     }
   }, []);
 
-  const firstName = user?.profile?.firstName || user?.email?.split('@')[0] || 'there';
+  const firstName = user?.firstName || user?.profile?.firstName || user?.email?.split('@')[0] || 'there';
   const todayFormatted = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
     month: 'long',
-    day: 'numeric'
+    day: 'numeric',
+    year: 'numeric'
   });
 
   if (loading && !data.summary) {
     return (
       <div style={styles.container}>
         <div style={styles.header}>
-          <h1 style={styles.greeting}>{getGreeting()}, {firstName}</h1>
+          <h1 style={styles.greeting}>Hello, {firstName}</h1>
           <p style={styles.subtitle}>{todayFormatted}</p>
         </div>
         <div style={styles.loadingOverlay}>
@@ -245,7 +271,7 @@ const RMDashboard = ({ user, onNavigate }) => {
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <h1 style={styles.greeting}>{getGreeting()}, {firstName}</h1>
+        <h1 style={styles.greeting}>Hello, {firstName}</h1>
         <p style={styles.subtitle}>
           <span>{todayFormatted}</span>
           {dailyQuote && (
@@ -270,6 +296,14 @@ const RMDashboard = ({ user, onNavigate }) => {
       <div style={styles.grid}>
         <PortfolioSummaryCard
           summary={data.summary}
+          selectedCurrency={dashboardCurrency}
+          onCurrencyChange={handleCurrencyChange}
+          hideClientsCount={isClient}
+        />
+
+        <AUMMiniChart
+          sessionId={localStorage.getItem('sessionId')}
+          currency={dashboardCurrency}
         />
 
         <UpcomingEventsCard
@@ -287,10 +321,13 @@ const RMDashboard = ({ user, onNavigate }) => {
           onAccountClick={handleCashAccountClick}
         />
 
-        <BirthdaysCard
-          birthdays={data.birthdays}
-          onBirthdayClick={handleBirthdayClick}
-        />
+        {/* Hide Birthdays card for clients - only show for RMs/Admins */}
+        {!isClient && (
+          <BirthdaysCard
+            birthdays={data.birthdays}
+            onBirthdayClick={handleBirthdayClick}
+          />
+        )}
 
         <MarketWatchlistCard
           watchlist={data.watchlist}

@@ -9,6 +9,8 @@
  * File format: Semicolon-delimited CSV with NO header row
  */
 
+import { OPERATION_TYPES, mapCFMOperationType } from '../constants/operationTypes';
+
 export const CFMOperationParser = {
   /**
    * Bank identifier
@@ -18,7 +20,7 @@ export const CFMOperationParser = {
   /**
    * Filename pattern for CFM operation files (mtit = Mouvements Titres)
    */
-  filenamePattern: /^(\d{8})-L\d+-[A-Z]{2}-W\d+-mtit\.csv$/i,
+  filenamePattern: /^(\d{8})-[A-Z]\d+-[A-Z]{2}-W\d+-mtit\.csv$/i,
 
   /**
    * Check if filename matches CFM operation file pattern
@@ -159,48 +161,10 @@ export const CFMOperationParser = {
 
   /**
    * Map operation type from CFM description to standardized type
+   * Uses centralized mapping from operationTypes.js constants
    */
   mapOperationType(operationType, direction) {
-    const type = (operationType || '').toLowerCase();
-    const dir = (direction || '').toLowerCase();
-
-    // Buy/Sell based on direction or type description
-    if (dir === 'a' || dir === 'achat' || type.includes('achat') || type.includes('buy') || type.includes('purchase')) {
-      return 'BUY';
-    }
-    if (dir === 'v' || dir === 'vente' || type.includes('vente') || type.includes('sell') || type.includes('sale')) {
-      return 'SELL';
-    }
-
-    // Income
-    if (type.includes('dividend') || type.includes('dividende')) {
-      return 'DIVIDEND';
-    }
-    if (type.includes('coupon') || type.includes('interet') || type.includes('interest')) {
-      return 'COUPON';
-    }
-
-    // Fees
-    if (type.includes('frais') || type.includes('fee') || type.includes('commission')) {
-      return 'FEE';
-    }
-
-    // Transfers
-    if (type.includes('virement') || type.includes('transfer') || type.includes('livraison')) {
-      return 'TRANSFER';
-    }
-
-    // Redemption
-    if (type.includes('remboursement') || type.includes('redemption') || type.includes('echeance') || type.includes('maturity')) {
-      return 'REDEMPTION';
-    }
-
-    // Corporate actions
-    if (type.includes('souscription') || type.includes('subscription')) {
-      return 'SUBSCRIPTION';
-    }
-
-    return 'OTHER';
+    return mapCFMOperationType(operationType, direction);
   },
 
   /**

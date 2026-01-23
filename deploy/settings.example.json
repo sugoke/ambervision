@@ -1,0 +1,17 @@
+{
+  "public": {
+    "appName": "Ambervision Structured Products",
+    "environment": "production"
+  },
+  "private": {
+    "MONGO_URL": "mongodb+srv://user:password@cluster.mongodb.net/dbname?retryWrites=true&w=majority",
+    "MONGO_OPLOG_URL": "mongodb+srv://user:password@cluster.mongodb.net/local?retryWrites=true&w=majority&authSource=admin",
+    "ANTHROPIC_API_KEY": "sk-ant-api03-your-key-here",
+    "SENDPULSE_CLIENT_ID": "your-sendpulse-client-id",
+    "SENDPULSE_CLIENT_SECRET": "your-sendpulse-client-secret",
+    "SENDPULSE_FROM_EMAIL": "contact@yourdomain.com",
+    "SENDPULSE_FROM_NAME": "Your App Name",
+    "APP_URL": "https://your-domain.com",
+    "SFTP_PRIVATE_KEY": "-----BEGIN RSA PRIVATE KEY-----\nYour private key here\n-----END RSA PRIVATE KEY-----"
+  }
+}

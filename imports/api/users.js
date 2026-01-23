@@ -9,7 +9,7 @@ export const UsersCollection = new Mongo.Collection('customUsers');
 // {
 //   username: String,
 //   password: String (hashed),
-//   role: String (superadmin/admin/rm/client),
+//   role: String (superadmin/admin/compliance/rm/client),
 //   relationshipManagerId: String (userId of the RM assigned to this client, only for CLIENT role),
 //   profile: {
 //     firstName: String,
@@ -32,6 +32,7 @@ export const UsersCollection = new Mongo.Collection('customUsers');
 export const USER_ROLES = {
   SUPERADMIN: 'superadmin',
   ADMIN: 'admin',
+  COMPLIANCE: 'compliance',
   RELATIONSHIP_MANAGER: 'rm',
   CLIENT: 'client'
 };
@@ -57,6 +58,17 @@ export const UserHelpers = {
 
   isRelationshipManager(userId) {
     return this.hasRole(userId, USER_ROLES.RELATIONSHIP_MANAGER);
+  },
+
+  isCompliance(userId) {
+    return this.hasRole(userId, USER_ROLES.COMPLIANCE);
+  },
+
+  // Check if user can view all clients (admins, superadmins, and compliance)
+  canViewAllClients(userId) {
+    const user = UsersCollection.findOne(userId);
+    if (!user) return false;
+    return [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.COMPLIANCE].includes(user.role);
   },
 
   // Get all clients assigned to a specific relationship manager

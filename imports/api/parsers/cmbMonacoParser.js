@@ -10,6 +10,7 @@
  */
 
 import { SECURITY_TYPES } from '../constants/instrumentTypes';
+import { mapCMBOperationType, OPERATION_TYPES } from '../constants/operationTypes';
 
 export const CMBMonacoParser = {
   /**
@@ -599,30 +600,48 @@ export const CMBMonacoParser = {
       return crypto.createHash('sha256').update(key).digest('hex');
     }
 
-    // For cash positions (no ISIN): Use instrumentCode + currency as identifier
-    // Position_Number can vary for the same cash account, but instrumentCode is stable
-    // This prevents duplicate cash holdings when Position_Number changes between files
+    // For cash positions (no ISIN): ALWAYS use instrumentCode + currency
+    // This ensures consistent uniqueKeys regardless of whether positionNumber is present
+    // Previously used positionNumber which caused duplicates when it was missing from some files
+    // instrumentCode identifies the specific account type (e.g., USD-A, EUR-B)
     if (instrumentCode) {
-      const key = `cmb-monaco|${basePortfolioCode}|${instrumentCode}|${currency}`;
+      const key = `cmb-monaco|${basePortfolioCode}|CASH|${instrumentCode}|${currency}`;
       return crypto.createHash('sha256').update(key).digest('hex');
     }
 
-    // Fallback: Use Position_Number if no instrumentCode available
-    if (positionNumber) {
-      const key = `cmb-monaco|${basePortfolioCode}|${positionNumber}`;
-      return crypto.createHash('sha256').update(key).digest('hex');
-    }
-
-    // Last resort fallback
-    const key = `cmb-monaco|${basePortfolioCode}|unknown`;
+    // Last resort fallback - use currency only
+    const key = `cmb-monaco|${basePortfolioCode}|CASH|${currency}`;
     return crypto.createHash('sha256').update(key).digest('hex');
   },
 
   /**
-   * Check if this is a cash position based on Asset_Class_ID
+   * Check if this is a cash position based on Asset_Class_ID and position name patterns
+   * @param {string} assetClassId - The asset class from the CSV
+   * @param {object} row - Optional full row for name-based detection
    */
-  isCashPosition(assetClassId) {
-    return assetClassId === 'cash';
+  isCashPosition(assetClassId, row = {}) {
+    // Original check - exact 'cash' match
+    if (assetClassId === 'cash') return true;
+
+    // Additional cash-like asset classes
+    const cashClasses = ['cash', 'current_account', 'credit_account', 'money_market', 'liquidity'];
+    if (cashClasses.includes((assetClassId || '').toLowerCase())) return true;
+
+    // Check position name for cash indicators (when no ISIN)
+    if (!row.ISIN) {
+      const positionName = (row.Position_Description || row.Instrument_Name || '').toLowerCase();
+      // Keywords indicating cash accounts
+      if (/\b(current account|credit account|cash account|deposit account|sight account)\b/i.test(positionName)) {
+        return true;
+      }
+      // Account number pattern without ISIN (e.g., "12345678 EUR")
+      const posDesc = (row.Position_Description || '').trim();
+      if (/^\d{6,}\s+[A-Z]{3}$/i.test(posDesc)) {
+        return true;
+      }
+    }
+
+    return false;
   },
 
   /**
@@ -641,7 +660,7 @@ export const CMBMonacoParser = {
     // Normalize prices based on asset type
     const assetTypeId = row.Asset_Type_ID || '';
     const assetClassId = row.Asset_Class_ID || '';
-    const isCash = this.isCashPosition(assetClassId);
+    const isCash = this.isCashPosition(assetClassId, row);
 
     const normalizedCostPrice = this.normalizePrice(
       rawCostPrice,
@@ -671,9 +690,10 @@ export const CMBMonacoParser = {
     const portfolioRefCurrency = this.getPortfolioReferenceCurrency(row.Portfolio_Number);
 
     // Convert market value from position currency to portfolio reference currency
-    // FX rates format: CCY;TO_CCY;Date;Quote where Quote is DIVIDE to convert
-    // Example: EUR;USD;0.850629 means €1 / 0.850629 = $1.1756
-    // Example: USD;EUR;1.1756 means $1 / 1.1756 = €0.85
+    // FX rates format: From_Currency;To_Currency;Date;Quote where Quote is MULTIPLY to convert
+    // Example: CNY;EUR;0.123053 means 1 CNY × 0.123053 = 0.123053 EUR
+    // Example: EUR;CNY;8.126579 means 1 EUR × 8.126579 = 8.126579 CNY
+    // The rates are reciprocal: 8.126579 × 0.123053 ≈ 1
     const positionCurrency = row.Ccy || 'EUR';
     let marketValueRefCcy = marketValueSecCcy; // Default: same if currencies match or no rate available
 
@@ -681,19 +701,19 @@ export const CMBMonacoParser = {
       // Look for direct rate: positionCurrency → portfolioRefCurrency
       if (fxRates[positionCurrency] && fxRates[positionCurrency][portfolioRefCurrency]) {
         const fxRate = fxRates[positionCurrency][portfolioRefCurrency];
-        marketValueRefCcy = marketValueSecCcy / fxRate;
+        marketValueRefCcy = marketValueSecCcy * fxRate;
         // Only log for non-trivial conversions
         if (Math.abs(marketValueSecCcy) > 100) {
-          console.log(`[CMB_PARSER] FX: ${marketValueSecCcy.toFixed(2)} ${positionCurrency} / ${fxRate} = ${marketValueRefCcy.toFixed(2)} ${portfolioRefCurrency}`);
+          console.log(`[CMB_PARSER] FX: ${marketValueSecCcy.toFixed(2)} ${positionCurrency} × ${fxRate} = ${marketValueRefCcy.toFixed(2)} ${portfolioRefCurrency}`);
         }
       }
       // Fallback: try inverse rate (portfolioRefCurrency → positionCurrency)
       else if (fxRates[portfolioRefCurrency] && fxRates[portfolioRefCurrency][positionCurrency]) {
         const inverseRate = fxRates[portfolioRefCurrency][positionCurrency];
-        // Inverse rate: divide becomes multiply
-        marketValueRefCcy = marketValueSecCcy * (1 / inverseRate);
+        // Inverse rate: if we have EUR→CNY=8.126579, to convert CNY→EUR we divide by 8.126579
+        marketValueRefCcy = marketValueSecCcy / inverseRate;
         if (Math.abs(marketValueSecCcy) > 100) {
-          console.log(`[CMB_PARSER] FX (inverse): ${marketValueSecCcy.toFixed(2)} ${positionCurrency} * (1/${inverseRate}) = ${marketValueRefCcy.toFixed(2)} ${portfolioRefCurrency}`);
+          console.log(`[CMB_PARSER] FX (inverse): ${marketValueSecCcy.toFixed(2)} ${positionCurrency} / ${inverseRate} = ${marketValueRefCcy.toFixed(2)} ${portfolioRefCurrency}`);
         }
       }
       else {
@@ -817,16 +837,20 @@ export const CMBMonacoParser = {
 
       // Bank-provided FX rates (flattened to currency → portfolio reference currency rate)
       // Used by cash calculator to ensure amounts match bank statements
-      // Format: { 'EUR': 0.850629, 'GBP': 0.78, ... } for USD portfolio
+      // Format: { 'CNY': 8.126579, 'GBP': 0.8520, ... } (DIVIDE format: EUR = amount / rate)
+      // Example: 100 CNY / 8.126579 = 12.31 EUR
       bankFxRates: Object.keys(fxRates).reduce((acc, fromCurrency) => {
-        // Store rate for converting fromCurrency → portfolioRefCurrency
+        // CMB FX file uses MULTIPLY format (CNY;EUR = 0.123053 means CNY × 0.123053 = EUR)
+        // Cash calculator expects DIVIDE format (EUR = amount / rate)
+        // So we need to invert: store 1/rate for direct rates
         if (fxRates[fromCurrency] && fxRates[fromCurrency][portfolioRefCurrency]) {
-          acc[fromCurrency] = fxRates[fromCurrency][portfolioRefCurrency];
+          // Direct rate exists (e.g., CNY→EUR = 0.123053), invert to DIVIDE format
+          acc[fromCurrency] = 1 / fxRates[fromCurrency][portfolioRefCurrency];
         }
-        // Also try storing inverse (portfolioRefCurrency → fromCurrency inverted)
+        // For inverse rate (e.g., we have EUR→CNY but not CNY→EUR), use it directly
         else if (fxRates[portfolioRefCurrency] && fxRates[portfolioRefCurrency][fromCurrency]) {
-          // Inverse: if rate is "divide", inverted is 1/rate
-          acc[fromCurrency] = 1 / fxRates[portfolioRefCurrency][fromCurrency];
+          // EUR→CNY = 8.126579 is already in the right format (divide CNY by 8.126579 to get EUR)
+          acc[fromCurrency] = fxRates[portfolioRefCurrency][fromCurrency];
         }
         return acc;
       }, {}),
@@ -941,11 +965,18 @@ export const CMBMonacoParser = {
       assetClass: row.Asset_Class || null,
 
       // Transaction Details
-      operationType: row.Order_Type_ID || null,
+      // Map raw CMB codes to standardized Ambervision operation types
+      operationType: mapCMBOperationType(
+        row.Order_Type_ID,
+        row.Meta_Type_ID,
+        this.parseNumber(row.Net_amount) || this.parseNumber(row.Gross_Amount) || 0
+      ),
       operationTypeName: row.Internal_Booking_Text || row.Order_Type || null,
       transactionCategory: row.Meta_Type_ID || null,
       transactionCategoryName: row.Meta_Type || null,
       description: row.Internal_Booking_Text || null,
+      // Preserve original bank code for reference
+      originalOperationType: row.Order_Type_ID || null,
 
       // Dates - operationDate is REQUIRED by schema validation
       operationDate: transactionDate || valueDate || verificationDate || fileDate,

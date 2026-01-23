@@ -18,7 +18,11 @@ import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetada
 import { CurrencyRateCacheCollection } from '../../imports/api/currencyCache.js';
 import { checkNegativeCash, buildRatesMap } from '../../imports/api/helpers/cashCalculator.js';
 import { SecurityResolver } from '../../imports/api/helpers/securityResolver.js';
+import { isValidSecurityType } from '../../imports/api/constants/instrumentTypes.js';
+import { findNewSGZipFiles, extractSGZipFile } from '../../imports/utils/zipUtils.js';
+import { decryptAllGpgFiles, isGpgAvailable } from '../../imports/utils/gpgUtils.js';
 import path from 'path';
+import fs from 'fs';
 
 /**
  * Check if ISIN needs re-enrichment from AmbervisionDB
@@ -235,6 +239,203 @@ Meteor.methods({
       if (connection.connectionType === 'local' && connection.localFolderName) {
         // For local connections, use the configured folder path
         bankFolderPath = path.join(bankfilesRoot, connection.localFolderName);
+
+        // Special handling for Societe Generale: full pipeline (ZIP extract + GPG decrypt + parse)
+        const isSocieteGenerale = bank.name?.toLowerCase().includes('société générale') ||
+                                   bank.name?.toLowerCase().includes('societe generale') ||
+                                   bank.name?.toLowerCase().includes('sg monaco') ||
+                                   connection.localFolderName?.includes('sg/');
+
+        if (isSocieteGenerale) {
+          console.log(`[BANK_POSITIONS] SG detected - running full pipeline: extract → decrypt → parse`);
+
+          const incomingPath = path.join(bankfilesRoot, connection.localFolderName);
+          const baseDir = path.dirname(connection.localFolderName); // sg/prod
+          const decryptedPath = path.join(bankfilesRoot, baseDir, 'decrypted');
+          const tempExtractPath = path.join(bankfilesRoot, baseDir, 'temp_extract');
+
+          // Track SG pipeline steps for error diagnostics
+          const sgPipelineResult = {
+            step: 'zip-scan',
+            zipFilesFound: 0,
+            zipFilesProcessed: 0,
+            gpgFilesFound: 0,
+            gpgFilesDecrypted: 0,
+            gpgFilesSkipped: 0,
+            csvFilesInDecrypted: 0,
+            error: null,
+            errorCode: null
+          };
+
+          // Step 1: Check for new ZIP files to process
+          const seenLocalFiles = connection.seenLocalFiles || [];
+
+          // Debug logging
+          console.log(`[BANK_POSITIONS] SG: incomingPath = ${incomingPath}`);
+          console.log(`[BANK_POSITIONS] SG: Path exists: ${fs.existsSync(incomingPath)}`);
+          console.log(`[BANK_POSITIONS] SG: seenLocalFiles (${seenLocalFiles.length}):`, JSON.stringify(seenLocalFiles));
+
+          // Check if incoming folder exists
+          if (!fs.existsSync(incomingPath)) {
+            sgPipelineResult.errorCode = 'incoming-folder-missing';
+            sgPipelineResult.error = `Incoming folder does not exist: ${incomingPath}`;
+            await BankConnectionsCollection.updateAsync(connectionId, {
+              $set: { status: 'error', lastError: sgPipelineResult.error }
+            });
+            throw new Meteor.Error(sgPipelineResult.errorCode, sgPipelineResult.error);
+          }
+
+          const allFilesInDir = fs.readdirSync(incomingPath);
+          console.log(`[BANK_POSITIONS] SG: All files in incoming dir:`, JSON.stringify(allFilesInDir));
+
+          if (allFilesInDir.length === 0) {
+            sgPipelineResult.errorCode = 'incoming-folder-empty';
+            sgPipelineResult.error = 'Incoming folder exists but contains no files';
+            await BankConnectionsCollection.updateAsync(connectionId, {
+              $set: { status: 'error', lastError: sgPipelineResult.error }
+            });
+            throw new Meteor.Error(sgPipelineResult.errorCode, sgPipelineResult.error);
+          }
+
+          const newZipFiles = findNewSGZipFiles(incomingPath, seenLocalFiles, decryptedPath);
+          sgPipelineResult.zipFilesFound = newZipFiles.length;
+
+          if (newZipFiles.length > 0) {
+            console.log(`[BANK_POSITIONS] SG: Found ${newZipFiles.length} new ZIP file(s) to process`);
+
+            // Check GPG availability
+            sgPipelineResult.step = 'gpg-check';
+            if (!isGpgAvailable()) {
+              sgPipelineResult.errorCode = 'gpg-not-available';
+              sgPipelineResult.error = 'GPG is required to process Societe Generale files but is not available';
+              await BankConnectionsCollection.updateAsync(connectionId, {
+                $set: { status: 'error', lastError: sgPipelineResult.error }
+              });
+              throw new Meteor.Error(sgPipelineResult.errorCode, sgPipelineResult.error);
+            }
+
+            // Ensure decrypted folder exists
+            if (!fs.existsSync(decryptedPath)) {
+              fs.mkdirSync(decryptedPath, { recursive: true });
+            }
+
+            const processedZips = [];
+            const failedZips = [];
+
+            // Process each new ZIP
+            sgPipelineResult.step = 'zip-extract';
+            for (const zipInfo of newZipFiles) {
+              try {
+                console.log(`[BANK_POSITIONS] SG: Processing ZIP: ${zipInfo.filename}`);
+
+                // Extract to temp
+                const extractResult = extractSGZipFile(zipInfo.fullPath, tempExtractPath);
+                console.log(`[BANK_POSITIONS] SG: Extracted ${extractResult.totalExtracted} files (${extractResult.gpgFiles.length} GPG)`);
+                sgPipelineResult.gpgFilesFound += extractResult.gpgFiles.length;
+
+                // Decrypt GPG files to decrypted folder
+                if (extractResult.gpgFiles.length > 0) {
+                  sgPipelineResult.step = 'gpg-decrypt';
+                  const extractedSubDir = path.join(tempExtractPath, extractResult.folderName);
+                  const decryptResult = decryptAllGpgFiles(extractedSubDir, decryptedPath, {
+                    preserveStructure: false,
+                    overwrite: false
+                  });
+                  console.log(`[BANK_POSITIONS] SG: Decrypted ${decryptResult.decryptedCount} files, skipped ${decryptResult.skippedCount}, failed ${decryptResult.failedCount || 0}`);
+                  sgPipelineResult.gpgFilesDecrypted += decryptResult.decryptedCount;
+                  sgPipelineResult.gpgFilesSkipped += decryptResult.skippedCount || 0;
+
+                  // Check for decryption failures
+                  if (decryptResult.failedCount > 0) {
+                    console.warn(`[BANK_POSITIONS] SG: ${decryptResult.failedCount} GPG files failed to decrypt`);
+                  }
+
+                  // Clean up temp
+                  if (fs.existsSync(extractedSubDir)) {
+                    fs.rmSync(extractedSubDir, { recursive: true, force: true });
+                  }
+                }
+
+                processedZips.push(zipInfo.filename);
+                sgPipelineResult.zipFilesProcessed++;
+              } catch (zipErr) {
+                console.error(`[BANK_POSITIONS] SG: Failed to process ${zipInfo.filename}: ${zipErr.message}`);
+                failedZips.push({ filename: zipInfo.filename, error: zipErr.message });
+              }
+            }
+
+            // If ALL ZIPs failed to process, throw error
+            if (processedZips.length === 0 && failedZips.length > 0) {
+              sgPipelineResult.errorCode = 'zip-extraction-failed';
+              sgPipelineResult.error = `All ZIP files failed to process: ${failedZips.map(f => f.filename).join(', ')}`;
+              await BankConnectionsCollection.updateAsync(connectionId, {
+                $set: { status: 'error', lastError: sgPipelineResult.error }
+              });
+              throw new Meteor.Error(sgPipelineResult.errorCode, sgPipelineResult.error);
+            }
+
+            // If GPG decryption yielded no files (and none were skipped because they already exist)
+            if (sgPipelineResult.gpgFilesFound > 0 && sgPipelineResult.gpgFilesDecrypted === 0 && sgPipelineResult.gpgFilesSkipped === 0) {
+              sgPipelineResult.errorCode = 'gpg-decryption-failed';
+              sgPipelineResult.error = `GPG decryption failed for all ${sgPipelineResult.gpgFilesFound} encrypted files`;
+              await BankConnectionsCollection.updateAsync(connectionId, {
+                $set: { status: 'error', lastError: sgPipelineResult.error }
+              });
+              throw new Meteor.Error(sgPipelineResult.errorCode, sgPipelineResult.error);
+            }
+
+            // Log success when files were skipped (already decrypted previously)
+            if (sgPipelineResult.gpgFilesSkipped > 0 && sgPipelineResult.gpgFilesDecrypted === 0) {
+              console.log(`[BANK_POSITIONS] SG: All ${sgPipelineResult.gpgFilesSkipped} GPG files already decrypted - using existing CSV files`);
+            }
+
+            // Update seenLocalFiles
+            if (processedZips.length > 0) {
+              await BankConnectionsCollection.updateAsync(connectionId, {
+                $set: { seenLocalFiles: [...seenLocalFiles, ...processedZips] }
+              });
+            }
+
+            // Clean up temp folder if empty
+            try {
+              if (fs.existsSync(tempExtractPath) && fs.readdirSync(tempExtractPath).length === 0) {
+                fs.rmdirSync(tempExtractPath);
+              }
+            } catch (e) { /* ignore */ }
+          } else {
+            console.log(`[BANK_POSITIONS] SG: No new ZIP files to process`);
+          }
+
+          // Verify decrypted folder has CSV files before parsing
+          sgPipelineResult.step = 'verify-csv';
+          if (fs.existsSync(decryptedPath)) {
+            const decryptedFiles = fs.readdirSync(decryptedPath);
+            sgPipelineResult.csvFilesInDecrypted = decryptedFiles.filter(f => f.endsWith('.csv')).length;
+            console.log(`[BANK_POSITIONS] SG: Found ${sgPipelineResult.csvFilesInDecrypted} CSV files in decrypted folder`);
+            console.log(`[BANK_POSITIONS] SG: Decrypted files:`, JSON.stringify(decryptedFiles));
+
+            if (sgPipelineResult.csvFilesInDecrypted === 0) {
+              sgPipelineResult.errorCode = 'no-csv-after-decrypt';
+              sgPipelineResult.error = `No CSV files found in decrypted folder (${decryptedFiles.length} other files present)`;
+              await BankConnectionsCollection.updateAsync(connectionId, {
+                $set: { status: 'error', lastError: sgPipelineResult.error }
+              });
+              throw new Meteor.Error(sgPipelineResult.errorCode, sgPipelineResult.error);
+            }
+          } else {
+            sgPipelineResult.errorCode = 'decrypted-folder-missing';
+            sgPipelineResult.error = 'Decrypted folder does not exist';
+            await BankConnectionsCollection.updateAsync(connectionId, {
+              $set: { status: 'error', lastError: sgPipelineResult.error }
+            });
+            throw new Meteor.Error(sgPipelineResult.errorCode, sgPipelineResult.error);
+          }
+
+          // Now parse from decrypted folder
+          bankFolderPath = decryptedPath;
+          console.log(`[BANK_POSITIONS] SG: Parsing from decrypted folder: ${bankFolderPath}`);
+          console.log(`[BANK_POSITIONS] SG Pipeline Result:`, JSON.stringify(sgPipelineResult));
+        }
       } else {
         // For SFTP connections, use sanitized bank name
         const sanitizedBankName = bank.name
@@ -250,7 +451,6 @@ Meteor.methods({
       console.log(`[BANK_POSITIONS] Scanning directory: ${bankFolderPath}`);
 
       // Check if directory exists
-      const fs = require('fs');
       if (!fs.existsSync(bankFolderPath)) {
         console.error(`[BANK_POSITIONS] Directory does not exist: ${bankFolderPath}`);
         throw new Meteor.Error('directory-not-found', `Bank files directory not found: ${bankFolderPath}`);
@@ -417,6 +617,14 @@ Meteor.methods({
 
                 // Set assetClass from Ambervision classification
                 position.assetClass = productInfo.data.assetClass || 'structured_product';
+
+                // CRITICAL: Also set securityType from assetClass if not already set
+                // This prevents raw bank codes (e.g., "19", "13") from being stored
+                if (!position.securityType || !isValidSecurityType(position.securityType)) {
+                  const { getSecurityTypeFromAssetClass } = await import('../../imports/api/constants/instrumentTypes.js');
+                  position.securityType = getSecurityTypeFromAssetClass(position.assetClass);
+                  console.log(`[BANK_POSITIONS] Set securityType from assetClass: ${position.assetClass} -> ${position.securityType}`);
+                }
 
                 // Set structured product classification fields directly on position for easy access
                 position.structuredProductUnderlyingType = productInfo.data.structuredProductUnderlyingType;
@@ -630,6 +838,7 @@ Meteor.methods({
             console.log(`[BANK_POSITIONS] Found ${stalePositions.length} positions to mark as sold/inactive`);
 
             for (const stale of stalePositions) {
+              // Mark the latest record as sold
               await PMSHoldingsCollection.updateAsync(stale._id, {
                 $set: {
                   isActive: false,        // No longer active
@@ -639,8 +848,27 @@ Meteor.methods({
                   updatedAt: new Date()
                 }
               });
+
+              // CRITICAL: Also mark ALL historical records with same uniqueKey as inactive
+              // This prevents closed positions from appearing in historical snapshot queries
+              const historicalUpdateCount = await PMSHoldingsCollection.updateAsync(
+                {
+                  uniqueKey: stale.uniqueKey,
+                  _id: { $ne: stale._id },  // Exclude the already-updated latest record
+                  isActive: { $ne: false }  // Only update records not already inactive
+                },
+                {
+                  $set: {
+                    isActive: false,
+                    updatedAt: new Date()
+                  }
+                },
+                { multi: true }
+              );
+
               soldPositionsCount++;
-              console.log(`[BANK_POSITIONS] Marked as sold: ${stale.securityName || stale.isin || 'Unknown'} (${stale.portfolioCode})`);
+              const histMsg = historicalUpdateCount > 0 ? ` (+${historicalUpdateCount} historical)` : '';
+              console.log(`[BANK_POSITIONS] Marked as sold: ${stale.securityName || stale.isin || 'Unknown'} (${stale.portfolioCode})${histMsg}`);
             }
           } else {
             console.log(`[BANK_POSITIONS] No sold positions detected`);
@@ -1033,10 +1261,12 @@ Meteor.methods({
       );
 
       // POST-PROCESSING VALIDATION: Verify isLatest flags are correct for processed uniqueKeys
-      // This is a safety net to detect if upsertHolding had issues
+      // This is a safety net to detect if upsertHolding had issues (orphans or duplicates)
       if (processedUniqueKeys.size > 0) {
         try {
           const orphanedKeys = [];
+          const duplicateKeys = [];
+
           for (const uniqueKey of processedUniqueKeys) {
             const latestCount = await PMSHoldingsCollection.find({
               uniqueKey,
@@ -1045,15 +1275,40 @@ Meteor.methods({
 
             if (latestCount === 0) {
               orphanedKeys.push(uniqueKey);
+            } else if (latestCount > 1) {
+              // Race condition: multiple isLatest=true records for same uniqueKey
+              duplicateKeys.push({ uniqueKey, count: latestCount });
             }
           }
 
+          // Report orphaned keys (no isLatest=true)
           if (orphanedKeys.length > 0) {
             console.error(`[BANK_POSITIONS] WARNING: ${orphanedKeys.length} uniqueKeys have NO isLatest=true record! This should not happen.`);
             console.error(`[BANK_POSITIONS] Orphaned keys (first 5): ${orphanedKeys.slice(0, 5).join(', ')}`);
-            // Log for investigation but don't fail
-          } else {
-            console.log(`[BANK_POSITIONS] Validation passed: All ${processedUniqueKeys.size} processed uniqueKeys have isLatest=true records`);
+          }
+
+          // Auto-fix duplicate keys (multiple isLatest=true) - caused by race conditions
+          if (duplicateKeys.length > 0) {
+            console.warn(`[BANK_POSITIONS] DUPLICATE DETECTED: ${duplicateKeys.length} uniqueKeys have multiple isLatest=true records. Auto-fixing...`);
+
+            let fixedCount = 0;
+            for (const { uniqueKey, count } of duplicateKeys) {
+              try {
+                const raceCheck = await PMSHoldingsHelpers.checkAndFixDuplicatesForKey(uniqueKey);
+                if (raceCheck.fixedCount > 0) {
+                  fixedCount += raceCheck.fixedCount;
+                }
+              } catch (fixError) {
+                console.error(`[BANK_POSITIONS] Failed to fix duplicates for key ${uniqueKey.substring(0, 16)}...: ${fixError.message}`);
+              }
+            }
+
+            console.log(`[BANK_POSITIONS] Auto-fixed ${fixedCount} duplicate isLatest records across ${duplicateKeys.length} uniqueKeys`);
+          }
+
+          // Final validation status
+          if (orphanedKeys.length === 0 && duplicateKeys.length === 0) {
+            console.log(`[BANK_POSITIONS] Validation passed: All ${processedUniqueKeys.size} processed uniqueKeys have exactly 1 isLatest=true record`);
           }
         } catch (validationError) {
           console.error(`[BANK_POSITIONS] Error during isLatest validation: ${validationError.message}`);
@@ -1117,10 +1372,14 @@ Meteor.methods({
       let operationsResult = { totalRecords: 0, newRecords: 0, updatedRecords: 0, skippedRecords: 0, unmappedOperations: 0 };
 
       try {
-        const operationsParseResult = BankOperationParser.parseLatestFile(bankFolderPath, {
+        // Use parseAllFiles to process ALL operation files (not just latest)
+        // This is important for transaction files which are incremental
+        const seenOperationFiles = connection.seenOperationFiles || [];
+        const operationsParseResult = BankOperationParser.parseAllFiles(bankFolderPath, {
           bankId: connection.bankId,
           bankName: bank.name,
-          userId: null  // Will be matched to bank accounts
+          userId: null,  // Will be matched to bank accounts
+          seenFiles: seenOperationFiles
         });
 
         if (operationsParseResult.error) {
@@ -1128,8 +1387,8 @@ Meteor.methods({
         }
 
         if (!operationsParseResult.error && operationsParseResult.operations) {
-          const { operations, filename: opFilename } = operationsParseResult;
-          console.log(`[BANK_OPERATIONS] Parsed ${operations.length} operations from ${opFilename}`);
+          const { operations, processedFiles } = operationsParseResult;
+          console.log(`[BANK_OPERATIONS] Parsed ${operations.length} operations from ${processedFiles.length} files`);
 
           let opNew = 0;
           let opUpdated = 0;
@@ -1161,7 +1420,7 @@ Meteor.methods({
               operation.userId = userId;
 
               operation.connectionId = connectionId;
-              operation.sourceFilePath = path.join(bankFolderPath, opFilename);
+              operation.sourceFilePath = path.join(bankFolderPath, operation.sourceFile || 'unknown');
 
               const result = await PMSOperationsHelpers.upsertOperation(operation);
 
@@ -1183,8 +1442,17 @@ Meteor.methods({
             skippedRecords: opSkipped,
             unmappedOperations: opUnmapped,
             unmappedPortfolioCodes: opUnmapped > 0 ? Array.from(opUnmappedPortfolioCodes) : undefined,
-            filename: opFilename
+            processedFiles: processedFiles
           };
+
+          // Update connection to track processed operation files
+          if (processedFiles.length > 0) {
+            const updatedSeenFiles = [...seenOperationFiles, ...processedFiles];
+            await BankConnectionsCollection.updateAsync(connectionId, {
+              $set: { seenOperationFiles: updatedSeenFiles }
+            });
+            console.log(`[BANK_OPERATIONS] Updated seenOperationFiles: ${processedFiles.join(', ')}`);
+          }
 
           if (opUnmapped > 0) {
             console.log(
@@ -1210,7 +1478,7 @@ Meteor.methods({
             status: 'success',
             message: opLogMessage,
             metadata: {
-              filename: opFilename,
+              processedFiles: processedFiles,
               totalRecords: operations.length,
               newRecords: opNew,
               updatedRecords: opUpdated,
@@ -1221,7 +1489,7 @@ Meteor.methods({
             userId: user._id
           });
         } else {
-          console.log(`[BANK_OPERATIONS] No operations file found or parse error`);
+          console.log(`[BANK_OPERATIONS] No new operations files to process`);
         }
       } catch (opError) {
         console.error(`[BANK_OPERATIONS] Operations processing error: ${opError.message}`);
@@ -1254,6 +1522,11 @@ Meteor.methods({
       // Update lastProcessedAt timestamp on successful processing
       await BankConnectionHelpers.updateActivityTimestamps(connectionId, { processedAt: new Date() });
 
+      // Clear any previous error status on success
+      await BankConnectionsCollection.updateAsync(connectionId, {
+        $set: { status: 'connected', lastError: null }
+      });
+
       return {
         success: true,
         positions: {
@@ -1275,6 +1548,15 @@ Meteor.methods({
     } catch (error) {
       console.error(`[BANK_POSITIONS] Processing failed: ${error.message}`);
 
+      // Update connection status with error (if not already set by SG pipeline)
+      try {
+        await BankConnectionsCollection.updateAsync(connectionId, {
+          $set: { status: 'error', lastError: error.message }
+        });
+      } catch (updateErr) {
+        console.error(`[BANK_POSITIONS] Failed to update connection error status: ${updateErr.message}`);
+      }
+
       // Log failure
       await BankConnectionLogHelpers.logConnectionAttempt({
         connectionId,
@@ -1286,6 +1568,10 @@ Meteor.methods({
         userId: user._id
       });
 
+      // Re-throw with the original error code if it's a Meteor.Error, otherwise wrap it
+      if (error.error) {
+        throw error; // Already a Meteor.Error with specific code
+      }
       throw new Meteor.Error('processing-failed', error.message);
     }
   },
@@ -1401,6 +1687,17 @@ Meteor.methods({
     let bankFolderPath;
     if (connection.connectionType === 'local' && connection.localFolderName) {
       bankFolderPath = path.join(bankfilesRoot, connection.localFolderName);
+
+      // Special handling for Societe Generale: use decrypted folder
+      const isSocieteGenerale = bank.name?.toLowerCase().includes('société générale') ||
+                                 bank.name?.toLowerCase().includes('societe generale') ||
+                                 bank.name?.toLowerCase().includes('sg monaco') ||
+                                 connection.localFolderName?.includes('sg/');
+
+      if (isSocieteGenerale) {
+        const baseDir = path.dirname(connection.localFolderName);
+        bankFolderPath = path.join(bankfilesRoot, baseDir, 'decrypted');
+      }
     } else {
       const sanitizedBankName = bank.name
         .toLowerCase()
@@ -1493,6 +1790,18 @@ Meteor.methods({
       let bankFolderPath;
       if (connection.connectionType === 'local' && connection.localFolderName) {
         bankFolderPath = path.join(bankfilesRoot, connection.localFolderName);
+
+        // Special handling for Societe Generale: use decrypted folder
+        const isSocieteGenerale = bank.name?.toLowerCase().includes('société générale') ||
+                                   bank.name?.toLowerCase().includes('societe generale') ||
+                                   bank.name?.toLowerCase().includes('sg monaco') ||
+                                   connection.localFolderName?.includes('sg/');
+
+        if (isSocieteGenerale) {
+          const baseDir = path.dirname(connection.localFolderName);
+          bankFolderPath = path.join(bankfilesRoot, baseDir, 'decrypted');
+          console.log(`[BANK_POSITIONS] SG detected - using decrypted folder: ${bankFolderPath}`);
+        }
       } else {
         const sanitizedBankName = bank.name
           .toLowerCase()
@@ -1578,6 +1887,14 @@ Meteor.methods({
                 // ALWAYS override with Ambervision product title for internal products
                 position.securityName = productInfo.data.securityName;
                 position.assetClass = productInfo.data.assetClass || 'structured_product';
+
+                // CRITICAL: Also set securityType from assetClass if not already set
+                // This prevents raw bank codes (e.g., "19", "13") from being stored
+                if (!position.securityType || !isValidSecurityType(position.securityType)) {
+                  const { getSecurityTypeFromAssetClass } = await import('../../imports/api/constants/instrumentTypes.js');
+                  position.securityType = getSecurityTypeFromAssetClass(position.assetClass);
+                  console.log(`[BANK_POSITIONS] Set securityType from assetClass: ${position.assetClass} -> ${position.securityType}`);
+                }
 
                 // Store product metadata in bankSpecificData
                 position.bankSpecificData = position.bankSpecificData || {};
@@ -2670,6 +2987,31 @@ Meteor.methods({
       hasStaleData,
       hasErrors,
       expectedDate: formatDataDate(new Date()) // Today's expected data date
+    };
+  },
+
+  /**
+   * Reset SG Monaco operations tracking (temporary debug method)
+   * Clears seenOperationFiles so trans files get reprocessed
+   */
+  async 'bank.resetSGOperationsTracking'() {
+    console.log('[BANK_OPERATIONS] Resetting SG Monaco operations tracking...');
+
+    // Clear seenOperationFiles for SG Monaco connection
+    const updateResult = await BankConnectionsCollection.updateAsync(
+      { connectionName: 'SG Monaco Local' },
+      { $set: { seenOperationFiles: [] } }
+    );
+    console.log(`[BANK_OPERATIONS] Cleared seenOperationFiles: ${updateResult} connection(s) updated`);
+
+    // Clear existing operations for SG Monaco
+    const deleteResult = await PMSOperationsCollection.removeAsync({ bankName: 'Societe Generale Monaco' });
+    console.log(`[BANK_OPERATIONS] Deleted ${deleteResult} SG Monaco operations`);
+
+    return {
+      success: true,
+      connectionsUpdated: updateResult,
+      operationsDeleted: deleteResult
     };
   }
 });

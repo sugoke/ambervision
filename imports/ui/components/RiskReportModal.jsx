@@ -338,7 +338,7 @@ const RiskReportModal = ({ report, onClose, isGenerating = false, progress = nul
                   color: isDarkMode ? '#6b7280' : '#9ca3af',
                   maxWidth: '500px'
                 }}>
-                  Our AI is searching the web for recent news and generating detailed analysis for each at-risk underlying. This may take 10-30 seconds...
+                  Amberlake is searching the web for recent news and generating detailed analysis for each at-risk underlying. This may take 10-30 seconds...
                 </p>
 
                 <style>{`

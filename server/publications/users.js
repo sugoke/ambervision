@@ -64,6 +64,28 @@ Meteor.publish("rmClients", async function (sessionId) {
         }
       }
     );
+  } else if (currentUser.role === USER_ROLES.COMPLIANCE) {
+    // Compliance sees all clients (but not admin users)
+    const query = {
+      role: USER_ROLES.CLIENT,
+      isActive: { $ne: false }
+    };
+    console.log('[rmClients] Compliance query:', JSON.stringify(query));
+    return UsersCollection.find(
+      query,
+      {
+        fields: {
+          email: 1,
+          firstName: 1,
+          lastName: 1,
+          profile: 1,
+          role: 1,
+          isActive: 1,
+          relationshipManagerId: 1,
+          createdAt: 1
+        }
+      }
+    );
   } else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
     // RMs see only their assigned clients
     return UsersCollection.find(

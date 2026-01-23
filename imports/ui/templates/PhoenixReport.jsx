@@ -1098,7 +1098,7 @@ const PhoenixReport = ({ results, productId }) => {
                 {tr.memoryAutocall}
               </span>
             )}
-            {results.observationAnalysis.hasMemoryCoupon && (
+            {results.observationAnalysis.hasMemoryCoupon && !results.observationAnalysis.hasGuaranteedCoupon && (
               <span style={{
                 fontSize: '0.8rem',
                 background: '#f59e0b',
@@ -1108,6 +1108,18 @@ const PhoenixReport = ({ results, productId }) => {
                 fontWeight: '500'
               }}>
                 {tr.memoryCoupon}
+              </span>
+            )}
+            {results.observationAnalysis.hasGuaranteedCoupon && (
+              <span style={{
+                fontSize: '0.8rem',
+                background: '#10b981',
+                color: 'white',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                fontWeight: '500'
+              }}>
+                💰 Guaranteed
               </span>
             )}
           </h4>
@@ -1142,28 +1154,31 @@ const PhoenixReport = ({ results, productId }) => {
               </div>
             </div>
 
-            <div style={{
-              background: 'var(--bg-tertiary)',
-              padding: '1rem',
-              borderRadius: '6px',
-              textAlign: 'center'
-            }}>
+            {/* In Memory stat - hide when guaranteed coupon is enabled */}
+            {!results.observationAnalysis.hasGuaranteedCoupon && (
               <div style={{
-                fontSize: '1.2rem',
-                fontWeight: '700',
-                color: results.observationAnalysis.totalMemoryCoupons > 0 ? '#f59e0b' : 'var(--text-muted)',
-                marginBottom: '0.5rem'
+                background: 'var(--bg-tertiary)',
+                padding: '1rem',
+                borderRadius: '6px',
+                textAlign: 'center'
               }}>
-                {results.observationAnalysis.totalMemoryCouponsFormatted}
+                <div style={{
+                  fontSize: '1.2rem',
+                  fontWeight: '700',
+                  color: results.observationAnalysis.totalMemoryCoupons > 0 ? '#f59e0b' : 'var(--text-muted)',
+                  marginBottom: '0.5rem'
+                }}>
+                  {results.observationAnalysis.totalMemoryCouponsFormatted}
+                </div>
+                <div style={{
+                  fontSize: '0.8rem',
+                  color: 'var(--text-secondary)',
+                  textTransform: 'uppercase'
+                }}>
+                  {tr.inMemory}
+                </div>
               </div>
-              <div style={{
-                fontSize: '0.8rem',
-                color: 'var(--text-secondary)',
-                textTransform: 'uppercase'
-              }}>
-                {tr.inMemory}
-              </div>
-            </div>
+            )}
 
             <div style={{
               background: 'var(--bg-tertiary)',
@@ -1462,9 +1477,20 @@ const PhoenixReport = ({ results, productId }) => {
                   {/* Table Header - Sleek Dark Header */}
                   <div style={{
                     display: 'grid',
-                    gridTemplateColumns: results.observationAnalysis.hasMemoryAutocall
-                      ? '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr 1.3fr'
-                      : '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr',
+                    gridTemplateColumns: (() => {
+                      const hasMemoryAutocall = results.observationAnalysis.hasMemoryAutocall;
+                      const hasGuaranteedCoupon = results.observationAnalysis.hasGuaranteedCoupon;
+                      // Base columns: Observation, Payment, Type, Trigger, Autocall, Coupon
+                      // Optional: Memory (only if NOT guaranteed coupon), Memory Lock (only if hasMemoryAutocall)
+                      if (hasGuaranteedCoupon) {
+                        return hasMemoryAutocall
+                          ? '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1.3fr'  // No Memory column, has Memory Lock
+                          : '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr';       // No Memory column, no Memory Lock
+                      }
+                      return hasMemoryAutocall
+                        ? '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr 1.3fr'  // Has Memory column and Memory Lock
+                        : '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr';       // Has Memory column, no Memory Lock
+                    })(),
                     gap: '0.75rem',
                     padding: '1.25rem 1.5rem',
                     background: 'linear-gradient(135deg, #1e293b 0%, #334155 100%)',
@@ -1527,16 +1553,18 @@ const PhoenixReport = ({ results, productId }) => {
                     }}>
                       💵 {tr.coupon}
                     </div>
-                    <div style={{
-                      fontSize: '0.7rem',
-                      fontWeight: '700',
-                      color: '#e2e8f0',
-                      textTransform: 'uppercase',
-                      textAlign: 'center',
-                      letterSpacing: '1px'
-                    }}>
-                      🧠 {tr.memory}
-                    </div>
+                    {!results.observationAnalysis.hasGuaranteedCoupon && (
+                      <div style={{
+                        fontSize: '0.7rem',
+                        fontWeight: '700',
+                        color: '#e2e8f0',
+                        textTransform: 'uppercase',
+                        textAlign: 'center',
+                        letterSpacing: '1px'
+                      }}>
+                        🧠 {tr.memory}
+                      </div>
+                    )}
                     {results.observationAnalysis.hasMemoryAutocall && (
                       <div style={{
                         fontSize: '0.7rem',
@@ -1573,9 +1601,18 @@ const PhoenixReport = ({ results, productId }) => {
                     return (
                     <div key={index} style={{
                       display: 'grid',
-                      gridTemplateColumns: results.observationAnalysis.hasMemoryAutocall
-                        ? '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr 1.3fr'
-                        : '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr',
+                      gridTemplateColumns: (() => {
+                        const hasMemoryAutocall = results.observationAnalysis.hasMemoryAutocall;
+                        const hasGuaranteedCoupon = results.observationAnalysis.hasGuaranteedCoupon;
+                        if (hasGuaranteedCoupon) {
+                          return hasMemoryAutocall
+                            ? '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1.3fr'
+                            : '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr';
+                        }
+                        return hasMemoryAutocall
+                          ? '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr 1.3fr'
+                          : '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr';
+                      })(),
                       alignItems: 'center',
                       gap: '0.75rem',
                       padding: '1rem 1.5rem',
@@ -1912,35 +1949,37 @@ const PhoenixReport = ({ results, productId }) => {
                         )}
                       </div>
 
-                      {/* Memory Coupon */}
-                      <div style={{
-                        fontSize: '0.875rem',
-                        fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
-                        textAlign: 'center',
-                        fontWeight: '700'
-                      }}>
-                        {obs.couponInMemory > 0 ? (
-                          <span style={{
-                            color: isRedemptionRow ? '#ffffff' : '#c2410c',
-                            background: isRedemptionRow
-                              ? 'rgba(255, 255, 255, 0.2)'
-                              : '#fed7aa',
-                            padding: '0.35rem 0.75rem',
-                            borderRadius: '8px',
-                            display: 'inline-block',
-                            boxShadow: isRedemptionRow ? 'none' : '0 1px 3px rgba(234, 88, 12, 0.1)'
-                          }}>
-                            {obs.couponInMemoryFormatted}
-                          </span>
-                        ) : (
-                          <span style={{
-                            color: isRedemptionRow ? 'rgba(255, 255, 255, 0.5)' : '#e2e8f0',
-                            fontWeight: '400'
-                          }}>
-                            —
-                          </span>
-                        )}
-                      </div>
+                      {/* Memory Coupon - Hide when guaranteed coupon is enabled */}
+                      {!results.observationAnalysis.hasGuaranteedCoupon && (
+                        <div style={{
+                          fontSize: '0.875rem',
+                          fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
+                          textAlign: 'center',
+                          fontWeight: '700'
+                        }}>
+                          {obs.couponInMemory > 0 ? (
+                            <span style={{
+                              color: isRedemptionRow ? '#ffffff' : '#c2410c',
+                              background: isRedemptionRow
+                                ? 'rgba(255, 255, 255, 0.2)'
+                                : '#fed7aa',
+                              padding: '0.35rem 0.75rem',
+                              borderRadius: '8px',
+                              display: 'inline-block',
+                              boxShadow: isRedemptionRow ? 'none' : '0 1px 3px rgba(234, 88, 12, 0.1)'
+                            }}>
+                              {obs.couponInMemoryFormatted}
+                            </span>
+                          ) : (
+                            <span style={{
+                              color: isRedemptionRow ? 'rgba(255, 255, 255, 0.5)' : '#e2e8f0',
+                              fontWeight: '400'
+                            }}>
+                              —
+                            </span>
+                          )}
+                        </div>
+                      )}
 
                       {/* Memory Autocall Flags - Only show locked/flagged underlyings */}
                       {results.observationAnalysis.hasMemoryAutocall && (
@@ -2079,7 +2118,7 @@ const PhoenixReport = ({ results, productId }) => {
 
         <div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-            {tr.memoryCoupon}
+            {results.observationAnalysis.hasGuaranteedCoupon ? 'Guaranteed Coupon' : tr.memoryCoupon}
           </div>
           <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)' }}>
             {phoenixParams.couponRate}%

@@ -25,13 +25,22 @@ function datesMatch(scheduledDate, operationDate, daysAfterTolerance = 7) {
   const scheduled = new Date(scheduledDate);
   const operation = new Date(operationDate);
 
+  // Normalize to UTC midnight to avoid timezone issues
+  const scheduledUTC = Date.UTC(scheduled.getFullYear(), scheduled.getMonth(), scheduled.getDate());
+  const operationUTC = Date.UTC(operation.getFullYear(), operation.getMonth(), operation.getDate());
+
   // Calculate difference in days (operation - scheduled)
   // Positive = operation is AFTER scheduled (late payment - OK within tolerance)
   // Negative = operation is BEFORE scheduled (early payment - not expected)
-  const daysDiff = (operation - scheduled) / (1000 * 60 * 60 * 24);
+  const daysDiff = (operationUTC - scheduledUTC) / (1000 * 60 * 60 * 24);
+
+  const matches = daysDiff >= 0 && daysDiff <= daysAfterTolerance;
+  const scheduledStr = `${scheduled.getFullYear()}-${String(scheduled.getMonth()+1).padStart(2,'0')}-${String(scheduled.getDate()).padStart(2,'0')}`;
+  const operationStr = `${operation.getFullYear()}-${String(operation.getMonth()+1).padStart(2,'0')}-${String(operation.getDate()).padStart(2,'0')}`;
+  console.log(`[PaymentMatcher] datesMatch: scheduled=${scheduledStr}, operation=${operationStr}, daysDiff=${daysDiff}, matches=${matches}`);
 
   // Allow same day (0) up to daysAfterTolerance days late
-  return daysDiff >= 0 && daysDiff <= daysAfterTolerance;
+  return matches;
 }
 
 /**
@@ -98,18 +107,23 @@ export function matchScheduledPayment(product, observation, pmsOperations = null
   let operations = pmsOperations;
   if (!operations) {
     // Match ANY operation with the same ISIN and positive amount (incoming payment)
-    // Don't rely on operationType classification as banks differ
+    // Also match by operationType as fallback for banks that store amounts differently
+    // Use toUpperCase() for consistent ISIN matching
     operations = PMSOperationsCollection.find({
-      isin: product.isin,
+      isin: product.isin.toUpperCase(),
       isActive: true,
       $or: [
         { grossAmount: { $gt: 0 } },
-        { netAmount: { $gt: 0 } }
+        { netAmount: { $gt: 0 } },
+        { operationType: 'COUPON' },    // Direct type match (SG Monaco, etc.)
+        { operationType: 'DIVIDEND' },  // Also catches dividend-style income
+        { operationType: 'INTEREST' }   // Interest payments
       ]
     }).fetch();
   }
 
   if (!operations || operations.length === 0) {
+    console.log(`[PaymentMatcher] matchScheduledPayment: No operations to match against`);
     return {
       confirmed: false,
       operation: null,
@@ -120,6 +134,7 @@ export function matchScheduledPayment(product, observation, pmsOperations = null
 
   // Try to find matching operation
   const paymentDate = new Date(observation.paymentDate);
+  console.log(`[PaymentMatcher] matchScheduledPayment: raw paymentDate="${observation.paymentDate}", parsed=${paymentDate.toISOString()}, checking ${operations.length} operations`);
 
   let bestMatch = null;
   let bestMatchScore = 0;
@@ -130,6 +145,10 @@ export function matchScheduledPayment(product, observation, pmsOperations = null
       dateMatch: false,
       amountMatch: false
     };
+
+    // Debug logging for each operation
+    const opValueDate = operation.valueDate ? new Date(operation.valueDate).toISOString().split('T')[0] : 'null';
+    console.log(`[PaymentMatcher]   Checking op: type=${operation.operationType}, valueDate=${opValueDate}, grossAmt=${operation.grossAmount}, netAmt=${operation.netAmount}`);
 
     // Check date match (operation.valueDate should match observation.paymentDate)
     // observation.paymentDate is the scheduled value/settlement date from the product
@@ -153,18 +172,21 @@ export function matchScheduledPayment(product, observation, pmsOperations = null
     }
 
     // Check amount match
-    // For now, we just check if grossAmount is positive (coupon received)
-    // In future, could calculate expected absolute amount from nominal * couponPercent
-    if (operation.grossAmount && operation.grossAmount > 0) {
+    // Check both grossAmount and netAmount - different banks use different fields
+    // Also check operationType as strong indicator for coupon payments
+    const hasPositiveGrossAmount = operation.grossAmount && operation.grossAmount > 0;
+    const hasPositiveNetAmount = operation.netAmount && operation.netAmount > 0;
+    const isCouponType = ['COUPON', 'DIVIDEND', 'INTEREST'].includes(operation.operationType);
+
+    if (hasPositiveGrossAmount || hasPositiveNetAmount) {
       score += 30;
       matchDetails.amountMatch = true;
+    }
 
-      // Could add more sophisticated amount matching here
-      // e.g., if we know the nominal value:
-      // const expectedAmount = (nominalValue * expectedCouponPercent) / 100;
-      // if (amountsMatch(operation.grossAmount, expectedAmount, 5)) {
-      //   score += 20;
-      // }
+    // Bonus score for operationType match
+    if (isCouponType) {
+      score += 20;
+      matchDetails.typeMatch = true;
     }
 
     // Also check operation date (transaction date) for additional confidence
@@ -196,6 +218,8 @@ export function matchScheduledPayment(product, observation, pmsOperations = null
     matchConfidence = 'low';
     confirmed = false; // Low confidence = not confirmed
   }
+
+  console.log(`[PaymentMatcher] matchScheduledPayment result: bestScore=${bestMatchScore}, confidence=${matchConfidence}, confirmed=${confirmed}`);
 
   if (!bestMatch) {
     return {
@@ -278,9 +302,9 @@ export function matchRedemptionTransaction(product, observation, redemptionOpera
 
   let operations = redemptionOperations;
   if (!operations) {
-    // Query redemption-like operations
+    // Query redemption-like operations with consistent ISIN case
     operations = PMSOperationsCollection.find({
-      isin: product.isin,
+      isin: product.isin.toUpperCase(),
       isActive: true,
       $or: [
         { operationType: 'REDEMPTION' },
@@ -289,6 +313,8 @@ export function matchRedemptionTransaction(product, observation, redemptionOpera
       ]
     }).fetch();
   }
+
+  console.log(`[PaymentMatcher] matchRedemptionTransaction: ${operations.length} redemption ops for ISIN ${product.isin.toUpperCase()}`);
 
   if (!operations || operations.length === 0) {
     return {
@@ -301,6 +327,7 @@ export function matchRedemptionTransaction(product, observation, redemptionOpera
 
   // Try to find matching redemption operation
   const paymentDate = new Date(observation.paymentDate);
+  console.log(`[PaymentMatcher] matchRedemptionTransaction: Looking for redemption on ${paymentDate.toISOString().split('T')[0]}`);
 
   let bestMatch = null;
   let bestMatchScore = 0;
@@ -313,6 +340,10 @@ export function matchRedemptionTransaction(product, observation, redemptionOpera
       quantityMatch: false,
       detailsMatch: false
     };
+
+    // Debug logging for each redemption operation
+    const opValueDate = operation.valueDate ? new Date(operation.valueDate).toISOString().split('T')[0] : 'null';
+    console.log(`[PaymentMatcher]   Checking redemption op: type=${operation.operationType}, valueDate=${opValueDate}, qty=${operation.quantity}, netAmt=${operation.netAmount}`);
 
     // Check date match (same 7-day tolerance as coupon payments)
     if (operation.valueDate && datesMatch(paymentDate, operation.valueDate, 7)) {
@@ -348,10 +379,16 @@ export function matchRedemptionTransaction(product, observation, redemptionOpera
       matchDetails.detailsMatch = true;
     }
 
-    // Check for negative quantity (position sold/redeemed)
-    if (operation.quantity && operation.quantity < 0) {
-      score += 10;
-      matchDetails.quantityMatch = true;
+    // Check quantity - negative indicates position sold/redeemed
+    // Some banks (SG Monaco) store quantity as absolute value with REDEMPTION type
+    if (operation.quantity) {
+      if (operation.quantity < 0) {
+        score += 10;  // Negative quantity = position sold
+        matchDetails.quantityMatch = true;
+      } else if (operation.operationType === 'REDEMPTION' && operation.quantity > 0) {
+        score += 5;   // Positive quantity with REDEMPTION type (SG Monaco style)
+        matchDetails.quantityMatch = true;
+      }
     }
 
     // Check price around 1.00 (100% of nominal) - typical for redemptions
@@ -387,6 +424,8 @@ export function matchRedemptionTransaction(product, observation, redemptionOpera
     matchConfidence = 'low';
     confirmed = false;
   }
+
+  console.log(`[PaymentMatcher] matchRedemptionTransaction result: bestScore=${bestMatchScore}, confidence=${matchConfidence}, confirmed=${confirmed}`);
 
   if (!bestMatch) {
     return {
@@ -429,35 +468,63 @@ export async function matchAllScheduledPayments(product, observations) {
     return observations;
   }
 
-  // Check if product exists in any PMS holdings (account tracking)
-  // Skip verification for products not tracked in PMS
-  const holdingsExist = await PMSHoldingsCollection.find({
-    isin: product.isin.toUpperCase(),
-    isLatest: true,
-    isActive: true
-  }).countAsync();
+  const isinUpper = product.isin.toUpperCase();
+  const isinLower = product.isin.toLowerCase();
+  const isinOriginal = product.isin;
+  console.log(`[PaymentMatcher] matchAllScheduledPayments for ISIN: ${isinOriginal} (upper: ${isinUpper})`);
 
-  if (holdingsExist === 0) {
-    // Product not in any PMS account - return observations without payment verification
-    return observations.map(obs => ({
-      ...obs,
-      paymentConfirmed: false,
-      matchConfidence: 'no-pms-holdings',
-      matchMessage: 'Product not found in any PMS account'
-    }));
-  }
-
-  // Query ALL operations for this product once (not just positive amounts)
-  // We need both coupon payments (positive) and redemptions (negative/sell)
-  const allOperations = await PMSOperationsCollection.find({
-    isin: product.isin,
+  // Query ALL operations for this product FIRST (not holdings)
+  // For redeemed products, holdings may be deleted but operations still exist
+  // Try multiple ISIN case variants to handle any storage differences
+  let allOperations = await PMSOperationsCollection.find({
+    isin: { $in: [isinOriginal, isinUpper, isinLower] },
     isActive: true
   }).fetchAsync();
 
-  // Separate operations into coupon (positive amounts) and redemption candidates
+  console.log(`[PaymentMatcher] Found ${allOperations.length} operations for ISIN variants [${isinOriginal}, ${isinUpper}, ${isinLower}]`);
+
+  // If no operations found, check if product was ever in holdings as secondary check
+  if (allOperations.length === 0) {
+    const holdingsExist = await PMSHoldingsCollection.find({
+      isin: isinUpper
+    }).countAsync();
+
+    if (holdingsExist === 0) {
+      console.log(`[PaymentMatcher] No operations AND no holdings for ISIN ${isinUpper} - skipping verification`);
+      // Product was never tracked in PMS at all
+      return observations.map(obs => ({
+        ...obs,
+        paymentConfirmed: false,
+        matchConfidence: 'no-pms-data',
+        matchMessage: 'No PMS operations or holdings found for this ISIN'
+      }));
+    }
+
+    // Holdings exist but no operations yet - payments not yet received
+    console.log(`[PaymentMatcher] Holdings exist but no operations for ISIN ${isinUpper}`);
+    return observations.map(obs => ({
+      ...obs,
+      paymentConfirmed: false,
+      matchConfidence: 'no-operations',
+      matchMessage: 'Product tracked in PMS but no payment operations found yet'
+    }));
+  }
+
+  // Log operation details for debugging
+  console.log(`[PaymentMatcher] Operations:`, allOperations.map(op => ({
+    type: op.operationType,
+    valueDate: op.valueDate,
+    netAmount: op.netAmount,
+    grossAmount: op.grossAmount
+  })));
+
+  // Separate operations into coupon (positive amounts OR coupon type) and redemption candidates
   const couponOperations = allOperations.filter(op =>
     (op.grossAmount && op.grossAmount > 0) ||
-    (op.netAmount && op.netAmount > 0)
+    (op.netAmount && op.netAmount > 0) ||
+    op.operationType === 'COUPON' ||
+    op.operationType === 'DIVIDEND' ||
+    op.operationType === 'INTEREST'
   );
 
   const redemptionOperations = allOperations.filter(op =>
@@ -466,6 +533,8 @@ export async function matchAllScheduledPayments(product, observations) {
     (op.quantity && op.quantity < 0) ||
     (op.details && op.details.toLowerCase().includes('redemption'))
   );
+
+  console.log(`[PaymentMatcher] Filtered: ${couponOperations.length} coupon ops, ${redemptionOperations.length} redemption ops`);
 
   // Match each observation
   const enhancedObservations = observations.map(obs => {

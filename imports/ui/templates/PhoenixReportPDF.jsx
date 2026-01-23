@@ -712,18 +712,28 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                 <td style={styles.td}>Coupon Rate (per observation)</td>
                 <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>{phoenixParams.couponRate || '-'}%</td>
               </tr>
+              {observationAnalysis.hasGuaranteedCoupon && (
+                <tr>
+                  <td style={styles.td}>Coupon Type</td>
+                  <td style={{...styles.td, textAlign: 'right', color: '#047857', fontWeight: 600}}>
+                    💰 Guaranteed (paid regardless of performance)
+                  </td>
+                </tr>
+              )}
               <tr>
                 <td style={styles.td}>Total Coupons Earned</td>
                 <td style={{...styles.td, textAlign: 'right', fontWeight: 600, color: '#047857'}}>
                   {observationAnalysis.totalCouponsEarnedFormatted || `${observationAnalysis.totalCouponsEarned || 0}%`}
                 </td>
               </tr>
-              <tr>
-                <td style={styles.td}>Coupons in Memory</td>
-                <td style={{...styles.td, textAlign: 'right', color: observationAnalysis.totalMemoryCoupons > 0 ? '#b45309' : '#6b7280'}}>
-                  {observationAnalysis.totalMemoryCouponsFormatted || `${observationAnalysis.totalMemoryCoupons || 0}%`}
-                </td>
-              </tr>
+              {!observationAnalysis.hasGuaranteedCoupon && (
+                <tr>
+                  <td style={styles.td}>Coupons in Memory</td>
+                  <td style={{...styles.td, textAlign: 'right', color: observationAnalysis.totalMemoryCoupons > 0 ? '#b45309' : '#6b7280'}}>
+                    {observationAnalysis.totalMemoryCouponsFormatted || `${observationAnalysis.totalMemoryCoupons || 0}%`}
+                  </td>
+                </tr>
+              )}
               <tr>
                 <td style={styles.td}>Observations Completed</td>
                 <td style={{...styles.td, textAlign: 'right'}}>
@@ -802,7 +812,9 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                 <th style={{...styles.th, textAlign: 'center', width: '70px'}}>Type</th>
                 <th style={{...styles.th, textAlign: 'right', width: '70px'}}>Autocall</th>
                 <th style={{...styles.th, textAlign: 'right', width: '70px'}}>Coupon</th>
-                <th style={{...styles.th, textAlign: 'center', width: '60px'}}>Memory</th>
+                {!observationAnalysis.hasGuaranteedCoupon && (
+                  <th style={{...styles.th, textAlign: 'center', width: '60px'}}>Memory</th>
+                )}
                 <th style={{...styles.th, textAlign: 'center', width: '70px'}}>Status</th>
               </tr>
             </thead>
@@ -832,9 +844,11 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                     </td>
                     <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>{obs.autocallLevel || phoenixParams.autocallBarrier || '-'}%</td>
                     <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>{obs.couponRate || phoenixParams.couponRate || '-'}%</td>
-                    <td style={{...styles.td, textAlign: 'center'}}>
-                      {obs.hasMemory || observationAnalysis.hasMemoryCoupon ? 'Yes' : 'No'}
-                    </td>
+                    {!observationAnalysis.hasGuaranteedCoupon && (
+                      <td style={{...styles.td, textAlign: 'center'}}>
+                        {obs.hasMemory || observationAnalysis.hasMemoryCoupon ? 'Yes' : 'No'}
+                      </td>
+                    )}
                     <td style={{...styles.td, textAlign: 'center'}}>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'center' }}>
                         {/* Coupon Payment Status */}
@@ -909,7 +923,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
               <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>{phoenixParams.protectionBarrier || '-'}%</td>
             </tr>
             <tr>
-              <td style={styles.td}>Memory Coupon Rate</td>
+              <td style={styles.td}>{observationAnalysis.hasGuaranteedCoupon ? 'Guaranteed Coupon Rate' : 'Memory Coupon Rate'}</td>
               <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>{phoenixParams.couponRate || '-'}%</td>
             </tr>
             <tr>

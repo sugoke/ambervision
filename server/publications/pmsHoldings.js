@@ -8,14 +8,117 @@ import { UsersCollection, USER_ROLES } from '/imports/api/users';
 import { SessionsCollection } from '/imports/api/sessions';
 import { Meteor } from 'meteor/meteor';
 
+// Debug method to test full publication logic
+Meteor.methods({
+  'pmsHoldings.debugFullPublicationLogic': async function(asOfDateStr) {
+    const asOfDate = new Date(asOfDateStr);
+
+    // Step 0: Test basic collection access
+    const basicCount = await PMSHoldingsCollection.find({}).countAsync();
+    const activeCount = await PMSHoldingsCollection.find({ isActive: true }).countAsync();
+
+    // Test date comparison
+    const withDateCount = await PMSHoldingsCollection.find({
+      isActive: true,
+      snapshotDate: { $lte: asOfDate }
+    }).countAsync();
+
+    // Test raw collection
+    const rawCount = await PMSHoldingsCollection.rawCollection().countDocuments({
+      isActive: true,
+      snapshotDate: { $lte: asOfDate }
+    });
+
+    const queryFilter = { isActive: true, snapshotDate: { $lte: asOfDate } };
+
+    // Step 1: Count total holdings
+    const totalCount = await PMSHoldingsCollection.find(queryFilter).countAsync();
+
+    // Step 2: Fetch all holdings with sorting
+    const allHoldings = await PMSHoldingsCollection.find(queryFilter, {
+      sort: { snapshotDate: -1, version: -1 }
+    }).fetchAsync();
+
+    // Step 3: Group by uniqueKey
+    const latestByKey = new Map();
+    for (const holding of allHoldings) {
+      if (!latestByKey.has(holding.uniqueKey)) {
+        latestByKey.set(holding.uniqueKey, holding);
+      }
+    }
+
+    // Step 4: Get IDs
+    const holdingIds = Array.from(latestByKey.values()).map(h => h._id);
+
+    // Step 5: Final query
+    const finalCount = await PMSHoldingsCollection.find({
+      _id: { $in: holdingIds }
+    }).countAsync();
+
+    // Get sample of final results
+    const finalSample = await PMSHoldingsCollection.find({
+      _id: { $in: holdingIds }
+    }, { limit: 3 }).fetchAsync();
+
+    return {
+      // Diagnostic step 0 - collection access tests
+      step0_basicCount: basicCount,
+      step0_activeCount: activeCount,
+      step0_withDateCount: withDateCount,
+      step0_rawCount: rawCount,
+      // Original steps
+      step1_queryFilter: JSON.stringify(queryFilter),
+      step2_totalFetched: allHoldings.length,
+      step3_uniqueKeys: latestByKey.size,
+      step4_holdingIds: holdingIds.length,
+      step5_finalCount: finalCount,
+      sampleNames: finalSample.map(h => h.securityName),
+      sampleDates: finalSample.map(h => h.snapshotDate?.toISOString())
+    };
+  }
+});
+
 Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = null, latestOnly = true, asOfDate = null) {
-  check(sessionId, Match.Maybe(String));
-  check(viewAsFilter, Match.Maybe(Match.ObjectIncluding({
-    type: String,
-    id: String
-  })));
-  check(latestOnly, Match.Maybe(Boolean));
-  check(asOfDate, Match.Maybe(Date));
+  // Log IMMEDIATELY to ensure we see publication being called
+  console.log('[PMS_HOLDINGS] *** PUBLICATION ENTRY ***', new Date().toISOString());
+
+  try {
+    console.log('[PMS_HOLDINGS] Raw params:', {
+      sessionId: sessionId ? 'present' : 'null',
+      viewAsFilter: viewAsFilter ? JSON.stringify(viewAsFilter) : 'null',
+      latestOnly,
+      asOfDate: String(asOfDate),
+      asOfDateType: typeof asOfDate,
+      asOfDateIsDate: asOfDate instanceof Date
+    });
+
+    check(sessionId, Match.Maybe(String));
+    check(viewAsFilter, Match.Maybe(Match.ObjectIncluding({
+      type: String,
+      id: String
+    })));
+    check(latestOnly, Match.Maybe(Boolean));
+    // Accept Date, String, or null for asOfDate - convert strings to Date
+    check(asOfDate, Match.Maybe(Match.OneOf(Date, String)));
+    console.log('[PMS_HOLDINGS] All checks passed');
+  } catch (checkError) {
+    console.error('[PMS_HOLDINGS] Check failed:', checkError.message);
+    throw checkError;
+  }
+
+  // Convert string to Date if needed
+  let parsedAsOfDate = null;
+  if (asOfDate) {
+    parsedAsOfDate = asOfDate instanceof Date ? asOfDate : new Date(asOfDate);
+    console.log('[PMS_HOLDINGS] asOfDate converted:', {
+      original: asOfDate,
+      type: typeof asOfDate,
+      parsed: parsedAsOfDate?.toISOString?.(),
+      isValidDate: parsedAsOfDate instanceof Date && !isNaN(parsedAsOfDate)
+    });
+  } else {
+    console.log('[PMS_HOLDINGS] No asOfDate provided, will use latestOnly logic');
+  }
 
   if (!this.userId && !sessionId) {
     return this.ready();
@@ -91,26 +194,38 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
       queryFilter.userId = currentUser._id;
     }
 
+    console.log('[PMS_HOLDINGS] After role check - queryFilter:', JSON.stringify(queryFilter));
+    console.log('[PMS_HOLDINGS] parsedAsOfDate value:', parsedAsOfDate?.toISOString?.() || 'null');
+
     // Handle asOfDate - view holdings as of a specific date
-    if (asOfDate) {
-      console.log(`[PMS_HOLDINGS] Querying holdings as of ${asOfDate.toISOString()}`);
+    if (parsedAsOfDate) {
+      console.log(`[PMS_HOLDINGS] ENTERING HISTORICAL PATH for date: ${parsedAsOfDate.toISOString()}`);
 
       // Get all holdings up to this date
-      queryFilter.snapshotDate = { $lte: asOfDate };
+      queryFilter.snapshotDate = { $lte: parsedAsOfDate };
 
-      const allHoldings = await PMSHoldingsCollection.find(queryFilter, {
-        sort: { snapshotDate: -1, version: -1 }
-      }).fetchAsync();
+      console.log('[PMS_HOLDINGS] Historical query filter:', JSON.stringify(queryFilter));
 
-      // Group by uniqueKey and get latest version for each position
-      const latestByKey = new Map();
-      for (const holding of allHoldings) {
-        if (!latestByKey.has(holding.uniqueKey)) {
-          latestByKey.set(holding.uniqueKey, holding);
+      // Use aggregation with allowDiskUse to handle large datasets
+      // This avoids MongoDB's 32MB sort memory limit by allowing disk-based sorting
+      const pipeline = [
+        { $match: queryFilter },
+        { $sort: { snapshotDate: -1, version: -1 } },
+        {
+          $group: {
+            _id: '$uniqueKey',
+            holdingId: { $first: '$_id' },
+            snapshotDate: { $first: '$snapshotDate' }
+          }
         }
-      }
+      ];
 
-      const holdingIds = Array.from(latestByKey.values()).map(h => h._id);
+      const latestByKey = await PMSHoldingsCollection.rawCollection()
+        .aggregate(pipeline, { allowDiskUse: true })
+        .toArray();
+
+      const holdingIds = latestByKey.map(doc => doc.holdingId);
+      console.log(`[PMS_HOLDINGS] Returning ${holdingIds.length} unique positions for historical view`);
 
       return PMSHoldingsCollection.find({
         _id: { $in: holdingIds }

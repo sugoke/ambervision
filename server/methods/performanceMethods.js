@@ -99,7 +99,11 @@ Meteor.methods({
 
       if (viewAsFilter.type === 'client') {
         targetUserId = viewAsFilter.id;
-        targetPortfolioCode = null;
+        // Only reset portfolioCode if not explicitly provided
+        // (allows selecting specific account within a client view)
+        if (!portfolioCode) {
+          targetPortfolioCode = null;
+        }
       } else if (viewAsFilter.type === 'account') {
         const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
         if (bankAccount) {
@@ -221,9 +225,13 @@ Meteor.methods({
         const { BankAccountsCollection } = await import('../../imports/api/bankAccounts.js');
 
         if (viewAsFilter.type === 'client') {
-          // View all portfolios for this client
+          // View portfolios for this client
           targetUserId = viewAsFilter.id;
-          targetPortfolioCode = null; // Aggregate all portfolios
+          // Only reset portfolioCode if not explicitly provided
+          // (allows selecting specific account within a client view)
+          if (!portfolioCode) {
+            targetPortfolioCode = null; // Aggregate all portfolios
+          }
         } else if (viewAsFilter.type === 'account') {
           // View specific account
           const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);

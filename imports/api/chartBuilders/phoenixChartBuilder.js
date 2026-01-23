@@ -60,12 +60,16 @@ export const PhoenixChartBuilder = {
       for (let index = 0; index < underlyingData.length; index++) {
         const underlying = underlyingData[index];
 
+        // Calculate current performance for synthetic data fallback
+        const currentPerformance = underlying.performance || underlying.performancePercent || 0;
+
         // Generate performance data using actual stock prices rebased to 100
         const performanceData = await this.generateRebasedStockData(
           underlying.fullTicker || `${underlying.ticker}.US`,
           tradeDate,
           maturityDate,
-          today
+          today,
+          currentPerformance // Pass actual performance for synthetic data fallback
         );
 
         // Use color from palette, cycling if there are more underlyings than colors
@@ -586,8 +590,13 @@ export const PhoenixChartBuilder = {
 
   /**
    * Generate rebased stock data (normalized to 100 at trade date)
+   * @param {string} ticker - The stock ticker (e.g., "MRNA.US")
+   * @param {Date} tradeDate - Product trade date
+   * @param {Date} maturityDate - Product maturity date
+   * @param {Date} today - Current date
+   * @param {number} currentPerformance - Current performance percentage (e.g., -62.56 for -62.56%)
    */
-  async generateRebasedStockData(ticker, tradeDate, maturityDate, today) {
+  async generateRebasedStockData(ticker, tradeDate, maturityDate, today, currentPerformance = 0) {
     try {
       const tradeDateStr = tradeDate.toISOString().split('T')[0];
       const maturityDateStr = maturityDate.toISOString().split('T')[0];
@@ -605,7 +614,8 @@ export const PhoenixChartBuilder = {
       }
 
       if (!cacheDoc || !cacheDoc.history || cacheDoc.history.length === 0) {
-        return this.generateSyntheticData(tradeDate, maturityDate, today);
+        console.log(`📊 No market data cache for ${ticker}, using synthetic data with performance: ${currentPerformance}%`);
+        return this.generateSyntheticData(tradeDate, maturityDate, today, currentPerformance);
       }
 
       const history = cacheDoc.history.filter(record => {
@@ -614,7 +624,8 @@ export const PhoenixChartBuilder = {
       });
 
       if (history.length === 0) {
-        return this.generateSyntheticData(tradeDate, maturityDate, today);
+        console.log(`📊 No history data in range for ${ticker}, using synthetic data with performance: ${currentPerformance}%`);
+        return this.generateSyntheticData(tradeDate, maturityDate, today, currentPerformance);
       }
 
       const initialPriceRecord = history.find(p =>
@@ -629,14 +640,19 @@ export const PhoenixChartBuilder = {
 
     } catch (error) {
       console.error(`❌ Error fetching price data for ${ticker}:`, error);
-      return this.generateSyntheticData(tradeDate, maturityDate, today);
+      return this.generateSyntheticData(tradeDate, maturityDate, today, currentPerformance);
     }
   },
 
   /**
    * Generate synthetic performance data as fallback
+   * Uses actual performance from evaluation to create realistic chart data
+   * @param {Date} tradeDate - Product trade date
+   * @param {Date} maturityDate - Product maturity date
+   * @param {Date} today - Current date
+   * @param {number} targetPerformance - Target performance percentage at today (e.g., -62.56 for -62.56%)
    */
-  generateSyntheticData(tradeDate, maturityDate, today) {
+  generateSyntheticData(tradeDate, maturityDate, today, targetPerformance = 0) {
     const labels = [];
     const currentDate = new Date(tradeDate);
 
@@ -651,8 +667,12 @@ export const PhoenixChartBuilder = {
       if (index === 0) {
         return { x: date, y: 100 };
       } else if (index <= todayIndex) {
-        const baseProgress = (36.9 * index) / Math.max(todayIndex, 1);
-        const volatility = Math.sin(index * 0.1) * 5;
+        // Use actual performance to create realistic progression
+        // Performance is percentage change from 100 (e.g., -62.56 means final value of 37.44)
+        const baseProgress = (targetPerformance * index) / Math.max(todayIndex, 1);
+        // Add some volatility but scale it based on the magnitude of performance
+        const volatilityScale = Math.min(Math.abs(targetPerformance) * 0.1, 5);
+        const volatility = Math.sin(index * 0.15) * volatilityScale;
         return { x: date, y: 100 + baseProgress + volatility };
       } else {
         return null;

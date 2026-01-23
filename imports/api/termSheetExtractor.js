@@ -5,6 +5,7 @@ import { ProductsCollection } from './products';
 import { SessionHelpers } from './sessions';
 import { IssuersCollection } from './issuers';
 import { BUILT_IN_TEMPLATES } from './templates';
+import { SecuritiesMetadataHelpers } from './securitiesMetadata';
 import { normalizeExchangeForEOD } from '/imports/utils/tickerUtils';
 import { validateISIN, cleanISIN } from '/imports/utils/isinValidator';
 
@@ -14,6 +15,74 @@ const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_MODEL = 'claude-sonnet-4-20250514';
 
 if (Meteor.isServer) {
+  // Node.js imports for file system operations
+  const fs = require('fs');
+  const path = require('path');
+
+  /**
+   * Save the term sheet PDF file during extraction
+   * This allows the file to be available on the report page without re-uploading
+   * @param {string} base64Data - Base64 encoded PDF content
+   * @param {Object} product - The product document with isin and title
+   * @param {string} productId - The product ID
+   * @param {string} userId - The user ID who uploaded
+   * @returns {Object|null} - The termSheet object to store in the product, or null on failure
+   */
+  function saveTermSheetFile(base64Data, product, productId, userId) {
+    try {
+      console.log('[TermSheetExtractor] Saving term sheet file...');
+
+      // Generate filename from ISIN and product title
+      const isin = product.isin || 'NO_ISIN';
+      const title = product.title || 'Untitled_Product';
+
+      // Sanitize ISIN and title for filename - remove special characters
+      const sanitizedIsin = isin.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const sanitizedTitle = title.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+      const sanitizedFilename = `${sanitizedIsin}_${sanitizedTitle}.pdf`;
+
+      // Determine the term sheets directory
+      let termsheetsDir;
+      if (process.env.TERMSHEETS_PATH) {
+        // Production: use persistent volume mount
+        termsheetsDir = process.env.TERMSHEETS_PATH;
+      } else {
+        // Development: use public directory
+        let projectRoot = process.cwd();
+        if (projectRoot.includes('.meteor')) {
+          projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
+        }
+        const publicDir = path.join(projectRoot, 'public');
+        termsheetsDir = path.join(publicDir, 'termsheets');
+      }
+
+      // Create directory if it doesn't exist
+      if (!fs.existsSync(termsheetsDir)) {
+        fs.mkdirSync(termsheetsDir, { recursive: true });
+      }
+
+      // Decode base64 to buffer and write file
+      const fileBuffer = Buffer.from(base64Data, 'base64');
+      const filePath = path.join(termsheetsDir, sanitizedFilename);
+      fs.writeFileSync(filePath, fileBuffer);
+
+      console.log(`[TermSheetExtractor] Term sheet saved: ${filePath}`);
+
+      // Return the termSheet object to store in the product
+      return {
+        url: `/termsheets/${sanitizedFilename}`,
+        filename: sanitizedFilename,
+        originalFilename: 'termsheet.pdf', // We don't have the original filename here
+        uploadedAt: new Date(),
+        uploadedBy: userId
+      };
+    } catch (error) {
+      console.error('[TermSheetExtractor] Failed to save term sheet file:', error);
+      // Don't throw - term sheet saving is not critical to product creation
+      return null;
+    }
+  }
+
   /**
    * Normalize ticker formats in extracted data to ensure EOD API compatibility
    * @param {Object} extractedData - Raw extracted data from Claude
@@ -287,6 +356,7 @@ if (Meteor.isServer) {
           strike: 100,
           memoryCoupon: true,
           memoryAutocall: false,
+          guaranteedCoupon: false,
           couponFrequency: "quarterly",
           referencePerformance: "worst-of"
         },
@@ -684,6 +754,7 @@ EXTRACTION RULES:
 9. Do NOT modify the structure or field names
 10. For coupon rates, autocall levels, protection barriers: extract exact percentages from term sheet tables/text
 11. For memory coupon/autocall: detect from term sheet language (e.g., "memory", "cumulative")
+    For guaranteed coupon: detect from term sheet language (e.g., "guaranteed", "unconditional", "paid regardless of performance", "coupon paid at each observation", "fixed coupon")
 12. For issuer: MUST select the closest match from the VALID ISSUERS LIST provided above (use exact name from list)
 13. For observationSchedule: calculate dates based on frequency (quarterly, monthly, etc.)
 14. Generate appropriate schedule IDs as "period_0", "period_1", etc.
@@ -1540,6 +1611,84 @@ CRITICAL: Return ONLY the JSON object with no additional text, explanations, or 
 
       const processingTime = Date.now() - startTime;
       console.log(`[TermSheetExtractor] Product created successfully in ${processingTime}ms, ID: ${productId}`);
+
+      // Save the term sheet PDF file so it's available on the report page
+      const termSheetData = saveTermSheetFile(fileData, productDocument, productId, session.userId);
+      if (termSheetData) {
+        try {
+          await ProductsCollection.updateAsync(productId, {
+            $set: { termSheet: termSheetData }
+          });
+          console.log(`[TermSheetExtractor] Term sheet attached to product: ${termSheetData.url}`);
+        } catch (updateError) {
+          console.error('[TermSheetExtractor] Failed to attach term sheet to product:', updateError);
+          // Not critical - product was still created successfully
+        }
+      }
+
+      // Auto-sync to securitiesMetadata if product has ISIN
+      if (productDocument.isin) {
+        Meteor.defer(async () => {
+          try {
+            // Map templateId to structuredProductType
+            const templateId = productDocument.templateId || productDocument.template || '';
+            const templateLower = templateId.toLowerCase();
+
+            let structuredProductType = 'other';
+            if (templateLower.includes('phoenix') || templateLower.includes('autocallable')) {
+              structuredProductType = 'phoenix';
+            } else if (templateLower.includes('orion')) {
+              structuredProductType = 'orion';
+            } else if (templateLower.includes('himalaya')) {
+              structuredProductType = 'himalaya';
+            } else if (templateLower.includes('participation')) {
+              structuredProductType = 'participation_note';
+            } else if (templateLower.includes('reverse_convertible_bond')) {
+              structuredProductType = 'reverse_convertible_bond';
+            } else if (templateLower.includes('reverse_convertible')) {
+              structuredProductType = 'reverse_convertible';
+            } else if (templateLower.includes('shark')) {
+              structuredProductType = 'shark_note';
+            }
+
+            // Determine underlying type based on underlyings
+            let underlyingType = 'equity_linked';
+            if (productDocument.underlyings && productDocument.underlyings.length > 0) {
+              const firstUnderlying = productDocument.underlyings[0];
+              const ticker = firstUnderlying.ticker || firstUnderlying.symbol || '';
+              if (ticker.includes('.BOND') || ticker.includes('BOND')) {
+                underlyingType = 'fixed_income_linked';
+              } else if (ticker.includes('.COMM') || ticker.includes('GOLD') || ticker.includes('OIL')) {
+                underlyingType = 'commodities_linked';
+              }
+            }
+
+            // Determine protection type from product structure
+            let protectionType = 'capital_protected_conditional';
+            if (productDocument.capitalProtection === 100) {
+              protectionType = 'capital_guaranteed_100';
+            } else if (productDocument.capitalProtection && productDocument.capitalProtection > 0) {
+              protectionType = 'capital_guaranteed_partial';
+            }
+
+            const securityMetadata = {
+              isin: productDocument.isin,
+              securityName: productDocument.title || productDocument.productName || `Structured Product ${productDocument.isin}`,
+              assetClass: 'structured_product',
+              structuredProductType: structuredProductType,
+              structuredProductUnderlyingType: underlyingType,
+              structuredProductProtectionType: protectionType,
+              sourceProductId: productId,
+              autoCreatedFromProduct: true
+            };
+
+            await SecuritiesMetadataHelpers.upsertSecurityMetadata(securityMetadata);
+            console.log(`[TermSheetExtractor] Auto-synced to securitiesMetadata: ${productDocument.isin}`);
+          } catch (metadataError) {
+            console.error('[TermSheetExtractor] Error syncing to securitiesMetadata:', metadataError);
+          }
+        });
+      }
 
       return {
         success: true,

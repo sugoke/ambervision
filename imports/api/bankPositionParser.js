@@ -5,6 +5,7 @@ import { AndbankParser } from './parsers/andbankParser.js';
 import { CFMParser } from './parsers/cfmParser.js';
 import { EDRMonacoParser } from './parsers/edrMonacoParser.js';
 import { CMBMonacoParser } from './parsers/cmbMonacoParser.js';
+import { SGMonacoParser } from './parsers/sgMonacoParser.js';
 
 /**
  * Bank Position Parser Service
@@ -23,6 +24,8 @@ export const BankPositionParser = {
     'cfm': CFMParser,
     'edmond-de-rothschild': EDRMonacoParser,
     'cmb-monaco': CMBMonacoParser,
+    'societe-generale': SGMonacoParser,
+    'sg-monaco': SGMonacoParser,
     // Add more parsers here:
     // 'ubs': UBSParser,
     // 'credit-suisse': CreditSuisseParser,
@@ -119,6 +122,30 @@ export const BankPositionParser = {
             });
           } catch (error) {
             console.error(`[BANK_PARSER] Error extracting date from FX rates file ${filename}: ${error.message}`);
+          }
+
+          break; // File matched, no need to check other parsers
+        }
+
+        // Also check prices pattern if parser supports it (e.g., SG Monaco price files)
+        if (parser.matchesPricesPattern && parser.matchesPricesPattern(filename)) {
+          const filePath = path.join(directoryPath, filename);
+          const stats = fs.statSync(filePath);
+
+          try {
+            const fileDate = parser.extractFileDate(filename);
+
+            positionFiles.push({
+              filename,
+              filePath,
+              fileDate,
+              fileSize: stats.size,
+              bankParser: bankKey,
+              fileType: 'prices', // Instrument prices
+              modified: stats.mtime
+            });
+          } catch (error) {
+            console.error(`[BANK_PARSER] Error extracting date from prices file ${filename}: ${error.message}`);
           }
 
           break; // File matched, no need to check other parsers
@@ -245,8 +272,9 @@ export const BankPositionParser = {
     const securitiesFiles = filesForDate.filter(f => f.fileType === 'securities');
     const cashFiles = filesForDate.filter(f => f.fileType === 'cash');
     const fxRatesFiles = filesForDate.filter(f => f.fileType === 'fxrates');
+    const pricesFiles = filesForDate.filter(f => f.fileType === 'prices');
 
-    console.log(`[BANK_PARSER] Files for ${targetDate.toISOString().split('T')[0]}: ${filesForDate.length} total (${securitiesFiles.length} securities, ${cashFiles.length} cash, ${fxRatesFiles.length} fxrates)`);
+    console.log(`[BANK_PARSER] Files for ${targetDate.toISOString().split('T')[0]}: ${filesForDate.length} total (${securitiesFiles.length} securities, ${cashFiles.length} cash, ${fxRatesFiles.length} fxrates, ${pricesFiles.length} prices)`);
 
     // Parse FX rates file first if available
     let fxRates = {};
@@ -261,6 +289,22 @@ export const BankPositionParser = {
         }
       } catch (error) {
         console.error(`[BANK_PARSER] Error parsing FX rates file: ${error.message}`);
+      }
+    }
+
+    // Parse prices file if available (SG Monaco provides prices in separate file)
+    let prices = {};
+    if (pricesFiles.length > 0) {
+      try {
+        const priceFile = pricesFiles[0];
+        const parser = this.parsers[priceFile.bankParser];
+        if (parser && parser.parsePrices) {
+          const priceContent = this.readFile(priceFile.filePath);
+          prices = parser.parsePrices(priceContent);
+          console.log(`[BANK_PARSER] Loaded ${Object.keys(prices).length} prices from ${priceFile.filename}`);
+        }
+      } catch (error) {
+        console.error(`[BANK_PARSER] Error parsing prices file: ${error.message}`);
       }
     }
 
@@ -280,7 +324,8 @@ export const BankPositionParser = {
           ...options,
           parser,
           fileType: 'securities',
-          fxRates
+          fxRates,
+          prices
         });
 
         allPositions = allPositions.concat(result.positions);
@@ -356,7 +401,8 @@ export const BankPositionParser = {
       userId,
       parser = null,
       fileType = 'securities', // Default to securities for backward compatibility
-      fxRates = {} // FX rates for currency conversion (CFM)
+      fxRates = {}, // FX rates for currency conversion (CFM)
+      prices = {}   // Instrument prices (SG Monaco)
     } = options;
 
     console.log(`[BANK_PARSER] Parsing file: ${filePath} (type: ${fileType})`);
@@ -410,7 +456,8 @@ export const BankPositionParser = {
           sourceFile: filename,
           fileDate,
           userId,
-          fxRates // Pass FX rates for currency conversion
+          fxRates, // Pass FX rates for currency conversion
+          prices   // Pass prices (SG Monaco)
         })
       : bankParser.parse(content, {
           bankId,
@@ -418,7 +465,8 @@ export const BankPositionParser = {
           sourceFile: filename,
           fileDate,
           userId,
-          fxRates // Pass FX rates for currency conversion (e.g., CMB Monaco)
+          fxRates, // Pass FX rates for currency conversion (e.g., CMB Monaco)
+          prices   // Pass prices (SG Monaco)
         });
 
     return {
@@ -437,24 +485,67 @@ export const BankPositionParser = {
    * Parses all files for the latest date (securities + cash) and combines results
    */
   parseLatestFile(directoryPath, options = {}) {
-    const latestFiles = this.findLatestFiles(directoryPath);
-
-    if (latestFiles.length === 0) {
+    // Check if directory exists
+    if (!fs.existsSync(directoryPath)) {
+      console.error(`[BANK_PARSER] Directory not found: ${directoryPath}`);
       return {
         positions: [],
         filename: null,
         fileDate: null,
         totalRecords: 0,
-        error: 'No position files found'
+        error: 'Directory not found',
+        errorCode: 'directory-not-found',
+        errorDetails: { path: directoryPath }
       };
     }
 
-    // Separate securities, cash, and FX rates files
+    // List all files in directory for diagnostics
+    const allFilesInDir = fs.readdirSync(directoryPath);
+    const csvFilesInDir = allFilesInDir.filter(f => f.endsWith('.csv'));
+
+    const latestFiles = this.findLatestFiles(directoryPath);
+
+    if (latestFiles.length === 0) {
+      // Provide diagnostic information about why no files matched
+      const registeredParsers = Object.keys(this.parsers);
+
+      let errorCode, errorMessage;
+      if (csvFilesInDir.length === 0) {
+        errorCode = 'no-csv-files';
+        errorMessage = `No CSV files found in directory (${allFilesInDir.length} other files present)`;
+      } else {
+        errorCode = 'parser-no-match';
+        errorMessage = `Found ${csvFilesInDir.length} CSV file(s) but none matched registered parser patterns`;
+      }
+
+      console.error(`[BANK_PARSER] ${errorMessage}`);
+      console.error(`[BANK_PARSER] CSV files in dir: ${csvFilesInDir.slice(0, 10).join(', ')}${csvFilesInDir.length > 10 ? '...' : ''}`);
+      console.error(`[BANK_PARSER] Registered parsers: ${registeredParsers.join(', ')}`);
+
+      return {
+        positions: [],
+        filename: null,
+        fileDate: null,
+        totalRecords: 0,
+        error: errorMessage,
+        errorCode,
+        errorDetails: {
+          path: directoryPath,
+          totalFiles: allFilesInDir.length,
+          csvFiles: csvFilesInDir.length,
+          csvFilenames: csvFilesInDir.slice(0, 5), // First 5 for debugging
+          registeredParsers
+        }
+      };
+    }
+
+    // Separate securities, cash, FX rates, and prices files
     const securitiesFiles = latestFiles.filter(f => f.fileType === 'securities');
     const cashFiles = latestFiles.filter(f => f.fileType === 'cash');
     const fxRatesFiles = latestFiles.filter(f => f.fileType === 'fxrates');
+    const pricesFiles = latestFiles.filter(f => f.fileType === 'prices');
 
-    console.log(`[BANK_PARSER] Latest files: ${latestFiles.length} total (${securitiesFiles.length} securities, ${cashFiles.length} cash, ${fxRatesFiles.length} fxrates)`);
+    console.log(`[BANK_PARSER] Latest files: ${latestFiles.length} total (${securitiesFiles.length} securities, ${cashFiles.length} cash, ${fxRatesFiles.length} fxrates, ${pricesFiles.length} prices)`);
 
     // Parse FX rates file first if available (for CFM)
     let fxRates = {};
@@ -469,6 +560,22 @@ export const BankPositionParser = {
         }
       } catch (error) {
         console.error(`[BANK_PARSER] Error parsing FX rates file: ${error.message}`);
+      }
+    }
+
+    // Parse prices file if available (SG Monaco provides prices in separate file)
+    let prices = {};
+    if (pricesFiles.length > 0) {
+      try {
+        const priceFile = pricesFiles[0];
+        const parser = this.parsers[priceFile.bankParser];
+        if (parser && parser.parsePrices) {
+          const priceContent = this.readFile(priceFile.filePath);
+          prices = parser.parsePrices(priceContent);
+          console.log(`[BANK_PARSER] Loaded ${Object.keys(prices).length} prices from ${priceFile.filename}`);
+        }
+      } catch (error) {
+        console.error(`[BANK_PARSER] Error parsing prices file: ${error.message}`);
       }
     }
 
@@ -488,7 +595,8 @@ export const BankPositionParser = {
           ...options,
           parser,
           fileType: 'securities',
-          fxRates // Pass FX rates for currency conversion (e.g., CMB Monaco)
+          fxRates, // Pass FX rates for currency conversion (e.g., CMB Monaco)
+          prices   // Pass prices for SG Monaco
         });
 
         allPositions = allPositions.concat(result.positions);

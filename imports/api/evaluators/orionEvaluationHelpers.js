@@ -1,5 +1,6 @@
 import { MarketDataHelpers, MarketDataCacheCollection } from '/imports/api/marketDataCache';
 import { EODApiHelpers } from '/imports/api/eodApi';
+import { CurrencyNormalization } from '/imports/utils/currencyNormalization';
 
 /**
  * Orion Memory Evaluation Helpers
@@ -195,21 +196,13 @@ export const OrionEvaluationHelpers = {
 
       const tradeDateStr = tradeDate.toISOString().split('T')[0];
 
-      // Get initial price from cache (same logic as chart builder)
-      // This ensures chart and evaluator use the same rebasing reference
-      const initialPriceRecord = cacheDoc.history.find(record =>
-        new Date(record.date).toISOString().split('T')[0] === tradeDateStr
-      ) || cacheDoc.history[0];
-
-      const initialPriceFromCache = initialPriceRecord?.adjustedClose || initialPriceRecord?.close;
-
-      // Fallback to strike if cache doesn't have trade date data
-      const initialPrice = initialPriceFromCache ||
-                          underlying.strike ||
+      // IMPORTANT: Use STRIKE price as the reference, NOT the cache price on trade date
+      // The strike is the contractual reference level that determines barrier hits
+      // This matches the chart builder which also uses strike for rebasing
+      const initialPrice = underlying.strike ||
                           (underlying.securityData?.tradeDatePrice?.price) ||
                           (underlying.securityData?.tradeDatePrice?.close) || 0;
 
-      console.log('[ORION BARRIER CHECK] Initial price from cache:', initialPriceFromCache);
       console.log('[ORION BARRIER CHECK] Initial price (strike):', underlying.strike);
       console.log('[ORION BARRIER CHECK] Initial price (used):', initialPrice);
 
@@ -223,7 +216,7 @@ export const OrionEvaluationHelpers = {
       console.log('[ORION BARRIER CHECK] Date range:', tradeDateStr, 'to', cutoffDateStr);
 
       // Filter historical data within the relevant period
-      const relevantHistory = cacheDoc.history.filter(record => {
+      let relevantHistory = cacheDoc.history.filter(record => {
         const recordDate = new Date(record.date).toISOString().split('T')[0];
         return recordDate >= tradeDateStr && recordDate <= cutoffDateStr;
       });
@@ -234,6 +227,14 @@ export const OrionEvaluationHelpers = {
         console.warn(`[ORION BARRIER CHECK] ❌ No historical data in relevant period for ${fullTicker}`);
         return false;
       }
+
+      // Normalize GBp to GBP for LSE stocks before barrier checking
+      // LSE prices are quoted in pence, but barrier and strike are in pounds
+      relevantHistory = CurrencyNormalization.normalizeHistoricalPrices(
+        relevantHistory,
+        initialPrice,
+        fullTicker
+      );
 
       // Check if any daily close reached or exceeded the upper barrier
       // upperBarrier is percentage (e.g., 150 means 150% of initial)
@@ -287,7 +288,6 @@ export const OrionEvaluationHelpers = {
    */
   async extractUnderlyingAssetsData(product) {
     const underlyings = [];
-    const currency = product.currency || 'USD';
 
     if (product.underlyings && Array.isArray(product.underlyings)) {
       for (const underlying of product.underlyings) {
@@ -295,11 +295,94 @@ export const OrionEvaluationHelpers = {
                            (underlying.securityData?.tradeDatePrice?.price) ||
                            (underlying.securityData?.tradeDatePrice?.close) || 0;
 
+        // Ensure securityData exists
+        if (!underlying.securityData) {
+          underlying.securityData = {};
+        }
+
+        // Build list of ticker variants to try (exchange suffixes)
+        const fullTicker = underlying.securityData?.ticker || `${underlying.ticker}.US`;
+        const tickerVariants = [];
+
+        // If ticker already has exchange suffix in securityData, try that first
+        if (underlying.securityData?.ticker) {
+          tickerVariants.push(underlying.securityData.ticker);
+        }
+
+        // Extract base ticker (without exchange suffix if present)
+        const baseTicker = (underlying.ticker || '').split('.')[0];
+        if (baseTicker) {
+          // Try common exchanges
+          tickerVariants.push(`${baseTicker}.US`);
+          tickerVariants.push(`${baseTicker}.NASDAQ`);
+          tickerVariants.push(`${baseTicker}.NYSE`);
+          tickerVariants.push(`${baseTicker}.LSE`);
+          tickerVariants.push(`${baseTicker}.PA`);
+          tickerVariants.push(`${baseTicker}.DE`);
+        }
+
+        // Remove duplicates while preserving order
+        const uniqueVariants = [...new Set(tickerVariants)];
+
+        // Check if we need to fetch a fresh price
+        const existingPrice = underlying.securityData.price;
+        const today = new Date();
+        const todayStr = today.toISOString().split('T')[0];
+        const existingPriceDate = existingPrice?.date ? new Date(existingPrice.date).toISOString().split('T')[0] : null;
+        const needsFreshPrice = !existingPrice || !existingPriceDate || existingPriceDate !== todayStr;
+
+        // Track the currency for this underlying (default to USD)
+        let underlyingCurrency = underlying.securityData?.currency || 'USD';
+
+        if (needsFreshPrice) {
+          console.log(`📊 Orion: Fetching fresh price for ${underlying.ticker} (existing price date: ${existingPriceDate || 'none'}, today: ${todayStr})`);
+
+          let priceFound = false;
+          for (const tickerVariant of uniqueVariants) {
+            try {
+              const cachedPrice = await MarketDataHelpers.getCurrentPrice(tickerVariant);
+
+              if (cachedPrice && cachedPrice.price) {
+                underlying.securityData.price = {
+                  price: cachedPrice.price,
+                  close: cachedPrice.price,
+                  date: cachedPrice.date || new Date(),
+                  source: 'market_data_cache',
+                  ticker: tickerVariant
+                };
+                // Capture the currency from the cache
+                underlyingCurrency = cachedPrice.currency || underlyingCurrency;
+                underlying.securityData.currency = underlyingCurrency;
+                console.log(`✅ Orion: Fetched price for ${tickerVariant}: ${cachedPrice.price} ${underlyingCurrency}`);
+                priceFound = true;
+                break;
+              }
+            } catch (error) {
+              // Try next variant silently
+            }
+          }
+
+          if (!priceFound) {
+            console.warn(`⚠️ Orion: Could not fetch price for ${underlying.ticker} after trying: ${uniqueVariants.join(', ')}`);
+          }
+        }
+
         const evaluationPriceInfo = this.getEvaluationPrice(underlying, product);
-        const currentPrice = evaluationPriceInfo.price;
+        const usedTicker = underlying.securityData?.price?.ticker || fullTicker;
+
+        // Normalize GBp to GBP for LSE stocks
+        // LSE prices are quoted in pence (GBp), strikes are in pounds (GBP)
+        const currentPrice = CurrencyNormalization.normalizePriceToGBP(
+          evaluationPriceInfo.price,
+          initialPrice,
+          usedTicker
+        );
 
         let performance = initialPrice > 0 ?
           ((currentPrice - initialPrice) / initialPrice) * 100 : 0;
+
+        // Use the underlying's currency for display, not the product currency
+        const displayCurrency = underlying.securityData?.currency || 'USD';
 
         const underlyingData = {
           ticker: underlying.ticker,
@@ -314,8 +397,10 @@ export const OrionEvaluationHelpers = {
           performance: performance,
           isPositive: performance >= 0,
 
-          initialPriceFormatted: this.formatCurrency(initialPrice, currency),
-          currentPriceFormatted: this.formatCurrency(currentPrice, currency),
+          // Use underlying's currency for price display
+          currency: displayCurrency,
+          initialPriceFormatted: this.formatCurrency(initialPrice, displayCurrency),
+          currentPriceFormatted: this.formatCurrency(currentPrice, displayCurrency),
           performanceFormatted: (performance >= 0 ? '+' : '') + performance.toFixed(2) + '%',
           priceDateFormatted: evaluationPriceInfo.date ?
             new Date(evaluationPriceInfo.date).toLocaleDateString('en-US', {
@@ -327,7 +412,7 @@ export const OrionEvaluationHelpers = {
           hasCurrentData: !!(underlying.securityData?.price?.price),
           lastUpdated: new Date().toISOString(),
 
-          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`
+          fullTicker: usedTicker
         };
 
         underlyings.push(underlyingData);
