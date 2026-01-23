@@ -63,7 +63,7 @@ mup ssh
 ## Database Configuration
 Your deployment is configured to use the **amberlake** database on MongoDB Atlas:
 ```
-mongodb+srv://sugoke:sugoke14@cluster0.ixanxcb.mongodb.net/amberlake
+mongodb+srv://<USER>:<PASSWORD>@cluster0.ixanxcb.mongodb.net/amberlake
 ```
 
 This is consistent across all configuration files (mup.js and settings-production.json).

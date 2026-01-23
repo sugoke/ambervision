@@ -48,8 +48,8 @@ This is the cleanest approach for production deployments.
 Create a `.env` file or set environment variables:
 
 ```bash
-export MONGO_URL="mongodb+srv://sugoke:sugoke14@cluster0.ixanxcb.mongodb.net/amberlake?retryWrites=true&w=majority&appName=Cluster0"
-export MONGO_OPLOG_URL="mongodb+srv://sugoke:sugoke14@cluster0.ixanxcb.mongodb.net/local?retryWrites=true&w=majority&appName=Cluster0&authSource=admin"
+export MONGO_URL="mongodb+srv://<USER>:<PASSWORD>@cluster0.ixanxcb.mongodb.net/amberlake?retryWrites=true&w=majority&appName=Cluster0"
+export MONGO_OPLOG_URL="mongodb+srv://<USER>:<PASSWORD>@cluster0.ixanxcb.mongodb.net/local?retryWrites=true&w=majority&appName=Cluster0&authSource=admin"
 export ROOT_URL="https://your-domain.com"
 export PORT="3000"
 ```
@@ -94,8 +94,8 @@ After=network.target
 Type=simple
 User=meteor
 WorkingDirectory=/home/meteor/ambervision
-Environment="MONGO_URL=mongodb+srv://sugoke:sugoke14@cluster0.ixanxcb.mongodb.net/amberlake?retryWrites=true&w=majority&appName=Cluster0"
-Environment="MONGO_OPLOG_URL=mongodb+srv://sugoke:sugoke14@cluster0.ixanxcb.mongodb.net/local?retryWrites=true&w=majority&appName=Cluster0&authSource=admin"
+Environment="MONGO_URL=mongodb+srv://<USER>:<PASSWORD>@cluster0.ixanxcb.mongodb.net/amberlake?retryWrites=true&w=majority&appName=Cluster0"
+Environment="MONGO_OPLOG_URL=mongodb+srv://<USER>:<PASSWORD>@cluster0.ixanxcb.mongodb.net/local?retryWrites=true&w=majority&appName=Cluster0&authSource=admin"
 Environment="ROOT_URL=https://your-domain.com"
 Environment="PORT=3000"
 Environment="NODE_ENV=production"
@@ -167,8 +167,8 @@ module.exports = {
 
     env: {
       ROOT_URL: 'https://your-domain.com',
-      MONGO_URL: 'mongodb+srv://sugoke:sugoke14@cluster0.ixanxcb.mongodb.net/amberlake?retryWrites=true&w=majority&appName=Cluster0',
-      MONGO_OPLOG_URL: 'mongodb+srv://sugoke:sugoke14@cluster0.ixanxcb.mongodb.net/local?retryWrites=true&w=majority&appName=Cluster0&authSource=admin'
+      MONGO_URL: 'mongodb+srv://<USER>:<PASSWORD>@cluster0.ixanxcb.mongodb.net/amberlake?retryWrites=true&w=majority&appName=Cluster0',
+      MONGO_OPLOG_URL: 'mongodb+srv://<USER>:<PASSWORD>@cluster0.ixanxcb.mongodb.net/local?retryWrites=true&w=majority&appName=Cluster0&authSource=admin'
     },
 
     docker: {
@@ -214,7 +214,7 @@ Test the connection from your Hetzner server:
 sudo apt-get install mongodb-clients
 
 # Test connection
-mongosh "mongodb+srv://sugoke:sugoke14@cluster0.ixanxcb.mongodb.net/amberlake?retryWrites=true&w=majority&appName=Cluster0"
+mongosh "mongodb+srv://<USER>:<PASSWORD>@cluster0.ixanxcb.mongodb.net/amberlake?retryWrites=true&w=majority&appName=Cluster0"
 ```
 
 ## NPM Scripts Reference

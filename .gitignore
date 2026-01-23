@@ -68,6 +68,12 @@ bankfiles/
 deploy/mup.js
 deploy/settings.json
 
+# MCP and config files with credentials
+.mcp.json
+claude_desktop_config.json
+run-atlas.bat
+mcp-server-config.json
+
 # Claude Code temporary directories
 tmpclaude-*/
 deploy/tmpclaude-*/
