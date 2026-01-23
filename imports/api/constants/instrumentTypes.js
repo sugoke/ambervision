@@ -61,6 +61,7 @@ export const ASSET_CLASSES = {
   FIXED_INCOME: 'fixed_income',
   STRUCTURED_PRODUCT: 'structured_product',
   CASH: 'cash',
+  FX_FORWARD: 'fx_forward',
   TIME_DEPOSIT: 'time_deposit',
   MONETARY_PRODUCTS: 'monetary_products',
   DERIVATIVES: 'derivatives',
@@ -89,7 +90,7 @@ export const SECURITY_TYPE_TO_ASSET_CLASS = {
   [SECURITY_TYPES.OPTION]: ASSET_CLASSES.DERIVATIVES,
   [SECURITY_TYPES.FUTURE]: ASSET_CLASSES.DERIVATIVES,
   [SECURITY_TYPES.WARRANT]: ASSET_CLASSES.DERIVATIVES,
-  [SECURITY_TYPES.FX_FORWARD]: ASSET_CLASSES.CASH,  // Treated as cash equivalent for allocation
+  [SECURITY_TYPES.FX_FORWARD]: ASSET_CLASSES.FX_FORWARD,  // Separate asset class for display/tracking
   [SECURITY_TYPES.COMMODITY]: ASSET_CLASSES.COMMODITIES,
   [SECURITY_TYPES.PRIVATE_EQUITY]: ASSET_CLASSES.PRIVATE_EQUITY,
   [SECURITY_TYPES.PRIVATE_DEBT]: ASSET_CLASSES.PRIVATE_DEBT,
@@ -125,6 +126,7 @@ export const ASSET_CLASS_LABELS = {
   [ASSET_CLASSES.FIXED_INCOME]: 'Fixed Income',
   [ASSET_CLASSES.STRUCTURED_PRODUCT]: 'Structured Products',
   [ASSET_CLASSES.CASH]: 'Cash',
+  [ASSET_CLASSES.FX_FORWARD]: 'FX Forwards',
   [ASSET_CLASSES.TIME_DEPOSIT]: 'Term Deposit',
   [ASSET_CLASSES.MONETARY_PRODUCTS]: 'Monetary Products',
   [ASSET_CLASSES.DERIVATIVES]: 'Derivatives',
@@ -239,6 +241,32 @@ export function getAssetSubClass(assetClass, securityType, securityName = '') {
   return null;
 }
 
+/**
+ * Get security type from asset class (reverse mapping).
+ * Used when enrichment sets assetClass but not securityType.
+ *
+ * @param {string} assetClass - One of ASSET_CLASSES values (lowercase)
+ * @returns {string} Corresponding SECURITY_TYPES value
+ */
+export function getSecurityTypeFromAssetClass(assetClass) {
+  const mapping = {
+    'equity': SECURITY_TYPES.EQUITY,
+    'fixed_income': SECURITY_TYPES.BOND,
+    'structured_product': SECURITY_TYPES.STRUCTURED_PRODUCT,
+    'cash': SECURITY_TYPES.CASH,
+    'time_deposit': SECURITY_TYPES.TERM_DEPOSIT,
+    'monetary_products': SECURITY_TYPES.MONEY_MARKET,
+    'derivatives': SECURITY_TYPES.OPTION,
+    'commodities': SECURITY_TYPES.COMMODITY,
+    'private_equity': SECURITY_TYPES.PRIVATE_EQUITY,
+    'private_debt': SECURITY_TYPES.PRIVATE_DEBT,
+    'fund': SECURITY_TYPES.FUND,
+    'etf': SECURITY_TYPES.ETF,
+    'other': SECURITY_TYPES.UNKNOWN
+  };
+  return mapping[assetClass] || SECURITY_TYPES.UNKNOWN;
+}
+
 // =============================================================================
 // LEGACY VALUE MAPPING (for data migration)
 // =============================================================================
@@ -264,7 +292,18 @@ export const LEGACY_SECURITY_TYPE_MAPPING = {
   'UCITS': SECURITY_TYPES.FUND,
   'STRUCTURED_NOTE': SECURITY_TYPES.STRUCTURED_PRODUCT,
   'NOTE': SECURITY_TYPES.STRUCTURED_PRODUCT,
-  'DERIVATIVE': SECURITY_TYPES.OPTION  // Generic derivative -> default to option
+  'DERIVATIVE': SECURITY_TYPES.OPTION,  // Generic derivative -> default to option
+
+  // Julius Baer INST_NAT_E raw codes (stored in DB as securityType by legacy parser)
+  '1': SECURITY_TYPES.EQUITY,
+  '2': SECURITY_TYPES.BOND,
+  '3': SECURITY_TYPES.FUND,
+  '4': SECURITY_TYPES.CASH,
+  '5': SECURITY_TYPES.OPTION,
+  '6': SECURITY_TYPES.FUTURE,
+  '7': SECURITY_TYPES.WARRANT,
+  '13': SECURITY_TYPES.FUND,               // Fund Share
+  '19': SECURITY_TYPES.STRUCTURED_PRODUCT  // Convertible/Structured Notes
 };
 
 /**
@@ -277,14 +316,22 @@ export const LEGACY_SECURITY_TYPE_MAPPING = {
 export function normalizeSecurityType(type) {
   if (!type) return SECURITY_TYPES.UNKNOWN;
 
-  const upperType = type.toUpperCase();
+  // Convert to string in case it's a number
+  const typeStr = String(type).trim();
+
+  // Check for raw numeric codes first (e.g., "13", "19" from Julius Baer)
+  if (LEGACY_SECURITY_TYPE_MAPPING[typeStr]) {
+    return LEGACY_SECURITY_TYPE_MAPPING[typeStr];
+  }
+
+  const upperType = typeStr.toUpperCase();
 
   // If it's already a valid type, return as-is
   if (isValidSecurityType(upperType)) {
     return upperType;
   }
 
-  // Check legacy mapping
+  // Check legacy mapping with uppercase
   if (LEGACY_SECURITY_TYPE_MAPPING[upperType]) {
     return LEGACY_SECURITY_TYPE_MAPPING[upperType];
   }

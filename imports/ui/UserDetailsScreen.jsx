@@ -46,6 +46,9 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
   const [editingRM, setEditingRM] = useState(false);
   const [editingPassword, setEditingPassword] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [passwordResetSuccess, setPasswordResetSuccess] = useState(false);
+  const [editingRole, setEditingRole] = useState(false);
+  const [selectedRole, setSelectedRole] = useState(null);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -75,6 +78,20 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
   const [editingBankAccount, setEditingBankAccount] = useState(null);
   const [editBankAccountData, setEditBankAccountData] = useState({});
 
+  // Current user state (fetched via auth method since sessions are in separate collection)
+  const [currentUser, setCurrentUser] = useState(null);
+
+  // Fetch current user on mount
+  useEffect(() => {
+    if (sessionId) {
+      Meteor.call('auth.getCurrentUser', sessionId, (err, user) => {
+        if (!err && user) {
+          setCurrentUser(user);
+        }
+      });
+    }
+  }, [sessionId]);
+
   // Family member state
   const [showAddFamilyMember, setShowAddFamilyMember] = useState(false);
   const [newFamilyMember, setNewFamilyMember] = useState({
@@ -97,7 +114,7 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
   const [activeTab, setActiveTab] = useState('info');
 
   // Subscribe to data
-  const { user, bankAccounts, relationshipManagers, banks, currentUser, accountProfiles, portfolioSnapshots, isLoading } = useTracker(() => {
+  const { user, bankAccounts, relationshipManagers, banks, accountProfiles, portfolioSnapshots, isLoading } = useTracker(() => {
     const userHandle = Meteor.subscribe('customUsers');
     const banksHandle = Meteor.subscribe('banks');
     const bankAccountsHandle = Meteor.subscribe('allBankAccounts');
@@ -123,16 +140,11 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
       userId: userId
     }).fetch();
 
-    // Get current user session
-    const session = Meteor.connection && Meteor.connection._lastSessionId;
-    const currentUserData = session ? UsersCollection.findOne({ 'sessions.sessionId': sessionId }) : null;
-
     return {
       user: userData,
       bankAccounts: accountsData,
       relationshipManagers: rms,
       banks: banksData,
-      currentUser: currentUserData,
       accountProfiles: profilesData,
       portfolioSnapshots: snapshotsData,
       isLoading: !userHandle.ready() || !banksHandle.ready() || !bankAccountsHandle.ready()
@@ -231,6 +243,10 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
 
       setFormData({ ...formData, newPassword: '' });
       setEditingPassword(false);
+      setPasswordResetSuccess(true);
+
+      // Auto-hide success message after 5 seconds
+      setTimeout(() => setPasswordResetSuccess(false), 5000);
 
       Meteor.call('notifications.create', {
         userId: currentUser?._id,
@@ -244,6 +260,27 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
         userId: currentUser?._id,
         type: 'error',
         message: `Failed to reset password: ${error.message}`,
+        sessionId
+      });
+    }
+  };
+
+  const handleSaveRole = async () => {
+    if (!selectedRole || selectedRole === user?.role) {
+      setEditingRole(false);
+      return;
+    }
+
+    try {
+      await Meteor.callAsync('users.updateRole', userId, selectedRole, sessionId);
+      setEditingRole(false);
+      setSelectedRole(null);
+    } catch (error) {
+      console.error('Error updating role:', error);
+      Meteor.call('notifications.create', {
+        userId: currentUser?._id,
+        type: 'error',
+        message: `Failed to update role: ${error.message}`,
         sessionId
       });
     }
@@ -570,6 +607,8 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
         return 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
       case USER_ROLES.ADMIN:
         return 'linear-gradient(135deg, #f97316 0%, #ea580c 100%)';
+      case USER_ROLES.COMPLIANCE:
+        return 'linear-gradient(135deg, #0891b2 0%, #0e7490 100%)';
       case USER_ROLES.RELATIONSHIP_MANAGER:
         return 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)';
       case USER_ROLES.CLIENT:
@@ -727,20 +766,95 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                 {fullName}
               </h1>
 
-              {/* Role Badge */}
-              <span style={{
-                padding: '6px 14px',
-                borderRadius: '20px',
-                background: getRoleBadgeColor(user.role),
-                color: '#fff',
-                fontSize: '12px',
-                fontWeight: '600',
-                textTransform: 'uppercase',
-                letterSpacing: '0.5px',
-                boxShadow: '0 4px 8px rgba(0,0,0,0.2)'
-              }}>
-                {user.role}
-              </span>
+              {/* Role Badge - Editable by Superadmin */}
+              {editingRole && currentUser?.role === USER_ROLES.SUPERADMIN ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <select
+                    value={selectedRole || user.role}
+                    onChange={(e) => setSelectedRole(e.target.value)}
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: '8px',
+                      border: '2px solid var(--accent-color)',
+                      background: 'var(--bg-secondary)',
+                      color: 'var(--text-primary)',
+                      fontSize: '12px',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      outline: 'none'
+                    }}
+                  >
+                    <option value={USER_ROLES.CLIENT}>Client</option>
+                    <option value={USER_ROLES.RELATIONSHIP_MANAGER}>Relationship Manager</option>
+                    <option value={USER_ROLES.COMPLIANCE}>Compliance</option>
+                    <option value={USER_ROLES.ADMIN}>Admin</option>
+                    <option value={USER_ROLES.SUPERADMIN}>Super Admin</option>
+                  </select>
+                  <button
+                    onClick={handleSaveRole}
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: '6px',
+                      border: 'none',
+                      background: '#10b981',
+                      color: '#fff',
+                      fontSize: '12px',
+                      fontWeight: '600',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={() => { setEditingRole(false); setSelectedRole(null); }}
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: '6px',
+                      border: '1px solid var(--border-color)',
+                      background: 'transparent',
+                      color: 'var(--text-secondary)',
+                      fontSize: '12px',
+                      fontWeight: '600',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <span
+                  onClick={() => {
+                    if (currentUser?.role === USER_ROLES.SUPERADMIN && user._id !== currentUser._id) {
+                      setSelectedRole(user.role);
+                      setEditingRole(true);
+                    }
+                  }}
+                  style={{
+                    padding: '6px 14px',
+                    borderRadius: '20px',
+                    background: getRoleBadgeColor(user.role),
+                    color: '#fff',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                    boxShadow: '0 4px 8px rgba(0,0,0,0.2)',
+                    cursor: currentUser?.role === USER_ROLES.SUPERADMIN && user._id !== currentUser._id ? 'pointer' : 'default',
+                    transition: 'transform 0.2s ease'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (currentUser?.role === USER_ROLES.SUPERADMIN && user._id !== currentUser._id) {
+                      e.currentTarget.style.transform = 'scale(1.05)';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.transform = 'scale(1)';
+                  }}
+                  title={currentUser?.role === USER_ROLES.SUPERADMIN && user._id !== currentUser._id ? 'Click to change role' : ''}
+                >
+                  {user.role}
+                </span>
+              )}
 
               {/* Active Status */}
               <span style={{
@@ -2093,10 +2207,22 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                   const isEditing = editingAccountProfile === account._id;
 
                   const categories = [
-                    { key: 'cash', label: 'Cash', labelFr: 'Monétaire', color: '#3b82f6', icon: '💵', maxKey: 'maxCash' },
-                    { key: 'bonds', label: 'Bonds', labelFr: 'Obligations', color: '#10b981', icon: '📄', maxKey: 'maxBonds' },
-                    { key: 'equities', label: 'Equities', labelFr: 'Actions', color: '#f59e0b', icon: '📈', maxKey: 'maxEquities' },
-                    { key: 'alternative', label: 'Alternative', labelFr: 'Alternatif', color: '#8b5cf6', icon: '🎯', maxKey: 'maxAlternative' }
+                    {
+                      key: 'cash', label: 'Cash', labelFr: 'Monétaire', color: '#3b82f6', icon: '💵', maxKey: 'maxCash',
+                      tooltip: 'Cash • Term Deposits • Monetary Products • Money Market Funds'
+                    },
+                    {
+                      key: 'bonds', label: 'Bonds', labelFr: 'Obligations', color: '#10b981', icon: '📄', maxKey: 'maxBonds',
+                      tooltip: 'Fixed-Income Bonds • Convertible Bonds • Bond Funds • Capital-Guaranteed Structured Products'
+                    },
+                    {
+                      key: 'equities', label: 'Equities', labelFr: 'Actions', color: '#f59e0b', icon: '📈', maxKey: 'maxEquities',
+                      tooltip: 'Equities & Stocks • Equity Funds • Equity-Linked Structured Products • Barrier-Protected Products'
+                    },
+                    {
+                      key: 'alternative', label: 'Alternative', labelFr: 'Alternatif', color: '#8b5cf6', icon: '🎯', maxKey: 'maxAlternative',
+                      tooltip: 'Private Equity • Private Debt • Commodities • Real Estate • Hedge Funds • Derivatives • Other'
+                    }
                   ];
 
                   return (
@@ -2213,7 +2339,10 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                                     borderRadius: '8px',
                                     border: `1px solid ${cat.color}30`
                                   }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                                    <div
+                                      style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px', cursor: 'help' }}
+                                      title={cat.tooltip}
+                                    >
                                       <span style={{ fontSize: '16px' }}>{cat.icon}</span>
                                       <span style={{ color: 'var(--text-primary)', fontSize: '12px', fontWeight: '600' }}>{cat.label}</span>
                                     </div>
@@ -2278,12 +2407,17 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                           ) : profile ? (
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                               {categories.map(cat => (
-                                <div key={cat.key} style={{
-                                  padding: '10px',
-                                  background: `${cat.color}10`,
-                                  borderRadius: '8px',
-                                  textAlign: 'center'
-                                }}>
+                                <div
+                                  key={cat.key}
+                                  style={{
+                                    padding: '10px',
+                                    background: `${cat.color}10`,
+                                    borderRadius: '8px',
+                                    textAlign: 'center',
+                                    cursor: 'help'
+                                  }}
+                                  title={cat.tooltip}
+                                >
                                   <span style={{ fontSize: '20px' }}>{cat.icon}</span>
                                   <p style={{ margin: '4px 0 0', color: 'var(--text-secondary)', fontSize: '11px' }}>{cat.label}</p>
                                   <p style={{ margin: '2px 0 0', color: 'var(--text-primary)', fontSize: '18px', fontWeight: '700' }}>
@@ -2320,7 +2454,10 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                                 return (
                                   <div key={cat.key}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                                      <span style={{ color: 'var(--text-secondary)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                      <span
+                                        style={{ color: 'var(--text-secondary)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', cursor: 'help' }}
+                                        title={cat.tooltip}
+                                      >
                                         <span>{cat.icon}</span> {cat.label}
                                       </span>
                                       <span style={{
@@ -2375,7 +2512,10 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                                 return (
                                   <div key={cat.key}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                                      <span style={{ color: 'var(--text-secondary)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                      <span
+                                        style={{ color: 'var(--text-secondary)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', cursor: 'help' }}
+                                        title={cat.tooltip}
+                                      >
                                         <span>{cat.icon}</span> {cat.label}
                                       </span>
                                       <span style={{ color: 'var(--text-primary)', fontSize: '12px', fontWeight: '600' }}>
@@ -2999,6 +3139,22 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                       🔒 Reset Password
                     </button>
                   </div>
+                </div>
+              ) : passwordResetSuccess ? (
+                <div style={{
+                  padding: '24px',
+                  textAlign: 'center',
+                  background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(5, 150, 105, 0.1) 100%)',
+                  borderRadius: '10px',
+                  border: '1px solid rgba(16, 185, 129, 0.3)'
+                }}>
+                  <div style={{ fontSize: '48px', marginBottom: '12px' }}>✅</div>
+                  <p style={{ margin: 0, color: '#10b981', fontSize: '16px', fontWeight: '600' }}>
+                    Password Reset Successfully!
+                  </p>
+                  <p style={{ margin: '8px 0 0 0', color: 'var(--text-secondary)', fontSize: '14px' }}>
+                    The user has been logged out of all sessions and must use the new password to log in.
+                  </p>
                 </div>
               ) : (
                 <div style={{

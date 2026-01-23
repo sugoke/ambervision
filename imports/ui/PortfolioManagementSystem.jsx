@@ -607,6 +607,7 @@ const PortfolioManagementSystem = ({ user }) => {
         quantity: holding.quantity || 0,
         avgPrice: holding.costPrice || 0,
         currentPrice: holding.marketPrice || 0,
+        priceDate: holding.priceDate || null,
         marketValue: holding.marketValue || 0,
         marketValueOriginalCurrency: holding.marketValueOriginalCurrency,
         marketValueNoAccruedInterest: holding.marketValueNoAccruedInterest,
@@ -807,10 +808,15 @@ const PortfolioManagementSystem = ({ user }) => {
       return dummyTransactions;
     }
 
-    return dummyTransactions.filter(op =>
-      op.portfolioCode === selectedTab.accountNumber &&
-      op.bankName === selectedTab.bankId
-    );
+    // Match portfolioCode using base account number with startsWith
+    // Handles: "5040241" matches "5040241", "5040241-1", "5040241200001" (JB long format)
+    // Note: op.bankName contains the bankId (see transform at line 690)
+    const baseAccountNumber = selectedTab.accountNumber.split('-')[0];
+
+    return dummyTransactions.filter(op => {
+      const portfolioCode = op.portfolioCode || '';
+      return portfolioCode.startsWith(baseAccountNumber) && op.bankName === selectedTab.bankId;
+    });
   }, [dummyTransactions, activeAccountTab, accountTabs]);
 
   // Use filtered data for display
@@ -984,7 +990,20 @@ const PortfolioManagementSystem = ({ user }) => {
   }, [filteredHoldings, selectedDate]);
 
   // Separate cash, FX forwards, and other positions
-  const cashPositions = displayPositions.filter(pos => pos.assetClass === 'cash');
+  // For consolidated view, exclude credit lines and credit cards from cash calculations
+  const cashPositions = displayPositions.filter(pos => {
+    if (pos.assetClass !== 'cash') return false;
+    // In consolidated view, exclude credit lines and credit cards
+    if (activeAccountTab === 'consolidated') {
+      const account = bankAccounts.find(acc =>
+        acc.accountNumber === pos.portfolioCode && acc.bankId === pos.bankId
+      );
+      if (account?.comment === 'Credit line' || account?.comment === 'Credit card') {
+        return false;
+      }
+    }
+    return true;
+  });
   const fxForwardPositions = displayPositions.filter(pos => pos.assetClass === 'fx_forward');
   const nonCashPositions = displayPositions.filter(pos => pos.assetClass !== 'cash' && pos.assetClass !== 'fx_forward');
 
@@ -1326,10 +1345,23 @@ const PortfolioManagementSystem = ({ user }) => {
     setLastFetchedRange(null);
   }, [viewAsFilter, activeAccountTab]);
 
-  // Reset account tab to consolidated when viewAsFilter changes
+  // Reset account tab when viewAsFilter changes
+  // If viewAsFilter has selectedAccountId, auto-select that specific account tab
   React.useEffect(() => {
-    setActiveAccountTab('consolidated');
-  }, [viewAsFilter]);
+    if (viewAsFilter?.selectedAccountId) {
+      // Find matching tab by the selected account ID
+      const matchingTab = accountTabs.find(tab => tab.id === viewAsFilter.selectedAccountId);
+      if (matchingTab) {
+        setActiveAccountTab(matchingTab.id);
+      } else {
+        // Account tab not found yet (may still be loading), default to consolidated
+        setActiveAccountTab('consolidated');
+      }
+    } else {
+      // No specific account selected - show consolidated view
+      setActiveAccountTab('consolidated');
+    }
+  }, [viewAsFilter, accountTabs]);
 
   // Helper function to calculate start date based on time range
   const getStartDateForRange = (range) => {
@@ -1380,11 +1412,13 @@ const PortfolioManagementSystem = ({ user }) => {
 
         try {
           // Fetch period performance (1M, 3M, YTD, etc.)
-          console.log('[PMS] Calling performance.getPeriods...');
+          // If a specific account tab is selected, pass its portfolioCode
+          const portfolioCode = activeAccountTab !== 'consolidated' ? activeAccountTab : null;
+          console.log('[PMS] Calling performance.getPeriods...', { portfolioCode });
           const periods = await Meteor.callAsync('performance.getPeriods', {
             sessionId,
-            viewAsFilter
-            // portfolioCode omitted = all portfolios aggregated
+            viewAsFilter,
+            portfolioCode
           });
           console.log('[PMS] getPeriods SUCCESS');
 
@@ -1399,7 +1433,7 @@ const PortfolioManagementSystem = ({ user }) => {
 
       fetchPerformancePeriods();
     }
-  }, [activeTab, performancePeriods, performanceLoading, viewAsFilter]);
+  }, [activeTab, performancePeriods, performanceLoading, viewAsFilter, activeAccountTab]);
 
   // Fetch chart data when Performance tab is active and time range changes
   React.useEffect(() => {
@@ -1419,18 +1453,22 @@ const PortfolioManagementSystem = ({ user }) => {
         try {
           const startDate = getStartDateForRange(selectedTimeRange);
           const endDate = new Date();
+          // If a specific account tab is selected, pass its portfolioCode
+          const portfolioCode = activeAccountTab !== 'consolidated' ? activeAccountTab : null;
 
           console.log('[PMS] Calling performance.getChartData...', {
             range: selectedTimeRange,
             startDate,
-            endDate
+            endDate,
+            portfolioCode
           });
 
           const chart = await Meteor.callAsync('performance.getChartData', {
             sessionId,
             startDate,
             endDate,
-            viewAsFilter
+            viewAsFilter,
+            portfolioCode
           });
           console.log('[PMS] getChartData SUCCESS for range:', selectedTimeRange);
 
@@ -1446,7 +1484,7 @@ const PortfolioManagementSystem = ({ user }) => {
 
       fetchChartData();
     }
-  }, [activeTab, selectedTimeRange, lastFetchedRange, chartLoading, viewAsFilter]);
+  }, [activeTab, selectedTimeRange, lastFetchedRange, chartLoading, viewAsFilter, activeAccountTab]);
 
   // Subscribe to available snapshot dates from PMSHoldings
   const { snapshotDates } = useTracker(() => {
@@ -2187,11 +2225,15 @@ const PortfolioManagementSystem = ({ user }) => {
                       </div>
                     </div>
 
-                    {/* Portfolio Value - Secondary emphasis */}
+                    {/* Portfolio Value + Position Weight */}
                     <div style={{ textAlign: 'right', borderLeft: '1px solid var(--border-color)', paddingLeft: '1rem' }}>
                       <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Value</div>
                       <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.95rem', fontVariantNumeric: 'tabular-nums' }}>
                         {formatCurrency(position.marketValue, portfolioCurrency)}
+                      </div>
+                      {/* Position weight as % of total portfolio */}
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                        {totalPortfolioValue > 0 ? ((position.marketValue / totalPortfolioValue) * 100).toFixed(2) : '0.00'}%
                       </div>
                     </div>
 
@@ -2203,13 +2245,15 @@ const PortfolioManagementSystem = ({ user }) => {
 
                     {/* Avg Price - Tertiary */}
                     <div style={{ textAlign: 'center' }}>
-                      <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Avg</div>
+                      <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Avg Purch Price</div>
                       <div style={{ fontSize: '0.8rem', fontVariantNumeric: 'tabular-nums', color: 'var(--text-secondary)' }}>{formatPrice(position.avgPrice, position.currency, position.priceType)}</div>
                     </div>
 
                     {/* Current Price - Tertiary with color hint */}
                     <div style={{ textAlign: 'center' }}>
-                      <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Now</div>
+                      <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
+                        {position.priceDate ? new Date(position.priceDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : 'Last Price'}
+                      </div>
                       <div style={{
                         color: position.currentPrice >= position.avgPrice ? '#10b981' : '#ef4444',
                         fontSize: '0.8rem',
@@ -2616,7 +2660,7 @@ const PortfolioManagementSystem = ({ user }) => {
                         fontWeight: '400',
                         fontSize: '0.75rem'
                       }}>
-                        {transaction.typeName || transaction.type}
+                        {transaction.type}
                       </span>
                     </td>
                     <td style={{ padding: '0.75rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
@@ -3870,8 +3914,21 @@ const PortfolioManagementSystem = ({ user }) => {
     }}>
       {/* Header */}
       <div style={{ marginBottom: '2rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
-          <div>
+        <div style={{
+          display: 'flex',
+          flexDirection: isMobile ? 'column' : 'row',
+          justifyContent: 'space-between',
+          alignItems: isMobile ? 'stretch' : 'flex-start',
+          gap: isMobile ? '1rem' : '0',
+          marginBottom: '1rem'
+        }}>
+          {/* Title and PDF button */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '1rem',
+            flexWrap: 'wrap'
+          }}>
             <h1 style={{
               margin: 0,
               fontSize: isMobile ? '1.5rem' : '2rem',
@@ -3879,7 +3936,7 @@ const PortfolioManagementSystem = ({ user }) => {
               color: 'var(--text-primary)',
               display: 'flex',
               alignItems: 'center',
-              gap: '0.75rem'
+              gap: '0.5rem'
             }}>
               <span style={{ fontSize: isMobile ? '1.5rem' : '2rem' }}>💼</span>
               {isMobile ? 'PMS' : 'Portfolio Management System'}
@@ -3895,11 +3952,10 @@ const PortfolioManagementSystem = ({ user }) => {
                 accountFilter: activeAccountTab
               }}
               style={{
-                marginTop: '0.75rem',
-                padding: '0.6rem 1rem',
+                padding: '0.5rem 0.75rem',
                 background: 'linear-gradient(135deg, #1e3a5f 0%, #2d4a6f 100%)',
                 borderRadius: '8px',
-                fontSize: '0.85rem',
+                fontSize: '0.8rem',
                 fontWeight: '600',
                 boxShadow: '0 2px 8px rgba(30, 58, 95, 0.25)'
               }}
@@ -3909,16 +3965,11 @@ const PortfolioManagementSystem = ({ user }) => {
           {/* Date and Account Filters */}
           <div style={{
             display: 'flex',
-            gap: '1rem',
-            alignItems: 'flex-start'
+            flexDirection: 'column',
+            gap: '0.5rem',
+            alignItems: isMobile ? 'stretch' : 'flex-end'
           }}>
-            {/* Historical Date Selector */}
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.5rem',
-              alignItems: 'flex-end'
-            }}>
+            {!isMobile && (
               <label style={{
                 fontSize: '0.875rem',
                 fontWeight: '600',
@@ -3926,44 +3977,94 @@ const PortfolioManagementSystem = ({ user }) => {
               }}>
                 Portfolio Date:
               </label>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <select
-                  value={selectedDate || 'latest'}
-                  onChange={(e) => setSelectedDate(e.target.value === 'latest' ? null : e.target.value)}
-                  style={{
-                    padding: '0.75rem 1rem',
-                    borderRadius: '8px',
-                    border: '1px solid var(--border-color)',
-                    background: 'var(--bg-secondary)',
-                    color: 'var(--text-primary)',
-                    fontSize: '0.95rem',
-                    cursor: 'pointer',
-                    minWidth: '200px',
-                    fontWeight: '500',
-                    transition: 'all 0.2s ease'
-                  }}
-                >
-                  <option value="latest">📅 Latest (Today)</option>
-                  {availableDates.map(date => (
-                    <option key={date} value={date}>
+            )}
+            {/* Date selector - stacked on mobile */}
+            <div style={{
+              display: 'flex',
+              flexDirection: isMobile ? 'column' : 'row',
+              gap: '0.5rem',
+              alignItems: isMobile ? 'stretch' : 'center'
+            }}>
+              <select
+                value={selectedDate || 'latest'}
+                onChange={(e) => setSelectedDate(e.target.value === 'latest' ? null : e.target.value)}
+                style={{
+                  padding: isMobile ? '0.625rem 0.75rem' : '0.75rem 1rem',
+                  borderRadius: '8px',
+                  border: '1px solid var(--border-color)',
+                  background: 'var(--bg-secondary)',
+                  color: 'var(--text-primary)',
+                  fontSize: isMobile ? '0.875rem' : '0.95rem',
+                  cursor: 'pointer',
+                  minWidth: isMobile ? 'auto' : '200px',
+                  fontWeight: '500',
+                  transition: 'all 0.2s ease'
+                }}
+              >
+                <option value="latest">Latest (Today)</option>
+                {availableDates.map(date => {
+                  // Convert Date objects to ISO strings for proper value handling
+                  const isoDate = date instanceof Date ? date.toISOString() : (typeof date === 'string' ? date : String(date));
+                  return (
+                    <option key={isoDate} value={isoDate}>
                       {new Date(date).toLocaleDateString('en-US', {
                         year: 'numeric',
                         month: 'short',
                         day: 'numeric'
                       })}
                     </option>
-                  ))}
-                </select>
+                  );
+                })}
+              </select>
+              {/* "or" and date picker row */}
+              <div style={{
+                display: 'flex',
+                gap: '0.5rem',
+                alignItems: 'center',
+                ...(isMobile && { justifyContent: 'space-between' })
+              }}>
+                <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>or</span>
+                <input
+                  type="date"
+                  value={selectedDate ? new Date(selectedDate).toISOString().split('T')[0] : ''}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      // Convert to ISO string format matching the dropdown values
+                      const date = new Date(e.target.value);
+                      date.setUTCHours(0, 0, 0, 0);
+                      setSelectedDate(date.toISOString());
+                    } else {
+                      setSelectedDate(null);
+                    }
+                  }}
+                  max={(() => {
+                    const today = new Date();
+                    return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+                  })()}
+                  style={{
+                    padding: isMobile ? '0.5rem 0.625rem' : '0.75rem 1rem',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border-color)',
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-primary)',
+                    fontSize: isMobile ? '0.8rem' : '0.95rem',
+                    cursor: 'pointer',
+                    fontWeight: '500',
+                    transition: 'all 0.2s ease',
+                    flex: isMobile ? 1 : 'none'
+                  }}
+                  title="Pick a specific date"
+                />
                 {selectedDate && (
                   <button
                     onClick={() => setSelectedDate(null)}
                     style={{
-                      padding: '0.75rem 1rem',
+                      padding: isMobile ? '0.5rem 0.625rem' : '0.75rem 1rem',
                       borderRadius: '8px',
                       border: '1px solid var(--border-color)',
                       background: 'var(--bg-secondary)',
                       color: 'var(--accent-color)',
-                      fontSize: '0.875rem',
+                      fontSize: isMobile ? '0.75rem' : '0.875rem',
                       cursor: 'pointer',
                       fontWeight: '600',
                       transition: 'all 0.2s ease',
@@ -3975,18 +4076,17 @@ const PortfolioManagementSystem = ({ user }) => {
                   </button>
                 )}
               </div>
-              {selectedDate && (
-                <div style={{
-                  fontSize: '0.75rem',
-                  color: '#f59e0b',
-                  fontStyle: 'italic',
-                  fontWeight: '600'
-                }}>
-                  ⚠️ Viewing historical snapshot
-                </div>
-              )}
             </div>
-
+            {selectedDate && (
+              <div style={{
+                fontSize: '0.75rem',
+                color: '#f59e0b',
+                fontStyle: 'italic',
+                fontWeight: '600'
+              }}>
+                ⚠️ Viewing historical snapshot
+              </div>
+            )}
           </div>
         </div>
       </div>

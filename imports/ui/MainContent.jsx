@@ -160,7 +160,7 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
   };
 
   const hasAccess = (requiredRole) => {
-    const roleHierarchy = { client: 1, rm: 2, admin: 2, superadmin: 3 };
+    const roleHierarchy = { client: 1, compliance: 2, rm: 2, admin: 2, superadmin: 3 };
     const userRoleLevel = roleHierarchy[getUserRole()] || 1;
     const requiredRoleLevel = roleHierarchy[requiredRole] || 1;
     return userRoleLevel >= requiredRoleLevel;
@@ -174,33 +174,21 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
   const renderContent = () => {
     switch (currentSection) {
       case 'dashboard':
-        // Show RMDashboard for RMs and Admins, regular Dashboard for clients
-        const role = getUserRole();
-        if (role === 'rm' || role === 'admin' || role === 'superadmin') {
-          return (
-            <RMDashboard
-              user={user}
-              onNavigate={(section, params) => {
-                if (section === 'report' && params?.productId) {
-                  setCurrentSection('report', params.productId);
-                } else if (section === 'client' && params?.clientId) {
-                  // Navigate to user details or profile
-                  setCurrentSection('user-management');
-                } else {
-                  setCurrentSection(section);
-                }
-              }}
-            />
-          );
-        }
+        // Show RMDashboard for all roles (rm, admin, superadmin, compliance, client)
+        // RMDashboard handles role-specific content display internally
         return (
-          <Dashboard
+          <RMDashboard
             user={user}
-            onCreateProduct={handleCreateProduct}
-            onEditProduct={handleEditProduct}
-            onViewReport={handleViewReport}
-            onDeleteProduct={handleDeleteProduct}
-            onViewProductReport={handleViewProductReport}
+            onNavigate={(section, params) => {
+              if (section === 'report' && params?.productId) {
+                setCurrentSection('report', params.productId);
+              } else if (section === 'client' && params?.clientId) {
+                // Navigate to user details or profile
+                setCurrentSection('user-management');
+              } else {
+                setCurrentSection(section);
+              }
+            }}
           />
         );
       
@@ -218,7 +206,7 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
         );
 
       case 'create-product':
-        if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
+        if (!hasAccess(USER_ROLES.RELATIONSHIP_MANAGER)) return <div>Access denied</div>;
         return (
           <div style={{
             minHeight: '100vh',

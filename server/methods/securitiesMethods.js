@@ -7,6 +7,7 @@ import { UsersCollection } from '../../imports/api/users.js';
 import { ISINClassifierHelpers } from '../../imports/api/isinClassifier.js';
 import { ProductsCollection } from '../../imports/api/products.js';
 import { mapAssetClassToSecurityType } from '../../imports/api/helpers/securityResolver.js';
+import { detectUnderlyingType } from '../../imports/api/helpers/underlyingTypeDetector.js';
 
 /**
  * Validate session and ensure user is admin
@@ -112,7 +113,7 @@ Meteor.methods({
   },
 
   /**
-   * Bulk import securities from pmsHoldings collection
+   * Bulk import securities from pmsHoldings collection AND Ambervision products
    * Extracts unique ISINs and creates basic metadata records
    */
   async 'securitiesMetadata.bulkImportFromPMS'({ sessionId }) {
@@ -121,7 +122,7 @@ Meteor.methods({
     // Validate admin access
     const user = await validateAdminSession(sessionId);
 
-    console.log(`[SECURITIES_METADATA] Starting bulk import from pmsHoldings`);
+    console.log(`[SECURITIES_METADATA] Starting bulk import from pmsHoldings and Ambervision products`);
 
     try {
       // Get all unique securities from pmsHoldings
@@ -160,6 +161,82 @@ Meteor.methods({
           });
         }
       });
+
+      // ALSO import Ambervision products that have ISINs (even if not in PMS holdings)
+      const products = await ProductsCollection.find({
+        isin: { $exists: true, $nin: [null, ''] }
+      }).fetchAsync();
+
+      console.log(`[SECURITIES_METADATA] Found ${products.length} Ambervision products with ISINs`);
+
+      let productsAdded = 0;
+      products.forEach(product => {
+        if (product.isin && !securitiesMap.has(product.isin)) {
+          // Map templateId to structuredProductType
+          const templateId = product.templateId || product.template || '';
+          const templateLower = templateId.toLowerCase();
+
+          let structuredProductType = 'other';
+          if (templateLower.includes('phoenix') || templateLower.includes('autocall')) {
+            structuredProductType = 'phoenix';
+          } else if (templateLower.includes('orion')) {
+            structuredProductType = 'orion';
+          } else if (templateLower.includes('himalaya')) {
+            structuredProductType = 'himalaya';
+          } else if (templateLower.includes('participation')) {
+            structuredProductType = 'participation_note';
+          } else if (templateLower.includes('reverse_convertible_bond')) {
+            structuredProductType = 'reverse_convertible_bond';
+          } else if (templateLower.includes('reverse_convertible')) {
+            structuredProductType = 'reverse_convertible';
+          } else if (templateLower.includes('shark')) {
+            structuredProductType = 'shark_note';
+          }
+
+          // Determine underlying type
+          let underlyingType = 'equity_linked';
+          if (product.underlyings && product.underlyings.length > 0) {
+            const firstUnderlying = product.underlyings[0];
+            const ticker = firstUnderlying.ticker || firstUnderlying.symbol || '';
+            if (ticker.includes('.BOND') || ticker.includes('BOND')) {
+              underlyingType = 'fixed_income_linked';
+            } else if (ticker.includes('.COMM') || ticker.includes('GOLD') || ticker.includes('OIL')) {
+              underlyingType = 'commodities_linked';
+            }
+          }
+
+          // Determine protection type
+          let protectionType = 'capital_protected_conditional';
+          if (product.capitalProtection === 100) {
+            protectionType = 'capital_guaranteed_100';
+          } else if (product.capitalProtection && product.capitalProtection > 0) {
+            protectionType = 'capital_guaranteed_partial';
+          }
+
+          securitiesMap.set(product.isin, {
+            isin: product.isin,
+            securityName: product.title || `Structured Product ${product.isin}`,
+            securityType: 'STRUCTURED_PRODUCT',
+            currency: product.currency || null,
+            assetClass: 'structured_product',
+            structuredProductType: structuredProductType,
+            structuredProductUnderlyingType: underlyingType,
+            structuredProductProtectionType: protectionType,
+            issuer: product.issuer || null,
+            capitalGuaranteed100: protectionType === 'capital_guaranteed_100',
+            capitalGuaranteedPartial: protectionType === 'capital_guaranteed_partial',
+            barrierProtected: protectionType === 'capital_protected_conditional',
+            sector: '',
+            listingExchange: '',
+            notes: `Auto-imported from Ambervision product (Template: ${templateId})`,
+            sourceProductId: product._id,
+            autoCreatedFromProduct: true
+          });
+          productsAdded++;
+        }
+      });
+
+      console.log(`[SECURITIES_METADATA] Added ${productsAdded} additional products from Ambervision`);
 
       console.log(`[SECURITIES_METADATA] Found ${securitiesMap.size} unique securities`);
 
@@ -461,9 +538,12 @@ Meteor.methods({
           const structure = product.structure || {};
 
           let assetClass = 'structured_product';
-          let underlyingType = '';
-          let protectionType = '';
-          let productType = templateType; // Store the product type (orion, phoenix, etc.)
+          // Default to equity_linked (most common) - will be overridden if we can determine from underlyings
+          let underlyingType = 'equity_linked';
+          // Default to conditional protection - will be overridden based on template type
+          let protectionType = 'capital_protected_conditional';
+          // Initialize to 'other' - will be set based on template matching
+          let productType = 'other';
 
           // Determine underlying type from product underlyings
           if (product.underlyings && product.underlyings.length > 0) {
@@ -490,7 +570,7 @@ Meteor.methods({
               return 'equity_linked';
             });
 
-            // Use the most common type, default to equity_linked
+            // Use the first detected type (most common is equity_linked anyway)
             underlyingType = underlyingTypes[0] || 'equity_linked';
           }
 
@@ -507,9 +587,9 @@ Meteor.methods({
             } else {
               protectionType = 'capital_protected_conditional';
             }
-          } else if (templateType.includes('phoenix')) {
+          } else if (templateType.includes('phoenix') || templateType.includes('autocall')) {
             productType = 'phoenix';
-            // Phoenix: Conditional protection via barrier
+            // Phoenix/Autocallable: Conditional protection via barrier
             protectionType = 'capital_protected_conditional';
           } else if (templateType.includes('himalaya')) {
             productType = 'himalaya';
@@ -889,9 +969,12 @@ Meteor.methods({
     const structure = product.structure || {};
 
     let assetClass = 'structured_product';
-    let underlyingType = '';
-    let protectionType = '';
-    let productType = templateType; // Store the product type (orion, phoenix, etc.)
+    // Default to equity_linked (most common) - will be overridden if we can determine from underlyings
+    let underlyingType = 'equity_linked';
+    // Default to conditional protection - will be overridden based on template type
+    let protectionType = 'capital_protected_conditional';
+    // Initialize to 'other' - will be set based on template matching
+    let productType = 'other';
 
     // Determine underlying type from product underlyings
     if (product.underlyings && product.underlyings.length > 0) {
@@ -918,7 +1001,7 @@ Meteor.methods({
         return 'equity_linked';
       });
 
-      // Use the most common type, default to equity_linked
+      // Use the first detected type (most common is equity_linked anyway)
       underlyingType = underlyingTypes[0] || 'equity_linked';
     }
 
@@ -935,9 +1018,9 @@ Meteor.methods({
       } else {
         protectionType = 'capital_protected_conditional';
       }
-    } else if (templateType.includes('phoenix')) {
+    } else if (templateType.includes('phoenix') || templateType.includes('autocall')) {
       productType = 'phoenix';
-      // Phoenix: Conditional protection via barrier
+      // Phoenix/Autocallable: Conditional protection via barrier
       protectionType = 'capital_protected_conditional';
     } else if (templateType.includes('himalaya')) {
       productType = 'himalaya';
@@ -1012,5 +1095,164 @@ Meteor.methods({
       assetClass,
       protectionType
     };
+  },
+
+  /**
+   * Re-enrich structured products in SecuritiesMetadata from Ambervision products
+   *
+   * This method finds all structured products in SecuritiesMetadata that are missing
+   * or have incorrect `structuredProductUnderlyingType` and updates them by looking
+   * up the matching Ambervision product.
+   *
+   * Use case: After bank sync, structured products may appear as "Alternative" instead
+   * of "Equities" because structuredProductUnderlyingType is not set. This method
+   * fixes that by extracting underlying type from the Ambervision product data.
+   *
+   * @param {Object} options
+   * @param {string} options.sessionId - Admin session ID (optional for server-side calls)
+   * @param {boolean} options.forceUpdate - Update even if structuredProductUnderlyingType is already set
+   * @returns {Object} - Summary of enrichment results
+   */
+  async 'securitiesMetadata.enrichFromProducts'({ sessionId, forceUpdate = false } = {}) {
+    // Allow server-side calls without sessionId (e.g., from cron jobs)
+    if (sessionId) {
+      check(sessionId, String);
+      await validateAdminSession(sessionId);
+    }
+
+    console.log(`[SECURITIES_METADATA] Starting re-enrichment from Ambervision products (forceUpdate: ${forceUpdate})`);
+
+    try {
+      // Build query for structured products
+      const query = {
+        assetClass: 'structured_product'
+      };
+
+      // If not forcing update, only get those missing structuredProductUnderlyingType
+      if (!forceUpdate) {
+        query.$or = [
+          { structuredProductUnderlyingType: { $exists: false } },
+          { structuredProductUnderlyingType: null },
+          { structuredProductUnderlyingType: '' }
+        ];
+      }
+
+      const structuredProducts = await SecuritiesMetadataCollection.find(query).fetchAsync();
+
+      console.log(`[SECURITIES_METADATA] Found ${structuredProducts.length} structured products to check`);
+
+      if (structuredProducts.length === 0) {
+        return {
+          success: true,
+          totalChecked: 0,
+          enriched: 0,
+          skipped: 0,
+          noProduct: 0,
+          errors: 0
+        };
+      }
+
+      // Get all Ambervision products with ISINs for matching
+      const ambervisionProducts = await ProductsCollection.find({
+        isin: { $exists: true, $nin: [null, ''] }
+      }).fetchAsync();
+
+      // Build lookup map by ISIN (case-insensitive)
+      const productsByIsin = new Map();
+      ambervisionProducts.forEach(product => {
+        if (product.isin) {
+          productsByIsin.set(product.isin.toUpperCase(), product);
+        }
+      });
+
+      console.log(`[SECURITIES_METADATA] Loaded ${productsByIsin.size} Ambervision products for matching`);
+
+      let enriched = 0;
+      let skipped = 0;
+      let noProduct = 0;
+      let errors = 0;
+
+      for (const security of structuredProducts) {
+        try {
+          if (!security.isin) {
+            skipped++;
+            continue;
+          }
+
+          // Find matching Ambervision product
+          const product = productsByIsin.get(security.isin.toUpperCase());
+
+          if (!product) {
+            // No matching Ambervision product - skip
+            noProduct++;
+            continue;
+          }
+
+          // Detect underlying type using shared utility
+          const underlyingType = detectUnderlyingType(product.underlyings);
+
+          // Check if update is needed
+          if (!forceUpdate && security.structuredProductUnderlyingType === underlyingType) {
+            skipped++;
+            continue;
+          }
+
+          // Update the security metadata
+          await SecuritiesMetadataCollection.updateAsync(
+            { _id: security._id },
+            {
+              $set: {
+                structuredProductUnderlyingType: underlyingType,
+                updatedAt: new Date()
+              },
+              $inc: { version: 1 }
+            }
+          );
+
+          console.log(`[SECURITIES_METADATA] Enriched ${security.isin}: underlyingType = ${underlyingType}`);
+          enriched++;
+
+          // Also propagate to PMSHoldings if they exist
+          try {
+            const propagationResult = await PMSHoldingsCollection.updateAsync(
+              { isin: security.isin },
+              {
+                $set: {
+                  structuredProductUnderlyingType: underlyingType
+                }
+              },
+              { multi: true }
+            );
+
+            if (propagationResult > 0) {
+              console.log(`[SECURITIES_METADATA] Propagated to ${propagationResult} PMSHoldings`);
+            }
+          } catch (propError) {
+            console.warn(`[SECURITIES_METADATA] Failed to propagate to PMSHoldings: ${propError.message}`);
+          }
+
+        } catch (error) {
+          console.error(`[SECURITIES_METADATA] Error enriching ${security.isin}: ${error.message}`);
+          errors++;
+        }
+      }
+
+      const summary = {
+        success: true,
+        totalChecked: structuredProducts.length,
+        enriched,
+        skipped,
+        noProduct,
+        errors
+      };
+
+      console.log(`[SECURITIES_METADATA] Re-enrichment complete: ${enriched} enriched, ${skipped} skipped, ${noProduct} no matching product, ${errors} errors`);
+
+      return summary;
+
+    } catch (error) {
+      console.error(`[SECURITIES_METADATA] Re-enrichment failed: ${error.message}`);
+      throw new Meteor.Error('enrichment-failed', error.message);
+    }
   }
 });

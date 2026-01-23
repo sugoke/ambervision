@@ -75,29 +75,33 @@ export const DataFreshnessBadge = ({
     );
   }
 
+  // Responsive sizing based on window width
+  const isMobileView = typeof window !== 'undefined' && window.innerWidth < 768;
+
   return (
     <div
       style={{
         display: 'flex',
         flexDirection: 'column',
-        padding: '12px 16px',
+        padding: isMobileView ? '8px 12px' : '12px 16px',
         borderRadius: '8px',
         background: styles.background,
         color: styles.textColor,
-        minWidth: '140px',
-        boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+        minWidth: isMobileView ? '100px' : '140px',
+        boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+        flex: isMobileView ? '0 0 auto' : 'none'
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-        <span style={{ fontSize: '16px' }}>{statusIcon}</span>
-        <span style={{ fontWeight: '600', fontSize: '14px' }}>{bankName}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
+        <span style={{ fontSize: isMobileView ? '12px' : '16px' }}>{statusIcon}</span>
+        <span style={{ fontWeight: '600', fontSize: isMobileView ? '12px' : '14px' }}>{bankName}</span>
       </div>
-      <div style={{ fontSize: '13px', opacity: 0.9 }}>
+      <div style={{ fontSize: isMobileView ? '11px' : '13px', opacity: 0.9 }}>
         {status === 'error' ? 'Sync Failed' : dataDateFormatted}
       </div>
       {lastError && status === 'error' && (
-        <div style={{ fontSize: '11px', opacity: 0.8, marginTop: '4px' }}>
-          {lastError.substring(0, 50)}...
+        <div style={{ fontSize: '10px', opacity: 0.8, marginTop: '2px' }}>
+          {lastError.substring(0, 30)}...
         </div>
       )}
     </div>
@@ -229,6 +233,9 @@ export const DataFreshnessPanel = ({
   const hasStaleData = filteredBanks.some(r => r.status === 'stale' || r.status === 'old');
   const hasErrors = filteredBanks.some(r => r.status === 'error');
 
+  // Responsive layout based on window width
+  const isMobileView = typeof window !== 'undefined' && window.innerWidth < 768;
+
   return (
     <div>
       {showWarning && (
@@ -242,8 +249,17 @@ export const DataFreshnessPanel = ({
       <div
         style={{
           display: 'flex',
-          flexWrap: 'wrap',
-          gap: compact ? '8px' : '12px'
+          flexWrap: isMobileView ? 'nowrap' : 'wrap',
+          gap: compact ? '8px' : (isMobileView ? '8px' : '12px'),
+          overflowX: isMobileView ? 'auto' : 'visible',
+          paddingBottom: isMobileView ? '8px' : '0',
+          marginLeft: isMobileView ? '-4px' : '0',
+          marginRight: isMobileView ? '-4px' : '0',
+          paddingLeft: isMobileView ? '4px' : '0',
+          paddingRight: isMobileView ? '4px' : '0',
+          WebkitOverflowScrolling: 'touch',
+          scrollbarWidth: 'none',
+          msOverflowStyle: 'none'
         }}
       >
         {filteredBanks.map((bank) => (

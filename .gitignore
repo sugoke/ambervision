@@ -64,6 +64,12 @@ bankfiles/
 
 # Deployment configurations with credentials
 .deploy/
+deploy/mup.js
+deploy/settings.json
+
+# Claude Code temporary directories
+tmpclaude-*/
+deploy/tmpclaude-*/
 
 # IDE files
 .vscode/

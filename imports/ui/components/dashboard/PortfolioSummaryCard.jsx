@@ -7,28 +7,43 @@ const CURRENCIES = [
   { code: 'GBP', symbol: '£', locale: 'en-GB', icon: '£' }
 ];
 
-const PortfolioSummaryCard = ({ summary }) => {
-  const [currency, setCurrency] = useState(() => {
-    return localStorage.getItem('dashboardCurrency') || 'CHF';
+const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, hideClientsCount = false }) => {
+  // Use selectedCurrency prop if provided, otherwise fall back to localStorage
+  const [localCurrency, setLocalCurrency] = useState(() => {
+    return localStorage.getItem('dashboardCurrency') || 'EUR';
   });
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
+  // Use prop if provided, otherwise use local state
+  const currency = selectedCurrency || localCurrency;
+
   const handleCurrencyChange = (newCurrency) => {
-    setCurrency(newCurrency);
+    setLocalCurrency(newCurrency);
     localStorage.setItem('dashboardCurrency', newCurrency);
     setDropdownOpen(false);
+    // Notify parent to refresh data with new currency
+    if (onCurrencyChange) {
+      onCurrencyChange(newCurrency);
+    }
   };
 
   const currentCurrency = CURRENCIES.find(c => c.code === currency) || CURRENCIES[0];
 
-  const formatCurrency = (value) => {
+  const formatCurrency = (value, compact = false) => {
     if (!value) return `${currentCurrency.code} 0`;
     return new Intl.NumberFormat(currentCurrency.locale, {
       style: 'currency',
       currency: currentCurrency.code,
       minimumFractionDigits: 0,
-      maximumFractionDigits: 0
+      maximumFractionDigits: 0,
+      notation: compact ? 'compact' : 'standard'
     }).format(value);
+  };
+
+  const formatPercent = (value) => {
+    if (value === null || value === undefined) return null;
+    const sign = value >= 0 ? '+' : '';
+    return `${sign}${value.toFixed(2)}%`;
   };
 
   // Dynamic icon based on selected currency
@@ -42,15 +57,28 @@ const PortfolioSummaryCard = ({ summary }) => {
     return <span style={{ fontSize: '12px', fontWeight: '700' }}>{icon}</span>;
   };
 
+  // Calculate variation display
+  const hasVariation = summary?.previousAUM !== null && summary?.previousAUM !== undefined;
+  const variationIsPositive = summary?.aumChange >= 0;
+  const variationColor = variationIsPositive ? '#10b981' : '#ef4444';
+
+  // Build stats array - conditionally exclude Clients count for client users
   const stats = [
     {
       label: 'Total AUM',
       value: formatCurrency(summary?.totalAUM),
       icon: getCurrencyIcon(),
       fullWidth: true,
-      color: '#10b981'
+      color: '#10b981',
+      variation: hasVariation ? {
+        change: summary?.aumChange,
+        percent: summary?.aumChangePercent,
+        isPositive: variationIsPositive,
+        color: variationColor
+      } : null
     },
-    {
+    // Only show Clients stat for RMs/Admins, not for client users
+    ...(!hideClientsCount ? [{
       label: 'Clients',
       value: summary?.clientCount || 0,
       icon: (
@@ -62,7 +90,7 @@ const PortfolioSummaryCard = ({ summary }) => {
         </svg>
       ),
       color: '#3b82f6'
-    },
+    }] : []),
     {
       label: 'Live',
       value: summary?.liveProducts || 0,
@@ -258,6 +286,41 @@ const PortfolioSummaryCard = ({ summary }) => {
             <div style={styles.statContent}>
               <span style={styles.statValue(stat.fullWidth)}>{stat.value}</span>
               <span style={styles.statLabel}>{stat.label}</span>
+              {/* Day-over-day variation for AUM */}
+              {stat.variation && (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  marginTop: '4px',
+                  fontSize: '12px'
+                }}>
+                  <span style={{
+                    color: stat.variation.color,
+                    fontWeight: '600',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '2px'
+                  }}>
+                    {stat.variation.isPositive ? (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <polyline points="18 15 12 9 6 15" />
+                      </svg>
+                    ) : (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <polyline points="6 9 12 15 18 9" />
+                      </svg>
+                    )}
+                    {formatPercent(stat.variation.percent)}
+                  </span>
+                  <span style={{ color: 'var(--text-muted)' }}>
+                    ({stat.variation.isPositive ? '+' : ''}{formatCurrency(stat.variation.change, true)})
+                  </span>
+                  <span style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
+                    vs {summary?.comparisonDateLabel || 'yesterday'}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         ))}

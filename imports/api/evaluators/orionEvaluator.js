@@ -175,6 +175,13 @@ export const OrionEvaluator = {
       capitalExplanation = `Protection breached (worst performer ${worstPerforming.toFixed(2)}% below ${lowerBarrierThreshold}% barrier)`;
     }
 
+    // Apply minimum capital guarantee floor (e.g., 100% capital guarantee means min return is 100%)
+    const minimumCapital = orionParams.capitalGuaranteed || 100;
+    if (capitalReturn < minimumCapital) {
+      capitalReturn = minimumCapital;
+      capitalExplanation = `Capital guaranteed at ${minimumCapital}% (barrier breached but principal protected by guarantee)`;
+    }
+
     // Count underlyings that hit upper barrier
     const hitBarrierCount = underlyings.filter(u => u.hitUpperBarrier).length;
     const allHitBarrier = hitBarrierCount === underlyings.length;
@@ -211,6 +218,11 @@ export const OrionEvaluator = {
       protectionIntact,
       protectionBarrier: orionParams.lowerBarrier,
       protectionBarrierFormatted: `${orionParams.lowerBarrier}%`,
+
+      // Capital guarantee
+      capitalGuaranteed: minimumCapital,
+      capitalGuaranteedFormatted: `${minimumCapital}%`,
+      hasCapitalGuarantee: minimumCapital > 0,
 
       // Upper barrier
       upperBarrier: orionParams.upperBarrier,

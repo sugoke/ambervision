@@ -353,11 +353,12 @@ export const SharedEvaluationHelpers = {
     let productStatus = 'live';
     let statusDetails = {};
 
-    if (isMaturityPassed || isFinalObsPassed) {
+    // Product is matured when final observation has passed (not maturity date which is just settlement)
+    if (isFinalObsPassed) {
       productStatus = 'matured';
       statusDetails = {
-        maturedDate: maturityDate || finalObsDate,
-        maturedDateFormatted: new Date(maturityDate || finalObsDate).toLocaleDateString('en-US', {
+        maturedDate: finalObsDate || maturityDate,
+        maturedDateFormatted: new Date(finalObsDate || maturityDate).toLocaleDateString('en-US', {
           month: 'short',
           day: 'numeric',
           year: 'numeric'

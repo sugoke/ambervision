@@ -8,6 +8,8 @@
  * This ensures consistent values are shown across the application.
  */
 
+import { SECURITY_TYPES, ASSET_CLASSES } from '/imports/api/constants/instrumentTypes.js';
+
 /**
  * Extract bank-provided FX rates from holdings and convert to multiplier format
  * Bank rates are stored in "divide" format (EUR = amount / rate), but our
@@ -188,12 +190,28 @@ export const calculateCashForHoldings = (holdings, ratesMap, cashEquivalentISINs
   for (const holding of holdings) {
     // Check if pure cash (for negative cash alerts)
     const isPureCash = holding.securityType === 'CASH' ||
+      holding.securityType === SECURITY_TYPES.CASH ||
       (holding.securityType && /cash/i.test(holding.securityType)) ||
       holding.assetClass === 'cash' ||
+      holding.assetClass === ASSET_CLASSES.CASH ||
       (holding.assetClass && /^cash$/i.test(holding.assetClass));
 
+    // Check if term deposit or money market fund (for high cash - includes products without ISINs)
+    const isTermDeposit = holding.securityType === 'TERM_DEPOSIT' ||
+      holding.securityType === SECURITY_TYPES.TERM_DEPOSIT ||
+      holding.assetClass === 'time_deposit' ||
+      holding.assetClass === ASSET_CLASSES.TIME_DEPOSIT;
+
+    const isMoneyMarket = holding.securityType === 'MONEY_MARKET' ||
+      holding.securityType === SECURITY_TYPES.MONEY_MARKET ||
+      holding.assetClass === 'monetary_products' ||
+      holding.assetClass === ASSET_CLASSES.MONETARY_PRODUCTS;
+
     // Check if cash equivalent (for high cash alerts - includes money market funds, time deposits)
+    // Matches by: pure cash OR securityType/assetClass OR ISIN lookup in metadata
     const isCashEquivalent = isPureCash ||
+      isTermDeposit ||
+      isMoneyMarket ||
       (holding.isin && cashEquivalentISINs.has(holding.isin));
 
     if (isPureCash || isCashEquivalent) {
@@ -213,6 +231,8 @@ export const calculateCashForHoldings = (holdings, ratesMap, cashEquivalentISINs
         originalValue: originalCurrencyValue,  // Value in native currency (not portfolio currency)
         eurValue,
         isPureCash,
+        isTermDeposit,
+        isMoneyMarket,
         isCashEquivalent
       };
 

@@ -5,7 +5,7 @@ import { ProductCommentaryCollection } from '/imports/api/riskAnalysis';
 
 /**
  * Product Commentary Card Component
- * Displays AI-generated investment advisor commentary for a product
+ * Displays Amberlake-generated investment advisor commentary for a product
  */
 const ProductCommentaryCard = ({ productId }) => {
   const [isGenerating, setIsGenerating] = useState(false);
@@ -191,7 +191,7 @@ const ProductCommentaryCard = ({ productId }) => {
               borderRadius: '4px',
               fontWeight: '600'
             }}>
-              🤖 AI Generated
+              🤖 Amberlake Comment
             </span>
           </div>
         </div>
@@ -206,7 +206,7 @@ const ProductCommentaryCard = ({ productId }) => {
             }}>
               <div style={{ fontSize: '2rem', marginBottom: '0.5rem', opacity: 0.5 }}>💬</div>
               <p style={{ margin: 0 }}>
-                No commentary generated yet. Click the button above to generate a client-ready investment commentary using AI.
+                No commentary generated yet. Click the button above to generate a client-ready investment commentary using Amberlake.
               </p>
             </div>
           )}

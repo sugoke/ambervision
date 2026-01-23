@@ -17,6 +17,7 @@ import { MarketDataCacheCollection } from '../../imports/api/marketDataCache.js'
 import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetadata.js';
 import { CurrencyRateCacheCollection, CurrencyCache } from '../../imports/api/currencyCache.js';
 import { calculateCashForHoldings } from '../../imports/api/helpers/cashCalculator.js';
+import { DashboardMetricsHelpers } from '../../imports/api/dashboardMetrics.js';
 import { INVESTMENT_QUOTES } from '../quotesData.js';
 
 // Database collections for quotes system
@@ -39,6 +40,8 @@ Meteor.startup(async () => {
 
 /**
  * Helper function to validate session and get current user
+ * Allows RMs, Admins, Compliance, and Clients to access the dashboard
+ * (data filtering is handled in individual methods based on role)
  */
 async function validateRMSession(sessionId) {
   const session = await SessionsCollection.findOneAsync({
@@ -56,11 +59,18 @@ async function validateRMSession(sessionId) {
     throw new Meteor.Error('not-authorized', 'User not found');
   }
 
-  // Allow both RM and Admin roles to access RM dashboard
-  if (currentUser.role !== USER_ROLES.RELATIONSHIP_MANAGER &&
-      currentUser.role !== USER_ROLES.ADMIN &&
-      currentUser.role !== USER_ROLES.SUPERADMIN) {
-    throw new Meteor.Error('not-authorized', 'Access restricted to relationship managers');
+  // Allow all authenticated users to access the dashboard
+  // Data filtering is handled per-role in individual methods
+  const allowedRoles = [
+    USER_ROLES.RELATIONSHIP_MANAGER,
+    USER_ROLES.ADMIN,
+    USER_ROLES.SUPERADMIN,
+    USER_ROLES.COMPLIANCE,
+    USER_ROLES.CLIENT
+  ];
+
+  if (!allowedRoles.includes(currentUser.role)) {
+    throw new Meteor.Error('not-authorized', 'Access restricted');
   }
 
   return currentUser;
@@ -68,10 +78,18 @@ async function validateRMSession(sessionId) {
 
 /**
  * Helper function to get RM's assigned clients
+ * For clients, returns only themselves (so all queries filter to their own data)
  */
 async function getAssignedClients(currentUser) {
-  // Admin/Superadmin sees all clients
-  if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN) {
+  // Client sees only themselves
+  if (currentUser.role === USER_ROLES.CLIENT) {
+    return [currentUser];
+  }
+
+  // Admin/Superadmin/Compliance sees all clients
+  if (currentUser.role === USER_ROLES.ADMIN ||
+      currentUser.role === USER_ROLES.SUPERADMIN ||
+      currentUser.role === USER_ROLES.COMPLIANCE) {
     return await UsersCollection.find({ role: USER_ROLES.CLIENT }).fetchAsync();
   }
 
@@ -149,6 +167,59 @@ function convertToEUR(amount, fromCurrency, ratesMap) {
   return amountUSD / eurUsdRate;
 }
 
+/**
+ * Convert amount from EUR to any target currency
+ * Uses USD as intermediate if needed
+ */
+function convertFromEUR(amountEUR, toCurrency, ratesMap) {
+  if (!amountEUR) return 0;
+  if (toCurrency === 'EUR') return amountEUR;
+
+  // Try direct EUR pair first (e.g., EURUSD.FOREX, EURCHF.FOREX)
+  // EUR/XXX rate means 1 EUR = rate XXX, so XXX = EUR * rate
+  const directPair = `EUR${toCurrency}.FOREX`;
+  if (ratesMap.has(directPair)) {
+    return amountEUR * ratesMap.get(directPair);
+  }
+
+  // Try inverse pair (e.g., XXXEUR.FOREX) - less common
+  const inversePair = `${toCurrency}EUR.FOREX`;
+  if (ratesMap.has(inversePair)) {
+    return amountEUR / ratesMap.get(inversePair);
+  }
+
+  // Convert via USD as intermediate
+  // First convert EUR to USD
+  const eurUsdRate = ratesMap.get('EURUSD.FOREX');
+  if (!eurUsdRate) {
+    console.warn('[AUM Conversion] No EURUSD rate available, returning EUR value');
+    return amountEUR;
+  }
+
+  // EURUSD = 1 EUR in USD, so USD = EUR * rate
+  const amountUSD = amountEUR * eurUsdRate;
+
+  if (toCurrency === 'USD') {
+    return amountUSD;
+  }
+
+  // Convert USD to target currency
+  // Try USD/XXX pair (e.g., USDCHF.FOREX)
+  const usdTargetPair = `USD${toCurrency}.FOREX`;
+  if (ratesMap.has(usdTargetPair)) {
+    return amountUSD * ratesMap.get(usdTargetPair);
+  }
+
+  // Try inverse XXX/USD pair (e.g., GBPUSD.FOREX)
+  const targetUsdPair = `${toCurrency}USD.FOREX`;
+  if (ratesMap.has(targetUsdPair)) {
+    return amountUSD / ratesMap.get(targetUsdPair);
+  }
+
+  console.warn(`[AUM Conversion] No FX rate for ${toCurrency}, returning EUR value`);
+  return amountEUR;
+}
+
 Meteor.methods({
   /**
    * Get alerts for RM Dashboard
@@ -191,8 +262,18 @@ Meteor.methods({
         sort: { createdAt: -1 }
       }).fetchAsync();
 
-      // Map notifications to alert format
+      // Deduplicate: keep only the latest notification per product per event type
+      const seenProductEvents = new Map();
       for (const notification of barrierNotifications) {
+        const key = `${notification.productId}-${notification.eventType}`;
+        // Already sorted by createdAt desc, so first one seen is the latest
+        if (!seenProductEvents.has(key)) {
+          seenProductEvents.set(key, notification);
+        }
+      }
+
+      // Map deduplicated notifications to alert format
+      for (const notification of seenProductEvents.values()) {
         alerts.push({
           type: notification.eventType === 'barrier_breached' ? 'barrier_breach' : 'barrier_warning',
           severity: notification.eventType === 'barrier_breached' ? 'critical' : 'warning',
@@ -327,36 +408,139 @@ Meteor.methods({
 
   /**
    * Get portfolio summary for RM Dashboard
+   * @param {String} sessionId - User session ID
+   * @param {String} targetCurrency - Currency to display AUM in (default: 'EUR')
    */
-  async 'rmDashboard.getPortfolioSummary'(sessionId) {
+  async 'rmDashboard.getPortfolioSummary'(sessionId, targetCurrency = 'EUR') {
     check(sessionId, String);
 
     const currentUser = await validateRMSession(sessionId);
     const clients = await getAssignedClients(currentUser);
     const clientIds = clients.map(c => c._id);
 
+    // For admin/superadmin requesting EUR, check pre-computed cache first
+    const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
+    if (isAdmin && targetCurrency === 'EUR') {
+      const cached = await DashboardMetricsHelpers.getMetrics('global', 'aum_summary');
+      if (cached) {
+        console.log('[RM Dashboard] Using pre-computed AUM metrics from cache');
+
+        // Product counts are quick to compute, fetch them fresh
+        const products = await ProductsCollection.find({}).fetchAsync();
+        const statusCounts = { live: 0, autocalled: 0, matured: 0 };
+        products.forEach(p => {
+          const status = p.productStatus || 'live';
+          if (status === 'live') statusCounts.live++;
+          else if (status === 'autocalled') statusCounts.autocalled++;
+          else if (status === 'matured') statusCounts.matured++;
+        });
+
+        return {
+          totalAUM: cached.totalAUM,
+          aumChange: cached.aumChange,
+          aumChangePercent: cached.aumChangePercent,
+          previousAUM: cached.previousDayAUM,
+          comparisonDateLabel: 'yesterday',
+          clientCount: cached.clientCount || clients.length,
+          liveProducts: statusCounts.live,
+          autocalledProducts: statusCounts.autocalled,
+          maturedProducts: statusCounts.matured,
+          fromCache: true
+        };
+      }
+    }
+
     try {
+      // Fetch FX rates for currency conversion
+      const currencyRates = await CurrencyRateCacheCollection.find({}).fetchAsync();
+      const ratesMap = buildRatesMap(currencyRates);
+
       // For admin/superadmin, get ALL holdings; for RM get only their clients' holdings
-      let totalAUM = 0;
+      let totalAUMInEUR = 0;
+
+      // Asset classes to include in AUM (cash and securities only)
+      // Excludes: fx_forward (hedging, large notionals), derivatives (mark-to-market)
+      const aumAssetClasses = [
+        'cash', 'equity', 'fixed_income', 'structured_product',
+        'time_deposit', 'monetary_products', 'commodities',
+        'private_equity', 'private_debt',
+        'etf',   // ETF positions
+        'fund'   // Fund positions
+      ];
+
+      // Helper to sum holdings in EUR
+      // Note: marketValue field is already in portfolio currency (EUR) from bank parsers
+      // The 'currency' field represents the security's trading currency, not marketValue's currency
+      const sumHoldingsInEUR = (holdings) => {
+        return holdings.reduce((sum, h) => {
+          // marketValue is already in EUR (PTF_MKT_VAL from bank files)
+          // Do NOT convert - that would double-convert non-EUR securities
+          return sum + (h.marketValue || 0);
+        }, 0);
+      };
+
+      // Track current portfolios for later comparison with snapshots
+      const currentPortfolioKeys = new Set();
 
       if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN) {
         // Admin sees all holdings - sum market value from latest PMSHoldings
+        // Include whitelisted asset classes + unclassified (null) holdings
+        // Must match PMS publication filter: isActive: true, isLatest: true
         const allHoldings = await PMSHoldingsCollection.find({
+          isActive: true,
           isLatest: true,
-          marketValue: { $exists: true, $gt: 0 }
+          marketValue: { $exists: true, $gt: 0 },
+          $or: [
+            { assetClass: { $in: aumAssetClasses } },
+            { assetClass: null },
+            { assetClass: { $exists: false } }
+          ]
         }).fetchAsync();
 
-        totalAUM = allHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+        totalAUMInEUR = sumHoldingsInEUR(allHoldings);
+
+        // Debug: Log holdings breakdown by portfolio/user
+        const holdingsByPortfolio = {};
+        allHoldings.forEach(h => {
+          const key = `${h.portfolioCode || 'unknown'}|${h.bankId || 'unknown'}`;
+          currentPortfolioKeys.add(key);
+          if (!holdingsByPortfolio[key]) {
+            holdingsByPortfolio[key] = { userId: h.userId, portfolioCode: h.portfolioCode, bankId: h.bankId, total: 0 };
+          }
+          holdingsByPortfolio[key].total += h.marketValue || 0;
+        });
+        console.log('[RM Dashboard] Current holdings by portfolio:');
+        Object.values(holdingsByPortfolio).forEach(p => {
+          console.log(`[RM Dashboard] Holdings - Portfolio: ${p.portfolioCode}, Bank: ${p.bankId}, User: ${p.userId}, Value: ${p.total.toLocaleString('en-US', { maximumFractionDigits: 2 })} EUR`);
+        });
+        console.log('[RM Dashboard] Total holdings user count:', new Set(Object.values(holdingsByPortfolio).map(p => p.userId)).size);
       } else if (clientIds.length > 0) {
         // RM sees only their clients' holdings
+        // Include whitelisted asset classes + unclassified (null) holdings
+        // Must match PMS publication filter: isActive: true, isLatest: true
         const clientHoldings = await PMSHoldingsCollection.find({
           userId: { $in: clientIds },
+          isActive: true,
           isLatest: true,
-          marketValue: { $exists: true, $gt: 0 }
+          marketValue: { $exists: true, $gt: 0 },
+          $or: [
+            { assetClass: { $in: aumAssetClasses } },
+            { assetClass: null },
+            { assetClass: { $exists: false } }
+          ]
         }).fetchAsync();
 
-        totalAUM = clientHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+        totalAUMInEUR = sumHoldingsInEUR(clientHoldings);
+
+        // Track current portfolios
+        clientHoldings.forEach(h => {
+          const key = `${h.portfolioCode || 'unknown'}|${h.bankId || 'unknown'}`;
+          currentPortfolioKeys.add(key);
+        });
       }
+
+      // Convert EUR total to target currency
+      const totalAUM = convertFromEUR(totalAUMInEUR, targetCurrency, ratesMap);
 
       // Get product counts by status
       let products = [];
@@ -392,8 +576,133 @@ Meteor.methods({
         clientCount = await UsersCollection.find({ role: USER_ROLES.CLIENT }).countAsync();
       }
 
+      // Calculate day-over-day AUM variation from snapshots
+      let aumChange = 0;
+      let aumChangePercent = 0;
+      let previousAUM = null;
+      let comparisonDateLabel = 'yesterday';
+
+      // Debug: Log current AUM before snapshot comparison
+      console.log('[RM Dashboard] Current AUM (EUR):', totalAUMInEUR.toLocaleString('en-US', { maximumFractionDigits: 2 }));
+
+      try {
+        // Get yesterday's date (normalized to midnight UTC)
+        const yesterday = new Date();
+        yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+        yesterday.setUTCHours(0, 0, 0, 0);
+
+        console.log('[RM Dashboard] Yesterday date (UTC):', yesterday.toISOString());
+
+        // For admin/superadmin, aggregate all portfolios; for RM, aggregate their clients only
+        let snapshotQuery = { snapshotDate: yesterday };
+
+        if (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN) {
+          // RM sees only their clients' snapshots
+          snapshotQuery.userId = { $in: clientIds };
+        }
+
+        // Get yesterday's aggregated AUM from snapshots (EXACT date match only - no fallback to old dates)
+        // Filter: totalAccountValue > 0 to match current AUM logic (excludes liability/loan accounts)
+        snapshotQuery.totalAccountValue = { $gt: 0 };
+        const yesterdaySnapshots = await PortfolioSnapshotsCollection.find(snapshotQuery).fetchAsync();
+
+        console.log('[RM Dashboard] Snapshots found for yesterday (positive values only):', yesterdaySnapshots.length);
+
+        if (yesterdaySnapshots.length > 0) {
+          // Build set of portfolios that have yesterday's snapshots
+          const snapshotPortfolioKeys = new Set(
+            yesterdaySnapshots.map(s => `${s.portfolioCode}|${s.bankId}`)
+          );
+
+          // Find which portfolios exist in BOTH current holdings AND yesterday's snapshots
+          const matchedPortfolioKeys = [...currentPortfolioKeys].filter(key => snapshotPortfolioKeys.has(key));
+          const missingFromSnapshots = [...currentPortfolioKeys].filter(key => !snapshotPortfolioKeys.has(key));
+
+          if (missingFromSnapshots.length > 0) {
+            console.log(`[RM Dashboard] ${missingFromSnapshots.length} portfolio(s) excluded from comparison (no yesterday snapshot):`);
+            missingFromSnapshots.forEach(key => console.log(`[RM Dashboard]   - ${key}`));
+          }
+
+          if (matchedPortfolioKeys.length > 0) {
+            // Filter yesterday's snapshots to only matched portfolios
+            const matchedSnapshots = yesterdaySnapshots.filter(s => {
+              const key = `${s.portfolioCode}|${s.bankId}`;
+              return matchedPortfolioKeys.includes(key);
+            });
+
+            // Calculate previous AUM from matched snapshots only
+            previousAUM = matchedSnapshots.reduce((sum, s) => sum + (s.totalAccountValue || 0), 0);
+
+            // Calculate current AUM for ONLY the matched portfolios (apples-to-apples comparison)
+            // We need to re-sum current holdings for matched portfolios only
+            let matchedCurrentHoldings;
+            if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN) {
+              matchedCurrentHoldings = await PMSHoldingsCollection.find({
+                isActive: true,
+                isLatest: true,
+                marketValue: { $exists: true, $gt: 0 },
+                $or: [
+                  { assetClass: { $in: ['cash', 'equity', 'fixed_income', 'structured_product', 'time_deposit', 'monetary_products', 'commodities', 'private_equity', 'private_debt', 'etf', 'fund'] } },
+                  { assetClass: null },
+                  { assetClass: { $exists: false } }
+                ]
+              }).fetchAsync();
+            } else {
+              matchedCurrentHoldings = await PMSHoldingsCollection.find({
+                userId: { $in: clientIds },
+                isActive: true,
+                isLatest: true,
+                marketValue: { $exists: true, $gt: 0 },
+                $or: [
+                  { assetClass: { $in: ['cash', 'equity', 'fixed_income', 'structured_product', 'time_deposit', 'monetary_products', 'commodities', 'private_equity', 'private_debt', 'etf', 'fund'] } },
+                  { assetClass: null },
+                  { assetClass: { $exists: false } }
+                ]
+              }).fetchAsync();
+            }
+
+            // Filter to matched portfolios only
+            const matchedCurrentAUMInEUR = matchedCurrentHoldings
+              .filter(h => {
+                const key = `${h.portfolioCode || 'unknown'}|${h.bankId || 'unknown'}`;
+                return matchedPortfolioKeys.includes(key);
+              })
+              .reduce((sum, h) => sum + (h.marketValue || 0), 0);
+
+            console.log(`[RM Dashboard] Matched portfolios: ${matchedPortfolioKeys.length}`);
+            console.log(`[RM Dashboard] Previous AUM (matched, EUR): ${previousAUM.toLocaleString('en-US', { maximumFractionDigits: 2 })}`);
+            console.log(`[RM Dashboard] Current AUM (matched, EUR): ${matchedCurrentAUMInEUR.toLocaleString('en-US', { maximumFractionDigits: 2 })}`);
+
+            // Convert to target currency if needed
+            let matchedCurrentAUM = matchedCurrentAUMInEUR;
+            if (targetCurrency !== 'EUR') {
+              previousAUM = convertFromEUR(previousAUM, targetCurrency, ratesMap);
+              matchedCurrentAUM = convertFromEUR(matchedCurrentAUMInEUR, targetCurrency, ratesMap);
+            }
+
+            // Calculate change using matched portfolios only
+            aumChange = matchedCurrentAUM - previousAUM;
+            aumChangePercent = previousAUM > 0 ? (aumChange / previousAUM) * 100 : 0;
+
+            console.log('[RM Dashboard] AUM Change:', aumChange.toLocaleString('en-US', { maximumFractionDigits: 2 }), targetCurrency);
+            console.log('[RM Dashboard] AUM Change %:', aumChangePercent.toFixed(2) + '%');
+          } else {
+            console.log('[RM Dashboard] No matching portfolios between current holdings and yesterday snapshots');
+            previousAUM = null;
+          }
+        } else {
+          console.log('[RM Dashboard] No snapshots found for yesterday');
+        }
+      } catch (snapshotError) {
+        console.warn('[RM Dashboard] Could not calculate AUM variation:', snapshotError.message);
+      }
+
       return {
         totalAUM,
+        aumChange,
+        aumChangePercent,
+        previousAUM,
+        comparisonDateLabel,  // 'yesterday' or specific date like '2026-01-20'
         clientCount,
         liveProducts: statusCounts.live,
         autocalledProducts: statusCounts.autocalled,
@@ -409,6 +718,194 @@ Meteor.methods({
         autocalledProducts: 0,
         maturedProducts: 0
       };
+    }
+  },
+
+  /**
+   * Get historical AUM data for mini chart
+   * Uses PortfolioSnapshots aggregated across all portfolios
+   * @param {String} sessionId - User session ID
+   * @param {Number} days - Number of days of history (default: 90)
+   * @param {String} targetCurrency - Currency for display (default: 'EUR')
+   */
+  async 'rmDashboard.getAUMHistory'(sessionId, days = 90, targetCurrency = 'EUR') {
+    check(sessionId, String);
+    check(days, Number);
+    check(targetCurrency, String);
+
+    const currentUser = await validateRMSession(sessionId);
+
+    // For admin/superadmin requesting WTD (<=7 days) in EUR, check pre-computed cache first
+    const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
+    if (isAdmin && days <= 7 && targetCurrency === 'EUR') {
+      const cached = await DashboardMetricsHelpers.getMetrics('global', 'aum_summary');
+      if (cached?.wtdHistory && cached.wtdHistory.length > 0) {
+        console.log('[RM Dashboard] Using pre-computed WTD history from cache');
+        return {
+          hasData: true,
+          labels: cached.wtdHistory.map(s => s.date.toISOString().split('T')[0]),
+          values: cached.wtdHistory.map(s => s.value),
+          snapshots: cached.wtdHistory.map(s => ({
+            date: s.date,
+            value: s.value,
+            portfolioCount: 0
+          })),
+          fromCache: true
+        };
+      }
+    }
+
+    try {
+      // Calculate date range
+      const endDate = new Date();
+      endDate.setHours(23, 59, 59, 999);
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - days);
+      startDate.setHours(0, 0, 0, 0);
+
+      // Fetch FX rates for currency conversion
+      const currencyRates = await CurrencyRateCacheCollection.find({}).fetchAsync();
+      const ratesMap = buildRatesMap(currencyRates);
+
+      // Get all snapshots in date range, aggregated by date
+      // For admin/superadmin: all portfolios
+      // For RM: only their clients' portfolios
+      let snapshots;
+
+      if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE) {
+        // Admin/Compliance sees all portfolios - aggregate by date
+        snapshots = await PortfolioSnapshotsCollection.find({
+          snapshotDate: { $gte: startDate, $lte: endDate }
+        }, {
+          sort: { snapshotDate: 1 }
+        }).fetchAsync();
+      } else {
+        // RM sees only their clients' portfolios
+        const clients = await getAssignedClients(currentUser);
+        const clientIds = clients.map(c => c._id);
+
+        if (clientIds.length === 0) {
+          return { hasData: false, labels: [], values: [], snapshots: [] };
+        }
+
+        snapshots = await PortfolioSnapshotsCollection.find({
+          userId: { $in: clientIds },
+          snapshotDate: { $gte: startDate, $lte: endDate }
+        }, {
+          sort: { snapshotDate: 1 }
+        }).fetchAsync();
+      }
+
+      if (snapshots.length === 0) {
+        return { hasData: false, labels: [], values: [], snapshots: [] };
+      }
+
+      // Aggregate snapshots by date (sum all portfolios for each day)
+      const dateMap = new Map();
+
+      for (const snapshot of snapshots) {
+        const dateKey = snapshot.snapshotDate.toISOString().split('T')[0];
+
+        if (!dateMap.has(dateKey)) {
+          dateMap.set(dateKey, {
+            date: snapshot.snapshotDate,
+            totalAccountValue: 0,
+            portfolioCount: 0
+          });
+        }
+
+        const entry = dateMap.get(dateKey);
+        entry.totalAccountValue += (snapshot.totalAccountValue || 0);
+        entry.portfolioCount += 1;
+      }
+
+      // Convert to sorted array
+      const aggregatedSnapshots = Array.from(dateMap.values())
+        .sort((a, b) => a.date - b.date);
+
+      // Calculate current live AUM from PMSHoldings (same logic as getPortfolioSummary)
+      // This ensures the chart's final point matches the displayed AUM
+      const aumAssetClasses = [
+        'cash', 'equity', 'fixed_income', 'structured_product',
+        'time_deposit', 'monetary_products', 'commodities',
+        'private_equity', 'private_debt', 'etf', 'fund'
+      ];
+
+      let liveAUMInEUR = 0;
+      if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE) {
+        const allHoldings = await PMSHoldingsCollection.find({
+          isActive: true,
+          isLatest: true,
+          marketValue: { $exists: true, $gt: 0 },
+          $or: [
+            { assetClass: { $in: aumAssetClasses } },
+            { assetClass: null },
+            { assetClass: { $exists: false } }
+          ]
+        }).fetchAsync();
+        liveAUMInEUR = allHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+      } else {
+        const clients = await getAssignedClients(currentUser);
+        const clientIds = clients.map(c => c._id);
+        if (clientIds.length > 0) {
+          const clientHoldings = await PMSHoldingsCollection.find({
+            userId: { $in: clientIds },
+            isActive: true,
+            isLatest: true,
+            marketValue: { $exists: true, $gt: 0 },
+            $or: [
+              { assetClass: { $in: aumAssetClasses } },
+              { assetClass: null },
+              { assetClass: { $exists: false } }
+            ]
+          }).fetchAsync();
+          liveAUMInEUR = clientHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+        }
+      }
+
+      // Add/update today's entry with live AUM
+      const todayKey = new Date().toISOString().split('T')[0];
+      const existingTodayIndex = aggregatedSnapshots.findIndex(
+        s => s.date.toISOString().split('T')[0] === todayKey
+      );
+
+      if (existingTodayIndex >= 0) {
+        // Update today's value with live AUM
+        aggregatedSnapshots[existingTodayIndex].totalAccountValue = liveAUMInEUR;
+      } else {
+        // Add today as new entry
+        aggregatedSnapshots.push({
+          date: new Date(),
+          totalAccountValue: liveAUMInEUR,
+          portfolioCount: 0
+        });
+      }
+
+      // Format for chart
+      const labels = aggregatedSnapshots.map(s => s.date.toISOString().split('T')[0]);
+      const values = aggregatedSnapshots.map(s => {
+        // Convert from EUR to target currency if needed
+        return targetCurrency === 'EUR'
+          ? s.totalAccountValue
+          : convertFromEUR(s.totalAccountValue, targetCurrency, ratesMap);
+      });
+
+      return {
+        hasData: true,
+        labels,
+        values,
+        snapshots: aggregatedSnapshots.map(s => ({
+          date: s.date,
+          value: targetCurrency === 'EUR'
+            ? s.totalAccountValue
+            : convertFromEUR(s.totalAccountValue, targetCurrency, ratesMap),
+          portfolioCount: s.portfolioCount
+        }))
+      };
+
+    } catch (error) {
+      console.error('[RM Dashboard] Error getting AUM history:', error);
+      return { hasData: false, labels: [], values: [], snapshots: [] };
     }
   },
 

@@ -95,6 +95,18 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
     }
   };
 
+  const handleMarkAllAsRead = async () => {
+    try {
+      const sessionId = localStorage.getItem('sessionId');
+      await Meteor.callAsync('notifications.markAllAsRead', sessionId);
+
+      // Reload notifications
+      loadNotifications(sessionId);
+    } catch (error) {
+      console.error('Error marking all notifications as read:', error);
+    }
+  };
+
   const handleViewAll = () => {
     setIsOpen(false);
     if (onViewAllClick) {
@@ -268,19 +280,32 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
               >
                 Notifications
               </h3>
-              {totalCount > 0 && (
-                <span
+              {unreadCount > 0 && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleMarkAllAsRead();
+                  }}
                   style={{
                     fontSize: '0.75rem',
-                    color: theme === 'light' ? '#6b7280' : '#9ca3af',
-                    background: theme === 'light' ? '#f3f4f6' : '#374151',
+                    color: '#3b82f6',
+                    background: 'transparent',
+                    border: 'none',
                     padding: '0.25rem 0.5rem',
-                    borderRadius: '12px',
-                    fontWeight: '500'
+                    borderRadius: '6px',
+                    fontWeight: '500',
+                    cursor: 'pointer',
+                    transition: 'background 0.2s ease'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = theme === 'light' ? '#eff6ff' : 'rgba(59, 130, 246, 0.1)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = 'transparent';
                   }}
                 >
-                  {totalCount} notification{totalCount !== 1 ? 's' : ''}
-                </span>
+                  Mark all as read
+                </button>
               )}
             </div>
 

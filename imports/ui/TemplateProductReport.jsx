@@ -879,6 +879,72 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
                   {displayProduct.currency || 'USD'}
                 </div>
               </div>
+
+              {/* Issuer with Logo */}
+              {displayProduct.issuer && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  {/* Issuer Logo */}
+                  <div style={{
+                    width: '36px',
+                    height: '36px',
+                    borderRadius: '6px',
+                    overflow: 'hidden',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: 'var(--bg-tertiary)',
+                    border: '1px solid var(--border-color)',
+                    flexShrink: 0
+                  }}>
+                    <img
+                      src={`https://financialmodelingprep.com/image-stock/${displayProduct.issuer}.png`}
+                      alt={displayProduct.issuer}
+                      style={{
+                        width: '28px',
+                        height: '28px',
+                        objectFit: 'contain'
+                      }}
+                      onError={(e) => {
+                        e.target.style.display = 'none';
+                        e.target.nextSibling.style.display = 'flex';
+                      }}
+                    />
+                    <div style={{
+                      display: 'none',
+                      width: '28px',
+                      height: '28px',
+                      background: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
+                      borderRadius: '4px',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '0.7rem',
+                      fontWeight: '700',
+                      color: 'white'
+                    }}>
+                      {displayProduct.issuer?.substring(0, 2).toUpperCase()}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.5px',
+                      color: 'var(--text-muted)',
+                      marginBottom: '0.35rem',
+                      fontWeight: '600'
+                    }}>
+                      Issuer
+                    </div>
+                    <div style={{
+                      color: 'var(--text-primary)',
+                      fontWeight: '600',
+                      fontSize: '0.95rem'
+                    }}>
+                      {displayProduct.issuer}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Timeline Section - Grouped Dates */}

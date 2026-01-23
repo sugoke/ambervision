@@ -8,6 +8,24 @@ import { UsersCollection, USER_ROLES } from '/imports/api/users';
 import { SessionsCollection } from '/imports/api/sessions';
 import { Meteor } from 'meteor/meteor';
 
+// Debug method to check operations count
+Meteor.methods({
+  'pmsOperations.debugCount': async function() {
+    const total = await PMSOperationsCollection.find({}).countAsync();
+    const active = await PMSOperationsCollection.find({ isActive: true }).countAsync();
+    const withBankId = await PMSOperationsCollection.find({ isActive: true, bankId: { $exists: true } }).countAsync();
+    const sample = await PMSOperationsCollection.findOneAsync({ isActive: true });
+    // Get distinct bankIds
+    const bankIds = await PMSOperationsCollection.rawCollection().distinct('bankId', { isActive: true });
+    return {
+      total, active, withBankId,
+      distinctBankIds: bankIds,
+      sampleBankId: sample?.bankId || 'MISSING',
+      samplePortfolio: sample?.portfolioCode || 'none'
+    };
+  }
+});
+
 Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter = null) {
   check(sessionId, Match.Maybe(String));
   check(viewAsFilter, Match.Maybe(Match.ObjectIncluding({
@@ -60,8 +78,9 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
         if (bankAccount) {
           queryFilter.userId = bankAccount.userId;
           // Match portfolioCode - strip suffix from bankAccount if present, use regex to match with/without suffix
+          // Handles: "5040241", "5040241-1", "5040241200001" (JB long format)
           const baseAccountNumber = bankAccount.accountNumber.split('-')[0];
-          queryFilter.portfolioCode = { $regex: `^${baseAccountNumber}(-|$)` };
+          queryFilter.portfolioCode = { $regex: `^${baseAccountNumber}` };
           queryFilter.bankId = bankAccount.bankId;
         } else {
           // Account not found - return empty result

@@ -1017,6 +1017,7 @@ const StructuredProductInterface = ({
           strike: 100,
           memoryCoupon: true,
           memoryAutocall: false,
+          guaranteedCoupon: false,
           couponFrequency: 'quarterly',
           referencePerformance: 'worst-of'
         };

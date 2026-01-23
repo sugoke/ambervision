@@ -11,6 +11,9 @@ import { EmailService } from '/imports/api/emailService';
 import { NotificationsCollection } from '/imports/api/notifications';
 import { checkDataFreshness, formatDataDate } from '/imports/api/helpers/dataFreshness.js';
 import { PMSHoldingsCollection } from '/imports/api/pmsHoldings.js';
+import { PortfolioSnapshotsCollection } from '/imports/api/portfolioSnapshots.js';
+import { UsersCollection, USER_ROLES } from '/imports/api/users.js';
+import { DashboardMetricsHelpers } from '/imports/api/dashboardMetrics.js';
 
 /**
  * Cron Jobs Configuration
@@ -19,8 +22,8 @@ import { PMSHoldingsCollection } from '/imports/api/pmsHoldings.js';
  * 1. Market Data Refresh - Daily at 00:00 CET (midnight) - Skip weekends & holidays
  * 2. Product Re-evaluation - Daily at 00:30 CET (30 min after data refresh) - Skip weekends & holidays
  * 3. Market Ticker Update - Every 15 minutes (conditional on user activity) - Skip weekends & holidays
- * 4. Bank File Sync - Daily at 07:30 CET (all banks)
- * 5. CMB File Sync - Daily at 09:00 CET (CMB only - uploads files later than other banks)
+ * 4. Bank File Sync - Daily at 07:30 CET Mon-Fri (all banks) - Skip weekends
+ * 5. CMB File Sync - Daily at 09:00 CET Mon-Fri (CMB only - uploads files later than other banks) - Skip weekends
  */
 
 /**
@@ -120,13 +123,13 @@ let scheduleInfo = {
   },
   bankFileSync: {
     name: 'bankFileSync',
-    schedule: '30 7 * * *', // 07:30 CET daily
+    schedule: '30 7 * * 1-5', // 07:30 CET Mon-Fri (skip weekends)
     lastFinishedAt: null,
     nextScheduledRun: null
   },
   cmbFileSync: {
     name: 'cmbFileSync',
-    schedule: '0 9 * * *', // 09:00 CET daily (CMB uploads files later than other banks)
+    schedule: '0 9 * * 1-5', // 09:00 CET Mon-Fri (skip weekends, CMB uploads files later than other banks)
     lastFinishedAt: null,
     nextScheduledRun: null
   }
@@ -1010,14 +1013,62 @@ async function cmbFileSyncJob(triggerSource = 'cron') {
 
     results.fileDetails.push(connectionFileDetails);
 
+    // Add freshness status for all OTHER active connections (so email shows complete picture)
+    try {
+      const allConnections = await BankConnectionsCollection.find({ isActive: true }).fetchAsync();
+
+      for (const conn of allConnections) {
+        // Skip CMB - already in results
+        if (conn._id === cmbConnection._id) continue;
+
+        // Get latest holding date for this connection
+        const latestHolding = await PMSHoldingsCollection.findOneAsync(
+          { bankId: conn.bankId, isLatest: true },
+          { sort: { snapshotDate: -1 }, fields: { snapshotDate: 1, fileDate: 1 } }
+        );
+
+        const dataDate = latestHolding?.snapshotDate || latestHolding?.fileDate;
+        const freshnessResult = checkDataFreshness(dataDate);
+
+        // Add to fileDetails with no files processed (just freshness info)
+        results.fileDetails.push({
+          connectionId: conn._id,
+          connectionName: conn.connectionName,
+          connectionType: conn.connectionType,
+          downloadedFiles: [],
+          skippedFiles: [],
+          positionsProcessed: 0,
+          success: true,
+          freshness: {
+            status: freshnessResult.status,
+            dataDate,
+            formattedDate: formatDataDate(dataDate),
+            businessDaysOld: freshnessResult.businessDaysOld,
+            message: freshnessResult.message
+          }
+        });
+
+        // Update counts
+        results.connectionsProcessed++;
+        if (freshnessResult.status === 'fresh') {
+          results.connectionsSucceeded++;
+        } else {
+          results.connectionsWithStaleData++;
+        }
+      }
+      console.log(`[CRON-CMB] Added freshness for ${allConnections.length - 1} other connections`);
+    } catch (otherConnError) {
+      console.error('[CRON-CMB] Error fetching other connections freshness:', otherConnError.message);
+    }
+
     // Update schedule info
     scheduleInfo.cmbFileSync.lastFinishedAt = new Date();
     scheduleInfo.cmbFileSync.nextScheduledRun = getNextRunTime(scheduleInfo.cmbFileSync.schedule);
 
     // Log completion
     await CronJobLogHelpers.completeJob(logId, results);
-    const staleWarning = results.connectionsWithStaleData > 0 ? ' (stale data)' : '';
-    console.log(`[CRON] CMB File Sync completed: ${results.connectionsSucceeded}/1 fresh${staleWarning}`);
+    const staleWarning = results.connectionsWithStaleData > 0 ? ` (${results.connectionsWithStaleData} stale)` : '';
+    console.log(`[CRON] CMB File Sync completed: ${results.connectionsSucceeded}/${results.connectionsProcessed} fresh${staleWarning}`);
 
     // Update consolidated holdings after CMB processing
     if (results.positionsProcessed > 0) {
@@ -1044,12 +1095,192 @@ async function cmbFileSyncJob(triggerSource = 'cron') {
       }
     }
 
+    // After CMB sync (last bank to sync), compute dashboard metrics for fast loading
+    try {
+      const metricsResult = await computeDashboardMetrics();
+      results.dashboardMetrics = metricsResult;
+    } catch (metricsError) {
+      console.error('[CRON-CMB] Failed to compute dashboard metrics:', metricsError.message);
+      results.dashboardMetrics = { success: false, error: metricsError.message };
+    }
+
     return { success: true, ...results };
 
   } catch (error) {
     console.error('[CRON] CMB File Sync failed:', error);
     await CronJobLogHelpers.failJob(logId, error);
     throw error;
+  }
+}
+
+/**
+ * Compute and cache dashboard AUM metrics
+ *
+ * Pre-computes AUM summary and WTD history for fast dashboard loading.
+ * Called after CMB sync completes to ensure all bank data is processed.
+ *
+ * Metrics computed:
+ * - Total AUM in EUR
+ * - Previous day AUM (from snapshots)
+ * - Day-over-day change (amount and percent)
+ * - WTD history (last 7 days)
+ */
+async function computeDashboardMetrics() {
+  console.log('[CRON] Computing dashboard metrics...');
+
+  try {
+    // Asset classes to include in AUM (matches rmDashboardMethods.getPortfolioSummary)
+    const aumAssetClasses = [
+      'cash', 'equity', 'fixed_income', 'structured_product',
+      'time_deposit', 'monetary_products', 'commodities',
+      'private_equity', 'private_debt', 'etf', 'fund'
+    ];
+
+    // Step 1: Calculate current total AUM from latest holdings
+    const allHoldings = await PMSHoldingsCollection.find({
+      isActive: true,
+      isLatest: true,
+      marketValue: { $exists: true, $gt: 0 },
+      $or: [
+        { assetClass: { $in: aumAssetClasses } },
+        { assetClass: null },
+        { assetClass: { $exists: false } }
+      ]
+    }).fetchAsync();
+
+    const totalAUMInEUR = allHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+
+    // Track current portfolios for comparison
+    const currentPortfolioKeys = new Set();
+    allHoldings.forEach(h => {
+      const key = `${h.portfolioCode || 'unknown'}|${h.bankId || 'unknown'}`;
+      currentPortfolioKeys.add(key);
+    });
+
+    console.log(`[CRON] Dashboard metrics - Current AUM: ${totalAUMInEUR.toLocaleString('en-US', { maximumFractionDigits: 0 })} EUR`);
+
+    // Step 2: Calculate day-over-day change from yesterday's snapshots
+    let previousDayAUM = null;
+    let aumChange = 0;
+    let aumChangePercent = 0;
+
+    const yesterday = new Date();
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    yesterday.setUTCHours(0, 0, 0, 0);
+
+    const yesterdaySnapshots = await PortfolioSnapshotsCollection.find({
+      snapshotDate: yesterday,
+      totalAccountValue: { $gt: 0 }
+    }).fetchAsync();
+
+    if (yesterdaySnapshots.length > 0) {
+      // Build set of portfolios that have yesterday's snapshots
+      const snapshotPortfolioKeys = new Set(
+        yesterdaySnapshots.map(s => `${s.portfolioCode}|${s.bankId}`)
+      );
+
+      // Find portfolios that exist in BOTH current holdings AND yesterday's snapshots
+      const matchedPortfolioKeys = [...currentPortfolioKeys].filter(key => snapshotPortfolioKeys.has(key));
+
+      if (matchedPortfolioKeys.length > 0) {
+        // Calculate previous AUM from matched snapshots
+        const matchedSnapshots = yesterdaySnapshots.filter(s => {
+          const key = `${s.portfolioCode}|${s.bankId}`;
+          return matchedPortfolioKeys.includes(key);
+        });
+        previousDayAUM = matchedSnapshots.reduce((sum, s) => sum + (s.totalAccountValue || 0), 0);
+
+        // Calculate current AUM for matched portfolios only (apples-to-apples)
+        const matchedCurrentAUM = allHoldings
+          .filter(h => {
+            const key = `${h.portfolioCode || 'unknown'}|${h.bankId || 'unknown'}`;
+            return matchedPortfolioKeys.includes(key);
+          })
+          .reduce((sum, h) => sum + (h.marketValue || 0), 0);
+
+        aumChange = matchedCurrentAUM - previousDayAUM;
+        aumChangePercent = previousDayAUM > 0 ? (aumChange / previousDayAUM) * 100 : 0;
+
+        console.log(`[CRON] Dashboard metrics - Previous AUM: ${previousDayAUM.toLocaleString('en-US', { maximumFractionDigits: 0 })} EUR (${matchedPortfolioKeys.length} portfolios)`);
+        console.log(`[CRON] Dashboard metrics - AUM Change: ${aumChange >= 0 ? '+' : ''}${aumChange.toLocaleString('en-US', { maximumFractionDigits: 0 })} EUR (${aumChangePercent.toFixed(2)}%)`);
+      }
+    }
+
+    // Step 3: Build WTD history (last 7 days)
+    const endDate = new Date();
+    endDate.setHours(23, 59, 59, 999);
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - 7);
+    startDate.setHours(0, 0, 0, 0);
+
+    const wtdSnapshots = await PortfolioSnapshotsCollection.find({
+      snapshotDate: { $gte: startDate, $lte: endDate }
+    }, {
+      sort: { snapshotDate: 1 }
+    }).fetchAsync();
+
+    // Aggregate snapshots by date
+    const dateMap = new Map();
+    for (const snapshot of wtdSnapshots) {
+      const dateKey = snapshot.snapshotDate.toISOString().split('T')[0];
+      if (!dateMap.has(dateKey)) {
+        dateMap.set(dateKey, { date: snapshot.snapshotDate, totalAccountValue: 0, portfolioCount: 0 });
+      }
+      const entry = dateMap.get(dateKey);
+      entry.totalAccountValue += (snapshot.totalAccountValue || 0);
+      entry.portfolioCount += 1;
+    }
+
+    // Convert to sorted array and add today's live AUM
+    const wtdHistory = Array.from(dateMap.values())
+      .sort((a, b) => a.date - b.date)
+      .map(s => ({ date: s.date, value: s.totalAccountValue }));
+
+    // Add/update today's entry with live AUM
+    const todayKey = new Date().toISOString().split('T')[0];
+    const existingTodayIndex = wtdHistory.findIndex(
+      s => s.date.toISOString().split('T')[0] === todayKey
+    );
+
+    if (existingTodayIndex >= 0) {
+      wtdHistory[existingTodayIndex].value = totalAUMInEUR;
+    } else {
+      wtdHistory.push({ date: new Date(), value: totalAUMInEUR });
+    }
+
+    // Step 4: Get client count for metadata
+    const clientCount = await UsersCollection.find({ role: USER_ROLES.CLIENT }).countAsync();
+
+    // Step 5: Save to cache
+    await DashboardMetricsHelpers.saveMetrics({
+      metricType: 'aum_summary',
+      scope: 'global',
+      totalAUM: totalAUMInEUR,
+      previousDayAUM,
+      aumChange,
+      aumChangePercent,
+      wtdHistory,
+      portfolioCount: currentPortfolioKeys.size,
+      clientCount,
+      snapshotDate: new Date()
+    });
+
+    console.log(`[CRON] Dashboard metrics computed and cached successfully`);
+
+    return {
+      success: true,
+      totalAUM: totalAUMInEUR,
+      previousDayAUM,
+      aumChange,
+      aumChangePercent,
+      wtdHistoryDays: wtdHistory.length,
+      portfolioCount: currentPortfolioKeys.size,
+      clientCount
+    };
+
+  } catch (error) {
+    console.error('[CRON] Error computing dashboard metrics:', error.message);
+    return { success: false, error: error.message };
   }
 }
 
@@ -1122,8 +1353,8 @@ export async function initializeCronJobs() {
 
   console.log('✓ Market Ticker Update scheduled every 15 minutes (conditional on activity)');
 
-  // Schedule Bank File Sync - Daily at 07:30 CET
-  cronJobs.bankFileSync = cron.schedule('30 7 * * *', Meteor.bindEnvironment(async () => {
+  // Schedule Bank File Sync - Daily at 07:30 CET Mon-Fri (skip weekends)
+  cronJobs.bankFileSync = cron.schedule('30 7 * * 1-5', Meteor.bindEnvironment(async () => {
     console.log('[CRON] ========================================');
     console.log('[CRON] Bank File Sync CRON trigger fired at:', new Date().toISOString());
     console.log('[CRON] ========================================');
@@ -1137,10 +1368,10 @@ export async function initializeCronJobs() {
     timezone: "Europe/Zurich"
   });
 
-  console.log('✓ Bank File Sync scheduled for daily at 07:30 CET');
+  console.log('✓ Bank File Sync scheduled for 07:30 CET Mon-Fri (skip weekends)');
 
-  // Schedule CMB File Sync - Daily at 09:00 CET (CMB uploads files later than other banks)
-  cronJobs.cmbFileSync = cron.schedule('0 9 * * *', Meteor.bindEnvironment(async () => {
+  // Schedule CMB File Sync - Daily at 09:00 CET Mon-Fri (skip weekends, CMB uploads files later than other banks)
+  cronJobs.cmbFileSync = cron.schedule('0 9 * * 1-5', Meteor.bindEnvironment(async () => {
     console.log('[CRON] ========================================');
     console.log('[CRON] CMB File Sync CRON trigger fired at:', new Date().toISOString());
     console.log('[CRON] ========================================');
@@ -1154,7 +1385,7 @@ export async function initializeCronJobs() {
     timezone: "Europe/Zurich"
   });
 
-  console.log('✓ CMB File Sync scheduled for daily at 09:00 CET');
+  console.log('✓ CMB File Sync scheduled for 09:00 CET Mon-Fri (skip weekends)');
 
   console.log('✓ Cron jobs initialized and started');
   console.log('✓ All jobs configured for Europe/Zurich timezone (CET/CEST)');
@@ -1259,6 +1490,57 @@ if (Meteor.isServer) {
       } catch (error) {
         throw new Meteor.Error('job-execution-failed', error.message);
       }
+    },
+
+    /**
+     * Manually trigger dashboard metrics computation
+     * Pre-computes AUM metrics for fast dashboard loading
+     */
+    async 'cronJobs.triggerDashboardMetrics'(sessionId) {
+      check(sessionId, String);
+
+      // Authenticate user - only superadmin
+      const currentUser = await Meteor.callAsync('auth.getCurrentUser', sessionId);
+      if (!currentUser || currentUser.role !== 'superadmin') {
+        throw new Meteor.Error('access-denied', 'Superadmin privileges required');
+      }
+
+      console.log(`[MANUAL] Dashboard Metrics computation triggered by ${currentUser.email}`);
+
+      try {
+        const result = await computeDashboardMetrics();
+        return { success: true, result };
+      } catch (error) {
+        throw new Meteor.Error('job-execution-failed', error.message);
+      }
+    },
+
+    /**
+     * Get dashboard metrics cache status
+     */
+    async 'cronJobs.getDashboardMetricsStatus'(sessionId) {
+      check(sessionId, String);
+
+      // Authenticate user
+      const currentUser = await Meteor.callAsync('auth.getCurrentUser', sessionId);
+      if (!currentUser || (currentUser.role !== 'admin' && currentUser.role !== 'superadmin')) {
+        throw new Meteor.Error('access-denied', 'Admin privileges required');
+      }
+
+      const stats = await DashboardMetricsHelpers.getCacheStats();
+      const cached = await DashboardMetricsHelpers.getMetrics('global', 'aum_summary');
+
+      return {
+        cacheStats: stats,
+        currentMetrics: cached ? {
+          totalAUM: cached.totalAUM,
+          aumChange: cached.aumChange,
+          aumChangePercent: cached.aumChangePercent,
+          portfolioCount: cached.portfolioCount,
+          computedAt: cached.computedAt,
+          expiresAt: cached.expiresAt
+        } : null
+      };
     },
 
     /**

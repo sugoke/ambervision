@@ -607,11 +607,24 @@ export const CFMParser = {
     // Parse balances
     // BALANCE_POSITION = balance in original currency (e.g., ILS 301,100)
     // BALANCE_PERF = balance in portfolio/performance currency (e.g., EUR 79,670.76)
-    const balanceOriginal = this.parseNumber(row[c.BALANCE_POSITION]);
+    // CAT_DETAIL = notional amount for FX forwards
+    let balanceOriginal = this.parseNumber(row[c.BALANCE_POSITION]);
     let balancePortfolio = this.parseNumber(row[c.BALANCE_PERF]);
+    const notional = this.parseNumber(row[c.CAT_DETAIL]);
     const currency = row[c.CURRENCY] || 'EUR';
     const portfolioCurrency = row[c.CAT_CURRENCY] || 'EUR';
     const accountType = row[c.ACCOUNT_TYPE] || '';
+    const isFxForward = accountType.toUpperCase().includes('CHANGE A TERME');
+
+    // For FX forwards with zero balance, use notional amount
+    if (isFxForward && (!balanceOriginal || balanceOriginal === 0) && notional) {
+      balanceOriginal = notional;
+      // Also try to convert notional to EUR if no portfolio balance
+      if (!balancePortfolio && currency !== 'EUR') {
+        balancePortfolio = this.convertToEur(notional, currency, fxRates);
+      }
+      console.log(`[CFM_FX_FORWARD] Using notional ${notional} ${currency} for FX forward (balance was 0)`);
+    }
 
     // If no portfolio value from file, calculate using FX rates
     if (!balancePortfolio && balanceOriginal && currency !== 'EUR') {
@@ -626,8 +639,8 @@ export const CFMParser = {
 
     // Determine security type based on account type
     // Uses SECURITY_TYPES constants from instrumentTypes.js
+    // Note: isFxForward already defined above
     const isCash = accountType.toUpperCase().includes('COMPTE COURANT');
-    const isFxForward = accountType.toUpperCase().includes('CHANGE A TERME');
     const securityType = isCash ? SECURITY_TYPES.CASH : (isFxForward ? SECURITY_TYPES.FX_FORWARD : SECURITY_TYPES.CASH);
 
     // Build ticker and security name based on type
@@ -750,15 +763,26 @@ export const CFMParser = {
     console.log(`[CFM_PARSER] Found ${rows.length} cash/FX rows`);
 
     // Map each row to standard schema
-    // Only include rows that have a balance
+    // Include FX forwards regardless of balance (they use notional amount)
+    // For cash accounts, skip zero balance
     const positions = rows
       .filter(row => {
+        const accountType = (row[this.cashColumns.ACCOUNT_TYPE] || '').toUpperCase();
+        const isFxForward = accountType.includes('CHANGE A TERME');
+
+        // Always include FX forwards - they use notional amount, not balance
+        if (isFxForward) {
+          const notional = this.parseNumber(row[this.cashColumns.CAT_DETAIL]);
+          return notional !== null && notional !== 0;
+        }
+
+        // For cash accounts, skip zero balance
         const balance = this.parseNumber(row[this.cashColumns.BALANCE_POSITION]);
         return balance !== null && balance !== 0;
       })
       .map(row => this.mapCashToStandardSchema(row, bankId, bankName, sourceFile, fileDate, userId, fxRates));
 
-    console.log(`[CFM_PARSER] Mapped ${positions.length} cash/FX positions (${rows.length - positions.length} skipped - zero balance)`);
+    console.log(`[CFM_PARSER] Mapped ${positions.length} cash/FX positions (${rows.length - positions.length} skipped)`);
 
     return positions;
   },

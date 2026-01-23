@@ -10,6 +10,8 @@
  * First row contains column headers, data starts from row 2
  */
 
+import { OPERATION_TYPES, mapAndbankOperationType } from '../constants/operationTypes';
+
 export const AndbankOperationParser = {
   /**
    * Bank identifier
@@ -174,43 +176,11 @@ export const AndbankOperationParser = {
 
   /**
    * Map transaction type to standardized operation type
+   * Uses centralized mapping from operationTypes.js constants
    */
   mapOperationType(typeCode, typeLabel, movementType, movementLabel) {
-    const label = (typeLabel || '').toLowerCase();
-    const movLabel = (movementLabel || '').toLowerCase();
-
-    // Buy/Sell
-    if (label.includes('buy') || label.includes('purchase') || label.includes('achat')) {
-      return 'BUY';
-    }
-    if (label.includes('sell') || label.includes('sale') || label.includes('vente')) {
-      return 'SELL';
-    }
-
-    // Income
-    if (label.includes('dividend')) {
-      return 'DIVIDEND';
-    }
-    if (label.includes('coupon') || label.includes('interest')) {
-      return 'COUPON';
-    }
-
-    // Fees
-    if (label.includes('fee') || label.includes('commission') || label.includes('frais')) {
-      return 'FEE';
-    }
-
-    // Transfers
-    if (label.includes('transfer') || label.includes('virement') || label.includes('withdrawal') || label.includes('deposit')) {
-      return 'TRANSFER';
-    }
-
-    // Redemption
-    if (label.includes('redemption') || label.includes('maturity') || label.includes('remboursement')) {
-      return 'REDEMPTION';
-    }
-
-    return 'OTHER';
+    // Use centralized mapping, falling back to typeLabel if typeCode doesn't match
+    return mapAndbankOperationType(typeCode, typeLabel || movementLabel, movementType);
   },
 
   /**

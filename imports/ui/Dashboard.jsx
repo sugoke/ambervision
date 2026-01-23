@@ -363,7 +363,7 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
       const status = product.status.charAt(0).toUpperCase() + product.status.slice(1);
       
       if (product.status === 'autocalled' && product.statusDate) {
-        const date = new Date(product.statusDate).toLocaleDateString();
+        const date = new Date(product.statusDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
         return `Autocalled on ${date}`;
       } else if (product.status === 'matured') {
         return 'Matured';
@@ -692,7 +692,7 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
             fontWeight: '700',
             color: 'var(--text-primary)'
           }}>
-            {isMobile ? 'Dashboard' : 'Product Dashboard'}
+            {isMobile ? 'Products' : 'Product Dashboard'}
           </h1>
         </div>
         {/* Hide New Product button on mobile */}

@@ -104,7 +104,8 @@ export const PhoenixEvaluator = {
       observationFrequency: 'quarterly',
       memoryCoupon: false,
       memoryAutocall: false,
-      oneStarRating: false      // Default no one star rating
+      oneStarRating: false,     // Default no one star rating
+      guaranteedCoupon: false   // Default no guaranteed coupon
     };
 
     // Extract from payoffStructure if available
@@ -181,6 +182,10 @@ export const PhoenixEvaluator = {
 
       if (product.structureParams.oneStarRating !== undefined) {
         params.oneStarRating = product.structureParams.oneStarRating;
+      }
+
+      if (product.structureParams.guaranteedCoupon !== undefined) {
+        params.guaranteedCoupon = product.structureParams.guaranteedCoupon;
       }
 
       if (product.structureParams.couponFrequency) {
@@ -453,6 +458,7 @@ export const PhoenixEvaluator = {
           remainingObservations: 0,
           hasMemoryAutocall: phoenixParams.memoryAutocall || false,
           hasMemoryCoupon: phoenixParams.memoryCoupon || false,
+          hasGuaranteedCoupon: phoenixParams.guaranteedCoupon || false,
           underlyingAutocallFlags: {}
         };
       }
@@ -486,17 +492,15 @@ export const PhoenixEvaluator = {
       const obsDateOnly = new Date(obsDate.getFullYear(), obsDate.getMonth(), obsDate.getDate());
       const todayOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
-      // Determine if observation has occurred by checking data availability
-      // For future dates: don't try to fetch data
-      // For today and past: try to fetch data - if data exists, observation has occurred
-      let isPast = false;
-      let basketLevel = 0;
+      // Determine if observation has occurred based on DATE, not data availability
+      // An observation has occurred if its date is in the past
+      const isPast = obsDateOnly < todayOnly;
+      let basketLevel = null;
       let hasAllHistoricalData = true;
       const underlyingPerformances = []; // Store {ticker, performance, price} for each underlying
 
-      // Only try to fetch historical data if date is BEFORE today (not today itself)
-      // Market closes on observation date, but prices are only available the NEXT day
-      if (underlyings.length > 0 && obsDateOnly < todayOnly) {
+      // For past observations, try to fetch historical data to calculate basket level
+      if (isPast && underlyings.length > 0) {
         // Try to fetch historical prices from MarketDataCacheCollection
         const performanceData = await Promise.all(
           underlyings.map(async (u) => {
@@ -517,14 +521,8 @@ export const PhoenixEvaluator = {
               };
             }
 
-            // Missing historical data - either market hasn't closed yet (if today) or data gap
-            if (obsDateOnly.getTime() === todayOnly.getTime()) {
-              // For today specifically, missing data means market hasn't closed
-              console.log(`📊 No market data yet for ${fullTicker} on ${obsDate.toISOString().split('T')[0]} - market still open or closing soon`);
-            } else {
-              // For past dates, missing data is a data quality issue
-              console.warn(`⚠️ Missing historical price for ${fullTicker} at ${obsDate.toISOString().split('T')[0]} - data gap`);
-            }
+            // Missing historical data - log but don't prevent observation from being marked as past
+            console.warn(`⚠️ Missing historical price for ${fullTicker} at ${obsDate.toISOString().split('T')[0]} - data gap (observation still marked as occurred)`);
             hasAllHistoricalData = false;
             return null;
           })
@@ -533,23 +531,19 @@ export const PhoenixEvaluator = {
         // Filter out null entries and store valid performances
         const validPerformances = performanceData.filter(p => p !== null);
         if (hasAllHistoricalData && validPerformances.length === underlyings.length) {
-          // Successfully retrieved all data - observation has occurred
-          isPast = true;
+          // Successfully retrieved all data - can calculate basket level
           underlyingPerformances.push(...validPerformances);
           basketLevel = Math.min(...validPerformances.map(p => p.performance));
         } else {
-          // Could not retrieve complete data
-          isPast = false; // Observation hasn't occurred yet (or data unavailable)
+          // Could not retrieve complete data - basket level unknown but observation still occurred
           basketLevel = null;
-          if (obsDateOnly.getTime() !== todayOnly.getTime()) {
-            console.warn(`⚠️ Incomplete historical data for observation ${i + 1} on ${obsDate.toISOString().split('T')[0]} - cannot determine basket level`);
-          }
+          console.warn(`⚠️ Incomplete historical data for observation ${i + 1} on ${obsDate.toISOString().split('T')[0]} - basket level unknown`);
         }
       }
 
       // For future observations, basket level is unknown
-      if (!isPast && obsDateOnly > todayOnly) {
-        basketLevel = 0; // Will be calculated when the date arrives
+      if (!isPast) {
+        basketLevel = null; // Will be calculated when the date arrives
       }
 
       // Convert barrier levels to performance thresholds
@@ -619,9 +613,16 @@ export const PhoenixEvaluator = {
       const basketAboveBarrier = basketLevel !== null && basketLevel >= autocallThreshold;
       const basketAboveCouponBarrier = basketLevel !== null && basketLevel >= couponThreshold;
 
+      // Check if guaranteed coupon feature is enabled
+      const isGuaranteedCoupon = phoenixParams.guaranteedCoupon === true;
+
       // Determine if coupon is paid (chart builder expects number, not boolean)
       // Only evaluate if we have valid basket level data
-      const baseCouponPaid = isPast && basketLevel !== null && basketAboveCouponBarrier ? (phoenixParams.couponRate || 0) : 0;
+      // For guaranteed coupons: pay as long as observation is past and product is alive
+      // For regular coupons: require basket to be above coupon barrier
+      const baseCouponPaid = isPast && basketLevel !== null && (isGuaranteedCoupon || basketAboveCouponBarrier)
+        ? (phoenixParams.couponRate || 0)
+        : 0;
 
       // Check for autocall - logic depends on memory autocall setting
       let autocalled = false;
@@ -642,7 +643,8 @@ export const PhoenixEvaluator = {
 
       // Memory coupon logic
       // Add to memory if: basket BELOW coupon barrier, product has memory feature, and it's a past observation
-      const memoryCouponAdded = isPast && !baseCouponPaid && basketLevel !== null && !basketAboveCouponBarrier && (phoenixParams.memoryCoupon || false);
+      // Note: Memory coupon only applies if NOT guaranteed coupon (guaranteed coupons are always paid, so no need to store in memory)
+      const memoryCouponAdded = !isGuaranteedCoupon && isPast && !baseCouponPaid && basketLevel !== null && !basketAboveCouponBarrier && (phoenixParams.memoryCoupon || false);
       if (memoryCouponAdded) {
         totalMemoryCoupons += phoenixParams.couponRate || 0;
       }
@@ -758,6 +760,7 @@ export const PhoenixEvaluator = {
       remainingObservations,
       hasMemoryAutocall: phoenixParams.memoryAutocall || false,
       hasMemoryCoupon: phoenixParams.memoryCoupon || false,
+      hasGuaranteedCoupon: phoenixParams.guaranteedCoupon || false,
       isEarlyAutocall: productCalled,
       callDate,
       callDateFormatted: callDate ? new Date(callDate).toLocaleDateString('en-GB', {
@@ -831,6 +834,9 @@ export const PhoenixEvaluator = {
       const effectiveCouponBarrier = phoenixParams.couponBarrier || protectionBarrier;
       const couponThreshold = effectiveCouponBarrier - 100; // e.g., -30 for 70% barrier
       const autocallThreshold = autocallBarrier - 100; // e.g., 0 for 100% barrier
+
+      // Check if guaranteed coupon feature is enabled
+      const isGuaranteedCoupon = phoenixParams.guaranteedCoupon === true;
 
       // Calculate days until observation
       const today = new Date();
@@ -912,17 +918,18 @@ export const PhoenixEvaluator = {
 
           prediction.displayText = `${prediction.dateFormatted}; memory autocall; ${prediction.autocallPriceFormatted}`;
           prediction.explanation = `All underlyings have reached autocall level at some point. Memory autocall would trigger at ${prediction.autocallPriceFormatted}.`;
-        } else if (currentBasketLevel >= couponThreshold) {
-          // Memory autocall conditions not met, but basket is above coupon barrier - pay coupon
+        } else if (isGuaranteedCoupon || currentBasketLevel >= couponThreshold) {
+          // Memory autocall conditions not met, but coupon would be paid (either guaranteed or above barrier)
           prediction.couponWouldPay = true;
           prediction.couponAmount = couponRate;
           prediction.couponAmountFormatted = PhoenixEvaluationHelpers.formatPredictionCoupon(couponRate);
           prediction.outcomeType = 'coupon';
 
+          const explanationPrefix = isGuaranteedCoupon ? 'Guaranteed coupon' : `Basket at ${currentBasketLevelFormatted}. Above coupon barrier (${protectionBarrier}%)`;
           prediction.displayText = `${prediction.dateFormatted}; coupon; ${prediction.couponAmountFormatted}`;
-          prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Above coupon barrier (${protectionBarrier}%), would receive ${prediction.couponAmountFormatted} coupon.`;
-        } else if (phoenixParams.memoryCoupon) {
-          // Below coupon barrier, add to memory
+          prediction.explanation = `${explanationPrefix}, would receive ${prediction.couponAmountFormatted} coupon.`;
+        } else if (!isGuaranteedCoupon && phoenixParams.memoryCoupon) {
+          // Below coupon barrier, add to memory (only if not guaranteed coupon)
           prediction.memoryWouldBeAdded = true;
           prediction.memoryAmountAdded = couponRate;
           prediction.outcomeType = 'memory_added';
@@ -930,25 +937,26 @@ export const PhoenixEvaluator = {
           const newMemoryTotal = totalMemoryCoupons + couponRate;
           prediction.displayText = `${prediction.dateFormatted}; coupon; in memory (total: ${PhoenixEvaluationHelpers.formatPredictionCoupon(newMemoryTotal)})`;
           prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Below coupon barrier (${protectionBarrier}%), ${PhoenixEvaluationHelpers.formatPredictionCoupon(couponRate)} would be added to memory (new total: ${PhoenixEvaluationHelpers.formatPredictionCoupon(newMemoryTotal)}).`;
-        } else {
-          // No event
+        } else if (!isGuaranteedCoupon) {
+          // No event (only if not guaranteed coupon)
           prediction.outcomeType = 'no_event';
           prediction.displayText = `${prediction.dateFormatted}; no event`;
           prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Below coupon barrier (${protectionBarrier}%), no coupon would be paid.`;
         }
       }
       // Check for coupon payment (non-memory autocall case)
-      else if (currentBasketLevel >= couponThreshold) {
+      else if (isGuaranteedCoupon || currentBasketLevel >= couponThreshold) {
         prediction.couponWouldPay = true;
         prediction.couponAmount = couponRate;
         prediction.couponAmountFormatted = PhoenixEvaluationHelpers.formatPredictionCoupon(couponRate);
         prediction.outcomeType = 'coupon';
 
+        const explanationPrefix = isGuaranteedCoupon ? 'Guaranteed coupon' : `Basket at ${currentBasketLevelFormatted}. Above coupon barrier (${protectionBarrier}%)`;
         prediction.displayText = `${prediction.dateFormatted}; coupon; ${prediction.couponAmountFormatted}`;
-        prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Above coupon barrier (${protectionBarrier}%), would receive ${prediction.couponAmountFormatted} coupon.`;
+        prediction.explanation = `${explanationPrefix}, would receive ${prediction.couponAmountFormatted} coupon.`;
       }
-      // Memory coupon would be added (non-memory autocall case)
-      else if (phoenixParams.memoryCoupon) {
+      // Memory coupon would be added (non-memory autocall case, only if not guaranteed)
+      else if (!isGuaranteedCoupon && phoenixParams.memoryCoupon) {
         prediction.memoryWouldBeAdded = true;
         prediction.memoryAmountAdded = couponRate;
         prediction.outcomeType = 'memory_added';
@@ -957,8 +965,8 @@ export const PhoenixEvaluator = {
         prediction.displayText = `${prediction.dateFormatted}; coupon; in memory (total: ${PhoenixEvaluationHelpers.formatPredictionCoupon(newMemoryTotal)})`;
         prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Below coupon barrier (${protectionBarrier}%), ${PhoenixEvaluationHelpers.formatPredictionCoupon(couponRate)} would be added to memory (new total: ${PhoenixEvaluationHelpers.formatPredictionCoupon(newMemoryTotal)}).`;
       }
-      // No event
-      else {
+      // No event (only if not guaranteed coupon)
+      else if (!isGuaranteedCoupon) {
         prediction.outcomeType = 'no_event';
         prediction.displayText = `${prediction.dateFormatted}; no event`;
         prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Below coupon barrier (${protectionBarrier}%), no coupon would be paid.`;

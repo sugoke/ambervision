@@ -131,7 +131,7 @@ const RiskAnalysisReport = ({ report }) => {
               color: isDarkMode ? '#6b7280' : '#9ca3af',
               fontStyle: 'italic'
             }}>
-              AI-Powered Analysis
+              Amberlake Analysis
             </p>
           </div>
         </div>
@@ -609,7 +609,7 @@ const RiskAnalysisReport = ({ report }) => {
                       alignItems: 'center',
                       gap: '0.5rem'
                     }}>
-                      <span>🤖</span> AI Analysis
+                      <span>🤖</span> Amberlake Comment
                     </h4>
                     <div style={{
                       fontSize: '0.925rem',
@@ -692,7 +692,7 @@ const RiskAnalysisReport = ({ report }) => {
         fontSize: '0.85rem'
       }}>
         <p style={{ margin: '0 0 0.5rem 0' }}>
-          This report was generated using AI analysis powered by Claude (Anthropic)
+          This report was generated using Amberlake analysis
         </p>
         <p style={{ margin: 0 }}>
           For questions or concerns, please contact the Risk Management team

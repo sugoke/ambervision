@@ -5,32 +5,73 @@ import { HTTP } from 'meteor/http';
 const EOD_API_TOKEN = Meteor.settings.private?.EOD_API_TOKEN || '5c265eab2c9066.19444326';
 const EOD_BASE_URL = 'https://eodhistoricaldata.com/api';
 
-// Popular indices data with common aliases
+// Popular indices data with common aliases (from EOD INDX exchange)
 const POPULAR_INDICES = [
   // US Indices
-  { Code: 'SPX', Name: 'S&P 500 Index', Exchange: 'INDX', Country: 'US', Currency: 'USD', Type: 'Index', ISIN: 'US78378X1072' },
+  { Code: 'GSPC', Name: 'S&P 500 Index', Exchange: 'INDX', Country: 'US', Currency: 'USD', Type: 'Index', ISIN: 'US78378X1072', Aliases: ['SPX', 'SP500', 'SP 500'] },
   { Code: 'IXIC', Name: 'NASDAQ Composite Index', Exchange: 'INDX', Country: 'US', Currency: 'USD', Type: 'Index', ISIN: 'US6311011026' },
   { Code: 'DJI', Name: 'Dow Jones Industrial Average', Exchange: 'INDX', Country: 'US', Currency: 'USD', Type: 'Index', ISIN: 'US2605661048' },
   { Code: 'NDX', Name: 'NASDAQ 100 Index', Exchange: 'INDX', Country: 'US', Currency: 'USD', Type: 'Index', ISIN: 'US6311011026' },
   { Code: 'RUT', Name: 'Russell 2000 Index', Exchange: 'INDX', Country: 'US', Currency: 'USD', Type: 'Index', ISIN: 'US83162U1051' },
   { Code: 'VIX', Name: 'CBOE Volatility Index', Exchange: 'INDX', Country: 'US', Currency: 'USD', Type: 'Index', ISIN: 'US1276301060' },
-  
+  { Code: 'SOX', Name: 'Philadelphia Semiconductor Index', Exchange: 'INDX', Country: 'US', Currency: 'USD', Type: 'Index' },
+
   // European Indices
   { Code: 'FTSE', Name: 'FTSE 100 Index', Exchange: 'INDX', Country: 'UK', Currency: 'GBP', Type: 'Index', ISIN: 'GB0001383545' },
+  { Code: 'UKX', Name: 'FTSE 100 Index', Exchange: 'INDX', Country: 'UK', Currency: 'GBP', Type: 'Index', ISIN: 'GB0001383545' },
   { Code: 'DAX', Name: 'DAX Index', Exchange: 'INDX', Country: 'DE', Currency: 'EUR', Type: 'Index', ISIN: 'DE0008469008' },
+  { Code: 'GDAXI', Name: 'DAX Index', Exchange: 'INDX', Country: 'DE', Currency: 'EUR', Type: 'Index', ISIN: 'DE0008469008' },
   { Code: 'CAC', Name: 'CAC 40 Index', Exchange: 'INDX', Country: 'FR', Currency: 'EUR', Type: 'Index', ISIN: 'FR0003500008' },
+  { Code: 'FCHI', Name: 'CAC 40 Index', Exchange: 'INDX', Country: 'FR', Currency: 'EUR', Type: 'Index', ISIN: 'FR0003500008' },
   { Code: 'STOXX50E', Name: 'Euro Stoxx 50 Index', Exchange: 'INDX', Country: 'EU', Currency: 'EUR', Type: 'Index', ISIN: 'EU0009658145' },
-  { Code: 'SX5E', Name: 'Euro Stoxx 50 Index', Exchange: 'INDX', Country: 'EU', Currency: 'EUR', Type: 'Index', ISIN: 'EU0009658145' }, // Common alias
-  
+  { Code: 'SX5E', Name: 'Euro Stoxx 50 Index', Exchange: 'INDX', Country: 'EU', Currency: 'EUR', Type: 'Index', ISIN: 'EU0009658145' },
+  { Code: 'AEX', Name: 'AEX Amsterdam Index', Exchange: 'INDX', Country: 'NL', Currency: 'EUR', Type: 'Index' },
+  { Code: 'BEL20', Name: 'BEL 20 Index', Exchange: 'INDX', Country: 'BE', Currency: 'EUR', Type: 'Index' },
+  { Code: 'IBEX', Name: 'IBEX 35 Index', Exchange: 'INDX', Country: 'ES', Currency: 'EUR', Type: 'Index' },
+  { Code: 'FTSEMIB', Name: 'FTSE MIB Index', Exchange: 'INDX', Country: 'IT', Currency: 'EUR', Type: 'Index' },
+  { Code: 'SSMI', Name: 'Swiss Market Index', Exchange: 'INDX', Country: 'CH', Currency: 'CHF', Type: 'Index', Aliases: ['SMI'] },
+  { Code: 'ATX', Name: 'Austrian Traded Index', Exchange: 'INDX', Country: 'AT', Currency: 'EUR', Type: 'Index' },
+  { Code: 'OMXS30', Name: 'OMX Stockholm 30 Index', Exchange: 'INDX', Country: 'SE', Currency: 'SEK', Type: 'Index' },
+  { Code: 'OBX', Name: 'Oslo Bors Index', Exchange: 'INDX', Country: 'NO', Currency: 'NOK', Type: 'Index' },
+  { Code: 'OMXC25', Name: 'OMX Copenhagen 25 Index', Exchange: 'INDX', Country: 'DK', Currency: 'DKK', Type: 'Index' },
+  { Code: 'OMXH25', Name: 'OMX Helsinki 25 Index', Exchange: 'INDX', Country: 'FI', Currency: 'EUR', Type: 'Index' },
+  { Code: 'PSI20', Name: 'PSI 20 Index', Exchange: 'INDX', Country: 'PT', Currency: 'EUR', Type: 'Index' },
+  { Code: 'ATG', Name: 'Athens General Composite', Exchange: 'INDX', Country: 'GR', Currency: 'EUR', Type: 'Index' },
+  { Code: 'WIG20', Name: 'WIG 20 Index', Exchange: 'INDX', Country: 'PL', Currency: 'PLN', Type: 'Index' },
+
   // Asian Indices
   { Code: 'N225', Name: 'Nikkei 225 Index', Exchange: 'INDX', Country: 'JP', Currency: 'JPY', Type: 'Index', ISIN: 'XC0009692440' },
+  { Code: 'NKY', Name: 'Nikkei 225 Index', Exchange: 'INDX', Country: 'JP', Currency: 'JPY', Type: 'Index', ISIN: 'XC0009692440' },
+  { Code: 'TOPIX', Name: 'Tokyo Stock Price Index', Exchange: 'INDX', Country: 'JP', Currency: 'JPY', Type: 'Index' },
   { Code: 'HSI', Name: 'Hang Seng Index', Exchange: 'INDX', Country: 'HK', Currency: 'HKD', Type: 'Index', ISIN: 'HK0000004322' },
+  { Code: 'HSCEI', Name: 'Hang Seng China Enterprises Index', Exchange: 'INDX', Country: 'HK', Currency: 'HKD', Type: 'Index' },
   { Code: 'AXJO', Name: 'ASX 200 Index', Exchange: 'INDX', Country: 'AU', Currency: 'AUD', Type: 'Index', ISIN: 'AU000000XJO2' },
-  
-  // Additional popular indices
-  { Code: 'FCHI', Name: 'CAC 40 Index', Exchange: 'INDX', Country: 'FR', Currency: 'EUR', Type: 'Index', ISIN: 'FR0003500008' }, // Alternative CAC symbol
-  { Code: 'GDAXI', Name: 'DAX Index', Exchange: 'INDX', Country: 'DE', Currency: 'EUR', Type: 'Index', ISIN: 'DE0008469008' }, // Alternative DAX symbol
-  { Code: 'UKX', Name: 'FTSE 100 Index', Exchange: 'INDX', Country: 'UK', Currency: 'GBP', Type: 'Index', ISIN: 'GB0001383545' }, // Alternative FTSE symbol
+  { Code: 'AORD', Name: 'Australia All Ordinaries', Exchange: 'INDX', Country: 'AU', Currency: 'AUD', Type: 'Index' },
+  { Code: 'KOSPI', Name: 'Korea Composite Stock Price Index', Exchange: 'INDX', Country: 'KR', Currency: 'KRW', Type: 'Index' },
+  { Code: 'TWII', Name: 'Taiwan Weighted Index', Exchange: 'INDX', Country: 'TW', Currency: 'TWD', Type: 'Index' },
+  { Code: 'STI', Name: 'Straits Times Index', Exchange: 'INDX', Country: 'SG', Currency: 'SGD', Type: 'Index' },
+  { Code: 'KLSE', Name: 'FTSE Bursa Malaysia KLCI', Exchange: 'INDX', Country: 'MY', Currency: 'MYR', Type: 'Index' },
+  { Code: 'JKSE', Name: 'Jakarta Composite Index', Exchange: 'INDX', Country: 'ID', Currency: 'IDR', Type: 'Index' },
+  { Code: 'SET', Name: 'Stock Exchange of Thailand Index', Exchange: 'INDX', Country: 'TH', Currency: 'THB', Type: 'Index' },
+  { Code: 'PSEI', Name: 'Philippine Stock Exchange Index', Exchange: 'INDX', Country: 'PH', Currency: 'PHP', Type: 'Index' },
+  { Code: 'SENSEX', Name: 'BSE Sensex 30 Index', Exchange: 'INDX', Country: 'IN', Currency: 'INR', Type: 'Index' },
+  { Code: 'NIFTY', Name: 'Nifty 50 Index', Exchange: 'INDX', Country: 'IN', Currency: 'INR', Type: 'Index' },
+
+  // China Indices
+  { Code: 'SSEC', Name: 'Shanghai Composite Index', Exchange: 'INDX', Country: 'CN', Currency: 'CNY', Type: 'Index' },
+  { Code: 'SZCOMP', Name: 'Shenzhen Composite Index', Exchange: 'INDX', Country: 'CN', Currency: 'CNY', Type: 'Index' },
+  { Code: 'CSI300', Name: 'CSI 300 Index', Exchange: 'INDX', Country: 'CN', Currency: 'CNY', Type: 'Index' },
+
+  // Americas Indices (ex-US)
+  { Code: 'GSPTSE', Name: 'S&P/TSX Composite Index', Exchange: 'INDX', Country: 'CA', Currency: 'CAD', Type: 'Index' },
+  { Code: 'BVSP', Name: 'Bovespa Index', Exchange: 'INDX', Country: 'BR', Currency: 'BRL', Type: 'Index' },
+  { Code: 'MXX', Name: 'IPC Mexico Index', Exchange: 'INDX', Country: 'MX', Currency: 'MXN', Type: 'Index' },
+  { Code: 'MERVAL', Name: 'MERVAL Index', Exchange: 'INDX', Country: 'AR', Currency: 'ARS', Type: 'Index' },
+
+  // Middle East & Africa
+  { Code: 'TA35', Name: 'Tel Aviv 35 Index', Exchange: 'INDX', Country: 'IL', Currency: 'ILS', Type: 'Index' },
+  { Code: 'TASI', Name: 'Tadawul All Share Index', Exchange: 'INDX', Country: 'SA', Currency: 'SAR', Type: 'Index' },
+  { Code: 'JALSH', Name: 'JSE All Share Index', Exchange: 'INDX', Country: 'ZA', Currency: 'ZAR', Type: 'Index' },
 ];
 
 // Hong Kong exchange symbols cache (1 week expiry)
@@ -294,10 +335,12 @@ export const EODApiHelpers = {
     }
 
     try {
-      // First check if query matches any popular indices
-      const indexMatches = POPULAR_INDICES.filter(index => 
-        index.Code.toLowerCase().includes(query.toLowerCase()) ||
-        index.Name.toLowerCase().includes(query.toLowerCase())
+      // First check if query matches any popular indices (Code, Name, or Aliases)
+      const queryLower = query.toLowerCase();
+      const indexMatches = POPULAR_INDICES.filter(index =>
+        index.Code.toLowerCase().includes(queryLower) ||
+        index.Name.toLowerCase().includes(queryLower) ||
+        (index.Aliases && index.Aliases.some(alias => alias.toLowerCase().includes(queryLower)))
       );
 
       // Make multiple optimized API calls for specific asset types to exclude mutual funds

@@ -104,9 +104,20 @@ export const aggregateToFourCategories = (breakdown, totalValue) => {
         lowerCategory.includes('money_market')) {
       cash += value;
     }
+    // Alternative - check FIRST to catch private_equity before general equity check
+    else if (lowerCategory === 'private_equity' ||
+             lowerCategory === 'private_debt' ||
+             lowerCategory === 'commodities' ||
+             lowerCategory === 'real_estate' ||
+             lowerCategory === 'hedge_fund' ||
+             lowerCategory === 'derivatives' ||
+             lowerCategory === 'other' ||
+             lowerCategory === 'structured_product_commodities_linked' ||
+             lowerCategory === 'structured_product_credit_linked') {
+      alternative += value;
+    }
     // Structured products with capital guarantee -> Bonds
-    else if (lowerCategory.includes('structured_product_capital_guaranteed') ||
-             lowerCategory.includes('structured_product_capital_protected')) {
+    else if (lowerCategory.includes('structured_product_capital_guaranteed')) {
       bonds += value;
     }
     // Fixed Income / Bonds
@@ -115,29 +126,24 @@ export const aggregateToFourCategories = (breakdown, totalValue) => {
              lowerCategory === 'convertible') {
       bonds += value;
     }
-    // Equities
+    // Equities - includes equity-linked AND barrier-protected structured products
+    // (barrier-protected products are almost always equity-linked in practice)
     else if (lowerCategory.includes('equity') ||
              lowerCategory.includes('stock') ||
-             lowerCategory === 'structured_product_equity_linked') {
+             lowerCategory === 'structured_product_equity_linked' ||
+             lowerCategory === 'structured_product_barrier_protected' ||
+             lowerCategory === 'structured_product_partial_guarantee') {
       equities += value;
     }
-    // Alternative
-    else if (lowerCategory === 'private_equity' ||
-             lowerCategory === 'private_debt' ||
-             lowerCategory === 'commodities' ||
-             lowerCategory === 'real_estate' ||
-             lowerCategory === 'hedge_fund' ||
-             lowerCategory === 'derivatives' ||
-             lowerCategory === 'other') {
-      alternative += value;
-    }
-    // Default: categorize remaining structured products
+    // Default: categorize remaining structured products to Equities
+    // (most structured products are equity-linked by default)
     else if (lowerCategory.includes('structured_product')) {
-      // Non-protected structured products go to equities or alternative
-      if (lowerCategory.includes('equity')) {
-        equities += value;
-      } else {
+      // Check for non-equity underlying types that should go to Alternative
+      if (lowerCategory.includes('commodities') || lowerCategory.includes('credit')) {
         alternative += value;
+      } else {
+        // Equity-linked or unknown underlying -> Equities (safer default)
+        equities += value;
       }
     }
     // Anything else goes to alternative

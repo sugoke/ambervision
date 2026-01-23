@@ -42,12 +42,10 @@ import '/imports/api/marketDataCache';
 import '/imports/api/tickerCache';
 import '/imports/api/currencyCache';
 import { CurrencyCache } from '/imports/api/currencyCache';
-import './testTickerDiagnosis'; // Ticker diagnosis tool
-import './testSecurityData'; // Check if securityData.ticker exists
+import '/imports/api/dashboardMetrics';  // Pre-computed AUM metrics cache
 import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
 import { PasswordResetTokensCollection, PasswordResetHelpers } from '/imports/api/passwordResetTokens';
 import { EmailService } from '/imports/api/emailService';
-import './testEmailMethod'; // Test email functionality
 import { AllocationsCollection, AllocationHelpers } from '/imports/api/allocations';
 import { NotificationsCollection, NotificationHelpers } from '/imports/api/notifications';
 import { CronJobLogsCollection } from '/imports/api/cronJobLogs';
@@ -74,6 +72,12 @@ import './methods/pmsMigrationMethods';
 import './migrations/migratePMSHoldingsVersioning';
 import './migrations/cleanupDuplicateVersions';
 import './migrations/cleanupDuplicateHoldings';
+import './migrations/cleanDuplicateCMBHoldings';
+import './migrations/activateCFMConnection';
+import './migrations/activateSGConnection';
+import './migrations/initializeSeenLocalFiles';
+import './migrations/syncProductsToSecuritiesMetadata';
+// import './migrations/fixNullAssetClass';  // One-time migration - already run
 import './methods/securitiesMethods';
 import './methods/performanceMethods';
 import './methods/pdfGenerationMethods';
@@ -358,9 +362,15 @@ Meteor.startup(async () => {
       console.log(`[PRODUCTS] Admin ${currentUser.email} accessing products`);
       return ProductsCollection.find();
     }
-    
+
+    // Compliance sees everything (for compliance review purposes)
+    if (currentUser.role === USER_ROLES.COMPLIANCE) {
+      console.log(`[PRODUCTS] Compliance ${currentUser.email} accessing products`);
+      return ProductsCollection.find();
+    }
+
     // AllocationsCollection is already imported at the top
-    
+
     // Relationship Manager sees products of their assigned clients
     if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
       // Get all clients assigned to this RM
@@ -435,10 +445,10 @@ Meteor.startup(async () => {
     }
     
     // Apply same access control as products publication
-    if (currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.ADMIN) {
+    if (currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.COMPLIANCE) {
       return ProductsCollection.find({ _id: productId });
     }
-    
+
     // For clients and RMs, check if they have access to this product through allocations
     let hasAccess = false;
     
@@ -1543,7 +1553,10 @@ Meteor.methods({
       user: {
         _id: user._id,
         email: user.email,
-        role: user.role
+        role: user.role,
+        profile: user.profile,
+        firstName: user.profile?.firstName,
+        lastName: user.profile?.lastName
       },
       expiresAt: session.expiresAt,
       rememberMe: session.rememberMe
@@ -1621,6 +1634,9 @@ Meteor.methods({
         _id: user._id,
         email: user.email,
         role: user.role,
+        profile: user.profile,
+        firstName: user.profile?.firstName,
+        lastName: user.profile?.lastName,
         sessionInfo: {
           createdAt: session.createdAt,
           lastUsed: session.lastUsed,
@@ -1970,11 +1986,39 @@ Meteor.methods({
     return 'User role updated to superadmin and sessions refreshed';
   },
 
-  async 'users.updateRole'(userId, newRole) {
+  async 'users.updateRole'(userId, newRole, sessionId) {
+    check(userId, String);
+    check(newRole, String);
+    check(sessionId, String);
+
+    // CRITICAL: Only SUPERADMIN can change user roles
+    const session = await SessionHelpers.validateSession(sessionId);
+    if (!session || !session.userId) {
+      throw new Meteor.Error('unauthorized', 'Invalid or expired session');
+    }
+
+    const currentUser = await UsersCollection.findOneAsync(session.userId);
+    if (!currentUser || currentUser.role !== USER_ROLES.SUPERADMIN) {
+      throw new Meteor.Error('unauthorized', 'Only superadmins can change user roles');
+    }
+
     // Validate role
     if (!Object.values(USER_ROLES).includes(newRole)) {
       throw new Meteor.Error('invalid-role', 'Invalid role specified');
     }
+
+    // Validate target user exists
+    const targetUser = await UsersCollection.findOneAsync(userId);
+    if (!targetUser) {
+      throw new Meteor.Error('user-not-found', 'Target user not found');
+    }
+
+    // Prevent changing own role
+    if (userId === currentUser._id) {
+      throw new Meteor.Error('invalid-operation', 'Cannot change your own role');
+    }
+
+    console.log(`[users.updateRole] Superadmin ${currentUser.email} changing role of ${targetUser.email} from ${targetUser.role} to ${newRole}`);
 
     // Update the user's role
     return await UsersCollection.updateAsync(userId, {
@@ -2580,6 +2624,23 @@ Meteor.methods({
     
     console.log('[PRODUCTS] ✅ Server-side validation passed');
 
+    // Check ISIN uniqueness before saving (only for non-draft products with ISIN)
+    if (productData.isin && productData.productStatus !== 'draft') {
+      const cleanedIsin = productData.isin.trim().toUpperCase();
+      const existingProduct = await ProductsCollection.findOneAsync({
+        isin: cleanedIsin,
+        productStatus: { $ne: 'draft' }
+      });
+
+      if (existingProduct) {
+        console.error(`[PRODUCTS] Duplicate ISIN detected: ${cleanedIsin} already exists in product ${existingProduct._id}`);
+        throw new Meteor.Error(
+          'duplicate-isin',
+          `A product with ISIN "${cleanedIsin}" already exists: "${existingProduct.title || 'Untitled'}". Please use a different ISIN or update the existing product.`
+        );
+      }
+    }
+
     // Use underlyings data sent from client, fallback to extraction if not provided
     const underlyings = productData.underlyings && productData.underlyings.length > 0 
       ? productData.underlyings 
@@ -2618,6 +2679,68 @@ Meteor.methods({
             }
           } catch (allocError) {
             console.error('[PRODUCTS] Error auto-creating allocations:', allocError);
+          }
+        });
+
+        // Auto-sync to securitiesMetadata if product has ISIN
+        Meteor.defer(async () => {
+          try {
+            // Map templateId to structuredProductType
+            const templateId = enrichedProductData.templateId || enrichedProductData.template || '';
+            const templateLower = templateId.toLowerCase();
+
+            let structuredProductType = 'other';
+            if (templateLower.includes('phoenix') || templateLower.includes('autocallable')) {
+              structuredProductType = 'phoenix';
+            } else if (templateLower.includes('orion')) {
+              structuredProductType = 'orion';
+            } else if (templateLower.includes('himalaya')) {
+              structuredProductType = 'himalaya';
+            } else if (templateLower.includes('participation')) {
+              structuredProductType = 'participation_note';
+            } else if (templateLower.includes('reverse_convertible_bond')) {
+              structuredProductType = 'reverse_convertible_bond';
+            } else if (templateLower.includes('reverse_convertible')) {
+              structuredProductType = 'reverse_convertible';
+            } else if (templateLower.includes('shark')) {
+              structuredProductType = 'shark_note';
+            }
+
+            // Determine underlying type based on underlyings
+            let underlyingType = 'equity_linked'; // Default for most products
+            if (enrichedProductData.underlyings && enrichedProductData.underlyings.length > 0) {
+              const firstUnderlying = enrichedProductData.underlyings[0];
+              const ticker = firstUnderlying.ticker || firstUnderlying.symbol || '';
+              if (ticker.includes('.BOND') || ticker.includes('BOND')) {
+                underlyingType = 'fixed_income_linked';
+              } else if (ticker.includes('.COMM') || ticker.includes('GOLD') || ticker.includes('OIL')) {
+                underlyingType = 'commodities_linked';
+              }
+            }
+
+            // Determine protection type from product structure
+            let protectionType = 'capital_protected_conditional'; // Default for most structured products
+            if (enrichedProductData.capitalProtection === 100) {
+              protectionType = 'capital_guaranteed_100';
+            } else if (enrichedProductData.capitalProtection && enrichedProductData.capitalProtection > 0) {
+              protectionType = 'capital_guaranteed_partial';
+            }
+
+            const securityMetadata = {
+              isin: enrichedProductData.isin,
+              securityName: enrichedProductData.title || `Structured Product ${enrichedProductData.isin}`,
+              assetClass: 'structured_product',
+              structuredProductType: structuredProductType,
+              structuredProductUnderlyingType: underlyingType,
+              structuredProductProtectionType: protectionType,
+              sourceProductId: productId,
+              autoCreatedFromProduct: true
+            };
+
+            await SecuritiesMetadataHelpers.upsertSecurityMetadata(securityMetadata);
+            console.log(`[PRODUCTS] Auto-synced to securitiesMetadata: ${enrichedProductData.isin}`);
+          } catch (metadataError) {
+            console.error('[PRODUCTS] Error syncing to securitiesMetadata:', metadataError);
           }
         });
       }
@@ -2664,16 +2787,41 @@ Meteor.methods({
     
     console.log('[PRODUCTS] ✅ Server-side update validation passed');
 
+    // Check ISIN uniqueness before updating (exclude current product from check)
+    if (productData.isin && productData.productStatus !== 'draft') {
+      const cleanedIsin = productData.isin.trim().toUpperCase();
+      const existingProduct = await ProductsCollection.findOneAsync({
+        isin: cleanedIsin,
+        productStatus: { $ne: 'draft' },
+        _id: { $ne: productId } // Exclude current product
+      });
+
+      if (existingProduct) {
+        console.error(`[PRODUCTS] Duplicate ISIN detected on update: ${cleanedIsin} already exists in product ${existingProduct._id}`);
+        throw new Meteor.Error(
+          'duplicate-isin',
+          `A product with ISIN "${cleanedIsin}" already exists: "${existingProduct.title || 'Untitled'}". Please use a different ISIN.`
+        );
+      }
+    }
+
     // Use underlyings data sent from client, fallback to extraction if not provided
-    const underlyings = productData.underlyings && productData.underlyings.length > 0 
-      ? productData.underlyings 
+    const underlyings = productData.underlyings && productData.underlyings.length > 0
+      ? productData.underlyings
       : extractUnderlyingsFromPayoffStructure(productData.payoffStructure);
-    
+
     // Extract chart data from product data if present
     const chartData = productData.chartData;
     const { chartData: _, ...productWithoutChartData } = productData;
-    
+
     try {
+      // Log key date fields being updated
+      console.log(`[PRODUCTS UPDATE] Updating product ${productId}:`);
+      console.log(`  - maturityDate: ${productWithoutChartData.maturityDate}`);
+      console.log(`  - maturity: ${productWithoutChartData.maturity}`);
+      console.log(`  - finalObservation: ${productWithoutChartData.finalObservation}`);
+      console.log(`  - finalObservationDate: ${productWithoutChartData.finalObservationDate}`);
+
       await ProductsCollection.updateAsync(productId, {
         $set: {
           ...productWithoutChartData,
@@ -2702,6 +2850,81 @@ Meteor.methods({
           }
         });
       }
+
+      // Auto-sync to securitiesMetadata if product has ISIN (on create or update)
+      if (productWithoutChartData.isin) {
+        Meteor.defer(async () => {
+          try {
+            // Map templateId to structuredProductType
+            const templateId = productWithoutChartData.templateId || productWithoutChartData.template || '';
+            const templateLower = templateId.toLowerCase();
+
+            let structuredProductType = 'other';
+            if (templateLower.includes('phoenix') || templateLower.includes('autocallable')) {
+              structuredProductType = 'phoenix';
+            } else if (templateLower.includes('orion')) {
+              structuredProductType = 'orion';
+            } else if (templateLower.includes('himalaya')) {
+              structuredProductType = 'himalaya';
+            } else if (templateLower.includes('participation')) {
+              structuredProductType = 'participation_note';
+            } else if (templateLower.includes('reverse_convertible_bond')) {
+              structuredProductType = 'reverse_convertible_bond';
+            } else if (templateLower.includes('reverse_convertible')) {
+              structuredProductType = 'reverse_convertible';
+            } else if (templateLower.includes('shark')) {
+              structuredProductType = 'shark_note';
+            }
+
+            // Determine underlying type based on underlyings
+            let underlyingType = 'equity_linked';
+            if (underlyings && underlyings.length > 0) {
+              const firstUnderlying = underlyings[0];
+              const ticker = firstUnderlying.ticker || firstUnderlying.symbol || '';
+              if (ticker.includes('.BOND') || ticker.includes('BOND')) {
+                underlyingType = 'fixed_income_linked';
+              } else if (ticker.includes('.COMM') || ticker.includes('GOLD') || ticker.includes('OIL')) {
+                underlyingType = 'commodities_linked';
+              }
+            }
+
+            // Determine protection type from product structure
+            let protectionType = 'capital_protected_conditional';
+            if (productWithoutChartData.capitalProtection === 100) {
+              protectionType = 'capital_guaranteed_100';
+            } else if (productWithoutChartData.capitalProtection && productWithoutChartData.capitalProtection > 0) {
+              protectionType = 'capital_guaranteed_partial';
+            }
+
+            const securityMetadata = {
+              isin: productWithoutChartData.isin,
+              securityName: productWithoutChartData.title || `Structured Product ${productWithoutChartData.isin}`,
+              assetClass: 'structured_product',
+              structuredProductType: structuredProductType,
+              structuredProductUnderlyingType: underlyingType,
+              structuredProductProtectionType: protectionType,
+              sourceProductId: productId,
+              autoCreatedFromProduct: true
+            };
+
+            await SecuritiesMetadataHelpers.upsertSecurityMetadata(securityMetadata);
+            console.log(`[PRODUCTS] Auto-synced to securitiesMetadata on update: ${productWithoutChartData.isin}`);
+          } catch (metadataError) {
+            console.error('[PRODUCTS] Error syncing to securitiesMetadata on update:', metadataError);
+          }
+        });
+      }
+
+      // Trigger re-evaluation to update status (live/matured/autocalled) and report
+      Meteor.defer(async () => {
+        try {
+          console.log(`[PRODUCTS] Triggering re-evaluation after update for product: ${productId}`);
+          await Meteor.callAsync('products.triggerEvaluation', productId);
+          console.log(`[PRODUCTS] Re-evaluation completed for product: ${productId}`);
+        } catch (evalError) {
+          console.error('[PRODUCTS] Error triggering re-evaluation after update:', evalError);
+        }
+      });
 
       return true;
     } catch (error) {
