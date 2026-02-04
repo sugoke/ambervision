@@ -656,10 +656,8 @@ Meteor.startup(async () => {
   });
 
   // Publish user's bank accounts
-  Meteor.publish("userBankAccounts", function (userId) {
-    if (!userId) return this.ready();
-    return BankAccountsCollection.find({ userId: userId, isActive: true });
-  });
+  // REMOVED DUPLICATE - see server/publications/banks.js for the full implementation
+  // that supports sessionId-based auth and viewAsFilter for all roles
 
   // Publish all bank accounts (admin only for linking)
   // REMOVED DUPLICATE - see line 3671 for the actual allBankAccounts publication
@@ -6394,109 +6392,8 @@ Meteor.methods({
 });
 
 // Equity Holdings publications
-Meteor.publish('userBankAccounts', async function (sessionId = null) {
-  check(sessionId, Match.Optional(String));
-  
-  // // console.log(`Bank accounts publication: Called with sessionId: ${sessionId}, this.userId: ${this.userId}`);
-  
-  try {
-    let currentUser = null;
-    
-    // Try session-based authentication first, then fall back to this.userId
-    if (sessionId) {
-      try {
-        currentUser = await Meteor.callAsync('auth.getCurrentUser', sessionId);
-        // // console.log('Bank accounts publication: Got user from session:', currentUser ? { id: currentUser._id, username: currentUser.username, role: currentUser.role } : 'null');
-      } catch (sessionError) {
-        // // console.log('Bank accounts publication: Session auth failed:', sessionError.message);
-        currentUser = null;
-      }
-    }
-    
-    // Fallback to this.userId if session auth failed
-    if (!currentUser && this.userId) {
-      currentUser = await UsersCollection.findOneAsync(this.userId);
-      // // console.log('Bank accounts publication: Got user from this.userId:', currentUser ? { id: currentUser._id, username: currentUser.username, role: currentUser.role } : 'null');
-    }
-    
-    if (!currentUser) {
-      // // console.log('Bank accounts publication: No valid user found, returning empty');
-      return this.ready();
-    }
-
-    // // console.log(`Bank accounts publication: User ${currentUser.username} (${currentUser.role}) requesting bank accounts`);
-
-    // Role-based access control following structured products pattern
-    let bankAccountQuery = {};
-
-    switch (currentUser.role) {
-      case USER_ROLES.SUPERADMIN:
-      case USER_ROLES.ADMIN:
-        // Admins can see all bank accounts
-        bankAccountQuery = { isActive: true };
-        // // console.log('Bank accounts publication: Admin access - returning all bank accounts');
-        break;
-        
-      case USER_ROLES.RELATIONSHIP_MANAGER:
-        // RMs can see bank accounts of their assigned clients + their own
-        const rmClients = await UsersCollection.find({ 
-          relationshipManagerId: currentUser._id,
-          role: USER_ROLES.CLIENT 
-        }).fetchAsync();
-        
-        const clientIds = rmClients.map(client => client._id);
-        clientIds.push(currentUser._id); // Include RM's own bank accounts if any
-        
-        bankAccountQuery = { userId: { $in: clientIds }, isActive: true };
-        // // console.log(`Bank accounts publication: RM access - returning bank accounts for ${clientIds.length} users`);
-        break;
-        
-      case USER_ROLES.CLIENT:
-        // Clients can only see their own bank accounts
-        bankAccountQuery = { userId: currentUser._id, isActive: true };
-        // // console.log('Bank accounts publication: Client access - returning own bank accounts only');
-        break;
-        
-      default:
-        // // console.log('Bank accounts publication: Unknown role, denying access');
-        return this.ready();
-    }
-
-    // // console.log('Bank accounts publication: Using query:', bankAccountQuery);
-    
-    // Execute the query and log results
-    const cursor = BankAccountsCollection.find(bankAccountQuery, {
-      sort: { createdAt: -1 }
-    });
-    
-    const accounts = await cursor.fetchAsync();
-    // // console.log(`Bank accounts publication: Found ${accounts.length} accounts matching query`);
-    // console.log('Bank accounts publication: Account details:', accounts.map(acc => ({ 
-    //   id: acc._id, 
-    //   userId: acc.userId, 
-    //   accountNumber: acc.accountNumber, 
-    //   isActive: acc.isActive 
-    // })));
-    
-    // Double check what's in the database
-    const dbCount = await BankAccountsCollection.find({ isActive: true }).countAsync();
-    // // console.log(`Bank accounts publication: Total active accounts in DB: ${dbCount}`);
-    
-    // Log session validation result
-    // console.log('Bank accounts publication: Session validation result:', {
-    //   sessionId,
-    //   userFound: !!currentUser,
-    //   userRole: currentUser?.role,
-    //   userId: currentUser?._id
-    // });
-    
-    return cursor;
-
-  } catch (error) {
-    console.error('Bank accounts publication error:', error);
-    return this.ready();
-  }
-});
+// REMOVED DUPLICATE userBankAccounts - see server/publications/banks.js for the full implementation
+// that supports sessionId-based auth and viewAsFilter for all roles including CLIENTs
 
 // Simple publication for admin management - return all bank accounts like customUsers does
 Meteor.publish('allBankAccounts', function () {
@@ -6610,9 +6507,12 @@ Meteor.methods({
       throw new Meteor.Error('not-authorized', 'User not found');
     }
 
-    // Only admins and superadmins can use ViewAs filter
-    if (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN) {
-      throw new Meteor.Error('access-denied', 'Only admins can use ViewAs filter');
+    // Admins, superadmins, and RMs can use ViewAs filter
+    const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
+    const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER;
+
+    if (!isAdmin && !isRM) {
+      throw new Meteor.Error('access-denied', 'Only admins and relationship managers can use ViewAs filter');
     }
 
     // If search term is empty, return empty results (don't load everything)
@@ -6623,16 +6523,24 @@ Meteor.methods({
     const searchLower = searchTerm.trim().toLowerCase();
     const searchRegex = new RegExp(searchTerm.trim(), 'i');
 
+    // Build base query for clients
+    const clientQuery = {
+      role: USER_ROLES.CLIENT,
+      $or: [
+        { email: searchRegex },
+        { 'profile.firstName': searchRegex },
+        { 'profile.lastName': searchRegex }
+      ]
+    };
+
+    // RMs can only see their assigned clients
+    if (isRM) {
+      clientQuery.relationshipManagerId = currentUser._id;
+    }
+
     // Search clients (limit to 5 results for performance)
     const clients = await UsersCollection.find(
-      {
-        role: USER_ROLES.CLIENT,
-        $or: [
-          { email: searchRegex },
-          { 'profile.firstName': searchRegex },
-          { 'profile.lastName': searchRegex }
-        ]
-      },
+      clientQuery,
       {
         limit: 5,
         fields: {
@@ -6647,16 +6555,33 @@ Meteor.methods({
       }
     ).fetchAsync();
 
+    // For RMs, get their assigned client IDs first to filter bank accounts
+    let assignedClientIds = null;
+    if (isRM) {
+      const assignedClients = await UsersCollection.find(
+        { role: USER_ROLES.CLIENT, relationshipManagerId: currentUser._id },
+        { fields: { _id: 1 } }
+      ).fetchAsync();
+      assignedClientIds = assignedClients.map(c => c._id);
+    }
+
+    // Build bank accounts query
+    const bankAccountQuery = {
+      isActive: true,
+      $or: [
+        { accountNumber: searchRegex },
+        { comment: searchRegex }
+      ]
+    };
+
+    // RMs can only see accounts belonging to their assigned clients
+    if (isRM && assignedClientIds) {
+      bankAccountQuery.userId = { $in: assignedClientIds };
+    }
+
     // Search bank accounts (limit to 5 results for performance)
-    // Search by account number OR comment/description field
     const bankAccounts = await BankAccountsCollection.find(
-      {
-        isActive: true,
-        $or: [
-          { accountNumber: searchRegex },
-          { comment: searchRegex }
-        ]
-      },
+      bankAccountQuery,
       {
         limit: 5,
         sort: { accountNumber: 1 }
@@ -6686,16 +6611,24 @@ Meteor.methods({
       })
     );
 
+    // Build user search query for accounts by user name/email
+    const userSearchQuery = {
+      role: USER_ROLES.CLIENT,
+      $or: [
+        { 'profile.firstName': searchRegex },
+        { 'profile.lastName': searchRegex },
+        { email: searchRegex }
+      ]
+    };
+
+    // RMs can only search their assigned clients
+    if (isRM) {
+      userSearchQuery.relationshipManagerId = currentUser._id;
+    }
+
     // Also search for accounts by user name/email
     const userMatches = await UsersCollection.find(
-      {
-        role: USER_ROLES.CLIENT,
-        $or: [
-          { 'profile.firstName': searchRegex },
-          { 'profile.lastName': searchRegex },
-          { email: searchRegex }
-        ]
-      },
+      userSearchQuery,
       {
         limit: 10,
         fields: { _id: 1 }

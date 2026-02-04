@@ -6,6 +6,7 @@ import { CFMFXParser } from './parsers/cfmFXParser.js';
 import { CFMCashOperationParser } from './parsers/cfmCashOperationParser.js';
 import { CMBMonacoParser } from './parsers/cmbMonacoParser.js';
 import { SGMonacoParser } from './parsers/sgMonacoParser.js';
+import { EDRMonacoOperationParser } from './parsers/edrMonacoOperationParser.js';
 
 /**
  * Bank Operation File Parser
@@ -50,6 +51,7 @@ export const BankOperationParser = {
         if (CFMOperationParser.matchesPattern(f)) return true;          // YYYYMMDD-X#######-LU-W#-mtit.csv
         if (CFMFXParser.matchesPattern(f)) return true;                 // YYYYMMDD-X#######-LU-W#-mfrx.csv
         if (CFMCashOperationParser.matchesPattern(f)) return true;      // YYYYMMDD-X#######-LU-W#-mesp.csv
+        if (EDRMonacoOperationParser.matchesPattern(f)) return true;    // mvt_XXXXXXXX_YYYYMMDD.csv (EDR Monaco)
         if (f.includes('DAILY_OPE')) return true;                       // Julius Baer: DAILY_OPE
 
         return false;
@@ -59,7 +61,7 @@ export const BankOperationParser = {
 
       if (operationFiles.length === 0) {
         console.warn(`[BANK_OPERATIONS] No operation files found in directory: ${directoryPath}`);
-        console.warn(`[BANK_OPERATIONS] Looking for: trans.YYYYMMDD.csv (SG), TAM_mba_eam_evt_list_*.csv (CMB), DAILY_OPE*.csv (JB), *_MVT_MNC.csv (Andbank), *-mtit.csv (CFM)`);
+        console.warn(`[BANK_OPERATIONS] Looking for: trans.YYYYMMDD.csv (SG), TAM_mba_eam_evt_list_*.csv (CMB), DAILY_OPE*.csv (JB), *_MVT_MNC.csv (Andbank), *-mtit.csv (CFM), mvt_*_YYYYMMDD.csv (EDR)`);
         return { error: 'No operation files found in directory' };
       }
 
@@ -86,6 +88,8 @@ export const BankOperationParser = {
         fileDate = CFMCashOperationParser.extractFileDate(latestFile);
       } else if (CMBMonacoParser.matchesOperationsPattern(latestFile)) {
         fileDate = CMBMonacoParser.extractFileDate(latestFile);
+      } else if (EDRMonacoOperationParser.matchesPattern(latestFile)) {
+        fileDate = EDRMonacoOperationParser.extractFileDate(latestFile);
       } else {
         // Julius Baer format: DAILY_OPE_JB.YYYYMMDD.HHMMSS.ACCOUNT.CSV
         const dateMatch = latestFile.match(/\.(\d{8})\./);
@@ -188,6 +192,23 @@ export const BankOperationParser = {
         };
       }
 
+      // Check for EDR Monaco operations (mvt_* files)
+      if (EDRMonacoOperationParser.matchesPattern(latestFile) || bankName.toLowerCase().includes('rothschild')) {
+        const operations = EDRMonacoOperationParser.parse(fileContent, {
+          bankId,
+          bankName,
+          sourceFile: latestFile,
+          fileDate,
+          ...options
+        });
+        return {
+          operations,
+          filename: latestFile,
+          fileDate,
+          totalRecords: operations.length
+        };
+      }
+
       // Check for CFM by bank name (fallback)
       if (bankName.toLowerCase().includes('cfm')) {
         // Default to CFMOperationParser for mtit-style content
@@ -271,6 +292,7 @@ export const BankOperationParser = {
         if (CFMOperationParser.matchesPattern(f)) return true;
         if (CFMFXParser.matchesPattern(f)) return true;
         if (CFMCashOperationParser.matchesPattern(f)) return true;
+        if (EDRMonacoOperationParser.matchesPattern(f)) return true;  // mvt_XXXXXXXX_YYYYMMDD.csv (EDR Monaco)
         if (f.includes('DAILY_OPE')) return true;
 
         return false;
@@ -357,6 +379,8 @@ export const BankOperationParser = {
         fileDate = CFMCashOperationParser.extractFileDate(filename);
       } else if (CMBMonacoParser.matchesOperationsPattern(filename)) {
         fileDate = CMBMonacoParser.extractFileDate(filename);
+      } else if (EDRMonacoOperationParser.matchesPattern(filename)) {
+        fileDate = EDRMonacoOperationParser.extractFileDate(filename);
       } else {
         const dateMatch = filename.match(/\.(\d{8})\./);
         fileDate = dateMatch
@@ -418,6 +442,18 @@ export const BankOperationParser = {
 
       if (CFMCashOperationParser.matchesPattern(filename)) {
         const operations = CFMCashOperationParser.parse(fileContent, {
+          bankId,
+          bankName,
+          sourceFile: filename,
+          fileDate,
+          ...options
+        });
+        return { operations, filename, fileDate, totalRecords: operations.length };
+      }
+
+      // EDR Monaco operations (mvt_* files)
+      if (EDRMonacoOperationParser.matchesPattern(filename) || bankName.toLowerCase().includes('rothschild')) {
+        const operations = EDRMonacoOperationParser.parse(fileContent, {
           bankId,
           bankName,
           sourceFile: filename,

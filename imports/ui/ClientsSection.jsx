@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Meteor } from 'meteor/meteor';
-import { UsersCollection, USER_ROLES } from '/imports/api/users';
+import { UsersCollection, USER_ROLES, USER_TYPE_CATEGORIES, getRoleCategory } from '/imports/api/users';
 import UserDetailsScreen from './UserDetailsScreen.jsx';
 import LiquidGlassCard from './components/LiquidGlassCard.jsx';
 
@@ -9,6 +9,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
   const [selectedUserId, setSelectedUserId] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [selectedTab, setSelectedTab] = useState(USER_TYPE_CATEGORIES.CLIENTS);
 
   // Create user form state
   const [newUserEmail, setNewUserEmail] = useState('');
@@ -74,6 +75,12 @@ const ClientsSection = ({ user: currentUser, theme }) => {
         return { label: 'Compliance', color: '#0891b2', bg: 'rgba(8, 145, 178, 0.1)' };
       case USER_ROLES.RELATIONSHIP_MANAGER:
         return { label: 'RM', color: '#2563eb', bg: 'rgba(37, 99, 235, 0.1)' };
+      case USER_ROLES.PROSPECT:
+        return { label: 'Prospect', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.1)' };
+      case USER_ROLES.STAFF:
+        return { label: 'Staff', color: '#6366f1', bg: 'rgba(99, 102, 241, 0.1)' };
+      case USER_ROLES.INTRODUCER:
+        return { label: 'Introducer', color: '#ec4899', bg: 'rgba(236, 72, 153, 0.1)' };
       case USER_ROLES.CLIENT:
       default:
         return { label: 'Client', color: '#059669', bg: 'rgba(5, 150, 105, 0.1)' };
@@ -92,9 +99,14 @@ const ClientsSection = ({ user: currentUser, theme }) => {
     }
   };
 
-  // Filter users by search term, then sort by role priority and name
+  // Filter users by selected tab category, search term, then sort by role priority and name
   const filteredUsers = users
     .filter(user => {
+      // First filter by tab category
+      const userCategory = getRoleCategory(user.role);
+      if (userCategory !== selectedTab) return false;
+
+      // Then filter by search term
       const { firstName, lastName } = getUserName(user);
       const fullName = `${firstName} ${lastName}`.toLowerCase();
       const email = (user.email || '').toLowerCase();
@@ -113,6 +125,23 @@ const ClientsSection = ({ user: currentUser, theme }) => {
       if (lastNameCompare !== 0) return lastNameCompare;
       return (aFirst || '').localeCompare(bFirst || '');
     });
+
+  // Count users per category for tab badges
+  const categoryCounts = useMemo(() => {
+    const counts = {
+      [USER_TYPE_CATEGORIES.CLIENTS]: 0,
+      [USER_TYPE_CATEGORIES.PROSPECTS]: 0,
+      [USER_TYPE_CATEGORIES.STAFF]: 0,
+      [USER_TYPE_CATEGORIES.INTRODUCERS]: 0
+    };
+    users.forEach(user => {
+      const category = getRoleCategory(user.role);
+      if (counts[category] !== undefined) {
+        counts[category]++;
+      }
+    });
+    return counts;
+  }, [users]);
 
   const canCreateUsers = currentUser?.role === USER_ROLES.ADMIN || currentUser?.role === USER_ROLES.SUPERADMIN;
 
@@ -205,7 +234,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
               fontWeight: '600',
               color: 'var(--text-primary)'
             }}>
-              Users
+              Contacts
             </h2>
             {canCreateUsers && (
               <button
@@ -229,7 +258,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
           {/* Search */}
           <input
             type="text"
-            placeholder="Search users..."
+            placeholder="Search contacts..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             style={{
@@ -243,6 +272,56 @@ const ClientsSection = ({ user: currentUser, theme }) => {
               boxSizing: 'border-box'
             }}
           />
+        </div>
+
+        {/* Category Tabs */}
+        <div style={{
+          display: 'flex',
+          borderBottom: '1px solid var(--border-color)',
+          background: 'var(--bg-primary)'
+        }}>
+          {[
+            { id: USER_TYPE_CATEGORIES.CLIENTS, label: 'Clients', icon: '👤' },
+            { id: USER_TYPE_CATEGORIES.PROSPECTS, label: 'Prospects', icon: '🎯' },
+            { id: USER_TYPE_CATEGORIES.STAFF, label: 'Staff', icon: '💼' },
+            { id: USER_TYPE_CATEGORIES.INTRODUCERS, label: 'Introducers', icon: '🤝' }
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => {
+                setSelectedTab(tab.id);
+                setSelectedUserId(null); // Clear selection when switching tabs
+              }}
+              style={{
+                flex: 1,
+                padding: '0.75rem 0.5rem',
+                background: selectedTab === tab.id ? 'var(--accent-color)' : 'transparent',
+                color: selectedTab === tab.id ? 'white' : 'var(--text-secondary)',
+                border: 'none',
+                borderBottom: selectedTab === tab.id ? '2px solid var(--accent-color)' : '2px solid transparent',
+                cursor: 'pointer',
+                fontSize: '0.75rem',
+                fontWeight: selectedTab === tab.id ? '600' : '500',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '0.25rem',
+                transition: 'all 0.2s ease'
+              }}
+            >
+              <span style={{ fontSize: '1rem' }}>{tab.icon}</span>
+              <span>{tab.label}</span>
+              <span style={{
+                fontSize: '0.65rem',
+                padding: '1px 6px',
+                borderRadius: '10px',
+                background: selectedTab === tab.id ? 'rgba(255,255,255,0.2)' : 'var(--bg-tertiary)',
+                color: selectedTab === tab.id ? 'white' : 'var(--text-muted)'
+              }}>
+                {categoryCounts[tab.id]}
+              </span>
+            </button>
+          ))}
         </div>
 
         {/* Create Form */}
@@ -371,13 +450,24 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                     cursor: 'pointer'
                   }}
                 >
-                  <option value={USER_ROLES.CLIENT}>Client</option>
-                  <option value={USER_ROLES.RELATIONSHIP_MANAGER}>Relationship Manager</option>
-                  <option value={USER_ROLES.COMPLIANCE}>Compliance</option>
-                  <option value={USER_ROLES.ADMIN}>Admin</option>
-                  {currentUser?.role === USER_ROLES.SUPERADMIN && (
-                    <option value={USER_ROLES.SUPERADMIN}>Super Admin</option>
-                  )}
+                  <optgroup label="Clients">
+                    <option value={USER_ROLES.CLIENT}>Client</option>
+                  </optgroup>
+                  <optgroup label="Prospects">
+                    <option value={USER_ROLES.PROSPECT}>Prospect</option>
+                  </optgroup>
+                  <optgroup label="Staff">
+                    <option value={USER_ROLES.RELATIONSHIP_MANAGER}>Relationship Manager</option>
+                    <option value={USER_ROLES.COMPLIANCE}>Compliance</option>
+                    <option value={USER_ROLES.STAFF}>Staff</option>
+                    <option value={USER_ROLES.ADMIN}>Admin</option>
+                    {currentUser?.role === USER_ROLES.SUPERADMIN && (
+                      <option value={USER_ROLES.SUPERADMIN}>Super Admin</option>
+                    )}
+                  </optgroup>
+                  <optgroup label="Introducers">
+                    <option value={USER_ROLES.INTRODUCER}>Introducer</option>
+                  </optgroup>
                 </select>
               </div>
               {error && (
@@ -435,7 +525,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
               textAlign: 'center',
               color: 'var(--text-secondary)'
             }}>
-              Loading users...
+              Loading contacts...
             </div>
           ) : filteredUsers.length === 0 ? (
             <div style={{
@@ -443,7 +533,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
               textAlign: 'center',
               color: 'var(--text-secondary)'
             }}>
-              {searchTerm ? 'No users match your search' : 'No users found'}
+              {searchTerm ? 'No contacts match your search' : 'No contacts found'}
             </div>
           ) : (
             filteredUsers.map(user => {

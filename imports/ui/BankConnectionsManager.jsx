@@ -546,24 +546,48 @@ const BankConnectionsManager = ({ user }) => {
     }
   };
 
-  // Get status indicator
-  const getStatusIndicator = (status) => {
-    switch (status) {
-      case 'connected': return '🟢';
-      case 'error': return '🔴';
-      case 'not_tested': return '⚪';
-      default: return '🟡';
-    }
+  // Check if a date is from today
+  const isToday = (date) => {
+    if (!date) return false;
+    const d = new Date(date);
+    const today = new Date();
+    return d.getFullYear() === today.getFullYear() &&
+           d.getMonth() === today.getMonth() &&
+           d.getDate() === today.getDate();
   };
 
-  // Get status text
-  const getStatusText = (status) => {
-    switch (status) {
-      case 'connected': return 'Connected';
-      case 'error': return 'Error';
-      case 'not_tested': return 'Not Tested';
-      default: return 'Unknown';
+  // Get status indicator - check both status and recency
+  const getStatusIndicator = (connection) => {
+    // If there's an error status, show red
+    if (connection.status === 'error') return '🔴';
+
+    // If never tested, show white
+    if (connection.status === 'not_tested') return '⚪';
+
+    // If status is "connected" but last connection/download/process wasn't today, show red
+    if (connection.status === 'connected') {
+      const hasRecentActivity = isToday(connection.lastConnection) ||
+                                isToday(connection.lastDownloadAt) ||
+                                isToday(connection.lastProcessedAt);
+      return hasRecentActivity ? '🟢' : '🔴';
     }
+
+    return '🟡';
+  };
+
+  // Get status text - includes staleness information
+  const getStatusText = (connection) => {
+    if (connection.status === 'error') return 'Error';
+    if (connection.status === 'not_tested') return 'Not Tested';
+
+    if (connection.status === 'connected') {
+      const hasRecentActivity = isToday(connection.lastConnection) ||
+                                isToday(connection.lastDownloadAt) ||
+                                isToday(connection.lastProcessedAt);
+      return hasRecentActivity ? 'Connected' : 'Stale (no sync today)';
+    }
+
+    return 'Unknown';
   };
 
   // Format timestamp
@@ -904,7 +928,7 @@ const BankConnectionsManager = ({ user }) => {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', flexWrap: 'wrap', gap: '1rem' }}>
                     <div style={{ flex: 1, minWidth: '300px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '0.75rem' }}>
-                        <span style={{ fontSize: '24px' }}>{getStatusIndicator(connection.status)}</span>
+                        <span style={{ fontSize: '24px' }}>{getStatusIndicator(connection)}</span>
                         <h4 style={{ margin: 0, color: 'var(--text-primary)', fontSize: '16px', fontWeight: '600' }}>
                           {connection.connectionName}
                         </h4>
@@ -937,7 +961,7 @@ const BankConnectionsManager = ({ user }) => {
 
                       <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
                         <div>
-                          <strong>Status:</strong> {getStatusText(connection.status)} •
+                          <strong>Status:</strong> {getStatusText(connection)} •
                           <strong> Last Connection:</strong> {formatTimestamp(connection.lastConnection)} •
                           <strong> Attempts:</strong> {connection.connectionCount || 0}
                         </div>

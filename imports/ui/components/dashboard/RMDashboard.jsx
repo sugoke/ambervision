@@ -11,7 +11,7 @@ import AUMMiniChart from './AUMMiniChart.jsx';
 import { useViewAs } from '../../ViewAsContext.jsx';
 
 const RMDashboard = ({ user, onNavigate }) => {
-  const { setFilter } = useViewAs();
+  const { viewAsFilter, setFilter } = useViewAs();
 
   // Detect if user is a client (shows personalized dashboard without RM-specific features)
   const isClient = user?.role === 'client';
@@ -31,6 +31,9 @@ const RMDashboard = ({ user, onNavigate }) => {
     cashMonitoring: { negativeCashAccounts: [], highCashAccounts: [] }
   });
 
+  // Use stringified viewAsFilter for stable dependency comparison
+  const viewAsFilterKey = viewAsFilter ? `${viewAsFilter.type}-${viewAsFilter.id}` : 'none';
+
   useEffect(() => {
     loadDashboardData();
     loadDailyQuote();
@@ -38,7 +41,7 @@ const RMDashboard = ({ user, onNavigate }) => {
     // Refresh every 5 minutes
     const interval = setInterval(loadDashboardData, 5 * 60 * 1000);
     return () => clearInterval(interval);
-  }, [user]);
+  }, [user?._id, viewAsFilterKey]);
 
   const loadDailyQuote = async () => {
     const sessionId = localStorage.getItem('sessionId');
@@ -65,14 +68,15 @@ const RMDashboard = ({ user, onNavigate }) => {
       setError(null);
 
       // Load all data in parallel (pass currency to getPortfolioSummary for AUM conversion)
+      // Pass viewAsFilter to methods that support it for proper client filtering
       const [alerts, summary, birthdays, events, watchlist, activity, cashMonitoring] = await Promise.all([
-        Meteor.callAsync('rmDashboard.getAlerts', sessionId),
-        Meteor.callAsync('rmDashboard.getPortfolioSummary', sessionId, currency),
-        Meteor.callAsync('rmDashboard.getBirthdays', sessionId),
-        Meteor.callAsync('rmDashboard.getUpcomingEvents', sessionId, 2),
-        Meteor.callAsync('rmDashboard.getWatchlist', sessionId),
-        Meteor.callAsync('rmDashboard.getRecentActivity', sessionId, 5),
-        Meteor.callAsync('rmDashboard.getCashMonitoring', sessionId)
+        Meteor.callAsync('rmDashboard.getAlerts', sessionId, viewAsFilter),
+        Meteor.callAsync('rmDashboard.getPortfolioSummary', sessionId, currency, viewAsFilter),
+        Meteor.callAsync('rmDashboard.getBirthdays', sessionId, viewAsFilter),
+        Meteor.callAsync('rmDashboard.getUpcomingEvents', sessionId, 2, viewAsFilter),
+        Meteor.callAsync('rmDashboard.getWatchlist', sessionId, viewAsFilter),
+        Meteor.callAsync('rmDashboard.getRecentActivity', sessionId, 5, viewAsFilter),
+        Meteor.callAsync('rmDashboard.getCashMonitoring', sessionId, viewAsFilter)
       ]);
 
       setData({ alerts, summary, birthdays, events, watchlist, activity, cashMonitoring });
@@ -93,8 +97,8 @@ const RMDashboard = ({ user, onNavigate }) => {
     if (!sessionId) return;
 
     try {
-      // Only refresh the summary with the new currency
-      const summary = await Meteor.callAsync('rmDashboard.getPortfolioSummary', sessionId, newCurrency);
+      // Only refresh the summary with the new currency (pass viewAsFilter for proper filtering)
+      const summary = await Meteor.callAsync('rmDashboard.getPortfolioSummary', sessionId, newCurrency, viewAsFilter);
       setData(prev => ({ ...prev, summary }));
     } catch (err) {
       console.error('[RMDashboard] Error refreshing portfolio summary:', err);

@@ -79,9 +79,11 @@ Meteor.methods({
    * @param {string} params.base64Data - Base64-encoded file data
    * @param {string} params.mimeType - File MIME type
    * @param {Date} params.expirationDate - Expiration date (for ID and residency card)
+   * @param {string} params.documentNumber - ID/Passport number or document reference
+   * @param {Date} params.issuanceDate - Date when document was issued
    * @param {string} params.sessionId - Session ID for authentication
    */
-  async 'clientDocuments.upload'({ userId, familyMemberIndex, documentType, fileName, base64Data, mimeType, expirationDate, sessionId }) {
+  async 'clientDocuments.upload'({ userId, familyMemberIndex, documentType, fileName, base64Data, mimeType, expirationDate, documentNumber, issuanceDate, sessionId }) {
     check(userId, String);
     check(familyMemberIndex, Match.Maybe(Match.OneOf(Number, null)));
     check(documentType, Match.OneOf(...Object.values(DOCUMENT_TYPES)));
@@ -89,6 +91,8 @@ Meteor.methods({
     check(base64Data, String);
     check(mimeType, String);
     check(expirationDate, Match.Maybe(Match.OneOf(Date, String, null)));
+    check(documentNumber, Match.Maybe(Match.OneOf(String, null)));
+    check(issuanceDate, Match.Maybe(Match.OneOf(Date, String, null)));
     check(sessionId, String);
 
     // Verify caller is logged in via session
@@ -149,6 +153,12 @@ Meteor.methods({
       parsedExpirationDate = typeof expirationDate === 'string' ? new Date(expirationDate) : expirationDate;
     }
 
+    // Parse issuance date if string
+    let parsedIssuanceDate = null;
+    if (issuanceDate) {
+      parsedIssuanceDate = typeof issuanceDate === 'string' ? new Date(issuanceDate) : issuanceDate;
+    }
+
     // Create database record
     const docId = await ClientDocumentsCollection.insertAsync({
       userId,
@@ -161,7 +171,9 @@ Meteor.methods({
       fileSize: Buffer.from(base64Data, 'base64').length,
       uploadedAt: new Date(),
       uploadedBy: currentUser._id,
-      expirationDate: parsedExpirationDate
+      expirationDate: parsedExpirationDate,
+      documentNumber: documentNumber || null,
+      issuanceDate: parsedIssuanceDate
     });
 
     console.log(`Document record created: ${docId}`);
@@ -232,6 +244,53 @@ Meteor.methods({
     });
 
     console.log(`📅 Updated expiration date for document ${documentId}: ${parsedDate}`);
+
+    return { success: true };
+  },
+
+  /**
+   * Update document details (number and issuance date)
+   * @param {string} documentId - Document ID
+   * @param {Object} details - Details to update
+   * @param {string} details.documentNumber - ID/Passport number
+   * @param {Date} details.issuanceDate - Issuance date
+   * @param {string} sessionId - Session ID for authentication
+   */
+  async 'clientDocuments.updateDetails'(documentId, details, sessionId) {
+    check(documentId, String);
+    check(details, {
+      documentNumber: Match.Maybe(Match.OneOf(String, null)),
+      issuanceDate: Match.Maybe(Match.OneOf(Date, String, null))
+    });
+    check(sessionId, String);
+
+    await validateSession(sessionId);
+
+    const doc = await ClientDocumentsCollection.findOneAsync(documentId);
+    if (!doc) {
+      throw new Meteor.Error('not-found', 'Document not found');
+    }
+
+    const updateFields = {};
+
+    if (details.documentNumber !== undefined) {
+      updateFields.documentNumber = details.documentNumber || null;
+    }
+
+    if (details.issuanceDate !== undefined) {
+      let parsedDate = null;
+      if (details.issuanceDate) {
+        parsedDate = typeof details.issuanceDate === 'string' ? new Date(details.issuanceDate) : details.issuanceDate;
+      }
+      updateFields.issuanceDate = parsedDate;
+    }
+
+    if (Object.keys(updateFields).length > 0) {
+      await ClientDocumentsCollection.updateAsync(documentId, {
+        $set: updateFields
+      });
+      console.log(`📝 Updated document details for ${documentId}:`, updateFields);
+    }
 
     return { success: true };
   },

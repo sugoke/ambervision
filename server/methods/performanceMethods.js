@@ -270,7 +270,10 @@ Meteor.methods({
       }
     }
 
+    console.log(`[PERFORMANCE] Found ${snapshots.length} snapshots for chart`);
+
     if (snapshots.length === 0) {
+      console.log(`[PERFORMANCE] No snapshots found - returning hasData: false`);
       return {
         hasData: false,
         labels: [],

@@ -15,7 +15,8 @@ import {
   ClientDocumentsCollection,
   DOCUMENT_TYPES,
   DOCUMENT_TYPE_CONFIG,
-  ClientDocumentHelpers
+  ClientDocumentHelpers,
+  getDocumentsByCategory
 } from '/imports/api/clientDocuments.js';
 
 const DocumentSlot = ({
@@ -29,6 +30,10 @@ const DocumentSlot = ({
   const [isUploading, setIsUploading] = useState(false);
   const [expirationDate, setExpirationDate] = useState(
     document?.expirationDate ? new Date(document.expirationDate).toISOString().split('T')[0] : ''
+  );
+  const [documentNumber, setDocumentNumber] = useState(document?.documentNumber || '');
+  const [issuanceDate, setIssuanceDate] = useState(
+    document?.issuanceDate ? new Date(document.issuanceDate).toISOString().split('T')[0] : ''
   );
   const fileInputRef = useRef(null);
 
@@ -91,6 +96,8 @@ const DocumentSlot = ({
         base64Data,
         mimeType: file.type,
         expirationDate: expirationDate ? new Date(expirationDate) : null,
+        documentNumber: documentNumber || null,
+        issuanceDate: issuanceDate ? new Date(issuanceDate) : null,
         sessionId
       });
 
@@ -111,7 +118,7 @@ const DocumentSlot = ({
     } finally {
       setIsUploading(false);
     }
-  }, [userId, familyMemberIndex, documentType, expirationDate, onUploadComplete]);
+  }, [userId, familyMemberIndex, documentType, expirationDate, documentNumber, issuanceDate, onUploadComplete]);
 
   // Drag & drop handlers
   const handleDragOver = (e) => {
@@ -191,6 +198,36 @@ const DocumentSlot = ({
         await Meteor.callAsync('clientDocuments.updateExpiration', document._id, new Date(newDate), sessionId);
       } catch (error) {
         console.error('Update expiration error:', error);
+      }
+    }
+  };
+
+  // Update document number
+  const handleDocumentNumberChange = async (e) => {
+    const newNumber = e.target.value;
+    setDocumentNumber(newNumber);
+
+    if (document) {
+      try {
+        const sessionId = localStorage.getItem('sessionId');
+        await Meteor.callAsync('clientDocuments.updateDetails', document._id, { documentNumber: newNumber }, sessionId);
+      } catch (error) {
+        console.error('Update document number error:', error);
+      }
+    }
+  };
+
+  // Update issuance date
+  const handleIssuanceDateChange = async (e) => {
+    const newDate = e.target.value;
+    setIssuanceDate(newDate);
+
+    if (document && newDate) {
+      try {
+        const sessionId = localStorage.getItem('sessionId');
+        await Meteor.callAsync('clientDocuments.updateDetails', document._id, { issuanceDate: new Date(newDate) }, sessionId);
+      } catch (error) {
+        console.error('Update issuance date error:', error);
       }
     }
   };
@@ -372,35 +409,101 @@ const DocumentSlot = ({
               </label>
             </div>
 
-            {/* Expiration date for ID and Residency Card */}
+            {/* Document number and dates for ID and Residency Card */}
             {config.requiresExpiration && (
               <div style={{
                 display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
+                flexDirection: 'column',
+                gap: '6px',
                 paddingTop: '6px',
                 borderTop: '1px solid var(--border-color)'
               }}>
-                <label style={{
-                  fontSize: '0.8rem',
-                  color: 'var(--text-secondary)',
-                  fontWeight: '500'
+                {/* Document Number */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
                 }}>
-                  Expires:
-                </label>
-                <input
-                  type="date"
-                  value={expirationDate}
-                  onChange={handleExpirationChange}
-                  style={{
-                    padding: '3px 6px',
+                  <label style={{
                     fontSize: '0.8rem',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '4px',
-                    backgroundColor: 'var(--bg-primary)',
-                    color: 'var(--text-primary)'
-                  }}
-                />
+                    color: 'var(--text-secondary)',
+                    fontWeight: '500',
+                    minWidth: '60px'
+                  }}>
+                    Number:
+                  </label>
+                  <input
+                    type="text"
+                    value={documentNumber}
+                    onChange={handleDocumentNumberChange}
+                    placeholder="ID/Passport number"
+                    style={{
+                      padding: '3px 6px',
+                      fontSize: '0.8rem',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '4px',
+                      backgroundColor: 'var(--bg-primary)',
+                      color: 'var(--text-primary)',
+                      flex: 1
+                    }}
+                  />
+                </div>
+                {/* Issuance Date */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}>
+                  <label style={{
+                    fontSize: '0.8rem',
+                    color: 'var(--text-secondary)',
+                    fontWeight: '500',
+                    minWidth: '60px'
+                  }}>
+                    Issued:
+                  </label>
+                  <input
+                    type="date"
+                    value={issuanceDate}
+                    onChange={handleIssuanceDateChange}
+                    style={{
+                      padding: '3px 6px',
+                      fontSize: '0.8rem',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '4px',
+                      backgroundColor: 'var(--bg-primary)',
+                      color: 'var(--text-primary)'
+                    }}
+                  />
+                </div>
+                {/* Expiration Date */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}>
+                  <label style={{
+                    fontSize: '0.8rem',
+                    color: 'var(--text-secondary)',
+                    fontWeight: '500',
+                    minWidth: '60px'
+                  }}>
+                    Expires:
+                  </label>
+                  <input
+                    type="date"
+                    value={expirationDate}
+                    onChange={handleExpirationChange}
+                    style={{
+                      padding: '3px 6px',
+                      fontSize: '0.8rem',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '4px',
+                      backgroundColor: 'var(--bg-primary)',
+                      color: 'var(--text-primary)'
+                    }}
+                  />
+                </div>
               </div>
             )}
           </div>
@@ -434,39 +537,107 @@ const DocumentSlot = ({
               </span>
             </label>
 
-            {/* Expiration date input for new uploads */}
+            {/* Document details input for new uploads */}
             {config.requiresExpiration && (
               <div style={{
                 display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
+                flexDirection: 'column',
+                gap: '6px',
                 paddingTop: '8px',
                 borderTop: '1px solid var(--border-color)',
-                width: '100%',
-                justifyContent: 'center'
+                width: '100%'
               }}
               onClick={(e) => e.stopPropagation()}
               >
-                <label style={{
-                  fontSize: '0.75rem',
-                  color: 'var(--text-secondary)',
-                  fontWeight: '500'
+                {/* Document Number */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  justifyContent: 'center'
                 }}>
-                  Expiration:
-                </label>
-                <input
-                  type="date"
-                  value={expirationDate}
-                  onChange={(e) => setExpirationDate(e.target.value)}
-                  style={{
-                    padding: '3px 6px',
+                  <label style={{
                     fontSize: '0.75rem',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '4px',
-                    backgroundColor: 'var(--bg-primary)',
-                    color: 'var(--text-primary)'
-                  }}
-                />
+                    color: 'var(--text-secondary)',
+                    fontWeight: '500',
+                    minWidth: '60px'
+                  }}>
+                    Number:
+                  </label>
+                  <input
+                    type="text"
+                    value={documentNumber}
+                    onChange={(e) => setDocumentNumber(e.target.value)}
+                    placeholder="ID/Passport #"
+                    style={{
+                      padding: '3px 6px',
+                      fontSize: '0.75rem',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '4px',
+                      backgroundColor: 'var(--bg-primary)',
+                      color: 'var(--text-primary)',
+                      width: '120px'
+                    }}
+                  />
+                </div>
+                {/* Issuance Date */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  justifyContent: 'center'
+                }}>
+                  <label style={{
+                    fontSize: '0.75rem',
+                    color: 'var(--text-secondary)',
+                    fontWeight: '500',
+                    minWidth: '60px'
+                  }}>
+                    Issued:
+                  </label>
+                  <input
+                    type="date"
+                    value={issuanceDate}
+                    onChange={(e) => setIssuanceDate(e.target.value)}
+                    style={{
+                      padding: '3px 6px',
+                      fontSize: '0.75rem',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '4px',
+                      backgroundColor: 'var(--bg-primary)',
+                      color: 'var(--text-primary)'
+                    }}
+                  />
+                </div>
+                {/* Expiration Date */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  justifyContent: 'center'
+                }}>
+                  <label style={{
+                    fontSize: '0.75rem',
+                    color: 'var(--text-secondary)',
+                    fontWeight: '500',
+                    minWidth: '60px'
+                  }}>
+                    Expires:
+                  </label>
+                  <input
+                    type="date"
+                    value={expirationDate}
+                    onChange={(e) => setExpirationDate(e.target.value)}
+                    style={{
+                      padding: '3px 6px',
+                      fontSize: '0.75rem',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '4px',
+                      backgroundColor: 'var(--bg-primary)',
+                      color: 'var(--text-primary)'
+                    }}
+                  />
+                </div>
               </div>
             )}
           </div>
@@ -581,19 +752,60 @@ const PersonDocuments = ({
         </div>
       </div>
 
-      {/* Document slots */}
+      {/* Document slots organized by category */}
       {!isCollapsed && (
         <div style={{ padding: '12px 16px' }}>
-          {Object.values(DOCUMENT_TYPES).map(docType => (
-            <DocumentSlot
-              key={docType}
-              documentType={docType}
-              document={getDocument(docType)}
-              userId={userId}
-              familyMemberIndex={familyMemberIndex}
-              onUploadComplete={onUploadComplete}
-            />
-          ))}
+          {/* Compliance Documents */}
+          <div style={{ marginBottom: '16px' }}>
+            <div style={{
+              fontSize: '0.75rem',
+              fontWeight: '600',
+              color: 'var(--text-secondary)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.5px',
+              marginBottom: '8px',
+              paddingBottom: '4px',
+              borderBottom: '1px solid var(--border-color)'
+            }}>
+              📋 Compliance Documents
+            </div>
+            {getDocumentsByCategory('compliance').map(docType => (
+              <DocumentSlot
+                key={docType}
+                documentType={docType}
+                document={getDocument(docType)}
+                userId={userId}
+                familyMemberIndex={familyMemberIndex}
+                onUploadComplete={onUploadComplete}
+              />
+            ))}
+          </div>
+
+          {/* Amberlake Partners Pack */}
+          <div>
+            <div style={{
+              fontSize: '0.75rem',
+              fontWeight: '600',
+              color: 'var(--text-secondary)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.5px',
+              marginBottom: '8px',
+              paddingBottom: '4px',
+              borderBottom: '1px solid var(--border-color)'
+            }}>
+              🏛️ Amberlake Partners Pack
+            </div>
+            {getDocumentsByCategory('amberlake').map(docType => (
+              <DocumentSlot
+                key={docType}
+                documentType={docType}
+                document={getDocument(docType)}
+                userId={userId}
+                familyMemberIndex={familyMemberIndex}
+                onUploadComplete={onUploadComplete}
+              />
+            ))}
+          </div>
         </div>
       )}
     </div>

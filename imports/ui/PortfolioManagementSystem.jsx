@@ -1412,9 +1412,12 @@ const PortfolioManagementSystem = ({ user }) => {
 
         try {
           // Fetch period performance (1M, 3M, YTD, etc.)
-          // If a specific account tab is selected, pass its portfolioCode
-          const portfolioCode = activeAccountTab !== 'consolidated' ? activeAccountTab : null;
-          console.log('[PMS] Calling performance.getPeriods...', { portfolioCode });
+          // If a specific account tab is selected, pass its accountNumber as portfolioCode
+          const selectedTab = accountTabs.find(tab => tab.id === activeAccountTab);
+          const portfolioCode = activeAccountTab !== 'consolidated' && selectedTab?.accountNumber
+            ? selectedTab.accountNumber
+            : null;
+          console.log('[PMS] Calling performance.getPeriods...', { portfolioCode, activeAccountTab });
           const periods = await Meteor.callAsync('performance.getPeriods', {
             sessionId,
             viewAsFilter,
@@ -1433,7 +1436,7 @@ const PortfolioManagementSystem = ({ user }) => {
 
       fetchPerformancePeriods();
     }
-  }, [activeTab, performancePeriods, performanceLoading, viewAsFilter, activeAccountTab]);
+  }, [activeTab, performancePeriods, performanceLoading, viewAsFilter, activeAccountTab, accountTabs]);
 
   // Fetch chart data when Performance tab is active and time range changes
   React.useEffect(() => {
@@ -1453,14 +1456,18 @@ const PortfolioManagementSystem = ({ user }) => {
         try {
           const startDate = getStartDateForRange(selectedTimeRange);
           const endDate = new Date();
-          // If a specific account tab is selected, pass its portfolioCode
-          const portfolioCode = activeAccountTab !== 'consolidated' ? activeAccountTab : null;
+          // If a specific account tab is selected, pass its accountNumber as portfolioCode
+          const selectedTab = accountTabs.find(tab => tab.id === activeAccountTab);
+          const portfolioCode = activeAccountTab !== 'consolidated' && selectedTab?.accountNumber
+            ? selectedTab.accountNumber
+            : null;
 
           console.log('[PMS] Calling performance.getChartData...', {
             range: selectedTimeRange,
             startDate,
             endDate,
-            portfolioCode
+            portfolioCode,
+            viewAsFilter: viewAsFilter ? { type: viewAsFilter.type, id: viewAsFilter.id, label: viewAsFilter.label } : null
           });
 
           const chart = await Meteor.callAsync('performance.getChartData', {
@@ -1470,7 +1477,7 @@ const PortfolioManagementSystem = ({ user }) => {
             viewAsFilter,
             portfolioCode
           });
-          console.log('[PMS] getChartData SUCCESS for range:', selectedTimeRange);
+          console.log('[PMS] getChartData result:', { hasData: chart?.hasData, snapshotCount: chart?.snapshots?.length || 0 });
 
           setChartData(chart);
           setLastFetchedRange(selectedTimeRange);
@@ -1484,7 +1491,7 @@ const PortfolioManagementSystem = ({ user }) => {
 
       fetchChartData();
     }
-  }, [activeTab, selectedTimeRange, lastFetchedRange, chartLoading, viewAsFilter, activeAccountTab]);
+  }, [activeTab, selectedTimeRange, lastFetchedRange, chartLoading, viewAsFilter, activeAccountTab, accountTabs]);
 
   // Subscribe to available snapshot dates from PMSHoldings
   const { snapshotDates } = useTracker(() => {
@@ -2983,7 +2990,9 @@ const PortfolioManagementSystem = ({ user }) => {
                 margin: 0,
                 fontSize: '0.875rem'
               }}>
-                Performance history will appear here once you process bank files
+                {viewAsFilter
+                  ? `No performance data found for ${viewAsFilter.label || 'selected filter'}. Try clearing the filter or selecting a different client.`
+                  : 'Performance history will appear here once you process bank files'}
               </p>
             </div>
           )}
@@ -4171,8 +4180,8 @@ const PortfolioManagementSystem = ({ user }) => {
         </div>
       )}
 
-      {/* Account Tab Layer - Only show when a client is selected and has multiple accounts */}
-      {viewAsFilter && accountTabs.length > 1 && (
+      {/* Account Tab Layer - Show when user has multiple accounts (for clients directly or via viewAsFilter) */}
+      {accountTabs.length > 1 && (
         <div style={{
           display: 'flex',
           flexWrap: 'wrap',

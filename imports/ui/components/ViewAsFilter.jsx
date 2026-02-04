@@ -14,8 +14,9 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
   const inputRef = useRef(null);
   const searchTimeoutRef = useRef(null);
 
-  // Only show for admins and superadmins
-  if (!currentUser || (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN)) {
+  // Show for admins, superadmins, compliance, and relationship managers only
+  // CLIENTs use the account tiles in the PMS page directly
+  if (!currentUser || (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN && currentUser.role !== USER_ROLES.COMPLIANCE && currentUser.role !== USER_ROLES.RELATIONSHIP_MANAGER)) {
     return null;
   }
 

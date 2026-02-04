@@ -17,7 +17,12 @@ export const ClientDocumentsCollection = new Mongo.Collection('clientDocuments')
 export const DOCUMENT_TYPES = {
   ID: 'id',
   RESIDENCY_CARD: 'residency_card',
-  PROOF_OF_ADDRESS: 'proof_of_address'
+  PROOF_OF_ADDRESS: 'proof_of_address',
+  // Amberlake Partners Pack
+  ADVISORY_MANDATE: 'advisory_mandate',
+  INVESTOR_PROFILE: 'investor_profile',
+  DISCHARGE_FORM: 'discharge_form',
+  BENEFICIAL_OWNER_FORM: 'beneficial_owner_form'
 };
 
 /**
@@ -27,18 +32,55 @@ export const DOCUMENT_TYPE_CONFIG = {
   [DOCUMENT_TYPES.ID]: {
     label: 'ID / Passport',
     requiresExpiration: true,
-    icon: '🪪'
+    icon: '🪪',
+    category: 'compliance'
   },
   [DOCUMENT_TYPES.RESIDENCY_CARD]: {
     label: 'Residency Card',
     requiresExpiration: true,
-    icon: '🏠'
+    icon: '🏠',
+    category: 'compliance'
   },
   [DOCUMENT_TYPES.PROOF_OF_ADDRESS]: {
     label: 'Proof of Address',
     requiresExpiration: false,
-    icon: '📄'
+    icon: '📄',
+    category: 'compliance'
+  },
+  // Amberlake Partners Pack
+  [DOCUMENT_TYPES.ADVISORY_MANDATE]: {
+    label: 'Advisory Mandate',
+    requiresExpiration: false,
+    icon: '📜',
+    category: 'amberlake'
+  },
+  [DOCUMENT_TYPES.INVESTOR_PROFILE]: {
+    label: "Investor's Profile",
+    requiresExpiration: false,
+    icon: '📊',
+    category: 'amberlake'
+  },
+  [DOCUMENT_TYPES.DISCHARGE_FORM]: {
+    label: 'Discharge (Exchange of Info & Electronic Orders)',
+    requiresExpiration: false,
+    icon: '📝',
+    category: 'amberlake'
+  },
+  [DOCUMENT_TYPES.BENEFICIAL_OWNER_FORM]: {
+    label: 'Beneficial Owner Identification',
+    requiresExpiration: false,
+    icon: '👤',
+    category: 'amberlake'
   }
+};
+
+/**
+ * Get documents by category
+ */
+export const getDocumentsByCategory = (category) => {
+  return Object.entries(DOCUMENT_TYPE_CONFIG)
+    .filter(([_, config]) => config.category === category)
+    .map(([type, _]) => type);
 };
 
 /**
@@ -54,6 +96,8 @@ export const DOCUMENT_TYPE_CONFIG = {
  * - uploadedAt: Date
  * - uploadedBy: String - RM who uploaded
  * - expirationDate: Date - For ID and residency card
+ * - documentNumber: String - ID/Passport number or document reference number
+ * - issuanceDate: Date - Date when the document was issued
  */
 
 /**

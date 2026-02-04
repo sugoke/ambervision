@@ -617,10 +617,14 @@ export const PortfolioSnapshotHelpers = {
       if (endDate) query.snapshotDate.$lte = endDate;
     }
 
+    console.log(`[SNAPSHOTS] getAggregatedSnapshots query:`, JSON.stringify(query));
+
     // Get all snapshots across all users/portfolios
     const snapshots = await PortfolioSnapshotsCollection.find(query, {
       sort: { snapshotDate: 1 }
     }).fetchAsync();
+
+    console.log(`[SNAPSHOTS] getAggregatedSnapshots found ${snapshots.length} raw snapshots`);
 
     // Group by date and sum values (skip weekends - banks don't report on weekends)
     const dateMap = {};

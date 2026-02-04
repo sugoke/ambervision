@@ -113,8 +113,16 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
   // Tab navigation state
   const [activeTab, setActiveTab] = useState('info');
 
+  // RM's clients state (for viewing RM profiles)
+  const [rmClients, setRmClients] = useState([]);
+  const [rmClientsLoading, setRmClientsLoading] = useState(false);
+
+  // Introducer's accounts state (for viewing Introducer profiles)
+  const [introducerAccounts, setIntroducerAccounts] = useState([]);
+  const [introducerAccountsLoading, setIntroducerAccountsLoading] = useState(false);
+
   // Subscribe to data
-  const { user, bankAccounts, relationshipManagers, banks, accountProfiles, portfolioSnapshots, isLoading } = useTracker(() => {
+  const { user, bankAccounts, relationshipManagers, introducers, banks, accountProfiles, portfolioSnapshots, isLoading } = useTracker(() => {
     const userHandle = Meteor.subscribe('customUsers');
     const banksHandle = Meteor.subscribe('banks');
     const bankAccountsHandle = Meteor.subscribe('allBankAccounts');
@@ -123,6 +131,7 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
 
     const userData = UsersCollection.findOne(userId);
     const rms = UsersCollection.find({ role: USER_ROLES.RELATIONSHIP_MANAGER }).fetch();
+    const introducersData = UsersCollection.find({ role: USER_ROLES.INTRODUCER }).fetch();
     const banksData = BanksCollection.find().fetch();
     const accountsData = BankAccountsCollection.find({
       userId: userId,
@@ -144,6 +153,7 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
       user: userData,
       bankAccounts: accountsData,
       relationshipManagers: rms,
+      introducers: introducersData,
       banks: banksData,
       accountProfiles: profilesData,
       portfolioSnapshots: snapshotsData,
@@ -166,6 +176,50 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
       });
     }
   }, [user]);
+
+  // Fetch RM's clients when viewing an RM profile
+  useEffect(() => {
+    if (user && user.role === USER_ROLES.RELATIONSHIP_MANAGER) {
+      setRmClientsLoading(true);
+      // Fetch all clients assigned to this RM
+      const clients = UsersCollection.find({
+        role: USER_ROLES.CLIENT,
+        relationshipManagerId: userId,
+        isActive: { $ne: false }
+      }, {
+        sort: { 'profile.lastName': 1, 'profile.firstName': 1 }
+      }).fetch();
+      setRmClients(clients);
+      setRmClientsLoading(false);
+    }
+  }, [user, userId]);
+
+  // Fetch accounts introduced by this introducer when viewing an Introducer profile
+  useEffect(() => {
+    if (user && user.role === USER_ROLES.INTRODUCER) {
+      setIntroducerAccountsLoading(true);
+      // Fetch all bank accounts introduced by this introducer
+      const accounts = BankAccountsCollection.find({
+        introducerId: userId,
+        isActive: true
+      }).fetch();
+
+      // Enrich with client info
+      const enrichedAccounts = accounts.map(account => {
+        const client = UsersCollection.findOne(account.userId);
+        const bank = BanksCollection.findOne(account.bankId);
+        return {
+          ...account,
+          clientName: client ? `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() : 'Unknown',
+          clientId: client?._id,
+          bankName: bank?.name || 'Unknown Bank'
+        };
+      });
+
+      setIntroducerAccounts(enrichedAccounts);
+      setIntroducerAccountsLoading(false);
+    }
+  }, [user, userId]);
 
   // Handlers
   const handleSaveBasicInfo = async () => {
@@ -363,7 +417,8 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
       referenceCurrency: account.referenceCurrency || 'EUR',
       accountType: account.accountType || 'personal',
       authorizedOverdraft: account.authorizedOverdraft || '',
-      comment: account.comment || ''
+      comment: account.comment || '',
+      introducerId: account.introducerId || ''
     });
   };
 
@@ -379,7 +434,8 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
           referenceCurrency: editBankAccountData.referenceCurrency,
           accountType: editBankAccountData.accountType,
           authorizedOverdraft: overdraftValue,
-          comment: editBankAccountData.comment || ''
+          comment: editBankAccountData.comment || '',
+          introducerId: editBankAccountData.introducerId || null
         },
         sessionId
       });
@@ -1042,18 +1098,27 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
       {(() => {
         const tabs = [
           { id: 'info', label: 'Information', icon: '👤' },
+          { id: 'rmClients', label: 'Clients', icon: '👥', rmOnly: true },
+          { id: 'introducerAccounts', label: 'Accounts Introduced', icon: '🤝', introducerOnly: true },
           { id: 'accounts', label: 'Accounts', icon: '🏦', clientOnly: true },
           { id: 'documents', label: 'Documents', icon: '📋', clientOnly: true },
+          { id: 'kyc', label: 'KYC', icon: '✅', clientOnly: true },
           { id: 'family', label: 'Family', icon: '👨‍👩‍👧‍👦', clientOnly: true },
           { id: 'password', label: 'Password', icon: '🔒', adminOnly: true }
         ];
 
         const isAdmin = currentUser?.role === USER_ROLES.ADMIN || currentUser?.role === USER_ROLES.SUPERADMIN;
         const isViewingClient = user.role === USER_ROLES.CLIENT;
+        const isViewingRM = user.role === USER_ROLES.RELATIONSHIP_MANAGER;
+        const isViewingIntroducer = user.role === USER_ROLES.INTRODUCER;
 
         const visibleTabs = tabs.filter(tab => {
           // Admins see everything when viewing a client
           if (isAdmin && isViewingClient) return true;
+          // RM-only tabs shown when viewing an RM
+          if (tab.rmOnly && !isViewingRM) return false;
+          // Introducer-only tabs shown when viewing an Introducer
+          if (tab.introducerOnly && !isViewingIntroducer) return false;
           // Client-only tabs shown for clients viewing their own profile
           if (tab.clientOnly && !isViewingClient) return false;
           // Admin-only tabs shown only for admins
@@ -1538,6 +1603,259 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
           </LiquidGlassCard>
           )}
 
+          {/* RM's Clients - rmClients tab (when viewing an RM profile) */}
+          {activeTab === 'rmClients' && user.role === USER_ROLES.RELATIONSHIP_MANAGER && (
+            <LiquidGlassCard style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                <h2 style={{
+                  margin: 0,
+                  fontSize: '20px',
+                  fontWeight: '600',
+                  color: 'var(--text-primary)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px'
+                }}>
+                  <span>👥</span> Assigned Clients
+                  <span style={{
+                    fontSize: '0.85rem',
+                    fontWeight: '500',
+                    padding: '4px 10px',
+                    borderRadius: '12px',
+                    background: 'var(--accent-color)',
+                    color: 'white'
+                  }}>
+                    {rmClients.length}
+                  </span>
+                </h2>
+              </div>
+
+              {rmClientsLoading ? (
+                <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-secondary)' }}>
+                  Loading clients...
+                </div>
+              ) : rmClients.length === 0 ? (
+                <div style={{
+                  textAlign: 'center',
+                  padding: '3rem',
+                  color: 'var(--text-secondary)',
+                  background: 'var(--bg-secondary)',
+                  borderRadius: '12px',
+                  border: '1px dashed var(--border-color)'
+                }}>
+                  <div style={{ fontSize: '3rem', marginBottom: '1rem', opacity: 0.5 }}>👤</div>
+                  <p style={{ margin: 0, fontSize: '1rem' }}>No clients assigned to this RM yet</p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {rmClients.map(client => {
+                    const firstName = client.profile?.firstName || client.firstName || '';
+                    const lastName = client.profile?.lastName || client.lastName || '';
+                    const displayName = firstName || lastName ? `${firstName} ${lastName}`.trim() : 'Unnamed';
+                    const initials = `${firstName?.[0] || ''}${lastName?.[0] || ''}`.toUpperCase() || '?';
+
+                    return (
+                      <div
+                        key={client._id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '1rem',
+                          padding: '1rem',
+                          background: 'var(--bg-secondary)',
+                          borderRadius: '10px',
+                          border: '1px solid var(--border-color)',
+                          transition: 'all 0.2s ease'
+                        }}
+                      >
+                        {/* Avatar */}
+                        <div style={{
+                          width: '48px',
+                          height: '48px',
+                          borderRadius: '50%',
+                          background: 'linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: 'white',
+                          fontWeight: '600',
+                          fontSize: '1rem',
+                          flexShrink: 0
+                        }}>
+                          {initials}
+                        </div>
+
+                        {/* Client Info */}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{
+                            fontWeight: '600',
+                            color: 'var(--text-primary)',
+                            fontSize: '1rem',
+                            marginBottom: '4px'
+                          }}>
+                            {displayName}
+                          </div>
+                          <div style={{
+                            fontSize: '0.85rem',
+                            color: 'var(--text-secondary)',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis'
+                          }}>
+                            {client.email}
+                          </div>
+                        </div>
+
+                        {/* Status Badge */}
+                        <div style={{
+                          padding: '4px 10px',
+                          borderRadius: '6px',
+                          background: 'rgba(5, 150, 105, 0.1)',
+                          color: '#059669',
+                          fontSize: '0.75rem',
+                          fontWeight: '600',
+                          flexShrink: 0
+                        }}>
+                          Client
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </LiquidGlassCard>
+          )}
+
+          {/* Introducer's Accounts - introducerAccounts tab (when viewing an Introducer profile) */}
+          {activeTab === 'introducerAccounts' && user.role === USER_ROLES.INTRODUCER && (
+            <LiquidGlassCard style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                <h2 style={{
+                  margin: 0,
+                  fontSize: '20px',
+                  fontWeight: '600',
+                  color: 'var(--text-primary)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px'
+                }}>
+                  <span>🤝</span> Accounts Introduced
+                  <span style={{
+                    fontSize: '0.85rem',
+                    fontWeight: '500',
+                    padding: '4px 10px',
+                    borderRadius: '12px',
+                    background: 'var(--accent-color)',
+                    color: 'white'
+                  }}>
+                    {introducerAccounts.length}
+                  </span>
+                </h2>
+              </div>
+
+              {introducerAccountsLoading ? (
+                <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-secondary)' }}>
+                  Loading accounts...
+                </div>
+              ) : introducerAccounts.length === 0 ? (
+                <div style={{
+                  textAlign: 'center',
+                  padding: '3rem',
+                  color: 'var(--text-secondary)',
+                  background: 'var(--bg-secondary)',
+                  borderRadius: '12px',
+                  border: '1px dashed var(--border-color)'
+                }}>
+                  <div style={{ fontSize: '3rem', marginBottom: '1rem', opacity: 0.5 }}>🏦</div>
+                  <p style={{ margin: 0, fontSize: '1rem' }}>No accounts introduced yet</p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {introducerAccounts.map(account => {
+                    const initials = account.clientName?.split(' ').map(n => n[0]).join('').toUpperCase() || '?';
+
+                    return (
+                      <div
+                        key={account._id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '1rem',
+                          padding: '1rem',
+                          background: 'var(--bg-secondary)',
+                          borderRadius: '10px',
+                          border: '1px solid var(--border-color)',
+                          transition: 'all 0.2s ease'
+                        }}
+                      >
+                        {/* Bank logo or icon */}
+                        <div style={{
+                          width: '48px',
+                          height: '48px',
+                          borderRadius: '12px',
+                          background: getBankLogoPath(account.bankName) ? 'var(--bg-primary)' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexShrink: 0,
+                          overflow: 'hidden',
+                          border: getBankLogoPath(account.bankName) ? '1px solid var(--border-color)' : 'none'
+                        }}>
+                          {getBankLogoPath(account.bankName) ? (
+                            <img
+                              src={getBankLogoPath(account.bankName)}
+                              alt={account.bankName}
+                              style={{ width: '40px', height: '40px', objectFit: 'contain' }}
+                            />
+                          ) : (
+                            <span style={{ fontSize: '24px' }}>🏦</span>
+                          )}
+                        </div>
+
+                        {/* Account Info */}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{
+                            fontWeight: '600',
+                            color: 'var(--text-primary)',
+                            fontSize: '1rem',
+                            marginBottom: '4px'
+                          }}>
+                            {account.bankName}
+                          </div>
+                          <div style={{
+                            fontSize: '0.85rem',
+                            color: 'var(--text-secondary)',
+                            display: 'flex',
+                            gap: '8px',
+                            flexWrap: 'wrap',
+                            alignItems: 'center'
+                          }}>
+                            <span>{account.accountNumber}</span>
+                            <span style={{ color: 'var(--text-muted)' }}>•</span>
+                            <span style={{ fontWeight: '500', color: '#3b82f6' }}>{account.clientName}</span>
+                          </div>
+                        </div>
+
+                        {/* Currency Badge */}
+                        <div style={{
+                          padding: '4px 10px',
+                          borderRadius: '6px',
+                          background: isDarkMode ? 'rgba(79, 166, 255, 0.15)' : 'rgba(59, 130, 246, 0.15)',
+                          color: '#4da6ff',
+                          fontSize: '0.75rem',
+                          fontWeight: '600',
+                          flexShrink: 0
+                        }}>
+                          {account.referenceCurrency || 'EUR'}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </LiquidGlassCard>
+          )}
+
           {/* Bank Accounts - accounts tab (when viewing a client profile) */}
           {activeTab === 'accounts' && user.role === USER_ROLES.CLIENT && (
             <LiquidGlassCard style={{ padding: '24px' }}>
@@ -2005,6 +2323,26 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                                     <option value="Credit card">Credit card</option>
                                     <option value="Spending">Spending</option>
                                   </select>
+                                  <select
+                                    value={editBankAccountData.introducerId || ''}
+                                    onChange={(e) => setEditBankAccountData(prev => ({ ...prev, introducerId: e.target.value }))}
+                                    style={{
+                                      padding: '4px 8px',
+                                      borderRadius: '6px',
+                                      border: '1px solid var(--border-color)',
+                                      background: 'var(--bg-secondary)',
+                                      color: 'var(--text-primary)',
+                                      fontSize: '12px',
+                                      fontWeight: '600'
+                                    }}
+                                  >
+                                    <option value="">No Introducer</option>
+                                    {introducers.map(introducer => (
+                                      <option key={introducer._id} value={introducer._id}>
+                                        {`${introducer.profile?.firstName || ''} ${introducer.profile?.lastName || ''}`.trim() || introducer.username}
+                                      </option>
+                                    ))}
+                                  </select>
                                 </div>
                               ) : (
                                 <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
@@ -2059,6 +2397,21 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                                       {account.comment}
                                     </span>
                                   )}
+                                  {account.introducerId && (() => {
+                                    const introducer = introducers.find(i => i._id === account.introducerId);
+                                    return introducer ? (
+                                      <span style={{
+                                        padding: '2px 8px',
+                                        borderRadius: '6px',
+                                        background: isDarkMode ? 'rgba(236, 72, 153, 0.15)' : 'rgba(236, 72, 153, 0.15)',
+                                        color: '#ec4899',
+                                        fontSize: '12px',
+                                        fontWeight: '600'
+                                      }}>
+                                        🤝 {`${introducer.profile?.firstName || ''} ${introducer.profile?.lastName || ''}`.trim()}
+                                      </span>
+                                    ) : null;
+                                  })()}
                                 </div>
                               )}
                             </div>
@@ -2568,6 +2921,195 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
               userId={userId}
               familyMembers={user.profile?.familyMembers || []}
             />
+          )}
+
+          {/* KYC - kyc tab (when viewing a client profile) */}
+          {activeTab === 'kyc' && user.role === USER_ROLES.CLIENT && (
+            <LiquidGlassCard style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                <h2 style={{
+                  margin: 0,
+                  fontSize: '20px',
+                  fontWeight: '600',
+                  color: 'var(--text-primary)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px'
+                }}>
+                  <span>✅</span> KYC Status
+                </h2>
+              </div>
+
+              {/* KYC Status Overview */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                gap: '16px',
+                marginBottom: '24px'
+              }}>
+                {/* Identity Verification */}
+                <div style={{
+                  padding: '16px',
+                  background: user.profile?.kyc?.identityVerified ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)',
+                  border: `1px solid ${user.profile?.kyc?.identityVerified ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`,
+                  borderRadius: '12px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '1.25rem' }}>{user.profile?.kyc?.identityVerified ? '✅' : '⏳'}</span>
+                    <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>Identity</span>
+                  </div>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                    {user.profile?.kyc?.identityVerified ? 'Verified' : 'Pending verification'}
+                  </div>
+                  {user.profile?.kyc?.identityVerifiedDate && (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                      {new Date(user.profile.kyc.identityVerifiedDate).toLocaleDateString()}
+                    </div>
+                  )}
+                </div>
+
+                {/* Address Verification */}
+                <div style={{
+                  padding: '16px',
+                  background: user.profile?.kyc?.addressVerified ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)',
+                  border: `1px solid ${user.profile?.kyc?.addressVerified ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`,
+                  borderRadius: '12px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '1.25rem' }}>{user.profile?.kyc?.addressVerified ? '✅' : '⏳'}</span>
+                    <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>Address</span>
+                  </div>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                    {user.profile?.kyc?.addressVerified ? 'Verified' : 'Pending verification'}
+                  </div>
+                  {user.profile?.kyc?.addressVerifiedDate && (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                      {new Date(user.profile.kyc.addressVerifiedDate).toLocaleDateString()}
+                    </div>
+                  )}
+                </div>
+
+                {/* Source of Funds */}
+                <div style={{
+                  padding: '16px',
+                  background: user.profile?.kyc?.sourceOfFundsVerified ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)',
+                  border: `1px solid ${user.profile?.kyc?.sourceOfFundsVerified ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`,
+                  borderRadius: '12px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '1.25rem' }}>{user.profile?.kyc?.sourceOfFundsVerified ? '✅' : '⏳'}</span>
+                    <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>Source of Funds</span>
+                  </div>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                    {user.profile?.kyc?.sourceOfFundsVerified ? 'Verified' : 'Pending verification'}
+                  </div>
+                  {user.profile?.kyc?.sourceOfFundsVerifiedDate && (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                      {new Date(user.profile.kyc.sourceOfFundsVerifiedDate).toLocaleDateString()}
+                    </div>
+                  )}
+                </div>
+
+                {/* Risk Assessment */}
+                <div style={{
+                  padding: '16px',
+                  background: user.profile?.kyc?.riskLevel
+                    ? (user.profile.kyc.riskLevel === 'low' ? 'rgba(16, 185, 129, 0.1)'
+                       : user.profile.kyc.riskLevel === 'medium' ? 'rgba(245, 158, 11, 0.1)'
+                       : 'rgba(239, 68, 68, 0.1)')
+                    : 'rgba(107, 114, 128, 0.1)',
+                  border: `1px solid ${user.profile?.kyc?.riskLevel
+                    ? (user.profile.kyc.riskLevel === 'low' ? 'rgba(16, 185, 129, 0.3)'
+                       : user.profile.kyc.riskLevel === 'medium' ? 'rgba(245, 158, 11, 0.3)'
+                       : 'rgba(239, 68, 68, 0.3)')
+                    : 'rgba(107, 114, 128, 0.3)'}`,
+                  borderRadius: '12px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '1.25rem' }}>
+                      {user.profile?.kyc?.riskLevel === 'low' ? '🟢'
+                       : user.profile?.kyc?.riskLevel === 'medium' ? '🟡'
+                       : user.profile?.kyc?.riskLevel === 'high' ? '🔴'
+                       : '⚪'}
+                    </span>
+                    <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>Risk Level</span>
+                  </div>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', textTransform: 'capitalize' }}>
+                    {user.profile?.kyc?.riskLevel || 'Not assessed'}
+                  </div>
+                </div>
+              </div>
+
+              {/* KYC Details */}
+              <div style={{
+                padding: '16px',
+                background: 'var(--bg-secondary)',
+                borderRadius: '12px',
+                border: '1px solid var(--border-color)'
+              }}>
+                <h3 style={{ margin: '0 0 16px', fontSize: '1rem', fontWeight: '600', color: 'var(--text-primary)' }}>
+                  Additional Information
+                </h3>
+
+                <div style={{ display: 'grid', gap: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Nationality</span>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: '500' }}>
+                      {user.profile?.kyc?.nationality || '—'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Tax Residence</span>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: '500' }}>
+                      {user.profile?.kyc?.taxResidence || '—'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>PEP Status</span>
+                    <span style={{
+                      color: user.profile?.kyc?.isPEP ? '#f59e0b' : 'var(--text-primary)',
+                      fontWeight: '500'
+                    }}>
+                      {user.profile?.kyc?.isPEP ? 'Yes - Politically Exposed Person' : 'No'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Last Review</span>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: '500' }}>
+                      {user.profile?.kyc?.lastReviewDate
+                        ? new Date(user.profile.kyc.lastReviewDate).toLocaleDateString()
+                        : '—'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Next Review Due</span>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: '500' }}>
+                      {user.profile?.kyc?.nextReviewDate
+                        ? new Date(user.profile.kyc.nextReviewDate).toLocaleDateString()
+                        : '—'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Notes */}
+              {user.profile?.kyc?.notes && (
+                <div style={{
+                  marginTop: '16px',
+                  padding: '16px',
+                  background: 'var(--bg-secondary)',
+                  borderRadius: '12px',
+                  border: '1px solid var(--border-color)'
+                }}>
+                  <h3 style={{ margin: '0 0 8px', fontSize: '1rem', fontWeight: '600', color: 'var(--text-primary)' }}>
+                    Notes
+                  </h3>
+                  <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.9rem', whiteSpace: 'pre-wrap' }}>
+                    {user.profile.kyc.notes}
+                  </p>
+                </div>
+              )}
+            </LiquidGlassCard>
           )}
 
           {/* Family Members - family tab (when viewing a client profile) */}
