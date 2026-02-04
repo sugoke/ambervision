@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Meteor } from 'meteor/meteor';
 import { translations, getTranslation } from '../../utils/reportTranslations';
 
@@ -119,112 +120,121 @@ const PDFDownloadButton = ({
     }
   };
 
+  // Language Selection Modal - rendered via Portal to escape stacking contexts
+  const languageModal = showLangModal && createPortal(
+    <div
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        background: 'rgba(0, 0, 0, 0.5)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 2147483647,
+        pointerEvents: 'auto'
+      }}
+      onClick={() => setShowLangModal(false)}
+    >
+      <div
+        style={{
+          background: 'var(--bg-primary, #1f2937)',
+          borderRadius: '12px',
+          padding: '1.5rem',
+          maxWidth: '320px',
+          width: '90%',
+          boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
+          pointerEvents: 'auto'
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 style={{
+          margin: '0 0 1rem 0',
+          fontSize: '1.1rem',
+          fontWeight: '600',
+          color: 'var(--text-primary, white)',
+          textAlign: 'center'
+        }}>
+          {translations.en.selectReportLanguage}
+        </h3>
+        <div style={{
+          display: 'flex',
+          gap: '0.75rem',
+          justifyContent: 'center'
+        }}>
+          <button
+            onClick={() => handleDownloadPDF('en')}
+            type="button"
+            style={{
+              padding: '0.75rem 1.5rem',
+              background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+              color: 'white',
+              border: 'none',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontSize: '0.95rem',
+              fontWeight: '500',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              transition: 'transform 0.2s'
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.02)'}
+            onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+          >
+            🇬🇧 {translations.en.english}
+          </button>
+          <button
+            onClick={() => handleDownloadPDF('fr')}
+            type="button"
+            style={{
+              padding: '0.75rem 1.5rem',
+              background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+              color: 'white',
+              border: 'none',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontSize: '0.95rem',
+              fontWeight: '500',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              transition: 'transform 0.2s'
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.02)'}
+            onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+          >
+            🇫🇷 {translations.fr.french}
+          </button>
+        </div>
+        <button
+          onClick={() => setShowLangModal(false)}
+          type="button"
+          style={{
+            marginTop: '1rem',
+            width: '100%',
+            padding: '0.5rem',
+            background: 'transparent',
+            border: '1px solid var(--border-color, #4b5563)',
+            borderRadius: '6px',
+            color: 'var(--text-secondary, #9ca3af)',
+            cursor: 'pointer',
+            fontSize: '0.85rem'
+          }}
+        >
+          {translations.en.cancel}
+        </button>
+      </div>
+    </div>,
+    document.body
+  );
+
   return (
     <div style={{ display: 'inline-block', position: 'relative' }}>
-      {/* Language Selection Modal */}
-      {showLangModal && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: 'rgba(0, 0, 0, 0.5)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 100000
-          }}
-          onClick={() => setShowLangModal(false)}
-        >
-          <div
-            style={{
-              background: 'var(--bg-primary, white)',
-              borderRadius: '12px',
-              padding: '1.5rem',
-              maxWidth: '320px',
-              width: '90%',
-              boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)'
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 style={{
-              margin: '0 0 1rem 0',
-              fontSize: '1.1rem',
-              fontWeight: '600',
-              color: 'var(--text-primary, #1f2937)',
-              textAlign: 'center'
-            }}>
-              {translations.en.selectReportLanguage}
-            </h3>
-            <div style={{
-              display: 'flex',
-              gap: '0.75rem',
-              justifyContent: 'center'
-            }}>
-              <button
-                onClick={() => handleDownloadPDF('en')}
-                style={{
-                  padding: '0.75rem 1.5rem',
-                  background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  fontSize: '0.95rem',
-                  fontWeight: '500',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem',
-                  transition: 'transform 0.2s'
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.02)'}
-                onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
-              >
-                🇬🇧 {translations.en.english}
-              </button>
-              <button
-                onClick={() => handleDownloadPDF('fr')}
-                style={{
-                  padding: '0.75rem 1.5rem',
-                  background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  fontSize: '0.95rem',
-                  fontWeight: '500',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem',
-                  transition: 'transform 0.2s'
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.02)'}
-                onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
-              >
-                🇫🇷 {translations.fr.french}
-              </button>
-            </div>
-            <button
-              onClick={() => setShowLangModal(false)}
-              style={{
-                marginTop: '1rem',
-                width: '100%',
-                padding: '0.5rem',
-                background: 'transparent',
-                border: '1px solid var(--border-color, #e5e7eb)',
-                borderRadius: '6px',
-                color: 'var(--text-secondary, #6b7280)',
-                cursor: 'pointer',
-                fontSize: '0.85rem'
-              }}
-            >
-              {translations.en.cancel}
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Language Selection Modal - rendered via Portal */}
+      {languageModal}
 
       <button
         onClick={handleDownloadClick}

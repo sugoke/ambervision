@@ -31,6 +31,28 @@ const formatShortDate = (date, lang = 'en') => {
   });
 };
 
+/**
+ * Parse markdown-style bold text (**text**) and render as React elements
+ * @param {string} text - Text that may contain **bold** markers
+ * @returns {React.ReactNode[]} Array of text and <strong> elements
+ */
+const renderMarkdownBold = (text) => {
+  if (!text || typeof text !== 'string') return text;
+
+  // Split by **text** pattern, keeping the delimiters
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+
+  return parts.map((part, index) => {
+    // Check if this part is a bold segment
+    if (part.startsWith('**') && part.endsWith('**')) {
+      // Remove the ** markers and wrap in <strong>
+      const boldText = part.slice(2, -2);
+      return <strong key={index}>{boldText}</strong>;
+    }
+    return part;
+  });
+};
+
 const getRiskBadgeStyle = (riskLevel) => {
   const baseStyle = {
     display: 'inline-block',
@@ -262,7 +284,7 @@ const RiskAnalysisPDF = () => {
         <div style={styles.executiveSummary} className="risk-pdf-section">
           <h2 style={styles.executiveSummaryTitle}>{lang === 'fr' ? 'Résumé Exécutif' : 'Executive Summary'}</h2>
           <div style={styles.executiveSummaryText}>
-            {executiveSummary}
+            {renderMarkdownBold(executiveSummary)}
           </div>
         </div>
 
@@ -380,7 +402,7 @@ const RiskAnalysisPDF = () => {
               <div style={styles.aiAnalysisBox}>
                 <h4 style={styles.aiAnalysisTitle}>{lang === 'fr' ? 'Commentaire Amberlake' : 'Amberlake Comment'}</h4>
                 <div style={styles.aiAnalysisText}>
-                  {analysis.analysis}
+                  {renderMarkdownBold(analysis.analysis)}
                 </div>
               </div>
 

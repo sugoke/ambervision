@@ -1,6 +1,6 @@
 import { Meteor } from 'meteor/meteor';
 import { Mongo } from 'meteor/mongo';
-import { check } from 'meteor/check';
+import { check, Match } from 'meteor/check';
 import { HTTP } from 'meteor/http';
 import { SessionsCollection } from '../../imports/api/sessions.js';
 import { UsersCollection, USER_ROLES } from '../../imports/api/users.js';
@@ -98,6 +98,65 @@ async function getAssignedClients(currentUser) {
     role: USER_ROLES.CLIENT,
     relationshipManagerId: currentUser._id
   }).fetchAsync();
+}
+
+/**
+ * Helper function to get filtered client IDs based on viewAsFilter
+ * Respects role-based access control and returns only IDs (not full user objects)
+ * @param {Object} currentUser - The authenticated user
+ * @param {Object} viewAsFilter - Optional filter {type: 'client'|'account', id: String}
+ * @returns {Array<String>} Array of client IDs to filter by
+ */
+async function getFilteredClientIds(currentUser, viewAsFilter = null) {
+  const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
+  const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER;
+  const isCompliance = currentUser.role === USER_ROLES.COMPLIANCE;
+  const isClient = currentUser.role === USER_ROLES.CLIENT;
+
+  // Client always sees only themselves
+  if (isClient) {
+    return [currentUser._id];
+  }
+
+  // If viewAsFilter is active, filter to specific client
+  if (viewAsFilter && (isAdmin || isRM || isCompliance)) {
+    if (viewAsFilter.type === 'client') {
+      // For RMs, verify they have access to this client
+      if (isRM) {
+        const targetClient = await UsersCollection.findOneAsync({
+          _id: viewAsFilter.id,
+          relationshipManagerId: currentUser._id
+        });
+        if (!targetClient) {
+          console.warn(`[getFilteredClientIds] RM ${currentUser._id} attempted to access unauthorized client ${viewAsFilter.id}`);
+          return [];
+        }
+      }
+      return [viewAsFilter.id];
+    } else if (viewAsFilter.type === 'account') {
+      // Get the client who owns this account
+      const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
+      if (bankAccount) {
+        // For RMs, verify they have access to this client
+        if (isRM) {
+          const targetClient = await UsersCollection.findOneAsync({
+            _id: bankAccount.userId,
+            relationshipManagerId: currentUser._id
+          });
+          if (!targetClient) {
+            console.warn(`[getFilteredClientIds] RM ${currentUser._id} attempted to access unauthorized account ${viewAsFilter.id}`);
+            return [];
+          }
+        }
+        return [bankAccount.userId];
+      }
+      return [];
+    }
+  }
+
+  // No filter - get all assigned clients
+  const clients = await getAssignedClients(currentUser);
+  return clients.map(c => c._id);
 }
 
 /**
@@ -224,17 +283,27 @@ Meteor.methods({
   /**
    * Get alerts for RM Dashboard
    * Includes: barrier breaches, barrier warnings, profile breaches, unknown products
+   * @param {String} sessionId - User session ID
+   * @param {Object} viewAsFilter - Optional filter to view specific client/account
    */
-  async 'rmDashboard.getAlerts'(sessionId) {
+  async 'rmDashboard.getAlerts'(sessionId, viewAsFilter = null) {
     check(sessionId, String);
+    check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
+      type: String,
+      id: String
+    }), null, undefined));
 
     const currentUser = await validateRMSession(sessionId);
-    const clients = await getAssignedClients(currentUser);
-    const clientIds = clients.map(c => c._id);
+
+    // Determine target client(s) based on viewAsFilter
+    const clientIds = await getFilteredClientIds(currentUser, viewAsFilter);
 
     if (clientIds.length === 0) {
       return [];
     }
+
+    // Fetch full client objects for profile breach checking
+    const clients = await UsersCollection.find({ _id: { $in: clientIds } }).fetchAsync();
 
     const alerts = [];
 
@@ -410,17 +479,23 @@ Meteor.methods({
    * Get portfolio summary for RM Dashboard
    * @param {String} sessionId - User session ID
    * @param {String} targetCurrency - Currency to display AUM in (default: 'EUR')
+   * @param {Object} viewAsFilter - Optional filter to view specific client/account
    */
-  async 'rmDashboard.getPortfolioSummary'(sessionId, targetCurrency = 'EUR') {
+  async 'rmDashboard.getPortfolioSummary'(sessionId, targetCurrency = 'EUR', viewAsFilter = null) {
     check(sessionId, String);
+    check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
+      type: String,
+      id: String
+    }), null, undefined));
 
     const currentUser = await validateRMSession(sessionId);
-    const clients = await getAssignedClients(currentUser);
-    const clientIds = clients.map(c => c._id);
 
-    // For admin/superadmin requesting EUR, check pre-computed cache first
+    // Determine target client(s) based on viewAsFilter
+    const clientIds = await getFilteredClientIds(currentUser, viewAsFilter);
+
+    // For admin/superadmin requesting EUR without viewAsFilter, check pre-computed cache first
     const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
-    if (isAdmin && targetCurrency === 'EUR') {
+    if (isAdmin && targetCurrency === 'EUR' && !viewAsFilter) {
       const cached = await DashboardMetricsHelpers.getMetrics('global', 'aum_summary');
       if (cached) {
         console.log('[RM Dashboard] Using pre-computed AUM metrics from cache');
@@ -441,7 +516,7 @@ Meteor.methods({
           aumChangePercent: cached.aumChangePercent,
           previousAUM: cached.previousDayAUM,
           comparisonDateLabel: 'yesterday',
-          clientCount: cached.clientCount || clients.length,
+          clientCount: cached.clientCount || clientIds.length,
           liveProducts: statusCounts.live,
           autocalledProducts: statusCounts.autocalled,
           maturedProducts: statusCounts.matured,
@@ -571,7 +646,7 @@ Meteor.methods({
       });
 
       // Client count: for admin all clients, for RM their assigned clients
-      let clientCount = clients.length;
+      let clientCount = clientIds.length;
       if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN) {
         clientCount = await UsersCollection.find({ role: USER_ROLES.CLIENT }).countAsync();
       }
@@ -713,7 +788,7 @@ Meteor.methods({
       console.error('[RM Dashboard] Error getting portfolio summary:', error);
       return {
         totalAUM: 0,
-        clientCount: clients.length,
+        clientCount: clientIds.length,
         liveProducts: 0,
         autocalledProducts: 0,
         maturedProducts: 0
@@ -912,13 +987,24 @@ Meteor.methods({
   /**
    * Get birthdays for RM Dashboard
    * Returns next upcoming birthdays (clients + family members)
+   * @param {String} sessionId - User session ID
+   * @param {Object} viewAsFilter - Optional filter to view specific client/account
    */
-  async 'rmDashboard.getBirthdays'(sessionId, limit = 5) {
+  async 'rmDashboard.getBirthdays'(sessionId, viewAsFilter = null, limit = 5) {
     check(sessionId, String);
+    check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
+      type: String,
+      id: String
+    }), null, undefined));
     check(limit, Number);
 
     const currentUser = await validateRMSession(sessionId);
-    const clients = await getAssignedClients(currentUser);
+    const clientIds = await getFilteredClientIds(currentUser, viewAsFilter);
+
+    // Get full client objects for birthday data
+    const clients = clientIds.length > 0
+      ? await UsersCollection.find({ _id: { $in: clientIds } }).fetchAsync()
+      : [];
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -1004,13 +1090,18 @@ Meteor.methods({
   /**
    * Get watchlist for RM Dashboard
    * Auto-generated from unique underlyings across client products
+   * @param {String} sessionId - User session ID
+   * @param {Object} viewAsFilter - Optional filter to view specific client/account
    */
-  async 'rmDashboard.getWatchlist'(sessionId) {
+  async 'rmDashboard.getWatchlist'(sessionId, viewAsFilter = null) {
     check(sessionId, String);
+    check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
+      type: String,
+      id: String
+    }), null, undefined));
 
     const currentUser = await validateRMSession(sessionId);
-    const clients = await getAssignedClients(currentUser);
-    const clientIds = clients.map(c => c._id);
+    const clientIds = await getFilteredClientIds(currentUser, viewAsFilter);
 
     if (clientIds.length === 0) {
       return [];
@@ -1090,14 +1181,20 @@ Meteor.methods({
   /**
    * Get upcoming events for RM Dashboard
    * Returns next N observations across all products
+   * @param {String} sessionId - User session ID
+   * @param {Number} limit - Max number of events to return
+   * @param {Object} viewAsFilter - Optional filter to view specific client/account
    */
-  async 'rmDashboard.getUpcomingEvents'(sessionId, limit = 2) {
+  async 'rmDashboard.getUpcomingEvents'(sessionId, limit = 2, viewAsFilter = null) {
     check(sessionId, String);
     check(limit, Number);
+    check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
+      type: String,
+      id: String
+    }), null, undefined));
 
     const currentUser = await validateRMSession(sessionId);
-    const clients = await getAssignedClients(currentUser);
-    const clientIds = clients.map(c => c._id);
+    const clientIds = await getFilteredClientIds(currentUser, viewAsFilter);
 
     if (clientIds.length === 0) {
       return [];
@@ -1164,16 +1261,36 @@ Meteor.methods({
 
   /**
    * Get recent activity for RM Dashboard
+   * @param {String} sessionId - User session ID
+   * @param {Number} limit - Max number of activities to return
+   * @param {Object} viewAsFilter - Optional filter to view specific client/account
    */
-  async 'rmDashboard.getRecentActivity'(sessionId, limit = 5) {
+  async 'rmDashboard.getRecentActivity'(sessionId, limit = 5, viewAsFilter = null) {
     check(sessionId, String);
     check(limit, Number);
+    check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
+      type: String,
+      id: String
+    }), null, undefined));
 
     const currentUser = await validateRMSession(sessionId);
+    const clientIds = await getFilteredClientIds(currentUser, viewAsFilter);
 
     try {
+      // Get allocations to find relevant products for these clients
+      const allocations = await AllocationsCollection.find({
+        clientId: { $in: clientIds },
+        status: 'active'
+      }).fetchAsync();
+      const productIds = [...new Set(allocations.map(a => a.productId))];
+
+      // Filter notifications to only those related to filtered client's products
+      const query = productIds.length > 0
+        ? { productId: { $in: productIds } }
+        : {}; // Fallback to all if no products (shouldn't happen normally)
+
       const notifications = await NotificationsCollection.find(
-        {},
+        query,
         {
           sort: { createdAt: -1 },
           limit
@@ -1358,28 +1475,80 @@ Meteor.methods({
   /**
    * Get cash monitoring data for RM Dashboard
    * Returns accounts with negative cash and accounts with high cash (>200k EUR)
+   * @param {String} sessionId - User session ID
+   * @param {Object} viewAsFilter - Optional filter to view specific client/account
    */
-  async 'rmDashboard.getCashMonitoring'(sessionId) {
+  async 'rmDashboard.getCashMonitoring'(sessionId, viewAsFilter = null) {
     check(sessionId, String);
+    check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
+      type: String,
+      id: String
+    }), null, undefined));
 
     const currentUser = await validateRMSession(sessionId);
-    const clients = await getAssignedClients(currentUser);
-    const clientIds = clients.map(c => c._id);
+    const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
+    const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER;
 
-    if (clientIds.length === 0) {
+    // Determine target client(s) based on viewAsFilter
+    let targetClientIds = [];
+
+    if (viewAsFilter && (isAdmin || isRM)) {
+      // Apply viewAsFilter - show only the selected client's data
+      if (viewAsFilter.type === 'client') {
+        // For RMs, verify they have access to this client
+        if (isRM) {
+          const targetClient = await UsersCollection.findOneAsync({
+            _id: viewAsFilter.id,
+            relationshipManagerId: currentUser._id
+          });
+          if (!targetClient) {
+            console.warn(`[CashMonitoring] RM ${currentUser._id} attempted to access unauthorized client ${viewAsFilter.id}`);
+            return { negativeCashAccounts: [], highCashAccounts: [] };
+          }
+        }
+        targetClientIds = [viewAsFilter.id];
+      } else if (viewAsFilter.type === 'account') {
+        // Get the client who owns this account
+        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
+        if (bankAccount) {
+          // For RMs, verify they have access to this client
+          if (isRM) {
+            const targetClient = await UsersCollection.findOneAsync({
+              _id: bankAccount.userId,
+              relationshipManagerId: currentUser._id
+            });
+            if (!targetClient) {
+              console.warn(`[CashMonitoring] RM ${currentUser._id} attempted to access unauthorized account ${viewAsFilter.id}`);
+              return { negativeCashAccounts: [], highCashAccounts: [] };
+            }
+          }
+          targetClientIds = [bankAccount.userId];
+        }
+      }
+    } else {
+      // No filter - get all assigned clients (or all for admins)
+      const clients = await getAssignedClients(currentUser);
+      targetClientIds = clients.map(c => c._id);
+    }
+
+    if (targetClientIds.length === 0) {
       return { negativeCashAccounts: [], highCashAccounts: [] };
     }
 
     try {
-      // Get all bank accounts for these clients
+      // Get bank accounts for target clients
       let bankAccounts;
-      if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN) {
-        // Admin sees all accounts
-        bankAccounts = await BankAccountsCollection.find({ isActive: true }).fetchAsync();
-      } else {
-        // RM sees only their clients' accounts
+
+      // If filtering by specific account, only get that account
+      if (viewAsFilter && viewAsFilter.type === 'account') {
         bankAccounts = await BankAccountsCollection.find({
-          userId: { $in: clientIds },
+          _id: viewAsFilter.id,
+          isActive: true
+        }).fetchAsync();
+      } else {
+        // Get all accounts for the target client(s)
+        bankAccounts = await BankAccountsCollection.find({
+          userId: { $in: targetClientIds },
           isActive: true
         }).fetchAsync();
       }

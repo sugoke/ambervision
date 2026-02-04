@@ -606,7 +606,7 @@ const AppContent = () => {
                     handleSectionChange('report', product._id);
                   }} />
 
-                  {/* View As Filter - Only for admins */}
+                  {/* View As Filter - For admins and RMs */}
                   <ViewAsFilter currentUser={user} />
                 </div>
               )}
@@ -644,8 +644,8 @@ const AppContent = () => {
                       🔍
                     </button>
 
-                    {/* View As Button - Only for admins */}
-                    {user && (user.role === 'admin' || user.role === 'superadmin') && (
+                    {/* View As Button - For admins and RMs only */}
+                    {user && (user.role === 'admin' || user.role === 'superadmin' || user.role === 'rm') && (
                       <button
                         onClick={() => setMobileViewAsOpen(true)}
                         style={{

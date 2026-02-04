@@ -34,7 +34,38 @@ export const USER_ROLES = {
   ADMIN: 'admin',
   COMPLIANCE: 'compliance',
   RELATIONSHIP_MANAGER: 'rm',
-  CLIENT: 'client'
+  CLIENT: 'client',
+  PROSPECT: 'prospect',
+  STAFF: 'staff',
+  INTRODUCER: 'introducer'
+};
+
+// User type categories for filtering in the Clients section
+export const USER_TYPE_CATEGORIES = {
+  CLIENTS: 'clients',
+  PROSPECTS: 'prospects',
+  STAFF: 'staff',
+  INTRODUCERS: 'introducers'
+};
+
+// Map roles to categories
+export const getRoleCategory = (role) => {
+  switch (role) {
+    case USER_ROLES.CLIENT:
+      return USER_TYPE_CATEGORIES.CLIENTS;
+    case USER_ROLES.PROSPECT:
+      return USER_TYPE_CATEGORIES.PROSPECTS;
+    case USER_ROLES.SUPERADMIN:
+    case USER_ROLES.ADMIN:
+    case USER_ROLES.COMPLIANCE:
+    case USER_ROLES.RELATIONSHIP_MANAGER:
+    case USER_ROLES.STAFF:
+      return USER_TYPE_CATEGORIES.STAFF;
+    case USER_ROLES.INTRODUCER:
+      return USER_TYPE_CATEGORIES.INTRODUCERS;
+    default:
+      return USER_TYPE_CATEGORIES.CLIENTS;
+  }
 };
 
 // Helper functions for role management

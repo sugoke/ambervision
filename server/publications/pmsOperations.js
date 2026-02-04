@@ -67,15 +67,41 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
     // Build query filter based on role and viewAsFilter
     let queryFilter = { isActive: true };
 
-    // Admins and superadmins with viewAsFilter
-    if (viewAsFilter && (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN)) {
+    const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
+    const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER;
+    const isClient = currentUser.role === USER_ROLES.CLIENT;
+
+    // Handle viewAsFilter for admins and RMs
+    if (viewAsFilter && (isAdmin || isRM)) {
       if (viewAsFilter.type === 'client') {
+        // For RMs, verify they have access to this client
+        if (isRM) {
+          const targetClient = await UsersCollection.findOneAsync({
+            _id: viewAsFilter.id,
+            relationshipManagerId: currentUser._id
+          });
+          if (!targetClient) {
+            console.log('[PMS_OPERATIONS] RM does not have access to client:', viewAsFilter.id);
+            return this.ready();
+          }
+        }
         // Filter by client userId (all accounts aggregated)
         queryFilter.userId = viewAsFilter.id;
       } else if (viewAsFilter.type === 'account') {
         // Filter by specific bank account
         const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
         if (bankAccount) {
+          // For RMs, verify they have access to this client
+          if (isRM) {
+            const targetClient = await UsersCollection.findOneAsync({
+              _id: bankAccount.userId,
+              relationshipManagerId: currentUser._id
+            });
+            if (!targetClient) {
+              console.log('[PMS_OPERATIONS] RM does not have access to account owner:', bankAccount.userId);
+              return this.ready();
+            }
+          }
           queryFilter.userId = bankAccount.userId;
           // Match portfolioCode - strip suffix from bankAccount if present, use regex to match with/without suffix
           // Handles: "5040241", "5040241-1", "5040241200001" (JB long format)
@@ -88,12 +114,33 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
         }
       }
     }
+    // Handle viewAsFilter for clients - only allow filtering to their OWN accounts
+    else if (viewAsFilter && isClient) {
+      if (viewAsFilter.type === 'account') {
+        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
+        // Security: Verify the client owns this account
+        if (bankAccount && bankAccount.userId === currentUser._id) {
+          queryFilter.userId = currentUser._id;
+          const baseAccountNumber = bankAccount.accountNumber.split('-')[0];
+          queryFilter.portfolioCode = { $regex: `^${baseAccountNumber}` };
+          queryFilter.bankId = bankAccount.bankId;
+          console.log('[PMS_OPERATIONS] Client filtering to own account:', bankAccount.accountNumber);
+        } else {
+          // If account not found or not owned by client, fall through to default client filter
+          console.log('[PMS_OPERATIONS] Client viewAsFilter rejected - account not owned:', viewAsFilter.id);
+          queryFilter.userId = currentUser._id;
+        }
+      } else {
+        // For any other filter type from clients, default to their own operations
+        queryFilter.userId = currentUser._id;
+      }
+    }
     // Admins without filter - see all operations
-    else if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN) {
+    else if (isAdmin) {
       // No additional filter - see all active operations
     }
-    // Relationship Managers
-    else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
+    // Relationship Managers without filter - see all assigned clients' operations
+    else if (isRM) {
       // Get all clients assigned to this RM
       const assignedClients = await UsersCollection.find({
         relationshipManagerId: currentUser._id
@@ -104,7 +151,7 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
       queryFilter.userId = { $in: clientIds };
     }
     // Clients - only their own operations
-    else if (currentUser.role === USER_ROLES.CLIENT) {
+    else if (isClient) {
       queryFilter.userId = currentUser._id;
     }
 

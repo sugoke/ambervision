@@ -1384,6 +1384,11 @@ const StructuredProductInterface = ({
     if (field === 'finalObservation') {
       setFinalObservationDate(value);
     }
+
+    // Sync maturity changes to maturityDate state
+    if (field === 'maturity') {
+      setMaturityDate(value);
+    }
   }, []);
 
   // Underlying mode change handler
