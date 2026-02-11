@@ -88,6 +88,7 @@ import './methods/accountProfileMethods';
 import './methods/rmDashboardMethods';
 import './methods/landingMethods';
 import './methods/clientDocumentMethods';
+import './methods/orderMethods';
 import './pdfAuth'; // PDF authentication middleware
 import './publications/underlyingsAnalysis';
 import './publications/bankConnections';
@@ -2162,9 +2163,79 @@ Meteor.methods({
     return result;
   },
 
+  // Update KYC Risk Score for a user
+  async 'users.updateRiskScore'(userId, riskScoreData, sessionId) {
+    check(userId, String);
+    check(sessionId, String);
+    check(riskScoreData, {
+      assessmentDate: Date,
+      assessedBy: Match.Maybe(String),
+      clientProspect: {
+        criteria: Object,
+        totalScore: Number,
+        riskLevel: String
+      },
+      beneficialOwner: {
+        criteria: Object,
+        totalScore: Number,
+        riskLevel: String
+      },
+      businessRelationship: {
+        criteria: Object,
+        totalScore: Number,
+        riskLevel: String
+      },
+      comments: Match.Maybe(String),
+      nextReviewDate: Match.Maybe(Date)
+    });
+
+    // Validate session and authorization
+    const session = await SessionHelpers.validateSession(sessionId);
+    if (!session || !session.userId) {
+      throw new Meteor.Error('unauthorized', 'Invalid or expired session');
+    }
+
+    const currentUser = await UsersCollection.findOneAsync(session.userId);
+    if (!currentUser) {
+      throw new Meteor.Error('unauthorized', 'User not found');
+    }
+
+    // Only SUPERADMIN, ADMIN, and COMPLIANCE can update risk scores
+    const allowedRoles = [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.COMPLIANCE];
+    if (!allowedRoles.includes(currentUser.role)) {
+      throw new Meteor.Error('unauthorized', 'Only admins and compliance officers can update KYC risk scores');
+    }
+
+    // Validate target user exists and is a client
+    const targetUser = await UsersCollection.findOneAsync(userId);
+    if (!targetUser) {
+      throw new Meteor.Error('user-not-found', 'Target user not found');
+    }
+
+    if (targetUser.role !== USER_ROLES.CLIENT) {
+      throw new Meteor.Error('invalid-operation', 'KYC risk scores can only be set for clients');
+    }
+
+    console.log(`[users.updateRiskScore] ${currentUser.role} ${currentUser.email} updating risk score for ${targetUser.email}`);
+    console.log(`  Client Prospect: ${riskScoreData.clientProspect.totalScore} pts (${riskScoreData.clientProspect.riskLevel})`);
+    console.log(`  Beneficial Owner: ${riskScoreData.beneficialOwner.totalScore} pts (${riskScoreData.beneficialOwner.riskLevel})`);
+    console.log(`  Business Relationship: ${riskScoreData.businessRelationship.totalScore} pts (${riskScoreData.businessRelationship.riskLevel})`);
+
+    // Update the user's profile with the risk score data
+    const result = await UsersCollection.updateAsync(userId, {
+      $set: {
+        'profile.kycRiskScore': riskScoreData,
+        'profile.updatedAt': new Date()
+      }
+    });
+
+    console.log(`[users.updateRiskScore] Update result: ${result} document(s) modified`);
+    return result;
+  },
+
   // Bank management methods
-  async 'banks.add'({ name, city, country, countryCode }) {
-    return await BankHelpers.addBank(name, city, country, countryCode, this.userId || 'system');
+  async 'banks.add'({ name, city, country, countryCode, deskEmail }) {
+    return await BankHelpers.addBank(name, city, country, countryCode, this.userId || 'system', deskEmail);
   },
 
   async 'banks.update'(bankId, updates) {
@@ -2520,6 +2591,73 @@ Meteor.methods({
     await IssuersCollection.updateAsync(issuerId, {
       $set: {
         active: newActiveState,
+        updatedAt: new Date(),
+        updatedBy: currentUser._id
+      }
+    });
+
+    return true;
+  },
+
+  async 'issuers.uploadLogo'({ issuerId, logoData, sessionId }) {
+    // Only admins and superadmins can upload logos
+    const currentUser = await validateSessionAndGetUser(sessionId);
+    if (!currentUser || (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN)) {
+      throw new Meteor.Error('not-authorized', 'Only administrators can upload issuer logos');
+    }
+
+    // Validate issuer exists
+    const issuer = await IssuersCollection.findOneAsync(issuerId);
+    if (!issuer) {
+      throw new Meteor.Error('issuer-not-found', 'Issuer not found');
+    }
+
+    // Validate logoData is a base64 data URI
+    if (!logoData || typeof logoData !== 'string') {
+      throw new Meteor.Error('invalid-logo', 'Logo data is required');
+    }
+
+    const dataUriMatch = logoData.match(/^data:(image\/(?:png|jpeg|jpg|gif|svg\+xml|webp));base64,/);
+    if (!dataUriMatch) {
+      throw new Meteor.Error('invalid-format', 'Logo must be a valid image (PNG, JPEG, GIF, SVG, or WebP)');
+    }
+
+    // Check size (base64 is ~33% larger than binary, so 500KB binary ≈ 667KB base64)
+    const base64Data = logoData.split(',')[1];
+    const sizeInBytes = Math.ceil(base64Data.length * 3 / 4);
+    if (sizeInBytes > 500 * 1024) {
+      throw new Meteor.Error('file-too-large', 'Logo must be smaller than 500KB');
+    }
+
+    // Store logo in issuer document
+    await IssuersCollection.updateAsync(issuerId, {
+      $set: {
+        logo: logoData,
+        updatedAt: new Date(),
+        updatedBy: currentUser._id
+      }
+    });
+
+    return true;
+  },
+
+  async 'issuers.removeLogo'({ issuerId, sessionId }) {
+    // Only admins and superadmins can remove logos
+    const currentUser = await validateSessionAndGetUser(sessionId);
+    if (!currentUser || (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN)) {
+      throw new Meteor.Error('not-authorized', 'Only administrators can remove issuer logos');
+    }
+
+    // Validate issuer exists
+    const issuer = await IssuersCollection.findOneAsync(issuerId);
+    if (!issuer) {
+      throw new Meteor.Error('issuer-not-found', 'Issuer not found');
+    }
+
+    // Remove logo field
+    await IssuersCollection.updateAsync(issuerId, {
+      $unset: { logo: '' },
+      $set: {
         updatedAt: new Date(),
         updatedBy: currentUser._id
       }
@@ -6828,6 +6966,76 @@ WebApp.connectHandlers.use('/fichier_central', async (req, res, next) => {
 
   } catch (error) {
     console.error('Error serving client document:', error);
+    res.writeHead(500, { 'Content-Type': 'text/plain' });
+    res.end('Internal server error');
+  }
+});
+
+// Server-side routing for order email traces from persistent volume
+WebApp.connectHandlers.use('/order_traces', async (req, res, next) => {
+  // URL format: /order_traces/{orderId}/{filename}
+  const urlParts = req.url.split('/').filter(p => p);
+
+  if (!process.env.FICHIER_CENTRAL_PATH) {
+    return next();
+  }
+
+  if (urlParts.length !== 2) {
+    return next();
+  }
+
+  const [orderId, filename] = urlParts;
+
+  try {
+    const filePath = path.join(process.env.FICHIER_CENTRAL_PATH, 'orders', orderId, filename);
+
+    // Security: Prevent directory traversal
+    const normalizedPath = path.normalize(filePath);
+    if (!normalizedPath.startsWith(path.join(process.env.FICHIER_CENTRAL_PATH, 'orders'))) {
+      console.error('Security: Attempted directory traversal:', req.url);
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Forbidden');
+      return;
+    }
+
+    if (!fs.existsSync(filePath)) {
+      console.log(`Order trace not found: ${filePath}`);
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('File not found');
+      return;
+    }
+
+    const fileBuffer = fs.readFileSync(filePath);
+    const stat = fs.statSync(filePath);
+
+    const ext = path.extname(filename).toLowerCase();
+    const contentTypes = {
+      '.pdf': 'application/pdf',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.gif': 'image/gif',
+      '.msg': 'application/vnd.ms-outlook',
+      '.eml': 'message/rfc822',
+      '.html': 'text/html'
+    };
+    const contentType = contentTypes[ext] || 'application/octet-stream';
+
+    // For .msg and .eml files, force download instead of inline display
+    const disposition = ['.msg', '.eml'].includes(ext) ? 'attachment' : 'inline';
+
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': stat.size,
+      'Content-Disposition': `${disposition}; filename="${filename}"`,
+      'Cache-Control': 'private, max-age=3600'
+    });
+
+    res.end(fileBuffer);
+    console.log(`Served order trace: ${orderId}/${filename} (${stat.size} bytes)`);
+
+  } catch (error) {
+    console.error('Error serving order trace:', error);
     res.writeHead(500, { 'Content-Type': 'text/plain' });
     res.end('Internal server error');
   }

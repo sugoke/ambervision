@@ -10,12 +10,14 @@ const BankManagement = React.memo(({ user }) => {
     name: '',
     city: '',
     country: '',
-    countryCode: ''
+    countryCode: '',
+    deskEmail: ''
   });
   
   
   const bankNameInputRef = useRef(null);
   
+  const [editingBank, setEditingBank] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -166,14 +168,15 @@ const BankManagement = React.memo(({ user }) => {
       name: newBank.name.trim(),
       city: newBank.city.trim(),
       country: newBank.country.trim(),
-      countryCode: newBank.countryCode.trim()
+      countryCode: newBank.countryCode.trim(),
+      deskEmail: newBank.deskEmail.trim() || null
     }, (err) => {
       setIsLoading(false);
       if (err) {
         setError(err.reason || 'Failed to add bank');
       } else {
         setSuccess('Bank added successfully!');
-        setNewBank({ name: '', city: '', country: '', countryCode: '' });
+        setNewBank({ name: '', city: '', country: '', countryCode: '', deskEmail: '' });
       }
     });
   };
@@ -191,6 +194,34 @@ const BankManagement = React.memo(({ user }) => {
     }
   };
 
+  const handleUpdateBank = () => {
+    if (!editingBank) return;
+    setError('');
+    setSuccess('');
+
+    const ccEmails = (editingBank.ccEmailsText || '')
+      .split(',')
+      .map(e => e.trim())
+      .filter(e => e);
+
+    const updates = {
+      name: editingBank.name.trim(),
+      city: editingBank.city.trim(),
+      country: editingBank.country.trim(),
+      countryCode: editingBank.countryCode.trim(),
+      deskEmail: editingBank.deskEmail?.trim() || null,
+      ccEmails
+    };
+
+    Meteor.call('banks.update', editingBank._id, updates, (err) => {
+      if (err) {
+        setError(err.reason || 'Failed to update bank');
+      } else {
+        setSuccess('Bank updated successfully!');
+        setEditingBank(null);
+      }
+    });
+  };
 
   return (
     <div>
@@ -326,6 +357,36 @@ const BankManagement = React.memo(({ user }) => {
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div>
+              <label htmlFor="bank-desk-email" style={{
+                display: 'block',
+                marginBottom: '8px',
+                fontSize: '0.875rem',
+                fontWeight: '600',
+                color: 'var(--text-primary)'
+              }}>
+                Desk Email (optional):
+              </label>
+              <input
+                id="bank-desk-email"
+                name="bankDeskEmail"
+                type="email"
+                value={newBank.deskEmail}
+                onChange={(e) => setNewBank({ ...newBank, deskEmail: e.target.value })}
+                placeholder="e.g., desk@bank.com"
+                style={{
+                  width: '100%',
+                  padding: '12px 16px',
+                  border: '2px solid var(--border-color)',
+                  borderRadius: '8px',
+                  fontSize: '1rem',
+                  boxSizing: 'border-box',
+                  background: 'var(--bg-secondary)',
+                  color: 'var(--text-primary)'
+                }}
+              />
             </div>
           </div>
 
@@ -574,13 +635,24 @@ const BankManagement = React.memo(({ user }) => {
                   </th>
                   <th style={{
                     padding: '14px 16px',
+                    textAlign: 'left',
+                    fontSize: '0.8rem',
+                    fontWeight: '600',
+                    color: 'var(--text-secondary)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.75px'
+                  }}>
+                    Desk Email
+                  </th>
+                  <th style={{
+                    padding: '14px 16px',
                     textAlign: 'center',
                     fontSize: '0.8rem',
                     fontWeight: '600',
                     color: 'var(--text-secondary)',
                     textTransform: 'uppercase',
                     letterSpacing: '0.75px',
-                    width: '100px'
+                    width: '150px'
                   }}>
                     Actions
                   </th>
@@ -653,32 +725,86 @@ const BankManagement = React.memo(({ user }) => {
                     </td>
                     <td style={{
                       padding: '14px 16px',
+                      fontSize: '0.9rem',
+                      color: bank.deskEmail ? 'var(--text-primary)' : 'var(--text-muted)'
+                    }}>
+                      {bank.deskEmail ? (
+                        <div>
+                          <a
+                            href={`mailto:${bank.deskEmail}${bank.ccEmails?.length ? '?cc=' + bank.ccEmails.join(',') : ''}`}
+                            style={{
+                              color: 'var(--accent-color)',
+                              textDecoration: 'none'
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.textDecoration = 'underline'}
+                            onMouseLeave={(e) => e.currentTarget.style.textDecoration = 'none'}
+                          >
+                            {bank.deskEmail}
+                          </a>
+                          {bank.ccEmails?.length > 0 && (
+                            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                              cc: {bank.ccEmails.join(', ')}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span style={{ fontStyle: 'italic' }}>—</span>
+                      )}
+                    </td>
+                    <td style={{
+                      padding: '14px 16px',
                       textAlign: 'center'
                     }}>
-                      <button
-                        onClick={() => handleDeactivateBank(bank._id)}
-                        style={{
-                          padding: '6px 12px',
-                          background: 'transparent',
-                          color: 'var(--danger-color)',
-                          border: '1px solid var(--danger-color)',
-                          borderRadius: '6px',
-                          cursor: 'pointer',
-                          fontSize: '0.85rem',
-                          fontWeight: '500',
-                          transition: 'all 0.2s ease'
-                        }}
-                        onMouseEnter={(e) => {
-                          e.target.style.background = 'var(--danger-color)';
-                          e.target.style.color = 'white';
-                        }}
-                        onMouseLeave={(e) => {
-                          e.target.style.background = 'transparent';
-                          e.target.style.color = 'var(--danger-color)';
-                        }}
-                      >
-                        Remove
-                      </button>
+                      <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
+                        <button
+                          onClick={() => setEditingBank({ ...bank, deskEmail: bank.deskEmail || '', ccEmailsText: (bank.ccEmails || []).join(', ') })}
+                          style={{
+                            padding: '6px 12px',
+                            background: 'transparent',
+                            color: 'var(--accent-color)',
+                            border: '1px solid var(--accent-color)',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontSize: '0.85rem',
+                            fontWeight: '500',
+                            transition: 'all 0.2s ease'
+                          }}
+                          onMouseEnter={(e) => {
+                            e.target.style.background = 'var(--accent-color)';
+                            e.target.style.color = 'white';
+                          }}
+                          onMouseLeave={(e) => {
+                            e.target.style.background = 'transparent';
+                            e.target.style.color = 'var(--accent-color)';
+                          }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleDeactivateBank(bank._id)}
+                          style={{
+                            padding: '6px 12px',
+                            background: 'transparent',
+                            color: 'var(--danger-color)',
+                            border: '1px solid var(--danger-color)',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontSize: '0.85rem',
+                            fontWeight: '500',
+                            transition: 'all 0.2s ease'
+                          }}
+                          onMouseEnter={(e) => {
+                            e.target.style.background = 'var(--danger-color)';
+                            e.target.style.color = 'white';
+                          }}
+                          onMouseLeave={(e) => {
+                            e.target.style.background = 'transparent';
+                            e.target.style.color = 'var(--danger-color)';
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -687,6 +813,245 @@ const BankManagement = React.memo(({ user }) => {
           </div>
         )}
       </section>
+
+      {/* Edit Bank Modal */}
+      {editingBank && (
+        <div
+          onClick={() => setEditingBank(null)}
+          style={{
+            position: 'fixed',
+            top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: 'var(--bg-primary)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '12px',
+              padding: '1.5rem',
+              width: '450px',
+              maxWidth: '90vw'
+            }}
+          >
+            <h3 style={{
+              margin: '0 0 1.25rem 0',
+              fontSize: '1.1rem',
+              fontWeight: '600',
+              color: 'var(--text-primary)'
+            }}>
+              Edit Bank — {editingBank.name}
+            </h3>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div>
+                <label style={{
+                  display: 'block',
+                  marginBottom: '6px',
+                  fontSize: '0.85rem',
+                  fontWeight: '600',
+                  color: 'var(--text-primary)'
+                }}>
+                  Bank Name:
+                </label>
+                <input
+                  type="text"
+                  value={editingBank.name}
+                  onChange={(e) => setEditingBank({ ...editingBank, name: e.target.value })}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    border: '2px solid var(--border-color)',
+                    borderRadius: '8px',
+                    fontSize: '0.95rem',
+                    boxSizing: 'border-box',
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-primary)'
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{
+                  display: 'block',
+                  marginBottom: '6px',
+                  fontSize: '0.85rem',
+                  fontWeight: '600',
+                  color: 'var(--text-primary)'
+                }}>
+                  City:
+                </label>
+                <input
+                  type="text"
+                  value={editingBank.city}
+                  onChange={(e) => setEditingBank({ ...editingBank, city: e.target.value })}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    border: '2px solid var(--border-color)',
+                    borderRadius: '8px',
+                    fontSize: '0.95rem',
+                    boxSizing: 'border-box',
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-primary)'
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{
+                  display: 'block',
+                  marginBottom: '6px',
+                  fontSize: '0.85rem',
+                  fontWeight: '600',
+                  color: 'var(--text-primary)'
+                }}>
+                  Country:
+                </label>
+                <select
+                  value={editingBank.countryCode}
+                  onChange={(e) => {
+                    const selectedCountry = countries.find(c => c.code === e.target.value);
+                    if (selectedCountry) {
+                      setEditingBank({
+                        ...editingBank,
+                        countryCode: selectedCountry.code,
+                        country: selectedCountry.name
+                      });
+                    }
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '8px',
+                    fontSize: '0.95rem',
+                    backgroundColor: 'var(--bg-primary)',
+                    color: 'var(--text-primary)',
+                    cursor: 'pointer',
+                    boxSizing: 'border-box'
+                  }}
+                >
+                  <option value="">Select Country</option>
+                  {countries.map(country => (
+                    <option key={country.code} value={country.code}>
+                      {country.name} ({country.code})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label style={{
+                  display: 'block',
+                  marginBottom: '6px',
+                  fontSize: '0.85rem',
+                  fontWeight: '600',
+                  color: 'var(--text-primary)'
+                }}>
+                  Desk Email:
+                </label>
+                <input
+                  type="email"
+                  value={editingBank.deskEmail}
+                  onChange={(e) => setEditingBank({ ...editingBank, deskEmail: e.target.value })}
+                  placeholder="e.g., desk@bank.com"
+                  autoFocus
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    border: '2px solid var(--border-color)',
+                    borderRadius: '8px',
+                    fontSize: '0.95rem',
+                    boxSizing: 'border-box',
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-primary)'
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{
+                  display: 'block',
+                  marginBottom: '6px',
+                  fontSize: '0.85rem',
+                  fontWeight: '600',
+                  color: 'var(--text-primary)'
+                }}>
+                  CC Emails:
+                </label>
+                <input
+                  type="text"
+                  value={editingBank.ccEmailsText}
+                  onChange={(e) => setEditingBank({ ...editingBank, ccEmailsText: e.target.value })}
+                  placeholder="e.g., ops@bank.com, risk@bank.com"
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    border: '2px solid var(--border-color)',
+                    borderRadius: '8px',
+                    fontSize: '0.95rem',
+                    boxSizing: 'border-box',
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-primary)'
+                  }}
+                />
+                <span style={{
+                  fontSize: '0.75rem',
+                  color: 'var(--text-muted)',
+                  marginTop: '4px',
+                  display: 'block'
+                }}>
+                  Separate multiple emails with commas
+                </span>
+              </div>
+            </div>
+
+            <div style={{
+              display: 'flex',
+              gap: '10px',
+              justifyContent: 'flex-end',
+              marginTop: '1.5rem'
+            }}>
+              <button
+                onClick={() => setEditingBank(null)}
+                style={{
+                  padding: '10px 20px',
+                  background: 'transparent',
+                  color: 'var(--text-secondary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '0.9rem',
+                  fontWeight: '500'
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleUpdateBank}
+                style={{
+                  padding: '10px 20px',
+                  background: 'var(--accent-color)',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '0.9rem',
+                  fontWeight: '600'
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Dialog */}
       <Dialog

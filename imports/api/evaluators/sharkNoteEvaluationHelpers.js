@@ -1,4 +1,5 @@
 import { MarketDataHelpers } from '/imports/api/marketDataCache';
+import { SharedEvaluationHelpers } from './sharedEvaluationHelpers';
 
 /**
  * Shark Note Evaluation Helpers
@@ -291,12 +292,12 @@ export const SharkNoteEvaluationHelpers = {
   /**
    * Extract underlying assets data with proper pricing hierarchy
    */
-  extractUnderlyingAssetsData(product) {
+  async extractUnderlyingAssetsData(product) {
     const underlyings = [];
     const currency = product.currency || 'USD';
 
     if (product.underlyings && Array.isArray(product.underlyings)) {
-      product.underlyings.forEach((underlying, index) => {
+      for (const underlying of product.underlyings) {
         const initialPrice = underlying.strike ||
                            (underlying.securityData?.tradeDatePrice?.price) ||
                            (underlying.securityData?.tradeDatePrice?.close) || 0;
@@ -333,11 +334,26 @@ export const SharkNoteEvaluationHelpers = {
           hasCurrentData: !!(underlying.securityData?.price?.price),
           lastUpdated: new Date().toISOString(),
 
-          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`
+          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`,
+
+          // Sparkline data
+          sparklineData: { hasData: false }
         };
 
+        // Generate sparkline price history
+        try {
+          const sparkline = await SharedEvaluationHelpers.generateSparklineData(
+            underlyingData.fullTicker,
+            product.initialDate || product.tradeDate || product.valueDate,
+            product
+          );
+          if (sparkline) underlyingData.sparklineData = sparkline;
+        } catch (err) {
+          console.log(`[Sparkline] Could not generate for ${underlyingData.fullTicker}:`, err.message);
+        }
+
         underlyings.push(underlyingData);
-      });
+      }
     }
 
     return underlyings;

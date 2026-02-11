@@ -876,9 +876,13 @@ Meteor.methods({
       }
 
       // Aggregate snapshots by date (sum all portfolios for each day)
+      // Skip weekends - banks don't report on weekends, so incomplete data causes chart dips
       const dateMap = new Map();
 
       for (const snapshot of snapshots) {
+        const dayOfWeek = snapshot.snapshotDate.getDay();
+        if (dayOfWeek === 0 || dayOfWeek === 6) continue; // Skip Saturday/Sunday
+
         const dateKey = snapshot.snapshotDate.toISOString().split('T')[0];
 
         if (!dateMap.has(dateKey)) {
@@ -894,8 +898,14 @@ Meteor.methods({
         entry.portfolioCount += 1;
       }
 
-      // Convert to sorted array
-      const aggregatedSnapshots = Array.from(dateMap.values())
+      // Filter out days with incomplete portfolio coverage
+      // (e.g., not all banks synced yet — causes artificial AUM dips)
+      const allEntries = Array.from(dateMap.values());
+      const maxPortfolioCount = Math.max(...allEntries.map(e => e.portfolioCount));
+      const minThreshold = Math.floor(maxPortfolioCount * 0.8);
+
+      const aggregatedSnapshots = allEntries
+        .filter(e => e.portfolioCount >= minThreshold)
         .sort((a, b) => a.date - b.date);
 
       // Calculate current live AUM from PMSHoldings (same logic as getPortfolioSummary)

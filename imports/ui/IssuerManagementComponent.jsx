@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Meteor } from 'meteor/meteor';
 import { IssuersCollection } from '/imports/api/issuers';
@@ -15,6 +15,58 @@ const IssuerManagementComponent = ({ user: currentUser }) => {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [uploadingLogoFor, setUploadingLogoFor] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const handleLogoUpload = (issuerId) => {
+    setUploadingLogoFor(issuerId);
+    fileInputRef.current.value = '';
+    fileInputRef.current.click();
+  };
+
+  const handleFileSelected = (e) => {
+    const file = e.target.files[0];
+    if (!file || !uploadingLogoFor) return;
+
+    if (file.size > 500 * 1024) {
+      setError('Logo must be smaller than 500KB');
+      setUploadingLogoFor(null);
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      setError('Please select an image file');
+      setUploadingLogoFor(null);
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const logoData = event.target.result;
+      const sessionId = localStorage.getItem('sessionId');
+      Meteor.call('issuers.uploadLogo', { issuerId: uploadingLogoFor, logoData, sessionId }, (err) => {
+        setUploadingLogoFor(null);
+        if (err) {
+          setError(err.reason);
+        } else {
+          setSuccess('Logo uploaded successfully!');
+        }
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemoveLogo = (issuerId) => {
+    clearMessages();
+    const sessionId = localStorage.getItem('sessionId');
+    Meteor.call('issuers.removeLogo', { issuerId, sessionId }, (err) => {
+      if (err) {
+        setError(err.reason);
+      } else {
+        setSuccess('Logo removed successfully!');
+      }
+    });
+  };
 
   // Function to get issuer logo emoji based on issuer name
   const getIssuerLogo = (issuerName) => {
@@ -380,6 +432,7 @@ const IssuerManagementComponent = ({ user: currentUser }) => {
             }}>
             <thead>
               <tr style={{ backgroundColor: 'var(--bg-tertiary)' }}>
+                <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'center', width: '80px' }}>Logo</th>
                 <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'left' }}>Name</th>
                 <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'left' }}>Code</th>
                 <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'center' }}>Status</th>
@@ -393,6 +446,74 @@ const IssuerManagementComponent = ({ user: currentUser }) => {
                   backgroundColor: issuer.active ? 'var(--bg-primary)' : 'var(--bg-secondary)',
                   opacity: issuer.active ? 1 : 0.7
                 }}>
+                  <td style={{ padding: '8px 12px', border: '1px solid var(--border-color)', textAlign: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}>
+                      {issuer.logo ? (
+                        <div style={{ position: 'relative', display: 'inline-block' }}>
+                          <img
+                            src={issuer.logo}
+                            alt={issuer.name}
+                            style={{
+                              width: '32px',
+                              height: '32px',
+                              objectFit: 'contain',
+                              borderRadius: '4px',
+                              border: '1px solid var(--border-color)',
+                              cursor: 'pointer'
+                            }}
+                            onClick={() => handleLogoUpload(issuer._id)}
+                            title="Click to replace logo"
+                          />
+                          <button
+                            onClick={() => handleRemoveLogo(issuer._id)}
+                            title="Remove logo"
+                            style={{
+                              position: 'absolute',
+                              top: '-6px',
+                              right: '-6px',
+                              width: '16px',
+                              height: '16px',
+                              borderRadius: '50%',
+                              border: 'none',
+                              background: 'var(--danger-color)',
+                              color: 'white',
+                              fontSize: '0.6rem',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              lineHeight: 1,
+                              padding: 0
+                            }}
+                          >
+                            x
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => handleLogoUpload(issuer._id)}
+                          disabled={uploadingLogoFor === issuer._id}
+                          title="Upload logo"
+                          style={{
+                            width: '32px',
+                            height: '32px',
+                            borderRadius: '4px',
+                            border: '2px dashed var(--border-color)',
+                            background: 'var(--bg-secondary)',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: '0.9rem',
+                            color: 'var(--text-muted)',
+                            padding: 0
+                          }}
+                        >
+                          {uploadingLogoFor === issuer._id ? '...' : '+'}
+                        </button>
+                      )}
+                    </div>
+                  </td>
                   <td style={{ padding: '12px', border: '1px solid var(--border-color)' }}>
                     {editingIssuer === issuer._id ? (
                       <input
@@ -555,6 +676,15 @@ const IssuerManagementComponent = ({ user: currentUser }) => {
         )}
       </section>
       
+      {/* Hidden file input for logo uploads */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        style={{ display: 'none' }}
+        onChange={handleFileSelected}
+      />
+
       {/* Global Dialog Component */}
       <Dialog
         isOpen={dialogState.isOpen}

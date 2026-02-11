@@ -1,4 +1,4 @@
-import { MarketDataHelpers } from '/imports/api/marketDataCache';
+import { MarketDataHelpers, MarketDataCacheCollection } from '/imports/api/marketDataCache';
 import { EODApiHelpers } from '/imports/api/eodApi';
 
 /**
@@ -215,6 +215,86 @@ export const SharedEvaluationHelpers = {
   },
 
   /**
+   * Generate sparkline price history data for an underlying
+   * Fetches from MarketDataCacheCollection and downsamples for compact display
+   *
+   * @param {string} fullTicker - Full ticker (e.g. "AAPL.US")
+   * @param {Date|string} startDate - Product initial/trade date
+   * @param {Object} product - The product (for maturity/evaluation context)
+   * @returns {Object|null} - Sparkline data object or null
+   */
+  async generateSparklineData(fullTicker, startDate, product) {
+    if (!fullTicker || !startDate) return null;
+
+    const start = new Date(startDate);
+    if (isNaN(start.getTime())) return null;
+
+    // End date: evaluation date or now
+    const end = new Date();
+
+    // Try to find the cache document
+    let cacheDoc = await MarketDataCacheCollection.findOneAsync({ fullTicker });
+
+    // Fallback to alternate exchanges (same pattern as chart builders)
+    if (!cacheDoc) {
+      const symbol = fullTicker.split('.')[0];
+      const exchanges = ['US', 'PA', 'DE', 'LSE', 'CO', 'SW', 'AS', 'MI', 'MC'];
+      for (const exchange of exchanges) {
+        const altTicker = `${symbol}.${exchange}`;
+        cacheDoc = await MarketDataCacheCollection.findOneAsync({ fullTicker: altTicker });
+        if (cacheDoc) break;
+      }
+    }
+
+    if (!cacheDoc || !cacheDoc.history || cacheDoc.history.length === 0) {
+      return null;
+    }
+
+    const startStr = start.toISOString().split('T')[0];
+    const endStr = end.toISOString().split('T')[0];
+
+    // Filter history to product date range
+    const filtered = cacheDoc.history.filter(record => {
+      const recordDate = new Date(record.date).toISOString().split('T')[0];
+      return recordDate >= startStr && recordDate <= endStr;
+    });
+
+    if (filtered.length === 0) return null;
+
+    // Downsample to ~90 points max for compact sparkline
+    const MAX_POINTS = 90;
+    let sampled;
+    if (filtered.length <= MAX_POINTS) {
+      sampled = filtered;
+    } else {
+      const step = filtered.length / MAX_POINTS;
+      sampled = [];
+      for (let i = 0; i < MAX_POINTS; i++) {
+        sampled.push(filtered[Math.floor(i * step)]);
+      }
+      // Always include the last point
+      sampled[sampled.length - 1] = filtered[filtered.length - 1];
+    }
+
+    const prices = sampled.map(r => ({
+      date: new Date(r.date).toISOString().split('T')[0],
+      price: r.adjustedClose || r.close
+    }));
+
+    const priceValues = prices.map(p => p.price);
+
+    return {
+      prices,
+      minPrice: Math.min(...priceValues),
+      maxPrice: Math.max(...priceValues),
+      startDate: prices[0].date,
+      endDate: prices[prices.length - 1].date,
+      dataPoints: prices.length,
+      hasData: true
+    };
+  },
+
+  /**
    * Extract underlying assets data with proper pricing hierarchy
    * Generic extraction logic that works for all template types
    *
@@ -309,8 +389,26 @@ export const SharedEvaluationHelpers = {
           lastUpdated: new Date().toISOString(),
 
           // Full ticker for API calls
-          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`
+          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`,
+
+          // Sparkline data - generated below
+          sparklineData: { hasData: false }
         };
+
+        // Generate sparkline price history data
+        try {
+          const sparkline = await this.generateSparklineData(
+            underlyingData.fullTicker,
+            product.initialDate || product.tradeDate || product.valueDate,
+            product
+          );
+          if (sparkline) {
+            underlyingData.sparklineData = sparkline;
+          }
+        } catch (err) {
+          // Sparkline is non-critical - don't fail evaluation
+          console.log(`[Sparkline] Could not generate for ${underlyingData.fullTicker}:`, err.message);
+        }
 
         underlyings.push(underlyingData);
       }

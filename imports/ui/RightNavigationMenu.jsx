@@ -78,6 +78,14 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
       nonClientOnly: true
     },
     {
+      id: 'order-book',
+      label: 'Order Book',
+      icon: '📋',
+      description: 'Manage buy/sell orders',
+      role: 'rm',
+      nonClientOnly: true
+    },
+    {
       id: 'intranet',
       label: 'Intranet',
       icon: '🏢',

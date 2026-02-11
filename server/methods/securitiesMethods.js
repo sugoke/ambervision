@@ -1254,5 +1254,120 @@ Meteor.methods({
       console.error(`[SECURITIES_METADATA] Re-enrichment failed: ${error.message}`);
       throw new Meteor.Error('enrichment-failed', error.message);
     }
+  },
+
+  /**
+   * Search securities for order creation (accessible by RM/Admin)
+   * Searches across SecuritiesMetadata, Products, and PMS Holdings
+   */
+  async 'securities.search'({ query, limit = 15 }, sessionId) {
+    check(query, String);
+    check(limit, Match.Optional(Number));
+    check(sessionId, String);
+
+    // Validate session (not admin-only, but must be authenticated)
+    const session = await SessionsCollection.findOneAsync({
+      sessionId,
+      isActive: true
+    });
+
+    if (!session) {
+      throw new Meteor.Error('not-authorized', 'Invalid session');
+    }
+
+    const user = await UsersCollection.findOneAsync(session.userId);
+
+    if (!user) {
+      throw new Meteor.Error('not-authorized', 'User not found');
+    }
+
+    // Only RMs and Admins can search securities for orders
+    if (!['rm', 'admin', 'superadmin'].includes(user.role)) {
+      throw new Meteor.Error('not-authorized', 'Only RMs and Admins can search securities');
+    }
+
+    const searchQuery = query.trim().toUpperCase();
+    if (searchQuery.length < 2) {
+      return [];
+    }
+
+    const results = [];
+    const seenISINs = new Set();
+
+    // 1. Search in SecuritiesMetadata
+    const metadataResults = await SecuritiesMetadataCollection.find({
+      $or: [
+        { isin: { $regex: searchQuery, $options: 'i' } },
+        { securityName: { $regex: searchQuery, $options: 'i' } },
+        { ticker: { $regex: searchQuery, $options: 'i' } }
+      ]
+    }, { limit: Math.ceil(limit / 2) }).fetchAsync();
+
+    metadataResults.forEach(sec => {
+      if (sec.isin && !seenISINs.has(sec.isin.toUpperCase())) {
+        seenISINs.add(sec.isin.toUpperCase());
+        results.push({
+          _id: sec._id,
+          isin: sec.isin,
+          name: sec.securityName,
+          ticker: sec.ticker,
+          exchange: sec.listingExchange,
+          currency: sec.currency,
+          assetClass: sec.assetClass,
+          source: 'metadata'
+        });
+      }
+    });
+
+    // 2. Search in Products (for structured products)
+    if (results.length < limit) {
+      const productResults = await ProductsCollection.find({
+        $or: [
+          { isin: { $regex: searchQuery, $options: 'i' } },
+          { title: { $regex: searchQuery, $options: 'i' } }
+        ]
+      }, { limit: Math.ceil(limit / 2) }).fetchAsync();
+
+      productResults.forEach(prod => {
+        if (prod.isin && !seenISINs.has(prod.isin.toUpperCase())) {
+          seenISINs.add(prod.isin.toUpperCase());
+          results.push({
+            _id: prod._id,
+            isin: prod.isin,
+            name: prod.title,
+            currency: prod.currency || prod.parameters?.currency || 'USD',
+            assetClass: 'structured_product',
+            source: 'product'
+          });
+        }
+      });
+    }
+
+    // 3. Search in PMSHoldings (for securities not in metadata)
+    if (results.length < limit) {
+      const holdingResults = await PMSHoldingsCollection.find({
+        isLatest: true,
+        $or: [
+          { isin: { $regex: searchQuery, $options: 'i' } },
+          { securityName: { $regex: searchQuery, $options: 'i' } }
+        ]
+      }, { limit: Math.ceil(limit / 2) }).fetchAsync();
+
+      holdingResults.forEach(hold => {
+        if (hold.isin && !seenISINs.has(hold.isin.toUpperCase())) {
+          seenISINs.add(hold.isin.toUpperCase());
+          results.push({
+            _id: hold._id,
+            isin: hold.isin,
+            name: hold.securityName,
+            currency: hold.currency,
+            assetClass: hold.assetClass || hold.securityType,
+            source: 'holding'
+          });
+        }
+      });
+    }
+
+    return results.slice(0, limit);
   }
 });

@@ -620,7 +620,25 @@ export const SGMonacoParser = {
       // Position Data
       quantity,
       marketValue,
-      marketValueOriginalCurrency: marketValue, // SG provides value in portfolio currency
+      marketValueOriginalCurrency: (() => {
+        // SG Monaco POS_MKT_VAL is in portfolio currency (EUR), not instrument currency.
+        // We need to compute the value in the instrument's original currency.
+        if (isCash) {
+          // For cash, quantity IS the amount in original currency
+          return quantity;
+        }
+        if (instrumentCurrency === portfolioCurrency) {
+          // Same currency, no conversion needed
+          return marketValue;
+        }
+        if (exchangeRate && exchangeRate !== 0 && marketValue !== null) {
+          // SG FX rates are multiply format: amount_original × rate = amount_EUR
+          // Reverse: amount_original = amount_EUR / rate
+          return marketValue / exchangeRate;
+        }
+        // Fallback: use portfolio currency value
+        return marketValue;
+      })(),
       marketValueRefCcy: marketValue,
       marketValuePortfolioCurrency: marketValue,
       currency: instrumentCurrency, // From price file (INS_CUR) - instrument currency

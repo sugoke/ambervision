@@ -1402,7 +1402,7 @@ if (Meteor.isServer) {
 
     // Check if product was autocalled early - if so, use autocall date instead of final observation
     const autocallDate = observationAnalysis?.callDate;
-    const isAutocalled = observationAnalysis?.productCalled && observationAnalysis?.isEarlyAutocall;
+    const isAutocalled = observationAnalysis?.isEarlyAutocall;
 
     // Check if product has been redeemed (matured or called early)
     const isRedeemed = (maturityDate && new Date(maturityDate) <= now) ||
@@ -2379,7 +2379,7 @@ async function generatePhoenixChartData(product, evaluationResults, phoenixParam
             }
             
             // Add autocall event indicator if product was called
-            if (observationAnalysis && observationAnalysis.productCalled && observationAnalysis.callDate) {
+            if (observationAnalysis && observationAnalysis.isEarlyAutocall && observationAnalysis.callDate) {
               const callDateISO = new Date(observationAnalysis.callDate).toISOString().split('T')[0];
               
               // Find which observation triggered the autocall

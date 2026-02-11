@@ -28,6 +28,7 @@ import MarketNews from './MarketNews.jsx';
 import PortfolioManagementSystem from './PortfolioManagementSystem.jsx';
 import ClientsSection from './ClientsSection.jsx';
 import AlertCenter from './AlertCenter.jsx';
+import OrderBook from './OrderBook.jsx';
 
 const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibraryStateChange, currentRoute, isMenuOpen, setIsMenuOpen, isSettingsOpen, setIsSettingsOpen, isMobile }) => {
   // Use lifted menu and settings state from App.jsx (for mobile header integration)
@@ -314,6 +315,10 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
       case 'clients':
         if (!isNonClient()) return <div>Access denied</div>;
         return <ClientsSection user={user} />;
+
+      case 'order-book':
+        if (!isNonClient()) return <div>Access denied</div>;
+        return <OrderBook user={user} />;
 
       case 'notifications':
         if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;

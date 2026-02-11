@@ -155,8 +155,9 @@ export const PMSHoldingsHelpers = {
       const mpMatch = isEqual(existingForDate.marketPrice, holdingData.marketPrice, 0.0001);
       const cbpMatch = isEqual(existingForDate.costBasisPortfolioCurrency, holdingData.costBasisPortfolioCurrency, 0.01);
       const cboMatch = isEqual(existingForDate.costBasisOriginalCurrency, holdingData.costBasisOriginalCurrency, 0.01);
+      const mvocMatch = isEqual(existingForDate.marketValueOriginalCurrency, holdingData.marketValueOriginalCurrency, 0.01);
 
-      if (qtyMatch && mvMatch && mpMatch && cbpMatch && cboMatch) {
+      if (qtyMatch && mvMatch && mpMatch && cbpMatch && cboMatch && mvocMatch) {
         // Data unchanged for this date - skip write entirely
         return { _id: existingForDate._id, isNew: false, updated: false, versioned: false, skipped: true };
       }
@@ -193,8 +194,9 @@ export const PMSHoldingsHelpers = {
       const mpMatch = isEqual(existing.marketPrice, holdingData.marketPrice, 0.0001);
       const cbpMatch = isEqual(existing.costBasisPortfolioCurrency, holdingData.costBasisPortfolioCurrency, 0.01);
       const cboMatch = isEqual(existing.costBasisOriginalCurrency, holdingData.costBasisOriginalCurrency, 0.01);
+      const mvocMatch = isEqual(existing.marketValueOriginalCurrency, holdingData.marketValueOriginalCurrency, 0.01);
 
-      const hasChanged = !qtyMatch || !mvMatch || !mpMatch || !cbpMatch || !cboMatch;
+      const hasChanged = !qtyMatch || !mvMatch || !mpMatch || !cbpMatch || !cboMatch || !mvocMatch;
 
       // Processing a NEW date (not yet in DB) - decide whether to create a new "latest" version
       if (incomingIsNewer) {
