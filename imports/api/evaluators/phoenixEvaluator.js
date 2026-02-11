@@ -617,10 +617,10 @@ export const PhoenixEvaluator = {
       const isGuaranteedCoupon = phoenixParams.guaranteedCoupon === true;
 
       // Determine if coupon is paid (chart builder expects number, not boolean)
-      // Only evaluate if we have valid basket level data
+      // Only evaluate if we have valid basket level data AND product hasn't already been autocalled
       // For guaranteed coupons: pay as long as observation is past and product is alive
       // For regular coupons: require basket to be above coupon barrier
-      const baseCouponPaid = isPast && basketLevel !== null && (isGuaranteedCoupon || basketAboveCouponBarrier)
+      const baseCouponPaid = isPast && !productCalled && basketLevel !== null && (isGuaranteedCoupon || basketAboveCouponBarrier)
         ? (phoenixParams.couponRate || 0)
         : 0;
 
@@ -642,9 +642,9 @@ export const PhoenixEvaluator = {
       }
 
       // Memory coupon logic
-      // Add to memory if: basket BELOW coupon barrier, product has memory feature, and it's a past observation
+      // Add to memory if: basket BELOW coupon barrier, product has memory feature, it's a past observation, and product hasn't been autocalled
       // Note: Memory coupon only applies if NOT guaranteed coupon (guaranteed coupons are always paid, so no need to store in memory)
-      const memoryCouponAdded = !isGuaranteedCoupon && isPast && !baseCouponPaid && basketLevel !== null && !basketAboveCouponBarrier && (phoenixParams.memoryCoupon || false);
+      const memoryCouponAdded = !isGuaranteedCoupon && isPast && !productCalled && !baseCouponPaid && basketLevel !== null && !basketAboveCouponBarrier && (phoenixParams.memoryCoupon || false);
       if (memoryCouponAdded) {
         totalMemoryCoupons += phoenixParams.couponRate || 0;
       }
@@ -717,8 +717,8 @@ export const PhoenixEvaluator = {
         autocallLevelFormatted: obs.isCallable ? `${obs.autocallLevel || phoenixParams.autocallBarrier}%` : 'N/A',
         isCallable: obs.isCallable || false,
         isFinal: isFinalObservation, // Flag for final/maturity observation
-        hasOccurred: isPast,
-        status: isPast ? 'completed' : 'upcoming',
+        hasOccurred: isPast && (!productCalled || autocalled),
+        status: productCalled && !autocalled ? 'cancelled' : (isPast ? 'completed' : 'upcoming'),
         // Memory Autocall tracking
         underlyingFlags, // Array of {ticker, performance, isFlagged, isNewFlag, flaggedDate}
         allUnderlyingsFlagged // Boolean: have all underlyings been flagged?

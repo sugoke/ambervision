@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Meteor } from 'meteor/meteor';
 import StructuredProductChart from '../components/StructuredProductChart.jsx';
 import UnderlyingNews from '../components/UnderlyingNews.jsx';
+import PriceSparkline from '../components/PriceSparkline.jsx';
 import { USER_ROLES } from '/imports/api/users';
 import { useDialog } from '../useDialog';
 import Dialog from '../Dialog.jsx';
@@ -463,6 +464,17 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
                         }}>
                           {underlying.currentPriceFormatted || '-'}
                         </div>
+                        {underlying.sparklineData?.hasData && (
+                          <div style={{ marginTop: '0.5rem' }}>
+                            <PriceSparkline
+                              sparklineData={underlying.sparklineData}
+                              ticker={underlying.ticker}
+                              initialPrice={underlying.initialPrice}
+                              currency={underlying.currency}
+                              isPositive={underlying.isPositive}
+                            />
+                          </div>
+                        )}
 
                         {/* Performance */}
                         <div style={{

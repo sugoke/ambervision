@@ -113,6 +113,10 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
   // Tab navigation state
   const [activeTab, setActiveTab] = useState('info');
 
+  // KYC Risk Score state
+  const [editingRiskScore, setEditingRiskScore] = useState(false);
+  const [savingRiskScore, setSavingRiskScore] = useState(false);
+
   // RM's clients state (for viewing RM profiles)
   const [rmClients, setRmClients] = useState([]);
   const [rmClientsLoading, setRmClientsLoading] = useState(false);
@@ -418,7 +422,8 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
       accountType: account.accountType || 'personal',
       authorizedOverdraft: account.authorizedOverdraft || '',
       comment: account.comment || '',
-      introducerId: account.introducerId || ''
+      introducerId: account.introducerId || '',
+      lifeInsuranceCompany: account.lifeInsuranceCompany || ''
     });
   };
 
@@ -435,7 +440,10 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
           accountType: editBankAccountData.accountType,
           authorizedOverdraft: overdraftValue,
           comment: editBankAccountData.comment || '',
-          introducerId: editBankAccountData.introducerId || null
+          introducerId: editBankAccountData.introducerId || null,
+          lifeInsuranceCompany: editBankAccountData.accountType === 'life_insurance'
+            ? (editBankAccountData.lifeInsuranceCompany || null)
+            : null
         },
         sessionId
       });
@@ -711,6 +719,306 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
     if (strength <= 2) return { strength, label: 'Weak', color: '#ef4444' };
     if (strength <= 3) return { strength, label: 'Medium', color: '#f59e0b' };
     return { strength, label: 'Strong', color: '#10b981' };
+  };
+
+  // KYC Risk Score Criteria Configuration (based on "Matrice risque Client AP.xlsx")
+  const RISK_CRITERIA = [
+    {
+      id: 'relationNature',
+      number: 1,
+      label: 'Nature de la relation',
+      labelEn: 'Nature of Relationship',
+      options: [
+        { value: 'individual', label: 'Personne physique', labelEn: 'Natural Person', score: 1 },
+        { value: 'company', label: 'Personne morale', labelEn: 'Legal Entity', score: 2 },
+        { value: 'trust', label: 'Trust, Fondation', labelEn: 'Trust, Foundation', score: 5 }
+      ]
+    },
+    {
+      id: 'pepStatus',
+      number: 2,
+      label: 'PPE Status',
+      labelEn: 'PEP Status',
+      options: [
+        { value: 'pep', label: 'PEP', labelEn: 'PEP', score: 30 },
+        { value: 'nonPep', label: 'NON-PEP', labelEn: 'Non-PEP', score: 0 }
+      ]
+    },
+    {
+      id: 'residence',
+      number: 3,
+      label: 'Residence',
+      labelEn: 'Residence',
+      options: [
+        { value: 'euLowRisk', label: 'Monaco/EU/EEE/Suisse', labelEn: 'Monaco/EU/EEA/Switzerland', score: 1 },
+        { value: 'nonEu', label: 'Non-EU', labelEn: 'Non-EU', score: 3 },
+        { value: 'gafiBlacklist', label: 'GAFI blacklist', labelEn: 'FATF blacklist', score: 20 },
+        { value: 'highRisk', label: 'Haut risque', labelEn: 'High risk', score: 15 }
+      ]
+    },
+    {
+      id: 'nationality',
+      number: 4,
+      label: 'Nationalite',
+      labelEn: 'Nationality',
+      options: [
+        { value: 'euLowRisk', label: 'Monaco/EU/EEE/Suisse', labelEn: 'Monaco/EU/EEA/Switzerland', score: 1 },
+        { value: 'nonEu', label: 'Non-EU', labelEn: 'Non-EU', score: 2 },
+        { value: 'gafiBlacklist', label: 'GAFI blacklist', labelEn: 'FATF blacklist', score: 10 },
+        { value: 'highRisk', label: 'Haut risque', labelEn: 'High risk', score: 10 }
+      ]
+    },
+    {
+      id: 'activityLocation',
+      number: 5,
+      label: 'Localisation des activites',
+      labelEn: 'Activity Location',
+      options: [
+        { value: 'euLowRisk', label: 'Monaco/EU/EEE/Suisse', labelEn: 'Monaco/EU/EEA/Switzerland', score: 1 },
+        { value: 'nonEu', label: 'Non-EU', labelEn: 'Non-EU', score: 3 },
+        { value: 'gafiBlacklist', label: 'GAFI blacklist', labelEn: 'FATF blacklist', score: 10 },
+        { value: 'highRisk', label: 'Haut risque', labelEn: 'High risk', score: 10 }
+      ]
+    },
+    {
+      id: 'fundsLocation',
+      number: 6,
+      label: 'Localisation des fonds',
+      labelEn: 'Funds Location',
+      options: [
+        { value: 'euLowRisk', label: 'Monaco/EU/EEE/Suisse', labelEn: 'Monaco/EU/EEA/Switzerland', score: 1 },
+        { value: 'nonEu', label: 'Non-EU', labelEn: 'Non-EU', score: 3 },
+        { value: 'gafiBlacklist', label: 'GAFI blacklist', labelEn: 'FATF blacklist', score: 10 },
+        { value: 'highRisk', label: 'Haut risque', labelEn: 'High risk', score: 10 }
+      ]
+    },
+    {
+      id: 'sensitiveActivity',
+      number: 7,
+      label: 'Activite sensible',
+      labelEn: 'Sensitive Activity',
+      options: [
+        { value: 'yes', label: 'Oui', labelEn: 'Yes', score: 10 },
+        { value: 'no', label: 'Non', labelEn: 'No', score: 0 }
+      ]
+    },
+    {
+      id: 'communicationDifficulty',
+      number: 8,
+      label: 'Difficulte communication',
+      labelEn: 'Communication Difficulty',
+      options: [
+        { value: 'yes', label: 'Oui', labelEn: 'Yes', score: 3 },
+        { value: 'no', label: 'Non', labelEn: 'No', score: 0 }
+      ]
+    },
+    {
+      id: 'criminalProsecution',
+      number: 9,
+      label: 'Poursuites penales',
+      labelEn: 'Criminal Prosecution',
+      options: [
+        { value: 'yes', label: 'Oui', labelEn: 'Yes', score: 30 },
+        { value: 'no', label: 'Non', labelEn: 'No', score: 0 }
+      ]
+    },
+    {
+      id: 'sanctionsList',
+      number: 10,
+      label: 'Liste de sanctions',
+      labelEn: 'Sanctions List',
+      options: [
+        { value: 'yes', label: 'Oui', labelEn: 'Yes', score: 30 },
+        { value: 'no', label: 'Non', labelEn: 'No', score: 0 }
+      ]
+    },
+    {
+      id: 'negativeInfo',
+      number: 11,
+      label: 'Information negative en ligne',
+      labelEn: 'Negative Info Online',
+      options: [
+        { value: 'yes', label: 'Oui', labelEn: 'Yes', score: 10 },
+        { value: 'no', label: 'Non', labelEn: 'No', score: 0 }
+      ]
+    },
+    {
+      id: 'mandateType',
+      number: 12,
+      label: 'Type de mandat',
+      labelEn: 'Mandate Type',
+      options: [
+        { value: 'advisoryRto', label: 'Gestion Conseil avec RTO', labelEn: 'Advisory with RTO', score: 1 },
+        { value: 'advisory', label: 'Gestion Conseil', labelEn: 'Advisory', score: 2 }
+      ]
+    },
+    {
+      id: 'largeAccount',
+      number: 13,
+      label: 'Compte > 10M/25M',
+      labelEn: 'Account > 10M/25M',
+      options: [
+        { value: 'yes', label: 'Oui', labelEn: 'Yes', score: 10 },
+        { value: 'no', label: 'Non', labelEn: 'No', score: 0 }
+      ]
+    },
+    {
+      id: 'transactionFrequency',
+      number: 14,
+      label: 'Transactions frequence',
+      labelEn: 'Transaction Frequency',
+      options: [
+        { value: 'normal', label: 'Normal', labelEn: 'Normal', score: 1 },
+        { value: 'frequent', label: 'Frequent/important', labelEn: 'Frequent/Significant', score: 2 }
+      ]
+    },
+    {
+      id: 'productRisk',
+      number: 15,
+      label: 'Risque Produit',
+      labelEn: 'Product Risk',
+      options: [
+        { value: 'standard', label: 'Action/Obligation/Monetaire', labelEn: 'Equities/Bonds/Money Market', score: 1 },
+        { value: 'structured', label: 'Produit Structure', labelEn: 'Structured Products', score: 3 },
+        { value: 'privateEquity', label: 'Private Equity', labelEn: 'Private Equity', score: 4 }
+      ]
+    },
+    {
+      id: 'complexStructure',
+      number: 16,
+      label: 'Structure complexe',
+      labelEn: 'Complex Structure',
+      options: [
+        { value: 'yes', label: 'Oui', labelEn: 'Yes', score: 15 },
+        { value: 'no', label: 'Non', labelEn: 'No', score: 0 }
+      ]
+    }
+  ];
+
+  // Helper function to calculate risk score for a single column
+  const calculateRiskScore = (criteriaValues) => {
+    let total = 0;
+    RISK_CRITERIA.forEach(criterion => {
+      const selectedOption = criterion.options.find(o => o.value === criteriaValues[criterion.id]);
+      if (selectedOption) total += selectedOption.score;
+    });
+    return {
+      totalScore: total,
+      riskLevel: total < 15 ? 'low' : total < 30 ? 'medium' : 'high'
+    };
+  };
+
+  // Helper function to get risk level display info
+  const getRiskLevelDisplay = (riskLevel) => {
+    switch (riskLevel) {
+      case 'low':
+        return { label: 'Risque Faible', labelEn: 'Low Risk', color: '#10b981', emoji: '🟢', reviewPeriod: '2 years' };
+      case 'medium':
+        return { label: 'Risque Moyen', labelEn: 'Medium Risk', color: '#f59e0b', emoji: '🟡', reviewPeriod: '2 years' };
+      case 'high':
+        return { label: 'Risque Eleve', labelEn: 'High Risk', color: '#ef4444', emoji: '🔴', reviewPeriod: '1 year' };
+      default:
+        return { label: 'Non evalue', labelEn: 'Not Assessed', color: '#6b7280', emoji: '⚪', reviewPeriod: '-' };
+    }
+  };
+
+  // Initialize risk score form from user data
+  const getInitialRiskScoreForm = () => {
+    const savedData = user?.profile?.kycRiskScore;
+    if (savedData) {
+      return {
+        clientProspect: savedData.clientProspect?.criteria || {},
+        beneficialOwner: savedData.beneficialOwner?.criteria || {},
+        businessRelationship: savedData.businessRelationship?.criteria || {},
+        comments: savedData.comments || ''
+      };
+    }
+    // Default empty form
+    return {
+      clientProspect: {},
+      beneficialOwner: {},
+      businessRelationship: {},
+      comments: ''
+    };
+  };
+
+  const [riskScoreForm, setRiskScoreForm] = useState(getInitialRiskScoreForm);
+
+  // Update risk score form when user data changes
+  useEffect(() => {
+    if (user?.profile?.kycRiskScore) {
+      setRiskScoreForm(getInitialRiskScoreForm());
+    }
+  }, [user?.profile?.kycRiskScore]);
+
+  // Handle risk score form changes
+  const handleRiskScoreChange = (column, criterionId, value) => {
+    setRiskScoreForm(prev => ({
+      ...prev,
+      [column]: {
+        ...prev[column],
+        [criterionId]: value
+      }
+    }));
+  };
+
+  // Save risk score data
+  const handleSaveRiskScore = async () => {
+    setSavingRiskScore(true);
+    try {
+      const clientProspectResult = calculateRiskScore(riskScoreForm.clientProspect);
+      const beneficialOwnerResult = calculateRiskScore(riskScoreForm.beneficialOwner);
+      const businessRelationshipResult = calculateRiskScore(riskScoreForm.businessRelationship);
+
+      // Determine highest risk level for next review calculation
+      const riskLevels = [clientProspectResult.riskLevel, beneficialOwnerResult.riskLevel, businessRelationshipResult.riskLevel];
+      const highestRisk = riskLevels.includes('high') ? 'high' : riskLevels.includes('medium') ? 'medium' : 'low';
+      const reviewMonths = highestRisk === 'high' ? 12 : 24;
+      const nextReviewDate = new Date();
+      nextReviewDate.setMonth(nextReviewDate.getMonth() + reviewMonths);
+
+      const riskScoreData = {
+        assessmentDate: new Date(),
+        assessedBy: currentUser?._id,
+        clientProspect: {
+          criteria: riskScoreForm.clientProspect,
+          totalScore: clientProspectResult.totalScore,
+          riskLevel: clientProspectResult.riskLevel
+        },
+        beneficialOwner: {
+          criteria: riskScoreForm.beneficialOwner,
+          totalScore: beneficialOwnerResult.totalScore,
+          riskLevel: beneficialOwnerResult.riskLevel
+        },
+        businessRelationship: {
+          criteria: riskScoreForm.businessRelationship,
+          totalScore: businessRelationshipResult.totalScore,
+          riskLevel: businessRelationshipResult.riskLevel
+        },
+        comments: riskScoreForm.comments,
+        nextReviewDate: nextReviewDate
+      };
+
+      await Meteor.callAsync('users.updateRiskScore', userId, riskScoreData, sessionId);
+
+      setEditingRiskScore(false);
+      Meteor.call('notifications.create', {
+        userId: currentUser?._id,
+        type: 'success',
+        message: 'KYC Risk Score updated successfully',
+        sessionId
+      });
+    } catch (error) {
+      console.error('Error saving risk score:', error);
+      Meteor.call('notifications.create', {
+        userId: currentUser?._id,
+        type: 'error',
+        message: `Failed to save risk score: ${error.message}`,
+        sessionId
+      });
+    } finally {
+      setSavingRiskScore(false);
+    }
   };
 
   if (isLoading || !user) {
@@ -1050,6 +1358,45 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                 </div>
               </div>
             )}
+
+            {/* Risk Score Row (for clients only) */}
+            {user.role === USER_ROLES.CLIENT && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                  <span>📊</span>
+                  {(() => {
+                    const riskScore = user.profile?.kycRiskScore;
+                    if (!riskScore) {
+                      return <span style={{ color: 'var(--text-muted)' }}>Risk not assessed</span>;
+                    }
+                    // Get highest risk level from the three columns
+                    const levels = [
+                      riskScore.clientProspect?.riskLevel,
+                      riskScore.beneficialOwner?.riskLevel,
+                      riskScore.businessRelationship?.riskLevel
+                    ].filter(Boolean);
+                    const highestRisk = levels.includes('high') ? 'high' : levels.includes('medium') ? 'medium' : 'low';
+                    const display = getRiskLevelDisplay(highestRisk);
+                    return (
+                      <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '3px 10px',
+                        background: `${display.color}15`,
+                        border: `1px solid ${display.color}40`,
+                        borderRadius: '12px',
+                        fontSize: '0.85rem',
+                        fontWeight: '500',
+                        color: display.color
+                      }}>
+                        {display.emoji} {display.labelEn}
+                      </span>
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Quick Stats */}
@@ -1103,6 +1450,7 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
           { id: 'accounts', label: 'Accounts', icon: '🏦', clientOnly: true },
           { id: 'documents', label: 'Documents', icon: '📋', clientOnly: true },
           { id: 'kyc', label: 'KYC', icon: '✅', clientOnly: true },
+          { id: 'riskScore', label: 'Risk Score', icon: '📊', clientOnly: true },
           { id: 'family', label: 'Family', icon: '👨‍👩‍👧‍👦', clientOnly: true },
           { id: 'password', label: 'Password', icon: '🔒', adminOnly: true }
         ];
@@ -2285,6 +2633,27 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                                     <option value="company">Company</option>
                                     <option value="life_insurance">Life Insurance</option>
                                   </select>
+                                  {editBankAccountData.accountType === 'life_insurance' && (
+                                    <input
+                                      type="text"
+                                      placeholder="Insurance Company"
+                                      value={editBankAccountData.lifeInsuranceCompany || ''}
+                                      onChange={(e) => setEditBankAccountData(prev => ({
+                                        ...prev,
+                                        lifeInsuranceCompany: e.target.value
+                                      }))}
+                                      style={{
+                                        padding: '4px 8px',
+                                        borderRadius: '6px',
+                                        border: '1px solid var(--border-color)',
+                                        background: 'var(--bg-secondary)',
+                                        color: 'var(--text-primary)',
+                                        fontSize: '12px',
+                                        fontWeight: '600',
+                                        width: '140px'
+                                      }}
+                                    />
+                                  )}
                                   <input
                                     type="number"
                                     placeholder="Credit Line"
@@ -2370,7 +2739,9 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                                     fontSize: '12px',
                                     fontWeight: '600'
                                   }}>
-                                    {account.accountType === 'life_insurance' ? 'Life Insurance' : account.accountType?.charAt(0).toUpperCase() + account.accountType?.slice(1)}
+                                    {account.accountType === 'life_insurance'
+                                      ? `Life Insurance${account.lifeInsuranceCompany ? ` (${account.lifeInsuranceCompany})` : ''}`
+                                      : account.accountType?.charAt(0).toUpperCase() + account.accountType?.slice(1)}
                                   </span>
                                   {account.authorizedOverdraft > 0 && (
                                     <span style={{
@@ -3107,6 +3478,422 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                   <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.9rem', whiteSpace: 'pre-wrap' }}>
                     {user.profile.kyc.notes}
                   </p>
+                </div>
+              )}
+            </LiquidGlassCard>
+          )}
+
+          {/* KYC Risk Score - riskScore tab (when viewing a client profile) */}
+          {activeTab === 'riskScore' && user.role === USER_ROLES.CLIENT && (
+            <LiquidGlassCard style={{ padding: '24px' }}>
+              {/* Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                <h2 style={{
+                  margin: 0,
+                  fontSize: '20px',
+                  fontWeight: '600',
+                  color: 'var(--text-primary)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px'
+                }}>
+                  <span>📊</span> KYC Risk Assessment
+                </h2>
+                {!editingRiskScore && (currentUser?.role === USER_ROLES.SUPERADMIN || currentUser?.role === USER_ROLES.ADMIN || currentUser?.role === USER_ROLES.COMPLIANCE) && (
+                  <button
+                    onClick={() => setEditingRiskScore(true)}
+                    style={{
+                      padding: '8px 16px',
+                      background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color-dark, #0284c7) 100%)',
+                      border: 'none',
+                      borderRadius: '8px',
+                      color: '#fff',
+                      cursor: 'pointer',
+                      fontSize: '14px',
+                      fontWeight: '500',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      transition: 'all 0.3s ease'
+                    }}
+                  >
+                    ✏️ Edit
+                  </button>
+                )}
+              </div>
+
+              {/* Assessment Info Bar */}
+              {user.profile?.kycRiskScore?.assessmentDate && (
+                <div style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: '16px',
+                  marginBottom: '24px',
+                  padding: '12px 16px',
+                  background: 'var(--bg-secondary)',
+                  borderRadius: '8px',
+                  fontSize: '0.85rem'
+                }}>
+                  <div>
+                    <span style={{ color: 'var(--text-secondary)' }}>Last Assessment: </span>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: '500' }}>
+                      {new Date(user.profile.kycRiskScore.assessmentDate).toLocaleDateString()}
+                    </span>
+                  </div>
+                  {user.profile?.kycRiskScore?.nextReviewDate && (
+                    <div>
+                      <span style={{ color: 'var(--text-secondary)' }}>Next Review Due: </span>
+                      <span style={{
+                        color: new Date(user.profile.kycRiskScore.nextReviewDate) < new Date() ? '#ef4444' : 'var(--text-primary)',
+                        fontWeight: '500'
+                      }}>
+                        {new Date(user.profile.kycRiskScore.nextReviewDate).toLocaleDateString()}
+                        {new Date(user.profile.kycRiskScore.nextReviewDate) < new Date() && ' (Overdue)'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Risk Score Matrix Table */}
+              <div style={{ overflowX: 'auto', marginBottom: '24px' }}>
+                <table style={{
+                  width: '100%',
+                  borderCollapse: 'collapse',
+                  fontSize: '0.85rem'
+                }}>
+                  <thead>
+                    <tr style={{ background: 'var(--bg-tertiary)' }}>
+                      <th style={{
+                        padding: '12px 16px',
+                        textAlign: 'left',
+                        fontWeight: '600',
+                        color: 'var(--text-primary)',
+                        borderBottom: '2px solid var(--border-color)',
+                        minWidth: '200px'
+                      }}>
+                        Criteria
+                      </th>
+                      <th style={{
+                        padding: '12px 16px',
+                        textAlign: 'center',
+                        fontWeight: '600',
+                        color: 'var(--text-primary)',
+                        borderBottom: '2px solid var(--border-color)',
+                        minWidth: '180px'
+                      }}>
+                        Client Prospect
+                      </th>
+                      <th style={{
+                        padding: '12px 16px',
+                        textAlign: 'center',
+                        fontWeight: '600',
+                        color: 'var(--text-primary)',
+                        borderBottom: '2px solid var(--border-color)',
+                        minWidth: '180px'
+                      }}>
+                        Beneficial Owner
+                      </th>
+                      <th style={{
+                        padding: '12px 16px',
+                        textAlign: 'center',
+                        fontWeight: '600',
+                        color: 'var(--text-primary)',
+                        borderBottom: '2px solid var(--border-color)',
+                        minWidth: '180px'
+                      }}>
+                        Business Relationship
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {RISK_CRITERIA.map((criterion, idx) => (
+                      <tr key={criterion.id} style={{
+                        background: idx % 2 === 0 ? 'transparent' : 'var(--bg-secondary)'
+                      }}>
+                        <td style={{
+                          padding: '10px 16px',
+                          borderBottom: '1px solid var(--border-color)',
+                          color: 'var(--text-primary)'
+                        }}>
+                          <span style={{ color: 'var(--text-secondary)', marginRight: '8px' }}>{criterion.number}.</span>
+                          {criterion.labelEn}
+                        </td>
+                        {['clientProspect', 'beneficialOwner', 'businessRelationship'].map(column => (
+                          <td key={column} style={{
+                            padding: '10px 16px',
+                            borderBottom: '1px solid var(--border-color)',
+                            textAlign: 'center'
+                          }}>
+                            {editingRiskScore ? (
+                              <select
+                                value={riskScoreForm[column][criterion.id] || ''}
+                                onChange={(e) => handleRiskScoreChange(column, criterion.id, e.target.value)}
+                                style={{
+                                  width: '100%',
+                                  padding: '8px 12px',
+                                  background: 'var(--bg-primary)',
+                                  border: '1px solid var(--border-color)',
+                                  borderRadius: '6px',
+                                  color: 'var(--text-primary)',
+                                  fontSize: '0.8rem',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                <option value="">-- Select --</option>
+                                {criterion.options.map(option => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.labelEn} ({option.score} pts)
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              (() => {
+                                const savedValue = user.profile?.kycRiskScore?.[column]?.criteria?.[criterion.id];
+                                const selectedOption = criterion.options.find(o => o.value === savedValue);
+                                if (selectedOption) {
+                                  return (
+                                    <span style={{
+                                      padding: '4px 10px',
+                                      background: selectedOption.score >= 10 ? 'rgba(239, 68, 68, 0.1)'
+                                        : selectedOption.score >= 3 ? 'rgba(245, 158, 11, 0.1)'
+                                        : 'rgba(16, 185, 129, 0.1)',
+                                      border: `1px solid ${selectedOption.score >= 10 ? 'rgba(239, 68, 68, 0.3)'
+                                        : selectedOption.score >= 3 ? 'rgba(245, 158, 11, 0.3)'
+                                        : 'rgba(16, 185, 129, 0.3)'}`,
+                                      borderRadius: '4px',
+                                      fontSize: '0.8rem',
+                                      color: selectedOption.score >= 10 ? '#ef4444'
+                                        : selectedOption.score >= 3 ? '#f59e0b'
+                                        : '#10b981'
+                                    }}>
+                                      {selectedOption.labelEn} ({selectedOption.score})
+                                    </span>
+                                  );
+                                }
+                                return <span style={{ color: 'var(--text-muted)' }}>—</span>;
+                              })()
+                            )}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                  {/* Totals Row */}
+                  <tfoot>
+                    <tr style={{ background: 'var(--bg-tertiary)' }}>
+                      <td style={{
+                        padding: '14px 16px',
+                        fontWeight: '700',
+                        color: 'var(--text-primary)',
+                        borderTop: '2px solid var(--border-color)'
+                      }}>
+                        TOTAL SCORE
+                      </td>
+                      {['clientProspect', 'beneficialOwner', 'businessRelationship'].map(column => {
+                        const result = editingRiskScore
+                          ? calculateRiskScore(riskScoreForm[column])
+                          : {
+                              totalScore: user.profile?.kycRiskScore?.[column]?.totalScore || 0,
+                              riskLevel: user.profile?.kycRiskScore?.[column]?.riskLevel || null
+                            };
+                        const display = getRiskLevelDisplay(result.riskLevel);
+                        return (
+                          <td key={column} style={{
+                            padding: '14px 16px',
+                            textAlign: 'center',
+                            borderTop: '2px solid var(--border-color)'
+                          }}>
+                            <div style={{
+                              fontSize: '1.5rem',
+                              fontWeight: '700',
+                              color: display.color,
+                              marginBottom: '4px'
+                            }}>
+                              {result.totalScore}
+                            </div>
+                            <div style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              padding: '4px 12px',
+                              background: `${display.color}15`,
+                              border: `1px solid ${display.color}40`,
+                              borderRadius: '20px',
+                              fontSize: '0.8rem',
+                              fontWeight: '600',
+                              color: display.color
+                            }}>
+                              {display.emoji} {display.labelEn}
+                            </div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              {/* Score Legend */}
+              <div style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: '16px',
+                marginBottom: '24px',
+                padding: '16px',
+                background: 'var(--bg-secondary)',
+                borderRadius: '8px'
+              }}>
+                <div style={{ fontWeight: '600', color: 'var(--text-primary)', marginRight: '8px' }}>Score Classification:</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ color: '#10b981' }}>🟢</span>
+                  <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>&lt; 15 pts = Low Risk (review every 2 years)</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ color: '#f59e0b' }}>🟡</span>
+                  <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>15-29 pts = Medium Risk (review every 2 years)</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ color: '#ef4444' }}>🔴</span>
+                  <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>≥ 30 pts = High Risk (review every year)</span>
+                </div>
+              </div>
+
+              {/* Comments Section */}
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{
+                  margin: '0 0 12px',
+                  fontSize: '1rem',
+                  fontWeight: '600',
+                  color: 'var(--text-primary)'
+                }}>
+                  Comments
+                </h3>
+                {editingRiskScore ? (
+                  <textarea
+                    value={riskScoreForm.comments}
+                    onChange={(e) => setRiskScoreForm(prev => ({ ...prev, comments: e.target.value }))}
+                    placeholder="Enter any additional comments or observations..."
+                    style={{
+                      width: '100%',
+                      minHeight: '100px',
+                      padding: '12px',
+                      background: 'var(--bg-secondary)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      color: 'var(--text-primary)',
+                      fontSize: '0.9rem',
+                      resize: 'vertical'
+                    }}
+                  />
+                ) : (
+                  <div style={{
+                    padding: '12px 16px',
+                    background: 'var(--bg-secondary)',
+                    borderRadius: '8px',
+                    color: user.profile?.kycRiskScore?.comments ? 'var(--text-primary)' : 'var(--text-muted)',
+                    fontSize: '0.9rem',
+                    whiteSpace: 'pre-wrap',
+                    minHeight: '60px'
+                  }}>
+                    {user.profile?.kycRiskScore?.comments || 'No comments recorded.'}
+                  </div>
+                )}
+              </div>
+
+              {/* Action Buttons (Edit Mode) */}
+              {editingRiskScore && (
+                <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                  <button
+                    onClick={() => {
+                      setEditingRiskScore(false);
+                      setRiskScoreForm(getInitialRiskScoreForm());
+                    }}
+                    disabled={savingRiskScore}
+                    style={{
+                      padding: '12px 24px',
+                      background: 'var(--bg-secondary)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      color: 'var(--text-primary)',
+                      cursor: savingRiskScore ? 'not-allowed' : 'pointer',
+                      fontSize: '14px',
+                      fontWeight: '500',
+                      opacity: savingRiskScore ? 0.5 : 1,
+                      transition: 'all 0.3s ease'
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSaveRiskScore}
+                    disabled={savingRiskScore}
+                    style={{
+                      padding: '12px 24px',
+                      background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                      border: 'none',
+                      borderRadius: '8px',
+                      color: '#fff',
+                      cursor: savingRiskScore ? 'not-allowed' : 'pointer',
+                      fontSize: '14px',
+                      fontWeight: '500',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      opacity: savingRiskScore ? 0.7 : 1,
+                      transition: 'all 0.3s ease'
+                    }}
+                  >
+                    {savingRiskScore ? (
+                      <>
+                        <span style={{
+                          width: '16px',
+                          height: '16px',
+                          border: '2px solid rgba(255,255,255,0.3)',
+                          borderTopColor: '#fff',
+                          borderRadius: '50%',
+                          animation: 'spin 1s linear infinite'
+                        }} />
+                        Saving...
+                      </>
+                    ) : (
+                      <>💾 Save Assessment</>
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {/* No Assessment Yet */}
+              {!user.profile?.kycRiskScore && !editingRiskScore && (
+                <div style={{
+                  padding: '32px',
+                  textAlign: 'center',
+                  background: 'var(--bg-secondary)',
+                  borderRadius: '12px',
+                  border: '1px dashed var(--border-color)'
+                }}>
+                  <div style={{ fontSize: '48px', marginBottom: '12px', opacity: 0.5 }}>📋</div>
+                  <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '14px' }}>
+                    No KYC risk assessment has been performed for this client yet.
+                  </p>
+                  {(currentUser?.role === USER_ROLES.SUPERADMIN || currentUser?.role === USER_ROLES.ADMIN || currentUser?.role === USER_ROLES.COMPLIANCE) && (
+                    <button
+                      onClick={() => setEditingRiskScore(true)}
+                      style={{
+                        marginTop: '16px',
+                        padding: '10px 20px',
+                        background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color-dark, #0284c7) 100%)',
+                        border: 'none',
+                        borderRadius: '8px',
+                        color: '#fff',
+                        cursor: 'pointer',
+                        fontSize: '14px',
+                        fontWeight: '500'
+                      }}
+                    >
+                      Start Assessment
+                    </button>
+                  )}
                 </div>
               )}
             </LiquidGlassCard>

@@ -1,6 +1,7 @@
 import React from 'react';
 import StructuredProductChart from '../components/StructuredProductChart.jsx';
 import UnderlyingNews from '../components/UnderlyingNews.jsx';
+import PriceSparkline from '../components/PriceSparkline.jsx';
 
 /**
  * Reverse Convertible (Bond) Report Component
@@ -378,6 +379,17 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                         fontWeight: '500'
                       }}>
                         {underlying.priceDateFormatted}
+                      </div>
+                    )}
+                    {underlying.sparklineData?.hasData && (
+                      <div style={{ marginTop: '0.5rem' }}>
+                        <PriceSparkline
+                          sparklineData={underlying.sparklineData}
+                          ticker={underlying.ticker}
+                          initialPrice={underlying.initialPrice}
+                          currency={underlying.currency}
+                          isPositive={underlying.isPositive}
+                        />
                       </div>
                     )}
                   </div>

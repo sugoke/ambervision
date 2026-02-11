@@ -364,7 +364,7 @@ export const PhoenixChartBuilder = {
     }
 
     // Add autocall event indicator if product was called
-    if (observationAnalysis && observationAnalysis.productCalled && observationAnalysis.callDate) {
+    if (observationAnalysis && observationAnalysis.isEarlyAutocall && observationAnalysis.callDate) {
       const callDateISO = new Date(observationAnalysis.callDate).toISOString().split('T')[0];
       const callDateIndex = labels.indexOf(callDateISO);
 
@@ -426,7 +426,7 @@ export const PhoenixChartBuilder = {
     }
 
     // Add maturity redemption line if product has matured (not autocalled)
-    if (!observationAnalysis?.productCalled) {
+    if (!observationAnalysis?.isEarlyAutocall) {
       const currentStatus = evaluation.currentStatus;
       const hasMatured = currentStatus?.hasMatured || currentStatus?.productStatus === 'matured';
 
@@ -554,7 +554,7 @@ export const PhoenixChartBuilder = {
             ticks: {
               maxRotation: 45,
               minRotation: 0,
-              color: '#ffffff',
+              color: 'rgba(148, 163, 184, 0.8)',
               font: { size: 11 },
               maxTicksLimit: 12
             }
@@ -570,7 +570,7 @@ export const PhoenixChartBuilder = {
               drawBorder: false
             },
             ticks: {
-              color: '#ffffff',
+              color: 'rgba(148, 163, 184, 0.8)',
               font: { size: 11 },
               callback: function(value) {
                 return value + '%';

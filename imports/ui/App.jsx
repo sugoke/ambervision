@@ -25,7 +25,7 @@ const MarketTicker = lazy(() => import('./MarketTicker.jsx'));
 
 const AppContent = () => {
   const { theme } = useTheme();
-  const { viewAsFilter } = useViewAs();
+  const { viewAsFilter, favorites, setFilter } = useViewAs();
   const [user, setUser] = useState(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true); // Add loading state for authentication
   const [isComponentLibraryOpen, setIsComponentLibraryOpen] = useState(false);
@@ -1056,6 +1056,83 @@ const AppContent = () => {
                 currentUser={user}
                 onSelect={() => setMobileViewAsOpen(false)}
               />
+
+              {/* Favorites Quick Access */}
+              {favorites && favorites.length > 0 && (
+                <div style={{ marginTop: '1.5rem' }}>
+                  <h4 style={{
+                    margin: '0 0 0.75rem 0',
+                    fontSize: '0.8rem',
+                    fontWeight: '600',
+                    color: 'var(--text-muted)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em'
+                  }}>
+                    Favorites
+                  </h4>
+                  <div style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.5rem'
+                  }}>
+                    {favorites.map(fav => (
+                      <button
+                        key={fav.id}
+                        onClick={() => {
+                          setFilter({
+                            type: fav.type || 'client',
+                            id: fav.id,
+                            label: fav.label,
+                            data: fav.data
+                          });
+                          setMobileViewAsOpen(false);
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.75rem',
+                          padding: '0.875rem 1rem',
+                          borderRadius: '10px',
+                          border: '1px solid var(--border-color)',
+                          background: viewAsFilter?.id === fav.id
+                            ? 'linear-gradient(135deg, rgba(59, 130, 246, 0.15), rgba(59, 130, 246, 0.05))'
+                            : 'var(--bg-secondary)',
+                          color: 'var(--text-primary)',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <span style={{ fontSize: '1.25rem' }}>
+                          {viewAsFilter?.id === fav.id ? '✓' : '⭐'}
+                        </span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{
+                            fontWeight: '500',
+                            fontSize: '0.95rem',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                          }}>
+                            {fav.label}
+                          </div>
+                          {fav.data?.emails?.[0]?.address && (
+                            <div style={{
+                              fontSize: '0.75rem',
+                              color: 'var(--text-muted)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap'
+                            }}>
+                              {fav.data.emails[0].address}
+                            </div>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Instructions */}

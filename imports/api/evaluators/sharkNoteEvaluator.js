@@ -28,7 +28,7 @@ export const SharkNoteEvaluator = {
     console.log('🦈 [Shark Note] Structure parameters:', sharkParams);
 
     // Extract underlying assets data
-    const underlyings = SharkNoteEvaluationHelpers.extractUnderlyingAssetsData(product);
+    const underlyings = await SharkNoteEvaluationHelpers.extractUnderlyingAssetsData(product);
     console.log('🦈 [Shark Note] Underlyings extracted:', underlyings.length);
 
     // Calculate basket performance

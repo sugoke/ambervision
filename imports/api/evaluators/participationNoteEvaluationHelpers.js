@@ -1,5 +1,6 @@
 import { MarketDataHelpers } from '/imports/api/marketDataCache';
 import { EODApiHelpers } from '/imports/api/eodApi';
+import { SharedEvaluationHelpers } from './sharedEvaluationHelpers';
 
 /**
  * Participation Note Evaluation Helpers
@@ -443,8 +444,23 @@ export const ParticipationNoteEvaluationHelpers = {
           hasCurrentData: !!(underlying.securityData?.price?.price),
           lastUpdated: new Date().toISOString(),
 
-          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`
+          fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`,
+
+          // Sparkline data
+          sparklineData: { hasData: false }
         };
+
+        // Generate sparkline price history
+        try {
+          const sparkline = await SharedEvaluationHelpers.generateSparklineData(
+            underlyingData.fullTicker,
+            product.initialDate || product.tradeDate || product.valueDate,
+            product
+          );
+          if (sparkline) underlyingData.sparklineData = sparkline;
+        } catch (err) {
+          console.log(`[Sparkline] Could not generate for ${underlyingData.fullTicker}:`, err.message);
+        }
 
         underlyings.push(underlyingData);
       }

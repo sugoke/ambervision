@@ -11,7 +11,9 @@ import { EmailService } from '/imports/api/emailService';
 import { NotificationsCollection } from '/imports/api/notifications';
 import { checkDataFreshness, formatDataDate } from '/imports/api/helpers/dataFreshness.js';
 import { PMSHoldingsCollection } from '/imports/api/pmsHoldings.js';
-import { PortfolioSnapshotsCollection } from '/imports/api/portfolioSnapshots.js';
+import { PortfolioSnapshotsCollection, PortfolioSnapshotHelpers } from '/imports/api/portfolioSnapshots.js';
+import { PMSOperationsCollection } from '/imports/api/pmsOperations.js';
+import { BanksCollection } from '/imports/api/banks.js';
 import { UsersCollection, USER_ROLES } from '/imports/api/users.js';
 import { DashboardMetricsHelpers } from '/imports/api/dashboardMetrics.js';
 
@@ -842,6 +844,16 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
       results.consolidation = { success: false, error: consolidationError.message };
     }
 
+    // Regenerate today's snapshots after all connections processed
+    // This ensures snapshots reflect all banks that synced in this batch
+    try {
+      const snapshotResult = await regenerateTodaySnapshots();
+      results.snapshotRegeneration = snapshotResult;
+    } catch (snapshotError) {
+      console.error('[CRON] Failed to regenerate today snapshots:', snapshotError.message);
+      results.snapshotRegeneration = { success: false, error: snapshotError.message };
+    }
+
     // Send bank sync completion email with notifications
     try {
       // Collect notifications generated during this sync (within the last 10 minutes)
@@ -1095,7 +1107,17 @@ async function cmbFileSyncJob(triggerSource = 'cron') {
       }
     }
 
-    // After CMB sync (last bank to sync), compute dashboard metrics for fast loading
+    // After CMB sync (last bank to sync), regenerate today's snapshots from final holdings
+    // This ensures snapshots reflect ALL banks, not just those that synced in the first batch
+    try {
+      const snapshotResult = await regenerateTodaySnapshots();
+      results.snapshotRegeneration = snapshotResult;
+    } catch (snapshotError) {
+      console.error('[CRON-CMB] Failed to regenerate today snapshots:', snapshotError.message);
+      results.snapshotRegeneration = { success: false, error: snapshotError.message };
+    }
+
+    // After snapshot regeneration, compute dashboard metrics for fast loading
     try {
       const metricsResult = await computeDashboardMetrics();
       results.dashboardMetrics = metricsResult;
@@ -1111,6 +1133,93 @@ async function cmbFileSyncJob(triggerSource = 'cron') {
     await CronJobLogHelpers.failJob(logId, error);
     throw error;
   }
+}
+
+/**
+ * Regenerate today's portfolio snapshots from current PMSHoldings
+ *
+ * Called after all bank syncs complete (end of CMB sync at 09:00+).
+ * Rebuilds snapshots for today using the final, complete holdings data
+ * so that no partial-sync data causes dips in the AUM chart.
+ */
+async function regenerateTodaySnapshots() {
+  console.log('[CRON] Regenerating today\'s snapshots from final holdings...');
+
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+
+  // Get all active bank connections
+  const connections = await BankConnectionsCollection.find({ isActive: true }).fetchAsync();
+
+  // Pre-fetch transfer operations for all users (reused across all snapshots)
+  const transferOpsCache = await PMSOperationsCollection.find({
+    operationType: 'TRANSFER',
+    operationCategory: 'CASH'
+  }).fetchAsync();
+
+  let regenerated = 0;
+  let errors = 0;
+
+  for (const connection of connections) {
+    try {
+      const bank = await BanksCollection.findOneAsync(connection.bankId);
+      if (!bank) continue;
+
+      // Get today's latest holdings for this bank
+      const holdings = await PMSHoldingsCollection.find({
+        bankId: connection.bankId,
+        isLatest: true,
+        isActive: true
+      }).fetchAsync();
+
+      if (holdings.length === 0) continue;
+
+      // Group by userId + portfolioCode
+      const portfolioGroups = {};
+      for (const h of holdings) {
+        if (!h.userId) continue;
+        const key = `${h.userId}__${h.portfolioCode || 'UNKNOWN'}`;
+        if (!portfolioGroups[key]) {
+          portfolioGroups[key] = {
+            userId: h.userId,
+            portfolioCode: h.portfolioCode || 'UNKNOWN',
+            accountNumber: h.accountNumber || null,
+            positions: []
+          };
+        }
+        portfolioGroups[key].positions.push(h);
+      }
+
+      // Create/update snapshot for each portfolio
+      for (const group of Object.values(portfolioGroups)) {
+        try {
+          await PortfolioSnapshotHelpers.createSnapshot({
+            userId: group.userId,
+            bankId: connection.bankId,
+            bankName: bank.name,
+            connectionId: connection._id,
+            portfolioCode: group.portfolioCode,
+            accountNumber: group.accountNumber,
+            snapshotDate: today,
+            fileDate: today,
+            sourceFile: 'regenerated_post_sync',
+            holdings: group.positions,
+            transferOpsCache
+          });
+          regenerated++;
+        } catch (err) {
+          errors++;
+          console.error(`[CRON] Snapshot error for ${group.portfolioCode}: ${err.message}`);
+        }
+      }
+    } catch (connError) {
+      errors++;
+      console.error(`[CRON] Connection error ${connection._id}: ${connError.message}`);
+    }
+  }
+
+  console.log(`[CRON] Snapshot regeneration complete: ${regenerated} updated, ${errors} errors`);
+  return { success: true, regenerated, errors };
 }
 
 /**
@@ -1219,9 +1328,12 @@ async function computeDashboardMetrics() {
       sort: { snapshotDate: 1 }
     }).fetchAsync();
 
-    // Aggregate snapshots by date
+    // Aggregate snapshots by date (skip weekends - incomplete data causes chart dips)
     const dateMap = new Map();
     for (const snapshot of wtdSnapshots) {
+      const dayOfWeek = snapshot.snapshotDate.getDay();
+      if (dayOfWeek === 0 || dayOfWeek === 6) continue; // Skip Saturday/Sunday
+
       const dateKey = snapshot.snapshotDate.toISOString().split('T')[0];
       if (!dateMap.has(dateKey)) {
         dateMap.set(dateKey, { date: snapshot.snapshotDate, totalAccountValue: 0, portfolioCount: 0 });
@@ -1231,8 +1343,13 @@ async function computeDashboardMetrics() {
       entry.portfolioCount += 1;
     }
 
-    // Convert to sorted array and add today's live AUM
-    const wtdHistory = Array.from(dateMap.values())
+    // Filter out days with incomplete portfolio coverage, then sort
+    const allEntries = Array.from(dateMap.values());
+    const maxPortfolioCount = Math.max(...allEntries.map(e => e.portfolioCount));
+    const minThreshold = Math.floor(maxPortfolioCount * 0.8);
+
+    const wtdHistory = allEntries
+      .filter(e => e.portfolioCount >= minThreshold)
       .sort((a, b) => a.date - b.date)
       .map(s => ({ date: s.date, value: s.totalAccountValue }));
 

@@ -1,6 +1,7 @@
 import React from 'react';
 import StructuredProductChart from '../components/StructuredProductChart.jsx';
 import UnderlyingNews from '../components/UnderlyingNews.jsx';
+import PriceSparkline from '../components/PriceSparkline.jsx';
 import { getTranslation, t } from '../../utils/reportTranslations';
 
 /**
@@ -271,6 +272,17 @@ const PhoenixReport = ({ results, productId }) => {
                         fontWeight: '500'
                       }}>
                         {underlying.priceDateFormatted}
+                      </div>
+                    )}
+                    {underlying.sparklineData?.hasData && (
+                      <div style={{ marginTop: '0.5rem' }}>
+                        <PriceSparkline
+                          sparklineData={underlying.sparklineData}
+                          ticker={underlying.ticker}
+                          initialPrice={underlying.initialPrice}
+                          currency={underlying.currency}
+                          isPositive={underlying.isPositive}
+                        />
                       </div>
                     )}
                   </div>
@@ -1232,7 +1244,7 @@ const PhoenixReport = ({ results, productId }) => {
            !results.observationAnalysis.nextObservationPrediction.isLastObservation &&
            !results.observationAnalysis.isEarlyAutocall &&
            !results.observationAnalysis.isMaturedAtFinal &&
-           !results.observationAnalysis.productCalled && (
+           !results.observationAnalysis.isEarlyAutocall && (
             <div className="pdf-card pdf-page-break-before" style={{
               background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(96, 165, 250, 0.05) 100%)',
               border: '2px solid rgba(59, 130, 246, 0.3)',

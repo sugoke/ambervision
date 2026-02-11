@@ -10,6 +10,8 @@ export const BanksCollection = new Mongo.Collection('banks');
 //   city: String,
 //   country: String,
 //   countryCode: String (ISO 3166-1 alpha-2, e.g., "CH", "DE", "US"),
+//   deskEmail: String (optional - email address of the bank's desk/contact),
+//   ccEmails: [String] (optional - additional email addresses in copy),
 //   isActive: Boolean,
 //   createdAt: Date,
 //   updatedAt: Date,
@@ -33,7 +35,7 @@ export const BankHelpers = {
   },
 
   // Add a new bank (admin only)
-  async addBank(name, city, country, countryCode, createdBy) {
+  async addBank(name, city, country, countryCode, createdBy, deskEmail = null) {
     check(name, String);
     check(city, String);
     check(country, String);
@@ -52,7 +54,7 @@ export const BankHelpers = {
       throw new Error('Bank already exists in this city/country');
     }
 
-    const bankId = await BanksCollection.insertAsync({
+    const bankData = {
       name: name.trim(),
       city: city.trim(),
       country: country.trim(),
@@ -61,7 +63,14 @@ export const BankHelpers = {
       createdAt: new Date(),
       updatedAt: new Date(),
       createdBy
-    });
+    };
+
+    // Add deskEmail if provided
+    if (deskEmail && deskEmail.trim()) {
+      bankData.deskEmail = deskEmail.trim().toLowerCase();
+    }
+
+    const bankId = await BanksCollection.insertAsync(bankData);
 
     return bankId;
   },
@@ -72,14 +81,22 @@ export const BankHelpers = {
     check(updates, Object);
     check(updatedBy, String);
 
-    const allowedFields = ['name', 'city', 'country', 'countryCode'];
+    const allowedFields = ['name', 'city', 'country', 'countryCode', 'deskEmail', 'ccEmails'];
     const filteredUpdates = {};
-    
+
     allowedFields.forEach(field => {
       if (updates[field] !== undefined) {
-        filteredUpdates[field] = field === 'countryCode' 
-          ? updates[field].toUpperCase() 
-          : updates[field].trim();
+        if (field === 'countryCode') {
+          filteredUpdates[field] = updates[field].toUpperCase();
+        } else if (field === 'deskEmail') {
+          filteredUpdates[field] = updates[field] ? updates[field].trim().toLowerCase() : null;
+        } else if (field === 'ccEmails') {
+          filteredUpdates[field] = Array.isArray(updates[field])
+            ? updates[field].map(e => e.trim().toLowerCase()).filter(e => e)
+            : [];
+        } else {
+          filteredUpdates[field] = updates[field].trim();
+        }
       }
     });
 

@@ -10,6 +10,7 @@ import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { BanksCollection } from '/imports/api/banks';
 import { ProductsCollection } from '/imports/api/products';
 import { AllocationsCollection } from '/imports/api/allocations';
+import { AccountProfilesCollection, aggregateToFourCategories, PROFILE_TEMPLATES } from '/imports/api/accountProfiles';
 import { useViewAs } from './ViewAsContext.jsx';
 import {
   getAssetClassLabel,
@@ -27,8 +28,10 @@ import {
 } from '/imports/api/constants/instrumentTypes';
 import PDFDownloadButton from './components/PDFDownloadButton.jsx';
 import NestedDoughnutChart from './components/NestedDoughnutChart.jsx';
+import OrderModal from './components/OrderModal.jsx';
 import { DataFreshnessPanel } from './components/DataFreshnessIndicator.jsx';
 import { checkDataFreshness } from '/imports/api/helpers/dataFreshness.js';
+import * as XLSX from 'xlsx';
 
 // Local collection for snapshot dates (synthetic collection from publication)
 const PMSHoldingsSnapshotDatesCollection = new Mongo.Collection('pmsHoldingsSnapshotDates');
@@ -424,6 +427,7 @@ const PortfolioManagementSystem = ({ user }) => {
   const [chartData, setChartData] = useState(null);
   const [chartLoading, setChartLoading] = useState(false);
   const [lastFetchedRange, setLastFetchedRange] = useState(null);
+  const [twrData, setTwrData] = useState(null);
   const [assetAllocation, setAssetAllocation] = useState(null);
   const [structuredProductHierarchy, setStructuredProductHierarchy] = useState({
     hasData: false,
@@ -440,6 +444,14 @@ const PortfolioManagementSystem = ({ user }) => {
   // Notification alerts from notifications collection
   const [notificationAlerts, setNotificationAlerts] = useState([]);
   const [notificationAlertsLoading, setNotificationAlertsLoading] = useState(false);
+
+  // Order modal state
+  const [orderModalOpen, setOrderModalOpen] = useState(false);
+  const [orderModalMode, setOrderModalMode] = useState('buy'); // 'buy' or 'sell'
+  const [orderPrefillData, setOrderPrefillData] = useState(null);
+
+  // Active orders for positions (to show indicators)
+  const [activeOrders, setActiveOrders] = useState([]);
 
   // Listen for refresh events from file processing
   useEffect(() => {
@@ -498,6 +510,43 @@ const PortfolioManagementSystem = ({ user }) => {
     fetchNotificationAlerts();
     // Re-fetch when refreshKey or viewAsFilter changes
   }, [refreshKey, viewAsFilter]);
+
+  // Fetch active orders for positions (pending, sent status)
+  useEffect(() => {
+    const fetchActiveOrders = async () => {
+      const sessionId = typeof window !== 'undefined' ? localStorage.getItem('sessionId') : null;
+      if (!sessionId) return;
+
+      // Only fetch orders for users who can place orders
+      if (!['rm', 'admin', 'superadmin'].includes(user?.role)) {
+        return;
+      }
+
+      try {
+        const filters = {
+          status: ['pending', 'sent'] // Only active orders
+        };
+
+        // If viewing a specific client, filter by that client
+        if (viewAsFilter?.type === 'client') {
+          filters.clientId = viewAsFilter.id;
+        }
+
+        const result = await Meteor.callAsync('orders.list', {
+          filters,
+          pagination: { limit: 100 },
+          sessionId
+        });
+
+        setActiveOrders(result.orders || []);
+      } catch (error) {
+        console.error('[PMS] Error fetching active orders:', error);
+        setActiveOrders([]);
+      }
+    };
+
+    fetchActiveOrders();
+  }, [refreshKey, viewAsFilter, user?.role, orderModalOpen]); // Re-fetch when order modal closes (new order created)
 
   // Fetch real holdings data from database
   const { holdings, isLoading } = useTracker(() => {
@@ -697,13 +746,14 @@ const PortfolioManagementSystem = ({ user }) => {
 
   // Fetch user's bank accounts for account filter dropdown
   // Filtered by selected client when viewAsFilter is set
-  const { bankAccounts, isLoadingAccounts } = useTracker(() => {
+  const { bankAccounts, accountProfiles, isLoadingAccounts } = useTracker(() => {
     const sessionId = typeof window !== 'undefined' ? localStorage.getItem('sessionId') : null;
     const accountsHandle = Meteor.subscribe('userBankAccounts', sessionId, viewAsFilter);
     const banksHandle = Meteor.subscribe('banks');
+    const profilesHandle = Meteor.subscribe('accountProfiles', sessionId, viewAsFilter?.id);
 
     if (!accountsHandle.ready() || !banksHandle.ready()) {
-      return { bankAccounts: [], isLoadingAccounts: true };
+      return { bankAccounts: [], accountProfiles: [], isLoadingAccounts: true };
     }
 
     // Build query - filter by selected client's userId if viewAsFilter is set
@@ -714,6 +764,10 @@ const PortfolioManagementSystem = ({ user }) => {
 
     const accounts = BankAccountsCollection.find(query, { sort: { accountNumber: 1 } }).fetch();
     const banks = BanksCollection.find({ isActive: true }).fetch();
+
+    // Get account profiles for these accounts
+    const accountIds = accounts.map(a => a._id);
+    const profiles = AccountProfilesCollection.find({ bankAccountId: { $in: accountIds } }).fetch();
 
     // Enrich accounts with bank info (name, country code)
     const enrichedAccounts = accounts.map(account => {
@@ -726,7 +780,7 @@ const PortfolioManagementSystem = ({ user }) => {
       };
     });
 
-    return { bankAccounts: enrichedAccounts, isLoadingAccounts: false };
+    return { bankAccounts: enrichedAccounts, accountProfiles: profiles, isLoadingAccounts: false };
   }, [viewAsFilter]);
 
   // Account description order (for tab sorting) and icons
@@ -822,6 +876,35 @@ const PortfolioManagementSystem = ({ user }) => {
   // Use filtered data for display
   const displayPositions = filteredHoldings;
   const displayTransactions = filteredOperations;
+
+  // Calculate 4-category allocation for risk profile comparison
+  const fourCategoryAllocation = useMemo(() => {
+    if (!filteredHoldings || filteredHoldings.length === 0) {
+      return { cash: 0, bonds: 0, equities: 0, alternative: 0, total: 0 };
+    }
+
+    // Build asset class breakdown by value
+    const breakdown = {};
+    let total = 0;
+
+    filteredHoldings.forEach(holding => {
+      const assetClass = holding.assetClass || 'other';
+      const marketValue = holding.marketValue || 0;
+      breakdown[assetClass] = (breakdown[assetClass] || 0) + marketValue;
+      total += marketValue;
+    });
+
+    const categories = aggregateToFourCategories(breakdown, total);
+    return { ...categories, total };
+  }, [filteredHoldings]);
+
+  // Get risk profile for the selected account
+  const selectedAccountProfile = useMemo(() => {
+    if (activeAccountTab === 'consolidated' || !activeAccountTab) {
+      return null;
+    }
+    return accountProfiles.find(p => p.bankAccountId === activeAccountTab);
+  }, [activeAccountTab, accountProfiles]);
 
   // Calculate asset allocation from filtered holdings (with sub-asset classes)
   React.useEffect(() => {
@@ -1337,12 +1420,48 @@ const PortfolioManagementSystem = ({ user }) => {
     }
   }, [Object.keys(groupedPositions).join(',')]);
 
+  // Export holdings to Excel
+  const exportToExcel = () => {
+    // Combine all holdings (cash + non-cash sorted positions) for export
+    const allHoldings = [...cashPositions, ...sortedPositions];
+
+    const data = allHoldings.map(h => ({
+      'Name': h.name || '',
+      'ISIN': h.isin || '',
+      'Ticker': h.ticker || '',
+      'Asset Class': h.assetClass ? h.assetClass.replace(/_/g, ' ') : '',
+      'Sub Class': h.assetSubClass ? h.assetSubClass.replace(/_/g, ' ') : '',
+      'Quantity': h.quantity || 0,
+      'Avg Price': h.avgPrice || 0,
+      'Current Price': h.currentPrice || 0,
+      'Price Type': h.priceType || '',
+      'Cost Basis': h.costBasis || 0,
+      'Market Value': h.marketValue || 0,
+      'Gain/Loss': h.gainLoss || 0,
+      'Gain/Loss %': h.gainLossPercent || 0,
+      'Currency': h.currency || '',
+      'Portfolio Currency': h.portfolioCurrency || portfolioCurrency || '',
+      'Bank': h.bankName || '',
+      'Portfolio Code': h.portfolioCode || '',
+      'Price Date': h.priceDate ? new Date(h.priceDate).toLocaleDateString() : '',
+      'Data Date': h.dataDate ? new Date(h.dataDate).toLocaleDateString() : ''
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Holdings');
+
+    const dateStr = new Date().toISOString().split('T')[0];
+    XLSX.writeFile(wb, `portfolio-holdings-${dateStr}.xlsx`);
+  };
+
   // Reset performance data when viewAsFilter or account tab changes
   // Must reset unconditionally so data refreshes when returning to performance tab
   React.useEffect(() => {
     setPerformancePeriods(null);
     setChartData(null);
     setLastFetchedRange(null);
+    setTwrData(null);
   }, [viewAsFilter, activeAccountTab]);
 
   // Reset account tab when viewAsFilter changes
@@ -1395,48 +1514,50 @@ const PortfolioManagementSystem = ({ user }) => {
     return startDate;
   };
 
-  // Fetch performance periods when Performance tab becomes active (only once)
+  // Fetch TWR performance data when Performance tab becomes active (only once)
   React.useEffect(() => {
-    if (activeTab === 'performance' && !performancePeriods && !performanceLoading) {
-      const fetchPerformancePeriods = async () => {
+    if (activeTab === 'performance' && !twrData && !performanceLoading) {
+      const fetchTWRData = async () => {
         setPerformanceLoading(true);
         const sessionId = localStorage.getItem('sessionId');
 
         // Guard: Don't call methods without session
         if (!sessionId) {
-          console.error('[PMS] No sessionId found, skipping performance fetch');
+          console.error('[PMS] No sessionId found, skipping TWR fetch');
           setPerformanceLoading(false);
-          setPerformancePeriods({});
+          setTwrData({ hasData: false });
           return;
         }
 
         try {
-          // Fetch period performance (1M, 3M, YTD, etc.)
           // If a specific account tab is selected, pass its accountNumber as portfolioCode
           const selectedTab = accountTabs.find(tab => tab.id === activeAccountTab);
           const portfolioCode = activeAccountTab !== 'consolidated' && selectedTab?.accountNumber
             ? selectedTab.accountNumber
             : null;
-          console.log('[PMS] Calling performance.getPeriods...', { portfolioCode, activeAccountTab });
-          const periods = await Meteor.callAsync('performance.getPeriods', {
+          console.log('[PMS] Calling performance.calculateTWR...', { portfolioCode, activeAccountTab });
+          const result = await Meteor.callAsync('performance.calculateTWR', {
             sessionId,
             viewAsFilter,
             portfolioCode
           });
-          console.log('[PMS] getPeriods SUCCESS');
+          console.log('[PMS] calculateTWR SUCCESS', { hasData: result?.hasData, periods: result?.periods ? Object.keys(result.periods) : [] });
 
-          setPerformancePeriods(periods);
+          setTwrData(result);
+          // Also set performancePeriods for backward compatibility with any other code
+          setPerformancePeriods(result?.periods || {});
         } catch (error) {
-          console.error('[PMS] Error fetching performance periods:', error);
+          console.error('[PMS] Error fetching TWR data:', error);
+          setTwrData({ hasData: false });
           setPerformancePeriods({});
         } finally {
           setPerformanceLoading(false);
         }
       };
 
-      fetchPerformancePeriods();
+      fetchTWRData();
     }
-  }, [activeTab, performancePeriods, performanceLoading, viewAsFilter, activeAccountTab, accountTabs]);
+  }, [activeTab, twrData, performanceLoading, viewAsFilter, activeAccountTab, accountTabs]);
 
   // Fetch chart data when Performance tab is active and time range changes
   React.useEffect(() => {
@@ -1536,6 +1657,39 @@ const PortfolioManagementSystem = ({ user }) => {
       setSortBy(field);
       setSortDirection('desc');
     }
+  };
+
+  // Open order modal for Buy/Sell
+  const openOrderModal = (mode, position) => {
+    // Only allow RM, Admin, and Superadmin to place orders
+    if (!['rm', 'admin', 'superadmin'].includes(user?.role)) {
+      return;
+    }
+
+    // Determine client ID: from position data, viewAsFilter, or current user
+    const clientId = position.userId || viewAsFilter?.id || user?._id;
+
+    setOrderModalMode(mode);
+    setOrderPrefillData({
+      isin: position.isin,
+      securityName: position.name,
+      currency: position.currency || portfolioCurrency,
+      assetType: position.assetClass === 'equity' ? 'equity' :
+                 position.assetClass === 'bond' ? 'bond' :
+                 position.assetClass === 'structured_product' ? 'structured_product' :
+                 position.assetClass === 'fund' ? 'fund' : 'other',
+      quantity: position.quantity,
+      holdingId: position.holdingId || position.id,
+      clientId: clientId,
+      bankAccountId: position.bankAccountId,
+      bankId: position.bankId
+    });
+    setOrderModalOpen(true);
+  };
+
+  const handleOrderCreated = (result) => {
+    console.log('[PMS] Order created:', result);
+    // Could show a success toast or notification here
   };
 
   // Removed handleIsinClick - using native anchor navigation instead
@@ -2130,6 +2284,51 @@ const PortfolioManagementSystem = ({ user }) => {
             <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
               {sortedPositions.length} positions
             </span>
+
+            {/* Export to Excel Button */}
+            <button
+              onClick={exportToExcel}
+              title="Export to Excel"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.375rem',
+                padding: '0.5rem 0.75rem',
+                borderRadius: '6px',
+                border: '1px solid var(--border-color)',
+                background: 'var(--bg-secondary)',
+                color: 'var(--text-primary)',
+                fontSize: '0.75rem',
+                cursor: 'pointer',
+                transition: 'all 0.15s ease'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'var(--bg-tertiary)';
+                e.currentTarget.style.borderColor = '#10b981';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'var(--bg-secondary)';
+                e.currentTarget.style.borderColor = 'var(--border-color)';
+              }}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="16" y1="13" x2="8" y2="13" />
+                <line x1="16" y1="17" x2="8" y2="17" />
+                <polyline points="10 9 9 9 8 9" />
+              </svg>
+              Excel
+            </button>
           </div>
         </div>
 
@@ -2149,6 +2348,16 @@ const PortfolioManagementSystem = ({ user }) => {
               // Check data freshness for this position
               const positionFreshness = checkDataFreshness(position.dataDate);
               const isStale = positionFreshness.status === 'stale' || positionFreshness.status === 'old';
+
+              // Find active orders for this position (by ISIN and optionally portfolioCode)
+              const positionOrders = activeOrders.filter(order =>
+                order.isin === position.isin &&
+                (!position.portfolioCode || order.portfolioCode === position.portfolioCode)
+              );
+              const buyOrders = positionOrders.filter(o => o.orderType === 'buy');
+              const sellOrders = positionOrders.filter(o => o.orderType === 'sell');
+              const totalBuyQty = buyOrders.reduce((sum, o) => sum + (o.quantity || 0), 0);
+              const totalSellQty = sellOrders.reduce((sum, o) => sum + (o.quantity || 0), 0);
 
               return (
                 <div key={position.id}>
@@ -2211,6 +2420,7 @@ const PortfolioManagementSystem = ({ user }) => {
                       </div>
                       {/* P&L - DOMINANT */}
                       <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                        <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>P&L</div>
                         <div style={{
                           fontSize: '1.1rem',
                           fontWeight: '700',
@@ -2238,28 +2448,76 @@ const PortfolioManagementSystem = ({ user }) => {
                       <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.95rem', fontVariantNumeric: 'tabular-nums' }}>
                         {formatCurrency(position.marketValue, portfolioCurrency)}
                       </div>
+                      {/* Value in original currency if different */}
+                      {position.currency && position.currency !== portfolioCurrency && position.marketValueOriginalCurrency && (
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
+                          {formatCurrency(position.marketValueOriginalCurrency, position.currency)}
+                        </div>
+                      )}
                       {/* Position weight as % of total portfolio */}
-                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                        {totalPortfolioValue > 0 ? ((position.marketValue / totalPortfolioValue) * 100).toFixed(2) : '0.00'}%
+                      <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                        {totalPortfolioValue > 0 ? ((position.marketValue / totalPortfolioValue) * 100).toFixed(2) : '0.00'}% of portfolio
                       </div>
                     </div>
 
                     {/* Quantity - Tertiary */}
                     <div style={{ textAlign: 'center' }}>
                       <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Qty</div>
-                      <div style={{ fontSize: '0.8rem', fontVariantNumeric: 'tabular-nums', color: 'var(--text-secondary)' }}>{position.quantity.toLocaleString()}</div>
+                      <div style={{ fontSize: '0.8rem', fontVariantNumeric: 'tabular-nums', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}>
+                        {position.quantity.toLocaleString()}
+                        {/* Order indicators */}
+                        {totalBuyQty > 0 && (
+                          <span
+                            title={`Buy order: +${totalBuyQty.toLocaleString()} (${buyOrders.length} order${buyOrders.length > 1 ? 's' : ''})`}
+                            style={{
+                              fontSize: '0.65rem',
+                              fontWeight: '600',
+                              color: '#10b981',
+                              background: 'rgba(16, 185, 129, 0.15)',
+                              padding: '1px 4px',
+                              borderRadius: '3px'
+                            }}
+                          >
+                            +{totalBuyQty.toLocaleString()}
+                          </span>
+                        )}
+                        {totalSellQty > 0 && (
+                          <span
+                            title={`Sell order: -${totalSellQty.toLocaleString()} (${sellOrders.length} order${sellOrders.length > 1 ? 's' : ''})`}
+                            style={{
+                              fontSize: '0.65rem',
+                              fontWeight: '600',
+                              color: '#ef4444',
+                              background: 'rgba(239, 68, 68, 0.15)',
+                              padding: '1px 4px',
+                              borderRadius: '3px'
+                            }}
+                          >
+                            -{totalSellQty.toLocaleString()}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                        {position.costBasis != null ? formatCurrency(position.costBasis, portfolioCurrency) :
+                         position.costBasisOriginalCurrency != null ? formatCurrency(position.costBasisOriginalCurrency, position.currency) : ''}
+                      </div>
                     </div>
 
                     {/* Avg Price - Tertiary */}
                     <div style={{ textAlign: 'center' }}>
                       <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Avg Purch Price</div>
                       <div style={{ fontSize: '0.8rem', fontVariantNumeric: 'tabular-nums', color: 'var(--text-secondary)' }}>{formatPrice(position.avgPrice, position.currency, position.priceType)}</div>
+                      <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                        {position.costBasis != null && totalPortfolioValue > 0
+                          ? `${((position.costBasis / totalPortfolioValue) * 100).toFixed(1)}% invested`
+                          : ''}
+                      </div>
                     </div>
 
                     {/* Current Price - Tertiary with color hint */}
                     <div style={{ textAlign: 'center' }}>
                       <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
-                        {position.priceDate ? new Date(position.priceDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : 'Last Price'}
+                        {position.priceDate ? new Date(position.priceDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Last Price'}
                       </div>
                       <div style={{
                         color: position.currentPrice >= position.avgPrice ? '#10b981' : '#ef4444',
@@ -2267,6 +2525,15 @@ const PortfolioManagementSystem = ({ user }) => {
                         fontVariantNumeric: 'tabular-nums'
                       }}>
                         {formatPrice(position.currentPrice, position.currency, position.priceType)}
+                      </div>
+                      <div style={{
+                        fontSize: '0.65rem',
+                        fontVariantNumeric: 'tabular-nums',
+                        color: position.currentPrice >= position.avgPrice ? '#10b981' : '#ef4444'
+                      }}>
+                        {position.avgPrice > 0
+                          ? `${position.currentPrice >= position.avgPrice ? '+' : ''}${(((position.currentPrice - position.avgPrice) / position.avgPrice) * 100).toFixed(1)}%`
+                          : ''}
                       </div>
                     </div>
                     </div>
@@ -2302,6 +2569,62 @@ const PortfolioManagementSystem = ({ user }) => {
                           {position.bankName || 'N/A'}
                         </div>
                       </div>
+
+                      {/* Buy/Sell Buttons - Only for RM/Admin */}
+                      {['rm', 'admin', 'superadmin'].includes(user?.role) && (
+                        <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openOrderModal('buy', position);
+                            }}
+                            style={{
+                              padding: '6px 16px',
+                              borderRadius: '6px',
+                              border: 'none',
+                              background: 'rgba(16, 185, 129, 0.15)',
+                              color: '#10b981',
+                              fontSize: '0.8rem',
+                              fontWeight: '600',
+                              cursor: 'pointer',
+                              transition: 'all 0.15s ease'
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.background = 'rgba(16, 185, 129, 0.25)';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.background = 'rgba(16, 185, 129, 0.15)';
+                            }}
+                          >
+                            Buy More
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openOrderModal('sell', position);
+                            }}
+                            style={{
+                              padding: '6px 16px',
+                              borderRadius: '6px',
+                              border: 'none',
+                              background: 'rgba(239, 68, 68, 0.15)',
+                              color: '#ef4444',
+                              fontSize: '0.8rem',
+                              fontWeight: '600',
+                              cursor: 'pointer',
+                              transition: 'all 0.15s ease'
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.background = 'rgba(239, 68, 68, 0.25)';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.background = 'rgba(239, 68, 68, 0.15)';
+                            }}
+                          >
+                            Sell
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -2732,120 +3055,70 @@ const PortfolioManagementSystem = ({ user }) => {
       );
     }
 
-    // Helper to format performance value
-    const formatPerformance = (period) => {
-      if (!period || !period.hasData) {
-        return { value: 'N/A', color: 'var(--text-muted)' };
-      }
-      const value = period.returnPercent;
-      const formatted = `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
-      const color = value >= 0 ? '#10b981' : '#ef4444';
-      return { value: formatted, color };
+    // TWR period definitions for metric cards
+    const twrPeriodCards = [
+      { key: '1M', label: '1 Month TWR' },
+      { key: '3M', label: '3 Month TWR' },
+      { key: '6M', label: '6 Month TWR' },
+      { key: 'YTD', label: 'YTD TWR' },
+      { key: '1Y', label: '1 Year TWR' },
+      { key: 'ALL', label: 'Since Inception TWR' }
+    ];
+
+    // Get color from pre-computed TWR value
+    const getTwrColor = (period) => {
+      if (!period || !period.hasData) return 'var(--text-muted)';
+      return period.twr >= 0 ? '#10b981' : '#ef4444';
     };
 
     return (
     <div style={{ padding: '1rem' }}>
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(min(130px, 100%), 1fr))',
         gap: '1rem',
         marginBottom: '1.5rem'
       }}>
-        {/* Performance Metrics */}
-        <LiquidGlassCard style={{
-          background: theme === 'light' ? '#6b7280' : '#0f172a',
-          backdropFilter: 'none'
-        }}>
-          <div style={{ padding: '1rem' }}>
-            <div style={{
-              fontSize: '0.75rem',
-              color: 'var(--text-muted)',
-              marginBottom: '0.5rem',
-              fontWeight: '400'
+        {/* TWR Performance Metrics */}
+        {twrPeriodCards.map(({ key, label }) => {
+          const period = twrData?.periods?.[key];
+          return (
+            <LiquidGlassCard key={key} style={{
+              background: theme === 'light' ? '#6b7280' : '#0f172a',
+              backdropFilter: 'none'
             }}>
-              1 Month Return
-            </div>
-            <div style={{
-              fontSize: '1.5rem',
-              fontWeight: '400',
-              color: formatPerformance(performancePeriods?.['1M']).color
-            }}>
-              {formatPerformance(performancePeriods?.['1M']).value}
-            </div>
-          </div>
-        </LiquidGlassCard>
-
-        <LiquidGlassCard style={{
-          background: theme === 'light' ? '#6b7280' : '#0f172a',
-          backdropFilter: 'none'
-        }}>
-          <div style={{ padding: '1rem' }}>
-            <div style={{
-              fontSize: '0.75rem',
-              color: 'var(--text-muted)',
-              marginBottom: '0.5rem',
-              fontWeight: '400'
-            }}>
-              3 Month Return
-            </div>
-            <div style={{
-              fontSize: '1.5rem',
-              fontWeight: '400',
-              color: formatPerformance(performancePeriods?.['3M']).color
-            }}>
-              {formatPerformance(performancePeriods?.['3M']).value}
-            </div>
-          </div>
-        </LiquidGlassCard>
-
-        <LiquidGlassCard style={{
-          background: theme === 'light' ? '#6b7280' : '#0f172a',
-          backdropFilter: 'none'
-        }}>
-          <div style={{ padding: '1rem' }}>
-            <div style={{
-              fontSize: '0.75rem',
-              color: 'var(--text-muted)',
-              marginBottom: '0.5rem',
-              fontWeight: '400'
-            }}>
-              YTD Return
-            </div>
-            <div style={{
-              fontSize: '1.5rem',
-              fontWeight: '400',
-              color: formatPerformance(performancePeriods?.YTD).color
-            }}>
-              {formatPerformance(performancePeriods?.YTD).value}
-            </div>
-          </div>
-        </LiquidGlassCard>
-
-        <LiquidGlassCard style={{
-          background: theme === 'light' ? '#6b7280' : '#0f172a',
-          backdropFilter: 'none'
-        }}>
-          <div style={{ padding: '1rem' }}>
-            <div style={{
-              fontSize: '0.75rem',
-              color: 'var(--text-muted)',
-              marginBottom: '0.5rem',
-              fontWeight: '400'
-            }}>
-              All Time Return
-            </div>
-            <div style={{
-              fontSize: '1.5rem',
-              fontWeight: '400',
-              color: formatPerformance(performancePeriods?.ALL).color
-            }}>
-              {formatPerformance(performancePeriods?.ALL).value}
-            </div>
-          </div>
-        </LiquidGlassCard>
+              <div style={{ padding: '1rem' }}>
+                <div style={{
+                  fontSize: '0.75rem',
+                  color: 'var(--text-muted)',
+                  marginBottom: '0.5rem',
+                  fontWeight: '400'
+                }}>
+                  {label}
+                </div>
+                <div style={{
+                  fontSize: '1.5rem',
+                  fontWeight: '400',
+                  color: getTwrColor(period)
+                }}>
+                  {period?.hasData ? period.twrFormatted : 'N/A'}
+                </div>
+                {key === 'ALL' && period?.isAnnualized && period?.twrAnnualizedFormatted && (
+                  <div style={{
+                    fontSize: '0.7rem',
+                    color: 'var(--text-muted)',
+                    marginTop: '0.25rem'
+                  }}>
+                    {period.twrAnnualizedFormatted}
+                  </div>
+                )}
+              </div>
+            </LiquidGlassCard>
+          );
+        })}
       </div>
 
-      {/* Performance Chart */}
+      {/* TWR Performance Chart */}
       <LiquidGlassCard style={{
         background: theme === 'light' ? '#6b7280' : '#0f172a',
         backdropFilter: 'none'
@@ -2858,7 +3131,7 @@ const PortfolioManagementSystem = ({ user }) => {
               fontWeight: '400',
               color: 'var(--text-primary)'
             }}>
-              Portfolio Value Over Time
+              TWR Performance (Rebased to 100)
             </h3>
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
               {['1M', '3M', '6M', 'YTD', '1Y', 'ALL'].map(range => (
@@ -2884,6 +3157,148 @@ const PortfolioManagementSystem = ({ user }) => {
               ))}
             </div>
           </div>
+          {(() => {
+            // Filter TWR chart data based on selected time range
+            const twrChart = twrData?.chartData;
+            if (!twrChart || !twrChart.labels || twrChart.labels.length === 0) {
+              return (
+                <div style={{
+                  textAlign: 'center',
+                  padding: '4rem 2rem',
+                  color: 'var(--text-muted)',
+                  background: theme === 'light' ? 'rgba(0, 0, 0, 0.02)' : 'rgba(255, 255, 255, 0.02)',
+                  borderRadius: '8px',
+                  border: '2px dashed var(--border-color)'
+                }}>
+                  <div style={{ fontSize: '3rem', marginBottom: '1rem', opacity: 0.5 }}>📈</div>
+                  <h3 style={{
+                    margin: '0 0 0.5rem 0',
+                    color: 'var(--text-secondary)',
+                    fontSize: '1.1rem'
+                  }}>
+                    No Historical Data
+                  </h3>
+                  <p style={{
+                    margin: 0,
+                    fontSize: '0.875rem'
+                  }}>
+                    {viewAsFilter
+                      ? `No performance data found for ${viewAsFilter.label || 'selected filter'}. Try clearing the filter or selecting a different client.`
+                      : 'Performance history will appear here once you process bank files'}
+                  </p>
+                </div>
+              );
+            }
+
+            // Slice chart data to selected time range
+            const rangeStartDate = getStartDateForRange(selectedTimeRange);
+            const rangeStartStr = rangeStartDate.toISOString().split('T')[0];
+            let startIdx = 0;
+            if (selectedTimeRange !== 'ALL') {
+              for (let i = 0; i < twrChart.labels.length; i++) {
+                if (twrChart.labels[i] >= rangeStartStr) {
+                  startIdx = i;
+                  break;
+                }
+              }
+            }
+
+            const filteredLabels = twrChart.labels.slice(startIdx);
+            const filteredData = twrChart.datasets[0].data.slice(startIdx);
+
+            return (
+              <div style={{ height: '300px' }}>
+                <Line
+                  data={{
+                    labels: filteredLabels,
+                    datasets: [{
+                      ...twrChart.datasets[0],
+                      data: filteredData
+                    }]
+                  }}
+                  options={{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                      mode: 'index',
+                      intersect: false,
+                    },
+                    plugins: {
+                      legend: {
+                        display: true,
+                        position: 'top',
+                        labels: {
+                          color: theme === 'light' ? '#374151' : '#d1d5db',
+                          font: { size: 12 }
+                        }
+                      },
+                      tooltip: {
+                        backgroundColor: theme === 'light' ? '#ffffff' : '#1f2937',
+                        titleColor: theme === 'light' ? '#111827' : '#f9fafb',
+                        bodyColor: theme === 'light' ? '#374151' : '#d1d5db',
+                        borderColor: theme === 'light' ? '#e5e7eb' : '#374151',
+                        borderWidth: 1,
+                        padding: 12,
+                        callbacks: {
+                          label: function(context) {
+                            let label = context.dataset.label || '';
+                            if (label) label += ': ';
+                            if (context.parsed.y !== null) {
+                              label += context.parsed.y.toFixed(2);
+                            }
+                            return label;
+                          }
+                        }
+                      }
+                    },
+                    scales: {
+                      x: {
+                        grid: {
+                          color: theme === 'light' ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)'
+                        },
+                        ticks: {
+                          color: theme === 'light' ? '#6b7280' : '#9ca3af',
+                          maxRotation: 45,
+                          minRotation: 0
+                        }
+                      },
+                      y: {
+                        beginAtZero: false,
+                        grace: '5%',
+                        grid: {
+                          color: theme === 'light' ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)'
+                        },
+                        ticks: {
+                          color: theme === 'light' ? '#6b7280' : '#9ca3af',
+                          callback: function(value) {
+                            return value.toFixed(1);
+                          }
+                        }
+                      }
+                    }
+                  }}
+                />
+              </div>
+            );
+          })()}
+        </div>
+      </LiquidGlassCard>
+
+      {/* Portfolio Value Over Time (Absolute) */}
+      <LiquidGlassCard style={{
+        marginTop: '1rem',
+        background: theme === 'light' ? '#6b7280' : '#0f172a',
+        backdropFilter: 'none'
+      }}>
+        <div style={{ padding: '1rem' }}>
+          <h3 style={{
+            margin: '0 0 1rem 0',
+            fontSize: '1.1rem',
+            fontWeight: '400',
+            color: 'var(--text-primary)'
+          }}>
+            Portfolio Value Over Time
+          </h3>
           {chartLoading ? (
             <div style={{
               height: '300px',
@@ -2894,7 +3309,7 @@ const PortfolioManagementSystem = ({ user }) => {
             }}>
               <div style={{ textAlign: 'center' }}>
                 <div style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>⏳</div>
-                <div>Loading {selectedTimeRange} data...</div>
+                <div>Loading chart data...</div>
               </div>
             </div>
           ) : chartData && chartData.hasData ? (
@@ -2930,9 +3345,7 @@ const PortfolioManagementSystem = ({ user }) => {
                       callbacks: {
                         label: function(context) {
                           let label = context.dataset.label || '';
-                          if (label) {
-                            label += ': ';
-                          }
+                          if (label) label += ': ';
                           if (context.parsed.y !== null) {
                             label += formatCurrency(context.parsed.y, portfolioCurrency);
                           }
@@ -2953,8 +3366,8 @@ const PortfolioManagementSystem = ({ user }) => {
                       }
                     },
                     y: {
-                      beginAtZero: false, // Dynamic scaling based on data
-                      grace: '5%', // Add 5% padding above and below data range
+                      beginAtZero: false,
+                      grace: '5%',
                       grid: {
                         color: theme === 'light' ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)'
                       },
@@ -2972,28 +3385,11 @@ const PortfolioManagementSystem = ({ user }) => {
           ) : (
             <div style={{
               textAlign: 'center',
-              padding: '4rem 2rem',
+              padding: '2rem',
               color: 'var(--text-muted)',
-              background: theme === 'light' ? 'rgba(0, 0, 0, 0.02)' : 'rgba(255, 255, 255, 0.02)',
-              borderRadius: '8px',
-              border: '2px dashed var(--border-color)'
+              fontSize: '0.875rem'
             }}>
-              <div style={{ fontSize: '3rem', marginBottom: '1rem', opacity: 0.5 }}>📈</div>
-              <h3 style={{
-                margin: '0 0 0.5rem 0',
-                color: 'var(--text-secondary)',
-                fontSize: '1.1rem'
-              }}>
-                No Historical Data
-              </h3>
-              <p style={{
-                margin: 0,
-                fontSize: '0.875rem'
-              }}>
-                {viewAsFilter
-                  ? `No performance data found for ${viewAsFilter.label || 'selected filter'}. Try clearing the filter or selecting a different client.`
-                  : 'Performance history will appear here once you process bank files'}
-              </p>
+              No portfolio value data available
             </div>
           )}
         </div>
@@ -3404,7 +3800,7 @@ const PortfolioManagementSystem = ({ user }) => {
         </div>
       </LiquidGlassCard>
 
-      {/* Performance Metrics Table */}
+      {/* TWR Performance Summary Table */}
       <LiquidGlassCard style={{
         marginTop: '1rem',
         background: theme === 'light' ? '#6b7280' : '#0f172a',
@@ -3417,9 +3813,9 @@ const PortfolioManagementSystem = ({ user }) => {
             fontWeight: '400',
             color: 'var(--text-primary)'
           }}>
-            Performance Summary by Period
+            TWR Performance Summary
           </h3>
-          {performancePeriods ? (
+          {twrData?.hasData && twrData?.periods ? (
             <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
                 <thead>
@@ -3427,14 +3823,13 @@ const PortfolioManagementSystem = ({ user }) => {
                     <th style={{ padding: '0.75rem', textAlign: 'left', color: 'var(--text-muted)', fontWeight: '600' }}>Period</th>
                     <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>Start Date</th>
                     <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>End Date</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>Start Value</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>End Value</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>Change</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>Return %</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>Data Points</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>TWR</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {Object.entries(performancePeriods).map(([periodKey, period]) => {
+                  {['1M', '3M', '6M', 'YTD', '1Y', 'ALL'].map(periodKey => {
+                    const period = twrData.periods[periodKey];
                     if (!period || !period.hasData) return null;
                     const periodLabels = {
                       '1M': '1 Month',
@@ -3444,9 +3839,7 @@ const PortfolioManagementSystem = ({ user }) => {
                       '1Y': '1 Year',
                       'ALL': 'Since Inception'
                     };
-                    const returnValue = period.returnAmount || 0;
-                    const returnPercent = period.returnPercent || 0;
-                    const isPositive = returnPercent >= 0;
+                    const isPositive = period.twr >= 0;
 
                     return (
                       <tr key={periodKey} style={{ borderBottom: '1px solid var(--border-color)' }}>
@@ -3454,24 +3847,13 @@ const PortfolioManagementSystem = ({ user }) => {
                           {periodLabels[periodKey] || periodKey}
                         </td>
                         <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
-                          {period.startDate ? new Date(period.startDate).toLocaleDateString() : 'N/A'}
+                          {period.startDate || 'N/A'}
                         </td>
                         <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
-                          {period.endDate ? new Date(period.endDate).toLocaleDateString() : 'N/A'}
+                          {period.endDate || 'N/A'}
                         </td>
                         <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary)' }}>
-                          {formatCurrency(period.startValue || 0, portfolioCurrency)}
-                        </td>
-                        <td style={{ padding: '0.75rem', textAlign: 'right', fontWeight: '600', color: 'var(--text-primary)' }}>
-                          {formatCurrency(period.endValue || 0, portfolioCurrency)}
-                        </td>
-                        <td style={{
-                          padding: '0.75rem',
-                          textAlign: 'right',
-                          fontWeight: '600',
-                          color: isPositive ? '#10b981' : '#ef4444'
-                        }}>
-                          {isPositive ? '+' : ''}{formatCurrency(returnValue, portfolioCurrency)}
+                          {period.dataPoints || 0}
                         </td>
                         <td style={{
                           padding: '0.75rem',
@@ -3480,13 +3862,23 @@ const PortfolioManagementSystem = ({ user }) => {
                           fontSize: '1rem',
                           color: isPositive ? '#10b981' : '#ef4444'
                         }}>
-                          {isPositive ? '+' : ''}{returnPercent.toFixed(2)}%
+                          {period.twrFormatted}
+                          {periodKey === 'ALL' && period.isAnnualized && period.twrAnnualizedFormatted && (
+                            <div style={{ fontSize: '0.7rem', fontWeight: '400', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
+                              {period.twrAnnualizedFormatted}
+                            </div>
+                          )}
                         </td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
+              {twrData.metadata && (
+                <div style={{ marginTop: '0.75rem', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                  Data from {twrData.metadata.firstSnapshotDate} to {twrData.metadata.lastSnapshotDate} | {twrData.metadata.externalFlowCount} external flows detected
+                </div>
+              )}
             </div>
           ) : (
             <div style={{
@@ -3495,7 +3887,7 @@ const PortfolioManagementSystem = ({ user }) => {
               color: 'var(--text-muted)',
               fontSize: '0.875rem'
             }}>
-              No performance data available
+              No TWR performance data available
             </div>
           )}
         </div>
@@ -4180,8 +4572,8 @@ const PortfolioManagementSystem = ({ user }) => {
         </div>
       )}
 
-      {/* Account Tab Layer - Show when user has multiple accounts (for clients directly or via viewAsFilter) */}
-      {accountTabs.length > 1 && (
+      {/* Account Tab Layer - Show when viewing a specific client via viewAsFilter and they have multiple accounts */}
+      {viewAsFilter && accountTabs.length > 1 && (
         <div style={{
           display: 'flex',
           flexWrap: 'wrap',
@@ -4250,6 +4642,179 @@ const PortfolioManagementSystem = ({ user }) => {
         </div>
       )}
 
+      {/* Investor Profile & Risk Bar - Always visible when a client is selected */}
+      {viewAsFilter && (() => {
+        // Detect profile name for selected account or all accounts on consolidated
+        const getProfileName = (profile) => {
+          if (!profile) return null;
+          const match = Object.entries(PROFILE_TEMPLATES).find(([, tpl]) =>
+            tpl.maxCash === profile.maxCash &&
+            tpl.maxBonds === profile.maxBonds &&
+            tpl.maxEquities === profile.maxEquities &&
+            tpl.maxAlternative === profile.maxAlternative
+          );
+          return match ? match[1].name : 'Custom';
+        };
+
+        let profileLabel = null;
+        if (activeAccountTab === 'consolidated') {
+          // Show all unique profile names across accounts
+          const names = [...new Set(accountProfiles.map(p => getProfileName(p)).filter(Boolean))];
+          if (names.length > 0) profileLabel = names.join(' / ');
+        } else {
+          profileLabel = getProfileName(selectedAccountProfile);
+        }
+
+        const riskLevel = viewAsFilter?.data?.profile?.kyc?.riskLevel;
+        const showRisk = user?.role !== 'client' && riskLevel;
+
+        if (!profileLabel && !showRisk) return null;
+
+        const riskConfig = {
+          low: { label: 'Low Risk', color: '#10b981', bg: 'rgba(16, 185, 129, 0.1)', border: 'rgba(16, 185, 129, 0.3)' },
+          medium: { label: 'Medium Risk', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.1)', border: 'rgba(245, 158, 11, 0.3)' },
+          high: { label: 'High Risk', color: '#ef4444', bg: 'rgba(239, 68, 68, 0.1)', border: 'rgba(239, 68, 68, 0.3)' }
+        };
+
+        return (
+          <div style={{
+            marginBottom: '0.75rem',
+            padding: '8px 14px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '10px',
+            flexWrap: 'wrap',
+            background: theme === 'light' ? 'rgba(255, 255, 255, 0.7)' : 'rgba(30, 41, 59, 0.5)',
+            borderRadius: '8px',
+            border: '1px solid var(--border-color)'
+          }}>
+            {profileLabel && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Investor Profile:</span>
+                <span style={{
+                  fontSize: '12px',
+                  fontWeight: '600',
+                  padding: '2px 10px',
+                  borderRadius: '4px',
+                  background: 'rgba(59, 130, 246, 0.1)',
+                  color: '#3b82f6',
+                  border: '1px solid rgba(59, 130, 246, 0.2)'
+                }}>
+                  {profileLabel}
+                </span>
+              </div>
+            )}
+            {showRisk && (() => {
+              const cfg = riskConfig[riskLevel] || riskConfig.medium;
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Risk Matrix:</span>
+                  <span style={{
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    padding: '2px 10px',
+                    borderRadius: '4px',
+                    background: cfg.bg,
+                    color: cfg.color,
+                    border: `1px solid ${cfg.border}`
+                  }}>
+                    {cfg.label}
+                  </span>
+                </div>
+              );
+            })()}
+          </div>
+        );
+      })()}
+
+      {/* Allocation Bar - Show when a specific account is selected (not Consolidated) */}
+      {viewAsFilter && activeAccountTab !== 'consolidated' && fourCategoryAllocation.total > 0 && (
+        <div style={{
+          marginBottom: '1rem',
+          padding: '1rem',
+          background: theme === 'light'
+            ? 'rgba(255, 255, 255, 0.7)'
+            : 'rgba(30, 41, 59, 0.5)',
+          borderRadius: '10px',
+          border: '1px solid var(--border-color)'
+        }}>
+          <h4 style={{ margin: '0 0 12px', color: 'var(--text-primary)', fontSize: '13px', fontWeight: '600' }}>
+            Current vs Maximum Allocation
+          </h4>
+          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+            {[
+              { key: 'cash', label: 'Cash', icon: '💵', max: selectedAccountProfile?.maxCash ?? null, current: fourCategoryAllocation.cash, color: '#3b82f6', tooltip: 'Cash • Term Deposits • Monetary Products • Money Market Funds' },
+              { key: 'bonds', label: 'Bonds', icon: '📄', max: selectedAccountProfile?.maxBonds ?? null, current: fourCategoryAllocation.bonds, color: '#10b981', tooltip: 'Fixed-Income Bonds • Convertible Bonds • Bond Funds • Capital-Guaranteed Structured Products' },
+              { key: 'equities', label: 'Equities', icon: '📈', max: selectedAccountProfile?.maxEquities ?? null, current: fourCategoryAllocation.equities, color: '#f59e0b', tooltip: 'Equities & Stocks • Equity Funds • Equity-Linked Structured Products • Barrier-Protected Products' },
+              { key: 'alternative', label: 'Alternative', icon: '🎯', max: selectedAccountProfile?.maxAlternative ?? null, current: fourCategoryAllocation.alternative, color: '#8b5cf6', tooltip: 'Private Equity • Private Debt • Commodities • Real Estate • Hedge Funds • Derivatives • Other' }
+            ].map(item => {
+              const hasProfile = item.max !== null;
+              const isOverLimit = hasProfile && item.current > item.max;
+
+              return (
+                <div key={item.key} style={{ flex: '1 1 140px', minWidth: '120px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                    <span
+                      style={{ color: 'var(--text-secondary)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', cursor: 'help' }}
+                      title={item.tooltip}
+                    >
+                      <span>{item.icon}</span> {item.label}
+                    </span>
+                    <span style={{
+                      color: isOverLimit ? '#ef4444' : 'var(--text-primary)',
+                      fontSize: '12px',
+                      fontWeight: '600'
+                    }}>
+                      {item.current.toFixed(1)}%{hasProfile ? ` / ${item.max}%` : ''}
+                      {isOverLimit && <span style={{ marginLeft: '4px' }}>⚠️</span>}
+                    </span>
+                  </div>
+                  <div style={{
+                    position: 'relative',
+                    height: '16px',
+                    background: theme === 'light' ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)',
+                    borderRadius: '8px',
+                    overflow: 'hidden'
+                  }}>
+                    {/* Max limit indicator - only show if profile exists */}
+                    {hasProfile && (
+                      <div style={{
+                        position: 'absolute',
+                        left: `${item.max}%`,
+                        top: 0,
+                        bottom: 0,
+                        width: '2px',
+                        background: theme === 'light' ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.5)',
+                        zIndex: 2
+                      }} />
+                    )}
+                    {/* Current allocation bar */}
+                    <div style={{
+                      position: 'absolute',
+                      left: 0,
+                      top: 0,
+                      bottom: 0,
+                      width: `${Math.min(item.current, 100)}%`,
+                      background: isOverLimit
+                        ? 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)'
+                        : `linear-gradient(90deg, ${item.color} 0%, ${item.color}dd 100%)`,
+                      borderRadius: '8px',
+                      transition: 'width 0.3s ease'
+                    }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {!selectedAccountProfile && (
+            <p style={{ margin: '10px 0 0', color: 'var(--text-secondary)', fontSize: '11px', textAlign: 'center' }}>
+              Set a profile to see limit comparisons
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Tab Navigation */}
       <LiquidGlassCard style={{ marginBottom: '2rem' }}>
         <div style={{
@@ -4309,6 +4874,20 @@ const PortfolioManagementSystem = ({ user }) => {
           {activeTab === 'alerts' && renderAlertsSection()}
         </div>
       </LiquidGlassCard>
+
+      {/* Order Modal */}
+      <OrderModal
+        isOpen={orderModalOpen}
+        onClose={() => {
+          setOrderModalOpen(false);
+          setOrderPrefillData(null);
+        }}
+        mode={orderModalMode}
+        prefillData={orderPrefillData}
+        clients={[]} // Will be populated by the modal via server call
+        onOrderCreated={handleOrderCreated}
+        user={user}
+      />
     </div>
   );
 };

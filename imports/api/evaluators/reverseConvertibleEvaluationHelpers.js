@@ -1,4 +1,5 @@
 import { MarketDataCacheCollection } from '/imports/api/marketDataCache';
+import { SharedEvaluationHelpers } from './sharedEvaluationHelpers';
 
 /**
  * Reverse Convertible Evaluation Helpers
@@ -70,7 +71,21 @@ export const ReverseConvertibleEvaluationHelpers = {
           // Performance (pre-formatted)
           performance,
           performanceFormatted: `${performance >= 0 ? '+' : ''}${performance.toFixed(2)}%`,
-          isPositive: performance >= 0
+          isPositive: performance >= 0,
+
+          // Sparkline data
+          sparklineData: await (async () => {
+            try {
+              return await SharedEvaluationHelpers.generateSparklineData(
+                fullTicker,
+                product.initialDate || product.tradeDate || product.valueDate,
+                product
+              ) || { hasData: false };
+            } catch (err) {
+              console.log(`[Sparkline] Could not generate for ${fullTicker}:`, err.message);
+              return { hasData: false };
+            }
+          })()
         };
       })
     );

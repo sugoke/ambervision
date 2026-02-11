@@ -10,11 +10,12 @@ export const BankAccountsCollection = new Mongo.Collection('bankAccounts');
 //   bankId: String (reference to BanksCollection),
 //   accountNumber: String,
 //   referenceCurrency: String (USD, EUR, GBP, CHF, etc.),
-//   accountType: String (personal, company),
+//   accountType: String (personal, company, life_insurance),
 //   accountStructure: String (direct, life_insurance),
-//   lifeInsuranceCompany: String (only if accountStructure is life_insurance),
+//   lifeInsuranceCompany: String (only if accountType is life_insurance),
 //   authorizedOverdraft: Number (optional, credit line amount in reference currency),
 //   comment: String (optional, user notes like "Investment Account", "Credit Card", etc.),
+//   introducerId: String (optional, reference to UsersCollection - the business introducer for this account),
 //   isActive: Boolean,
 //   createdAt: Date,
 //   updatedAt: Date
@@ -85,7 +86,7 @@ export const BankAccountHelpers = {
     check(accountId, String);
     check(updates, Object);
 
-    const allowedFields = ['bankId', 'accountNumber', 'referenceCurrency', 'accountType', 'accountStructure', 'lifeInsuranceCompany', 'authorizedOverdraft', 'comment'];
+    const allowedFields = ['bankId', 'accountNumber', 'referenceCurrency', 'accountType', 'accountStructure', 'lifeInsuranceCompany', 'authorizedOverdraft', 'comment', 'introducerId'];
     const filteredUpdates = {};
 
     allowedFields.forEach(field => {

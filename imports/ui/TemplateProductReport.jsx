@@ -7,6 +7,7 @@ import { USER_ROLES, UsersCollection } from '/imports/api/users';
 import { AllocationsCollection, AllocationHelpers } from '/imports/api/allocations';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { BanksCollection } from '/imports/api/banks';
+import { IssuersCollection } from '/imports/api/issuers';
 import { ProductPricesCollection } from '/imports/api/productPrices';
 import StructuredProductChart from './components/StructuredProductChart.jsx';
 import HimalayaReport from './templates/HimalayaReport.jsx';
@@ -17,6 +18,7 @@ import ParticipationNoteReport from './templates/ParticipationNoteReport.jsx';
 import ReverseConvertibleReport from './templates/ReverseConvertibleReport.jsx';
 import ReverseConvertibleBondReport from './templates/ReverseConvertibleBondReport.jsx';
 import ProductCommentaryCard from './components/ProductCommentaryCard.jsx';
+import PriceSparkline from './components/PriceSparkline.jsx';
 import TermSheetManager from './components/TermSheetManager.jsx';
 import PDFDownloadButton from './components/PDFDownloadButton.jsx';
 
@@ -278,7 +280,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
   }, [isPDFMode]);
 
   // Subscribe to product, reports, allocations, users and bank accounts
-  const { product, latestReport, allocations, allocationsSummary, allocationDetails, productPrice, isDataReady } = useTracker(() => {
+  const { product, latestReport, allocations, allocationsSummary, allocationDetails, productPrice, notePriceSparkline, issuerDoc, isDataReady } = useTracker(() => {
     // Use state-tracked sessionId to ensure reactivity when it changes (e.g., PDF auth completes)
     const sessionId = currentSessionId;
     console.log('[TemplateProductReport] useTracker running with sessionId:', sessionId ? `${sessionId.substring(0, 20)}...` : 'null', 'isPDFMode:', isPDFMode, 'pdfAuthValidated:', pdfAuthState.validated);
@@ -293,6 +295,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
         allocationsSummary: null,
         allocationDetails: null,
         productPrice: null,
+        notePriceSparkline: null,
         isDataReady: false
       };
     }
@@ -303,18 +306,33 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
     const usersHandle = Meteor.subscribe('customUsers');
     const bankAccountsHandle = Meteor.subscribe('allBankAccounts');
     const banksHandle = Meteor.subscribe('banks');
+    const issuersHandle = Meteor.subscribe('issuers');
 
     const productData = ProductsCollection.findOne(productId);
 
     // Subscribe to price history for this product's ISIN
     let priceHandle = { ready: () => true };
     let latestPrice = null;
+    let notePriceSparkline = null;
     if (productData && productData.isin) {
-      priceHandle = Meteor.subscribe('priceHistory', productData.isin, 1);
-      latestPrice = ProductPricesCollection.findOne(
+      priceHandle = Meteor.subscribe('priceHistory', productData.isin, 200);
+      const allPrices = ProductPricesCollection.find(
         { isin: productData.isin.toUpperCase(), isActive: true },
-        { sort: { priceDate: -1, uploadDate: -1 } }
-      );
+        { sort: { priceDate: 1 } }
+      ).fetch();
+      if (allPrices.length > 0) {
+        latestPrice = allPrices[allPrices.length - 1];
+        notePriceSparkline = {
+          hasData: true,
+          prices: allPrices.map(p => ({
+            date: new Date(p.priceDate).toISOString().split('T')[0],
+            price: p.price
+          })),
+          startDate: allPrices[0].priceDate,
+          endDate: allPrices[allPrices.length - 1].priceDate,
+          dataPoints: allPrices.length
+        };
+      }
     }
     const reportData = TemplateReportsCollection.findOne(
       { productId },
@@ -428,6 +446,13 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
       productCache.current = productData;
     }
 
+    // Look up issuer logo from issuers collection
+    const issuerName = productData?.issuer;
+    const issuerDoc = issuerName ? IssuersCollection.findOne({
+      name: new RegExp(`^${issuerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+      active: true
+    }) : null;
+
     return {
       product: productData,
       latestReport: reportData,
@@ -435,8 +460,11 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
       allocationsSummary: summary,
       allocationDetails: detailsData,
       productPrice: latestPrice,
+      notePriceSparkline,
+      issuerDoc,
       isDataReady: productHandle.ready() && reportsHandle.ready() && allocationsHandle.ready() &&
-                   usersHandle.ready() && bankAccountsHandle.ready() && banksHandle.ready() && priceHandle.ready()
+                   usersHandle.ready() && bankAccountsHandle.ready() && banksHandle.ready() &&
+                   issuersHandle.ready() && priceHandle.ready()
     };
   }, [productId, currentSessionId, isPDFMode, pdfAuthState.validated]);
 
@@ -896,33 +924,47 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
                     border: '1px solid var(--border-color)',
                     flexShrink: 0
                   }}>
-                    <img
-                      src={`https://financialmodelingprep.com/image-stock/${displayProduct.issuer}.png`}
-                      alt={displayProduct.issuer}
-                      style={{
-                        width: '28px',
-                        height: '28px',
-                        objectFit: 'contain'
-                      }}
-                      onError={(e) => {
-                        e.target.style.display = 'none';
-                        e.target.nextSibling.style.display = 'flex';
-                      }}
-                    />
-                    <div style={{
-                      display: 'none',
-                      width: '28px',
-                      height: '28px',
-                      background: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
-                      borderRadius: '4px',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '0.7rem',
-                      fontWeight: '700',
-                      color: 'white'
-                    }}>
-                      {displayProduct.issuer?.substring(0, 2).toUpperCase()}
-                    </div>
+                    {issuerDoc?.logo ? (
+                      <img
+                        src={issuerDoc.logo}
+                        alt={displayProduct.issuer}
+                        style={{
+                          width: '28px',
+                          height: '28px',
+                          objectFit: 'contain'
+                        }}
+                      />
+                    ) : (
+                      <>
+                        <img
+                          src={`https://financialmodelingprep.com/image-stock/${displayProduct.issuer}.png`}
+                          alt={displayProduct.issuer}
+                          style={{
+                            width: '28px',
+                            height: '28px',
+                            objectFit: 'contain'
+                          }}
+                          onError={(e) => {
+                            e.target.style.display = 'none';
+                            e.target.nextSibling.style.display = 'flex';
+                          }}
+                        />
+                        <div style={{
+                          display: 'none',
+                          width: '28px',
+                          height: '28px',
+                          background: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
+                          borderRadius: '4px',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '0.7rem',
+                          fontWeight: '700',
+                          color: 'white'
+                        }}>
+                          {displayProduct.issuer?.substring(0, 2).toUpperCase()}
+                        </div>
+                      </>
+                    )}
                   </div>
                   <div>
                     <div style={{
@@ -1076,7 +1118,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
             }}>
               <div style={{
                 fontSize: '0.7rem',
-                color: 'rgba(255, 255, 255, 0.9)',
+                color: 'rgba(255, 255, 255, 0.6)',
                 textTransform: 'uppercase',
                 letterSpacing: '0.5px',
                 fontWeight: '600',
@@ -1087,22 +1129,22 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
               <div style={{
                 fontSize: productPrice ? '1.75rem' : '0.95rem',
                 fontWeight: '700',
-                color: 'white',
+                color: 'rgba(255, 255, 255, 0.85)',
                 fontFamily: 'monospace',
                 marginBottom: productPrice ? '0.4rem' : 0
               }}>
                 {productPrice ? (
                   <>
-                    {productPrice.price.toFixed(2)}% <span style={{ fontSize: '0.85rem', opacity: 0.9 }}>of par</span>
+                    {productPrice.price.toFixed(2)}% <span style={{ fontSize: '0.85rem', opacity: 0.7 }}>of par</span>
                   </>
                 ) : (
-                  <span style={{ opacity: 0.8, fontFamily: 'inherit' }}>No price data</span>
+                  <span style={{ opacity: 0.6, fontFamily: 'inherit' }}>No price data</span>
                 )}
               </div>
               {productPrice ? (
                 <div style={{
                   fontSize: '0.7rem',
-                  color: 'rgba(255, 255, 255, 0.8)'
+                  color: 'rgba(255, 255, 255, 0.55)'
                 }}>
                   {new Date(productPrice.priceDate).toLocaleDateString('en-GB', {
                     day: '2-digit',
@@ -1117,6 +1159,17 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
                   fontStyle: 'italic'
                 }}>
                   Upload in Admin Panel
+                </div>
+              )}
+              {notePriceSparkline?.hasData && (
+                <div style={{ marginTop: '0.5rem' }}>
+                  <PriceSparkline
+                    sparklineData={notePriceSparkline}
+                    ticker="Note Price"
+                    initialPrice={100}
+                    currency="%"
+                    isPositive={productPrice && productPrice.price >= 100}
+                  />
                 </div>
               )}
             </div>

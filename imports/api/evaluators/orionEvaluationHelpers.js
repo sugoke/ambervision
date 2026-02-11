@@ -1,6 +1,7 @@
 import { MarketDataHelpers, MarketDataCacheCollection } from '/imports/api/marketDataCache';
 import { EODApiHelpers } from '/imports/api/eodApi';
 import { CurrencyNormalization } from '/imports/utils/currencyNormalization';
+import { SharedEvaluationHelpers } from './sharedEvaluationHelpers';
 
 /**
  * Orion Memory Evaluation Helpers
@@ -412,8 +413,23 @@ export const OrionEvaluationHelpers = {
           hasCurrentData: !!(underlying.securityData?.price?.price),
           lastUpdated: new Date().toISOString(),
 
-          fullTicker: usedTicker
+          fullTicker: usedTicker,
+
+          // Sparkline data
+          sparklineData: { hasData: false }
         };
+
+        // Generate sparkline price history
+        try {
+          const sparkline = await SharedEvaluationHelpers.generateSparklineData(
+            usedTicker,
+            product.initialDate || product.tradeDate || product.valueDate,
+            product
+          );
+          if (sparkline) underlyingData.sparklineData = sparkline;
+        } catch (err) {
+          console.log(`[Sparkline] Could not generate for ${usedTicker}:`, err.message);
+        }
 
         underlyings.push(underlyingData);
       }

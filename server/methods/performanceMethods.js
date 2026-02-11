@@ -432,5 +432,266 @@ Meteor.methods({
       console.error('[SNAPSHOTS] Error getting available dates:', error);
       throw new Meteor.Error('get-dates-failed', error.message);
     }
+  },
+
+  /**
+   * Calculate Time-Weighted Return (TWR) for a portfolio
+   *
+   * TWR neutralizes the effect of external cash flows (deposits/withdrawals)
+   * by chain-linking daily sub-period returns.
+   *
+   * Returns pre-formatted data for all periods (1M, 3M, 6M, YTD, 1Y, ALL)
+   * plus chart data rebased to 100.
+   */
+  async 'performance.calculateTWR'({ sessionId, portfolioCode = null, viewAsFilter = null }) {
+    check(sessionId, String);
+    check(portfolioCode, Match.OneOf(String, null, undefined));
+    check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
+      type: String,
+      id: String
+    }), null, undefined));
+
+    const user = await validateSession(sessionId);
+
+    const now = new Date();
+    const isAdminAllClients = (user.role === 'admin' || user.role === 'superadmin') && !viewAsFilter;
+
+    // Determine target userId and portfolioCode (same pattern as getPeriods)
+    let targetUserId = user._id;
+    let targetPortfolioCode = portfolioCode;
+
+    if (viewAsFilter && (user.role === 'admin' || user.role === 'superadmin')) {
+      const { BankAccountsCollection } = await import('../../imports/api/bankAccounts.js');
+
+      if (viewAsFilter.type === 'client') {
+        targetUserId = viewAsFilter.id;
+        if (!portfolioCode) targetPortfolioCode = null;
+      } else if (viewAsFilter.type === 'account') {
+        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
+        if (bankAccount) {
+          targetUserId = bankAccount.userId;
+          targetPortfolioCode = bankAccount.accountNumber;
+        }
+      }
+    }
+
+    console.log(`[TWR] Calculating for user: ${user.username}, target: ${targetUserId}, portfolio: ${targetPortfolioCode || 'ALL'}, adminAll: ${isAdminAllClients}`);
+
+    // 1. Fetch all snapshots
+    let snapshots;
+    if (isAdminAllClients) {
+      snapshots = await PortfolioSnapshotHelpers.getAggregatedSnapshots({
+        startDate: null,
+        endDate: now
+      });
+    } else if (targetPortfolioCode) {
+      snapshots = await PortfolioSnapshotHelpers.getSnapshots({
+        userId: targetUserId,
+        portfolioCode: targetPortfolioCode,
+        startDate: null,
+        endDate: now
+      });
+    } else {
+      snapshots = await PortfolioSnapshotHelpers.getAggregatedSnapshotsForUser({
+        userId: targetUserId,
+        startDate: null,
+        endDate: now
+      });
+    }
+
+    const emptyResponse = {
+      hasData: false,
+      periods: {},
+      chartData: { labels: [], datasets: [] },
+      metadata: { calculatedAt: new Date() }
+    };
+
+    if (!snapshots || snapshots.length < 2) {
+      console.log(`[TWR] Insufficient snapshots (${snapshots?.length || 0}), need at least 2`);
+      return emptyResponse;
+    }
+
+    // 2. Fetch external cash flow operations
+    const { PMSOperationsCollection } = await import('../../imports/api/pmsOperations.js');
+    const { OPERATION_TYPES } = await import('../../imports/api/constants/operationTypes.js');
+
+    const externalFlowTypes = [
+      OPERATION_TYPES.TRANSFER_IN,
+      OPERATION_TYPES.TRANSFER_OUT,
+      OPERATION_TYPES.PAYMENT_IN,
+      OPERATION_TYPES.PAYMENT_OUT
+    ];
+
+    const opsQuery = {
+      operationType: { $in: externalFlowTypes }
+    };
+
+    if (!isAdminAllClients) {
+      opsQuery.userId = targetUserId;
+      if (targetPortfolioCode) {
+        opsQuery.portfolioCode = targetPortfolioCode;
+      }
+    }
+
+    const operations = await PMSOperationsCollection.find(opsQuery, {
+      sort: { operationDate: 1 }
+    }).fetchAsync();
+
+    console.log(`[TWR] Found ${snapshots.length} snapshots, ${operations.length} external flows`);
+
+    // 3. Build FX rates map
+    const { CurrencyRateCacheCollection } = await import('../../imports/api/currencyCache.js');
+    const { buildRatesMap, extractBankFxRates, mergeRatesMaps } = await import('../../imports/api/helpers/cashCalculator.js');
+
+    const currencyRates = await CurrencyRateCacheCollection.find({}).fetchAsync();
+    const eodRatesMap = buildRatesMap(currencyRates);
+
+    // Get bank FX rates from recent holdings
+    const { PMSHoldingsCollection } = await import('../../imports/api/pmsHoldings.js');
+    const holdingsQuery = {};
+    if (!isAdminAllClients) {
+      holdingsQuery.userId = targetUserId;
+      if (targetPortfolioCode) holdingsQuery.portfolioCode = targetPortfolioCode;
+    }
+    const recentHoldings = await PMSHoldingsCollection.find(holdingsQuery, {
+      limit: 100,
+      sort: { updatedAt: -1 }
+    }).fetchAsync();
+
+    const bankRates = extractBankFxRates(recentHoldings);
+    const ratesMap = mergeRatesMaps(eodRatesMap, bankRates);
+
+    // 4. Calculate TWR
+    const {
+      buildDailyValuesFromSnapshots,
+      buildDailyFlowsFromOperations,
+      calculateDailyTWR,
+      annualizeTWR
+    } = await import('../../imports/api/helpers/twrCalculator.js');
+
+    const dailyValues = buildDailyValuesFromSnapshots(snapshots);
+    const dailyFlows = buildDailyFlowsFromOperations(operations, ratesMap);
+    const twrSeries = calculateDailyTWR(dailyValues, dailyFlows);
+
+    if (twrSeries.length === 0) {
+      console.log(`[TWR] No TWR data points generated`);
+      return emptyResponse;
+    }
+
+    // 5. Calculate period TWRs
+    const lastEntry = twrSeries[twrSeries.length - 1];
+    const firstDate = new Date(dailyValues[0].date);
+    const lastDate = new Date(lastEntry.date);
+    const totalDays = Math.ceil((lastDate - firstDate) / (1000 * 60 * 60 * 24));
+
+    const periodDefs = {
+      '1M': new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
+      '3M': new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000),
+      '6M': new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000),
+      'YTD': new Date(now.getFullYear(), 0, 1),
+      '1Y': new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000),
+      'ALL': null
+    };
+
+    const formatTWR = (value) => `${value >= 0 ? '+' : ''}${(value * 100).toFixed(2)}%`;
+
+    const periods = {};
+
+    for (const [periodName, periodStart] of Object.entries(periodDefs)) {
+      // ALL period: use total cumulative TWR
+      if (periodName === 'ALL') {
+        const twr = lastEntry.cumulativeTWR;
+        const annualized = annualizeTWR(twr, totalDays);
+
+        periods.ALL = {
+          hasData: true,
+          twr,
+          twrFormatted: formatTWR(twr),
+          startDate: dailyValues[0].date,
+          endDate: lastEntry.date,
+          dataPoints: twrSeries.length,
+          isAnnualized: annualized !== null,
+          twrAnnualized: annualized,
+          twrAnnualizedFormatted: annualized !== null
+            ? `${formatTWR(annualized).replace('%', '% (ann.)')}`
+            : null
+        };
+        continue;
+      }
+
+      const periodStartStr = periodStart.toISOString().split('T')[0];
+
+      // Find the TWR entry closest to (but not after) the period start
+      let startTWR = 0; // Default: reference point at the very beginning
+
+      // Look for an entry at or before the period start date
+      for (let i = twrSeries.length - 1; i >= 0; i--) {
+        if (twrSeries[i].date <= periodStartStr) {
+          startTWR = twrSeries[i].cumulativeTWR;
+          break;
+        }
+      }
+
+      // Check if we have any data in this period range
+      const dataPointsInPeriod = twrSeries.filter(e => e.date >= periodStartStr).length;
+
+      if (dataPointsInPeriod === 0) {
+        periods[periodName] = {
+          hasData: false,
+          twr: 0,
+          twrFormatted: 'N/A',
+          startDate: periodStartStr,
+          endDate: lastEntry.date,
+          dataPoints: 0
+        };
+        continue;
+      }
+
+      // Chain-link: period TWR = (1 + endTWR) / (1 + startTWR) - 1
+      const endTWR = lastEntry.cumulativeTWR;
+      const periodTWR = (1 + endTWR) / (1 + startTWR) - 1;
+
+      periods[periodName] = {
+        hasData: true,
+        twr: periodTWR,
+        twrFormatted: formatTWR(periodTWR),
+        startDate: periodStartStr,
+        endDate: lastEntry.date,
+        dataPoints: dataPointsInPeriod
+      };
+    }
+
+    // 6. Build chart data (rebased to 100 from inception)
+    const chartLabels = [dailyValues[0].date, ...twrSeries.map(r => r.date)];
+    const chartValues = [100, ...twrSeries.map(r => 100 * (1 + r.cumulativeTWR))];
+
+    const chartData = {
+      labels: chartLabels,
+      datasets: [{
+        label: 'TWR Performance',
+        data: chartValues,
+        borderColor: '#10b981',
+        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+        fill: true,
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.1
+      }]
+    };
+
+    console.log(`[TWR] Complete: ${twrSeries.length} data points, ALL TWR: ${formatTWR(lastEntry.cumulativeTWR)}, ${operations.length} external flows`);
+
+    return {
+      hasData: true,
+      periods,
+      chartData,
+      metadata: {
+        calculatedAt: new Date(),
+        totalDays,
+        firstSnapshotDate: dailyValues[0].date,
+        lastSnapshotDate: lastEntry.date,
+        externalFlowCount: operations.length
+      }
+    };
   }
 });
