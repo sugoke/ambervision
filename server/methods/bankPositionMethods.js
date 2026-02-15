@@ -21,6 +21,7 @@ import { SecurityResolver } from '../../imports/api/helpers/securityResolver.js'
 import { isValidSecurityType } from '../../imports/api/constants/instrumentTypes.js';
 import { findNewSGZipFiles, extractSGZipFile } from '../../imports/utils/zipUtils.js';
 import { decryptAllGpgFiles, isGpgAvailable } from '../../imports/utils/gpgUtils.js';
+import { yieldToEventLoop } from '../../imports/utils/asyncHelpers.js';
 import path from 'path';
 import fs from 'fs';
 
@@ -201,6 +202,7 @@ Meteor.methods({
     check(connectionId, String);
     check(sessionId, String);
     check(forceReprocess, Match.Maybe(Boolean));
+    this.unblock();
 
     // Validate admin access
     const user = await validateAdminSession(sessionId);
@@ -567,7 +569,9 @@ Meteor.methods({
       // Avoids redundant lookups when same ISIN appears multiple times in file
       const enrichmentCache = new Map();
 
-      for (const position of positions) {
+      for (let i = 0; i < positions.length; i++) {
+        await yieldToEventLoop(i, 25);
+        const position = positions[i];
         try {
           // Match portfolio code to bank account to find userId (in-memory lookup)
           const userId = getUserIdFromMap(position.portfolioCode, portfolioUserMap);
@@ -837,7 +841,9 @@ Meteor.methods({
           if (stalePositions.length > 0) {
             console.log(`[BANK_POSITIONS] Found ${stalePositions.length} positions to mark as sold/inactive`);
 
-            for (const stale of stalePositions) {
+            for (let i = 0; i < stalePositions.length; i++) {
+              await yieldToEventLoop(i, 20);
+              const stale = stalePositions[i];
               // Mark the latest record as sold
               await PMSHoldingsCollection.updateAsync(stale._id, {
                 $set: {
@@ -1669,6 +1675,7 @@ Meteor.methods({
   async 'bankPositions.getMissingDates'({ connectionId, sessionId }) {
     check(connectionId, String);
     check(sessionId, String);
+    this.unblock();
 
     const user = await validateAdminSession(sessionId);
 
@@ -1754,6 +1761,7 @@ Meteor.methods({
     check(connectionId, String);
     check(targetDate, String); // ISO date string
     check(sessionId, String);
+    this.unblock();
 
     const user = await validateAdminSession(sessionId);
 
@@ -1844,7 +1852,9 @@ Meteor.methods({
       const portfolioUserMap = await buildPortfolioUserMap(connection.bankId);
       console.log(`[BANK_POSITIONS] Built portfolio map with ${portfolioUserMap.size} accounts for historical processing`);
 
-      for (const position of positions) {
+      for (let i = 0; i < positions.length; i++) {
+        await yieldToEventLoop(i, 25);
+        const position = positions[i];
         try {
           // Match portfolio code to bank account to find userId (using pre-built map)
           const userId = getUserIdFromMap(position.portfolioCode, portfolioUserMap);
@@ -2088,6 +2098,7 @@ Meteor.methods({
     check(connectionId, String);
     check(sessionId, String);
     check(maxDates, Match.Optional(Number));
+    this.unblock();
 
     const user = await validateAdminSession(sessionId);
 
@@ -2112,7 +2123,9 @@ Meteor.methods({
     console.log(`[BANK_POSITIONS] Processing ${datesToProcess.length} missing dates sequentially`);
 
     const results = [];
-    for (const dateStr of datesToProcess) {
+    for (let i = 0; i < datesToProcess.length; i++) {
+      await yieldToEventLoop(i, 1);
+      const dateStr = datesToProcess[i];
       try {
         console.log(`[BANK_POSITIONS] Processing missing date: ${dateStr}`);
 
@@ -2631,6 +2644,7 @@ Meteor.methods({
   async 'bankPositions.getMissingSnapshotDates'({ connectionId, sessionId }) {
     check(connectionId, String);
     check(sessionId, String);
+    this.unblock();
 
     const user = await validateAdminSession(sessionId);
 
@@ -2726,6 +2740,7 @@ Meteor.methods({
     check(connectionId, String);
     check(sessionId, String);
     check(maxDates, Match.Maybe(Number));
+    this.unblock();
 
     const user = await validateAdminSession(sessionId);
 
@@ -2773,7 +2788,9 @@ Meteor.methods({
     let regenerated = 0;
     const errors = [];
 
-    for (const missing of datesToProcess) {
+    for (let i = 0; i < datesToProcess.length; i++) {
+      await yieldToEventLoop(i, 5);
+      const missing = datesToProcess[i];
       try {
         // Parse the date string back to a Date object
         const snapshotDate = new Date(missing.snapshotDate + 'T00:00:00.000Z');

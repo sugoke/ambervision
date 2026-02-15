@@ -63,6 +63,7 @@ import '/imports/api/reports';
 import '/imports/api/templateReports';
 import '/imports/api/underlyingsAnalysis';
 import '/imports/api/riskAnalysis';
+import '/imports/api/portfolioReviews';
 import '/imports/api/termSheetExtractor';
 import '/imports/api/amberConversations';
 import '/imports/api/amberService';

@@ -149,8 +149,10 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
     }).fetch();
 
     // Get portfolio snapshots for this user (already sorted by date desc from publication)
+    // Exclude CONSOLIDATED to avoid double-counting when aggregating by date
     const snapshotsData = PortfolioSnapshotsCollection.find({
-      userId: userId
+      userId: userId,
+      portfolioCode: { $ne: 'CONSOLIDATED' }
     }).fetch();
 
     return {

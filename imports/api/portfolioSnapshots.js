@@ -470,7 +470,7 @@ export const PortfolioSnapshotHelpers = {
    * Groups snapshots by date and sums values (prevents zigzag chart when user has multiple accounts)
    */
   async getAggregatedSnapshotsForUser({ userId, startDate, endDate }) {
-    const query = { userId };
+    const query = { userId, portfolioCode: { $ne: 'CONSOLIDATED' } };
 
     if (startDate || endDate) {
       query.snapshotDate = {};
@@ -478,7 +478,7 @@ export const PortfolioSnapshotHelpers = {
       if (endDate) query.snapshotDate.$lte = endDate;
     }
 
-    // Get all snapshots for this user across all portfolios
+    // Get all snapshots for this user across all portfolios (exclude CONSOLIDATED to avoid double-counting)
     const snapshots = await PortfolioSnapshotsCollection.find(query, {
       sort: { snapshotDate: 1 }
     }).fetchAsync();
@@ -564,10 +564,11 @@ export const PortfolioSnapshotHelpers = {
    * Merges assetClassBreakdown from all portfolios for the target date
    */
   async getAggregatedAssetAllocationForUser({ userId, targetDate }) {
-    // Get all snapshots for this user up to target date
+    // Get all snapshots for this user up to target date (exclude CONSOLIDATED to avoid double-counting)
     const snapshots = await PortfolioSnapshotsCollection.find({
       userId,
-      snapshotDate: { $lte: targetDate }
+      snapshotDate: { $lte: targetDate },
+      portfolioCode: { $ne: 'CONSOLIDATED' }
     }, {
       sort: { snapshotDate: -1 }
     }).fetchAsync();
@@ -609,7 +610,7 @@ export const PortfolioSnapshotHelpers = {
    * Groups snapshots by date and sums values across all portfolios
    */
   async getAggregatedSnapshots({ startDate, endDate }) {
-    const query = {};
+    const query = { portfolioCode: { $ne: 'CONSOLIDATED' } };
 
     if (startDate || endDate) {
       query.snapshotDate = {};
@@ -619,7 +620,7 @@ export const PortfolioSnapshotHelpers = {
 
     console.log(`[SNAPSHOTS] getAggregatedSnapshots query:`, JSON.stringify(query));
 
-    // Get all snapshots across all users/portfolios
+    // Get all snapshots across all users/portfolios (exclude CONSOLIDATED to avoid double-counting)
     const snapshots = await PortfolioSnapshotsCollection.find(query, {
       sort: { snapshotDate: 1 }
     }).fetchAsync();

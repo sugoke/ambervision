@@ -13,7 +13,7 @@ export const OrderCountersCollection = new Mongo.Collection('orderCounters');
 export const OrderCounterHelpers = {
   /**
    * Generate next order reference number (atomic operation)
-   * Format: ORD-YYYY-XXXXX (e.g., ORD-2025-00001)
+   * Format: YYYY-XXXXX (e.g., 2025-00001)
    * @returns {Promise<string>} The generated order reference
    */
   async generateNextReference() {
@@ -30,7 +30,7 @@ export const OrderCounterHelpers = {
     );
 
     const nextNumber = result.lastNumber;
-    const reference = `ORD-${currentYear}-${String(nextNumber).padStart(5, '0')}`;
+    const reference = `${currentYear}-${String(nextNumber).padStart(5, '0')}`;
 
     return reference;
   },
@@ -60,11 +60,11 @@ export const OrderCounterHelpers = {
 
   /**
    * Parse order reference to extract year and number
-   * @param {string} reference - Order reference (e.g., ORD-2025-00001)
+   * @param {string} reference - Order reference (e.g., 2025-00001)
    * @returns {Object|null} Parsed data or null if invalid
    */
   parseReference(reference) {
-    const match = reference?.match(/^ORD-(\d{4})-(\d{5})$/);
+    const match = reference?.match(/^(\d{4})-(\d{5})$/);
     if (!match) return null;
 
     return {
@@ -79,6 +79,6 @@ export const OrderCounterHelpers = {
    * @returns {boolean} True if valid format
    */
   isValidReference(reference) {
-    return /^ORD-\d{4}-\d{5}$/.test(reference);
+    return /^\d{4}-\d{5}$/.test(reference);
   }
 };

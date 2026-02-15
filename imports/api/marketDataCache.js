@@ -459,6 +459,7 @@ if (Meteor.isServer) {
     async 'marketData.refreshCache'(options = {}, sessionId = null) {
       check(options, Match.OneOf(Object, null, undefined));
       check(sessionId, Match.OneOf(String, null, undefined));
+      this.unblock();
 
       // Check if this is a server-side system call (from cron jobs)
       const isSystemCall = sessionId === 'system-cron' || sessionId === 'system';
