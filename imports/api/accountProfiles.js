@@ -116,8 +116,11 @@ export const aggregateToFourCategories = (breakdown, totalValue) => {
              lowerCategory === 'structured_product_credit_linked') {
       alternative += value;
     }
-    // Structured products with capital guarantee -> Bonds
-    else if (lowerCategory.includes('structured_product_capital_guaranteed')) {
+    // Structured products with capital guarantee or protection -> Bonds
+    // Per profile rules: "Structured products with capital guarantee or protection (any underlying)"
+    else if (lowerCategory.includes('structured_product_capital_guaranteed') ||
+             lowerCategory === 'structured_product_barrier_protected' ||
+             lowerCategory === 'structured_product_partial_guarantee') {
       bonds += value;
     }
     // Fixed Income / Bonds
@@ -126,13 +129,10 @@ export const aggregateToFourCategories = (breakdown, totalValue) => {
              lowerCategory === 'convertible') {
       bonds += value;
     }
-    // Equities - includes equity-linked AND barrier-protected structured products
-    // (barrier-protected products are almost always equity-linked in practice)
+    // Equities - includes equity-linked structured products (without capital protection)
     else if (lowerCategory.includes('equity') ||
              lowerCategory.includes('stock') ||
-             lowerCategory === 'structured_product_equity_linked' ||
-             lowerCategory === 'structured_product_barrier_protected' ||
-             lowerCategory === 'structured_product_partial_guarantee') {
+             lowerCategory === 'structured_product_equity_linked') {
       equities += value;
     }
     // Default: categorize remaining structured products to Equities

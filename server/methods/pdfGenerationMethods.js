@@ -310,6 +310,11 @@ Meteor.methods({
           reportUrl = `${baseUrl}pdf/risk-analysis/${reportId}?pdfToken=${tempToken}&userId=${userId}&lang=${lang}`;
           console.log('[PDF] Using Risk Analysis Report template for report:', reportId);
           break;
+        case 'portfolio-review':
+          // Portfolio Review Report - reportId is the review ID
+          reportUrl = `${baseUrl}pdf/portfolio-review/${reportId}?pdfToken=${tempToken}&userId=${userId}&lang=${lang}`;
+          console.log('[PDF] Using Portfolio Review template for review:', reportId);
+          break;
         default:
           throw new Meteor.Error('invalid-report-type', 'Invalid report type specified');
       }
@@ -476,7 +481,7 @@ Meteor.methods({
       // Use landscape mode for better table display
       // Determine if this report should be landscape
       // PMS reports need landscape for wide tables
-      const useLandscape = reportType === 'pms';
+      const useLandscape = reportType === 'pms' || reportType === 'portfolio-review';
 
       let pdfBuffer;
       try {

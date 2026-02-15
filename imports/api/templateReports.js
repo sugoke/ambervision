@@ -147,6 +147,7 @@ if (Meteor.isServer) {
     async 'templateReports.create'(productData, sessionId) {
       check(productData, Object);
       check(sessionId, String);
+      this.unblock();
 
       const user = await validateSessionAndGetUser(sessionId);
 
@@ -387,6 +388,7 @@ if (Meteor.isServer) {
       check(productData, Object);
       check(triggeredBy, String);
       check(cronJobRunId, Match.Maybe(String));
+      this.unblock();
 
       console.log(`[templateReports.generate] Generating report for ${productData._id}, triggered by: ${triggeredBy}`);
 

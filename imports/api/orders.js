@@ -7,7 +7,7 @@ export const OrdersCollection = new Mongo.Collection('orders');
 // Order schema structure:
 // {
 //   _id: String,
-//   orderReference: String,        // ORD-2025-00001 format
+//   orderReference: String,        // 2025-00001 format
 //   orderType: 'buy' | 'sell',
 //
 //   // Security
@@ -179,7 +179,7 @@ export const OrderFormatters = {
 
   // Format order reference
   formatOrderReference(year, number) {
-    return `ORD-${year}-${String(number).padStart(5, '0')}`;
+    return `${year}-${String(number).padStart(5, '0')}`;
   },
 
   // Format date for display
@@ -202,6 +202,16 @@ export const OrderFormatters = {
       hour: '2-digit',
       minute: '2-digit'
     });
+  },
+
+  // Format date as dd/mm/yy (short, no time)
+  formatDateShort(date) {
+    if (!date) return 'N/A';
+    const d = new Date(date);
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = String(d.getFullYear()).slice(-2);
+    return `${day}/${month}/${year}`;
   },
 
   // Get status display label
@@ -262,6 +272,26 @@ export const OrderFormatters = {
       [TERMSHEET_STATUSES.NONE]: '#6b7280',
       [TERMSHEET_STATUSES.SENT]: '#f59e0b',
       [TERMSHEET_STATUSES.SIGNED]: '#10b981'
+    };
+    return colors[status] || '#6b7280';
+  },
+
+  // Get booking status label
+  getBookingStatusLabel(status) {
+    const labels = {
+      'confirmed': 'Booked',
+      'likely': 'Likely',
+      'none': '-'
+    };
+    return labels[status] || '-';
+  },
+
+  // Get booking status color
+  getBookingStatusColor(status) {
+    const colors = {
+      'confirmed': '#10b981',  // green
+      'likely': '#f59e0b',     // orange
+      'none': '#6b7280'        // gray
     };
     return colors[status] || '#6b7280';
   }
@@ -341,7 +371,8 @@ export const OrderHelpers = {
     return {
       ...order,
       // Pre-format dates
-      createdAtFormatted: OrderFormatters.formatDateTime(order.createdAt),
+      createdAtFormatted: OrderFormatters.formatDateShort(order.createdAt),
+      createdAtFull: OrderFormatters.formatDateTime(order.createdAt),
       sentAtFormatted: OrderFormatters.formatDateTime(order.sentAt),
       executionDateFormatted: OrderFormatters.formatDate(order.executionDate),
       cancelledAtFormatted: OrderFormatters.formatDateTime(order.cancelledAt),

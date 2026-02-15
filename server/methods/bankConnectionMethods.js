@@ -531,6 +531,7 @@ Meteor.methods({
   async 'bankConnections.downloadAllFiles'({ connectionId, sessionId }) {
     check(connectionId, String);
     check(sessionId, String);
+    this.unblock();
 
     // Validate admin access
     const user = await validateAdminSession(sessionId);

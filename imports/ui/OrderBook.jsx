@@ -38,6 +38,10 @@ const OrderBook = ({ user }) => {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 
+  // Sorting
+  const [sortField, setSortField] = useState('createdAt');
+  const [sortOrder, setSortOrder] = useState(-1);
+
   // Modals
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
@@ -71,6 +75,9 @@ const OrderBook = ({ user }) => {
   const [uploadingTrace, setUploadingTrace] = useState(null); // traceType currently uploading
   const [traceError, setTraceError] = useState(null);
 
+  // Booking check results (keyed by orderId)
+  const [bookingResults, setBookingResults] = useState({});
+
   // Clients for new order modal
   const [clients, setClients] = useState([]);
 
@@ -85,7 +92,7 @@ const OrderBook = ({ user }) => {
   // Load orders
   useEffect(() => {
     loadOrders();
-  }, [statusFilter, bankFilter, searchQuery, dateFrom, dateTo, currentPage]);
+  }, [statusFilter, bankFilter, searchQuery, dateFrom, dateTo, currentPage, sortField, sortOrder]);
 
   // Load clients for new order modal
   useEffect(() => {
@@ -128,14 +135,31 @@ const OrderBook = ({ user }) => {
         pagination: {
           limit: pageSize,
           skip: (currentPage - 1) * pageSize,
-          sortField: 'createdAt',
-          sortOrder: -1
+          sortField,
+          sortOrder
         },
         sessionId
       });
 
-      setOrders(result.orders || []);
+      const loadedOrders = result.orders || [];
+      setOrders(loadedOrders);
       setTotalOrders(result.total || 0);
+
+      // Batch check booking status for all non-cancelled orders (including executed)
+      const checkableIds = loadedOrders
+        .filter(o => o.status !== ORDER_STATUSES.CANCELLED)
+        .map(o => o._id);
+      if (checkableIds.length > 0) {
+        try {
+          const bookings = await Meteor.callAsync('orders.batchCheckBooking', {
+            orderIds: checkableIds,
+            sessionId
+          });
+          setBookingResults(prev => ({ ...prev, ...bookings }));
+        } catch (bookingErr) {
+          console.error('Error checking bookings:', bookingErr);
+        }
+      }
     } catch (err) {
       console.error('Error loading orders:', err);
       setOrders([]);
@@ -151,6 +175,19 @@ const OrderBook = ({ user }) => {
       setSelectedOrder(result);
       setTraceError(null);
       setDetailModalOpen(true);
+
+      // Fetch booking status for this order if not already loaded
+      if (!bookingResults[order._id] && order.status !== ORDER_STATUSES.CANCELLED) {
+        try {
+          const bookings = await Meteor.callAsync('orders.batchCheckBooking', {
+            orderIds: [order._id],
+            sessionId
+          });
+          setBookingResults(prev => ({ ...prev, ...bookings }));
+        } catch (bookingErr) {
+          console.error('Error checking booking:', bookingErr);
+        }
+      }
     } catch (err) {
       console.error('Error loading order details:', err);
     }
@@ -267,6 +304,30 @@ const OrderBook = ({ user }) => {
   const handleOrderCreated = (result) => {
     setNewOrderModalOpen(false);
     loadOrders();
+  };
+
+  const handleSort = (field) => {
+    if (sortField === field) {
+      setSortOrder(prev => prev === 1 ? -1 : 1);
+    } else {
+      setSortField(field);
+      setSortOrder(-1);
+    }
+    setCurrentPage(1);
+  };
+
+  const SortableHeader = ({ field, label, title }) => {
+    const isActive = sortField === field;
+    const arrow = isActive ? (sortOrder === 1 ? ' ▲' : ' ▼') : '';
+    return (
+      <th
+        style={{ ...styles.th, cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
+        title={title || `Sort by ${label}`}
+        onClick={() => handleSort(field)}
+      >
+        {label}{isActive && <span style={{ opacity: 0.7, fontSize: '10px' }}>{arrow}</span>}
+      </th>
+    );
   };
 
   // Termsheet status handler - cycles: none -> sent -> signed -> none
@@ -767,23 +828,22 @@ const OrderBook = ({ user }) => {
                 <table style={styles.table}>
                   <thead>
                     <tr>
-                      <th style={styles.th}>Reference</th>
-                      <th style={styles.th}>Date</th>
-                      <th style={styles.th}>Status</th>
-                      <th style={styles.th}>Ind/Bloc</th>
-                      <th style={styles.th}>WA</th>
-                      <th style={styles.th}>Client</th>
-                      <th style={styles.th}>Bank</th>
-                      <th style={styles.th}>Type</th>
-                      <th style={styles.th}>Security</th>
-                      <th style={styles.th}>Asset</th>
-                      <th style={styles.th}>Ccy</th>
-                      <th style={styles.th}>Qty</th>
-                      <th style={styles.th}>Exec Price</th>
-                      <th style={styles.th}>Broker</th>
-                      <th style={styles.th}>Underlyings</th>
-                      <th style={styles.th}>Settl. Ccy</th>
-                      <th style={styles.th}>Notes</th>
+                      <SortableHeader field="orderReference" label="Reference" />
+                      <SortableHeader field="createdAt" label="Date" />
+                      <SortableHeader field="status" label="Status" />
+                      <th style={styles.th}>Booked</th>
+                      <SortableHeader field="bulkOrderGroupId" label="Ind/Bloc" />
+                      <SortableHeader field="wealthAdvisor" label="WA" />
+                      <SortableHeader field="clientName" label="Client" />
+                      <SortableHeader field="bankName" label="Bank" />
+                      <SortableHeader field="orderType" label="Type" />
+                      <SortableHeader field="securityName" label="Security" />
+                      <SortableHeader field="assetType" label="Asset" />
+                      <SortableHeader field="currency" label="Ccy" />
+                      <SortableHeader field="quantity" label="Qty" />
+                      <SortableHeader field="executedPrice" label="Exec Price" />
+                      <SortableHeader field="broker" label="Broker" />
+                      <SortableHeader field="settlementCurrency" label="Settl. Ccy" />
                       <th style={styles.th} title="Termsheet">TS</th>
                       <th style={styles.th}>Traces</th>
                       <th style={styles.th}>Actions</th>
@@ -815,11 +875,44 @@ const OrderBook = ({ user }) => {
                             </span>
                           )}
                         </td>
-                        <td style={styles.td}>{order.createdAtFormatted}</td>
+                        <td style={styles.td} title={order.createdAtFull}>{order.createdAtFormatted}</td>
                         <td style={styles.td}>
                           <span style={styles.statusBadge(order.status)}>
                             {order.statusLabel}
                           </span>
+                        </td>
+                        <td style={styles.td}>
+                          {(() => {
+                            const booking = bookingResults[order._id];
+                            if (!booking || booking.bookingStatus === 'none') {
+                              return <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>-</span>;
+                            }
+                            const color = OrderFormatters.getBookingStatusColor(booking.bookingStatus);
+                            const label = OrderFormatters.getBookingStatusLabel(booking.bookingStatus);
+                            const tooltipParts = [];
+                            if (booking.matchedOperation) {
+                              const op = booking.matchedOperation;
+                              if (op.operationDate) tooltipParts.push(`Date: ${new Date(op.operationDate).toLocaleDateString('en-GB')}`);
+                              if (op.quantity) tooltipParts.push(`Qty: ${Math.abs(op.quantity).toLocaleString('en-US')}`);
+                              if (op.price) tooltipParts.push(`Price: ${op.price}`);
+                              if (op.operationCode) tooltipParts.push(`Ref: ${op.operationCode}`);
+                            }
+                            return (
+                              <span
+                                style={{
+                                  fontSize: '11px',
+                                  fontWeight: '600',
+                                  color,
+                                  padding: '2px 8px',
+                                  borderRadius: '10px',
+                                  background: `${color}15`
+                                }}
+                                title={tooltipParts.join('\n')}
+                              >
+                                {label}
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td style={styles.td}>
                           <span style={{
@@ -870,19 +963,7 @@ const OrderBook = ({ user }) => {
                           </span>
                         </td>
                         <td style={styles.td}>
-                          <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-                            {order.underlyings || ''}
-                          </span>
-                        </td>
-                        <td style={styles.td}>
                           <span style={{ fontSize: '12px' }}>{order.settlementCurrency || ''}</span>
-                        </td>
-                        <td style={styles.td}>
-                          {order.notes ? (
-                            <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }} title={order.notes}>
-                              {order.notes.length > 20 ? order.notes.substring(0, 20) + '...' : order.notes}
-                            </span>
-                          ) : null}
                         </td>
                         <td style={styles.td} onClick={(e) => e.stopPropagation()}>
                           {order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? (
@@ -1224,14 +1305,6 @@ const OrderBook = ({ user }) => {
               )}
             </div>
 
-            {selectedOrder.order.notes && (
-              <div style={styles.detailSection}>
-                <div style={styles.detailTitle}>Notes</div>
-                <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>
-                  {selectedOrder.order.notes}
-                </p>
-              </div>
-            )}
 
             {selectedOrder.order.sentAt && (
               <div style={styles.detailSection}>
@@ -1246,6 +1319,115 @@ const OrderBook = ({ user }) => {
                 </div>
               </div>
             )}
+
+            {/* PMS Booking Section */}
+            {(() => {
+              const booking = bookingResults[selectedOrder.order._id];
+              if (!booking || booking.bookingStatus === 'none') {
+                if (selectedOrder.order.status !== ORDER_STATUSES.CANCELLED) {
+                  return (
+                    <div style={styles.detailSection}>
+                      <div style={styles.detailTitle}>PMS Booking</div>
+                      <div style={{ padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '13px', color: 'var(--text-muted)', textAlign: 'center' }}>
+                        No matching operation found in PMS
+                      </div>
+                    </div>
+                  );
+                }
+                return null;
+              }
+              const op = booking.matchedOperation;
+              const color = OrderFormatters.getBookingStatusColor(booking.bookingStatus);
+              const label = OrderFormatters.getBookingStatusLabel(booking.bookingStatus);
+              return (
+                <div style={styles.detailSection}>
+                  <div style={styles.detailTitle}>PMS Booking</div>
+                  <div style={{ marginBottom: '10px' }}>
+                    <span style={{
+                      display: 'inline-block',
+                      padding: '4px 12px',
+                      borderRadius: '12px',
+                      fontSize: '12px',
+                      fontWeight: '600',
+                      background: `${color}20`,
+                      color
+                    }}>
+                      {label} {booking.confidence === 'exact_match' ? '(exact match)' : booking.confidence === 'close_match' ? '(close match)' : ''}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '10px' }}>
+                    {booking.reason}
+                  </div>
+                  {op && (
+                    <>
+                      <div style={styles.detailRow}>
+                        <span style={styles.detailLabel}>Operation Date</span>
+                        <span style={styles.detailValue}>{op.operationDate ? new Date(op.operationDate).toLocaleDateString('en-GB') : 'N/A'}</span>
+                      </div>
+                      <div style={styles.detailRow}>
+                        <span style={styles.detailLabel}>Quantity</span>
+                        <span style={styles.detailValue}>{op.quantity ? Math.abs(op.quantity).toLocaleString('en-US') : 'N/A'}</span>
+                      </div>
+                      {op.price != null && (
+                        <div style={styles.detailRow}>
+                          <span style={styles.detailLabel}>Price</span>
+                          <span style={styles.detailValue}>{op.price}</span>
+                        </div>
+                      )}
+                      {op.grossAmount != null && (
+                        <div style={styles.detailRow}>
+                          <span style={styles.detailLabel}>Gross Amount</span>
+                          <span style={styles.detailValue}>{op.grossAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                        </div>
+                      )}
+                      {op.operationCode && (
+                        <div style={styles.detailRow}>
+                          <span style={styles.detailLabel}>Bank Reference</span>
+                          <span style={{ ...styles.detailValue, fontFamily: 'monospace', fontSize: '12px' }}>{op.operationCode}</span>
+                        </div>
+                      )}
+                      {op.instrumentName && (
+                        <div style={styles.detailRow}>
+                          <span style={styles.detailLabel}>Instrument</span>
+                          <span style={styles.detailValue}>{op.instrumentName}</span>
+                        </div>
+                      )}
+                      {op.remark && (
+                        <div style={styles.detailRow}>
+                          <span style={styles.detailLabel}>Remark</span>
+                          <span style={{ ...styles.detailValue, fontSize: '12px', maxWidth: '300px', textAlign: 'right' }}>{op.remark}</span>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {selectedOrder.order.status !== ORDER_STATUSES.EXECUTED && (
+                    <div style={{ marginTop: '12px' }}>
+                      <button
+                        style={{
+                          padding: '6px 14px',
+                          fontSize: '12px',
+                          fontWeight: '500',
+                          border: '1px solid #10b981',
+                          borderRadius: '6px',
+                          background: 'rgba(16, 185, 129, 0.1)',
+                          color: '#10b981',
+                          cursor: 'pointer'
+                        }}
+                        onClick={async () => {
+                          setDetailModalOpen(false);
+                          setExecutedQuantity(Math.abs(op?.quantity || selectedOrder.order.quantity)?.toString() || '');
+                          if (op?.price) setExecutedPrice(op.price.toString());
+                          if (op?.operationDate) setExecutionDate(new Date(op.operationDate).toISOString().split('T')[0]);
+                          setExecuteModalOpen(true);
+                        }}
+                      >
+                        Mark as Executed from PMS Match
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Email Traces Section */}
             <div style={styles.detailSection}>
@@ -1641,27 +1823,6 @@ const OrderBook = ({ user }) => {
                 />
               </div>
             )}
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
-                Notes
-              </label>
-              <textarea
-                style={{
-                  width: '100%',
-                  padding: '10px 12px',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '6px',
-                  fontSize: '13px',
-                  background: 'var(--bg-primary)',
-                  color: 'var(--text-primary)',
-                  minHeight: '80px',
-                  resize: 'vertical'
-                }}
-                value={editNotes}
-                onChange={(e) => setEditNotes(e.target.value)}
-                placeholder="Add notes..."
-              />
-            </div>
             {actionError && (
               <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: '#ef4444', fontSize: '13px' }}>
                 {actionError}

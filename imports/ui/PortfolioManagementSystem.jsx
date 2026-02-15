@@ -29,6 +29,8 @@ import {
 import PDFDownloadButton from './components/PDFDownloadButton.jsx';
 import NestedDoughnutChart from './components/NestedDoughnutChart.jsx';
 import OrderModal from './components/OrderModal.jsx';
+import PortfolioReviewsList from './components/PortfolioReviewsList.jsx';
+import PortfolioReviewModal from './components/PortfolioReviewModal.jsx';
 import { DataFreshnessPanel } from './components/DataFreshnessIndicator.jsx';
 import { checkDataFreshness } from '/imports/api/helpers/dataFreshness.js';
 import * as XLSX from 'xlsx';
@@ -453,6 +455,16 @@ const PortfolioManagementSystem = ({ user }) => {
   // Active orders for positions (to show indicators)
   const [activeOrders, setActiveOrders] = useState([]);
 
+  // Portfolio Review state
+  const [portfolioReviewModalId, setPortfolioReviewModalId] = useState(null);
+  const [reviewToastVisible, setReviewToastVisible] = useState(false);
+  const [reviewToastId, setReviewToastId] = useState(null);
+  const [reviewGenerating, setReviewGenerating] = useState(false);
+  const [reviewProgress, setReviewProgress] = useState(null); // { currentStepLabel, completedSections, totalSections }
+  const [reviewError, setReviewError] = useState(null);
+  const [reviewsListKey, setReviewsListKey] = useState(0); // force re-fetch of reviews list
+  const [reviewLangPickerOpen, setReviewLangPickerOpen] = useState(false); // language picker dropdown
+
   // Listen for refresh events from file processing
   useEffect(() => {
     const handleRefresh = (event) => {
@@ -547,6 +559,52 @@ const PortfolioManagementSystem = ({ user }) => {
 
     fetchActiveOrders();
   }, [refreshKey, viewAsFilter, user?.role, orderModalOpen]); // Re-fetch when order modal closes (new order created)
+
+  // Poll review status while generating
+  useEffect(() => {
+    if (!reviewGenerating || !reviewToastId) return;
+
+    const sessionId = localStorage.getItem('sessionId');
+    if (!sessionId) return;
+
+    const pollInterval = setInterval(() => {
+      Meteor.callAsync('portfolioReview.getReview', reviewToastId, sessionId)
+        .then(review => {
+          if (!review) return;
+
+          // Update progress display
+          if (review.progress) {
+            setReviewProgress({
+              currentStepLabel: review.progress.currentStepLabel,
+              completedSections: review.progress.completedSections || 0,
+              totalSections: review.progress.totalSections || 7
+            });
+          }
+
+          if (review.status === 'completed') {
+            clearInterval(pollInterval);
+            setReviewGenerating(false);
+            setReviewProgress(null);
+            setReviewError(null);
+            setReviewToastVisible(true);
+            setReviewsListKey(prev => prev + 1); // refresh reviews list
+            setTimeout(() => setReviewToastVisible(false), 15000);
+          } else if (review.status === 'failed') {
+            clearInterval(pollInterval);
+            setReviewGenerating(false);
+            setReviewProgress(null);
+            setReviewError(review.progress?.currentStepLabel || 'Generation failed');
+            setReviewsListKey(prev => prev + 1);
+            setTimeout(() => setReviewError(null), 10000);
+          }
+        })
+        .catch(err => {
+          console.error('[PMS] Error polling review status:', err);
+        });
+    }, 3000); // Poll every 3 seconds
+
+    return () => clearInterval(pollInterval);
+  }, [reviewGenerating, reviewToastId]);
 
   // Fetch real holdings data from database
   const { holdings, isLoading } = useTracker(() => {
@@ -883,14 +941,36 @@ const PortfolioManagementSystem = ({ user }) => {
       return { cash: 0, bonds: 0, equities: 0, alternative: 0, total: 0 };
     }
 
-    // Build asset class breakdown by value
+    // Build granular asset class breakdown by value
+    // For structured products, use protection type to distinguish capital-protected (bonds) from equity-linked (equities)
     const breakdown = {};
     let total = 0;
 
     filteredHoldings.forEach(holding => {
-      const assetClass = holding.assetClass || 'other';
+      let categoryKey = holding.assetClass || 'other';
       const marketValue = holding.marketValue || 0;
-      breakdown[assetClass] = (breakdown[assetClass] || 0) + marketValue;
+
+      if (categoryKey === 'structured_product') {
+        const protectionType = holding.structuredProductProtectionType;
+        const underlyingType = holding.structuredProductUnderlyingType || 'equity_linked';
+        if (protectionType === 'capital_guaranteed_100') {
+          categoryKey = 'structured_product_capital_guaranteed';
+        } else if (protectionType === 'capital_guaranteed_partial') {
+          categoryKey = 'structured_product_partial_guarantee';
+        } else if (protectionType === 'capital_protected_conditional') {
+          // Equity-linked barrier protected → equities (still has equity risk)
+          // Non-equity barrier protected → bonds
+          if (underlyingType === 'equity_linked') {
+            categoryKey = 'structured_product_equity_linked_barrier_protected';
+          } else {
+            categoryKey = 'structured_product_barrier_protected';
+          }
+        } else if (holding.structuredProductUnderlyingType) {
+          categoryKey = `structured_product_${holding.structuredProductUnderlyingType}`;
+        }
+      }
+
+      breakdown[categoryKey] = (breakdown[categoryKey] || 0) + marketValue;
       total += marketValue;
     });
 
@@ -1647,7 +1727,8 @@ const PortfolioManagementSystem = ({ user }) => {
     { id: 'positions', label: 'Positions', icon: '📊' },
     { id: 'transactions', label: 'Transactions', icon: '💱' },
     { id: 'performance', label: 'Performance', icon: '📈' },
-    { id: 'alerts', label: 'Alerts', icon: '⚠️' }
+    { id: 'alerts', label: 'Alerts', icon: '⚠️' },
+    { id: 'reviews', label: 'Reviews', icon: '📋' }
   ];
 
   const handleSort = (field) => {
@@ -1693,6 +1774,48 @@ const PortfolioManagementSystem = ({ user }) => {
   };
 
   // Removed handleIsinClick - using native anchor navigation instead
+
+  // Portfolio Review generation handler
+  const handleGeneratePortfolioReview = (language = 'en') => {
+    const sessionId = localStorage.getItem('sessionId');
+    if (!sessionId) return;
+    if (reviewGenerating) return; // prevent double-click
+
+    setReviewGenerating(true);
+    setReviewError(null);
+    setReviewProgress({ currentStepLabel: 'Starting...', completedSections: 0, totalSections: 7 });
+
+    Meteor.callAsync('portfolioReview.generate', sessionId, activeAccountTab, viewAsFilter, language)
+      .then(result => {
+        console.log('[PMS] Portfolio review generation started:', result.reviewId);
+        setReviewToastId(result.reviewId);
+        setReviewsListKey(prev => prev + 1); // refresh list to show "generating" entry
+      })
+      .catch(err => {
+        console.error('[PMS] Portfolio review generation failed:', err);
+        setReviewGenerating(false);
+        setReviewProgress(null);
+        setReviewError(err.reason || err.message || 'Failed to start generation');
+        setTimeout(() => setReviewError(null), 10000);
+      });
+  };
+
+  // Render Reviews tab content
+  const renderReviewsSection = () => {
+    return (
+      <div style={{ padding: '1rem 0' }}>
+        <PortfolioReviewsList
+          viewAsFilter={viewAsFilter}
+          accountFilter={activeAccountTab}
+          onOpenReview={(reviewId) => setPortfolioReviewModalId(reviewId)}
+          onGenerateNew={(language) => handleGeneratePortfolioReview(language)}
+          refreshKey={reviewsListKey}
+          isGenerating={reviewGenerating}
+          onCancelGeneration={() => setReviewGenerating(false)}
+        />
+      </div>
+    );
+  };
 
   const renderPositionsSection = () => {
     // Loading state
@@ -4490,6 +4613,128 @@ const PortfolioManagementSystem = ({ user }) => {
             )}
           </div>
         </div>
+
+        {/* Portfolio Review Button + Language Picker + Progress */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.75rem' }}>
+          <div style={{ position: 'relative', display: 'inline-flex' }}
+            onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setReviewLangPickerOpen(false); }}
+            tabIndex={-1}
+          >
+            <button
+              onClick={() => !reviewGenerating && setReviewLangPickerOpen(!reviewLangPickerOpen)}
+              disabled={reviewGenerating}
+              style={{
+                padding: '0.5rem 0.75rem',
+                background: reviewGenerating
+                  ? 'linear-gradient(135deg, #6b7280 0%, #9ca3af 100%)'
+                  : 'linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '0.8rem',
+                fontWeight: '600',
+                cursor: reviewGenerating ? 'not-allowed' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.35rem',
+                boxShadow: '0 2px 8px rgba(79, 70, 229, 0.25)',
+                transition: 'all 0.2s',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              {reviewGenerating ? 'Generating...' : 'Portfolio Review ▾'}
+            </button>
+            {reviewLangPickerOpen && !reviewGenerating && (
+              <div style={{
+                position: 'absolute',
+                top: '100%',
+                left: 0,
+                marginTop: '4px',
+                background: theme === 'dark' ? '#1f2937' : '#fff',
+                border: `1px solid ${theme === 'dark' ? '#374151' : '#e5e7eb'}`,
+                borderRadius: '8px',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                zIndex: 50,
+                overflow: 'hidden',
+                minWidth: '120px'
+              }}>
+                {[{ code: 'en', label: 'English' }, { code: 'fr', label: 'Français' }].map(lang => (
+                  <button
+                    key={lang.code}
+                    onClick={() => {
+                      setReviewLangPickerOpen(false);
+                      handleGeneratePortfolioReview(lang.code);
+                    }}
+                    style={{
+                      display: 'block',
+                      width: '100%',
+                      padding: '0.5rem 0.75rem',
+                      background: 'none',
+                      border: 'none',
+                      textAlign: 'left',
+                      fontSize: '0.8rem',
+                      color: theme === 'dark' ? '#e5e7eb' : '#1e293b',
+                      cursor: 'pointer'
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.background = theme === 'dark' ? 'rgba(255,255,255,0.1)' : '#f3f4f6'}
+                    onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                  >
+                    {lang.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          {reviewGenerating && reviewProgress && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              fontSize: '0.75rem',
+              color: 'var(--text-muted)',
+              whiteSpace: 'nowrap'
+            }}>
+              <div style={{
+                width: '60px',
+                height: '4px',
+                background: 'var(--border-color, #e5e7eb)',
+                borderRadius: '2px',
+                overflow: 'hidden'
+              }}>
+                <div style={{
+                  width: `${((reviewProgress.completedSections || 0) / (reviewProgress.totalSections || 7)) * 100}%`,
+                  height: '100%',
+                  background: '#6366f1',
+                  borderRadius: '2px',
+                  transition: 'width 0.5s ease'
+                }} />
+              </div>
+              <span>{reviewProgress.currentStepLabel}</span>
+            </div>
+          )}
+          {reviewError && (
+            <div style={{
+              fontSize: '0.75rem',
+              color: '#ef4444',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.3rem'
+            }}>
+              <span>Failed: {reviewError}</span>
+              <button
+                onClick={() => setReviewError(null)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#ef4444',
+                  cursor: 'pointer',
+                  fontSize: '0.85rem',
+                  padding: '0 2px'
+                }}
+              >&times;</button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Historical Data Banner */}
@@ -4746,7 +4991,7 @@ const PortfolioManagementSystem = ({ user }) => {
             {[
               { key: 'cash', label: 'Cash', icon: '💵', max: selectedAccountProfile?.maxCash ?? null, current: fourCategoryAllocation.cash, color: '#3b82f6', tooltip: 'Cash • Term Deposits • Monetary Products • Money Market Funds' },
               { key: 'bonds', label: 'Bonds', icon: '📄', max: selectedAccountProfile?.maxBonds ?? null, current: fourCategoryAllocation.bonds, color: '#10b981', tooltip: 'Fixed-Income Bonds • Convertible Bonds • Bond Funds • Capital-Guaranteed Structured Products' },
-              { key: 'equities', label: 'Equities', icon: '📈', max: selectedAccountProfile?.maxEquities ?? null, current: fourCategoryAllocation.equities, color: '#f59e0b', tooltip: 'Equities & Stocks • Equity Funds • Equity-Linked Structured Products • Barrier-Protected Products' },
+              { key: 'equities', label: 'Equities', icon: '📈', max: selectedAccountProfile?.maxEquities ?? null, current: fourCategoryAllocation.equities, color: '#f59e0b', tooltip: 'Equities & Stocks • Equity Funds • Equity-Linked Structured Products (without capital protection)' },
               { key: 'alternative', label: 'Alternative', icon: '🎯', max: selectedAccountProfile?.maxAlternative ?? null, current: fourCategoryAllocation.alternative, color: '#8b5cf6', tooltip: 'Private Equity • Private Debt • Commodities • Real Estate • Hedge Funds • Derivatives • Other' }
             ].map(item => {
               const hasProfile = item.max !== null;
@@ -4872,8 +5117,81 @@ const PortfolioManagementSystem = ({ user }) => {
           {activeTab === 'transactions' && renderTransactionsSection()}
           {activeTab === 'performance' && renderPerformanceSection()}
           {activeTab === 'alerts' && renderAlertsSection()}
+          {activeTab === 'reviews' && renderReviewsSection()}
         </div>
       </LiquidGlassCard>
+
+      {/* Portfolio Review Toast Notification */}
+      {reviewToastVisible && reviewToastId && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '2rem',
+            right: '2rem',
+            background: 'linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)',
+            color: 'white',
+            padding: '1rem 1.5rem',
+            borderRadius: '12px',
+            boxShadow: '0 8px 30px rgba(79, 70, 229, 0.4)',
+            zIndex: 9999,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.75rem',
+            fontSize: '0.9rem',
+            fontWeight: '500',
+            animation: 'slideUp 0.3s ease-out'
+          }}
+          onClick={() => {
+            setPortfolioReviewModalId(reviewToastId);
+            setReviewToastVisible(false);
+          }}
+        >
+          <span style={{ fontSize: '1.2rem' }}>📋</span>
+          <div>
+            <div style={{ fontWeight: '600' }}>Portfolio Review Ready</div>
+            <div style={{ fontSize: '0.8rem', opacity: 0.9 }}>Click to view</div>
+          </div>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setReviewToastVisible(false);
+            }}
+            style={{
+              background: 'rgba(255,255,255,0.2)',
+              border: 'none',
+              color: 'white',
+              borderRadius: '50%',
+              width: '24px',
+              height: '24px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.8rem',
+              marginLeft: '0.5rem'
+            }}
+          >
+            &times;
+          </button>
+        </div>
+      )}
+
+      {/* Portfolio Review Modal */}
+      {portfolioReviewModalId && (
+        <PortfolioReviewModal
+          reviewId={portfolioReviewModalId}
+          onClose={() => setPortfolioReviewModalId(null)}
+        />
+      )}
+
+      {/* Toast animation */}
+      <style>{`
+        @keyframes slideUp {
+          from { transform: translateY(20px); opacity: 0; }
+          to { transform: translateY(0); opacity: 1; }
+        }
+      `}</style>
 
       {/* Order Modal */}
       <OrderModal

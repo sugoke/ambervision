@@ -9,6 +9,7 @@ import { UsersCollection } from '../../imports/api/users.js';
 import { BanksCollection } from '../../imports/api/banks.js';
 import { BankAccountsCollection } from '../../imports/api/bankAccounts.js';
 import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
+import { PMSOperationsCollection } from '../../imports/api/pmsOperations.js';
 import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, OrderHelpers, OrderFormatters } from '../../imports/api/orders.js';
 import { OrderCountersCollection, OrderCounterHelpers } from '../../imports/api/orderCounters.js';
 import { EmailService } from '../../imports/api/emailService.js';
@@ -971,9 +972,9 @@ Please find the full order confirmation attached as PDF.
   },
 
   /**
-   * Check for automatic execution matching (when bank file is imported)
+   * Check if an order has been booked in the PMS by matching against PMSOperations
    */
-  async 'orders.checkExecution'({ orderId, sessionId }) {
+  async 'orders.checkBooking'({ orderId, sessionId }) {
     check(orderId, String);
     check(sessionId, String);
 
@@ -983,60 +984,159 @@ Please find the full order confirmation attached as PDF.
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
 
-    // Only check pending/sent orders
-    if (![ORDER_STATUSES.PENDING, ORDER_STATUSES.SENT].includes(order.status)) {
-      return { matched: false, reason: 'Order not in pending/sent status' };
-    }
+    return await matchOrderToOperations(order);
+  },
 
-    // Look for matching PMS holding
-    const holdings = await PMSHoldingsCollection.find({
-      isin: order.isin,
-      portfolioCode: order.portfolioCode,
-      isLatest: true,
-      isActive: true
-    }).fetchAsync();
+  /**
+   * Batch check booking status for multiple orders (called on page load)
+   */
+  async 'orders.batchCheckBooking'({ orderIds, sessionId }) {
+    check(orderIds, [String]);
+    check(sessionId, String);
 
-    if (holdings.length === 0) {
-      return { matched: false, reason: 'No matching holdings found' };
-    }
+    const { user } = await validateSession(sessionId);
+    validateOrderPermission(user);
 
-    // For buy orders, check if position appeared after order was created
-    // For sell orders, check if position quantity decreased
-    const holding = holdings[0];
+    const results = {};
+    const orders = await OrdersCollection.find({ _id: { $in: orderIds } }).fetchAsync();
 
-    if (order.orderType === 'buy') {
-      // Check if holding was created after order
-      if (holding.positionDate > order.createdAt) {
-        return {
-          matched: true,
-          holding: {
-            _id: holding._id,
-            quantity: holding.quantity,
-            positionDate: holding.positionDate
-          },
-          suggestion: 'Position found after order date - may be execution confirmation'
-        };
-      }
-    } else if (order.orderType === 'sell') {
-      // For sells, check if quantity decreased
-      if (order.sourcePositionQuantity && holding.quantity < order.sourcePositionQuantity) {
-        const soldQuantity = order.sourcePositionQuantity - holding.quantity;
-        return {
-          matched: soldQuantity >= order.quantity,
-          holding: {
-            _id: holding._id,
-            previousQuantity: order.sourcePositionQuantity,
-            currentQuantity: holding.quantity,
-            soldQuantity
-          },
-          suggestion: `Position decreased by ${soldQuantity} - may be execution confirmation`
-        };
+    for (const order of orders) {
+      try {
+        results[order._id] = await matchOrderToOperations(order);
+      } catch (err) {
+        results[order._id] = { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: err.message };
       }
     }
 
-    return { matched: false, reason: 'No execution match detected' };
+    return results;
   }
 });
+
+/**
+ * Match an order against PMSOperations to detect if it was booked
+ */
+async function matchOrderToOperations(order) {
+  if (!order.isin || !order.portfolioCode) {
+    return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'Missing ISIN or portfolio code' };
+  }
+
+  // Build operation type filter based on order type
+  const opTypes = order.orderType === 'buy'
+    ? ['BUY', 'SUBSCRIPTION']
+    : ['SELL', 'REDEMPTION'];
+
+  // Date window: 5 days before order to 30 days after
+  const orderDate = order.createdAt || new Date();
+  const windowStart = new Date(orderDate);
+  windowStart.setDate(windowStart.getDate() - 5);
+  const windowEnd = new Date(orderDate);
+  windowEnd.setDate(windowEnd.getDate() + 30);
+
+  // Escape special regex chars in portfolioCode and match with prefix
+  const escapedCode = order.portfolioCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  const operations = await PMSOperationsCollection.find({
+    isin: order.isin,
+    portfolioCode: { $regex: `^${escapedCode}` },
+    operationType: { $in: opTypes },
+    operationDate: { $gte: windowStart, $lte: windowEnd },
+    isActive: true
+  }, {
+    sort: { operationDate: -1 },
+    limit: 10
+  }).fetchAsync();
+
+  if (operations.length === 0) {
+    return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'No matching operations found' };
+  }
+
+  // Score each match
+  let bestMatch = null;
+  let bestScore = 0;
+
+  for (const op of operations) {
+    let score = 0;
+
+    // Quantity similarity
+    const opQty = Math.abs(op.quantity || 0);
+    const orderQty = Math.abs(order.quantity || 0);
+    if (orderQty > 0 && opQty > 0) {
+      const qtyRatio = Math.min(opQty, orderQty) / Math.max(opQty, orderQty);
+      if (qtyRatio >= 0.99) {
+        score += 50; // Exact match
+      } else if (qtyRatio >= 0.90) {
+        score += 30; // Within 10%
+      } else if (qtyRatio >= 0.70) {
+        score += 10; // Within 30%
+      }
+    }
+
+    // Date proximity (closer = better)
+    const daysDiff = Math.abs((op.operationDate - orderDate) / (1000 * 60 * 60 * 24));
+    if (daysDiff <= 2) {
+      score += 30;
+    } else if (daysDiff <= 7) {
+      score += 20;
+    } else if (daysDiff <= 14) {
+      score += 10;
+    }
+
+    // ISIN exact match bonus (already filtered but confirms)
+    score += 10;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = op;
+    }
+  }
+
+  if (!bestMatch) {
+    return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'No matching operations found' };
+  }
+
+  // Determine status based on score
+  const opQty = Math.abs(bestMatch.quantity || 0);
+  const orderQty = Math.abs(order.quantity || 0);
+  const qtyRatio = orderQty > 0 && opQty > 0
+    ? Math.min(opQty, orderQty) / Math.max(opQty, orderQty)
+    : 0;
+  const isExact = qtyRatio >= 0.99;
+
+  let bookingStatus, confidence;
+  if (bestScore >= 70 && isExact) {
+    bookingStatus = 'confirmed';
+    confidence = 'exact_match';
+  } else if (bestScore >= 40) {
+    bookingStatus = 'likely';
+    confidence = 'close_match';
+  } else {
+    bookingStatus = 'none';
+    confidence = null;
+  }
+
+  const fmtQty = (bestMatch.quantity || 0).toLocaleString('en-US');
+  const fmtDate = bestMatch.operationDate
+    ? new Date(bestMatch.operationDate).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })
+    : 'N/A';
+
+  return {
+    bookingStatus,
+    matchedOperation: {
+      operationDate: bestMatch.operationDate,
+      quantity: bestMatch.quantity,
+      price: bestMatch.price || bestMatch.quote,
+      grossAmount: bestMatch.grossAmount,
+      operationCode: bestMatch.operationCode,
+      instrumentName: bestMatch.instrumentName,
+      remark: bestMatch.remark,
+      operationType: bestMatch.operationType
+    },
+    confidence,
+    reason: bookingStatus !== 'none'
+      ? `Matching ${bestMatch.operationType} operation found: ${fmtQty} units on ${fmtDate}`
+      : 'No confident match found'
+  };
+}
 
 /**
  * Get base path for order file storage
@@ -1323,6 +1423,9 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
       padding: 8px 0;
       border-bottom: 1px solid #f3f4f6;
     }
+    .info-row.full-width {
+      grid-column: 1 / -1;
+    }
     .info-label {
       color: #6b7280;
       font-size: 10pt;
@@ -1401,7 +1504,7 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
   <div class="section">
     <h2>Security Details</h2>
     <div class="info-grid">
-      <div class="info-row">
+      <div class="info-row full-width">
         <span class="info-label">Security Name</span>
         <span class="info-value">${order.securityName}</span>
       </div>

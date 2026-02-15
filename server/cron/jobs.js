@@ -16,6 +16,7 @@ import { PMSOperationsCollection } from '/imports/api/pmsOperations.js';
 import { BanksCollection } from '/imports/api/banks.js';
 import { UsersCollection, USER_ROLES } from '/imports/api/users.js';
 import { DashboardMetricsHelpers } from '/imports/api/dashboardMetrics.js';
+import { yieldToEventLoop } from '/imports/utils/asyncHelpers.js';
 
 /**
  * Cron Jobs Configuration
@@ -537,7 +538,9 @@ async function createConsolidatedHoldings() {
 
     let totalConsolidated = 0;
 
-    for (const userId of usersWithHoldings) {
+    for (let i = 0; i < usersWithHoldings.length; i++) {
+      await yieldToEventLoop(i, 5);
+      const userId = usersWithHoldings[i];
       if (!userId) continue;
 
       // Get all latest holdings for this user (excluding CONSOLIDATED)
@@ -615,12 +618,14 @@ async function createConsolidatedHoldings() {
         { multi: true }
       );
 
-      // Insert new consolidated holdings
+      // Insert new consolidated holdings via bulkWrite for efficiency
       const consolidatedPositions = Object.values(consolidated);
-      for (const pos of consolidatedPositions) {
-        // Generate unique key for consolidated position
-        pos.uniqueKey = `CONSOLIDATED_${userId}_${pos.isin || pos.ticker || pos.securityName}`;
-        await PMSHoldingsCollection.insertAsync(pos);
+      if (consolidatedPositions.length > 0) {
+        const bulkOps = consolidatedPositions.map(pos => {
+          pos.uniqueKey = `CONSOLIDATED_${userId}_${pos.isin || pos.ticker || pos.securityName}`;
+          return { insertOne: { document: pos } };
+        });
+        await PMSHoldingsCollection.rawCollection().bulkWrite(bulkOps, { ordered: false });
       }
 
       totalConsolidated += consolidatedPositions.length;
@@ -1160,7 +1165,9 @@ async function regenerateTodaySnapshots() {
   let regenerated = 0;
   let errors = 0;
 
-  for (const connection of connections) {
+  for (let ci = 0; ci < connections.length; ci++) {
+    await yieldToEventLoop(ci, 5);
+    const connection = connections[ci];
     try {
       const bank = await BanksCollection.findOneAsync(connection.bankId);
       if (!bank) continue;
@@ -1191,7 +1198,10 @@ async function regenerateTodaySnapshots() {
       }
 
       // Create/update snapshot for each portfolio
-      for (const group of Object.values(portfolioGroups)) {
+      const groupValues = Object.values(portfolioGroups);
+      for (let gi = 0; gi < groupValues.length; gi++) {
+        await yieldToEventLoop(gi, 10);
+        const group = groupValues[gi];
         try {
           await PortfolioSnapshotHelpers.createSnapshot({
             userId: group.userId,
@@ -1245,11 +1255,12 @@ async function computeDashboardMetrics() {
       'private_equity', 'private_debt', 'etf', 'fund'
     ];
 
-    // Step 1: Calculate current total AUM from latest holdings
+    // Step 1: Calculate current total AUM from latest holdings (exclude CONSOLIDATED to avoid double-counting)
     const allHoldings = await PMSHoldingsCollection.find({
       isActive: true,
       isLatest: true,
       marketValue: { $exists: true, $gt: 0 },
+      portfolioCode: { $ne: 'CONSOLIDATED' },
       $or: [
         { assetClass: { $in: aumAssetClasses } },
         { assetClass: null },
@@ -1279,7 +1290,8 @@ async function computeDashboardMetrics() {
 
     const yesterdaySnapshots = await PortfolioSnapshotsCollection.find({
       snapshotDate: yesterday,
-      totalAccountValue: { $gt: 0 }
+      totalAccountValue: { $gt: 0 },
+      portfolioCode: { $ne: 'CONSOLIDATED' }
     }).fetchAsync();
 
     if (yesterdaySnapshots.length > 0) {
@@ -1322,8 +1334,10 @@ async function computeDashboardMetrics() {
     startDate.setDate(startDate.getDate() - 7);
     startDate.setHours(0, 0, 0, 0);
 
+    // Exclude CONSOLIDATED snapshots to avoid double-counting with individual portfolio snapshots
     const wtdSnapshots = await PortfolioSnapshotsCollection.find({
-      snapshotDate: { $gte: startDate, $lte: endDate }
+      snapshotDate: { $gte: startDate, $lte: endDate },
+      portfolioCode: { $ne: 'CONSOLIDATED' }
     }, {
       sort: { snapshotDate: 1 }
     }).fetchAsync();
@@ -1518,6 +1532,7 @@ if (Meteor.isServer) {
      */
     async 'cronJobs.triggerMarketDataRefresh'(sessionId) {
       check(sessionId, String);
+      this.unblock();
 
       // Authenticate user - only superadmin
       const currentUser = await Meteor.callAsync('auth.getCurrentUser', sessionId);
@@ -1540,6 +1555,7 @@ if (Meteor.isServer) {
      */
     async 'cronJobs.triggerProductRevaluation'(sessionId) {
       check(sessionId, String);
+      this.unblock();
 
       // Authenticate user - only superadmin
       const currentUser = await Meteor.callAsync('auth.getCurrentUser', sessionId);
@@ -1590,6 +1606,7 @@ if (Meteor.isServer) {
     async 'cronJobs.triggerBankFileSync'(sessionId, options = {}) {
       check(sessionId, String);
       check(options, Match.Maybe(Object));
+      this.unblock();
 
       const { forceReprocess = false } = options;
 
@@ -1615,6 +1632,7 @@ if (Meteor.isServer) {
      */
     async 'cronJobs.triggerDashboardMetrics'(sessionId) {
       check(sessionId, String);
+      this.unblock();
 
       // Authenticate user - only superadmin
       const currentUser = await Meteor.callAsync('auth.getCurrentUser', sessionId);

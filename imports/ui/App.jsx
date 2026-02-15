@@ -10,6 +10,7 @@ import OrionReportPDF from './templates/OrionReportPDF.jsx';
 import ParticipationNoteReportPDF from './templates/ParticipationNoteReportPDF.jsx';
 import PMSReportPDF from './templates/PMSReportPDF.jsx';
 import RiskAnalysisPDF from './templates/RiskAnalysisPDF.jsx';
+import PortfolioReviewPDF from './templates/PortfolioReviewPDF.jsx';
 import GlobalSearchBar from './components/GlobalSearchBar.jsx';
 import ViewAsFilter from './components/ViewAsFilter.jsx';
 import NotificationCenter from './NotificationCenter.jsx';
@@ -113,6 +114,14 @@ const AppContent = () => {
       const reportId = pdfRiskAnalysisMatch[1];
       console.log('App: Found PDF Risk Analysis route for report:', reportId);
       return { section: 'pdf-risk-analysis', reportId };
+    }
+
+    // Check for PDF Portfolio Review route: /pdf/portfolio-review/:reviewId
+    const pdfPortfolioReviewMatch = pathname.match(/^\/pdf\/portfolio-review\/([a-zA-Z0-9]+)$/);
+    if (pdfPortfolioReviewMatch) {
+      const reviewId = pdfPortfolioReviewMatch[1];
+      console.log('App: Found PDF Portfolio Review route for review:', reviewId);
+      return { section: 'pdf-portfolio-review', reviewId };
     }
 
     // Check for report route: /report/:productId
@@ -780,7 +789,7 @@ const AppContent = () => {
         }} />}
 
         {/* Loading state during authentication check - Exclude PDF modes as they handle their own loading */}
-        {isAuthLoading && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'landing' && currentSection !== 'infine' && (
+        {isAuthLoading && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'infine' && (
           <div style={{
             display: 'flex',
             justifyContent: 'center',
@@ -829,6 +838,11 @@ const AppContent = () => {
           <RiskAnalysisPDF />
         )}
 
+        {/* PDF Portfolio Review */}
+        {currentSection === 'pdf-portfolio-review' && (
+          <PortfolioReviewPDF />
+        )}
+
         {/* Landing Page - Public marketing page, no authentication required */}
         {currentSection === 'landing' && (
           <LandingPage />
@@ -852,7 +866,7 @@ const AppContent = () => {
         )}
 
         {/* Login Form Section - Only show when not logged in, not loading, not on reset password page, and not in PDF mode */}
-        {!user && !isAuthLoading && currentSection !== 'reset-password' && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'landing' && currentSection !== 'infine' && (
+        {!user && !isAuthLoading && currentSection !== 'reset-password' && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'infine' && (
           <section style={{
             padding: '0 1rem',
             background: theme === 'light' ? 'transparent' : 'transparent'
@@ -872,7 +886,7 @@ const AppContent = () => {
 
 
         {/* Main Content - Protected (or PDF mode) */}
-        {(user || isPDFMode) && currentSection !== 'reset-password' && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'landing' && currentSection !== 'infine' && <MainContent user={user} currentSection={currentSection} setCurrentSection={handleSectionChange} onComponentLibraryStateChange={setIsComponentLibraryOpen} currentRoute={currentRoute} isMenuOpen={isMenuOpen} setIsMenuOpen={setIsMenuOpen} isSettingsOpen={isSettingsOpen} setIsSettingsOpen={setIsSettingsOpen} isMobile={isMobile} />}
+        {(user || isPDFMode) && currentSection !== 'reset-password' && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'infine' && <MainContent user={user} currentSection={currentSection} setCurrentSection={handleSectionChange} onComponentLibraryStateChange={setIsComponentLibraryOpen} currentRoute={currentRoute} isMenuOpen={isMenuOpen} setIsMenuOpen={setIsMenuOpen} isSettingsOpen={isSettingsOpen} setIsSettingsOpen={setIsSettingsOpen} isMobile={isMobile} />}
 
         {/* Spacer to prevent content from being hidden behind fixed bottom bar - Hide on mobile */}
         {user && !isMobile && <div style={{ height: '40px' }} />}

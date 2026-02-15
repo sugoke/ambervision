@@ -561,10 +561,12 @@ Meteor.methods({
         // Admin sees all holdings - sum market value from latest PMSHoldings
         // Include whitelisted asset classes + unclassified (null) holdings
         // Must match PMS publication filter: isActive: true, isLatest: true
+        // Exclude CONSOLIDATED to avoid double-counting
         const allHoldings = await PMSHoldingsCollection.find({
           isActive: true,
           isLatest: true,
           marketValue: { $exists: true, $gt: 0 },
+          portfolioCode: { $ne: 'CONSOLIDATED' },
           $or: [
             { assetClass: { $in: aumAssetClasses } },
             { assetClass: null },
@@ -593,11 +595,13 @@ Meteor.methods({
         // RM sees only their clients' holdings
         // Include whitelisted asset classes + unclassified (null) holdings
         // Must match PMS publication filter: isActive: true, isLatest: true
+        // Exclude CONSOLIDATED to avoid double-counting
         const clientHoldings = await PMSHoldingsCollection.find({
           userId: { $in: clientIds },
           isActive: true,
           isLatest: true,
           marketValue: { $exists: true, $gt: 0 },
+          portfolioCode: { $ne: 'CONSOLIDATED' },
           $or: [
             { assetClass: { $in: aumAssetClasses } },
             { assetClass: null },
@@ -669,7 +673,8 @@ Meteor.methods({
         console.log('[RM Dashboard] Yesterday date (UTC):', yesterday.toISOString());
 
         // For admin/superadmin, aggregate all portfolios; for RM, aggregate their clients only
-        let snapshotQuery = { snapshotDate: yesterday };
+        // Exclude CONSOLIDATED snapshots to avoid double-counting
+        let snapshotQuery = { snapshotDate: yesterday, portfolioCode: { $ne: 'CONSOLIDATED' } };
 
         if (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN) {
           // RM sees only their clients' snapshots
@@ -849,8 +854,10 @@ Meteor.methods({
 
       if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE) {
         // Admin/Compliance sees all portfolios - aggregate by date
+        // Exclude CONSOLIDATED snapshots to avoid double-counting
         snapshots = await PortfolioSnapshotsCollection.find({
-          snapshotDate: { $gte: startDate, $lte: endDate }
+          snapshotDate: { $gte: startDate, $lte: endDate },
+          portfolioCode: { $ne: 'CONSOLIDATED' }
         }, {
           sort: { snapshotDate: 1 }
         }).fetchAsync();
@@ -863,9 +870,11 @@ Meteor.methods({
           return { hasData: false, labels: [], values: [], snapshots: [] };
         }
 
+        // Exclude CONSOLIDATED snapshots to avoid double-counting
         snapshots = await PortfolioSnapshotsCollection.find({
           userId: { $in: clientIds },
-          snapshotDate: { $gte: startDate, $lte: endDate }
+          snapshotDate: { $gte: startDate, $lte: endDate },
+          portfolioCode: { $ne: 'CONSOLIDATED' }
         }, {
           sort: { snapshotDate: 1 }
         }).fetchAsync();
@@ -922,6 +931,7 @@ Meteor.methods({
           isActive: true,
           isLatest: true,
           marketValue: { $exists: true, $gt: 0 },
+          portfolioCode: { $ne: 'CONSOLIDATED' },
           $or: [
             { assetClass: { $in: aumAssetClasses } },
             { assetClass: null },
@@ -938,6 +948,7 @@ Meteor.methods({
             isActive: true,
             isLatest: true,
             marketValue: { $exists: true, $gt: 0 },
+            portfolioCode: { $ne: 'CONSOLIDATED' },
             $or: [
               { assetClass: { $in: aumAssetClasses } },
               { assetClass: null },
