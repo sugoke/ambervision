@@ -89,6 +89,9 @@ const OrderModal = ({
     }
   };
 
+  // Track whether user has manually edited estimated value
+  const [estimatedValueManuallyEdited, setEstimatedValueManuallyEdited] = useState(false);
+
   // Initialize from prefill data
   useEffect(() => {
     if (prefillData && isOpen) {
@@ -110,8 +113,39 @@ const OrderModal = ({
         // For sell, show available quantity
         setQuantity(prefillData.quantity.toString());
       }
+      if (prefillData.bankName) {
+        setBroker(prefillData.bankName);
+      }
+      if (prefillData.currency) {
+        setSettlementCurrency(prefillData.currency);
+      }
+      setEstimatedValueManuallyEdited(false);
     }
   }, [prefillData, isOpen, mode]);
+
+  // Auto-calculate estimated value from quantity and price
+  useEffect(() => {
+    if (estimatedValueManuallyEdited) return;
+
+    const qty = parseFloat(quantity);
+    if (!qty || qty <= 0) {
+      setEstimatedValue('');
+      return;
+    }
+
+    if (priceType === PRICE_TYPES.LIMIT) {
+      const price = parseFloat(limitPrice);
+      if (price && price > 0) {
+        const isPercentage = prefillData?.priceType === 'percentage';
+        const value = isPercentage ? qty * price / 100 : qty * price;
+        setEstimatedValue(value.toFixed(2));
+      }
+    } else if (prefillData?.marketPrice && prefillData.marketPrice > 0) {
+      const isPercentage = prefillData?.priceType === 'percentage';
+      const value = isPercentage ? qty * prefillData.marketPrice : qty * prefillData.marketPrice;
+      setEstimatedValue(value.toFixed(2));
+    }
+  }, [quantity, priceType, limitPrice, prefillData, estimatedValueManuallyEdited]);
 
   // Reset form when modal closes
   useEffect(() => {
@@ -134,6 +168,7 @@ const OrderModal = ({
       setSelectedBankAccountId('');
       setClientBankAccounts([]);
       setBulkOrders([{ clientId: '', bankAccountId: '', quantity: '', estimatedValue: '' }]);
+      setEstimatedValueManuallyEdited(false);
     }
   }, [isOpen]);
 
@@ -319,7 +354,7 @@ const OrderModal = ({
               orderItem.estimatedValue = parseFloat(o.estimatedValue);
             }
             if (mode === 'sell' && prefillData?.holdingId) {
-              orderItem.sourceHoldingId = prefillData.holdingId;
+              orderItem.sourceHoldingId = String(prefillData.holdingId);
             }
             if (o.portfolioCode) {
               orderItem.portfolioCode = o.portfolioCode;
@@ -377,7 +412,7 @@ const OrderModal = ({
           orderData.portfolioCode = selectedAccount.accountNumber;
         }
         if (mode === 'sell' && prefillData?.holdingId) {
-          orderData.sourceHoldingId = prefillData.holdingId;
+          orderData.sourceHoldingId = String(prefillData.holdingId);
         }
         if (notes && notes.trim()) {
           orderData.notes = notes.trim();
@@ -772,12 +807,15 @@ const OrderModal = ({
       )}
 
       <div style={styles.formGroup}>
-        <label style={styles.label}>Estimated Value ({selectedSecurity?.currency || 'USD'}) - Optional</label>
+        <label style={styles.label}>Estimated Value ({selectedSecurity?.currency || 'USD'}){prefillData?.marketPrice ? '' : ' - Optional'}</label>
         <input
           type="number"
           style={styles.input}
           value={estimatedValue}
-          onChange={(e) => setEstimatedValue(e.target.value)}
+          onChange={(e) => {
+            setEstimatedValue(e.target.value);
+            setEstimatedValueManuallyEdited(true);
+          }}
           placeholder="Enter estimated value"
           min="0"
           step="0.01"

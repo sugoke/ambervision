@@ -161,7 +161,7 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
   };
 
   const hasAccess = (requiredRole) => {
-    const roleHierarchy = { client: 1, compliance: 2, rm: 2, admin: 2, superadmin: 3 };
+    const roleHierarchy = { client: 1, rm: 2, compliance: 3, admin: 3, superadmin: 4 };
     const userRoleLevel = roleHierarchy[getUserRole()] || 1;
     const requiredRoleLevel = roleHierarchy[requiredRole] || 1;
     return userRoleLevel >= requiredRoleLevel;
@@ -207,7 +207,7 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
         );
 
       case 'create-product':
-        if (!hasAccess(USER_ROLES.RELATIONSHIP_MANAGER)) return <div>Access denied</div>;
+        if (!hasAccess(USER_ROLES.ADMIN)) return <div>Access denied</div>;
         return (
           <div style={{
             minHeight: '100vh',

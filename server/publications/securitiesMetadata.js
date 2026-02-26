@@ -34,13 +34,14 @@ Meteor.publish('securitiesMetadata', async function(sessionId, filters = {}) {
     return this.ready();
   }
 
-  // Only publish to admin and superadmin
-  if (user.role !== 'admin' && user.role !== 'superadmin') {
-    console.log('[securitiesMetadata] Not an admin user');
+  // Only publish to admin, superadmin, compliance, and relationship managers
+  const allowedRoles = ['admin', 'superadmin', 'compliance', 'rm'];
+  if (!allowedRoles.includes(user.role)) {
+    console.log('[securitiesMetadata] User role not authorized:', user.role);
     return this.ready();
   }
 
-  console.log(`[securitiesMetadata] Publishing securities metadata for admin user: ${user.username}`);
+  console.log(`[securitiesMetadata] Publishing securities metadata for ${user.role} user: ${user.username}`);
 
   // Build query from filters
   const query = {};

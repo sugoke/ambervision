@@ -1,5 +1,6 @@
 import { MarketDataHelpers } from '/imports/api/marketDataCache';
 import { EODApiHelpers } from '/imports/api/eodApi';
+import { getSplitAdjustedStrike } from '/imports/api/splitAdjustment';
 
 /**
  * Himalaya Evaluation Helpers
@@ -165,7 +166,8 @@ export const HimalayaEvaluationHelpers = {
     if (product.underlyings && Array.isArray(product.underlyings)) {
       // Process all underlyings sequentially to fetch current prices
       for (const [index, underlying] of product.underlyings.entries()) {
-        const initialPrice = underlying.strike ||
+        const splitResult = await getSplitAdjustedStrike(underlying, product);
+        const initialPrice = splitResult.adjustedStrike ||
                            (underlying.securityData?.tradeDatePrice?.price) ||
                            (underlying.securityData?.tradeDatePrice?.close) || 0;
 

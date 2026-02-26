@@ -5,18 +5,13 @@ import { ReverseConvertibleBondEvaluationHelpers } from './reverseConvertibleBon
  *
  * Evaluates Reverse Convertible structured products on bond underlyings.
  *
- * Product Structure:
+ * Product Structure (Physical Delivery / Conversion Ratio model):
  * - Guaranteed coupon at maturity
- * - Capital protection barrier (e.g., 70%)
- * - Above barrier: 100% + coupon
- * - Below barrier: 100% + (performance × gearing) + coupon
- *   where gearing = 1 / (barrier_level / 100)
- *
- * Example:
- * - Barrier: 70%, Coupon: 3.5%
- * - Gearing: 1 / 0.70 = 1.43
- * - If underlying at 60% (−40% performance):
- *   → 100% + (−40% × 1.43) + 3.5% = 46.3%
+ * - Strike level (e.g., 72.45% of par)
+ * - Above strike: Cash settlement = 100% of denomination + coupon
+ * - At or below strike: Physical delivery via Conversion Ratio + coupon
+ *   Conversion Ratio = Denomination / ((Strike + Accrued Interest) / 100 x Par Amount)
+ *   Delivery value as % = Final Fixing / (Strike + Accrued Interest) x 100
  *
  * Template Type: reverse_convertible_bond
  */
@@ -38,23 +33,34 @@ export const ReverseConvertibleBondEvaluator = {
     const underlyings = await ReverseConvertibleBondEvaluationHelpers.extractUnderlyingAssetsData(product);
     console.log('📜 [Reverse Convertible Bond] Underlyings extracted:', underlyings.length);
 
-    // Enhance underlyings with barrier status
-    const enhancedUnderlyings = this.enhanceUnderlyingsWithBarrierStatus(
+    // Enhance underlyings with strike status
+    // Use per-underlying strikeLevel if set (entered from termsheet), fall back to product-level parameter
+    const productStrikeLevel = reverseConvertibleParams.strikeLevel;
+    const enhancedUnderlyings = this.enhanceUnderlyingsWithStrikeStatus(
       underlyings,
-      reverseConvertibleParams.capitalProtectionBarrier
+      productStrikeLevel
     );
 
-    // Calculate basket performance (worst-of)
+    // Calculate basket performance (worst-of) — used for display only
     const basketPerformance = ReverseConvertibleBondEvaluationHelpers.calculateBasketPerformance(underlyings);
     console.log('📜 [Reverse Convertible Bond] Basket performance:', basketPerformance);
+
+    // Resolve effective strike level: per-underlying strikeLevel takes priority over product-level
+    const effectiveStrikeLevel = underlyings[0]?.strikeLevel || reverseConvertibleParams.strikeLevel;
+
+    // For bonds: redemption uses the actual worst-of current price (% of par), NOT relative performance.
+    // Bond prices are already in % of par (e.g. 67.04), so we compare directly against the strike level.
+    const worstCurrentBondPrice = underlyings.length > 0
+      ? Math.min(...underlyings.map(u => u.currentPrice || 0))
+      : 100;
 
     // Calculate redemption value
     const redemptionCalc = ReverseConvertibleBondEvaluationHelpers.calculateRedemption(
       product,
-      basketPerformance || 0,
-      reverseConvertibleParams.capitalProtectionBarrier,
+      worstCurrentBondPrice,
+      effectiveStrikeLevel,
       reverseConvertibleParams.couponRate,
-      reverseConvertibleParams.gearingFactor
+      reverseConvertibleParams.accruedInterestAtRedemption
     );
     console.log('📜 [Reverse Convertible Bond] Redemption calculation:', redemptionCalc);
 
@@ -67,11 +73,15 @@ export const ReverseConvertibleBondEvaluator = {
     // Build formatted timeline dates
     const timeline = this.buildTimeline(product);
 
+    // Calculate conversion ratio using effective strike level
+    const conversionRatio = reverseConvertibleParams.denomination /
+      ((effectiveStrikeLevel + reverseConvertibleParams.accruedInterestAtRedemption) / 100 * reverseConvertibleParams.parAmount);
+
     // Generate report structure
     const report = {
       // Template metadata
       templateType: 'reverse_convertible_bond',
-      templateVersion: '1.0.0',
+      templateVersion: '2.0.0',
 
       // Current status
       currentStatus: {
@@ -86,18 +96,28 @@ export const ReverseConvertibleBondEvaluator = {
 
       // Reverse Convertible structure
       reverseConvertibleStructure: {
-        capitalProtectionBarrier: reverseConvertibleParams.capitalProtectionBarrier,
-        capitalProtectionBarrierFormatted: `${reverseConvertibleParams.capitalProtectionBarrier.toFixed(0)}%`,
+        strikeLevel: effectiveStrikeLevel,
+        strikeLevelFormatted: `${effectiveStrikeLevel.toFixed(2)}%`,
         couponRate: reverseConvertibleParams.couponRate,
         couponRateFormatted: `${reverseConvertibleParams.couponRate.toFixed(1)}%`,
-        strike: reverseConvertibleParams.strike,
-        strikeFormatted: `${reverseConvertibleParams.strike.toFixed(0)}%`,
-        gearingFactor: reverseConvertibleParams.gearingFactor,
-        gearingFactorFormatted: `${reverseConvertibleParams.gearingFactor.toFixed(2)}x`,
-        gearedDownside: reverseConvertibleParams.gearedDownside
+        accruedInterestAtRedemption: reverseConvertibleParams.accruedInterestAtRedemption,
+        accruedInterestFormatted: `${reverseConvertibleParams.accruedInterestAtRedemption.toFixed(2)}%`,
+        parAmount: reverseConvertibleParams.parAmount,
+        parAmountFormatted: ReverseConvertibleBondEvaluationHelpers.formatCurrency(
+          reverseConvertibleParams.parAmount,
+          product.currency || 'USD'
+        ),
+        denomination: reverseConvertibleParams.denomination,
+        denominationFormatted: ReverseConvertibleBondEvaluationHelpers.formatCurrency(
+          reverseConvertibleParams.denomination,
+          product.currency || 'USD'
+        ),
+        conversionRatio,
+        conversionRatioFormatted: conversionRatio.toFixed(4),
+        barrierType: reverseConvertibleParams.barrierType
       },
 
-      // Underlying assets (with barrier status)
+      // Underlying assets (with strike status)
       underlyings: enhancedUnderlyings,
 
       // Basket performance
@@ -109,7 +129,7 @@ export const ReverseConvertibleBondEvaluator = {
         isPositive: basketPerformance !== null && basketPerformance >= 0
       },
 
-      // Basket analysis (for barrier chart)
+      // Basket analysis (for strike chart)
       basketAnalysis,
 
       // Redemption calculation
@@ -120,9 +140,15 @@ export const ReverseConvertibleBondEvaluator = {
         couponFormatted: redemptionCalc.couponFormatted,
         totalValue: redemptionCalc.totalValue,
         totalValueFormatted: redemptionCalc.totalValueFormatted,
-        barrierBreached: redemptionCalc.barrierBreached,
+        settlementType: redemptionCalc.settlementType,
+        settlementTypeLabel: redemptionCalc.settlementType === 'cash' ? 'Cash Settlement' : 'Physical Delivery',
+        strikeBreached: redemptionCalc.strikeBreached,
         capitalExplanation: redemptionCalc.capitalExplanation,
-        formula: redemptionCalc.formula
+        formula: redemptionCalc.formula,
+        conversionRatio: redemptionCalc.conversionRatio,
+        conversionRatioFormatted: redemptionCalc.conversionRatioFormatted,
+        deliveryValue: redemptionCalc.deliveryValue,
+        deliveryValueFormatted: redemptionCalc.deliveryValueFormatted
       },
 
       // Timeline
@@ -164,44 +190,52 @@ export const ReverseConvertibleBondEvaluator = {
     const structureParams = product.structureParams || product.structureParameters || {};
     const structure = product.structure || {};
 
-    // Capital protection barrier (percentage)
-    const capitalProtectionBarrier = structureParams.capitalProtectionBarrier ||
-                                     structureParams.protectionBarrier ||
-                                     structureParams.protectionBarrierLevel ||
-                                     structure.capitalProtectionBarrier ||
-                                     structure.protectionBarrier ||
-                                     70; // Default 70%
+    // Strike level (% of par) - threshold for physical delivery
+    // Also check protectionBarrierLevel (legacy field name used by older products)
+    const strikeLevel = structureParams.strikeLevel ||
+                        structureParams.protectionBarrierLevel ||
+                        structure.strikeLevel ||
+                        100; // Default 100%
 
     // Coupon rate (percentage, guaranteed)
     const couponRate = structureParams.couponRate ||
                       structure.couponRate ||
-                      0; // Default no coupon
+                      0;
 
-    // Strike level (reference point for performance calculation)
-    const strike = structureParams.strike ||
-                  structure.strike ||
-                  100; // Default 100% (at-the-money)
+    // Accrued interest at redemption (% of par)
+    const accruedInterestAtRedemption = structureParams.accruedInterestAtRedemption ||
+                                        structure.accruedInterestAtRedemption ||
+                                        0;
 
-    // Calculate gearing factor: 1 / (barrier / 100)
-    // Example: barrier 70% → gearing = 1 / 0.70 = 1.43x
-    const gearingFactor = 1 / (capitalProtectionBarrier / 100);
+    // Par amount of one underlying bond
+    const parAmount = structureParams.parAmount ||
+                     structure.parAmount ||
+                     1000;
 
-    // Determine if gearedDownside is true (always true for reverse convertibles)
-    const gearedDownside = true;
+    // Note denomination
+    const denomination = structureParams.denomination ||
+                        structure.denomination ||
+                        1000;
+
+    // Barrier observation type
+    const barrierType = structureParams.barrierType ||
+                       structure.barrierType ||
+                       'european';
 
     return {
-      capitalProtectionBarrier,
+      strikeLevel,
       couponRate,
-      strike,
-      gearingFactor,
-      gearedDownside
+      accruedInterestAtRedemption,
+      parAmount,
+      denomination,
+      barrierType
     };
   },
 
   /**
-   * Enhance underlyings with barrier status and chart data
+   * Enhance underlyings with strike status and chart data
    */
-  enhanceUnderlyingsWithBarrierStatus(underlyings, capitalProtectionBarrier) {
+  enhanceUnderlyingsWithStrikeStatus(underlyings, productStrikeLevel) {
     if (!underlyings || underlyings.length === 0) return underlyings;
 
     // Find worst performing underlying
@@ -213,21 +247,24 @@ export const ReverseConvertibleBondEvaluator = {
       const performance = underlying.performance || 0;
       const isPositive = performance >= 0;
 
-      // Calculate distance to barrier
-      // Performance of -20%, barrier of 70% (i.e., -30%)
-      // Distance = -20 - (-30) = +10% (safe)
-      const barrierLevel = capitalProtectionBarrier - 100; // e.g., 70 - 100 = -30%
-      const distanceToBarrier = performance - barrierLevel;
+      // Per-underlying strikeLevel takes priority over product-level parameter
+      const strikeLevel = underlying.strikeLevel || productStrikeLevel;
 
-      // Determine barrier status
-      let barrierStatus = 'safe';
-      let barrierStatusText = 'Safe';
-      if (performance < barrierLevel) {
-        barrierStatus = 'breached';
-        barrierStatusText = 'Breached';
-      } else if (distanceToBarrier < 10) { // Within 10% of barrier
-        barrierStatus = 'near';
-        barrierStatusText = 'Near Barrier';
+      // Current level as % of par (using current price directly, since bond prices are % of par)
+      // Distance to strike: how far current price is from strike level (both in % of par)
+      const currentPrice = underlying.currentPrice || 0;
+      const initialPrice = underlying.initialPrice || 0;
+      const distanceToStrike = currentPrice - strikeLevel;
+
+      // Determine strike status — compare current bond price directly against strike level (both % of par)
+      let strikeStatus = 'safe';
+      let strikeStatusText = 'Above Strike';
+      if (currentPrice <= strikeLevel) {
+        strikeStatus = 'breached';
+        strikeStatusText = 'At/Below Strike';
+      } else if (distanceToStrike < 5) {
+        strikeStatus = 'near';
+        strikeStatusText = 'Near Strike';
       }
 
       // Calculate bar chart properties
@@ -248,58 +285,67 @@ export const ReverseConvertibleBondEvaluator = {
 
       return {
         ...underlying,
+        strikeLevel,
+        strikeLevelFormatted: `${strikeLevel.toFixed(2)}%`,
         isWorstPerforming,
-        distanceToBarrier,
-        distanceToBarrierFormatted: `${distanceToBarrier >= 0 ? '+' : ''}${distanceToBarrier.toFixed(1)}%`,
-        barrierStatus,
-        barrierStatusText,
+        distanceToStrike,
+        distanceToStrikeFormatted: `${distanceToStrike >= 0 ? '+' : ''}${distanceToStrike.toFixed(2)}%`,
+        strikeStatus,
+        strikeStatusText,
+        distanceToBarrier: distanceToStrike,
+        distanceToBarrierFormatted: `${distanceToStrike >= 0 ? '+' : ''}${distanceToStrike.toFixed(2)}%`,
+        barrierStatus: strikeStatus,
+        barrierStatusText: strikeStatusText,
         chartData
       };
     });
   },
 
   /**
-   * Build basket analysis including barrier chart configuration
+   * Build basket analysis including strike chart configuration
    */
   buildBasketAnalysis(underlyings, reverseConvertibleParams) {
     if (!underlyings || underlyings.length === 0) return null;
 
-    const capitalProtectionBarrier = reverseConvertibleParams.capitalProtectionBarrier || 70;
+    // Use first underlying's strikeLevel if set, otherwise product-level parameter
+    const strikeLevel = underlyings[0]?.strikeLevel || reverseConvertibleParams.strikeLevel || 100;
 
-    // Count underlyings by barrier status
-    const safeCount = underlyings.filter(u => u.barrierStatus === 'safe').length;
-    const nearCount = underlyings.filter(u => u.barrierStatus === 'near').length;
-    const breachedCount = underlyings.filter(u => u.barrierStatus === 'breached').length;
+    // Count underlyings by strike status
+    const safeCount = underlyings.filter(u => u.strikeStatus === 'safe').length;
+    const nearCount = underlyings.filter(u => u.strikeStatus === 'near').length;
+    const breachedCount = underlyings.filter(u => u.strikeStatus === 'breached').length;
 
     // Determine overall status
-    let overallStatus = 'All underlyings above protection barrier';
+    let overallStatus = 'All underlyings above strike level';
     if (breachedCount > 0) {
-      overallStatus = `${breachedCount} underlying${breachedCount > 1 ? 's have' : ' has'} breached protection barrier`;
+      overallStatus = `${breachedCount} underlying${breachedCount > 1 ? 's are' : ' is'} at or below strike level`;
     } else if (nearCount > 0) {
-      overallStatus = `${nearCount} underlying${nearCount > 1 ? 's are' : ' is'} near protection barrier`;
+      overallStatus = `${nearCount} underlying${nearCount > 1 ? 's are' : ' is'} near strike level`;
     }
 
     // Find critical distance (worst-of)
-    const distances = underlyings.map(u => u.distanceToBarrier).filter(d => d !== undefined);
+    const distances = underlyings.map(u => u.distanceToStrike).filter(d => d !== undefined);
     const criticalDistance = distances.length > 0 ? Math.min(...distances) : 0;
 
-    // Calculate barrier position in chart
-    const barrierOffset = 100 - capitalProtectionBarrier;
-    const barrierPosition = 50 + barrierOffset;
+    // Calculate strike position in chart
+    const strikeOffset = 100 - strikeLevel;
+    const strikePosition = 50 + strikeOffset;
 
     return {
-      capitalProtectionBarrier,
+      strikeLevel,
       criticalDistance,
       criticalDistanceFormatted: `${criticalDistance >= 0 ? '+' : ''}${criticalDistance.toFixed(1)}%`,
       safeCount,
       nearCount,
       breachedCount,
       overallStatus,
-      barrierChartConfig: {
-        position: barrierPosition,
-        level: capitalProtectionBarrier,
-        label: `${capitalProtectionBarrier}% Protection`
-      }
+      strikeChartConfig: {
+        position: strikePosition,
+        level: strikeLevel,
+        label: `${strikeLevel.toFixed(2)}% Strike`
+      },
+      // Keep backward compat field
+      capitalProtectionBarrier: strikeLevel
     };
   },
 

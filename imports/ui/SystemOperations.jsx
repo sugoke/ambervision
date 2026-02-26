@@ -6,6 +6,8 @@ import { useDialog } from './useDialog.js';
 const SystemOperations = ({ user }) => {
   const [batchProcessing, setBatchProcessing] = useState(false);
   const [batchResults, setBatchResults] = useState(null);
+  const [backfillIsin, setBackfillIsin] = useState('');
+  const [backfillRunning, setBackfillRunning] = useState(false);
   const { dialogState, showAlert, showError, showSuccess, showConfirm, hideDialog } = useDialog();
 
   const handleBatchProcessAllProducts = async () => {
@@ -51,6 +53,34 @@ const SystemOperations = ({ user }) => {
       showError(`Failed to process products: ${error.message}`, 'Processing Error');
     } finally {
       setBatchProcessing(false);
+    }
+  };
+
+  const handleBackfillPrices = async () => {
+    const targetIsin = backfillIsin.trim().toUpperCase() || null;
+    const label = targetIsin || 'ALL product ISINs';
+    const confirmed = await showConfirm(
+      `This will promote historical PMS bank snapshots into the price history for ${label}.\n\nExisting prices will not be overwritten (bank_file prices take priority).\n\nProceed?`,
+      null,
+      'Confirm Price Backfill'
+    );
+    if (!confirmed) return;
+
+    setBackfillRunning(true);
+    try {
+      const sessionId = localStorage.getItem('sessionId');
+      const result = await Meteor.callAsync('productPrices.backfillFromPMSSnapshots', {
+        isin: targetIsin,
+        sessionId
+      });
+      showSuccess(
+        `Backfill complete.\n\nISINs processed: ${result.isinsProcessed}\nRecords upserted: ${result.totalInserted}\nSkipped: ${result.totalSkipped}`,
+        'Backfill Complete'
+      );
+    } catch (error) {
+      showError(`Backfill failed: ${error.message}`, 'Backfill Error');
+    } finally {
+      setBackfillRunning(false);
     }
   };
 
@@ -406,6 +436,56 @@ const SystemOperations = ({ user }) => {
             </div>
           </div>
         )}
+      </section>
+
+      {/* PMS Price Backfill Section */}
+      <section style={{
+        marginBottom: '2rem',
+        padding: '1.5rem',
+        border: '1px solid var(--border-color)',
+        borderRadius: '12px',
+        background: 'var(--bg-primary)'
+      }}>
+        <h3 style={{ margin: '0 0 0.5rem 0', fontSize: '1.2rem', fontWeight: '600', color: 'var(--text-primary)' }}>
+          Note Price History Backfill
+        </h3>
+        <p style={{ margin: '0 0 1.25rem 0', color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
+          Promote historical PMS bank snapshots into the product price history. Leave ISIN blank to backfill all internal product ISINs.
+        </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          <input
+            type="text"
+            value={backfillIsin}
+            onChange={(e) => setBackfillIsin(e.target.value)}
+            placeholder="ISIN (optional — blank = all products)"
+            style={{
+              flex: '1 1 260px',
+              padding: '10px 14px',
+              border: '1px solid var(--border-color)',
+              borderRadius: '8px',
+              background: 'var(--bg-secondary)',
+              color: 'var(--text-primary)',
+              fontSize: '0.9rem'
+            }}
+          />
+          <button
+            onClick={handleBackfillPrices}
+            disabled={backfillRunning}
+            style={{
+              padding: '10px 20px',
+              background: backfillRunning ? 'var(--text-muted)' : 'var(--accent-color)',
+              color: 'white',
+              border: 'none',
+              borderRadius: '8px',
+              fontSize: '0.9rem',
+              fontWeight: '600',
+              cursor: backfillRunning ? 'not-allowed' : 'pointer',
+              whiteSpace: 'nowrap'
+            }}
+          >
+            {backfillRunning ? 'Running...' : 'Backfill Prices'}
+          </button>
+        </div>
       </section>
 
       {/* Market Data Operations */}

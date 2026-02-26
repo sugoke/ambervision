@@ -17,6 +17,8 @@ import { BanksCollection } from '/imports/api/banks.js';
 import { UsersCollection, USER_ROLES } from '/imports/api/users.js';
 import { DashboardMetricsHelpers } from '/imports/api/dashboardMetrics.js';
 import { yieldToEventLoop } from '/imports/utils/asyncHelpers.js';
+import { ManualPriceTrackersCollection, ManualPriceTrackerHelpers } from '/imports/api/manualPriceTrackers.js';
+import { scrapePrice } from '/imports/api/priceScraperService.js';
 
 /**
  * Cron Jobs Configuration
@@ -101,7 +103,8 @@ let cronJobs = {
   productRevaluation: null,
   marketTickerUpdate: null,
   bankFileSync: null,
-  cmbFileSync: null  // CMB-specific sync (runs later due to late file uploads)
+  cmbFileSync: null,  // CMB-specific sync (runs later due to late file uploads)
+  priceTrackerScrape: null  // Manual price tracker scrape for securities without EOD coverage
 };
 
 // Store next run times for the dashboard
@@ -133,6 +136,12 @@ let scheduleInfo = {
   cmbFileSync: {
     name: 'cmbFileSync',
     schedule: '0 9 * * 1-5', // 09:00 CET Mon-Fri (skip weekends, CMB uploads files later than other banks)
+    lastFinishedAt: null,
+    nextScheduledRun: null
+  },
+  priceTrackerScrape: {
+    name: 'priceTrackerScrape',
+    schedule: '15 9 * * 1-5', // 09:15 CET Mon-Fri (scrape manually tracked securities)
     lastFinishedAt: null,
     nextScheduledRun: null
   }
@@ -1415,6 +1424,83 @@ async function computeDashboardMetrics() {
   }
 }
 
+/**
+ * JOB 6: Price Tracker Scrape
+ * Runs daily at 09:15 CET Mon-Fri
+ * Scrapes all active manually-tracked securities and records prices
+ * Also upserts into underlyingPrices collection for use by evaluators
+ */
+async function priceTrackerScrapeJob() {
+  const tradingDayCheck = isWeekendOrHoliday();
+  if (tradingDayCheck.isNonTradingDay) {
+    console.log(`[CRON] Price Tracker Scrape skipped: ${tradingDayCheck.reason}`);
+    scheduleInfo.priceTrackerScrape.nextScheduledRun = getNextRunTime(scheduleInfo.priceTrackerScrape.schedule);
+    return { skipped: true, reason: tradingDayCheck.reason };
+  }
+
+  const logId = await CronJobLogHelpers.startJob('priceTrackerScrape', 'cron');
+  console.log('[CRON] Price Tracker Scrape started');
+
+  try {
+    const trackers = await ManualPriceTrackerHelpers.getActiveTrackers();
+    console.log(`[CRON] Found ${trackers.length} active price trackers`);
+
+    let succeeded = 0;
+    let failed = 0;
+    const errors = [];
+
+    for (const tracker of trackers) {
+      try {
+        const result = await scrapePrice(tracker.url, tracker.name, tracker.currency);
+        await ManualPriceTrackerHelpers.recordPrice(tracker._id, result.price);
+
+        // Also record in underlyingPrices collection for evaluator access
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        await Meteor.callAsync('underlyingPrices.insert', {
+          ticker: tracker.isin,
+          date: today,
+          open: result.price,
+          high: result.price,
+          low: result.price,
+          close: result.price,
+          volume: 0,
+          currency: tracker.currency,
+          exchange: 'MANUAL',
+          source: 'manual-scraper'
+        });
+
+        succeeded++;
+        console.log(`[CRON] ✓ ${tracker.name}: ${result.price} ${tracker.currency}`);
+      } catch (error) {
+        failed++;
+        const errorMsg = error.reason || error.message || 'Unknown error';
+        errors.push({ name: tracker.name, isin: tracker.isin, error: errorMsg });
+        await ManualPriceTrackerHelpers.recordScrapeError(tracker._id, errorMsg);
+        console.error(`[CRON] ✗ ${tracker.name}: ${errorMsg}`);
+      }
+    }
+
+    scheduleInfo.priceTrackerScrape.lastFinishedAt = new Date();
+    scheduleInfo.priceTrackerScrape.nextScheduledRun = getNextRunTime(scheduleInfo.priceTrackerScrape.schedule);
+
+    await CronJobLogHelpers.completeJob(logId, {
+      trackersProcessed: trackers.length,
+      trackersSucceeded: succeeded,
+      trackersFailed: failed,
+      errors
+    });
+
+    console.log(`[CRON] Price Tracker Scrape completed: ${succeeded}/${trackers.length} succeeded`);
+    return { success: true, succeeded, failed, total: trackers.length, errors };
+
+  } catch (error) {
+    console.error('[CRON] Price Tracker Scrape failed:', error);
+    await CronJobLogHelpers.failJob(logId, error);
+    throw error;
+  }
+}
+
 export async function initializeCronJobs() {
   console.log('Initializing cron jobs...');
 
@@ -1427,6 +1513,7 @@ export async function initializeCronJobs() {
   scheduleInfo.marketTickerUpdate.nextScheduledRun = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes from now
   scheduleInfo.bankFileSync.nextScheduledRun = getNextRunTime(scheduleInfo.bankFileSync.schedule);
   scheduleInfo.cmbFileSync.nextScheduledRun = getNextRunTime(scheduleInfo.cmbFileSync.schedule);
+  scheduleInfo.priceTrackerScrape.nextScheduledRun = getNextRunTime(scheduleInfo.priceTrackerScrape.schedule);
 
   // Schedule Market Data Refresh - Daily at midnight CET
   cronJobs.marketDataRefresh = cron.schedule('0 0 * * *', Meteor.bindEnvironment(async () => {
@@ -1517,6 +1604,23 @@ export async function initializeCronJobs() {
   });
 
   console.log('✓ CMB File Sync scheduled for 09:00 CET Mon-Fri (skip weekends)');
+
+  // Schedule Price Tracker Scrape - Daily at 09:15 CET Mon-Fri
+  cronJobs.priceTrackerScrape = cron.schedule('15 9 * * 1-5', Meteor.bindEnvironment(async () => {
+    console.log('[CRON] ========================================');
+    console.log('[CRON] Price Tracker Scrape CRON trigger fired at:', new Date().toISOString());
+    console.log('[CRON] ========================================');
+    try {
+      await priceTrackerScrapeJob();
+    } catch (error) {
+      console.error('[CRON] Price Tracker Scrape job error:', error);
+    }
+  }), {
+    scheduled: true,
+    timezone: "Europe/Paris"
+  });
+
+  console.log('✓ Price Tracker Scrape scheduled for 09:15 CET Mon-Fri');
 
   console.log('✓ Cron jobs initialized and started');
   console.log('✓ All jobs configured for Europe/Zurich timezone (CET/CEST)');
@@ -1651,6 +1755,28 @@ if (Meteor.isServer) {
     },
 
     /**
+     * Manually trigger price tracker scrape
+     */
+    async 'cronJobs.triggerPriceTrackerScrape'(sessionId) {
+      check(sessionId, String);
+      this.unblock();
+
+      const currentUser = await Meteor.callAsync('auth.getCurrentUser', sessionId);
+      if (!currentUser || (currentUser.role !== 'admin' && currentUser.role !== 'superadmin')) {
+        throw new Meteor.Error('access-denied', 'Admin privileges required');
+      }
+
+      console.log(`[MANUAL] Price Tracker Scrape triggered by ${currentUser.email}`);
+
+      try {
+        const result = await priceTrackerScrapeJob();
+        return { success: true, result };
+      } catch (error) {
+        throw new Meteor.Error('job-execution-failed', error.message);
+      }
+    },
+
+    /**
      * Get dashboard metrics cache status
      */
     async 'cronJobs.getDashboardMetricsStatus'(sessionId) {
@@ -1715,6 +1841,11 @@ if (Meteor.isServer) {
           name: scheduleInfo.cmbFileSync.name,
           nextScheduledRun: scheduleInfo.cmbFileSync.nextScheduledRun,
           lastFinishedAt: scheduleInfo.cmbFileSync.lastFinishedAt
+        },
+        {
+          name: scheduleInfo.priceTrackerScrape.name,
+          nextScheduledRun: scheduleInfo.priceTrackerScrape.nextScheduledRun,
+          lastFinishedAt: scheduleInfo.priceTrackerScrape.lastFinishedAt
         }
       ];
     }

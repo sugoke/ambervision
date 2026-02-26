@@ -189,6 +189,7 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
       ['FX EXPOSURE', review.fxAnalysis?.content],
       ['UPCOMING EVENTS', review.eventsSchedule?.content],
       ['CASH POSITION', review.cashAnalysis?.content],
+      ['POINTS OF ATTENTION', review.pointsOfAttention?.content],
       ['RECOMMENDATIONS', review.recommendations?.content]
     ];
 
@@ -932,7 +933,45 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
                   </Section>
                 )}
 
-                {/* 7. Recommendations (highlighted) */}
+                {/* 7. Points of Attention */}
+                {review.pointsOfAttention?.content && (
+                  <Section title="Points of Attention" icon="⚠️" defaultExpanded={true}>
+                    {review.pointsOfAttention.underlyings?.length > 0 && (
+                      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+                        {review.pointsOfAttention.underlyings.map((u, i) => (
+                          <div key={i} style={{
+                            padding: '0.4rem 0.6rem',
+                            background: isDarkMode ? 'rgba(220, 38, 38, 0.1)' : '#fef2f2',
+                            borderRadius: '6px',
+                            border: `1px solid ${isDarkMode ? 'rgba(220, 38, 38, 0.3)' : '#fecaca'}`,
+                            minWidth: '100px'
+                          }}>
+                            <div style={{ fontSize: '0.8rem', fontWeight: '700' }}>{u.ticker}</div>
+                            <div style={{ fontSize: '0.7rem', opacity: 0.7 }}>{u.name}</div>
+                            <div style={{ fontSize: '0.85rem', fontWeight: '700', color: '#dc2626' }}>
+                              {u.performanceFormatted}
+                            </div>
+                            {u.distanceToBarrier && (
+                              <div style={{ fontSize: '0.65rem', color: '#d97706' }}>Barrier: {u.distanceToBarrier}</div>
+                            )}
+                            <div style={{ fontSize: '0.65rem', opacity: 0.6 }}>{u.productsAffected} product{u.productsAffected !== 1 ? 's' : ''}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div style={{
+                      padding: '0.75rem',
+                      background: isDarkMode ? 'rgba(220, 38, 38, 0.08)' : '#fef2f2',
+                      borderRadius: '8px',
+                      borderLeft: '4px solid #dc2626',
+                      marginBottom: '0.5rem'
+                    }}>
+                      {renderMarkdown(review.pointsOfAttention.content)}
+                    </div>
+                  </Section>
+                )}
+
+                {/* 8. Recommendations (highlighted) */}
                 {review.recommendations?.content && (
                   <Section title="Investment Recommendations" icon="💡" defaultExpanded={true}>
                     <div style={{

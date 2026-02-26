@@ -21,6 +21,7 @@ import './productCommentary';
 import './serverLogs';
 import './clientDocuments';
 import './orders';
+import './manualPriceTrackers';
 
 
 

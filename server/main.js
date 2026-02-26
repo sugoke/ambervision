@@ -67,6 +67,7 @@ import '/imports/api/portfolioReviews';
 import '/imports/api/termSheetExtractor';
 import '/imports/api/amberConversations';
 import '/imports/api/amberService';
+import '/imports/api/manualPriceTrackers';
 import './methods/bankConnectionMethods';
 import './methods/bankPositionMethods';
 import './methods/pmsMigrationMethods';
@@ -90,11 +91,13 @@ import './methods/rmDashboardMethods';
 import './methods/landingMethods';
 import './methods/clientDocumentMethods';
 import './methods/orderMethods';
+import './methods/manualPriceTrackerMethods';
 import './pdfAuth'; // PDF authentication middleware
 import './publications/underlyingsAnalysis';
 import './publications/bankConnections';
 import './publications/securitiesMetadata';
 import './publications/accountProfiles';
+import './publications/manualPriceTrackers';
 import './publications'; // Import all publications from index.js
 
 // Complex product templates are now part of BUILT_IN_TEMPLATES in /imports/api/templates.js
@@ -6850,24 +6853,32 @@ WebApp.connectHandlers.use('/termsheets', async (req, res, next) => {
   // URL format: /termsheets/{filename} (flat structure)
   const urlParts = req.url.split('/').filter(p => p);
 
-  // If we're in development (no TERMSHEETS_PATH), let Meteor serve from public/
-  if (!process.env.TERMSHEETS_PATH) {
-    return next();
-  }
-
   if (urlParts.length !== 1) {
     return next();
   }
 
-  const filename = urlParts[0];
+  const filename = decodeURIComponent(urlParts[0]);
+
+  // Resolve termsheets directory: TERMSHEETS_PATH (production) or public/termsheets (dev)
+  let termsheetsDir = process.env.TERMSHEETS_PATH;
+  if (!termsheetsDir) {
+    // Development: serve directly from public/termsheets/ to avoid Meteor static file
+    // serving issues (hot-reload race conditions when files are added dynamically)
+    let projectRoot = process.cwd();
+    if (projectRoot.includes('.meteor')) {
+      projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
+    }
+    termsheetsDir = path.join(projectRoot, 'public', 'termsheets');
+  }
 
   try {
-    // Construct file path from TERMSHEETS_PATH (flat structure)
-    const filePath = path.join(process.env.TERMSHEETS_PATH, filename);
+    // Construct file path (flat structure)
+    const filePath = path.join(termsheetsDir, filename);
 
     // Security: Prevent directory traversal
     const normalizedPath = path.normalize(filePath);
-    if (!normalizedPath.startsWith(process.env.TERMSHEETS_PATH)) {
+    const normalizedDir = path.normalize(termsheetsDir);
+    if (!normalizedPath.startsWith(normalizedDir)) {
       console.error('⚠️  Security: Attempted directory traversal:', req.url);
       res.writeHead(403, { 'Content-Type': 'text/plain' });
       res.end('Forbidden');

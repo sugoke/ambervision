@@ -29,10 +29,12 @@ import {
 import PDFDownloadButton from './components/PDFDownloadButton.jsx';
 import NestedDoughnutChart from './components/NestedDoughnutChart.jsx';
 import OrderModal from './components/OrderModal.jsx';
+import SecurityClassificationModal from './components/SecurityClassificationModal.jsx';
 import PortfolioReviewsList from './components/PortfolioReviewsList.jsx';
 import PortfolioReviewModal from './components/PortfolioReviewModal.jsx';
 import { DataFreshnessPanel } from './components/DataFreshnessIndicator.jsx';
 import { checkDataFreshness } from '/imports/api/helpers/dataFreshness.js';
+import HoldingPriceChart from './components/HoldingPriceChart.jsx';
 import * as XLSX from 'xlsx';
 
 // Local collection for snapshot dates (synthetic collection from publication)
@@ -158,7 +160,7 @@ const getProductTypeIcon = (templateId) => {
     'shark_note': '🦈',
     'participation_note': '📈',
     'reverse_convertible': '🔄',
-    'reverse_convertible_bond': '🔄'
+    'reverse_convertible_bond': '📜'
   };
 
   return iconMap[templateId] || '📊';
@@ -452,6 +454,10 @@ const PortfolioManagementSystem = ({ user }) => {
   const [orderModalMode, setOrderModalMode] = useState('buy'); // 'buy' or 'sell'
   const [orderPrefillData, setOrderPrefillData] = useState(null);
 
+  // Reclassify modal state
+  const [showClassifyModal, setShowClassifyModal] = useState(false);
+  const [classifyTarget, setClassifyTarget] = useState(null);
+
   // Active orders for positions (to show indicators)
   const [activeOrders, setActiveOrders] = useState([]);
 
@@ -684,9 +690,9 @@ const PortfolioManagementSystem = ({ user }) => {
         assetClass = metadata.assetClass;
         assetSubClass = metadata.assetSubClass || '';
       } else if (holding.isin) {
-        // ISIN exists but not classified - mark as uncategorized
-        assetClass = 'other';
-        assetSubClass = '';
+        // ISIN exists but not classified in metadata - use holding's own assetClass if available
+        assetClass = holding.assetClass || getAssetClassFromSecurityType(holding.securityType, holding.securityName, productTags) || 'other';
+        assetSubClass = holding.assetSubClass || getAssetSubClass(assetClass, holding.securityType, holding.securityName, productTags) || '';
       } else {
         // No ISIN - use heuristic for things like cash
         assetClass = getAssetClassFromSecurityType(holding.securityType, holding.securityName, productTags);
@@ -1352,8 +1358,8 @@ const PortfolioManagementSystem = ({ user }) => {
       groups[assetClass].subGroups[underlyingType].subGroups[protectionType].push(position);
     }
     // For equity and fixed income, group by sub-class (direct vs funds)
-    else if ((assetClass === 'equity' || assetClass === 'fixed_income') && position.assetSubClass) {
-      const subClass = position.assetSubClass;
+    else if (assetClass === 'equity' || assetClass === 'fixed_income') {
+      const subClass = position.assetSubClass || (assetClass === 'equity' ? 'Common Stock' : 'Direct');
       if (!groups[assetClass].subGroups[subClass]) {
         groups[assetClass].subGroups[subClass] = [];
       }
@@ -1760,10 +1766,14 @@ const PortfolioManagementSystem = ({ user }) => {
                  position.assetClass === 'structured_product' ? 'structured_product' :
                  position.assetClass === 'fund' ? 'fund' : 'other',
       quantity: position.quantity,
-      holdingId: position.holdingId || position.id,
+      holdingId: String(position.holdingId || position.id || ''),
       clientId: clientId,
       bankAccountId: position.bankAccountId,
-      bankId: position.bankId
+      bankId: position.bankId,
+      marketPrice: position.currentPrice || position.marketPrice || 0,
+      marketValue: position.marketValue || 0,
+      bankName: position.bankName || '',
+      priceType: position.priceType || 'absolute'
     });
     setOrderModalOpen(true);
   };
@@ -1771,6 +1781,53 @@ const PortfolioManagementSystem = ({ user }) => {
   const handleOrderCreated = (result) => {
     console.log('[PMS] Order created:', result);
     // Could show a success toast or notification here
+  };
+
+  // Reclassify a position's security
+  const handleReclassify = (position) => {
+    const existingMetadata = SecuritiesMetadataCollection.findOne({ isin: position.isin });
+    const securityData = {
+      isin: position.isin,
+      securityName: existingMetadata?.securityName || position.name || '',
+      assetClass: existingMetadata?.assetClass || position.assetClass || '',
+      assetSubClass: existingMetadata?.assetSubClass || position.assetSubClass || '',
+      structuredProductType: existingMetadata?.structuredProductType || '',
+      structuredProductUnderlyingType: existingMetadata?.structuredProductUnderlyingType || '',
+      structuredProductProtectionType: existingMetadata?.structuredProductProtectionType || '',
+      capitalGuaranteed100: existingMetadata?.capitalGuaranteed100 || false,
+      capitalGuaranteedPartial: existingMetadata?.capitalGuaranteedPartial || false,
+      guaranteedLevel: existingMetadata?.guaranteedLevel || '',
+      barrierProtected: existingMetadata?.barrierProtected || false,
+      barrierLevel: existingMetadata?.barrierLevel || '',
+      currency: existingMetadata?.currency || position.currency || '',
+      listingExchange: existingMetadata?.listingExchange || '',
+      listingCountry: existingMetadata?.listingCountry || '',
+      sector: existingMetadata?.sector || '',
+      industry: existingMetadata?.industry || '',
+      issuer: existingMetadata?.issuer || '',
+      productType: existingMetadata?.productType || '',
+      maturityDate: existingMetadata?.maturityDate || '',
+      couponRate: existingMetadata?.couponRate || '',
+      notes: existingMetadata?.notes || ''
+    };
+    setClassifyTarget(securityData);
+    setShowClassifyModal(true);
+  };
+
+  const handleSaveClassification = async (classificationData) => {
+    const sessionId = localStorage.getItem('sessionId');
+    try {
+      await Meteor.callAsync('securitiesMetadata.upsert', {
+        isin: classifyTarget.isin,
+        classificationData,
+        sessionId
+      });
+      setShowClassifyModal(false);
+      setClassifyTarget(null);
+    } catch (error) {
+      console.error('[PMS] Classification save error:', error);
+      throw error;
+    }
   };
 
   // Removed handleIsinClick - using native anchor navigation instead
@@ -2530,6 +2587,13 @@ const PortfolioManagementSystem = ({ user }) => {
                           </div>
                           <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
                             {position.isin || 'N/A'}
+                            {position.isin && (
+                              <HoldingPriceChart
+                                isin={position.isin}
+                                securityName={position.name}
+                                sessionId={localStorage.getItem('sessionId')}
+                              />
+                            )}
                             {isStale && (
                               <span
                                 title={`Data is ${positionFreshness.businessDaysOld} business day(s) old`}
@@ -2746,6 +2810,34 @@ const PortfolioManagementSystem = ({ user }) => {
                           >
                             Sell
                           </button>
+                          {/* Reclassify Button - Admin/Superadmin only */}
+                          {['admin', 'superadmin'].includes(user?.role) && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleReclassify(position);
+                              }}
+                              style={{
+                                padding: '6px 16px',
+                                borderRadius: '6px',
+                                border: 'none',
+                                background: 'rgba(139, 92, 246, 0.15)',
+                                color: '#8b5cf6',
+                                fontSize: '0.8rem',
+                                fontWeight: '600',
+                                cursor: 'pointer',
+                                transition: 'all 0.15s ease'
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.background = 'rgba(139, 92, 246, 0.25)';
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.background = 'rgba(139, 92, 246, 0.15)';
+                              }}
+                            >
+                              Reclassify
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
@@ -5192,6 +5284,18 @@ const PortfolioManagementSystem = ({ user }) => {
           to { transform: translateY(0); opacity: 1; }
         }
       `}</style>
+
+      {/* Reclassify Modal */}
+      {showClassifyModal && classifyTarget && (
+        <SecurityClassificationModal
+          security={classifyTarget}
+          onSave={handleSaveClassification}
+          onClose={() => {
+            setShowClassifyModal(false);
+            setClassifyTarget(null);
+          }}
+        />
+      )}
 
       {/* Order Modal */}
       <OrderModal

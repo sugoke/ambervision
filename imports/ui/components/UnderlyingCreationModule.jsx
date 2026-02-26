@@ -6,7 +6,7 @@ import { StockLogo, StockLogoFallback } from '/imports/utils/stockLogoUtils.js';
 
 // Underlying Creation Module Component
 const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onBasketModeChange, productDetails, basketPerformanceType, setBasketPerformanceType, editingProduct, selectedTemplateId }) => {
-  const [newUnderlying, setNewUnderlying] = useState({ isin: '', ticker: '', name: '', strike: 0, securityData: null });
+  const [newUnderlying, setNewUnderlying] = useState({ isin: '', ticker: '', name: '', strike: 0, strikeLevel: 0, securityData: null });
   const [isAddingUnderlying, setIsAddingUnderlying] = useState(false);
 
   const addUnderlying = () => {
@@ -22,7 +22,7 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
         const newUnderlyings = [...prev, underlying];
         return newUnderlyings;
       });
-      setNewUnderlying({ isin: '', ticker: '', name: '', strike: 0, securityData: null });
+      setNewUnderlying({ isin: '', ticker: '', name: '', strike: 0, strikeLevel: 0, securityData: null });
     }
   };
 
@@ -106,7 +106,7 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
                     setUnderlyings([underlying]);
 
                     // Clear the search input
-                    setNewUnderlying({ isin: '', ticker: '', name: '', strike: 0, securityData: null });
+                    setNewUnderlying({ isin: '', ticker: '', name: '', strike: 0, strikeLevel: 0, securityData: null });
 
                     // Fetch prices
                     const symbol = security.Code || security.symbol;
@@ -240,7 +240,7 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
                     </div>
                     <div style={{
                       display: 'grid',
-                      gridTemplateColumns: '1fr 1fr',
+                      gridTemplateColumns: '1fr 1fr 1fr',
                       gap: '1rem',
                       paddingTop: '1rem',
                       borderTop: '1px solid var(--border-color)'
@@ -253,7 +253,7 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
                           marginBottom: '0.5rem',
                           fontWeight: '500'
                         }}>
-                          Initial Price
+                          Initial Price (% of par)
                         </label>
                         <input
                           type="text"
@@ -269,7 +269,6 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
                             }
                           }}
                           onChange={(e) => {
-                            // Allow temporary invalid states during typing
                             updateUnderlying(underlying.id, 'strike', e.target.value);
                           }}
                           style={{
@@ -282,7 +281,52 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
                             fontSize: '0.9rem'
                           }}
                         />
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                          Bond price at trade date
+                        </div>
                       </div>
+
+                      <div>
+                        <label style={{
+                          display: 'block',
+                          fontSize: '0.85rem',
+                          color: 'var(--text-muted)',
+                          marginBottom: '0.5rem',
+                          fontWeight: '500'
+                        }}>
+                          Strike Level (% of par)
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={underlying.strikeLevel || 0}
+                          onFocus={handleInputFocus}
+                          onBlur={(e) => {
+                            handleInputBlur(e);
+                            const value = e.target.value.replace(',', '.');
+                            const numValue = parseFloat(value);
+                            if (!isNaN(numValue)) {
+                              updateUnderlying(underlying.id, 'strikeLevel', numValue);
+                            }
+                          }}
+                          onChange={(e) => {
+                            updateUnderlying(underlying.id, 'strikeLevel', e.target.value);
+                          }}
+                          style={{
+                            width: '100%',
+                            padding: '0.5rem',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '4px',
+                            background: 'var(--bg-secondary)',
+                            color: 'var(--text-primary)',
+                            fontSize: '0.9rem'
+                          }}
+                        />
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                          Physical delivery threshold (from termsheet)
+                        </div>
+                      </div>
+
                       {underlying.securityData?.price && (
                         <div>
                           <label style={{
@@ -430,7 +474,7 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
                       setUnderlyings(prev => [...prev, underlying]);
 
                       // Clear the search input
-                      setNewUnderlying({ isin: '', ticker: '', name: '', strike: 0, securityData: null });
+                      setNewUnderlying({ isin: '', ticker: '', name: '', strike: 0, strikeLevel: 0, securityData: null });
 
                       // STEP 3: Now make API calls in parallel to get prices
                       

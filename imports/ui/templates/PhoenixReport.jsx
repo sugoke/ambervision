@@ -1358,17 +1358,35 @@ const PhoenixReport = ({ results, productId }) => {
                           </span>
                         )}
                         {results.observationAnalysis.nextObservationPrediction.outcomeType === 'coupon' && (
-                          <span style={{
-                            color: '#059669',
-                            background: '#d1fae5',
-                            padding: '0.5rem 1rem',
-                            borderRadius: '8px',
-                            fontSize: '0.9rem',
-                            fontWeight: '700',
-                            boxShadow: '0 1px 3px rgba(5, 150, 105, 0.1)'
-                          }}>
-                            💵 {tr.coupon}: {results.observationAnalysis.nextObservationPrediction.couponAmountFormatted}
-                          </span>
+                          <>
+                            <span style={{
+                              color: '#059669',
+                              background: '#d1fae5',
+                              padding: '0.5rem 1rem',
+                              borderRadius: '8px',
+                              fontSize: '0.9rem',
+                              fontWeight: '700',
+                              boxShadow: '0 1px 3px rgba(5, 150, 105, 0.1)'
+                            }}>
+                              💵 {tr.coupon}: {results.observationAnalysis.nextObservationPrediction.memoryWouldBeReleased
+                                ? results.observationAnalysis.nextObservationPrediction.totalCouponWithMemoryFormatted
+                                : results.observationAnalysis.nextObservationPrediction.couponAmountFormatted}
+                            </span>
+                            {results.observationAnalysis.nextObservationPrediction.memoryWouldBeReleased && (
+                              <span style={{
+                                color: '#7c3aed',
+                                background: '#ede9fe',
+                                padding: '0.5rem 1rem',
+                                borderRadius: '8px',
+                                fontSize: '0.8rem',
+                                fontWeight: '600',
+                                boxShadow: '0 1px 3px rgba(124, 58, 237, 0.1)',
+                                marginLeft: '0.5rem'
+                              }}>
+                                🧠 {tr.includesMemory || 'Incl.'} {results.observationAnalysis.nextObservationPrediction.totalMemoryCouponsFormatted} {tr.memory || 'memory'}
+                              </span>
+                            )}
+                          </>
                         )}
                         {results.observationAnalysis.nextObservationPrediction.outcomeType === 'memory_added' && (
                           <span style={{

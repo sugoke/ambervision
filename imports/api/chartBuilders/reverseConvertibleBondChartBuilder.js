@@ -1,15 +1,14 @@
 import { MarketDataCacheCollection } from '/imports/api/marketDataCache';
+import { ManualPriceTrackersCollection } from '/imports/api/manualPriceTrackers';
 
 /**
  * Reverse Convertible (Bond) Chart Builder
  *
  * Generates chart configurations specific to Reverse Convertible products on bond underlyings.
  * Charts include:
- * - Performance evolution with protection barrier
- * - Capital protection barrier line
- * - Strike level reference line
+ * - Performance evolution with strike level
+ * - Strike level horizontal line (physical delivery threshold)
  * - Maturity date marker
- * - Barrier breach zones
  */
 export const ReverseConvertibleBondChartBuilder = {
   /**
@@ -52,7 +51,7 @@ export const ReverseConvertibleBondChartBuilder = {
     const datasets = [];
 
     // Add underlying performance datasets
-    const capitalProtectionBarrier = reverseConvertibleParams.capitalProtectionBarrier || 70;
+    const strikeLevel = reverseConvertibleParams.strikeLevel || reverseConvertibleParams.capitalProtectionBarrier || 100;
 
     if (underlyingData && underlyingData.length > 0) {
       if (underlyingData.length === 1) {
@@ -63,7 +62,8 @@ export const ReverseConvertibleBondChartBuilder = {
           tradeDate,
           maturityDate,
           today,
-          underlying.initialPrice
+          underlying.initialPrice,
+          underlying.isin
         );
 
         datasets.push({
@@ -91,7 +91,8 @@ export const ReverseConvertibleBondChartBuilder = {
             tradeDate,
             maturityDate,
             today,
-            underlying.initialPrice
+            underlying.initialPrice,
+            underlying.isin
           );
 
           allUnderlyingData.push({
@@ -133,10 +134,10 @@ export const ReverseConvertibleBondChartBuilder = {
       }
     }
 
-    // Add capital protection barrier line (horizontal at barrier level)
+    // Add strike level line (physical delivery threshold)
     datasets.push({
-      label: `Protection Barrier (${capitalProtectionBarrier.toFixed(0)}%)`,
-      data: labels.map(date => ({ x: date, y: capitalProtectionBarrier })),
+      label: `Strike Level (${strikeLevel.toFixed(2)}%)`,
+      data: labels.map(date => ({ x: date, y: strikeLevel })),
       borderColor: '#ef4444',
       backgroundColor: 'transparent',
       borderWidth: 2.5,
@@ -145,20 +146,6 @@ export const ReverseConvertibleBondChartBuilder = {
       pointRadius: 0,
       isPercentage: true,
       order: 3
-    });
-
-    // Add strike level line (100% reference)
-    datasets.push({
-      label: 'Strike Level (100%)',
-      data: labels.map(date => ({ x: date, y: 100 })),
-      borderColor: '#6b7280',
-      backgroundColor: 'transparent',
-      borderWidth: 1.5,
-      borderDash: [2, 2],
-      fill: false,
-      pointRadius: 0,
-      isPercentage: true,
-      order: 4
     });
 
     // Build annotations
@@ -232,7 +219,7 @@ export const ReverseConvertibleBondChartBuilder = {
             display: true,
             text: `${product.title || 'Reverse Convertible (Bond)'} - Performance Evolution`,
             font: { size: 16, weight: 'bold' },
-            color: '#1f2937'
+            color: '#e5e7eb'
           },
           legend: {
             display: true,
@@ -298,8 +285,8 @@ export const ReverseConvertibleBondChartBuilder = {
               color: 'rgba(209, 213, 219, 0.2)',
               drawBorder: false
             },
-            // Add 15% padding below barrier for better visibility
-            suggestedMin: Math.min(capitalProtectionBarrier - 15, 30)
+            // Add 15% padding below strike for better visibility
+            suggestedMin: Math.min(strikeLevel - 15, 30)
           }
         }
       },
@@ -313,9 +300,8 @@ export const ReverseConvertibleBondChartBuilder = {
         maturityDate: maturityDate.toISOString().split('T')[0],
         evaluationDate: new Date().toISOString(),
         hasMatured: new Date() >= maturityDate,
-        capitalProtectionBarrier: capitalProtectionBarrier,
+        strikeLevel: strikeLevel,
         couponRate: reverseConvertibleParams.couponRate,
-        gearingFactor: reverseConvertibleParams.gearingFactor,
         dataPoints: labels.length,
         underlyingCount: underlyingData.length,
         generatedAt: new Date().toISOString(),
@@ -369,7 +355,7 @@ export const ReverseConvertibleBondChartBuilder = {
   /**
    * Generate rebased stock data (normalized to 100 at trade date)
    */
-  async generateRebasedStockData(ticker, startDate, endDate, currentDate, strikePrice = null) {
+  async generateRebasedStockData(ticker, startDate, endDate, currentDate, strikePrice = null, isin = null) {
     try {
       // Fetch historical data from market data cache with exchange fallback
       let cacheDoc = await MarketDataCacheCollection.findOneAsync({ fullTicker: ticker });
@@ -386,6 +372,46 @@ export const ReverseConvertibleBondChartBuilder = {
             break;
           }
         }
+      }
+
+      // Fallback: use ManualPriceTracker price history when no market cache data exists
+      if ((!cacheDoc || !cacheDoc.history || cacheDoc.history.length === 0) && isin) {
+        const manualTracker = await ManualPriceTrackersCollection.findOneAsync({
+          isin,
+          isActive: true,
+          latestPrice: { $ne: null }
+        });
+
+        if (manualTracker && manualTracker.priceHistory && manualTracker.priceHistory.length > 0) {
+          console.log(`📈 Reverse Convertible Bond Chart: Using manual scraper history for ${ticker} (${isin}), ${manualTracker.priceHistory.length} points`);
+
+          // priceHistory is [{date: 'YYYY-MM-DD', price, scrapedAt}], sorted descending — reverse for ascending
+          const trackerHistory = [...manualTracker.priceHistory].sort((a, b) => a.date.localeCompare(b.date));
+
+          const startDateStr = startDate.toISOString().split('T')[0];
+          const endDateStr = endDate.toISOString().split('T')[0];
+          const currentDateStr = currentDate.toISOString().split('T')[0];
+
+          // Use absolute prices so the bond line sits at its actual % of par value.
+          // strikeLevel on the y-axis is also an absolute % of par (e.g. 72.45),
+          // so the bond at ~67 will correctly appear below the strike barrier.
+          // Start point: use the provided strikePrice (bond's initial price at trade date).
+          // If not available, assume par (100).
+          const initialPrice = strikePrice || 100;
+
+          const performanceData = [{ x: startDateStr, y: initialPrice }];
+          for (const h of trackerHistory) {
+            if (h.date <= startDateStr) continue;
+            if (h.date > currentDateStr || h.date > endDateStr) break;
+            performanceData.push({ x: h.date, y: h.price });
+          }
+
+          console.log(`📈 Reverse Convertible Bond Chart: Generated ${performanceData.length} points from manual tracker for ${ticker}`);
+          return performanceData;
+        }
+
+        console.warn(`📈 Reverse Convertible Bond Chart: No historical data for ${ticker} (ISIN: ${isin})`);
+        return [];
       }
 
       if (!cacheDoc || !cacheDoc.history || cacheDoc.history.length === 0) {

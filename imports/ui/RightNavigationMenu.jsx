@@ -32,7 +32,7 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
       label: 'Create Product',
       icon: '➕',
       description: 'Design new products',
-      role: 'rm'
+      role: 'admin'
     },
     {
       id: 'profile',
@@ -103,12 +103,19 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
   ];
 
   const getRoleLevel = (role) => {
-    const levels = { client: 1, compliance: 2, rm: 2, admin: 2, superadmin: 3 };
+    const levels = { client: 1, rm: 2, compliance: 3, admin: 3, superadmin: 4 };
     return levels[role] || 0;
   };
 
+  // Items that should be hidden from RM profiles
+  const rmExcludedItems = ['create-product', 'profile', 'administration', 'order-book'];
+
   const userRoleLevel = getRoleLevel(userRole);
-  const visibleItems = menuItems.filter(item => getRoleLevel(item.role) <= userRoleLevel);
+  const visibleItems = menuItems.filter(item => {
+    if (getRoleLevel(item.role) > userRoleLevel) return false;
+    if (userRole === 'rm' && rmExcludedItems.includes(item.id)) return false;
+    return true;
+  });
   
   // Check if user is in an admin section that requires form interactions
   const isInAdminFormSection = ['user-management', 'issuer-management', 'administration', 'bank-management', 'price-data-upload', 'market-data'].includes(currentSection);

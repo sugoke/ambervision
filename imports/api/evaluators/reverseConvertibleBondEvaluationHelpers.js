@@ -1,24 +1,27 @@
 import { MarketDataCacheCollection } from '/imports/api/marketDataCache';
+import { ManualPriceTrackersCollection } from '/imports/api/manualPriceTrackers';
 import { SharedEvaluationHelpers } from './sharedEvaluationHelpers';
+import { getSplitAdjustedStrike } from '/imports/api/splitAdjustment';
 
 /**
  * Reverse Convertible (Bond) Evaluation Helpers
  *
  * Shared utility functions for evaluating Reverse Convertible structured products on bond underlyings.
  *
- * Product Logic:
+ * Product Logic (Physical Delivery / Conversion Ratio model):
  * - Guaranteed coupon at maturity
- * - Capital protection barrier (e.g., 70%)
- * - Above barrier: 100% + coupon
- * - Below barrier: 100% + (performance × gearing) + coupon
- *   where gearing = 1 / (barrier_level / 100)
+ * - Strike level (% of par) - threshold for physical delivery
+ * - Above strike: Cash settlement = 100% of denomination + coupon
+ * - At or below strike: Physical delivery via Conversion Ratio + coupon
+ *   Conversion Ratio = Denomination / ((Strike + Accrued Interest) / 100 x Par Amount)
+ *   Delivery value as % = Final Fixing / (Strike + Accrued Interest) x 100
  */
 export const ReverseConvertibleBondEvaluationHelpers = {
   /**
    * Extract underlying assets data with pricing and performance
    */
   async extractUnderlyingAssetsData(product) {
-    const underlyingAssets = product.underlyingAssets || [];
+    const underlyingAssets = product.underlyingAssets || product.underlyings || [];
     if (underlyingAssets.length === 0) {
       console.warn('[Reverse Convertible Bond] No underlying assets found');
       return [];
@@ -29,8 +32,12 @@ export const ReverseConvertibleBondEvaluationHelpers = {
         const ticker = asset.ticker || asset.symbol;
         const fullTicker = asset.fullTicker || `${ticker}.US`;
 
-        // Get initial price (strike price from trade date)
-        const initialPrice = asset.initialPrice || asset.strike || asset.strikePrice;
+        // Get split-adjusted initial price (strike price from trade date)
+        const splitResult = await getSplitAdjustedStrike(
+          { ...asset, securityData: { ticker: fullTicker } },
+          product
+        );
+        const initialPrice = splitResult.adjustedStrike;
 
         // Get current/redemption price
         const { currentPrice, priceDate, priceSource, hasCurrentData } = await this.getCurrentPrice(
@@ -52,12 +59,13 @@ export const ReverseConvertibleBondEvaluationHelpers = {
           isin: asset.isin,
           exchange: asset.exchange || 'US',
           currency: asset.currency || product.currency || 'USD',
+          strikeLevel: asset.strikeLevel || 0,
 
-          // Prices (pre-formatted)
+          // Prices (pre-formatted as % of par — bond prices are expressed as % of par value)
           initialPrice,
-          initialPriceFormatted: this.formatCurrency(initialPrice, asset.currency || product.currency),
+          initialPriceFormatted: this.formatBondPrice(initialPrice),
           currentPrice,
-          currentPriceFormatted: this.formatCurrency(currentPrice, asset.currency || product.currency),
+          currentPriceFormatted: this.formatBondPrice(currentPrice),
           priceDate,
           priceDateFormatted: priceDate ? new Date(priceDate).toLocaleDateString('en-US', {
             day: '2-digit',
@@ -72,6 +80,14 @@ export const ReverseConvertibleBondEvaluationHelpers = {
           performance,
           performanceFormatted: `${performance >= 0 ? '+' : ''}${performance.toFixed(2)}%`,
           isPositive: performance >= 0,
+
+          // Split adjustment info
+          splitAdjustment: splitResult.factor !== 1.0 ? {
+            factor: splitResult.factor,
+            originalStrike: asset.initialPrice || asset.strike || asset.strikePrice,
+            adjustedStrike: splitResult.adjustedStrike,
+            splits: splitResult.splits
+          } : null,
 
           // Sparkline data
           sparklineData: await (async () => {
@@ -120,6 +136,25 @@ export const ReverseConvertibleBondEvaluationHelpers = {
       }
 
       if (!cacheDoc || !cacheDoc.currentPrice) {
+        // Fallback: check manual price tracker by ISIN
+        const isin = asset.isin || asset.securityData?.isin;
+        if (isin) {
+          const manualTracker = await ManualPriceTrackersCollection.findOneAsync({
+            isin,
+            isActive: true,
+            latestPrice: { $ne: null }
+          });
+          if (manualTracker) {
+            console.log(`[Reverse Convertible Bond] Using manual scraper price for ${fullTicker} (${isin}): ${manualTracker.latestPrice}`);
+            return {
+              currentPrice: manualTracker.latestPrice,
+              priceDate: manualTracker.lastScrapedAt,
+              priceSource: 'manual_scraper',
+              hasCurrentData: true
+            };
+          }
+        }
+
         console.warn(`[Reverse Convertible Bond] No market data for ${fullTicker}`);
         return {
           currentPrice: asset.initialPrice || 0,
@@ -212,8 +247,9 @@ export const ReverseConvertibleBondEvaluationHelpers = {
     const redemptionDate = new Date(product.maturity || product.maturityDate);
     const redemptionDateStr = redemptionDate.toISOString().split('T')[0];
 
-    if (product.underlyingAssets) {
-      for (const asset of product.underlyingAssets) {
+    const assetsArray = product.underlyingAssets || product.underlyings;
+    if (assetsArray) {
+      for (const asset of assetsArray) {
         if (!asset.redemptionPrice) {
           const fullTicker = asset.fullTicker || `${asset.ticker}.US`;
           const historicalPrice = await this.getPriceAtDate(fullTicker, redemptionDate);
@@ -274,29 +310,52 @@ export const ReverseConvertibleBondEvaluationHelpers = {
   },
 
   /**
-   * Calculate redemption value
+   * Calculate redemption value using physical delivery / conversion ratio model
+   *
+   * @param {Object} product - Product object
+   * @param {number} finalBondPrice - Worst-of current bond price as % of par (e.g. 67.04)
+   * @param {number} strikeLevel - Strike level as % of par (e.g. 72.45)
+   * @param {number} couponRate - Guaranteed coupon rate (e.g. 5.0)
+   * @param {number} accruedInterest - Accrued interest at redemption (% of par, e.g. 1.2)
    */
-  calculateRedemption(product, basketPerformance, capitalProtectionBarrier, couponRate, gearingFactor) {
+  calculateRedemption(product, finalBondPrice, strikeLevel, couponRate, accruedInterest) {
     const currency = product.currency || 'USD';
+    const denomination = (product.structureParams || product.structureParameters || {}).denomination || 1000;
+    const parAmount = (product.structureParams || product.structureParameters || {}).parAmount || 1000;
 
-    // Check if barrier is breached
-    const barrierLevel = capitalProtectionBarrier - 100; // e.g., 70 → -30%
-    const barrierBreached = basketPerformance < barrierLevel;
+    // For bonds: final level IS the current bond price as % of par (not a relative performance)
+    const finalLevel = finalBondPrice;
+
+    // Check if bond price is above strike (both in % of par)
+    const isAboveStrike = finalLevel > strikeLevel;
+    const strikeBreached = !isAboveStrike;
+
+    // Calculate conversion ratio
+    const conversionRatio = denomination / ((strikeLevel + accruedInterest) / 100 * parAmount);
 
     let capitalComponent;
     let capitalExplanation;
+    let formula;
+    let settlementType;
+    let deliveryValue = null;
 
-    if (!barrierBreached) {
-      // Above barrier: 100% capital back
+    if (isAboveStrike) {
+      // Above strike: Cash settlement = 100% of denomination
       capitalComponent = 100;
-      capitalExplanation = `Capital protected: ${capitalProtectionBarrier}% barrier not breached`;
+      settlementType = 'cash';
+      capitalExplanation = `Bond level (${finalLevel.toFixed(2)}%) is above strike (${strikeLevel.toFixed(2)}%): cash settlement at 100%`;
+      formula = `100% + ${couponRate.toFixed(1)}% = ${(100 + couponRate).toFixed(2)}%`;
     } else {
-      // Below barrier: 100% + (performance × gearing)
-      capitalComponent = 100 + (basketPerformance * gearingFactor);
-      capitalExplanation = `Barrier breached: 100% + (${basketPerformance.toFixed(2)}% × ${gearingFactor.toFixed(2)})`;
+      // At or below strike: Physical delivery
+      // Delivery value as % of denomination = Final Fixing / (Strike + Accrued Interest) x 100
+      deliveryValue = (finalLevel / (strikeLevel + accruedInterest)) * 100;
+      capitalComponent = deliveryValue;
+      settlementType = 'physical_delivery';
+      capitalExplanation = `Bond level (${finalLevel.toFixed(2)}%) is at/below strike (${strikeLevel.toFixed(2)}%): physical delivery via conversion ratio`;
+      formula = `${finalLevel.toFixed(2)}% / (${strikeLevel.toFixed(2)}% + ${accruedInterest.toFixed(2)}%) x 100 + ${couponRate.toFixed(1)}% = ${(deliveryValue + couponRate).toFixed(2)}%`;
     }
 
-    // Add coupon
+    // Total = capital component + coupon (coupon is always paid)
     const totalValue = capitalComponent + couponRate;
 
     return {
@@ -306,11 +365,14 @@ export const ReverseConvertibleBondEvaluationHelpers = {
       couponFormatted: `${couponRate.toFixed(1)}%`,
       totalValue,
       totalValueFormatted: `${totalValue.toFixed(2)}%`,
-      barrierBreached,
+      settlementType,
+      strikeBreached,
       capitalExplanation,
-      formula: barrierBreached
-        ? `100% + (${basketPerformance.toFixed(2)}% × ${gearingFactor.toFixed(2)}) + ${couponRate.toFixed(1)}% = ${totalValue.toFixed(2)}%`
-        : `100% + ${couponRate.toFixed(1)}% = ${totalValue.toFixed(2)}%`
+      formula,
+      conversionRatio,
+      conversionRatioFormatted: conversionRatio.toFixed(4),
+      deliveryValue,
+      deliveryValueFormatted: deliveryValue !== null ? `${deliveryValue.toFixed(2)}%` : 'N/A'
     };
   },
 
@@ -350,6 +412,14 @@ export const ReverseConvertibleBondEvaluationHelpers = {
   },
 
   /**
+   * Format bond price as % of par (e.g. 71.1644 → "71.16%")
+   */
+  formatBondPrice(price) {
+    if (price === null || price === undefined) return 'N/A';
+    return `${price.toFixed(2)}%`;
+  },
+
+  /**
    * Format currency
    */
   formatCurrency(amount, currency = 'USD') {
@@ -370,12 +440,12 @@ export const ReverseConvertibleBondEvaluationHelpers = {
    */
   generateProductName(underlyings, reverseConvertibleParams) {
     if (!underlyings || underlyings.length === 0) {
-      return `Reverse Convertible (Bond) (${reverseConvertibleParams.capitalProtectionBarrier}% protection)`;
+      return `Reverse Convertible (Bond) (${reverseConvertibleParams.strikeLevel}% strike)`;
     }
 
     const tickers = underlyings.map(u => u.ticker).join('/');
     const basketLabel = underlyings.length > 1 ? ' Basket' : '';
 
-    return `${tickers}${basketLabel} Reverse Convertible (Bond) (${reverseConvertibleParams.capitalProtectionBarrier}% protection, ${reverseConvertibleParams.couponRate}% coupon)`;
+    return `${tickers}${basketLabel} Reverse Convertible (Bond) (${reverseConvertibleParams.strikeLevel}% strike, ${reverseConvertibleParams.couponRate}% coupon)`;
   }
 };

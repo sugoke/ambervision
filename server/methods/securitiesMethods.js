@@ -2,6 +2,8 @@ import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { SecuritiesMetadataCollection, SecuritiesMetadataHelpers } from '../../imports/api/securitiesMetadata.js';
 import { PMSHoldingsCollection, PMSHoldingsHelpers } from '../../imports/api/pmsHoldings.js';
+import { EODApiHelpers } from '../../imports/api/eodApi.js';
+import { computeCumulativeSplitFactor } from '../../imports/api/splitAdjustment.js';
 import { SessionsCollection } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
 import { ISINClassifierHelpers } from '../../imports/api/isinClassifier.js';
@@ -1369,5 +1371,37 @@ Meteor.methods({
     }
 
     return results.slice(0, limit);
+  },
+
+  /**
+   * Debug method to check stock splits for a ticker
+   * Usage: Meteor.call('products.checkSplits', { fullTicker: 'TSLA.US', fromDate: '2020-01-01' })
+   */
+  async 'products.checkSplits'({ fullTicker, fromDate }) {
+    check(fullTicker, String);
+    check(fromDate, Match.Optional(String));
+
+    const from = fromDate ? new Date(fromDate) : new Date('2010-01-01');
+    const to = new Date();
+
+    console.log(`[SplitCheck] Checking splits for ${fullTicker} from ${from.toISOString().split('T')[0]}`);
+
+    const splits = await EODApiHelpers.getStockSplits(fullTicker, from, to);
+    const factor = computeCumulativeSplitFactor(splits, from);
+
+    console.log(`[SplitCheck] ${fullTicker}: ${splits.length} split(s), cumulative factor: ${factor}`);
+
+    return {
+      fullTicker,
+      fromDate: from.toISOString().split('T')[0],
+      toDate: to.toISOString().split('T')[0],
+      splits,
+      cumulativeFactor: factor,
+      exampleAdjustment: factor !== 1.0 ? {
+        originalStrike: 100,
+        adjustedStrike: 100 / factor,
+        explanation: `A strike of 100 would be adjusted to ${(100 / factor).toFixed(4)} after splits`
+      } : null
+    };
   }
 });

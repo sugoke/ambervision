@@ -95,6 +95,7 @@ export const translations = {
     couponsEarned: 'Coupons Earned',
     totalCouponsPaidToDate: 'Total coupons paid to date',
     memoryCoupons: 'Memory Coupons',
+    includesMemory: 'Incl.',
     accumulatedInMemory: 'Accumulated in memory',
     forfeitedBelowBarrier: 'Forfeited (below barrier)',
 
@@ -258,6 +259,7 @@ export const translations = {
     couponsEarned: 'Coupons Gagnés',
     totalCouponsPaidToDate: 'Total des coupons payés à ce jour',
     memoryCoupons: 'Coupons Mémoire',
+    includesMemory: 'Incl.',
     accumulatedInMemory: 'Accumulé en mémoire',
     forfeitedBelowBarrier: 'Perdu (sous la barrière)',
 

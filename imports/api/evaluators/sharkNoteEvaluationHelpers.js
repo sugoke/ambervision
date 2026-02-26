@@ -1,5 +1,6 @@
 import { MarketDataHelpers } from '/imports/api/marketDataCache';
 import { SharedEvaluationHelpers } from './sharedEvaluationHelpers';
+import { getSplitAdjustedStrike } from '/imports/api/splitAdjustment';
 
 /**
  * Shark Note Evaluation Helpers
@@ -155,7 +156,8 @@ export const SharkNoteEvaluationHelpers = {
 
     for (const underlying of product.underlyings) {
       const fullTicker = underlying.securityData?.ticker || `${underlying.ticker}.US`;
-      const initialPrice = underlying.strike || underlying.securityData?.tradeDatePrice?.price;
+      const splitResult = await getSplitAdjustedStrike(underlying, product);
+      const initialPrice = splitResult.adjustedStrike || underlying.securityData?.tradeDatePrice?.price;
 
       if (!initialPrice) {
         console.warn(`Shark Note: No initial price for ${underlying.ticker}`);
@@ -298,7 +300,8 @@ export const SharkNoteEvaluationHelpers = {
 
     if (product.underlyings && Array.isArray(product.underlyings)) {
       for (const underlying of product.underlyings) {
-        const initialPrice = underlying.strike ||
+        const splitResult = await getSplitAdjustedStrike(underlying, product);
+        const initialPrice = splitResult.adjustedStrike ||
                            (underlying.securityData?.tradeDatePrice?.price) ||
                            (underlying.securityData?.tradeDatePrice?.close) || 0;
 

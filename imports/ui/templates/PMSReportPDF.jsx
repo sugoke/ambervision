@@ -14,6 +14,7 @@ import { BankAccountsCollection } from '../../api/bankAccounts';
 import { BanksCollection } from '../../api/banks';
 import { ProductsCollection } from '../../api/products';
 import { SecuritiesMetadataCollection, getAssetClassLabel } from '../../api/securitiesMetadata';
+import HoldingPriceChart from '../components/HoldingPriceChart.jsx';
 
 // Register Chart.js components
 ChartJS.register(ArcElement, Tooltip, Legend);
@@ -617,7 +618,16 @@ const PMSReportPDF = () => {
                         )}
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontWeight: '600', fontSize: '0.85rem' }}>{holding.securityName || holding.ticker || '-'}</div>
-                          <div style={{ fontSize: '0.7rem', color: '#64748b', fontFamily: 'monospace' }}>{holding.isin || '-'}</div>
+                          <div style={{ fontSize: '0.7rem', color: '#64748b', fontFamily: 'monospace' }}>
+                            {holding.isin || '-'}
+                            {holding.isin && !isPDFMode && (
+                              <HoldingPriceChart
+                                isin={holding.isin}
+                                securityName={holding.securityName || holding.ticker}
+                                sessionId={currentSessionId}
+                              />
+                            )}
+                          </div>
                         </div>
                       </div>
                       <div style={{ textAlign: 'right', flexShrink: 0 }}>

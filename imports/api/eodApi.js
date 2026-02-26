@@ -769,6 +769,50 @@ export const EODApiHelpers = {
     };
   },
 
+  // Get stock splits for a security within a date range
+  async getStockSplits(fullTicker, fromDate, toDate) {
+    try {
+      const url = `${EOD_BASE_URL}/splits/${fullTicker}`;
+
+      const params = {
+        api_token: EOD_API_TOKEN,
+        fmt: 'json'
+      };
+
+      if (fromDate) {
+        const d = new Date(fromDate);
+        params.from = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      }
+      if (toDate) {
+        const d = new Date(toDate);
+        params.to = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      }
+
+      const response = await HTTP.get(url, { params });
+      const data = response.data;
+
+      if (!data || !Array.isArray(data)) {
+        return [];
+      }
+
+      // Parse split strings into numeric ratios
+      // EOD format: "2/1" means 2-for-1 split (shares double, price halves)
+      return data.map(entry => {
+        const parts = (entry.split || '').split('/');
+        const numerator = parseFloat(parts[0]) || 1;
+        const denominator = parseFloat(parts[1]) || 1;
+        return {
+          date: entry.date,
+          splitString: entry.split,
+          ratio: numerator / denominator // e.g. "3/1" → 3.0
+        };
+      });
+    } catch (error) {
+      console.warn(`[EOD API] Failed to fetch splits for ${fullTicker}:`, error.message);
+      return [];
+    }
+  },
+
   // Validate if a security ticker is valid
   async validateTicker(ticker) {
     try {

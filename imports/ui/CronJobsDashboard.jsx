@@ -98,7 +98,8 @@ const CronJobsDashboard = ({ user }) => {
       'marketDataRefresh': 'Market Data Refresh',
       'productRevaluation': 'Product Re-evaluation',
       'bankFileSync': 'Bank File Sync',
-      'marketTickerUpdate': 'Market Ticker Update'
+      'marketTickerUpdate': 'Market Ticker Update',
+      'priceTrackerScrape': 'Price Tracker Scrape'
     };
     return names[jobName] || jobName;
   };
@@ -131,13 +132,14 @@ const CronJobsDashboard = ({ user }) => {
   const executeTriggerJob = async (jobName) => {
     setTriggering(jobName);
     try {
-      const methodName = jobName === 'marketDataRefresh'
-        ? 'cronJobs.triggerMarketDataRefresh'
-        : jobName === 'productRevaluation'
-        ? 'cronJobs.triggerProductRevaluation'
-        : jobName === 'bankFileSync'
-        ? 'cronJobs.triggerBankFileSync'
-        : 'cronJobs.triggerMarketTickerUpdate';
+      const methodMap = {
+        marketDataRefresh: 'cronJobs.triggerMarketDataRefresh',
+        productRevaluation: 'cronJobs.triggerProductRevaluation',
+        bankFileSync: 'cronJobs.triggerBankFileSync',
+        marketTickerUpdate: 'cronJobs.triggerMarketTickerUpdate',
+        priceTrackerScrape: 'cronJobs.triggerPriceTrackerScrape'
+      };
+      const methodName = methodMap[jobName] || 'cronJobs.triggerMarketTickerUpdate';
 
       await new Promise((resolve, reject) => {
         Meteor.call(methodName, sessionId, (err, result) => {
@@ -296,12 +298,14 @@ const CronJobsDashboard = ({ user }) => {
                     {job.name === 'marketDataRefresh' ? '📊 Market Data Refresh' :
                      job.name === 'productRevaluation' ? '🔄 Product Re-evaluation' :
                      job.name === 'bankFileSync' ? '🏦 Bank File Sync' :
+                     job.name === 'priceTrackerScrape' ? '🔍 Price Tracker Scrape' :
                      '📈 Market Ticker Update'}
                   </h4>
                   <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
                     {job.name === 'marketDataRefresh' ? 'Fetches latest market data' :
                      job.name === 'productRevaluation' ? 'Re-evaluates live products' :
                      job.name === 'bankFileSync' ? 'Downloads & processes bank files' :
+                     job.name === 'priceTrackerScrape' ? 'Scrapes manually tracked securities' :
                      'Updates ticker prices'}
                   </p>
                 </div>
@@ -464,6 +468,20 @@ const CronJobsDashboard = ({ user }) => {
             >
               Bank Sync
             </button>
+            <button
+              onClick={() => setSelectedJob('priceTrackerScrape')}
+              style={{
+                padding: '0.5rem 1rem',
+                background: selectedJob === 'priceTrackerScrape' ? 'var(--accent-color)' : 'var(--bg-tertiary)',
+                color: selectedJob === 'priceTrackerScrape' ? 'white' : 'var(--text-primary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '0.85rem'
+              }}
+            >
+              Price Tracker
+            </button>
           </div>
         </div>
 
@@ -529,6 +547,7 @@ const CronJobsDashboard = ({ user }) => {
                             {log.jobName === 'marketDataRefresh' ? '📊 Market Data' :
                              log.jobName === 'productRevaluation' ? '🔄 Re-evaluation' :
                              log.jobName === 'bankFileSync' ? '🏦 Bank Sync' :
+                             log.jobName === 'priceTrackerScrape' ? '🔍 Price Tracker' :
                              '📈 Ticker Update'}
                           </td>
                           <td style={{ padding: '1rem', color: 'var(--text-primary)' }}>
@@ -558,6 +577,15 @@ const CronJobsDashboard = ({ user }) => {
                                 {log.filesDownloaded > 0 && (
                                   <span style={{ color: '#10b981', marginLeft: '0.5rem' }}>
                                     ({log.filesDownloaded} files)
+                                  </span>
+                                )}
+                              </span>
+                            ) : log.jobName === 'priceTrackerScrape' ? (
+                              <span>
+                                {log.trackersSucceeded || 0}/{log.trackersProcessed || 0} trackers
+                                {log.trackersFailed > 0 && (
+                                  <span style={{ color: '#ef4444', marginLeft: '0.5rem' }}>
+                                    ({log.trackersFailed} failed)
                                   </span>
                                 )}
                               </span>
