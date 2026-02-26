@@ -577,6 +577,45 @@ const PortfolioReviewPDF = () => {
           </div>
         )}
 
+        {/* Section: Points of Attention */}
+        {review.pointsOfAttention?.content && (
+          <div className="pdf-section" style={{ marginBottom: '18px' }}>
+            <h2 style={{ fontSize: '15px', fontWeight: '700', color: '#dc2626', margin: '0 0 8px', borderBottom: '2px solid #fca5a5', paddingBottom: '4px' }}>
+              Points of Attention
+            </h2>
+            {review.pointsOfAttention.underlyings?.length > 0 && (
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                {review.pointsOfAttention.underlyings.map((u, i) => (
+                  <div key={i} style={{
+                    padding: '6px 12px',
+                    background: '#fef2f2',
+                    borderRadius: '6px',
+                    border: '1px solid #fecaca',
+                    minWidth: '120px'
+                  }}>
+                    <div style={{ fontSize: '11px', fontWeight: '700', color: '#0f172a' }}>{u.ticker}</div>
+                    <div style={{ fontSize: '10px', color: '#64748b' }}>{u.name}</div>
+                    <div style={{ fontSize: '13px', fontWeight: '700', color: '#dc2626', marginTop: '2px' }}>
+                      {u.performanceFormatted}
+                    </div>
+                    {u.distanceToBarrier && (
+                      <div style={{ fontSize: '9px', color: '#92400e', marginTop: '1px' }}>
+                        Barrier: {u.distanceToBarrier}
+                      </div>
+                    )}
+                    <div style={{ fontSize: '9px', color: '#64748b', marginTop: '1px' }}>
+                      {u.productsAffected} product{u.productsAffected !== 1 ? 's' : ''}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ padding: '10px 14px', background: '#fef2f2', borderRadius: '6px', borderLeft: '4px solid #dc2626' }}>
+              {renderMarkdown(review.pointsOfAttention.content)}
+            </div>
+          </div>
+        )}
+
         {/* Section: Recommendations */}
         {review.recommendations?.content && (
           <div className="pdf-section" style={{ marginBottom: '18px' }}>

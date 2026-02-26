@@ -925,9 +925,19 @@ export const PhoenixEvaluator = {
           prediction.couponAmountFormatted = PhoenixEvaluationHelpers.formatPredictionCoupon(couponRate);
           prediction.outcomeType = 'coupon';
 
-          const explanationPrefix = isGuaranteedCoupon ? 'Guaranteed coupon' : `Basket at ${currentBasketLevelFormatted}. Above coupon barrier (${protectionBarrier}%)`;
-          prediction.displayText = `${prediction.dateFormatted}; coupon; ${prediction.couponAmountFormatted}`;
-          prediction.explanation = `${explanationPrefix}, would receive ${prediction.couponAmountFormatted} coupon.`;
+          const explanationPrefix = isGuaranteedCoupon ? 'Guaranteed coupon' : `Basket at ${currentBasketLevelFormatted}. Above coupon barrier (${effectiveCouponBarrier}%)`;
+
+          // Memory coupon release: when coupon is paid and there are accumulated memory coupons
+          if (phoenixParams.memoryCoupon && totalMemoryCoupons > 0) {
+            prediction.memoryWouldBeReleased = true;
+            prediction.totalCouponWithMemory = couponRate + totalMemoryCoupons;
+            prediction.totalCouponWithMemoryFormatted = PhoenixEvaluationHelpers.formatPredictionCoupon(prediction.totalCouponWithMemory);
+            prediction.displayText = `${prediction.dateFormatted}; coupon; ${prediction.totalCouponWithMemoryFormatted} (incl. ${prediction.totalMemoryCouponsFormatted} memory)`;
+            prediction.explanation = `${explanationPrefix}, would receive ${prediction.couponAmountFormatted} coupon + ${prediction.totalMemoryCouponsFormatted} memory coupons released.`;
+          } else {
+            prediction.displayText = `${prediction.dateFormatted}; coupon; ${prediction.couponAmountFormatted}`;
+            prediction.explanation = `${explanationPrefix}, would receive ${prediction.couponAmountFormatted} coupon.`;
+          }
         } else if (!isGuaranteedCoupon && phoenixParams.memoryCoupon) {
           // Below coupon barrier, add to memory (only if not guaranteed coupon)
           prediction.memoryWouldBeAdded = true;
@@ -936,12 +946,12 @@ export const PhoenixEvaluator = {
 
           const newMemoryTotal = totalMemoryCoupons + couponRate;
           prediction.displayText = `${prediction.dateFormatted}; coupon; in memory (total: ${PhoenixEvaluationHelpers.formatPredictionCoupon(newMemoryTotal)})`;
-          prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Below coupon barrier (${protectionBarrier}%), ${PhoenixEvaluationHelpers.formatPredictionCoupon(couponRate)} would be added to memory (new total: ${PhoenixEvaluationHelpers.formatPredictionCoupon(newMemoryTotal)}).`;
+          prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Below coupon barrier (${effectiveCouponBarrier}%), ${PhoenixEvaluationHelpers.formatPredictionCoupon(couponRate)} would be added to memory (new total: ${PhoenixEvaluationHelpers.formatPredictionCoupon(newMemoryTotal)}).`;
         } else if (!isGuaranteedCoupon) {
           // No event (only if not guaranteed coupon)
           prediction.outcomeType = 'no_event';
           prediction.displayText = `${prediction.dateFormatted}; no event`;
-          prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Below coupon barrier (${protectionBarrier}%), no coupon would be paid.`;
+          prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Below coupon barrier (${effectiveCouponBarrier}%), no coupon would be paid.`;
         }
       }
       // Check for coupon payment (non-memory autocall case)
@@ -951,9 +961,19 @@ export const PhoenixEvaluator = {
         prediction.couponAmountFormatted = PhoenixEvaluationHelpers.formatPredictionCoupon(couponRate);
         prediction.outcomeType = 'coupon';
 
-        const explanationPrefix = isGuaranteedCoupon ? 'Guaranteed coupon' : `Basket at ${currentBasketLevelFormatted}. Above coupon barrier (${protectionBarrier}%)`;
-        prediction.displayText = `${prediction.dateFormatted}; coupon; ${prediction.couponAmountFormatted}`;
-        prediction.explanation = `${explanationPrefix}, would receive ${prediction.couponAmountFormatted} coupon.`;
+        const explanationPrefix = isGuaranteedCoupon ? 'Guaranteed coupon' : `Basket at ${currentBasketLevelFormatted}. Above coupon barrier (${effectiveCouponBarrier}%)`;
+
+        // Memory coupon release: when coupon is paid and there are accumulated memory coupons
+        if (phoenixParams.memoryCoupon && totalMemoryCoupons > 0) {
+          prediction.memoryWouldBeReleased = true;
+          prediction.totalCouponWithMemory = couponRate + totalMemoryCoupons;
+          prediction.totalCouponWithMemoryFormatted = PhoenixEvaluationHelpers.formatPredictionCoupon(prediction.totalCouponWithMemory);
+          prediction.displayText = `${prediction.dateFormatted}; coupon; ${prediction.totalCouponWithMemoryFormatted} (incl. ${prediction.totalMemoryCouponsFormatted} memory)`;
+          prediction.explanation = `${explanationPrefix}, would receive ${prediction.couponAmountFormatted} coupon + ${prediction.totalMemoryCouponsFormatted} memory coupons released.`;
+        } else {
+          prediction.displayText = `${prediction.dateFormatted}; coupon; ${prediction.couponAmountFormatted}`;
+          prediction.explanation = `${explanationPrefix}, would receive ${prediction.couponAmountFormatted} coupon.`;
+        }
       }
       // Memory coupon would be added (non-memory autocall case, only if not guaranteed)
       else if (!isGuaranteedCoupon && phoenixParams.memoryCoupon) {
@@ -963,13 +983,13 @@ export const PhoenixEvaluator = {
 
         const newMemoryTotal = totalMemoryCoupons + couponRate;
         prediction.displayText = `${prediction.dateFormatted}; coupon; in memory (total: ${PhoenixEvaluationHelpers.formatPredictionCoupon(newMemoryTotal)})`;
-        prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Below coupon barrier (${protectionBarrier}%), ${PhoenixEvaluationHelpers.formatPredictionCoupon(couponRate)} would be added to memory (new total: ${PhoenixEvaluationHelpers.formatPredictionCoupon(newMemoryTotal)}).`;
+        prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Below coupon barrier (${effectiveCouponBarrier}%), ${PhoenixEvaluationHelpers.formatPredictionCoupon(couponRate)} would be added to memory (new total: ${PhoenixEvaluationHelpers.formatPredictionCoupon(newMemoryTotal)}).`;
       }
       // No event (only if not guaranteed coupon)
       else if (!isGuaranteedCoupon) {
         prediction.outcomeType = 'no_event';
         prediction.displayText = `${prediction.dateFormatted}; no event`;
-        prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Below coupon barrier (${protectionBarrier}%), no coupon would be paid.`;
+        prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Below coupon barrier (${effectiveCouponBarrier}%), no coupon would be paid.`;
       }
 
       // Handle final observation

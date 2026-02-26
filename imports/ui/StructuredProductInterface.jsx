@@ -1050,6 +1050,15 @@ const StructuredProductInterface = ({
           callableByIssuer: false,
           issuerCallRebateType: 'fixed'
         };
+      case 'reverse_convertible_bond':
+        return {
+          couponRate: 5.0,
+          strikeLevel: 100,
+          accruedInterestAtRedemption: 0,
+          parAmount: 1000,
+          denomination: 1000,
+          barrierType: 'european'
+        };
       default:
         return {
           couponRate: 8.5,

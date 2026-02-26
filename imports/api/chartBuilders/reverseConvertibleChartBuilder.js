@@ -232,7 +232,7 @@ export const ReverseConvertibleChartBuilder = {
             display: true,
             text: `${product.title || 'Reverse Convertible'} - Performance Evolution`,
             font: { size: 16, weight: 'bold' },
-            color: '#1f2937'
+            color: '#e5e7eb'
           },
           legend: {
             display: true,

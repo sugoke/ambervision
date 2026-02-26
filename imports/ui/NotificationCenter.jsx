@@ -72,14 +72,22 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
     };
   }, [isOpen]);
 
-  const handleBellClick = () => {
+  const handleBellClick = async () => {
     const newIsOpen = !isOpen;
     setIsOpen(newIsOpen);
 
-    // Reset counter and store last viewed timestamp when opening the modal
+    // Mark all as read when opening the dropdown to reset the badge
     if (newIsOpen) {
-      setTotalCount(0);
-      localStorage.setItem('notificationsLastViewedAt', new Date().toISOString());
+      try {
+        const sessionId = localStorage.getItem('sessionId');
+        if (sessionId) {
+          await Meteor.callAsync('notifications.markAllAsRead', sessionId);
+          setUnreadCount(0);
+          localStorage.setItem('notificationsLastViewedAt', new Date().toISOString());
+        }
+      } catch (error) {
+        console.error('Error marking notifications as read:', error);
+      }
     }
   };
 
@@ -214,8 +222,8 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
           <path d="M13.73 21a2 2 0 0 1-3.46 0" />
         </svg>
 
-        {/* Total Count Badge */}
-        {totalCount > 0 && (
+        {/* Unread Count Badge */}
+        {unreadCount > 0 && (
           <div
             style={{
               position: 'absolute',
@@ -235,7 +243,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
               boxShadow: '0 2px 4px rgba(0, 0, 0, 0.2)'
             }}
           >
-            {totalCount > 99 ? '99+' : totalCount}
+            {unreadCount > 99 ? '99+' : unreadCount}
           </div>
         )}
       </button>

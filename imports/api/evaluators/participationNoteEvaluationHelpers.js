@@ -1,6 +1,7 @@
 import { MarketDataHelpers } from '/imports/api/marketDataCache';
 import { EODApiHelpers } from '/imports/api/eodApi';
 import { SharedEvaluationHelpers } from './sharedEvaluationHelpers';
+import { getSplitAdjustedStrike } from '/imports/api/splitAdjustment';
 
 /**
  * Participation Note Evaluation Helpers
@@ -70,14 +71,16 @@ export const ParticipationNoteEvaluationHelpers = {
       if (tradeDatePrice) {
         underlying.securityData.tradeDatePrice = tradeDatePrice;
       } else if (underlying.strike) {
-        // Fallback: use strike as trade date price (assumes strike was set correctly at creation)
+        // Fallback: use split-adjusted strike as trade date price
+        const splitResult = await getSplitAdjustedStrike(underlying, product);
+        const adjustedStrike = splitResult.adjustedStrike || underlying.strike;
         underlying.securityData.tradeDatePrice = {
-          price: underlying.strike,
-          close: underlying.strike,
+          price: adjustedStrike,
+          close: adjustedStrike,
           date: tradeDateObj,
-          source: 'strike_fallback'
+          source: splitResult.factor !== 1.0 ? 'strike_fallback_split_adjusted' : 'strike_fallback'
         };
-        console.log(`⚠️ [Participation Note] Using strike as fallback trade date price for ${underlying.ticker}: ${underlying.strike}`);
+        console.log(`⚠️ [Participation Note] Using strike as fallback trade date price for ${underlying.ticker}: ${adjustedStrike}${splitResult.factor !== 1.0 ? ` (split-adjusted from ${underlying.strike}, factor=${splitResult.factor})` : ''}`);
       }
     }
   },
@@ -407,10 +410,11 @@ export const ParticipationNoteEvaluationHelpers = {
       // Process all underlyings sequentially to fetch news
       for (const [index, underlying] of product.underlyings.entries()) {
         // Priority: Use actual market price on trade date for accurate performance
-        // Fall back to strike only if no historical data available
+        // Fall back to split-adjusted strike only if no historical data available
+        const splitResult = await getSplitAdjustedStrike(underlying, product);
         const initialPrice = (underlying.securityData?.tradeDatePrice?.price) ||
                            (underlying.securityData?.tradeDatePrice?.close) ||
-                           underlying.strike || 0;
+                           splitResult.adjustedStrike || 0;
 
         const evaluationPriceInfo = this.getEvaluationPrice(underlying, product);
         const currentPrice = evaluationPriceInfo.price;

@@ -189,7 +189,24 @@ if (Meteor.isServer) {
           fromDate.setDate(fromDate.getDate() - 30);
 
           try {
+            // Check which underlyings have manual price trackers (no EOD coverage)
+            const { ManualPriceTrackersCollection } = require('./manualPriceTrackers.js');
+            const manualTrackerIsins = new Set();
+            const allTrackers = await ManualPriceTrackersCollection.find({ isActive: true }, { fields: { isin: 1 } }).fetchAsync();
+            allTrackers.forEach(t => manualTrackerIsins.add(t.isin));
+
             for (const ticker of tickers) {
+              // Check if this underlying's ISIN has a manual tracker
+              const underlying = productData.underlyings.find(u =>
+                (u.fullTicker || u.securityData?.ticker || `${u.ticker}.US`) === ticker
+              );
+              const isin = underlying?.isin || underlying?.securityData?.isin;
+
+              if (isin && manualTrackerIsins.has(isin)) {
+                console.log(`📊 [templateReports] Skipping EOD fetch for ${ticker} (${isin}) - has manual price tracker`);
+                continue;
+              }
+
               await MarketDataHelpers.fetchAndCacheHistoricalData(ticker, fromDate, new Date());
             }
             console.log(`✅ [templateReports] Market data refreshed for ${tickers.length} underlyings`);

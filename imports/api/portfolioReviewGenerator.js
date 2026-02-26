@@ -809,6 +809,117 @@ async function gatherSPUnderlyingNews(spReports) {
 }
 
 /**
+ * Identify worst-performing SP underlyings and do deep Brave Search research on each.
+ * Returns array of { ticker, name, performance, performanceFormatted, products, braveResearch[] }
+ * Each braveResearch entry has { query, results[] } for multiple search angles.
+ */
+async function gatherPointsOfAttention(spReports) {
+  // Collect all underlyings with significant negative performance
+  const underlyingMap = {};
+  for (const [productId, report] of Object.entries(spReports)) {
+    if (!report?.templateResults?.underlyings) continue;
+    const productName = report.productName || 'Unknown';
+    const productIsin = report.productIsin || '';
+    const tr = report.templateResults;
+    const status = tr.currentStatus || {};
+    const structure = tr.phoenixStructure || tr.orionStructure || tr.participationStructure || {};
+
+    for (const u of tr.underlyings) {
+      const ticker = u.ticker || (u.fullTicker ? u.fullTicker.split('.')[0] : null);
+      if (!ticker) continue;
+      const perf = u.performance || 0;
+
+      // Only interested in underperformers (< -15%)
+      if (perf >= -15) continue;
+
+      if (!underlyingMap[ticker]) {
+        underlyingMap[ticker] = {
+          ticker,
+          fullTicker: u.fullTicker,
+          name: u.name || ticker,
+          performance: perf,
+          performanceFormatted: u.performanceFormatted || `${perf.toFixed(1)}%`,
+          distanceToBarrier: u.distanceToBarrierFormatted,
+          barrierStatus: u.barrierStatusText,
+          isWorstPerforming: u.isWorstPerforming,
+          products: []
+        };
+      }
+      // Keep worst performance across products
+      if (perf < underlyingMap[ticker].performance) {
+        underlyingMap[ticker].performance = perf;
+        underlyingMap[ticker].performanceFormatted = u.performanceFormatted || `${perf.toFixed(1)}%`;
+        underlyingMap[ticker].distanceToBarrier = u.distanceToBarrierFormatted;
+        underlyingMap[ticker].barrierStatus = u.barrierStatusText;
+      }
+
+      underlyingMap[ticker].products.push({
+        productId,
+        productName,
+        productIsin,
+        isWorstOf: u.isWorstPerforming,
+        barrierDistance: u.distanceToBarrierFormatted,
+        barrierStatus: u.barrierStatusText,
+        protectionBarrier: structure.protectionBarrier,
+        hasMatured: status.hasMatured,
+        hasAutocalled: status.hasAutocalled
+      });
+    }
+  }
+
+  // Sort by worst performance, take top worst losers
+  const worstLosers = Object.values(underlyingMap)
+    .sort((a, b) => a.performance - b.performance)
+    .slice(0, 6);
+
+  if (worstLosers.length === 0) {
+    console.log('[PortfolioReview] No underlyings below -15% - skipping points of attention');
+    return [];
+  }
+
+  console.log(`[PortfolioReview] Points of attention: ${worstLosers.length} underlyings below -15%: ${worstLosers.map(l => `${l.ticker} (${l.performanceFormatted})`).join(', ')}`);
+
+  // Run multiple deep Brave searches per underlying
+  const deepSearches = [];
+  for (const loser of worstLosers) {
+    const name = loser.name;
+    const ticker = loser.ticker;
+
+    // Search 1: Why did it drop - recent news & events
+    deepSearches.push(
+      callBraveSearch(`${name} ${ticker} stock why decline drop reason recent news 2026`, 5)
+        .then(results => ({ ticker, angle: 'decline_reasons', results }))
+    );
+
+    // Search 2: Analyst views, price targets, ratings
+    deepSearches.push(
+      callBraveSearch(`${name} ${ticker} analyst price target rating upgrade downgrade 2026`, 5)
+        .then(results => ({ ticker, angle: 'analyst_views', results }))
+    );
+
+    // Search 3: Forward outlook, earnings, recovery potential
+    deepSearches.push(
+      callBraveSearch(`${name} ${ticker} earnings outlook forecast recovery 2026 2027`, 4)
+        .then(results => ({ ticker, angle: 'forward_outlook', results }))
+    );
+  }
+
+  const searchResults = await Promise.all(deepSearches);
+
+  // Attach results to each loser
+  for (const loser of worstLosers) {
+    loser.braveResearch = [];
+    for (const result of searchResults) {
+      if (result.ticker === loser.ticker) {
+        loser.braveResearch.push({ angle: result.angle, results: result.results });
+      }
+    }
+  }
+
+  return worstLosers;
+}
+
+/**
  * Gather recently redeemed products (matured/autocalled/called) and possible upcoming redemptions.
  * Returns { recentRedemptions, possibleRedemptions }.
  */
@@ -1645,6 +1756,87 @@ Write the events summary now:`;
 }
 
 /**
+ * Generate Points of Attention section - deep analysis of worst-performing SP underlyings.
+ * For each underlying, synthesizes news, analyst views, and forward outlook into actionable commentary.
+ */
+async function generatePointsOfAttention(pointsOfAttentionData, language) {
+  if (!pointsOfAttentionData || pointsOfAttentionData.length === 0) return null;
+
+  const langInstruction = language === 'fr'
+    ? '\nLANGUAGE: Write the ENTIRE analysis in FRENCH (Français).'
+    : '';
+
+  // Build rich context for each underlying
+  const underlyingContexts = pointsOfAttentionData.map(loser => {
+    let ctx = `\n### ${loser.name} (${loser.ticker}) — Performance: ${loser.performanceFormatted}`;
+    if (loser.distanceToBarrier) ctx += ` | Barrier Distance: ${loser.distanceToBarrier}`;
+    if (loser.barrierStatus) ctx += ` (${loser.barrierStatus})`;
+
+    // Products affected
+    ctx += `\nProducts exposed to this underlying:`;
+    for (const p of loser.products) {
+      ctx += `\n  - ${p.productName} (${p.productIsin})`;
+      if (p.isWorstOf) ctx += ' [WORST-OF]';
+      if (p.barrierDistance) ctx += ` | Barrier distance: ${p.barrierDistance}`;
+      if (p.protectionBarrier) ctx += ` | Protection barrier: ${p.protectionBarrier}%`;
+      if (p.hasMatured) ctx += ' [MATURED]';
+      if (p.hasAutocalled) ctx += ' [AUTOCALLED]';
+    }
+
+    // Brave Search research results
+    for (const research of loser.braveResearch) {
+      const angleLabel = {
+        'decline_reasons': 'WHY IT DECLINED (recent news & events)',
+        'analyst_views': 'ANALYST VIEWS (price targets, ratings)',
+        'forward_outlook': 'FORWARD OUTLOOK (earnings, recovery potential)'
+      }[research.angle] || research.angle;
+
+      if (research.results?.length > 0) {
+        ctx += `\n\n${angleLabel}:`;
+        for (const article of research.results.slice(0, 4)) {
+          const age = article.age ? ` (${article.age})` : '';
+          ctx += `\n  - ${article.title}${age}`;
+          if (article.description) ctx += `\n    ${article.description}`;
+        }
+      }
+    }
+
+    return ctx;
+  }).join('\n\n---\n');
+
+  const prompt = `You are a senior wealth advisor preparing a "Points of Attention" section for a client portfolio review. This section focuses on the WORST-PERFORMING underlyings in the client's structured products portfolio.
+
+For each underlying below, you have:
+1. Performance data and barrier distances
+2. Which structured products are exposed to this underlying
+3. Recent news explaining WHY the stock declined
+4. Analyst price targets and ratings
+5. Forward earnings outlook and recovery potential
+
+YOUR TASK:
+For EACH underlying, write a thorough analysis (150-250 words) structured as:
+
+**[TICKER] — [Name] ([performance]%)**
+1. **What happened**: Explain the key reason(s) for the decline using the news provided. Be specific — name the catalyst (earnings miss, guidance cut, sector rotation, regulatory issue, macro headwind, etc.)
+2. **Analyst consensus**: What do analysts think? Mention price targets if available, consensus rating (buy/hold/sell), any recent upgrades or downgrades.
+3. **Forward outlook**: What's the outlook for recovery? Reference earnings expectations, industry trends, or catalysts that could drive a reversal.
+4. **Impact on portfolio**: How does this affect the structured products? Is the barrier at risk? Is this the worst-of? What's the practical consequence for the client (capital risk, missed coupons, etc.)?
+
+TONE: Professional, factual, constructive. Acknowledge the risk but don't be alarmist. Frame it as "here's what happened, here's what analysts think, here's what we're watching."
+${langInstruction}
+
+UNDERLYINGS TO ANALYZE:
+${underlyingContexts}
+
+Write your response as a single markdown document. Use ## headers for each underlying. Do NOT use JSON format.`;
+
+  const response = await callAnthropicAPI(prompt, 4000);
+
+  // Strip any HTML cite tags
+  return response.replace(/<\/?cite[^>]*>/gi, '');
+}
+
+/**
  * Generate cash analysis
  */
 async function generateCashAnalysis(cashData, totalPortfolioValue, language) {
@@ -1721,6 +1913,9 @@ async function generateRecommendations(allSections, data, language) {
   }
   if (allSections.possibleRedemptions?.length > 0) {
     sectionSummaries.push(`POSSIBLE UPCOMING REDEMPTIONS:\n${allSections.possibleRedemptions.join('\n')}`);
+  }
+  if (allSections.pointsOfAttention) {
+    sectionSummaries.push(`POINTS OF ATTENTION (underlyings with significant losses):\n${allSections.pointsOfAttention.substring(0, 800)}`);
   }
 
   // Add Brave macro news for recommendations context
@@ -1835,6 +2030,9 @@ ${allGeneratedContent.cash || 'N/A'}
 === MACRO SECTION ===
 ${allGeneratedContent.macro || 'N/A'}
 
+=== POINTS OF ATTENTION ===
+${allGeneratedContent.pointsOfAttention || 'N/A'}
+
 === RECOMMENDATIONS ===
 ${allGeneratedContent.recommendations || 'N/A'}
 
@@ -1853,7 +2051,7 @@ Return your response as a JSON object with this format:
   "hasIssues": true/false,
   "corrections": [
     {
-      "section": "events" | "allocation" | "cash" | "macro" | "recommendations" | "positions",
+      "section": "events" | "allocation" | "cash" | "macro" | "pointsOfAttention" | "recommendations" | "positions",
       "original": "the problematic sentence or paragraph",
       "corrected": "the corrected version",
       "reason": "brief explanation of what was wrong"
@@ -1918,6 +2116,7 @@ async function applyCorrections(reviewId, corrections) {
       'allocation': 'allocationAnalysis.content',
       'cash': 'cashAnalysis.content',
       'macro': 'macroAnalysis.content',
+      'pointsOfAttention': 'pointsOfAttention.content',
       'recommendations': 'recommendations.content'
     };
 
@@ -1963,7 +2162,7 @@ export async function generatePortfolioReview(reviewId, accountFilter, viewAsFil
     // PHASE 1: GATHER ALL DATA
     // ========================================
     await updateProgress(reviewId, 'gathering_data',
-      language === 'fr' ? '0/8 Collecte des données du portefeuille...' : '0/8 Gathering portfolio data...', 0);
+      language === 'fr' ? '0/9 Collecte des données du portefeuille...' : '0/9 Gathering portfolio data...', 0);
 
     const { all: allHoldings, grouped } = await gatherHoldings(accountFilter, viewAsFilter);
     console.log(`[PortfolioReview] Gathered ${allHoldings.length} holdings`);
@@ -2020,7 +2219,7 @@ export async function generatePortfolioReview(reviewId, accountFilter, viewAsFil
 
     // Gather supplementary data in parallel
     await updateProgress(reviewId, 'gathering_supplementary',
-      language === 'fr' ? '0/8 Collecte des données de marché...' : '0/8 Gathering market data...', 0);
+      language === 'fr' ? '0/9 Collecte des données de marché...' : '0/9 Gathering market data...', 0);
 
     const [spReports, marketData, equityNews, allocationData, cashData] = await Promise.all([
       gatherStructuredProductData(allHoldings),
@@ -2034,11 +2233,12 @@ export async function generatePortfolioReview(reviewId, accountFilter, viewAsFil
     const eventsData = gatherEventsFromReports(spReports, allHoldings);
     const redemptionData = await gatherRedemptionData(spReports, allHoldings, viewAsFilter);
 
-    // Fetch news for biggest-moving SP underlyings, FX exposure, and Brave news in parallel
+    // Fetch news for biggest-moving SP underlyings, FX exposure, Brave news, and points of attention in parallel
     const fxExposureSync = gatherFxExposure(allHoldings, cashData.ratesMap);
-    const [spUnderlyingNews, braveNews] = await Promise.all([
+    const [spUnderlyingNews, braveNews, pointsOfAttentionData] = await Promise.all([
       gatherSPUnderlyingNews(spReports),
-      gatherBraveNewsContext(grouped, spReports, fxExposureSync)
+      gatherBraveNewsContext(grouped, spReports, fxExposureSync),
+      gatherPointsOfAttention(spReports)
     ]);
     const fxExposure = fxExposureSync;
 
@@ -2075,7 +2275,7 @@ export async function generatePortfolioReview(reviewId, accountFilter, viewAsFil
 
     // Section 1: Macro Analysis
     await updateProgress(reviewId, 'macro_analysis',
-      language === 'fr' ? '1/8 Analyse macro-économique...' : '1/8 Analyzing macro environment...', 1);
+      language === 'fr' ? '1/9 Analyse macro-économique...' : '1/9 Analyzing macro environment...', 1);
 
     const macroContent = await generateMacroAnalysis(sharedData, language);
     await PortfolioReviewsCollection.updateAsync(reviewId, {
@@ -2084,7 +2284,7 @@ export async function generatePortfolioReview(reviewId, accountFilter, viewAsFil
 
     // Section 2: Position Analyses
     await updateProgress(reviewId, 'position_analysis',
-      language === 'fr' ? '2/8 Analyse des positions...' : '2/8 Analyzing positions...', 2);
+      language === 'fr' ? '2/9 Analyse des positions...' : '2/9 Analyzing positions...', 2);
 
     const positionAnalyses = await generatePositionAnalyses(
       grouped, spReports, marketData, equityNews, spUnderlyingNews, braveNews, language
@@ -2098,7 +2298,7 @@ export async function generatePortfolioReview(reviewId, accountFilter, viewAsFil
 
     // Section 3: Allocation Analysis
     await updateProgress(reviewId, 'allocation_analysis',
-      language === 'fr' ? '3/8 Vérification de l\'allocation...' : '3/8 Checking allocation compliance...', 3);
+      language === 'fr' ? '3/9 Vérification de l\'allocation...' : '3/9 Checking allocation compliance...', 3);
 
     const allocationContent = await generateAllocationAnalysis(allocationData, language);
     await PortfolioReviewsCollection.updateAsync(reviewId, {
@@ -2114,7 +2314,7 @@ export async function generatePortfolioReview(reviewId, accountFilter, viewAsFil
 
     // Section 4: FX Analysis
     await updateProgress(reviewId, 'fx_analysis',
-      language === 'fr' ? '4/8 Analyse des devises...' : '4/8 Analyzing FX exposure...', 4);
+      language === 'fr' ? '4/9 Analyse des devises...' : '4/9 Analyzing FX exposure...', 4);
 
     const fxContent = await generateFxAnalysis(fxExposure, braveNews, language);
     await PortfolioReviewsCollection.updateAsync(reviewId, {
@@ -2128,7 +2328,7 @@ export async function generatePortfolioReview(reviewId, accountFilter, viewAsFil
 
     // Section 5: Events Schedule
     await updateProgress(reviewId, 'events_schedule',
-      language === 'fr' ? '5/8 Résumé des événements...' : '5/8 Summarizing events...', 5);
+      language === 'fr' ? '5/9 Résumé des événements...' : '5/9 Summarizing events...', 5);
 
     const eventsContent = await generateEventsScheduleSummary(eventsData, redemptionData, language);
     await PortfolioReviewsCollection.updateAsync(reviewId, {
@@ -2145,7 +2345,7 @@ export async function generatePortfolioReview(reviewId, accountFilter, viewAsFil
 
     // Section 6: Cash Analysis
     await updateProgress(reviewId, 'cash_analysis',
-      language === 'fr' ? '6/8 Analyse de la trésorerie...' : '6/8 Analyzing cash position...', 6);
+      language === 'fr' ? '6/9 Analyse de la trésorerie...' : '6/9 Analyzing cash position...', 6);
 
     const cashPercent = totalValueEUR > 0 ? (cashData.pureCashEUR / totalValueEUR) * 100 : 0;
     const cashContent = await generateCashAnalysis(cashData, totalValueEUR, language);
@@ -2161,9 +2361,39 @@ export async function generatePortfolioReview(reviewId, accountFilter, viewAsFil
       }
     });
 
-    // Section 7: Recommendations
+    // Section 7: Points of Attention (deep analysis of worst-performing SP underlyings)
+    let pointsOfAttentionContent = null;
+    if (pointsOfAttentionData.length > 0) {
+      await updateProgress(reviewId, 'points_of_attention',
+        language === 'fr' ? '7/9 Analyse des points d\'attention...' : '7/9 Analyzing points of attention...', 7);
+
+      pointsOfAttentionContent = await generatePointsOfAttention(pointsOfAttentionData, language);
+      await PortfolioReviewsCollection.updateAsync(reviewId, {
+        $set: {
+          pointsOfAttention: {
+            content: pointsOfAttentionContent,
+            underlyings: pointsOfAttentionData.map(u => ({
+              ticker: u.ticker,
+              name: u.name,
+              performance: u.performance,
+              performanceFormatted: u.performanceFormatted,
+              distanceToBarrier: u.distanceToBarrier,
+              barrierStatus: u.barrierStatus,
+              productsAffected: u.products.length,
+              productNames: u.products.map(p => p.productName)
+            })),
+            generatedAt: new Date()
+          }
+        }
+      });
+    } else {
+      await updateProgress(reviewId, 'points_of_attention',
+        language === 'fr' ? '7/9 Pas de points d\'attention...' : '7/9 No points of attention...', 7);
+    }
+
+    // Section 8: Recommendations
     await updateProgress(reviewId, 'recommendations',
-      language === 'fr' ? '7/8 Génération des recommandations...' : '7/8 Generating recommendations...', 7);
+      language === 'fr' ? '8/9 Génération des recommandations...' : '8/9 Generating recommendations...', 8);
 
     const recommendationsContent = await generateRecommendations(
       {
@@ -2174,7 +2404,8 @@ export async function generatePortfolioReview(reviewId, accountFilter, viewAsFil
         pureCashEUR: cashData.pureCashEUR,
         eventCount: eventsData.past.length + eventsData.upcoming.length,
         recentRedemptions: redemptionData.recentRedemptions.map(r => `${r.productName}: ${r.redemptionDetails}`),
-        possibleRedemptions: redemptionData.possibleRedemptions.map(r => `${r.productName}: ${r.observationType} on ${r.nextObservationDate.toLocaleDateString('en-GB')} (${r.autocallLikelihood || 'maturity'})`)
+        possibleRedemptions: redemptionData.possibleRedemptions.map(r => `${r.productName}: ${r.observationType} on ${r.nextObservationDate.toLocaleDateString('en-GB')} (${r.autocallLikelihood || 'maturity'})`),
+        pointsOfAttention: pointsOfAttentionContent
       },
       sharedData,
       language
@@ -2183,9 +2414,9 @@ export async function generatePortfolioReview(reviewId, accountFilter, viewAsFil
       $set: { recommendations: { content: recommendationsContent, generatedAt: new Date() } }
     });
 
-    // Section 8: Consistency Check (final quality pass)
+    // Section 9: Consistency Check (final quality pass)
     await updateProgress(reviewId, 'consistency_check',
-      language === 'fr' ? '8/8 Vérification de cohérence...' : '8/8 Running consistency check...', 8);
+      language === 'fr' ? '9/9 Vérification de cohérence...' : '9/9 Running consistency check...', 9);
 
     // Build position commentaries summary for consistency check
     const positionCommentaries = positionAnalyses
@@ -2220,6 +2451,7 @@ export async function generatePortfolioReview(reviewId, accountFilter, viewAsFil
         allocation: allocationContent,
         cash: cashContent,
         macro: macroContent,
+        pointsOfAttention: pointsOfAttentionContent,
         recommendations: recommendationsContent,
         positions: positionCommentaries
       },
@@ -2251,7 +2483,7 @@ export async function generatePortfolioReview(reviewId, accountFilter, viewAsFil
         processingTimeMs,
         'progress.currentStep': 'completed',
         'progress.currentStepLabel': language === 'fr' ? 'Revue terminée' : 'Review complete',
-        'progress.completedSections': 8
+        'progress.completedSections': 9
       }
     });
 

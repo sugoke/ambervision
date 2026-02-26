@@ -3,6 +3,7 @@ import { Meteor } from 'meteor/meteor';
 import { check } from 'meteor/check';
 import { ProductsCollection } from './products.js';
 import { MarketDataCacheCollection } from './marketDataCache.js';
+import { ManualPriceTrackersCollection } from './manualPriceTrackers.js';
 
 export const UnderlyingPricesCollection = new Mongo.Collection('underlyingPrices');
 
@@ -124,7 +125,7 @@ if (Meteor.isServer) {
       }
 
       for (const tickerVariant of tickerVariants) {
-        
+
         // Look in MarketDataCacheCollection (populated by refresh button)
         const price = await MarketDataCacheCollection.findOneAsync({
           $or: [
@@ -137,6 +138,19 @@ if (Meteor.isServer) {
         if (price) {
           return price[priceType] || price.close;
         }
+      }
+
+      // Fallback: check manually scraped prices by ISIN
+      // The ticker might be an ISIN for securities without EOD coverage
+      const manualTracker = await ManualPriceTrackersCollection.findOneAsync({
+        isin: ticker,
+        isActive: true,
+        latestPrice: { $ne: null }
+      });
+
+      if (manualTracker) {
+        console.log(`[UNDERLYING_PRICES] Using manual scraper price for ${ticker}: ${manualTracker.latestPrice}`);
+        return manualTracker.latestPrice;
       }
 
       return null;
@@ -185,6 +199,33 @@ if (Meteor.isServer) {
             volume: price.volume,
             adjustedClose: price.adjustedClose
           }));
+        }
+      }
+
+      // Fallback: check manually scraped price history by ISIN
+      const manualTracker = await ManualPriceTrackersCollection.findOneAsync({
+        isin: ticker,
+        isActive: true
+      });
+
+      if (manualTracker && manualTracker.priceHistory && manualTracker.priceHistory.length > 0) {
+        const startStr = startDate.toISOString().slice(0, 10);
+        const endStr = endDate.toISOString().slice(0, 10);
+        const filtered = manualTracker.priceHistory
+          .filter(h => h.date >= startStr && h.date <= endStr)
+          .map(h => ({
+            ticker,
+            date: new Date(h.date),
+            open: h.price,
+            high: h.price,
+            low: h.price,
+            close: h.price,
+            volume: 0,
+            adjustedClose: h.price
+          }));
+        if (filtered.length > 0) {
+          console.log(`[UNDERLYING_PRICES] Using ${filtered.length} manual scraper prices for ${ticker}`);
+          return filtered;
         }
       }
 

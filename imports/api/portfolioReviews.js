@@ -107,7 +107,7 @@ if (Meteor.isServer) {
           currentStep: 'initializing',
           currentStepLabel: language === 'fr' ? 'Initialisation...' : 'Initializing...',
           completedSections: 0,
-          totalSections: 8,
+          totalSections: 9,
           positionsAnalyzed: 0,
           totalPositions: 0
         },
@@ -118,6 +118,7 @@ if (Meteor.isServer) {
         fxAnalysis: null,
         eventsSchedule: null,
         cashAnalysis: null,
+        pointsOfAttention: null,
         recommendations: null
       };
 

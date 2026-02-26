@@ -9,6 +9,7 @@ import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { BanksCollection } from '/imports/api/banks';
 import { IssuersCollection } from '/imports/api/issuers';
 import { ProductPricesCollection } from '/imports/api/productPrices';
+import { PMSHoldingsCollection } from '/imports/api/pmsHoldings';
 import StructuredProductChart from './components/StructuredProductChart.jsx';
 import HimalayaReport from './templates/HimalayaReport.jsx';
 import OrionReport from './templates/OrionReport.jsx';
@@ -199,6 +200,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [evaluationError, setEvaluationError] = useState(null);
   const [showAllocationDetails, setShowAllocationDetails] = useState(false);
+  const [showLinkedHoldingsDetails, setShowLinkedHoldingsDetails] = useState(false);
 
   // Cache for product data to prevent "not found" errors during re-renders (e.g., window resize)
   const productCache = useRef(null);
@@ -280,7 +282,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
   }, [isPDFMode]);
 
   // Subscribe to product, reports, allocations, users and bank accounts
-  const { product, latestReport, allocations, allocationsSummary, allocationDetails, productPrice, notePriceSparkline, issuerDoc, isDataReady } = useTracker(() => {
+  const { product, latestReport, allocations, allocationsSummary, allocationDetails, productPrice, notePriceSparkline, issuerDoc, linkedHoldings, isDataReady } = useTracker(() => {
     // Use state-tracked sessionId to ensure reactivity when it changes (e.g., PDF auth completes)
     const sessionId = currentSessionId;
     console.log('[TemplateProductReport] useTracker running with sessionId:', sessionId ? `${sessionId.substring(0, 20)}...` : 'null', 'isPDFMode:', isPDFMode, 'pdfAuthValidated:', pdfAuthState.validated);
@@ -296,6 +298,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
         allocationDetails: null,
         productPrice: null,
         notePriceSparkline: null,
+        linkedHoldings: [],
         isDataReady: false
       };
     }
@@ -309,6 +312,9 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
     const issuersHandle = Meteor.subscribe('issuers');
 
     const productData = ProductsCollection.findOne(productId);
+
+    const productIsin = productData?.isin || null;
+    const linkedHoldingsHandle = Meteor.subscribe('pmsHoldings.byProduct', productIsin, sessionId);
 
     // Subscribe to price history for this product's ISIN
     let priceHandle = { ready: () => true };
@@ -453,6 +459,64 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
       active: true
     }) : null;
 
+    // Fetch PMS holdings linked to this product
+    const allBanks = BanksCollection.find().fetch();
+    const banksById = {};
+    allBanks.forEach(b => { banksById[b._id] = b; });
+
+    // Build account number → bankAccount map for client lookup
+    const allBankAccounts = BankAccountsCollection.find().fetch();
+    const bankAccountByPortfolio = {};
+    allBankAccounts.forEach(ba => {
+      const baseNum = (ba.accountNumber || '').split('-')[0];
+      const key = `${ba.bankId}__${baseNum}`;
+      if (!bankAccountByPortfolio[key]) bankAccountByPortfolio[key] = ba;
+    });
+
+    const allUsers = UsersCollection.find().fetch();
+    const usersById = {};
+    allUsers.forEach(u => { usersById[u._id] = u; });
+
+    const rawLinkedHoldings = productData?.isin ? PMSHoldingsCollection.find(
+      { isin: productData.isin, isLatest: true, isActive: true },
+      { sort: { bankId: 1, portfolioCode: 1 } }
+    ).fetch().filter(h => !/CONSOLIDATED/i.test(h.portfolioCode || '')) : [];
+
+    const linkedHoldingsData = rawLinkedHoldings.map(h => {
+      const bankName = banksById[h.bankId]?.name || h.bankId || 'Unknown Bank';
+      const basePortfolio = (h.portfolioCode || '').split('-')[0];
+      const key = `${h.bankId}__${basePortfolio}`;
+      const bankAccount = bankAccountByPortfolio[key];
+      const client = bankAccount?.userId ? usersById[bankAccount.userId] : null;
+      const clientName = client
+        ? `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() || client.email
+        : null;
+      const clientEmail = client?.email || null;
+      const marketValue = h.marketValuePortfolioCurrency ?? h.marketValue;
+      const marketPrice = h.marketPrice;
+
+      return {
+        _id: h._id,
+        bankName,
+        portfolioCode: h.portfolioCode,
+        isin: h.isin,
+        quantity: h.quantity ?? h.balance,
+        marketPrice,
+        marketPriceFormatted: marketPrice != null ? `${(marketPrice * 100).toFixed(2)}%` : 'N/A',
+        marketValue,
+        marketValueFormatted: marketValue != null
+          ? new Intl.NumberFormat('en-US', { style: 'currency', currency: h.currency || 'EUR', maximumFractionDigits: 0 }).format(marketValue)
+          : 'N/A',
+        currency: h.currency || 'EUR',
+        snapshotDate: h.snapshotDate,
+        snapshotDateFormatted: h.snapshotDate
+          ? new Date(h.snapshotDate).toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' })
+          : null,
+        clientName,
+        clientEmail
+      };
+    });
+
     return {
       product: productData,
       latestReport: reportData,
@@ -462,9 +526,10 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
       productPrice: latestPrice,
       notePriceSparkline,
       issuerDoc,
+      linkedHoldings: linkedHoldingsData,
       isDataReady: productHandle.ready() && reportsHandle.ready() && allocationsHandle.ready() &&
                    usersHandle.ready() && bankAccountsHandle.ready() && banksHandle.ready() &&
-                   issuersHandle.ready() && priceHandle.ready()
+                   issuersHandle.ready() && priceHandle.ready() && linkedHoldingsHandle.ready()
     };
   }, [productId, currentSessionId, isPDFMode, pdfAuthState.validated]);
 
@@ -1177,6 +1242,187 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
         </div>
       </div>
 
+      {/* PMS Client Holdings Summary (Phoenix-style) */}
+      {linkedHoldings && linkedHoldings.length > 0 && user && (user.role === USER_ROLES.ADMIN || user.role === USER_ROLES.SUPERADMIN || user.role === USER_ROLES.RELATIONSHIP_MANAGER) && (() => {
+        const totalMV = linkedHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+        const uniqueClients = [...new Set(linkedHoldings.map(h => h.clientEmail).filter(Boolean))].length;
+        const currency = linkedHoldings[0]?.currency || 'EUR';
+        const avgPrice = linkedHoldings.length > 0
+          ? linkedHoldings.reduce((sum, h) => sum + (h.marketPrice || 0), 0) / linkedHoldings.length
+          : 0;
+        return (
+          <div style={{
+            background: 'var(--bg-secondary)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '12px',
+            padding: '1.5rem',
+            marginBottom: '2rem',
+            boxShadow: '0 2px 4px rgba(0, 0, 0, 0.05)'
+          }}>
+            <h3 style={{
+              margin: '0 0 1rem 0',
+              fontSize: '1.2rem',
+              color: 'var(--text-primary)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem'
+            }}>
+              👥 Client Allocations Summary
+            </h3>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(200px, 1fr))',
+              gap: '1rem'
+            }}>
+              <div>
+                <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Total Allocations</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                  {linkedHoldings.length}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Unique Clients</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                  {uniqueClients || linkedHoldings.length}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Total Market Value</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                  {new Intl.NumberFormat('en-US', { style: 'currency', currency, maximumFractionDigits: 0 }).format(totalMV)}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Average Market Price</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                  {(avgPrice * 100).toFixed(2)}%
+                </div>
+              </div>
+            </div>
+
+            {/* Collapsible Client Details */}
+            <div style={{ marginTop: '1.5rem' }}>
+              <button
+                onClick={() => setShowLinkedHoldingsDetails(!showLinkedHoldingsDetails)}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  padding: '8px 12px',
+                  color: 'var(--text-primary)',
+                  cursor: 'pointer',
+                  fontSize: '0.9rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  width: '100%',
+                  justifyContent: 'space-between',
+                  transition: 'all 0.2s ease'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-tertiary)'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+              >
+                <span>📋 View Client Details ({linkedHoldings.length} position{linkedHoldings.length > 1 ? 's' : ''})</span>
+                <span style={{ transition: 'transform 0.2s ease', transform: showLinkedHoldingsDetails ? 'rotate(180deg)' : 'rotate(0deg)' }}>▼</span>
+              </button>
+
+              {showLinkedHoldingsDetails && (
+                <div style={{
+                  marginTop: '1rem',
+                  background: 'var(--bg-primary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  overflow: 'hidden'
+                }}>
+                  {isMobile ? (
+                    <div style={{ padding: '0.5rem' }}>
+                      {linkedHoldings.map((holding, index) => (
+                        <div key={holding._id} style={{
+                          background: 'var(--bg-secondary)',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '8px',
+                          padding: '1rem',
+                          marginBottom: index < linkedHoldings.length - 1 ? '0.75rem' : '0'
+                        }}>
+                          <div style={{ marginBottom: '0.75rem' }}>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.25rem', textTransform: 'uppercase' }}>Client</div>
+                            <div style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{holding.clientName || holding.portfolioCode}</div>
+                            {holding.clientEmail && <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '2px' }}>{holding.clientEmail}</div>}
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                            <div>
+                              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.25rem', textTransform: 'uppercase' }}>Market Value</div>
+                              <div style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{holding.marketValueFormatted}</div>
+                            </div>
+                            <div>
+                              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.25rem', textTransform: 'uppercase' }}>Price</div>
+                              <div style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{holding.marketPriceFormatted}</div>
+                            </div>
+                          </div>
+                          <div style={{ marginTop: '0.75rem' }}>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.25rem', textTransform: 'uppercase' }}>Bank Account</div>
+                            <div style={{ fontWeight: '500', color: 'var(--text-primary)' }}>{holding.bankName}</div>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '2px' }}>{holding.portfolioCode}</div>
+                          </div>
+                          <div style={{ marginTop: '0.75rem' }}>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.25rem', textTransform: 'uppercase' }}>Date</div>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{holding.snapshotDateFormatted || 'N/A'}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: '2fr 1fr 2fr 1fr 1fr',
+                        gap: '12px',
+                        padding: '12px',
+                        background: 'var(--bg-tertiary)',
+                        fontSize: '0.8rem',
+                        fontWeight: '600',
+                        color: 'var(--text-secondary)',
+                        borderBottom: '1px solid var(--border-color)'
+                      }}>
+                        <div>Client</div>
+                        <div>Market Value</div>
+                        <div>Bank Account</div>
+                        <div>Price</div>
+                        <div>Date</div>
+                      </div>
+                      {linkedHoldings.map((holding, index) => (
+                        <div key={holding._id} style={{
+                          display: 'grid',
+                          gridTemplateColumns: '2fr 1fr 2fr 1fr 1fr',
+                          gap: '12px',
+                          padding: '12px',
+                          borderBottom: index < linkedHoldings.length - 1 ? '1px solid var(--border-color)' : 'none',
+                          fontSize: '0.85rem'
+                        }}>
+                          <div>
+                            <div style={{ fontWeight: '500', color: 'var(--text-primary)' }}>{holding.clientName || holding.portfolioCode}</div>
+                            {holding.clientEmail && <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '2px' }}>{holding.clientEmail}</div>}
+                          </div>
+                          <div style={{ fontWeight: '600', color: 'var(--text-primary)' }}>
+                            {holding.marketValueFormatted}
+                          </div>
+                          <div>
+                            <div style={{ fontWeight: '500', color: 'var(--text-primary)' }}>{holding.bankName}</div>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '2px' }}>{holding.portfolioCode}</div>
+                          </div>
+                          <div style={{ fontWeight: '500', color: 'var(--text-primary)' }}>{holding.marketPriceFormatted}</div>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{holding.snapshotDateFormatted || 'N/A'}</div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Client Allocations Summary */}
       {allocationsSummary && user && (user.role === USER_ROLES.ADMIN || user.role === USER_ROLES.SUPERADMIN || (user.role === USER_ROLES.CLIENT && allocationsSummary.totalNominalInvested > 0)) && (
         <div style={{
@@ -1552,6 +1798,7 @@ const getTemplateName = (templateId) => {
     'shark_note': 'Shark Note',
     'participation_note': 'Participation Note',
     'reverse_convertible': 'Reverse Convertible',
+    'reverse_convertible_bond': 'Reverse Convertible Bond',
     'unknown_template': 'Unknown Template',
     'unknown': 'Unknown'
   };
@@ -1568,6 +1815,7 @@ const getTemplateIcon = (templateId) => {
     'shark_note': '🦈',
     'participation_note': '📈',
     'reverse_convertible': '🔄',
+    'reverse_convertible_bond': '📜',
     'unknown_template': '📄',
     'unknown': '📄'
   };

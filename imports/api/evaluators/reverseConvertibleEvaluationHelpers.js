@@ -1,5 +1,7 @@
 import { MarketDataCacheCollection } from '/imports/api/marketDataCache';
+import { ManualPriceTrackersCollection } from '/imports/api/manualPriceTrackers';
 import { SharedEvaluationHelpers } from './sharedEvaluationHelpers';
+import { getSplitAdjustedStrike } from '/imports/api/splitAdjustment';
 
 /**
  * Reverse Convertible Evaluation Helpers
@@ -29,8 +31,13 @@ export const ReverseConvertibleEvaluationHelpers = {
         const ticker = asset.ticker || asset.symbol;
         const fullTicker = asset.fullTicker || `${ticker}.US`;
 
-        // Get initial price (strike price from trade date)
-        const initialPrice = asset.initialPrice || asset.strike || asset.strikePrice;
+        // Get split-adjusted initial price (strike price from trade date)
+        // RC assets use flat structure; wrap for getSplitAdjustedStrike compatibility
+        const splitResult = await getSplitAdjustedStrike(
+          { ...asset, securityData: { ticker: fullTicker } },
+          product
+        );
+        const initialPrice = splitResult.adjustedStrike;
 
         // Get current/redemption price
         const { currentPrice, priceDate, priceSource, hasCurrentData } = await this.getCurrentPrice(
@@ -72,6 +79,14 @@ export const ReverseConvertibleEvaluationHelpers = {
           performance,
           performanceFormatted: `${performance >= 0 ? '+' : ''}${performance.toFixed(2)}%`,
           isPositive: performance >= 0,
+
+          // Split adjustment info
+          splitAdjustment: splitResult.factor !== 1.0 ? {
+            factor: splitResult.factor,
+            originalStrike: asset.initialPrice || asset.strike || asset.strikePrice,
+            adjustedStrike: splitResult.adjustedStrike,
+            splits: splitResult.splits
+          } : null,
 
           // Sparkline data
           sparklineData: await (async () => {
@@ -120,6 +135,25 @@ export const ReverseConvertibleEvaluationHelpers = {
       }
 
       if (!cacheDoc || !cacheDoc.currentPrice) {
+        // Fallback: check manual price tracker by ISIN
+        const isin = asset.isin || asset.securityData?.isin;
+        if (isin) {
+          const manualTracker = await ManualPriceTrackersCollection.findOneAsync({
+            isin,
+            isActive: true,
+            latestPrice: { $ne: null }
+          });
+          if (manualTracker) {
+            console.log(`[Reverse Convertible] Using manual scraper price for ${fullTicker} (${isin}): ${manualTracker.latestPrice}`);
+            return {
+              currentPrice: manualTracker.latestPrice,
+              priceDate: manualTracker.lastScrapedAt,
+              priceSource: 'manual_scraper',
+              hasCurrentData: true
+            };
+          }
+        }
+
         console.warn(`[Reverse Convertible] No market data for ${fullTicker}`);
         return {
           currentPrice: asset.initialPrice || 0,

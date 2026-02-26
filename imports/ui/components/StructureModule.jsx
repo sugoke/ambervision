@@ -1065,19 +1065,17 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                   <input
                     type="text"
                     inputMode="decimal"
-                    defaultValue={structureParams?.couponRate !== undefined ? structureParams.couponRate : 3.5}
+                    defaultValue={structureParams?.couponRate !== undefined ? structureParams.couponRate : 5.0}
                     style={numberInputStyle}
                     onFocus={handleInputFocus}
                     onBlur={(e) => {
                       handleInputBlur(e);
-                      // Parse and save value on blur
                       const value = e.target.value.replace(',', '.');
                       const numValue = parseFloat(value);
                       if (!isNaN(numValue)) {
                         onParamChange && onParamChange('couponRate', numValue);
                       } else {
-                        // Reset to default if invalid
-                        e.target.value = structureParams?.couponRate !== undefined ? structureParams.couponRate : 3.5;
+                        e.target.value = structureParams?.couponRate !== undefined ? structureParams.couponRate : 5.0;
                       }
                     }}
                   />
@@ -1087,40 +1085,141 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                 </div>
 
                 <div style={fieldContainerStyle}>
-                  <label style={labelStyle}>Capital Protection Barrier</label>
+                  <label style={labelStyle}>Strike Level (% of par)</label>
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                    <select
-                      value={structureParams?.barrierType || 'european'}
-                      style={{ ...selectInputStyle, width: '110px' }}
-                      onFocus={handleInputFocus}
-                      onBlur={handleInputBlur}
-                      onChange={(e) => onParamChange && onParamChange('barrierType', e.target.value)}
-                    >
-                      <option value="american">American</option>
-                      <option value="european">European</option>
-                    </select>
                     <input
-                      type="number"
-                      value={structureParams?.capitalProtectionBarrier || 100}
-                      min="0"
-                      max="100"
-                      step="1"
-                      style={{ ...numberInputStyle, width: '70px' }}
+                      type="text"
+                      inputMode="decimal"
+                      defaultValue={structureParams?.strikeLevel !== undefined ? structureParams.strikeLevel : 100}
+                      style={numberInputStyle}
                       onFocus={handleInputFocus}
-                      onBlur={handleInputBlur}
-                      onChange={(e) => onParamChange && onParamChange('capitalProtectionBarrier', parseInt(e.target.value) || 0)}
+                      onBlur={(e) => {
+                        handleInputBlur(e);
+                        const value = e.target.value.replace(',', '.');
+                        const numValue = parseFloat(value);
+                        if (!isNaN(numValue)) {
+                          onParamChange && onParamChange('strikeLevel', numValue);
+                        } else {
+                          e.target.value = structureParams?.strikeLevel !== undefined ? structureParams.strikeLevel : 100;
+                        }
+                      }}
                     />
                     <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>%</span>
                   </div>
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                    {structureParams?.barrierType === 'american'
-                      ? 'Continuous monitoring during product life'
-                      : 'Checked only at final observation'}
+                    Threshold for physical delivery (e.g. 72.45%)
                   </div>
                 </div>
               </div>
 
-              {/* Gearing Factor Display (Calculated) */}
+              {/* Secondary Parameters */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr 1fr',
+                gap: '1.5rem',
+                marginBottom: '2rem'
+              }}>
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Denomination</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    defaultValue={structureParams?.denomination !== undefined ? structureParams.denomination : 1000}
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={(e) => {
+                      handleInputBlur(e);
+                      const value = e.target.value.replace(',', '.');
+                      const numValue = parseFloat(value);
+                      if (!isNaN(numValue)) {
+                        onParamChange && onParamChange('denomination', numValue);
+                      } else {
+                        e.target.value = structureParams?.denomination !== undefined ? structureParams.denomination : 1000;
+                      }
+                    }}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Note denomination (currency)
+                  </div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Par Amount</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    defaultValue={structureParams?.parAmount !== undefined ? structureParams.parAmount : 1000}
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={(e) => {
+                      handleInputBlur(e);
+                      const value = e.target.value.replace(',', '.');
+                      const numValue = parseFloat(value);
+                      if (!isNaN(numValue)) {
+                        onParamChange && onParamChange('parAmount', numValue);
+                      } else {
+                        e.target.value = structureParams?.parAmount !== undefined ? structureParams.parAmount : 1000;
+                      }
+                    }}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Par amount of one underlying bond
+                  </div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Accrued Interest at Redemption (%)</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    defaultValue={structureParams?.accruedInterestAtRedemption !== undefined ? structureParams.accruedInterestAtRedemption : 0}
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={(e) => {
+                      handleInputBlur(e);
+                      const value = e.target.value.replace(',', '.');
+                      const numValue = parseFloat(value);
+                      if (!isNaN(numValue)) {
+                        onParamChange && onParamChange('accruedInterestAtRedemption', numValue);
+                      } else {
+                        e.target.value = structureParams?.accruedInterestAtRedemption !== undefined ? structureParams.accruedInterestAtRedemption : 0;
+                      }
+                    }}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Accrued interest at redemption date (% of par)
+                  </div>
+                </div>
+              </div>
+
+              {/* Barrier Type */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: '1.5rem',
+                marginBottom: '2rem'
+              }}>
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Barrier Observation</label>
+                  <select
+                    value={structureParams?.barrierType || 'european'}
+                    style={selectInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('barrierType', e.target.value)}
+                  >
+                    <option value="european">European (at maturity)</option>
+                    <option value="american">American (continuous)</option>
+                  </select>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    {structureParams?.barrierType === 'american'
+                      ? 'Strike monitored continuously during product life'
+                      : 'Strike checked only at final observation date'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Calculated Parameters Display */}
               <div style={{
                 background: 'var(--bg-tertiary)',
                 border: '1px solid var(--border-color)',
@@ -1154,7 +1253,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                       marginBottom: '0.5rem',
                       fontWeight: '600'
                     }}>
-                      Gearing Factor
+                      Conversion Ratio
                     </div>
                     <div style={{
                       fontSize: '1.5rem',
@@ -1162,7 +1261,14 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                       color: 'var(--accent-color)',
                       fontFamily: 'monospace'
                     }}>
-                      {(1 / ((structureParams?.capitalProtectionBarrier || 100) / 100)).toFixed(2)}x
+                      {(() => {
+                        const denom = structureParams?.denomination || 1000;
+                        const strike = structureParams?.strikeLevel || 100;
+                        const accrued = structureParams?.accruedInterestAtRedemption || 0;
+                        const par = structureParams?.parAmount || 1000;
+                        const ratio = denom / ((strike + accrued) / 100 * par);
+                        return ratio.toFixed(4);
+                      })()}
                     </div>
                     <div style={{
                       fontSize: '0.7rem',
@@ -1170,9 +1276,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                       marginTop: '0.5rem',
                       lineHeight: '1.4'
                     }}>
-                      Downside participation below barrier
-                      <br />
-                      Formula: 1 ÷ (barrier ÷ 100)
+                      Denomination / ((Strike + Accrued) / 100 x Par)
                     </div>
                   </div>
 
@@ -1188,19 +1292,30 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                       marginBottom: '0.5rem',
                       fontWeight: '600'
                     }}>
-                      Example Scenario
+                      Example: Bond at {((structureParams?.strikeLevel || 100) - 10).toFixed(0)}%
                     </div>
                     <div style={{
                       fontSize: '0.8rem',
                       color: 'var(--text-secondary)',
                       lineHeight: '1.6'
                     }}>
-                      If bond at 95% (−5%):<br />
-                      <span style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                        100% + (−5% × {(1 / ((structureParams?.capitalProtectionBarrier || 100) / 100)).toFixed(2)}) + {structureParams?.couponRate || 3.5}%
-                      </span>
-                      <br />
-                      = <strong>{(100 + (-5 * (1 / ((structureParams?.capitalProtectionBarrier || 100) / 100))) + (structureParams?.couponRate || 3.5)).toFixed(1)}%</strong>
+                      {(() => {
+                        const strike = structureParams?.strikeLevel || 100;
+                        const accrued = structureParams?.accruedInterestAtRedemption || 0;
+                        const coupon = structureParams?.couponRate || 5.0;
+                        const finalLevel = strike - 10;
+                        const deliveryPct = (finalLevel / (strike + accrued)) * 100;
+                        return (
+                          <>
+                            Physical delivery value:<br />
+                            <span style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                              {finalLevel}% / ({strike}% + {accrued}%) x 100 = {deliveryPct.toFixed(2)}%
+                            </span>
+                            <br />
+                            Total = <strong>{(deliveryPct + coupon).toFixed(2)}%</strong> (incl. coupon)
+                          </>
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>
@@ -1220,12 +1335,12 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                   ℹ️ How Reverse Convertible (Bond) Works:
                 </div>
                 <ul style={{ margin: '0', paddingLeft: '1.5rem' }}>
-                  <li><strong>Guaranteed Coupon:</strong> {structureParams?.couponRate || 3.5}% paid at maturity regardless of bond performance</li>
-                  <li><strong>Above Barrier ({structureParams?.capitalProtectionBarrier || 100}%):</strong> Full capital protection → 100% + {structureParams?.couponRate || 3.5}% coupon</li>
-                  <li><strong>Below Barrier:</strong> Geared downside exposure → 100% + (performance × {(1 / ((structureParams?.capitalProtectionBarrier || 100) / 100)).toFixed(2)}x) + {structureParams?.couponRate || 3.5}% coupon</li>
-                  <li><strong>{structureParams?.barrierType === 'american' ? 'American Barrier:' : 'European Barrier:'}</strong> {structureParams?.barrierType === 'american' ? 'Monitored continuously (any intraday touch counts)' : 'Checked only at final observation date'}</li>
+                  <li><strong>Guaranteed Coupon:</strong> {structureParams?.couponRate || 5.0}% paid at maturity regardless of bond performance</li>
+                  <li><strong>Above Strike ({structureParams?.strikeLevel || 100}%):</strong> Cash settlement at 100% of denomination + coupon</li>
+                  <li><strong>At or Below Strike:</strong> Physical delivery of bonds via conversion ratio + coupon</li>
+                  <li><strong>Conversion Ratio:</strong> Denomination / ((Strike + Accrued Interest) x Par / 100)</li>
+                  <li><strong>{structureParams?.barrierType === 'american' ? 'American Observation:' : 'European Observation:'}</strong> {structureParams?.barrierType === 'american' ? 'Monitored continuously (any intraday touch counts)' : 'Checked only at final observation date'}</li>
                   <li><strong>Bond Underlying:</strong> This template is designed for reverse convertibles on bond underlyings</li>
-                  <li><strong>Best for:</strong> Investors seeking high income with full capital protection on investment-grade bonds</li>
                 </ul>
               </div>
             </div>

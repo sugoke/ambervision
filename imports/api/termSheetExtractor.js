@@ -28,26 +28,42 @@ if (Meteor.isServer) {
    * @param {string} userId - The user ID who uploaded
    * @returns {Object|null} - The termSheet object to store in the product, or null on failure
    */
-  function saveTermSheetFile(base64Data, product, productId, userId) {
+  /**
+   * Build termSheet metadata (URL, filename) without writing the file yet.
+   * This is called BEFORE product insertion so the termSheet field is included
+   * in the initial insert, avoiding race conditions with Meteor hot-reload.
+   */
+  function buildTermSheetMetadata(product, userId) {
+    const isin = product.isin || 'NO_ISIN';
+    const title = product.title || 'Untitled_Product';
+
+    const sanitizedIsin = isin.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const sanitizedTitle = title.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+    const sanitizedFilename = `${sanitizedIsin}_${sanitizedTitle}.pdf`;
+
+    return {
+      url: `/termsheets/${sanitizedFilename}`,
+      filename: sanitizedFilename,
+      originalFilename: 'termsheet.pdf',
+      uploadedAt: new Date(),
+      uploadedBy: userId
+    };
+  }
+
+  /**
+   * Write the termsheet PDF file to disk.
+   * Called AFTER product insertion. In dev mode, writing to public/ triggers
+   * a Meteor hot-reload, but the product already has the termSheet field set.
+   */
+  function writeTermSheetFile(base64Data, termSheetMetadata) {
     try {
-      console.log('[TermSheetExtractor] Saving term sheet file...');
-
-      // Generate filename from ISIN and product title
-      const isin = product.isin || 'NO_ISIN';
-      const title = product.title || 'Untitled_Product';
-
-      // Sanitize ISIN and title for filename - remove special characters
-      const sanitizedIsin = isin.replace(/[^a-zA-Z0-9_-]/g, '_');
-      const sanitizedTitle = title.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
-      const sanitizedFilename = `${sanitizedIsin}_${sanitizedTitle}.pdf`;
+      console.log('[TermSheetExtractor] Writing term sheet file to disk...');
 
       // Determine the term sheets directory
       let termsheetsDir;
       if (process.env.TERMSHEETS_PATH) {
-        // Production: use persistent volume mount
         termsheetsDir = process.env.TERMSHEETS_PATH;
       } else {
-        // Development: use public directory
         let projectRoot = process.cwd();
         if (projectRoot.includes('.meteor')) {
           projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
@@ -63,23 +79,14 @@ if (Meteor.isServer) {
 
       // Decode base64 to buffer and write file
       const fileBuffer = Buffer.from(base64Data, 'base64');
-      const filePath = path.join(termsheetsDir, sanitizedFilename);
+      const filePath = path.join(termsheetsDir, termSheetMetadata.filename);
       fs.writeFileSync(filePath, fileBuffer);
 
       console.log(`[TermSheetExtractor] Term sheet saved: ${filePath}`);
-
-      // Return the termSheet object to store in the product
-      return {
-        url: `/termsheets/${sanitizedFilename}`,
-        filename: sanitizedFilename,
-        originalFilename: 'termsheet.pdf', // We don't have the original filename here
-        uploadedAt: new Date(),
-        uploadedBy: userId
-      };
+      return true;
     } catch (error) {
-      console.error('[TermSheetExtractor] Failed to save term sheet file:', error);
-      // Don't throw - term sheet saving is not critical to product creation
-      return null;
+      console.error('[TermSheetExtractor] Failed to write term sheet file:', error);
+      return false;
     }
   }
 
@@ -1600,7 +1607,16 @@ CRITICAL: Return ONLY the JSON object with no additional text, explanations, or 
 
       console.log('[TermSheetExtractor] Inserting product into database...');
 
-      // Insert into database
+      // Build termSheet metadata BEFORE inserting the product so it's included
+      // in the initial insert. This avoids a race condition where writing the PDF
+      // to public/ triggers a Meteor hot-reload before the separate updateAsync
+      // can attach the termSheet field.
+      const termSheetMetadata = buildTermSheetMetadata(productDocument, session.userId);
+      if (termSheetMetadata) {
+        productDocument.termSheet = termSheetMetadata;
+      }
+
+      // Insert into database (with termSheet field already set)
       let productId;
       try {
         productId = await ProductsCollection.insertAsync(productDocument);
@@ -1612,18 +1628,12 @@ CRITICAL: Return ONLY the JSON object with no additional text, explanations, or 
       const processingTime = Date.now() - startTime;
       console.log(`[TermSheetExtractor] Product created successfully in ${processingTime}ms, ID: ${productId}`);
 
-      // Save the term sheet PDF file so it's available on the report page
-      const termSheetData = saveTermSheetFile(fileData, productDocument, productId, session.userId);
-      if (termSheetData) {
-        try {
-          await ProductsCollection.updateAsync(productId, {
-            $set: { termSheet: termSheetData }
-          });
-          console.log(`[TermSheetExtractor] Term sheet attached to product: ${termSheetData.url}`);
-        } catch (updateError) {
-          console.error('[TermSheetExtractor] Failed to attach term sheet to product:', updateError);
-          // Not critical - product was still created successfully
-        }
+      // Write the PDF file to disk AFTER the product is in the database.
+      // In dev mode, this may trigger a Meteor hot-reload, but the product
+      // already has the termSheet field set from the initial insert.
+      if (termSheetMetadata) {
+        writeTermSheetFile(fileData, termSheetMetadata);
+        console.log(`[TermSheetExtractor] Term sheet attached to product: ${termSheetMetadata.url}`);
       }
 
       // Auto-sync to securitiesMetadata if product has ISIN

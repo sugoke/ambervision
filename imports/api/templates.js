@@ -371,7 +371,7 @@ export const BUILT_IN_TEMPLATES = [
     name: "Reverse Convertible (Bond)",
     icon: "📜",
     category: "yield_enhancement",
-    description: "Guaranteed coupon at maturity with capital protection barrier on bond underlyings. Above barrier: full capital return. Below barrier: geared downside exposure (1/barrier ratio).",
+    description: "Reverse convertible on bond underlying. Guaranteed coupon at maturity. Above strike: 100% cash redemption. At or below strike: physical delivery of bonds via conversion ratio.",
     isBuiltIn: true,
     createdAt: new Date(),
     updatedAt: new Date(),

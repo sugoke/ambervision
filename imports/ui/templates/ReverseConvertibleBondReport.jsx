@@ -1,14 +1,15 @@
 import React from 'react';
 import StructuredProductChart from '../components/StructuredProductChart.jsx';
-import UnderlyingNews from '../components/UnderlyingNews.jsx';
 import PriceSparkline from '../components/PriceSparkline.jsx';
 
 /**
  * Reverse Convertible (Bond) Report Component
  *
- * Displays comprehensive evaluation results for Reverse Convertible products on bond underlyings.
- * Shows underlying performance, capital protection barrier, guaranteed coupon,
- * gearing factor, and redemption calculations.
+ * Displays evaluation results for Reverse Convertible products on bond underlyings
+ * using the physical delivery / conversion ratio model.
+ *
+ * Shows: strike level, conversion ratio, settlement type (cash/physical delivery),
+ * guaranteed coupon, underlying performance, and redemption calculations.
  *
  * CSS Styling Reference: PhoenixReport.jsx
  */
@@ -36,7 +37,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
         alignItems: 'center',
         gap: '0.5rem'
       }}>
-        =� Reverse Convertible (Bond) Evaluation Results
+        Reverse Convertible (Bond) Evaluation Results
       </div>
 
       {/* Product Structure Summary */}
@@ -57,15 +58,15 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
           gap: '0.5rem',
           fontWeight: '700'
         }}>
-          =� Product Structure
+          Product Structure
         </h4>
 
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
           gap: '1rem'
         }}>
-          {/* Capital Protection Barrier */}
+          {/* Strike Level */}
           <div style={{
             background: 'rgba(255, 255, 255, 0.15)',
             padding: '1.25rem',
@@ -80,7 +81,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
               fontWeight: '700',
               letterSpacing: '0.5px'
             }}>
-              =� Capital Protection
+              Strike Level
             </div>
             <div style={{
               fontSize: '1.8rem',
@@ -89,14 +90,14 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
               marginBottom: '0.5rem',
               fontFamily: 'monospace'
             }}>
-              {reverseConvertibleParams.capitalProtectionBarrierFormatted}
+              {reverseConvertibleParams.strikeLevelFormatted}
             </div>
             <div style={{
               fontSize: '0.7rem',
               color: 'rgba(255, 255, 255, 0.75)',
               lineHeight: '1.4'
             }}>
-              Protection barrier level
+              Physical delivery threshold
             </div>
           </div>
 
@@ -115,12 +116,12 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
               fontWeight: '700',
               letterSpacing: '0.5px'
             }}>
-              =� Guaranteed Coupon
+              Guaranteed Coupon
             </div>
             <div style={{
               fontSize: '1.8rem',
               fontWeight: '700',
-              color: '#10b981',
+              color: 'white',
               marginBottom: '0.5rem',
               fontFamily: 'monospace'
             }}>
@@ -134,7 +135,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
             </div>
           </div>
 
-          {/* Gearing Factor */}
+          {/* Conversion Ratio */}
           <div style={{
             background: 'rgba(255, 255, 255, 0.15)',
             padding: '1.25rem',
@@ -149,7 +150,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
               fontWeight: '700',
               letterSpacing: '0.5px'
             }}>
-              � Gearing Factor
+              Conversion Ratio
             </div>
             <div style={{
               fontSize: '1.8rem',
@@ -158,16 +159,17 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
               marginBottom: '0.5rem',
               fontFamily: 'monospace'
             }}>
-              {reverseConvertibleParams.gearingFactorFormatted}
+              {reverseConvertibleParams.conversionRatioFormatted}
             </div>
             <div style={{
               fontSize: '0.7rem',
               color: 'rgba(255, 255, 255, 0.75)',
               lineHeight: '1.4'
             }}>
-              Downside participation below barrier
+              Bonds delivered per note
             </div>
           </div>
+
         </div>
       </div>
 
@@ -187,7 +189,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
             alignItems: 'center',
             gap: '0.5rem'
           }}>
-            =� Underlying Assets Performance
+            Underlying Assets Performance
           </h4>
 
           <div style={{
@@ -253,7 +255,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                       fontWeight: '600',
                       color: 'white'
                     }}>
-                      {underlying.ticker?.substring(0, 2).toUpperCase()}
+                      📜
                     </div>
                   </div>
 
@@ -295,15 +297,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                       alignItems: 'center',
                       gap: '0.5rem'
                     }}>
-                      <span>{underlying.exchange}</span>
-                      <span>"</span>
-                      <span>{underlying.currency}</span>
-                      {underlying.isin && (
-                        <>
-                          <span>"</span>
-                          <span>ISIN: {underlying.isin}</span>
-                        </>
-                      )}
+                      {underlying.currency && <span>Denominated in {underlying.currency}</span>}
                     </div>
                   </div>
                 </div>
@@ -343,6 +337,34 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                     </div>
                   </div>
 
+                  {/* Strike Level — always show, fall back to product-level value */}
+                  <div style={{
+                    background: 'var(--bg-primary)',
+                    padding: '0.85rem',
+                    borderRadius: '6px',
+                    textAlign: 'center',
+                    border: '1px solid rgba(52, 211, 153, 0.3)'
+                  }}>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      color: 'var(--text-secondary)',
+                      textTransform: 'uppercase',
+                      marginBottom: '0.5rem',
+                      fontWeight: '600',
+                      letterSpacing: '0.5px'
+                    }}>
+                      Strike Level
+                    </div>
+                    <div style={{
+                      fontSize: '1.1rem',
+                      fontWeight: '700',
+                      color: '#34d399',
+                      fontFamily: 'monospace'
+                    }}>
+                      {underlying.strikeLevelFormatted || reverseConvertibleParams.strikeLevelFormatted || 'N/A'}
+                    </div>
+                  </div>
+
                   {/* Current/Redemption Level */}
                   <div style={{
                     background: 'var(--bg-primary)',
@@ -368,7 +390,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                     }}>
                       {underlying.currentPriceFormatted}
                       {underlying.priceSource === 'initial_fallback_error' && (
-                        <span style={{ fontSize: '0.7rem', marginLeft: '0.25rem', color: '#ef4444' }} title="Missing data">�</span>
+                        <span style={{ fontSize: '0.7rem', marginLeft: '0.25rem', color: '#ef4444' }} title="Missing data">!</span>
                       )}
                     </div>
                     {underlying.priceDateFormatted && (
@@ -422,16 +444,16 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                     </div>
                   </div>
 
-                  {/* Barrier Distance */}
+                  {/* Strike Distance */}
                   <div style={{
-                    background: underlying.barrierStatus === 'breached' ? 'rgba(239, 68, 68, 0.1)' :
-                               underlying.barrierStatus === 'near' ? 'rgba(245, 158, 11, 0.1)' : 'rgba(16, 185, 129, 0.1)',
+                    background: underlying.strikeStatus === 'breached' ? 'rgba(239, 68, 68, 0.1)' :
+                               underlying.strikeStatus === 'near' ? 'rgba(245, 158, 11, 0.1)' : 'rgba(16, 185, 129, 0.1)',
                     padding: '0.85rem',
                     borderRadius: '6px',
                     textAlign: 'center',
                     border: `1px solid ${
-                      underlying.barrierStatus === 'breached' ? 'rgba(239, 68, 68, 0.3)' :
-                      underlying.barrierStatus === 'near' ? 'rgba(245, 158, 11, 0.3)' : 'rgba(16, 185, 129, 0.3)'
+                      underlying.strikeStatus === 'breached' ? 'rgba(239, 68, 68, 0.3)' :
+                      underlying.strikeStatus === 'near' ? 'rgba(245, 158, 11, 0.3)' : 'rgba(16, 185, 129, 0.3)'
                     }`
                   }}>
                     <div style={{
@@ -442,25 +464,25 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                       fontWeight: '600',
                       letterSpacing: '0.5px'
                     }}>
-                      Barrier Distance
+                      Strike Distance
                     </div>
                     <div style={{
                       fontSize: '1.1rem',
                       fontWeight: '700',
-                      color: underlying.barrierStatus === 'breached' ? '#ef4444' :
-                             underlying.barrierStatus === 'near' ? '#f59e0b' : '#10b981',
+                      color: underlying.strikeStatus === 'breached' ? '#ef4444' :
+                             underlying.strikeStatus === 'near' ? '#f59e0b' : '#10b981',
                       fontFamily: 'monospace'
                     }}>
-                      {underlying.distanceToBarrierFormatted}
+                      {underlying.distanceToStrikeFormatted}
                     </div>
                     <div style={{
                       fontSize: '0.7rem',
-                      color: underlying.barrierStatus === 'breached' ? '#ef4444' :
-                             underlying.barrierStatus === 'near' ? '#f59e0b' : '#10b981',
+                      color: underlying.strikeStatus === 'breached' ? '#ef4444' :
+                             underlying.strikeStatus === 'near' ? '#f59e0b' : '#10b981',
                       marginTop: '0.35rem',
                       fontWeight: '600'
                     }}>
-                      {underlying.barrierStatusText}
+                      {underlying.strikeStatusText}
                     </div>
                   </div>
                 </div>
@@ -486,8 +508,8 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
             alignItems: 'center',
             gap: '0.5rem'
           }}>
-            =� Performance Overview
-            {reverseConvertibleParams.capitalProtectionBarrier && (
+            Performance Overview
+            {reverseConvertibleParams.strikeLevel && (
               <span style={{
                 fontSize: '0.75rem',
                 background: '#10b981',
@@ -496,7 +518,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                 borderRadius: '4px',
                 fontWeight: '500'
               }}>
-                Protection at {reverseConvertibleParams.capitalProtectionBarrier}%
+                Strike at {reverseConvertibleParams.strikeLevelFormatted}
               </span>
             )}
           </h4>
@@ -514,21 +536,40 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
               gap: '1rem'
             }}>
               {underlyings.map((underlying, index) => {
-                const performance = underlying.performance || 0;
-                const maxRange = 150;
-                const zeroPosition = 50;
+                // Bond chart: zero = initial price. All positions are absolute price deviations (pp of par).
+                const initialPrice = underlying.initialPrice || 0;
+                const currentPrice = underlying.currentPrice || 0;
+                const strikeLevel = underlying.strikeLevel || reverseConvertibleParams.strikeLevel || 0;
 
+                // Deviations from initial price in percentage-points of par
+                const barDev = currentPrice - initialPrice;       // e.g. 67.04 - 67.38 = -0.34pp
+                const strikeDev = strikeLevel - initialPrice;     // e.g. 72.45 - 67.38 = +5.07pp (right of zero)
+
+                // Scale: right side must fit the strike + margin; left side fits the bar + margin
+                const rightMax = Math.max(strikeDev * 1.4, Math.abs(barDev) * 1.4, 3);
+                const leftMax = Math.max(Math.abs(barDev) * 1.4, rightMax * 0.25, 1.5);
+                const totalRange = leftMax + rightMax;
+
+                // Zero (= initial price) position as % of bar width
+                const zeroPos = (leftMax / totalRange) * 100;
+
+                // Bar position
                 let barLeft = 0;
                 let barWidth = 0;
-
-                if (performance >= 0) {
-                  barLeft = zeroPosition;
-                  barWidth = Math.min(performance, 100) * (100 - zeroPosition) / 100;
+                if (barDev >= 0) {
+                  barLeft = zeroPos;
+                  barWidth = Math.min((barDev / totalRange) * 100, 100 - zeroPos);
                 } else {
-                  const absPerf = Math.abs(performance);
-                  barWidth = Math.min(absPerf, 50) * zeroPosition / 50;
-                  barLeft = zeroPosition - barWidth;
+                  barWidth = Math.min((Math.abs(barDev) / totalRange) * 100, zeroPos);
+                  barLeft = zeroPos - barWidth;
                 }
+
+                // Strike line position (to the right when strikeLevel > initialPrice)
+                const strikePos = Math.max(1, Math.min(99, zeroPos + (strikeDev / totalRange) * 100));
+
+                // Axis labels (actual bond prices in % of par)
+                const leftEdgePrice = initialPrice - leftMax;
+                const rightEdgePrice = initialPrice + rightMax;
 
                 return (
                   <div key={index} style={{
@@ -549,7 +590,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                     }}>
                       {underlying.ticker}
                       {underlying.isWorstPerforming && (
-                        <span style={{ fontSize: '0.75rem', color: '#ef4444' }} title="Worst Performing">�</span>
+                        <span style={{ fontSize: '0.75rem', color: '#ef4444' }} title="Worst Performing">!</span>
                       )}
                     </div>
 
@@ -561,10 +602,10 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                       borderRadius: '4px',
                       overflow: 'visible'
                     }}>
-                      {/* Zero line */}
+                      {/* Zero line = initial price */}
                       <div style={{
                         position: 'absolute',
-                        left: `${zeroPosition}%`,
+                        left: `${zeroPos}%`,
                         top: 0,
                         bottom: 0,
                         width: '2px',
@@ -572,11 +613,11 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                         zIndex: 1
                       }} />
 
-                      {/* Protection barrier line */}
-                      {reverseConvertibleParams.capitalProtectionBarrier && (
+                      {/* Strike level line (to the right for strike > initial) */}
+                      {strikeLevel > 0 && (
                         <div style={{
                           position: 'absolute',
-                          left: `${zeroPosition + (reverseConvertibleParams.capitalProtectionBarrier - 100) * (zeroPosition / 50)}%`,
+                          left: `${strikePos}%`,
                           top: '-8px',
                           bottom: '-8px',
                           width: '3px',
@@ -599,31 +640,31 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                               borderRadius: '3px',
                               boxShadow: '0 0 6px rgba(52, 211, 153, 0.3)'
                             }}>
-                              Barrier
+                              Strike {underlying.strikeLevelFormatted || reverseConvertibleParams.strikeLevelFormatted}
                             </div>
                           )}
                         </div>
                       )}
 
-                      {/* Performance bar */}
+                      {/* Price deviation bar */}
                       <div style={{
                         position: 'absolute',
                         left: `${barLeft}%`,
                         top: '4px',
                         bottom: '4px',
                         width: `${barWidth}%`,
-                        background: performance >= 0
+                        background: barDev >= 0
                           ? 'linear-gradient(90deg, #10b981 0%, #059669 100%)'
                           : 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)',
                         borderRadius: '3px',
                         transition: 'all 0.3s ease',
-                        boxShadow: performance >= 0
+                        boxShadow: barDev >= 0
                           ? '0 2px 8px rgba(16, 185, 129, 0.3)'
                           : '0 2px 8px rgba(239, 68, 68, 0.3)',
                         zIndex: 3
                       }} />
 
-                      {/* Scale markers */}
+                      {/* Scale markers (price axis in % of par) */}
                       {index === underlyings.length - 1 && (
                         <>
                           <div style={{
@@ -634,19 +675,20 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                             color: 'var(--text-muted)',
                             fontFamily: 'monospace'
                           }}>
-                            -50%
+                            {leftEdgePrice.toFixed(2)}%
                           </div>
                           <div style={{
                             position: 'absolute',
-                            left: `${zeroPosition}%`,
+                            left: `${zeroPos}%`,
                             bottom: '-20px',
                             transform: 'translateX(-50%)',
                             fontSize: '0.65rem',
                             color: 'var(--text-secondary)',
                             fontWeight: '600',
-                            fontFamily: 'monospace'
+                            fontFamily: 'monospace',
+                            whiteSpace: 'nowrap'
                           }}>
-                            0%
+                            {initialPrice.toFixed(2)}% ★
                           </div>
                           <div style={{
                             position: 'absolute',
@@ -656,21 +698,21 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                             color: 'var(--text-muted)',
                             fontFamily: 'monospace'
                           }}>
-                            +100%
+                            {rightEdgePrice.toFixed(2)}%
                           </div>
                         </>
                       )}
                     </div>
 
-                    {/* Performance value */}
+                    {/* Current price value */}
                     <div style={{
                       fontSize: '0.9rem',
                       fontWeight: '700',
-                      color: performance >= 0 ? '#10b981' : '#ef4444',
+                      color: barDev >= 0 ? '#10b981' : '#ef4444',
                       textAlign: 'right',
                       fontFamily: 'monospace'
                     }}>
-                      {underlying.performanceFormatted}
+                      {underlying.currentPriceFormatted}
                     </div>
                   </div>
                 );
@@ -690,12 +732,11 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <div style={{
-                  width: '20px',
-                  height: '12px',
-                  background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
-                  borderRadius: '2px'
+                  width: '2px',
+                  height: '16px',
+                  background: 'var(--border-color)'
                 }} />
-                <span>Positive Performance</span>
+                <span>★ Initial Price (reference zero)</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <div style={{
@@ -704,9 +745,18 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                   background: 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)',
                   borderRadius: '2px'
                 }} />
-                <span>Negative Performance</span>
+                <span>Price below initial</span>
               </div>
-              {reverseConvertibleParams.capitalProtectionBarrier && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <div style={{
+                  width: '20px',
+                  height: '12px',
+                  background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
+                  borderRadius: '2px'
+                }} />
+                <span>Price above initial</span>
+              </div>
+              {reverseConvertibleParams.strikeLevel && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <div style={{
                     width: '3px',
@@ -714,7 +764,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                     background: '#34d399',
                     boxShadow: '0 0 6px rgba(52, 211, 153, 0.5)'
                   }} />
-                  <span>Protection Barrier ({reverseConvertibleParams.capitalProtectionBarrier}%)</span>
+                  <span>Strike ({reverseConvertibleParams.strikeLevelFormatted})</span>
                 </div>
               )}
             </div>
@@ -722,40 +772,8 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
         </div>
       )}
 
-      {/* Latest News Section */}
-      {underlyings.length > 0 && (
-        <div style={{
-          background: 'var(--bg-secondary)',
-          padding: '1.5rem',
-          borderRadius: '6px',
-          marginBottom: '1.5rem'
-        }}>
-          <h4 style={{
-            margin: '0 0 1rem 0',
-            fontSize: '1rem',
-            color: 'var(--text-primary)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem'
-          }}>
-            =� Latest News
-          </h4>
-          <div style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '1rem'
-          }}>
-            {underlyings.map((underlying, index) => (
-              <UnderlyingNews
-                key={index}
-                ticker={underlying.ticker}
-              />
-            ))}
-          </div>
-        </div>
-      )}
 
-      {/* Capital Protection Analysis */}
+      {/* Strike Analysis */}
       {basketAnalysis && (
         <div style={{
           background: 'var(--bg-secondary)',
@@ -771,7 +789,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
             alignItems: 'center',
             gap: '0.5rem'
           }}>
-            =� Capital Protection Analysis
+            Strike Analysis
             <span style={{
               fontSize: '0.8rem',
               background: basketAnalysis.breachedCount > 0 ? '#ef4444' :
@@ -781,7 +799,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
               borderRadius: '4px',
               fontWeight: '500'
             }}>
-              {basketAnalysis.capitalProtectionBarrier}% Barrier
+              {reverseConvertibleParams.strikeLevelFormatted} Strike
             </span>
           </h4>
 
@@ -832,7 +850,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                 color: 'var(--text-secondary)',
                 textTransform: 'uppercase'
               }}>
-                Above Barrier
+                Above Strike
               </div>
             </div>
 
@@ -856,7 +874,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                   color: 'var(--text-secondary)',
                   textTransform: 'uppercase'
                 }}>
-                  Near Barrier
+                  Near Strike
                 </div>
               </div>
             )}
@@ -881,7 +899,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                   color: 'var(--text-secondary)',
                   textTransform: 'uppercase'
                 }}>
-                  Breached Barrier
+                  At/Below Strike
                 </div>
               </div>
             )}
@@ -892,64 +910,63 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
       {/* Redemption Calculation */}
       {redemption && (
         <div style={{
-          background: redemption.barrierBreached
-            ? 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)'
+          background: redemption.strikeBreached
+            ? 'rgba(249, 115, 22, 0.15)'
             : 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
           padding: '1.5rem',
           borderRadius: '8px',
           marginBottom: '1.5rem',
-          border: redemption.barrierBreached
-            ? '2px solid #f87171'
+          border: redemption.strikeBreached
+            ? '1px solid rgba(249, 115, 22, 0.35)'
             : '2px solid #34d399',
-          boxShadow: redemption.barrierBreached
-            ? '0 8px 24px rgba(239, 68, 68, 0.3)'
+          boxShadow: redemption.strikeBreached
+            ? '0 4px 16px rgba(249, 115, 22, 0.1)'
             : '0 8px 24px rgba(16, 185, 129, 0.3)'
         }}>
           <h4 style={{
             margin: '0 0 1rem 0',
             fontSize: '1.1rem',
-            color: 'white',
+            color: redemption.strikeBreached ? '#ea580c' : 'white',
             display: 'flex',
             alignItems: 'center',
             gap: '0.5rem',
             fontWeight: '700'
           }}>
-            =� Redemption Calculation
-            {redemption.barrierBreached && (
-              <span style={{
-                fontSize: '0.7rem',
-                background: 'rgba(255, 255, 255, 0.25)',
-                color: 'white',
-                padding: '3px 8px',
-                borderRadius: '4px',
-                fontWeight: '500'
-              }}>
-                Barrier Breached
-              </span>
-            )}
+            Redemption Calculation
+            <span style={{
+              fontSize: '0.7rem',
+              background: redemption.strikeBreached ? 'rgba(249, 115, 22, 0.2)' : 'rgba(255, 255, 255, 0.25)',
+              color: redemption.strikeBreached ? '#ea580c' : 'white',
+              padding: '3px 8px',
+              borderRadius: '4px',
+              fontWeight: '500'
+            }}>
+              {redemption.settlementTypeLabel}
+            </span>
           </h4>
 
           <div style={{
-            background: 'rgba(255, 255, 255, 0.15)',
+            background: redemption.strikeBreached ? 'rgba(249, 115, 22, 0.08)' : 'rgba(255, 255, 255, 0.15)',
             padding: '1rem',
             borderRadius: '6px',
             marginBottom: '1rem',
             fontSize: '0.8rem',
-            color: 'rgba(255, 255, 255, 0.95)',
+            color: redemption.strikeBreached ? 'var(--text-secondary)' : 'rgba(255, 255, 255, 0.95)',
             fontStyle: 'italic',
-            border: '1px solid rgba(255, 255, 255, 0.2)'
+            border: redemption.strikeBreached ? '1px solid rgba(249, 115, 22, 0.15)' : '1px solid rgba(255, 255, 255, 0.2)'
           }}>
             {redemption.capitalExplanation}
           </div>
 
           {/* Total Redemption Value - Large Display */}
           <div style={{
-            background: 'white',
+            background: redemption.strikeBreached ? 'var(--bg-secondary)' : 'white',
             padding: '2rem',
             borderRadius: '8px',
             textAlign: 'center',
             marginBottom: '1.5rem',
-            boxShadow: '0 4px 16px rgba(0, 0, 0, 0.1)'
+            boxShadow: redemption.strikeBreached ? 'none' : '0 4px 16px rgba(0, 0, 0, 0.1)',
+            border: redemption.strikeBreached ? '1px solid rgba(249, 115, 22, 0.2)' : 'none'
           }}>
             <div style={{
               fontSize: '0.85rem',
@@ -964,7 +981,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
             <div style={{
               fontSize: '3rem',
               fontWeight: '800',
-              color: redemption.barrierBreached ? '#ef4444' : '#10b981',
+              color: redemption.strikeBreached ? '#ea580c' : '#10b981',
               fontFamily: 'monospace',
               lineHeight: '1'
             }}>
@@ -982,30 +999,30 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
           {/* Breakdown Components */}
           <div style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+            gridTemplateColumns: redemption.strikeBreached ? '1fr 1fr 1fr' : 'repeat(auto-fit, minmax(200px, 1fr))',
             gap: '1rem'
           }}>
             {/* Capital Component */}
             <div style={{
-              background: 'rgba(255, 255, 255, 0.15)',
+              background: redemption.strikeBreached ? 'rgba(249, 115, 22, 0.08)' : 'rgba(255, 255, 255, 0.15)',
               padding: '1.25rem',
               borderRadius: '6px',
-              border: '1px solid rgba(255, 255, 255, 0.2)'
+              border: redemption.strikeBreached ? '1px solid rgba(249, 115, 22, 0.15)' : '1px solid rgba(255, 255, 255, 0.2)'
             }}>
               <div style={{
                 fontSize: '0.7rem',
-                color: 'rgba(255, 255, 255, 0.85)',
+                color: redemption.strikeBreached ? '#ea580c' : 'rgba(255, 255, 255, 0.85)',
                 textTransform: 'uppercase',
                 marginBottom: '0.75rem',
                 fontWeight: '700',
                 letterSpacing: '0.5px'
               }}>
-                =� Capital Return
+                {redemption.strikeBreached ? 'Delivery Value' : 'Capital Return'}
               </div>
               <div style={{
                 fontSize: '1.8rem',
                 fontWeight: '700',
-                color: 'white',
+                color: redemption.strikeBreached ? 'var(--text-primary)' : 'white',
                 marginBottom: '0.5rem',
                 fontFamily: 'monospace'
               }}>
@@ -1013,29 +1030,29 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
               </div>
               <div style={{
                 fontSize: '0.7rem',
-                color: 'rgba(255, 255, 255, 0.75)',
+                color: redemption.strikeBreached ? 'var(--text-secondary)' : 'rgba(255, 255, 255, 0.75)',
                 lineHeight: '1.4'
               }}>
-                {redemption.barrierBreached ? 'With geared downside' : 'Fully protected'}
+                {redemption.strikeBreached ? 'Physical delivery of bonds' : 'Cash settlement at par'}
               </div>
             </div>
 
             {/* Guaranteed Coupon */}
             <div style={{
-              background: 'rgba(255, 255, 255, 0.15)',
+              background: redemption.strikeBreached ? 'rgba(249, 115, 22, 0.08)' : 'rgba(255, 255, 255, 0.15)',
               padding: '1.25rem',
               borderRadius: '6px',
-              border: '1px solid rgba(255, 255, 255, 0.2)'
+              border: redemption.strikeBreached ? '1px solid rgba(249, 115, 22, 0.15)' : '1px solid rgba(255, 255, 255, 0.2)'
             }}>
               <div style={{
                 fontSize: '0.7rem',
-                color: 'rgba(255, 255, 255, 0.85)',
+                color: redemption.strikeBreached ? '#ea580c' : 'rgba(255, 255, 255, 0.85)',
                 textTransform: 'uppercase',
                 marginBottom: '0.75rem',
                 fontWeight: '700',
                 letterSpacing: '0.5px'
               }}>
-                =� Guaranteed Coupon
+                Guaranteed Coupon
               </div>
               <div style={{
                 fontSize: '1.8rem',
@@ -1048,11 +1065,48 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
               </div>
               <div style={{
                 fontSize: '0.7rem',
-                color: 'rgba(255, 255, 255, 0.75)'
+                color: redemption.strikeBreached ? 'var(--text-secondary)' : 'rgba(255, 255, 255, 0.75)'
               }}>
                 Always paid at maturity
               </div>
             </div>
+
+            {/* Conversion Ratio (only shown when strike breached) */}
+            {redemption.strikeBreached && (
+              <div style={{
+                background: 'rgba(249, 115, 22, 0.08)',
+                padding: '1.25rem',
+                borderRadius: '6px',
+                border: '1px solid rgba(249, 115, 22, 0.15)'
+              }}>
+                <div style={{
+                  fontSize: '0.7rem',
+                  color: '#ea580c',
+                  textTransform: 'uppercase',
+                  marginBottom: '0.75rem',
+                  fontWeight: '700',
+                  letterSpacing: '0.5px'
+                }}>
+                  Conversion Ratio
+                </div>
+                <div style={{
+                  fontSize: '1.8rem',
+                  fontWeight: '700',
+                  color: 'var(--text-primary)',
+                  marginBottom: '0.5rem',
+                  fontFamily: 'monospace'
+                }}>
+                  {redemption.conversionRatioFormatted}
+                </div>
+                <div style={{
+                  fontSize: '0.7rem',
+                  color: 'var(--text-secondary)',
+                  lineHeight: '1.4'
+                }}>
+                  Bonds per note denomination
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1073,27 +1127,27 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
             alignItems: 'center',
             gap: '0.5rem'
           }}>
-            =� Performance Evolution
+            Performance Evolution
           </h4>
           <StructuredProductChart productId={productId} height="450px" />
         </div>
       )}
 
-      {/* Reverse Convertible (Bond) Parameters Summary */}
+      {/* Parameters Summary */}
       <div style={{
         background: 'var(--bg-secondary)',
         padding: '1.5rem',
         borderRadius: '6px',
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
         gap: '1.5rem'
       }}>
         <div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-            Capital Protection Barrier
+            Strike Level
           </div>
           <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)' }}>
-            {reverseConvertibleParams.capitalProtectionBarrierFormatted}
+            {reverseConvertibleParams.strikeLevelFormatted}
           </div>
         </div>
 
@@ -1108,19 +1162,37 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
 
         <div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-            Gearing Factor
+            Conversion Ratio
           </div>
           <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)' }}>
-            {reverseConvertibleParams.gearingFactorFormatted}
+            {reverseConvertibleParams.conversionRatioFormatted}
           </div>
         </div>
 
         <div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-            Strike Level
+            Denomination
           </div>
           <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)' }}>
-            {reverseConvertibleParams.strikeFormatted}
+            {reverseConvertibleParams.denominationFormatted}
+          </div>
+        </div>
+
+        <div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+            Par Amount
+          </div>
+          <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)' }}>
+            {reverseConvertibleParams.parAmountFormatted}
+          </div>
+        </div>
+
+        <div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+            Accrued Interest
+          </div>
+          <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)' }}>
+            {reverseConvertibleParams.accruedInterestFormatted}
           </div>
         </div>
       </div>

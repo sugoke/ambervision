@@ -10,6 +10,7 @@ import Prices from './Prices.jsx';
 import CronJobsDashboard from './CronJobsDashboard.jsx';
 import NotificationsPage from './NotificationsPage.jsx';
 import ServerLogsViewer from './ServerLogsViewer.jsx';
+import ManualPriceTracker from './ManualPriceTracker.jsx';
 
 const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => {
   // Determine initial active tab based on currentSection
@@ -122,6 +123,12 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
       label: 'Logs',
       icon: '📋',
       requiredRole: 'admin'
+    },
+    {
+      id: 'priceTracker',
+      label: 'Price Tracker',
+      icon: '🔍',
+      requiredRole: 'admin'
     }
   ];
 
@@ -148,6 +155,8 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
         return <NotificationsPage key="notifications" currentUser={user} />;
       case 'logs':
         return <ServerLogsViewer key="logs" sessionId={localStorage.getItem('sessionId')} />;
+      case 'priceTracker':
+        return <ManualPriceTracker key="priceTracker" user={user} />;
       default:
         return null;
     }

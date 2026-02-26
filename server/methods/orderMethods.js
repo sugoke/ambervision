@@ -774,9 +774,9 @@ Meteor.methods({
       // Use shared PDF helper which handles buffer/base64 conversion properly
       const result = await generatePDFFromHTML(html, {
         format: 'A4',
-        marginTop: '20mm',
+        marginTop: '10mm',
         marginRight: '15mm',
-        marginBottom: '20mm',
+        marginBottom: '10mm',
         marginLeft: '15mm'
       });
 
@@ -846,9 +846,9 @@ Meteor.methods({
     const html = generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser);
     const pdfResult = await generatePDFFromHTML(html, {
       format: 'A4',
-      marginTop: '20mm',
+      marginTop: '10mm',
       marginRight: '15mm',
-      marginBottom: '20mm',
+      marginBottom: '10mm',
       marginLeft: '15mm'
     });
 
@@ -1358,7 +1358,7 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
       line-height: 1.5;
       color: #1f2937;
       background: white;
-      padding: 40px;
+      padding: 20px 40px;
     }
     .header {
       display: flex;
@@ -1476,8 +1476,8 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
       white-space: pre-wrap;
     }
     .footer {
-      margin-top: 40px;
-      padding-top: 20px;
+      margin-top: 20px;
+      padding-top: 12px;
       border-top: 1px solid #e5e7eb;
       font-size: 9pt;
       color: #9ca3af;

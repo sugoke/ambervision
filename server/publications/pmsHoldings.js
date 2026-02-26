@@ -412,3 +412,48 @@ Meteor.publish('pmsHoldings.snapshotDates', async function (sessionId = null, vi
     return this.ready();
   }
 });
+
+/**
+ * Publication for holdings linked to a specific product by ISIN
+ * Matches by isin field (primary) or linkedProductId (manual link, fallback)
+ * Used by TemplateProductReport to show client positions from bank files
+ */
+Meteor.publish('pmsHoldings.byProduct', async function(isin, sessionId = null) {
+  check(isin, Match.Maybe(String));
+  check(sessionId, Match.Maybe(String));
+
+  if (!isin) return this.ready();
+
+  try {
+    let currentUser = null;
+
+    if (sessionId) {
+      const session = await SessionsCollection.findOneAsync({
+        sessionId,
+        isActive: true,
+        expiresAt: { $gt: new Date() }
+      });
+      if (session && session.userId) {
+        currentUser = await UsersCollection.findOneAsync(session.userId);
+      }
+    } else if (this.userId) {
+      currentUser = await UsersCollection.findOneAsync(this.userId);
+    }
+
+    if (!currentUser) return this.ready();
+
+    const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
+    const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER;
+
+    if (!isAdmin && !isRM) return this.ready();
+
+    return PMSHoldingsCollection.find({
+      isin,
+      isLatest: true,
+      isActive: true
+    });
+  } catch (error) {
+    console.error('[pmsHoldings.byProduct] Error:', error);
+    return this.ready();
+  }
+});

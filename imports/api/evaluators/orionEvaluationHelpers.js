@@ -2,6 +2,7 @@ import { MarketDataHelpers, MarketDataCacheCollection } from '/imports/api/marke
 import { EODApiHelpers } from '/imports/api/eodApi';
 import { CurrencyNormalization } from '/imports/utils/currencyNormalization';
 import { SharedEvaluationHelpers } from './sharedEvaluationHelpers';
+import { getSplitAdjustedStrike } from '/imports/api/splitAdjustment';
 
 /**
  * Orion Memory Evaluation Helpers
@@ -197,15 +198,17 @@ export const OrionEvaluationHelpers = {
 
       const tradeDateStr = tradeDate.toISOString().split('T')[0];
 
-      // IMPORTANT: Use STRIKE price as the reference, NOT the cache price on trade date
+      // IMPORTANT: Use SPLIT-ADJUSTED STRIKE price as the reference
       // The strike is the contractual reference level that determines barrier hits
-      // This matches the chart builder which also uses strike for rebasing
-      const initialPrice = underlying.strike ||
+      // Must be split-adjusted to compare with adjustedClose prices from cache
+      const splitResult = await getSplitAdjustedStrike(underlying, product);
+      const initialPrice = splitResult.adjustedStrike ||
                           (underlying.securityData?.tradeDatePrice?.price) ||
                           (underlying.securityData?.tradeDatePrice?.close) || 0;
 
       console.log('[ORION BARRIER CHECK] Initial price (strike):', underlying.strike);
-      console.log('[ORION BARRIER CHECK] Initial price (used):', initialPrice);
+      console.log('[ORION BARRIER CHECK] Split factor:', splitResult.factor);
+      console.log('[ORION BARRIER CHECK] Initial price (used, split-adjusted):', initialPrice);
 
       if (initialPrice === 0) {
         console.warn(`[ORION BARRIER CHECK] ❌ Initial price is 0 for ${fullTicker}, cannot check barrier`);
@@ -292,7 +295,8 @@ export const OrionEvaluationHelpers = {
 
     if (product.underlyings && Array.isArray(product.underlyings)) {
       for (const underlying of product.underlyings) {
-        const initialPrice = underlying.strike ||
+        const splitResult = await getSplitAdjustedStrike(underlying, product);
+        const initialPrice = splitResult.adjustedStrike ||
                            (underlying.securityData?.tradeDatePrice?.price) ||
                            (underlying.securityData?.tradeDatePrice?.close) || 0;
 

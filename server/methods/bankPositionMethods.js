@@ -707,7 +707,13 @@ Meteor.methods({
                 }
 
                 // UNIFIED PRICING: Extract price from bank file and upsert to product prices
-                if (position.marketPrice && position.priceDate) {
+                // Use bank file date (dataDate/fileDate) as the effective price date, NOT the internal
+                // price date from the bank's price file (position.priceDate). Some banks (e.g. SG Monaco)
+                // report stale INS_PRICE_D values that lag weeks behind the actual file date, causing
+                // newer bank files to produce older price records. The file date represents when we
+                // last received confirmation of this price from the bank.
+                const effectivePriceDate = position.dataDate || fileDate || position.priceDate;
+                if (position.marketPrice && effectivePriceDate) {
                   try {
                     const { ProductPriceHelpers } = await import('../../imports/api/productPrices.js');
 
@@ -722,7 +728,7 @@ Meteor.methods({
                       isin: position.isin,
                       price: displayPrice,
                       currency: position.priceCurrency || position.currency || 'USD',
-                      priceDate: position.priceDate,
+                      priceDate: effectivePriceDate,
                       priceSource: 'bank_file',
                       uploadedBy: 'system',
                       sourceFile: filename,
@@ -3029,6 +3035,271 @@ Meteor.methods({
       success: true,
       connectionsUpdated: updateResult,
       operationsDeleted: deleteResult
+    };
+  },
+
+  /**
+   * Get price history sparkline data for a holding by ISIN
+   * Strategy 1: ProductPricesCollection (structured products, bonds - stored by ISIN)
+   * Strategy 2: MarketDataCacheCollection (equities - stored by fullTicker, resolved via EOD API)
+   */
+  async 'pms.getHoldingPriceHistory'({ isin, sessionId }) {
+    check(isin, String);
+    check(sessionId, String);
+
+    // Validate session
+    const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
+    if (!session) {
+      throw new Meteor.Error('not-authorized', 'Invalid session');
+    }
+
+    const { ProductPricesCollection } = await import('../../imports/api/productPrices.js');
+    const { MarketDataCacheCollection } = await import('../../imports/api/marketDataCache.js');
+
+    // --- Strategy 1: ProductPricesCollection (structured products, bonds) ---
+    // Prices are stored directly by ISIN
+    const productPrices = await ProductPricesCollection.find(
+      { isin: isin.toUpperCase(), isActive: true },
+      { sort: { priceDate: 1 }, limit: 200 }
+    ).fetchAsync();
+
+    if (productPrices.length >= 2) {
+      const prices = productPrices.map(p => ({
+        date: new Date(p.priceDate).toISOString().split('T')[0],
+        price: p.price
+      }));
+      const priceValues = prices.map(p => p.price);
+      const firstPrice = priceValues[0];
+      const lastPrice = priceValues[priceValues.length - 1];
+
+      return {
+        hasData: true,
+        source: 'productPrices',
+        fullTicker: isin,
+        currency: productPrices[0].currency || 'EUR',
+        prices,
+        minPrice: Math.min(...priceValues),
+        maxPrice: Math.max(...priceValues),
+        startDate: prices[0].date,
+        endDate: prices[prices.length - 1].date,
+        dataPoints: prices.length,
+        isPositive: lastPrice >= firstPrice,
+        firstPrice,
+        lastPrice,
+        isPercentagePrice: firstPrice <= 2 // heuristic: values <= 2 are likely decimal percentages
+      };
+    }
+
+    // --- Strategy 2: MarketDataCacheCollection (equities) ---
+    // Need to resolve ISIN -> fullTicker via EOD API
+    const { EODApiHelpers } = await import('../../imports/api/eodApi.js');
+    let fullTicker = null;
+
+    try {
+      const searchResults = await EODApiHelpers.searchSecurities(isin, 5);
+      if (searchResults && searchResults.length > 0) {
+        const exactMatch = searchResults.find(r => r.ISIN === isin.toUpperCase());
+        const match = exactMatch || searchResults[0];
+        if (match && match.Code && match.Exchange) {
+          fullTicker = `${match.Code}.${match.Exchange}`;
+        }
+      }
+    } catch (e) {
+      console.log(`[PMS_PRICE_HISTORY] EOD search failed for ${isin}:`, e.message);
+    }
+
+    if (!fullTicker) {
+      return { hasData: false, error: 'No price history available for this instrument' };
+    }
+
+    let cacheDoc = await MarketDataCacheCollection.findOneAsync({ fullTicker });
+
+    // Fallback: try alternate exchanges
+    if (!cacheDoc) {
+      const symbol = fullTicker.split('.')[0];
+      const exchanges = ['US', 'PA', 'DE', 'LSE', 'CO', 'SW', 'AS', 'MI', 'MC', 'L', 'XETRA', 'ST', 'HE', 'OL', 'BR', 'VI', 'TA'];
+      for (const exchange of exchanges) {
+        const altTicker = `${symbol}.${exchange}`;
+        cacheDoc = await MarketDataCacheCollection.findOneAsync({ fullTicker: altTicker });
+        if (cacheDoc) {
+          fullTicker = altTicker;
+          break;
+        }
+      }
+    }
+
+    // If still no cache data, try to fetch it
+    if (!cacheDoc) {
+      try {
+        const { MarketDataHelpers } = await import('../../imports/api/marketDataCache.js');
+        const oneYearAgo = new Date();
+        oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+        await MarketDataHelpers.fetchAndCacheHistoricalData(fullTicker, oneYearAgo);
+        cacheDoc = await MarketDataCacheCollection.findOneAsync({ fullTicker });
+      } catch (e) {
+        console.log(`[PMS_PRICE_HISTORY] Failed to fetch data for ${fullTicker}:`, e.message);
+      }
+    }
+
+    if (!cacheDoc || !cacheDoc.history || cacheDoc.history.length === 0) {
+      return { hasData: false, error: 'No price history available' };
+    }
+
+    // Generate sparkline data from the last ~1 year of history
+
+    const oneYearAgo = new Date();
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+    const oneYearAgoStr = oneYearAgo.toISOString().split('T')[0];
+
+    const filtered = cacheDoc.history.filter(record => {
+      const recordDate = new Date(record.date).toISOString().split('T')[0];
+      return recordDate >= oneYearAgoStr;
+    });
+
+    if (filtered.length === 0) {
+      return { hasData: false, error: 'No recent price history' };
+    }
+
+    // Downsample to ~90 points
+    const MAX_POINTS = 90;
+    let sampled;
+    if (filtered.length <= MAX_POINTS) {
+      sampled = filtered;
+    } else {
+      const step = filtered.length / MAX_POINTS;
+      sampled = [];
+      for (let i = 0; i < MAX_POINTS; i++) {
+        sampled.push(filtered[Math.floor(i * step)]);
+      }
+      sampled[sampled.length - 1] = filtered[filtered.length - 1];
+    }
+
+    const prices = sampled.map(r => ({
+      date: new Date(r.date).toISOString().split('T')[0],
+      price: r.adjustedClose || r.close
+    }));
+
+    const priceValues = prices.map(p => p.price);
+    const firstPrice = priceValues[0];
+    const lastPrice = priceValues[priceValues.length - 1];
+
+    return {
+      hasData: true,
+      source: 'marketData',
+      fullTicker,
+      currency: cacheDoc.currency || 'USD',
+      prices,
+      minPrice: Math.min(...priceValues),
+      maxPrice: Math.max(...priceValues),
+      startDate: prices[0].date,
+      endDate: prices[prices.length - 1].date,
+      dataPoints: prices.length,
+      isPositive: lastPrice >= firstPrice,
+      firstPrice,
+      lastPrice,
+      isPercentagePrice: false
+    };
+  },
+
+  /**
+   * Backfill ProductPrices from historical PMSHoldings snapshots.
+   * Promotes existing bank price data into ProductPricesCollection for a given ISIN
+   * (or all product ISINs if no ISIN is specified).
+   */
+  async 'productPrices.backfillFromPMSSnapshots'({ isin, sessionId }) {
+    check(sessionId, String);
+    check(isin, Match.Maybe(String));
+
+    const user = await validateAdminSession(sessionId);
+
+    const { ProductPriceHelpers } = await import('../../imports/api/productPrices.js');
+    const { ProductsCollection } = await import('../../imports/api/products.js');
+
+    // Determine which ISINs to backfill
+    let isinsToProcess = [];
+    if (isin) {
+      isinsToProcess = [isin.toUpperCase()];
+    } else {
+      // All ISINs from internal products
+      const products = await ProductsCollection.find(
+        { isin: { $exists: true, $ne: '' } },
+        { fields: { isin: 1 } }
+      ).fetchAsync();
+      isinsToProcess = [...new Set(
+        products.map(p => p.isin).filter(Boolean).map(i => i.toUpperCase())
+      )];
+    }
+
+    console.log(`[PRICE_BACKFILL] Starting backfill for ${isinsToProcess.length} ISINs by ${user.username}`);
+
+    let totalInserted = 0;
+    let totalSkipped = 0;
+
+    for (const targetIsin of isinsToProcess) {
+      // Query ALL PMSHoldings snapshots for this ISIN, excluding CONSOLIDATED portfolios
+      const holdings = await PMSHoldingsCollection.find(
+        {
+          isin: targetIsin,
+          portfolioCode: { $not: /CONSOLIDATED/i }
+        },
+        { sort: { snapshotDate: 1 } }
+      ).fetchAsync();
+
+      if (holdings.length === 0) continue;
+
+      // Deduplicate by snapshotDate - take the first record for each date
+      const byDate = new Map();
+      for (const h of holdings) {
+        if (!h.snapshotDate || !h.marketPrice) continue;
+        const dateKey = new Date(h.snapshotDate).toISOString().split('T')[0];
+        if (!byDate.has(dateKey)) {
+          byDate.set(dateKey, h);
+        }
+      }
+
+      console.log(`[PRICE_BACKFILL] ${targetIsin}: ${byDate.size} unique dates from ${holdings.length} snapshots`);
+
+      for (const [dateKey, holding] of byDate) {
+        try {
+          // Convert decimal → percentage for percentage-priced instruments
+          // PMSHoldings stores in decimal (0.9677 = 96.77%), ProductPrices in percentage (96.77)
+          const displayPrice = holding.priceType === 'percentage'
+            ? holding.marketPrice * 100
+            : holding.marketPrice;
+
+          const priceDate = new Date(holding.snapshotDate);
+
+          await ProductPriceHelpers.upsertProductPrice({
+            isin: targetIsin,
+            price: displayPrice,
+            currency: holding.priceCurrency || holding.currency || 'USD',
+            priceDate,
+            priceSource: 'pms_snapshot_backfill',
+            uploadedBy: user._id,
+            sourceFile: `pms_backfill_${dateKey}`,
+            bankFileDate: priceDate,
+            metadata: {
+              portfolioCode: holding.portfolioCode,
+              priceType: holding.priceType,
+              backfilledBy: user.username
+            }
+          });
+
+          totalInserted++;
+        } catch (e) {
+          console.error(`[PRICE_BACKFILL] Error upserting ${targetIsin} on ${dateKey}: ${e.message}`);
+          totalSkipped++;
+        }
+      }
+    }
+
+    console.log(`[PRICE_BACKFILL] Complete: ${totalInserted} upserted, ${totalSkipped} skipped`);
+
+    return {
+      success: true,
+      isinsProcessed: isinsToProcess.length,
+      totalInserted,
+      totalSkipped
     };
   }
 });

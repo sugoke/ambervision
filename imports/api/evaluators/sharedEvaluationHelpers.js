@@ -1,5 +1,6 @@
 import { MarketDataHelpers, MarketDataCacheCollection } from '/imports/api/marketDataCache';
 import { EODApiHelpers } from '/imports/api/eodApi';
+import { getSplitAdjustedStrike } from '/imports/api/splitAdjustment';
 
 /**
  * Shared Evaluation Helpers
@@ -311,8 +312,9 @@ export const SharedEvaluationHelpers = {
     if (product.underlyings && Array.isArray(product.underlyings)) {
       // Process all underlyings sequentially to fetch news
       for (const [index, underlying] of product.underlyings.entries()) {
-        // Get initial price
-        const initialPrice = underlying.strike ||
+        // Get split-adjusted initial price
+        const splitResult = await getSplitAdjustedStrike(underlying, product);
+        const initialPrice = splitResult.adjustedStrike ||
                            (underlying.securityData?.tradeDatePrice?.price) ||
                            (underlying.securityData?.tradeDatePrice?.close) || 0;
 
@@ -390,6 +392,14 @@ export const SharedEvaluationHelpers = {
 
           // Full ticker for API calls
           fullTicker: underlying.securityData?.ticker || `${underlying.ticker}.US`,
+
+          // Split adjustment info (for report metadata)
+          splitAdjustment: splitResult.factor !== 1.0 ? {
+            factor: splitResult.factor,
+            originalStrike: underlying.strike || underlying.initialPrice || underlying.strikePrice,
+            adjustedStrike: splitResult.adjustedStrike,
+            splits: splitResult.splits
+          } : null,
 
           // Sparkline data - generated below
           sparklineData: { hasData: false }
