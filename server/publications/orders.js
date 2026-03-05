@@ -54,7 +54,7 @@ Meteor.publish('orders', async function(sessionId, filters = {}) {
     query.clientId = user._id;
   } else if (user.role === 'rm') {
     // RMs see orders for their clients
-    const rmClients = await UsersCollection.find({ rmId: user._id }).fetchAsync();
+    const rmClients = await UsersCollection.find({ relationshipManagerId: user._id }).fetchAsync();
     const clientIds = rmClients.map(c => c._id);
     query.clientId = { $in: clientIds };
   }
@@ -110,7 +110,7 @@ Meteor.publish('orders.single', async function(sessionId, orderId) {
   } else if (user.role === 'rm') {
     // RMs can see orders for their clients
     const client = await UsersCollection.findOneAsync(order.clientId);
-    if (!client || client.rmId !== user._id) {
+    if (!client || client.relationshipManagerId !== user._id) {
       return this.ready();
     }
   }
@@ -137,12 +137,12 @@ Meteor.publish('orders.pendingCount', async function(sessionId) {
   }
 
   const query = {
-    status: { $in: [ORDER_STATUSES.PENDING, ORDER_STATUSES.SENT] }
+    status: { $in: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING, ORDER_STATUSES.SENT] }
   };
 
   // RMs only see count for their clients
   if (user.role === 'rm') {
-    const rmClients = await UsersCollection.find({ rmId: user._id }).fetchAsync();
+    const rmClients = await UsersCollection.find({ relationshipManagerId: user._id }).fetchAsync();
     const clientIds = rmClients.map(c => c._id);
     query.clientId = { $in: clientIds };
   }
@@ -197,7 +197,7 @@ Meteor.publish('orders.bulkGroup', async function(sessionId, bulkOrderGroupId) {
 
   // RMs only see their clients' orders
   if (user.role === 'rm') {
-    const rmClients = await UsersCollection.find({ rmId: user._id }).fetchAsync();
+    const rmClients = await UsersCollection.find({ relationshipManagerId: user._id }).fetchAsync();
     const clientIds = rmClients.map(c => c._id);
     query.clientId = { $in: clientIds };
   }

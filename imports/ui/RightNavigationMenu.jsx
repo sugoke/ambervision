@@ -108,7 +108,7 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
   };
 
   // Items that should be hidden from RM profiles
-  const rmExcludedItems = ['create-product', 'profile', 'administration', 'order-book'];
+  const rmExcludedItems = ['create-product', 'profile', 'administration'];
 
   const userRoleLevel = getRoleLevel(userRole);
   const visibleItems = menuItems.filter(item => {
