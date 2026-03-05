@@ -13,12 +13,12 @@ export const OrdersCollection = new Mongo.Collection('orders');
 //   // Security
 //   isin: String,
 //   securityName: String,
-//   assetType: 'equity' | 'bond' | 'structured_product' | 'fx' | 'fund' | 'other',
+//   assetType: 'equity' | 'bond' | 'structured_product' | 'fx' | 'fund' | 'etf' | 'term_deposit' | 'other',
 //   currency: String,
 //
 //   // Order Details
 //   quantity: Number,
-//   priceType: 'market' | 'limit',
+//   priceType: 'market' | 'limit' | 'stop_loss' | 'take_profit',
 //   limitPrice: Number (optional),
 //   estimatedValue: Number (optional),
 //
@@ -32,8 +32,17 @@ export const OrdersCollection = new Mongo.Collection('orders');
 //   sourceHoldingId: String (optional),
 //   sourcePositionQuantity: Number (optional),
 //
-//   // Status: 'draft' | 'pending' | 'sent' | 'executed' | 'partially_executed' | 'cancelled' | 'rejected'
+//   // Status: 'draft' | 'pending_validation' | 'pending' | 'sent' | 'executed' | 'partially_executed' | 'cancelled' | 'rejected'
 //   status: String,
+//
+//   // Four-eyes validation (pending_validation → pending)
+//   validatedAt: Date,
+//   validatedBy: String,
+//   validatedByName: String,
+//   rejectedAt: Date,
+//   rejectedBy: String,
+//   rejectedByName: String,
+//   rejectionReason: String,
 //
 //   // Execution
 //   executedQuantity: Number,
@@ -60,6 +69,23 @@ export const OrdersCollection = new Mongo.Collection('orders');
 //   termsheetStatus: 'none' | 'sent' | 'signed',   // Tracks if client received/signed termsheet
 //   termsheetUpdatedBy: String,                      // Display name of user who last changed termsheet status
 //   termsheetUpdatedAt: Date,                        // When termsheet status was last changed
+//
+//   // FX-specific fields
+//   fxSubtype: 'spot' | 'forward',
+//   fxPair: String (e.g. "EUR/USD"),
+//   fxBuyCurrency: String,
+//   fxSellCurrency: String,
+//   fxRate: Number (optional - indicative rate),
+//   fxForwardDate: Date (optional - for forwards),
+//   fxValueDate: Date (optional),
+//
+//   // Term Deposit-specific fields
+//   depositTenor: String (e.g. "1M", "6M", "2Y"),
+//   depositCurrency: String,
+//   depositMaturityDate: Date (optional),
+//
+//   // Limit modification history
+//   limitHistory: [{ price: Number, priceType: String, changedAt: Date, changedBy: String, changedByName: String, reason: String }],
 //
 //   // Notes
 //   notes: String,
@@ -89,6 +115,7 @@ export const OrdersCollection = new Mongo.Collection('orders');
 
 // Email trace types for order documentation
 export const EMAIL_TRACE_TYPES = {
+  CLIENT_ORDER: 'client_order',
   CLIENT_CONFIRMATION: 'client_confirmation',
   ORDER_TO_BANK: 'order_to_bank',
   BANK_CONFIRMATION: 'bank_confirmation',
@@ -97,6 +124,7 @@ export const EMAIL_TRACE_TYPES = {
 
 // Email trace type labels for display
 export const EMAIL_TRACE_LABELS = {
+  [EMAIL_TRACE_TYPES.CLIENT_ORDER]: 'Client Order',
   [EMAIL_TRACE_TYPES.CLIENT_CONFIRMATION]: 'Client Confirmation',
   [EMAIL_TRACE_TYPES.ORDER_TO_BANK]: 'Order to Bank',
   [EMAIL_TRACE_TYPES.BANK_CONFIRMATION]: 'Bank Confirmation',
@@ -110,6 +138,7 @@ export const EMAIL_TRACE_MAX_SIZE = 15 * 1024 * 1024; // 15MB
 // Valid order statuses
 export const ORDER_STATUSES = {
   DRAFT: 'draft',
+  PENDING_VALIDATION: 'pending_validation',
   PENDING: 'pending',
   SENT: 'sent',
   EXECUTED: 'executed',
@@ -126,6 +155,7 @@ export const ASSET_TYPES = {
   FX: 'fx',
   FUND: 'fund',
   ETF: 'etf',
+  TERM_DEPOSIT: 'term_deposit',
   OTHER: 'other'
 };
 
@@ -138,8 +168,29 @@ export const TRADE_MODES = {
 // Valid price types
 export const PRICE_TYPES = {
   MARKET: 'market',
-  LIMIT: 'limit'
+  LIMIT: 'limit',
+  STOP_LOSS: 'stop_loss',
+  TAKE_PROFIT: 'take_profit'
 };
+
+// FX subtypes
+export const FX_SUBTYPES = {
+  SPOT: 'spot',
+  FORWARD: 'forward'
+};
+
+// Term Deposit tenor options
+export const TERM_DEPOSIT_TENORS = [
+  { value: '2D', label: '2 Days' },
+  { value: '1W', label: '1 Week' },
+  { value: '2W', label: '2 Weeks' },
+  { value: '3W', label: '3 Weeks' },
+  { value: '1M', label: '1 Month' },
+  { value: '2M', label: '2 Months' },
+  { value: '6M', label: '6 Months' },
+  { value: '1Y', label: '1 Year' },
+  { value: '2Y', label: '2 Years' }
+];
 
 // Termsheet statuses (structured products only)
 export const TERMSHEET_STATUSES = {
@@ -218,6 +269,7 @@ export const OrderFormatters = {
   getStatusLabel(status) {
     const labels = {
       [ORDER_STATUSES.DRAFT]: 'Draft',
+      [ORDER_STATUSES.PENDING_VALIDATION]: 'Pending Validation',
       [ORDER_STATUSES.PENDING]: 'Pending',
       [ORDER_STATUSES.SENT]: 'Sent',
       [ORDER_STATUSES.EXECUTED]: 'Executed',
@@ -232,6 +284,7 @@ export const OrderFormatters = {
   getStatusColor(status) {
     const colors = {
       [ORDER_STATUSES.DRAFT]: '#6b7280',       // gray
+      [ORDER_STATUSES.PENDING_VALIDATION]: '#f97316', // orange
       [ORDER_STATUSES.PENDING]: '#f59e0b',     // amber
       [ORDER_STATUSES.SENT]: '#3b82f6',        // blue
       [ORDER_STATUSES.EXECUTED]: '#10b981',    // green
@@ -251,9 +304,21 @@ export const OrderFormatters = {
       [ASSET_TYPES.FX]: 'FX',
       [ASSET_TYPES.FUND]: 'Fund',
       [ASSET_TYPES.ETF]: 'ETF',
+      [ASSET_TYPES.TERM_DEPOSIT]: 'Term Deposit',
       [ASSET_TYPES.OTHER]: 'Other'
     };
     return labels[assetType] || assetType;
+  },
+
+  // Get price type display label
+  getPriceTypeLabel(priceType) {
+    const labels = {
+      [PRICE_TYPES.MARKET]: 'Market',
+      [PRICE_TYPES.LIMIT]: 'Limit',
+      [PRICE_TYPES.STOP_LOSS]: 'Stop Loss',
+      [PRICE_TYPES.TAKE_PROFIT]: 'Take Profit'
+    };
+    return labels[priceType] || priceType || 'Market';
   },
 
   // Get termsheet status label
@@ -329,7 +394,7 @@ export const OrderHelpers = {
   // Get pending orders count
   async getPendingOrdersCount() {
     return await OrdersCollection.find({
-      status: { $in: [ORDER_STATUSES.PENDING, ORDER_STATUSES.SENT] }
+      status: { $in: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING, ORDER_STATUSES.SENT] }
     }).countAsync();
   },
 
@@ -387,13 +452,38 @@ export const OrderHelpers = {
       statusColor: OrderFormatters.getStatusColor(order.status),
       assetTypeLabel: OrderFormatters.getAssetTypeLabel(order.assetType),
       orderTypeLabel: order.orderType === 'buy' ? 'Buy' : 'Sell',
-      priceTypeLabel: order.priceType === 'market' ? 'Market' : 'Limit',
+      priceTypeLabel: OrderFormatters.getPriceTypeLabel(order.priceType),
       tradeModeLabel: order.tradeMode === 'block' ? 'Block' : 'Ind.',
       wealthAmbassadorFormatted: order.wealthAmbassador || '',
       termsheetLabel: OrderFormatters.getTermsheetLabel(order.termsheetStatus),
       termsheetColor: OrderFormatters.getTermsheetColor(order.termsheetStatus),
       termsheetUpdatedByFormatted: order.termsheetUpdatedBy || null,
-      termsheetUpdatedAtFormatted: order.termsheetUpdatedAt ? OrderFormatters.formatDateTime(order.termsheetUpdatedAt) : null
+      termsheetUpdatedAtFormatted: order.termsheetUpdatedAt ? OrderFormatters.formatDateTime(order.termsheetUpdatedAt) : null,
+      // FX-specific formatted fields
+      fxPairFormatted: order.fxPair || null,
+      fxSubtypeLabel: order.fxSubtype === 'forward' ? 'Forward' : order.fxSubtype === 'spot' ? 'Spot' : null,
+      fxRateFormatted: order.fxRate ? order.fxRate.toFixed(6) : null,
+      fxAmountCurrencyFormatted: order.fxAmountCurrency || null,
+      fxForwardDateFormatted: order.fxForwardDate ? OrderFormatters.formatDate(order.fxForwardDate) : null,
+      fxValueDateFormatted: order.fxValueDate ? OrderFormatters.formatDate(order.fxValueDate) : null,
+      stopLossPriceFormatted: order.stopLossPrice ? order.stopLossPrice.toFixed(6) : null,
+      takeProfitPriceFormatted: order.takeProfitPrice ? order.takeProfitPrice.toFixed(6) : null,
+      // Term Deposit-specific formatted fields
+      depositTenorLabel: order.depositTenor ? (TERM_DEPOSIT_TENORS.find(t => t.value === order.depositTenor)?.label || order.depositTenor) : null,
+      depositMaturityDateFormatted: order.depositMaturityDate ? OrderFormatters.formatDate(order.depositMaturityDate) : null,
+      depositAction: order.depositAction || null,
+      // Limit modification history
+      limitHistoryFormatted: (order.limitHistory || []).map(entry => ({
+        ...entry,
+        changedAtFormatted: OrderFormatters.formatDateTime(entry.changedAt),
+        priceTypeLabel: OrderFormatters.getPriceTypeLabel(entry.priceType)
+      })),
+      // Validation fields (four-eyes principle)
+      validatedByName: order.validatedByName || null,
+      validatedAtFormatted: order.validatedAt ? OrderFormatters.formatDateTime(order.validatedAt) : null,
+      rejectedByName: order.rejectedByName || null,
+      rejectedAtFormatted: order.rejectedAt ? OrderFormatters.formatDateTime(order.rejectedAt) : null,
+      rejectionReason: order.rejectionReason || null
     };
   },
 
@@ -419,12 +509,35 @@ export const OrderHelpers = {
       `Price Type: ${order.priceType === 'market' ? 'Market' : 'Limit'}`,
     ];
 
-    if (order.priceType === 'limit' && order.limitPrice) {
-      lines.push(`Limit Price: ${OrderFormatters.formatWithCurrency(order.limitPrice, order.currency)}`);
+    if (order.priceType !== 'market' && order.limitPrice) {
+      lines.push(`${OrderFormatters.getPriceTypeLabel(order.priceType)} Price: ${OrderFormatters.formatWithCurrency(order.limitPrice, order.currency)}`);
     }
 
     if (order.estimatedValue) {
       lines.push(`Estimated Value: ${OrderFormatters.formatWithCurrency(order.estimatedValue, order.currency)}`);
+    }
+
+    // FX-specific fields
+    if (order.assetType === 'fx') {
+      if (order.fxPair) lines.push(`FX Pair: ${order.fxPair}`);
+      if (order.fxSubtype) lines.push(`FX Type: ${order.fxSubtype === 'forward' ? 'Forward' : 'Spot'}`);
+      if (order.fxAmountCurrency) lines.push(`Amount Currency: ${order.fxAmountCurrency}`);
+      if (order.fxRate) lines.push(`Rate: ${order.fxRate.toFixed(6)}`);
+      if (order.limitPrice) lines.push(`Limit Price: ${order.limitPrice.toFixed(6)}`);
+      if (order.stopLossPrice) lines.push(`Stop Loss: ${order.stopLossPrice.toFixed(6)}`);
+      if (order.takeProfitPrice) lines.push(`Take Profit: ${order.takeProfitPrice.toFixed(6)}`);
+      if (order.fxValueDate) lines.push(`Value Date: ${OrderFormatters.formatDate(order.fxValueDate)}`);
+      if (order.fxForwardDate) lines.push(`Forward Date: ${OrderFormatters.formatDate(order.fxForwardDate)}`);
+    }
+
+    // Term Deposit-specific fields
+    if (order.assetType === 'term_deposit') {
+      if (order.depositCurrency) lines.push(`Deposit Currency: ${order.depositCurrency}`);
+      if (order.depositTenor) {
+        const tenorLabel = TERM_DEPOSIT_TENORS.find(t => t.value === order.depositTenor)?.label || order.depositTenor;
+        lines.push(`Tenor: ${tenorLabel}`);
+      }
+      if (order.depositMaturityDate) lines.push(`Maturity Date: ${OrderFormatters.formatDate(order.depositMaturityDate)}`);
     }
 
     if (order.broker) {

@@ -2,7 +2,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Meteor } from 'meteor/meteor';
 import Modal from './common/Modal.jsx';
 import ActionButton from './common/ActionButton.jsx';
-import { ASSET_TYPES, PRICE_TYPES, TRADE_MODES, OrderFormatters } from '/imports/api/orders';
+import { ASSET_TYPES, PRICE_TYPES, TRADE_MODES, FX_SUBTYPES, TERM_DEPOSIT_TENORS, EMAIL_TRACE_TYPES, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, OrderFormatters } from '/imports/api/orders';
+
+const FX_CURRENCIES = [
+  'USD', 'EUR', 'CHF', 'GBP', 'JPY', 'ILS',
+  'CAD', 'AUD', 'NZD', 'SEK', 'NOK', 'DKK',
+  'SGD', 'HKD', 'CNH', 'ZAR', 'TRY', 'MXN', 'BRL'
+];
 
 /**
  * OrderModal - Multi-step wizard for creating buy/sell orders
@@ -43,6 +49,10 @@ const OrderModal = ({
   const [isSearching, setIsSearching] = useState(false);
   const [selectedSecurity, setSelectedSecurity] = useState(null);
   const [assetType, setAssetType] = useState(ASSET_TYPES.EQUITY);
+  const [manualEntryMode, setManualEntryMode] = useState(false);
+  const [manualName, setManualName] = useState('');
+  const [manualIsin, setManualIsin] = useState('');
+  const [manualCurrency, setManualCurrency] = useState('EUR');
 
   // Step 2: Order Details
   const [quantity, setQuantity] = useState('');
@@ -54,6 +64,22 @@ const OrderModal = ({
   const [settlementCurrency, setSettlementCurrency] = useState('');
   const [underlyings, setUnderlyings] = useState('');
 
+  // FX-specific
+  const [fxSubtype, setFxSubtype] = useState(FX_SUBTYPES.SPOT);
+  const [fxBuyCurrency, setFxBuyCurrency] = useState('');
+  const [fxSellCurrency, setFxSellCurrency] = useState('');
+  const [fxRate, setFxRate] = useState('');
+  const [fxForwardDate, setFxForwardDate] = useState('');
+  const [fxValueDate, setFxValueDate] = useState('');
+  const [fxAmountCurrency, setFxAmountCurrency] = useState('buy'); // 'buy' or 'sell'
+  const [stopLossPrice, setStopLossPrice] = useState('');
+  const [takeProfitPrice, setTakeProfitPrice] = useState('');
+
+  // Term Deposit-specific
+  const [depositTenor, setDepositTenor] = useState('');
+  const [depositCurrency, setDepositCurrency] = useState('EUR');
+  const [depositAction, setDepositAction] = useState('increase'); // 'increase' or 'decrease'
+
   // Step 3: Account Selection
   const [selectedClientId, setSelectedClientId] = useState('');
   const [selectedBankAccountId, setSelectedBankAccountId] = useState('');
@@ -64,6 +90,9 @@ const OrderModal = ({
 
   // Bulk mode state
   const [bulkOrders, setBulkOrders] = useState([{ clientId: '', bankAccountId: '', quantity: '', estimatedValue: '' }]);
+
+  // Client order email attachment
+  const [clientOrderFile, setClientOrderFile] = useState(null);
 
   const searchTimeoutRef = useRef(null);
   const getSessionId = () => localStorage.getItem('sessionId');
@@ -156,6 +185,10 @@ const OrderModal = ({
       setSearchResults([]);
       setSelectedSecurity(null);
       setAssetType(ASSET_TYPES.EQUITY);
+      setManualEntryMode(false);
+      setManualName('');
+      setManualIsin('');
+      setManualCurrency('EUR');
       setQuantity('');
       setPriceType(PRICE_TYPES.MARKET);
       setLimitPrice('');
@@ -169,6 +202,22 @@ const OrderModal = ({
       setClientBankAccounts([]);
       setBulkOrders([{ clientId: '', bankAccountId: '', quantity: '', estimatedValue: '' }]);
       setEstimatedValueManuallyEdited(false);
+      // Reset FX fields
+      setFxSubtype(FX_SUBTYPES.SPOT);
+      setFxBuyCurrency('');
+      setFxSellCurrency('');
+      setFxRate('');
+      setFxForwardDate('');
+      setFxValueDate('');
+      setFxAmountCurrency('buy');
+      setStopLossPrice('');
+      setTakeProfitPrice('');
+      // Reset Term Deposit fields
+      setDepositTenor('');
+      setDepositCurrency('EUR');
+      setDepositAction('increase');
+      // Reset client order attachment
+      setClientOrderFile(null);
     }
   }, [isOpen]);
 
@@ -257,12 +306,24 @@ const OrderModal = ({
       };
       setAssetType(assetClassMap[security.assetClass] || ASSET_TYPES.OTHER);
     }
+
+    // Auto-fill Step 2 fields from product data (structured products from Ambervision)
+    if (security.source === 'product') {
+      if (security.issuer) setBroker(security.issuer);
+      if (security.currency) setSettlementCurrency(security.currency);
+      if (security.underlyings) setUnderlyings(security.underlyings);
+      if (security.denomination) setQuantity(String(security.denomination));
+    }
   };
 
   const clearSecuritySelection = () => {
     setSelectedSecurity(null);
     setSearchQuery('');
     setSearchResults([]);
+    setManualEntryMode(false);
+    setManualName('');
+    setManualIsin('');
+    setManualCurrency('EUR');
   };
 
   const validateStep = (step) => {
@@ -270,6 +331,28 @@ const OrderModal = ({
 
     switch (step) {
       case 1: // Security
+        if (assetType === ASSET_TYPES.FX) {
+          if (!fxBuyCurrency || !fxSellCurrency) {
+            setError('Please enter both buy and sell currencies');
+            return false;
+          }
+          if (fxBuyCurrency === fxSellCurrency) {
+            setError('Buy and sell currencies must be different');
+            return false;
+          }
+          return true;
+        }
+        if (assetType === ASSET_TYPES.TERM_DEPOSIT) {
+          if (!depositCurrency) {
+            setError('Please select a deposit currency');
+            return false;
+          }
+          if (!depositTenor) {
+            setError('Please select a tenor');
+            return false;
+          }
+          return true;
+        }
         if (!selectedSecurity || !selectedSecurity.isin) {
           setError('Please select a security with a valid ISIN');
           return false;
@@ -278,11 +361,11 @@ const OrderModal = ({
 
       case 2: // Order Details
         if (!quantity || parseFloat(quantity) <= 0) {
-          setError('Please enter a valid quantity');
+          setError(assetType === ASSET_TYPES.FX ? 'Please enter a valid amount' : assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Please enter a valid amount' : 'Please enter a valid quantity');
           return false;
         }
-        if (priceType === PRICE_TYPES.LIMIT && (!limitPrice || parseFloat(limitPrice) <= 0)) {
-          setError('Please enter a valid limit price');
+        if (assetType !== ASSET_TYPES.FX && priceType !== PRICE_TYPES.MARKET && (!limitPrice || parseFloat(limitPrice) <= 0)) {
+          setError(`Please enter a valid ${OrderFormatters.getPriceTypeLabel(priceType).toLowerCase()} price`);
           return false;
         }
         return true;
@@ -388,13 +471,35 @@ const OrderModal = ({
         onOrderCreated?.(result);
       } else {
         // Create single order
+        // Determine ISIN and security name based on asset type
+        let orderIsin, orderSecurityName, orderCurrency;
+        if (assetType === ASSET_TYPES.FX) {
+          orderIsin = 'FX';
+          const subtypeLabel = fxSubtype === FX_SUBTYPES.FORWARD ? 'Forward' : 'Spot';
+          orderSecurityName = `FX ${subtypeLabel} ${fxBuyCurrency}/${fxSellCurrency}`;
+          orderCurrency = fxBuyCurrency || 'USD';
+        } else if (assetType === ASSET_TYPES.TERM_DEPOSIT) {
+          orderIsin = 'TD';
+          const tenorLabel = TERM_DEPOSIT_TENORS.find(t => t.value === depositTenor)?.label || depositTenor;
+          orderSecurityName = `Term Deposit ${depositCurrency} ${tenorLabel}`;
+          orderCurrency = depositCurrency || 'EUR';
+        } else {
+          orderIsin = selectedSecurity.isin;
+          orderSecurityName = selectedSecurity.name || selectedSecurity.ticker;
+          orderCurrency = selectedSecurity.currency || 'USD';
+        }
+
         // Note: Match.Maybe accepts undefined but NOT null, so we use undefined for optional fields
+        // For term deposits, the depositAction determines buy/sell
+        const effectiveOrderType = assetType === ASSET_TYPES.TERM_DEPOSIT
+          ? (depositAction === 'decrease' ? 'sell' : 'buy')
+          : mode;
         const orderData = {
-          orderType: mode,
-          isin: selectedSecurity.isin,
-          securityName: selectedSecurity.name || selectedSecurity.ticker,
+          orderType: effectiveOrderType,
+          isin: orderIsin,
+          securityName: orderSecurityName,
           assetType,
-          currency: selectedSecurity.currency || 'USD',
+          currency: orderCurrency,
           quantity: parseFloat(quantity),
           priceType,
           clientId: selectedClientId,
@@ -402,7 +507,7 @@ const OrderModal = ({
         };
 
         // Add optional fields only if they have values (undefined is accepted by Match.Maybe, null is not)
-        if (priceType === PRICE_TYPES.LIMIT && limitPrice) {
+        if (priceType !== PRICE_TYPES.MARKET && limitPrice) {
           orderData.limitPrice = parseFloat(limitPrice);
         }
         if (estimatedValue) {
@@ -426,12 +531,59 @@ const OrderModal = ({
         if (underlyings && underlyings.trim()) {
           orderData.underlyings = underlyings.trim();
         }
+        // FX-specific fields
+        if (assetType === ASSET_TYPES.FX) {
+          orderData.fxSubtype = fxSubtype;
+          orderData.fxPair = `${fxBuyCurrency}/${fxSellCurrency}`;
+          orderData.fxBuyCurrency = fxBuyCurrency;
+          orderData.fxSellCurrency = fxSellCurrency;
+          orderData.fxAmountCurrency = fxAmountCurrency === 'buy' ? fxBuyCurrency : fxSellCurrency;
+          if (fxRate) orderData.fxRate = parseFloat(fxRate);
+          if (limitPrice) orderData.limitPrice = parseFloat(limitPrice);
+          if (stopLossPrice) orderData.stopLossPrice = parseFloat(stopLossPrice);
+          if (takeProfitPrice) orderData.takeProfitPrice = parseFloat(takeProfitPrice);
+          if (fxForwardDate) orderData.fxForwardDate = fxForwardDate;
+          if (fxValueDate) orderData.fxValueDate = fxValueDate;
+          // For FX, set priceType based on which levels are set
+          if (limitPrice) {
+            orderData.priceType = PRICE_TYPES.LIMIT;
+          }
+        }
+        // Term Deposit-specific fields
+        if (assetType === ASSET_TYPES.TERM_DEPOSIT) {
+          orderData.depositTenor = depositTenor;
+          orderData.depositCurrency = depositCurrency;
+          orderData.depositAction = depositAction;
+        }
         orderData.tradeMode = TRADE_MODES.INDIVIDUAL;
 
         const result = await Meteor.callAsync('orders.create', {
           orderData,
           sessionId
         });
+
+        // Upload client order email attachment if provided
+        if (clientOrderFile && result?.orderId) {
+          try {
+            const base64 = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result.split(',')[1]);
+              reader.onerror = reject;
+              reader.readAsDataURL(clientOrderFile);
+            });
+            await Meteor.callAsync('orders.uploadEmailTrace', {
+              orderId: result.orderId,
+              traceType: EMAIL_TRACE_TYPES.CLIENT_ORDER,
+              fileName: clientOrderFile.name,
+              base64Data: base64,
+              mimeType: clientOrderFile.type || 'application/octet-stream',
+              sessionId
+            });
+          } catch (uploadErr) {
+            console.error('Error uploading client order email:', uploadErr);
+            // Don't block order creation if attachment upload fails
+          }
+        }
 
         onOrderCreated?.(result);
       }
@@ -646,6 +798,7 @@ const OrderModal = ({
 
   const renderStep1 = () => (
     <div>
+      {assetType !== ASSET_TYPES.FX && assetType !== ASSET_TYPES.TERM_DEPOSIT && (
       <div style={styles.formGroup}>
         <label style={styles.label}>Search Security</label>
         {selectedSecurity ? (
@@ -660,7 +813,82 @@ const OrderModal = ({
               Change
             </ActionButton>
           </div>
+        ) : manualEntryMode ? (
+          /* Manual entry form - stable, stays visible until user confirms or cancels */
+          <div style={{ background: 'var(--bg-secondary)', padding: '16px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                Enter security details manually
+              </div>
+              <ActionButton variant="secondary" size="small" onClick={() => {
+                setManualEntryMode(false);
+                setManualName('');
+                setManualIsin('');
+                setManualCurrency('EUR');
+              }}>
+                Back to search
+              </ActionButton>
+            </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Security Name *</label>
+              <input
+                type="text"
+                style={styles.input}
+                value={manualName}
+                onChange={(e) => setManualName(e.target.value)}
+                placeholder="e.g. Phoenix Autocallable on TSLA/AAPL"
+                autoFocus
+              />
+            </div>
+            <div style={styles.row}>
+              <div style={styles.col}>
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>ISIN *</label>
+                  <input
+                    type="text"
+                    style={styles.input}
+                    value={manualIsin}
+                    onChange={(e) => setManualIsin(e.target.value.toUpperCase())}
+                    placeholder="e.g. CH1234567890"
+                    maxLength={20}
+                  />
+                </div>
+              </div>
+              <div style={{ flex: '0 0 120px' }}>
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>Currency *</label>
+                  <input
+                    type="text"
+                    style={styles.input}
+                    value={manualCurrency}
+                    onChange={(e) => setManualCurrency(e.target.value.toUpperCase().slice(0, 3))}
+                    placeholder="EUR"
+                    maxLength={3}
+                  />
+                </div>
+              </div>
+            </div>
+            <ActionButton
+              variant="primary"
+              size="small"
+              onClick={() => {
+                if (manualName.trim() && manualIsin.trim() && manualCurrency.trim()) {
+                  setSelectedSecurity({
+                    isin: manualIsin.trim(),
+                    name: manualName.trim(),
+                    currency: manualCurrency.trim()
+                  });
+                  setManualEntryMode(false);
+                }
+              }}
+              disabled={!manualName.trim() || !manualIsin.trim() || !manualCurrency.trim()}
+              style={{ marginTop: '4px' }}
+            >
+              Confirm Security
+            </ActionButton>
+          </div>
         ) : (
+          /* Search mode */
           <div style={{ position: 'relative' }}>
             <input
               type="text"
@@ -692,16 +920,58 @@ const OrderModal = ({
                 ))}
               </div>
             )}
+            {/* No results message */}
+            {!isSearching && searchQuery.length >= 2 && searchResults.length === 0 && (
+              <div style={{
+                marginTop: '8px',
+                padding: '10px 12px',
+                background: 'var(--bg-secondary)',
+                borderRadius: '6px',
+                fontSize: '13px',
+                color: 'var(--text-secondary)'
+              }}>
+                No results found for "{searchQuery}"
+              </div>
+            )}
+            {/* Always-visible manual entry link */}
+            <div
+              style={{
+                marginTop: '8px',
+                fontSize: '13px',
+                color: 'var(--text-secondary)',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px'
+              }}
+              onClick={() => {
+                setManualEntryMode(true);
+                setManualName(searchQuery);
+                setSearchQuery('');
+                setSearchResults([]);
+              }}
+            >
+              <span style={{ fontSize: '14px' }}>+</span> New security not in the system? <span style={{ color: 'var(--accent-primary)', fontWeight: '500' }}>Enter manually</span>
+            </div>
           </div>
         )}
       </div>
+      )}
 
       <div style={styles.formGroup}>
         <label style={styles.label}>Asset Type</label>
         <select
           style={styles.select}
           value={assetType}
-          onChange={(e) => setAssetType(e.target.value)}
+          onChange={(e) => {
+            setAssetType(e.target.value);
+            // Clear security selection when switching to FX/TD
+            if (e.target.value === ASSET_TYPES.FX || e.target.value === ASSET_TYPES.TERM_DEPOSIT) {
+              setSelectedSecurity(null);
+              setSearchQuery('');
+              setSearchResults([]);
+            }
+          }}
         >
           <option value={ASSET_TYPES.EQUITY}>Equity</option>
           <option value={ASSET_TYPES.BOND}>Bond</option>
@@ -709,157 +979,381 @@ const OrderModal = ({
           <option value={ASSET_TYPES.FUND}>Fund</option>
           <option value={ASSET_TYPES.ETF}>ETF</option>
           <option value={ASSET_TYPES.FX}>FX</option>
+          <option value={ASSET_TYPES.TERM_DEPOSIT}>Term Deposit</option>
           <option value={ASSET_TYPES.OTHER}>Other</option>
         </select>
       </div>
 
-      {/* Manual ISIN entry if no security found */}
-      {!selectedSecurity && searchQuery.length >= 2 && searchResults.length === 0 && !isSearching && (
-        <div style={{ ...styles.formGroup, background: 'var(--bg-secondary)', padding: '12px', borderRadius: '6px' }}>
-          <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-            Security not found? Enter details manually:
+      {/* FX-specific form */}
+      {assetType === ASSET_TYPES.FX && (
+        <div style={{ background: 'var(--bg-secondary)', padding: '16px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+          <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '12px' }}>
+            FX Transaction Details
+          </div>
+          <div style={styles.formGroup}>
+            <label style={styles.label}>FX Type</label>
+            <select
+              style={styles.select}
+              value={fxSubtype}
+              onChange={(e) => setFxSubtype(e.target.value)}
+            >
+              <option value={FX_SUBTYPES.SPOT}>Spot</option>
+              <option value={FX_SUBTYPES.FORWARD}>Forward</option>
+            </select>
           </div>
           <div style={styles.row}>
             <div style={styles.col}>
-              <label style={styles.label}>ISIN</label>
-              <input
-                type="text"
-                style={styles.input}
-                placeholder="Enter ISIN"
-                onChange={(e) => {
-                  if (e.target.value.length >= 12) {
-                    setSelectedSecurity({
-                      isin: e.target.value.toUpperCase(),
-                      name: searchQuery,
-                      currency: 'USD'
-                    });
-                  }
-                }}
-              />
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Buy Currency *</label>
+                <select
+                  style={styles.select}
+                  value={fxBuyCurrency}
+                  onChange={(e) => setFxBuyCurrency(e.target.value)}
+                >
+                  <option value="">Select currency...</option>
+                  {FX_CURRENCIES.filter(ccy => ccy !== fxSellCurrency).map(ccy => (
+                    <option key={ccy} value={ccy}>{ccy}</option>
+                  ))}
+                </select>
+              </div>
             </div>
             <div style={styles.col}>
-              <label style={styles.label}>Currency</label>
-              <select
-                style={styles.select}
-                onChange={(e) => {
-                  if (selectedSecurity) {
-                    setSelectedSecurity({ ...selectedSecurity, currency: e.target.value });
-                  }
-                }}
-              >
-                <option value="USD">USD</option>
-                <option value="EUR">EUR</option>
-                <option value="GBP">GBP</option>
-                <option value="CHF">CHF</option>
-              </select>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Sell Currency *</label>
+                <select
+                  style={styles.select}
+                  value={fxSellCurrency}
+                  onChange={(e) => setFxSellCurrency(e.target.value)}
+                >
+                  <option value="">Select currency...</option>
+                  {FX_CURRENCIES.filter(ccy => ccy !== fxBuyCurrency).map(ccy => (
+                    <option key={ccy} value={ccy}>{ccy}</option>
+                  ))}
+                </select>
+              </div>
             </div>
           </div>
+          {fxBuyCurrency && fxSellCurrency && (
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+              Pair: <strong>{fxBuyCurrency}/{fxSellCurrency}</strong>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Term Deposit-specific form */}
+      {assetType === ASSET_TYPES.TERM_DEPOSIT && (
+        <div style={{ background: 'var(--bg-secondary)', padding: '16px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+          <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '12px' }}>
+            Term Deposit Details
+          </div>
+          {/* Action toggle: Increase or Decrease */}
+          <div style={{ display: 'flex', gap: '0', marginBottom: '12px', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+            <button
+              type="button"
+              onClick={() => setDepositAction('increase')}
+              style={{
+                flex: 1, padding: '8px 12px', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: '600',
+                background: depositAction === 'increase' ? '#10b981' : 'var(--bg-primary)',
+                color: depositAction === 'increase' ? '#fff' : 'var(--text-secondary)',
+                transition: 'all 0.15s ease'
+              }}
+            >
+              Increase
+            </button>
+            <button
+              type="button"
+              onClick={() => setDepositAction('decrease')}
+              style={{
+                flex: 1, padding: '8px 12px', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: '600',
+                borderLeft: '1px solid var(--border-color)',
+                background: depositAction === 'decrease' ? '#ef4444' : 'var(--bg-primary)',
+                color: depositAction === 'decrease' ? '#fff' : 'var(--text-secondary)',
+                transition: 'all 0.15s ease'
+              }}
+            >
+              Decrease
+            </button>
+          </div>
+          <div style={styles.row}>
+            <div style={styles.col}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Deposit Currency *</label>
+                <select
+                  style={styles.select}
+                  value={depositCurrency}
+                  onChange={(e) => setDepositCurrency(e.target.value)}
+                >
+                  {FX_CURRENCIES.map(ccy => (
+                    <option key={ccy} value={ccy}>{ccy}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div style={styles.col}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Tenor *</label>
+                <select
+                  style={styles.select}
+                  value={depositTenor}
+                  onChange={(e) => setDepositTenor(e.target.value)}
+                >
+                  <option value="">Select tenor...</option>
+                  {TERM_DEPOSIT_TENORS.map(t => (
+                    <option key={t.value} value={t.value}>{t.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+          {depositCurrency && depositTenor && (
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+              {depositAction === 'decrease' ? 'Will decrease' : 'Will increase'}: <strong>Term Deposit {depositCurrency} {TERM_DEPOSIT_TENORS.find(t => t.value === depositTenor)?.label || depositTenor}</strong>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 
+  const getCurrencyForDisplay = () => {
+    if (assetType === ASSET_TYPES.FX) return fxBuyCurrency || 'USD';
+    if (assetType === ASSET_TYPES.TERM_DEPOSIT) return depositCurrency || 'EUR';
+    return selectedSecurity?.currency || 'USD';
+  };
+
   const renderStep2 = () => (
     <div>
-      <div style={styles.row}>
-        <div style={styles.col}>
-          <div style={styles.formGroup}>
-            <label style={styles.label}>Quantity {mode === 'sell' && prefillData?.quantity && `(Max: ${prefillData.quantity})`}</label>
-            <input
-              type="number"
-              style={styles.input}
-              value={quantity}
-              onChange={(e) => setQuantity(e.target.value)}
-              placeholder="Enter quantity"
-              min="0"
-              step="1"
-            />
+      {/* FX-specific Step 2 */}
+      {assetType === ASSET_TYPES.FX ? (
+        <>
+          {/* Amount + currency side */}
+          <div style={styles.row}>
+            <div style={{ flex: 2 }}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Amount</label>
+                <input
+                  type="number"
+                  style={styles.input}
+                  value={quantity}
+                  onChange={(e) => setQuantity(e.target.value)}
+                  placeholder="Enter amount"
+                  min="0"
+                  step="0.01"
+                />
+              </div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>In Currency</label>
+                <select
+                  style={styles.select}
+                  value={fxAmountCurrency}
+                  onChange={(e) => setFxAmountCurrency(e.target.value)}
+                >
+                  <option value="buy">{fxBuyCurrency || 'Buy'}</option>
+                  <option value="sell">{fxSellCurrency || 'Sell'}</option>
+                </select>
+              </div>
+            </div>
           </div>
-        </div>
-        <div style={styles.col}>
-          <div style={styles.formGroup}>
-            <label style={styles.label}>Price Type</label>
-            <select
-              style={styles.select}
-              value={priceType}
-              onChange={(e) => setPriceType(e.target.value)}
-            >
-              <option value={PRICE_TYPES.MARKET}>Market</option>
-              <option value={PRICE_TYPES.LIMIT}>Limit</option>
-            </select>
-          </div>
-        </div>
-      </div>
 
-      {priceType === PRICE_TYPES.LIMIT && (
+          {/* Pair display */}
+          <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px', padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
+            {mode === 'buy' ? 'Buy' : 'Sell'} <strong>{fxBuyCurrency}/{fxSellCurrency}</strong>
+            {fxSubtype === FX_SUBTYPES.FORWARD ? ' Forward' : ' Spot'}
+            {quantity ? ` — ${parseFloat(quantity).toLocaleString()} ${fxAmountCurrency === 'buy' ? fxBuyCurrency : fxSellCurrency}` : ''}
+          </div>
+
+          {/* Limit, Stop Loss, Take Profit */}
+          <div style={styles.row}>
+            <div style={styles.col}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Limit Price (Optional)</label>
+                <input
+                  type="number"
+                  style={styles.input}
+                  value={limitPrice}
+                  onChange={(e) => setLimitPrice(e.target.value)}
+                  placeholder="Limit rate"
+                  min="0"
+                  step="0.000001"
+                />
+              </div>
+            </div>
+            <div style={styles.col}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Stop Loss (Optional)</label>
+                <input
+                  type="number"
+                  style={styles.input}
+                  value={stopLossPrice}
+                  onChange={(e) => setStopLossPrice(e.target.value)}
+                  placeholder="Stop loss rate"
+                  min="0"
+                  step="0.000001"
+                />
+              </div>
+            </div>
+            <div style={styles.col}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Take Profit (Optional)</label>
+                <input
+                  type="number"
+                  style={styles.input}
+                  value={takeProfitPrice}
+                  onChange={(e) => setTakeProfitPrice(e.target.value)}
+                  placeholder="Take profit rate"
+                  min="0"
+                  step="0.000001"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Value Date / Forward Date */}
+          <div style={styles.row}>
+            <div style={styles.col}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Value Date (Optional)</label>
+                <input
+                  type="date"
+                  style={styles.input}
+                  value={fxValueDate}
+                  onChange={(e) => setFxValueDate(e.target.value)}
+                />
+              </div>
+            </div>
+            {fxSubtype === FX_SUBTYPES.FORWARD && (
+              <div style={styles.col}>
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>Forward Date</label>
+                  <input
+                    type="date"
+                    style={styles.input}
+                    value={fxForwardDate}
+                    onChange={(e) => setFxForwardDate(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      ) : (
+        <>
+          {/* Non-FX: standard quantity + price type */}
+          <div style={styles.row}>
+            <div style={styles.col}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>
+                  {assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Amount' : 'Quantity'}
+                  {mode === 'sell' && prefillData?.quantity && ` (Max: ${prefillData.quantity})`}
+                </label>
+                <input
+                  type="number"
+                  style={styles.input}
+                  value={quantity}
+                  onChange={(e) => setQuantity(e.target.value)}
+                  placeholder={assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Enter amount' : 'Enter quantity'}
+                  min="0"
+                  step={assetType === ASSET_TYPES.TERM_DEPOSIT ? '0.01' : '1'}
+                />
+              </div>
+            </div>
+            {assetType !== ASSET_TYPES.TERM_DEPOSIT && (
+              <div style={styles.col}>
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>Price Type</label>
+                  <select
+                    style={styles.select}
+                    value={priceType}
+                    onChange={(e) => setPriceType(e.target.value)}
+                  >
+                    <option value={PRICE_TYPES.MARKET}>Market</option>
+                    <option value={PRICE_TYPES.LIMIT}>Limit</option>
+                  </select>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {priceType !== PRICE_TYPES.MARKET && assetType !== ASSET_TYPES.TERM_DEPOSIT && (
+            <div style={styles.formGroup}>
+              <label style={styles.label}>{OrderFormatters.getPriceTypeLabel(priceType)} Price ({getCurrencyForDisplay()})</label>
+              <input
+                type="number"
+                style={styles.input}
+                value={limitPrice}
+                onChange={(e) => setLimitPrice(e.target.value)}
+                placeholder={`Enter ${OrderFormatters.getPriceTypeLabel(priceType).toLowerCase()} price`}
+                min="0"
+                step="0.01"
+              />
+            </div>
+          )}
+        </>
+      )}
+
+      {assetType !== ASSET_TYPES.TERM_DEPOSIT && assetType !== ASSET_TYPES.FX && (
         <div style={styles.formGroup}>
-          <label style={styles.label}>Limit Price ({selectedSecurity?.currency || 'USD'})</label>
+          <label style={styles.label}>Estimated Value ({getCurrencyForDisplay()}){prefillData?.marketPrice ? '' : ' - Optional'}</label>
           <input
             type="number"
             style={styles.input}
-            value={limitPrice}
-            onChange={(e) => setLimitPrice(e.target.value)}
-            placeholder="Enter limit price"
+            value={estimatedValue}
+            onChange={(e) => {
+              setEstimatedValue(e.target.value);
+              setEstimatedValueManuallyEdited(true);
+            }}
+            placeholder="Enter estimated value"
             min="0"
             step="0.01"
           />
         </div>
       )}
 
-      <div style={styles.formGroup}>
-        <label style={styles.label}>Estimated Value ({selectedSecurity?.currency || 'USD'}){prefillData?.marketPrice ? '' : ' - Optional'}</label>
-        <input
-          type="number"
-          style={styles.input}
-          value={estimatedValue}
-          onChange={(e) => {
-            setEstimatedValue(e.target.value);
-            setEstimatedValueManuallyEdited(true);
-          }}
-          placeholder="Enter estimated value"
-          min="0"
-          step="0.01"
-        />
-      </div>
+      {assetType !== ASSET_TYPES.FX && assetType !== ASSET_TYPES.TERM_DEPOSIT && (
+        <>
+          <div style={styles.row}>
+            <div style={styles.col}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Broker / Issuer (Optional)</label>
+                <input
+                  type="text"
+                  style={styles.input}
+                  value={broker}
+                  onChange={(e) => setBroker(e.target.value)}
+                  placeholder="e.g. Marex, EDR..."
+                />
+              </div>
+            </div>
+            <div style={styles.col}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Settlement Currency (Optional)</label>
+                <input
+                  type="text"
+                  style={styles.input}
+                  value={settlementCurrency}
+                  onChange={(e) => setSettlementCurrency(e.target.value)}
+                  placeholder="e.g. EUR, USD..."
+                  maxLength={3}
+                />
+              </div>
+            </div>
+          </div>
 
-      <div style={styles.row}>
-        <div style={styles.col}>
           <div style={styles.formGroup}>
-            <label style={styles.label}>Broker / Issuer (Optional)</label>
+            <label style={styles.label}>Underlyings (Optional)</label>
             <input
               type="text"
               style={styles.input}
-              value={broker}
-              onChange={(e) => setBroker(e.target.value)}
-              placeholder="e.g. Marex, EDR..."
+              value={underlyings}
+              onChange={(e) => setUnderlyings(e.target.value)}
+              placeholder="e.g. TSLA/AAPL/MSFT"
             />
           </div>
-        </div>
-        <div style={styles.col}>
-          <div style={styles.formGroup}>
-            <label style={styles.label}>Settlement Currency (Optional)</label>
-            <input
-              type="text"
-              style={styles.input}
-              value={settlementCurrency}
-              onChange={(e) => setSettlementCurrency(e.target.value)}
-              placeholder="e.g. EUR, USD..."
-              maxLength={3}
-            />
-          </div>
-        </div>
-      </div>
-
-      <div style={styles.formGroup}>
-        <label style={styles.label}>Underlyings (Optional)</label>
-        <input
-          type="text"
-          style={styles.input}
-          value={underlyings}
-          onChange={(e) => setUnderlyings(e.target.value)}
-          placeholder="e.g. TSLA/AAPL/MSFT"
-        />
-      </div>
+        </>
+      )}
 
       <div style={styles.formGroup}>
         <label style={styles.label}>Notes (Optional)</label>
@@ -869,6 +1363,87 @@ const OrderModal = ({
           onChange={(e) => setNotes(e.target.value)}
           placeholder="Add any special instructions or notes..."
         />
+      </div>
+
+      {/* Client Order Email Attachment */}
+      <div style={styles.formGroup}>
+        <label style={styles.label}>Client Order Email (Optional)</label>
+        <div
+          style={{
+            border: clientOrderFile ? '2px solid #10b981' : '2px dashed var(--border-color)',
+            borderRadius: '8px',
+            padding: '16px',
+            textAlign: 'center',
+            cursor: 'pointer',
+            background: clientOrderFile ? 'rgba(16, 185, 129, 0.05)' : 'var(--bg-secondary)',
+            transition: 'border-color 0.15s, background 0.15s'
+          }}
+          onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const file = e.dataTransfer.files[0];
+            if (file) {
+              const ext = '.' + file.name.split('.').pop().toLowerCase();
+              if (!EMAIL_TRACE_ACCEPTED_TYPES.includes(ext)) {
+                setError(`File type ${ext} not accepted. Use: ${EMAIL_TRACE_ACCEPTED_TYPES.join(', ')}`);
+                return;
+              }
+              if (file.size > EMAIL_TRACE_MAX_SIZE) {
+                setError('File exceeds maximum size of 15MB');
+                return;
+              }
+              setClientOrderFile(file);
+              setError(null);
+            }
+          }}
+          onClick={() => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = EMAIL_TRACE_ACCEPTED_TYPES.join(',');
+            input.onchange = (e) => {
+              const file = e.target.files[0];
+              if (file) {
+                if (file.size > EMAIL_TRACE_MAX_SIZE) {
+                  setError('File exceeds maximum size of 15MB');
+                  return;
+                }
+                setClientOrderFile(file);
+                setError(null);
+              }
+            };
+            input.click();
+          }}
+        >
+          {clientOrderFile ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '16px' }}>📎</span>
+              <span style={{ fontSize: '13px', fontWeight: '600', color: '#10b981' }}>{clientOrderFile.name}</span>
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                ({(clientOrderFile.size / 1024).toFixed(0)} KB)
+              </span>
+              <button
+                style={{
+                  background: 'none', border: 'none', color: '#ef4444',
+                  cursor: 'pointer', fontSize: '14px', padding: '2px 6px'
+                }}
+                onClick={(e) => { e.stopPropagation(); setClientOrderFile(null); }}
+                title="Remove file"
+              >
+                ✕
+              </button>
+            </div>
+          ) : (
+            <div>
+              <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                Drop client order email here, or click to browse
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                .msg, .eml, .pdf — Visible to validators for four-eyes check
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -994,49 +1569,127 @@ const OrderModal = ({
     return (
       <div>
         <div style={{ textAlign: 'center', marginBottom: '24px' }}>
-          <span style={styles.orderTypeBadge(mode)}>{mode.toUpperCase()} ORDER</span>
+          <span style={styles.orderTypeBadge(assetType === ASSET_TYPES.TERM_DEPOSIT && depositAction === 'decrease' ? 'sell' : mode)}>
+            {assetType === ASSET_TYPES.TERM_DEPOSIT
+              ? (depositAction === 'increase' ? 'INCREASE' : 'DECREASE') + ' TERM DEPOSIT'
+              : mode.toUpperCase() + ' ORDER'}
+          </span>
         </div>
 
         <div style={styles.reviewSection}>
-          <div style={styles.reviewTitle}>Security Details</div>
-          <div style={styles.reviewRow}>
-            <span style={styles.reviewLabel}>Security</span>
-            <span style={styles.reviewValue}>{selectedSecurity?.name}</span>
+          <div style={styles.reviewTitle}>
+            {assetType === ASSET_TYPES.FX ? 'FX Details' : assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Term Deposit Details' : 'Security Details'}
           </div>
-          <div style={styles.reviewRow}>
-            <span style={styles.reviewLabel}>ISIN</span>
-            <span style={styles.reviewValue}>{selectedSecurity?.isin}</span>
-          </div>
+          {assetType === ASSET_TYPES.FX ? (
+            <>
+              <div style={styles.reviewRow}>
+                <span style={styles.reviewLabel}>Description</span>
+                <span style={styles.reviewValue}>FX {fxSubtype === FX_SUBTYPES.FORWARD ? 'Forward' : 'Spot'} {fxBuyCurrency}/{fxSellCurrency}</span>
+              </div>
+              <div style={styles.reviewRow}>
+                <span style={styles.reviewLabel}>Amount</span>
+                <span style={styles.reviewValue}>{parseFloat(quantity).toLocaleString()} {fxAmountCurrency === 'buy' ? fxBuyCurrency : fxSellCurrency}</span>
+              </div>
+              {limitPrice && (
+                <div style={styles.reviewRow}>
+                  <span style={styles.reviewLabel}>Limit Price</span>
+                  <span style={styles.reviewValue}>{limitPrice}</span>
+                </div>
+              )}
+              {stopLossPrice && (
+                <div style={styles.reviewRow}>
+                  <span style={styles.reviewLabel}>Stop Loss</span>
+                  <span style={styles.reviewValue}>{stopLossPrice}</span>
+                </div>
+              )}
+              {takeProfitPrice && (
+                <div style={styles.reviewRow}>
+                  <span style={styles.reviewLabel}>Take Profit</span>
+                  <span style={styles.reviewValue}>{takeProfitPrice}</span>
+                </div>
+              )}
+              {fxValueDate && (
+                <div style={styles.reviewRow}>
+                  <span style={styles.reviewLabel}>Value Date</span>
+                  <span style={styles.reviewValue}>{fxValueDate}</span>
+                </div>
+              )}
+              {fxSubtype === FX_SUBTYPES.FORWARD && fxForwardDate && (
+                <div style={styles.reviewRow}>
+                  <span style={styles.reviewLabel}>Forward Date</span>
+                  <span style={styles.reviewValue}>{fxForwardDate}</span>
+                </div>
+              )}
+            </>
+          ) : assetType === ASSET_TYPES.TERM_DEPOSIT ? (
+            <>
+              <div style={styles.reviewRow}>
+                <span style={styles.reviewLabel}>Action</span>
+                <span style={{
+                  ...styles.reviewValue,
+                  fontWeight: '600',
+                  color: depositAction === 'increase' ? '#10b981' : '#ef4444'
+                }}>
+                  {depositAction === 'increase' ? 'Increase' : 'Decrease'}
+                </span>
+              </div>
+              <div style={styles.reviewRow}>
+                <span style={styles.reviewLabel}>Description</span>
+                <span style={styles.reviewValue}>Term Deposit {depositCurrency} {TERM_DEPOSIT_TENORS.find(t => t.value === depositTenor)?.label || depositTenor}</span>
+              </div>
+              <div style={styles.reviewRow}>
+                <span style={styles.reviewLabel}>Currency</span>
+                <span style={styles.reviewValue}>{depositCurrency}</span>
+              </div>
+              <div style={styles.reviewRow}>
+                <span style={styles.reviewLabel}>Tenor</span>
+                <span style={styles.reviewValue}>{TERM_DEPOSIT_TENORS.find(t => t.value === depositTenor)?.label || depositTenor}</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={styles.reviewRow}>
+                <span style={styles.reviewLabel}>Security</span>
+                <span style={styles.reviewValue}>{selectedSecurity?.name}</span>
+              </div>
+              <div style={styles.reviewRow}>
+                <span style={styles.reviewLabel}>ISIN</span>
+                <span style={styles.reviewValue}>{selectedSecurity?.isin}</span>
+              </div>
+            </>
+          )}
           <div style={styles.reviewRow}>
             <span style={styles.reviewLabel}>Asset Type</span>
             <span style={styles.reviewValue}>{OrderFormatters.getAssetTypeLabel(assetType)}</span>
           </div>
           <div style={styles.reviewRow}>
             <span style={styles.reviewLabel}>Currency</span>
-            <span style={styles.reviewValue}>{selectedSecurity?.currency || 'USD'}</span>
+            <span style={styles.reviewValue}>{getCurrencyForDisplay()}</span>
           </div>
         </div>
 
         <div style={styles.reviewSection}>
           <div style={styles.reviewTitle}>Order Details</div>
           <div style={styles.reviewRow}>
-            <span style={styles.reviewLabel}>Quantity</span>
+            <span style={styles.reviewLabel}>{assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Amount' : 'Quantity'}</span>
             <span style={styles.reviewValue}>{OrderFormatters.formatQuantity(parseFloat(quantity) || 0)}</span>
           </div>
-          <div style={styles.reviewRow}>
-            <span style={styles.reviewLabel}>Price Type</span>
-            <span style={styles.reviewValue}>{priceType === PRICE_TYPES.MARKET ? 'Market' : 'Limit'}</span>
-          </div>
-          {priceType === PRICE_TYPES.LIMIT && (
+          {assetType !== ASSET_TYPES.TERM_DEPOSIT && (
             <div style={styles.reviewRow}>
-              <span style={styles.reviewLabel}>Limit Price</span>
-              <span style={styles.reviewValue}>{OrderFormatters.formatWithCurrency(parseFloat(limitPrice) || 0, selectedSecurity?.currency || 'USD')}</span>
+              <span style={styles.reviewLabel}>Price Type</span>
+              <span style={styles.reviewValue}>{OrderFormatters.getPriceTypeLabel(priceType)}</span>
+            </div>
+          )}
+          {priceType !== PRICE_TYPES.MARKET && assetType !== ASSET_TYPES.TERM_DEPOSIT && limitPrice && (
+            <div style={styles.reviewRow}>
+              <span style={styles.reviewLabel}>{OrderFormatters.getPriceTypeLabel(priceType)} Price</span>
+              <span style={styles.reviewValue}>{OrderFormatters.formatWithCurrency(parseFloat(limitPrice) || 0, getCurrencyForDisplay())}</span>
             </div>
           )}
           {estimatedValue && (
             <div style={styles.reviewRow}>
               <span style={styles.reviewLabel}>Estimated Value</span>
-              <span style={styles.reviewValue}>{OrderFormatters.formatWithCurrency(parseFloat(estimatedValue) || 0, selectedSecurity?.currency || 'USD')}</span>
+              <span style={styles.reviewValue}>{OrderFormatters.formatWithCurrency(parseFloat(estimatedValue) || 0, getCurrencyForDisplay())}</span>
             </div>
           )}
           {broker && (
@@ -1085,6 +1738,19 @@ const OrderModal = ({
             <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)' }}>{notes}</p>
           </div>
         )}
+
+        {clientOrderFile && (
+          <div style={styles.reviewSection}>
+            <div style={styles.reviewTitle}>Client Order Email</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+              <span>📎</span>
+              <span>{clientOrderFile.name}</span>
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                ({(clientOrderFile.size / 1024).toFixed(0)} KB)
+              </span>
+            </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -1116,11 +1782,11 @@ const OrderModal = ({
         </ActionButton>
       ) : (
         <ActionButton
-          variant={mode === 'buy' ? 'success' : 'danger'}
+          variant={(assetType === ASSET_TYPES.TERM_DEPOSIT ? depositAction === 'increase' : mode === 'buy') ? 'success' : 'danger'}
           onClick={handleSubmit}
           loading={isSubmitting}
         >
-          {isSubmitting ? 'Creating...' : `Confirm ${mode.toUpperCase()}`}
+          {isSubmitting ? 'Creating...' : `Confirm ${assetType === ASSET_TYPES.TERM_DEPOSIT ? (depositAction === 'increase' ? 'INCREASE' : 'DECREASE') : mode.toUpperCase()}`}
         </ActionButton>
       )}
     </>

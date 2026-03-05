@@ -10,7 +10,7 @@ import { BanksCollection } from '../../imports/api/banks.js';
 import { BankAccountsCollection } from '../../imports/api/bankAccounts.js';
 import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
 import { PMSOperationsCollection } from '../../imports/api/pmsOperations.js';
-import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, OrderHelpers, OrderFormatters } from '../../imports/api/orders.js';
+import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, FX_SUBTYPES, TERM_DEPOSIT_TENORS, OrderHelpers, OrderFormatters } from '../../imports/api/orders.js';
 import { OrderCountersCollection, OrderCounterHelpers } from '../../imports/api/orderCounters.js';
 import { EmailService } from '../../imports/api/emailService.js';
 
@@ -78,7 +78,7 @@ async function validateOrderAccess(order, user) {
   if (user.role === 'rm') {
     // Check if the order's client is managed by this RM
     const client = await UsersCollection.findOneAsync(order.clientId);
-    if (client && client.rmId === user._id) {
+    if (client && client.relationshipManagerId === user._id) {
       return true;
     }
   }
@@ -123,7 +123,23 @@ Meteor.methods({
       broker: Match.Maybe(String),
       settlementCurrency: Match.Maybe(String),
       underlyings: Match.Maybe(String),
-      tradeMode: Match.Maybe(Match.Where(x => Object.values(TRADE_MODES).includes(x)))
+      tradeMode: Match.Maybe(Match.Where(x => Object.values(TRADE_MODES).includes(x))),
+      // FX-specific fields
+      fxSubtype: Match.Maybe(Match.Where(x => Object.values(FX_SUBTYPES).includes(x))),
+      fxPair: Match.Maybe(String),
+      fxBuyCurrency: Match.Maybe(String),
+      fxSellCurrency: Match.Maybe(String),
+      fxRate: Match.Maybe(Number),
+      fxAmountCurrency: Match.Maybe(String),
+      fxForwardDate: Match.Maybe(String),
+      fxValueDate: Match.Maybe(String),
+      stopLossPrice: Match.Maybe(Number),
+      takeProfitPrice: Match.Maybe(Number),
+      // Term Deposit-specific fields
+      depositTenor: Match.Maybe(String),
+      depositCurrency: Match.Maybe(String),
+      depositMaturityDate: Match.Maybe(String),
+      depositAction: Match.Maybe(String)
     });
 
     const { user, userId, userDisplayName } = await validateSession(sessionId);
@@ -145,8 +161,8 @@ Meteor.methods({
       throw new Meteor.Error('invalid-account', 'Bank account not found or does not belong to client');
     }
 
-    // For SELL orders, validate position
-    if (orderData.orderType === 'sell') {
+    // For SELL orders, validate position (skip for term deposit decreases)
+    if (orderData.orderType === 'sell' && orderData.assetType !== ASSET_TYPES.TERM_DEPOSIT) {
       if (!orderData.sourceHoldingId) {
         throw new Meteor.Error('invalid-order', 'Source holding required for sell orders');
       }
@@ -180,6 +196,7 @@ Meteor.methods({
     const tradeMode = orderData.tradeMode || (orderData.bulkOrderGroupId ? TRADE_MODES.BLOCK : TRADE_MODES.INDIVIDUAL);
 
     // Create order document
+    const hasLimitPrice = orderData.priceType !== 'market';
     const order = {
       orderReference,
       orderType: orderData.orderType,
@@ -189,14 +206,14 @@ Meteor.methods({
       currency: orderData.currency.toUpperCase(),
       quantity: orderData.quantity,
       priceType: orderData.priceType,
-      limitPrice: orderData.priceType === 'limit' ? orderData.limitPrice : null,
+      limitPrice: hasLimitPrice ? orderData.limitPrice : null,
       estimatedValue: orderData.estimatedValue || null,
       clientId: orderData.clientId,
       bankAccountId: orderData.bankAccountId,
       bankId: bankAccount.bankId,
       portfolioCode: orderData.portfolioCode || bankAccount.accountNumber,
       sourceHoldingId: orderData.orderType === 'sell' ? orderData.sourceHoldingId : null,
-      status: ORDER_STATUSES.PENDING,
+      status: ORDER_STATUSES.PENDING_VALIDATION,
       executedQuantity: 0,
       notes: orderData.notes || null,
       bulkOrderGroupId: orderData.bulkOrderGroupId || null,
@@ -205,6 +222,24 @@ Meteor.methods({
       settlementCurrency: orderData.settlementCurrency || null,
       underlyings: orderData.underlyings || null,
       tradeMode,
+      // FX-specific fields
+      fxSubtype: orderData.fxSubtype || null,
+      fxPair: orderData.fxPair || null,
+      fxBuyCurrency: orderData.fxBuyCurrency || null,
+      fxSellCurrency: orderData.fxSellCurrency || null,
+      fxRate: orderData.fxRate || null,
+      fxAmountCurrency: orderData.fxAmountCurrency || null,
+      fxForwardDate: orderData.fxForwardDate ? new Date(orderData.fxForwardDate) : null,
+      fxValueDate: orderData.fxValueDate ? new Date(orderData.fxValueDate) : null,
+      stopLossPrice: orderData.stopLossPrice || null,
+      takeProfitPrice: orderData.takeProfitPrice || null,
+      // Term Deposit-specific fields
+      depositTenor: orderData.depositTenor || null,
+      depositCurrency: orderData.depositCurrency || null,
+      depositMaturityDate: orderData.depositMaturityDate ? new Date(orderData.depositMaturityDate) : null,
+      depositAction: orderData.depositAction || null,
+      // Limit modification history
+      limitHistory: [],
       createdAt: new Date(),
       createdBy: userId,
       updatedAt: new Date(),
@@ -222,6 +257,30 @@ Meteor.methods({
     const orderId = await OrdersCollection.insertAsync(order);
 
     console.log(`[ORDERS] Created order ${orderReference} (${orderId}) by ${userDisplayName} (${userId})`);
+
+    // Notify users with canValidateOrders permission (excluding the creator)
+    try {
+      const { NotificationHelpers, EVENT_TYPES } = await import('../../imports/api/notifications.js');
+      const validators = await UsersCollection.find({
+        canValidateOrders: true,
+        _id: { $ne: userId },
+        role: { $in: ['superadmin', 'admin', 'rm', 'compliance', 'staff'] }
+      }).fetchAsync();
+
+      if (validators.length > 0) {
+        const validatorIds = validators.map(v => v._id);
+        await NotificationHelpers.createForMultipleUsers({
+          userIds: validatorIds,
+          type: 'warning',
+          title: 'Order Pending Validation',
+          message: `Order ${orderReference} (${order.securityName}) created by ${userDisplayName} requires validation.`,
+          metadata: { orderId, orderReference },
+          eventType: EVENT_TYPES.ORDER_PENDING_VALIDATION
+        });
+      }
+    } catch (notifError) {
+      console.error('[ORDERS] Error sending validation notification:', notifError);
+    }
 
     return {
       orderId,
@@ -247,6 +306,22 @@ Meteor.methods({
       broker: Match.Maybe(String),
       settlementCurrency: Match.Maybe(String),
       underlyings: Match.Maybe(String),
+      // FX-specific fields (passed through to individual orders)
+      fxSubtype: Match.Maybe(Match.Where(x => Object.values(FX_SUBTYPES).includes(x))),
+      fxPair: Match.Maybe(String),
+      fxBuyCurrency: Match.Maybe(String),
+      fxSellCurrency: Match.Maybe(String),
+      fxRate: Match.Maybe(Number),
+      fxAmountCurrency: Match.Maybe(String),
+      fxForwardDate: Match.Maybe(String),
+      fxValueDate: Match.Maybe(String),
+      stopLossPrice: Match.Maybe(Number),
+      takeProfitPrice: Match.Maybe(Number),
+      // Term Deposit-specific fields
+      depositTenor: Match.Maybe(String),
+      depositCurrency: Match.Maybe(String),
+      depositMaturityDate: Match.Maybe(String),
+      depositAction: Match.Maybe(String),
       orders: [{
         clientId: String,
         bankAccountId: String,
@@ -274,21 +349,41 @@ Meteor.methods({
       const individualOrder = bulkOrderData.orders[i];
 
       try {
+        // Build individual order data with shared fields
+        const sharedFields = {
+          orderType: bulkOrderData.orderType,
+          isin: bulkOrderData.isin,
+          securityName: bulkOrderData.securityName,
+          assetType: bulkOrderData.assetType,
+          currency: bulkOrderData.currency,
+          priceType: bulkOrderData.priceType,
+          limitPrice: bulkOrderData.limitPrice,
+          notes: bulkOrderData.notes,
+          broker: bulkOrderData.broker,
+          settlementCurrency: bulkOrderData.settlementCurrency,
+          underlyings: bulkOrderData.underlyings,
+          tradeMode: TRADE_MODES.BLOCK,
+          bulkOrderGroupId
+        };
+        // Pass through FX/TD fields if present
+        if (bulkOrderData.fxSubtype) sharedFields.fxSubtype = bulkOrderData.fxSubtype;
+        if (bulkOrderData.fxPair) sharedFields.fxPair = bulkOrderData.fxPair;
+        if (bulkOrderData.fxBuyCurrency) sharedFields.fxBuyCurrency = bulkOrderData.fxBuyCurrency;
+        if (bulkOrderData.fxSellCurrency) sharedFields.fxSellCurrency = bulkOrderData.fxSellCurrency;
+        if (bulkOrderData.fxRate) sharedFields.fxRate = bulkOrderData.fxRate;
+        if (bulkOrderData.fxAmountCurrency) sharedFields.fxAmountCurrency = bulkOrderData.fxAmountCurrency;
+        if (bulkOrderData.fxForwardDate) sharedFields.fxForwardDate = bulkOrderData.fxForwardDate;
+        if (bulkOrderData.fxValueDate) sharedFields.fxValueDate = bulkOrderData.fxValueDate;
+        if (bulkOrderData.stopLossPrice) sharedFields.stopLossPrice = bulkOrderData.stopLossPrice;
+        if (bulkOrderData.takeProfitPrice) sharedFields.takeProfitPrice = bulkOrderData.takeProfitPrice;
+        if (bulkOrderData.depositTenor) sharedFields.depositTenor = bulkOrderData.depositTenor;
+        if (bulkOrderData.depositCurrency) sharedFields.depositCurrency = bulkOrderData.depositCurrency;
+        if (bulkOrderData.depositMaturityDate) sharedFields.depositMaturityDate = bulkOrderData.depositMaturityDate;
+        if (bulkOrderData.depositAction) sharedFields.depositAction = bulkOrderData.depositAction;
+
         const result = await Meteor.callAsync('orders.create', {
           orderData: {
-            orderType: bulkOrderData.orderType,
-            isin: bulkOrderData.isin,
-            securityName: bulkOrderData.securityName,
-            assetType: bulkOrderData.assetType,
-            currency: bulkOrderData.currency,
-            priceType: bulkOrderData.priceType,
-            limitPrice: bulkOrderData.limitPrice,
-            notes: bulkOrderData.notes,
-            broker: bulkOrderData.broker,
-            settlementCurrency: bulkOrderData.settlementCurrency,
-            underlyings: bulkOrderData.underlyings,
-            tradeMode: TRADE_MODES.BLOCK,
-            bulkOrderGroupId,
+            ...sharedFields,
             ...individualOrder
           },
           sessionId
@@ -412,7 +507,15 @@ Meteor.methods({
       notes: Match.Maybe(String),
       broker: Match.Maybe(String),
       settlementCurrency: Match.Maybe(String),
-      underlyings: Match.Maybe(String)
+      underlyings: Match.Maybe(String),
+      fxRate: Match.Maybe(Number),
+      fxForwardDate: Match.Maybe(String),
+      fxValueDate: Match.Maybe(String),
+      stopLossPrice: Match.Maybe(Number),
+      takeProfitPrice: Match.Maybe(Number),
+      depositTenor: Match.Maybe(String),
+      depositMaturityDate: Match.Maybe(String),
+      depositAction: Match.Maybe(String)
     });
 
     const { user, userId, userDisplayName } = await validateSession(sessionId);
@@ -421,8 +524,8 @@ Meteor.methods({
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
 
-    // Only pending orders can be updated
-    if (order.status !== ORDER_STATUSES.PENDING) {
+    // Only pending or pending_validation orders can be updated
+    if (order.status !== ORDER_STATUSES.PENDING && order.status !== ORDER_STATUSES.PENDING_VALIDATION) {
       throw new Meteor.Error('invalid-operation', 'Only pending orders can be updated');
     }
 
@@ -441,7 +544,7 @@ Meteor.methods({
         updateFields.limitPrice = null;
       }
     }
-    if (updateData.limitPrice !== undefined && updateData.priceType === 'limit') {
+    if (updateData.limitPrice !== undefined && updateData.priceType !== 'market') {
       updateFields.limitPrice = updateData.limitPrice;
     }
     if (updateData.notes !== undefined) {
@@ -455,6 +558,27 @@ Meteor.methods({
     }
     if (updateData.underlyings !== undefined) {
       updateFields.underlyings = updateData.underlyings || null;
+    }
+    if (updateData.fxRate !== undefined) {
+      updateFields.fxRate = updateData.fxRate || null;
+    }
+    if (updateData.fxForwardDate !== undefined) {
+      updateFields.fxForwardDate = updateData.fxForwardDate ? new Date(updateData.fxForwardDate) : null;
+    }
+    if (updateData.fxValueDate !== undefined) {
+      updateFields.fxValueDate = updateData.fxValueDate ? new Date(updateData.fxValueDate) : null;
+    }
+    if (updateData.stopLossPrice !== undefined) {
+      updateFields.stopLossPrice = updateData.stopLossPrice || null;
+    }
+    if (updateData.takeProfitPrice !== undefined) {
+      updateFields.takeProfitPrice = updateData.takeProfitPrice || null;
+    }
+    if (updateData.depositTenor !== undefined) {
+      updateFields.depositTenor = updateData.depositTenor || null;
+    }
+    if (updateData.depositMaturityDate !== undefined) {
+      updateFields.depositMaturityDate = updateData.depositMaturityDate ? new Date(updateData.depositMaturityDate) : null;
     }
 
     await OrdersCollection.updateAsync(orderId, { $set: updateFields });
@@ -477,8 +601,8 @@ Meteor.methods({
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
 
-    // Only pending orders can be deleted
-    if (order.status !== ORDER_STATUSES.PENDING) {
+    // Only pending or pending_validation orders can be deleted
+    if (order.status !== ORDER_STATUSES.PENDING && order.status !== ORDER_STATUSES.PENDING_VALIDATION) {
       throw new Meteor.Error('invalid-operation', 'Only pending orders can be deleted');
     }
 
@@ -487,6 +611,61 @@ Meteor.methods({
     console.log(`[ORDERS] Deleted order ${order.orderReference} by ${userDisplayName} (${userId})`);
 
     return { success: true, orderId, orderReference: order.orderReference };
+  },
+
+  /**
+   * Update limit on a sent order (allows post-send limit changes)
+   * Tracks change history for audit trail
+   */
+  async 'orders.updateLimit'({ orderId, priceType, limitPrice, reason, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+    check(priceType, Match.Where(x => Object.values(PRICE_TYPES).includes(x)));
+    check(limitPrice, Match.Maybe(Number));
+    check(reason, Match.Maybe(String));
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+    validateOrderPermission(user);
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    await validateOrderAccess(order, user);
+
+    // Allowed on pending, pending_validation, and sent orders
+    const allowedStatuses = [ORDER_STATUSES.PENDING, ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.SENT];
+    if (!allowedStatuses.includes(order.status)) {
+      throw new Meteor.Error('invalid-operation', 'Limit can only be modified on pending or sent orders');
+    }
+
+    // Build history entry for the old values
+    const historyEntry = {
+      price: order.limitPrice,
+      priceType: order.priceType,
+      changedAt: new Date(),
+      changedBy: userId,
+      changedByName: userDisplayName,
+      reason: reason || null
+    };
+
+    const updateFields = {
+      priceType,
+      updatedAt: new Date(),
+      updatedBy: userId
+    };
+
+    if (priceType === 'market') {
+      updateFields.limitPrice = null;
+    } else {
+      updateFields.limitPrice = limitPrice || null;
+    }
+
+    await OrdersCollection.updateAsync(orderId, {
+      $set: updateFields,
+      $push: { limitHistory: historyEntry }
+    });
+
+    console.log(`[ORDERS] Updated limit on order ${order.orderReference} (${order.status}) by ${userDisplayName} (${userId}) - reason: ${reason || 'none'}`);
+
+    return { success: true, orderId };
   },
 
   /**
@@ -503,6 +682,10 @@ Meteor.methods({
 
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
+
+    if (order.status === ORDER_STATUSES.PENDING_VALIDATION) {
+      throw new Meteor.Error('invalid-operation', 'Cannot mark as sent while pending validation');
+    }
 
     await OrdersCollection.updateAsync(orderId, {
       $set: {
@@ -538,6 +721,10 @@ Meteor.methods({
 
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
+
+    if (order.status === ORDER_STATUSES.PENDING_VALIDATION) {
+      throw new Meteor.Error('invalid-operation', 'Cannot mark as executed while pending validation');
+    }
 
     // Determine status based on executed quantity
     let newStatus = ORDER_STATUSES.EXECUTED;
@@ -663,7 +850,7 @@ Meteor.methods({
     // Role-based filtering
     if (user.role === 'rm') {
       // RMs only see orders for their clients
-      const rmClients = await UsersCollection.find({ rmId: user._id }).fetchAsync();
+      const rmClients = await UsersCollection.find({ relationshipManagerId: user._id }).fetchAsync();
       const clientIds = rmClients.map(c => c._id);
       query.clientId = { $in: clientIds };
     } else if (user.role === 'client') {
@@ -726,15 +913,17 @@ Meteor.methods({
       skip
     }).fetchAsync();
 
-    // Enrich orders with client and bank names
+    // Enrich orders with client, bank, and creator names
     const enrichedOrders = await Promise.all(orders.map(async (order) => {
       const client = await UsersCollection.findOneAsync(order.clientId);
       const bank = await BanksCollection.findOneAsync(order.bankId);
+      const creator = await UsersCollection.findOneAsync(order.createdBy);
 
       return {
         ...OrderHelpers.formatOrderDetails(order),
         clientName: client ? `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() : 'Unknown',
-        bankName: bank?.name || 'Unknown'
+        bankName: bank?.name || 'Unknown',
+        createdByName: creator ? `${creator.profile?.firstName || ''} ${creator.profile?.lastName || ''}`.trim() : 'Unknown'
       };
     }));
 
@@ -758,6 +947,11 @@ Meteor.methods({
 
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
+
+    // Cannot generate PDF for orders pending validation
+    if (order.status === ORDER_STATUSES.PENDING_VALIDATION) {
+      throw new Meteor.Error('invalid-operation', 'Cannot generate PDF for orders pending validation');
+    }
 
     // Get related data
     const client = await UsersCollection.findOneAsync(order.clientId);
@@ -829,6 +1023,11 @@ Meteor.methods({
 
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
+
+    // Cannot send email for orders pending validation
+    if (order.status === ORDER_STATUSES.PENDING_VALIDATION) {
+      throw new Meteor.Error('invalid-operation', 'Cannot send email for orders pending validation');
+    }
 
     // Get related data
     const client = await UsersCollection.findOneAsync(order.clientId);
@@ -1009,6 +1208,186 @@ Please find the full order confirmation attached as PDF.
     }
 
     return results;
+  },
+
+  /**
+   * Validate an order (four-eyes principle: move from PENDING_VALIDATION → PENDING)
+   * Enforces: validator !== creator, validator has canValidateOrders permission
+   */
+  async 'orders.validate'({ orderId, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+
+    // Check permission
+    if (!user.canValidateOrders) {
+      throw new Meteor.Error('not-authorized', 'You do not have order validation permission');
+    }
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    if (!order) {
+      throw new Meteor.Error('not-found', 'Order not found');
+    }
+
+    if (order.status !== ORDER_STATUSES.PENDING_VALIDATION) {
+      throw new Meteor.Error('invalid-operation', 'Order is not pending validation');
+    }
+
+    // RMs can only validate orders for their own clients
+    if (user.role === 'rm') {
+      const client = await UsersCollection.findOneAsync(order.clientId);
+      if (!client || client.relationshipManagerId !== user._id) {
+        throw new Meteor.Error('not-authorized', 'You can only validate orders for your own clients');
+      }
+    }
+
+    // Four-eyes: creator cannot validate their own order
+    if (order.createdBy === userId) {
+      throw new Meteor.Error('four-eyes-violation', 'You cannot validate your own order (four-eyes principle)');
+    }
+
+    await OrdersCollection.updateAsync(orderId, {
+      $set: {
+        status: ORDER_STATUSES.PENDING,
+        validatedBy: userId,
+        validatedByName: userDisplayName,
+        validatedAt: new Date(),
+        updatedAt: new Date(),
+        updatedBy: userId
+      }
+    });
+
+    console.log(`[ORDERS] Validated order ${order.orderReference} by ${userDisplayName} (${userId})`);
+
+    // Notify the creator that their order was validated
+    try {
+      const { NotificationHelpers, EVENT_TYPES } = await import('../../imports/api/notifications.js');
+      await NotificationHelpers.create({
+        userId: order.createdBy,
+        type: 'success',
+        title: 'Order Validated',
+        message: `Your order ${order.orderReference} (${order.securityName}) has been validated by ${userDisplayName}.`,
+        metadata: { orderId, orderReference: order.orderReference },
+        eventType: EVENT_TYPES.ORDER_VALIDATED
+      });
+    } catch (notifError) {
+      console.error('[ORDERS] Error sending validation notification:', notifError);
+    }
+
+    return { success: true, orderId, newStatus: ORDER_STATUSES.PENDING };
+  },
+
+  /**
+   * Reject an order validation (move from PENDING_VALIDATION → REJECTED)
+   */
+  async 'orders.rejectValidation'({ orderId, reason, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+    check(reason, Match.Maybe(String));
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+
+    // Check permission
+    if (!user.canValidateOrders) {
+      throw new Meteor.Error('not-authorized', 'You do not have order validation permission');
+    }
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    if (!order) {
+      throw new Meteor.Error('not-found', 'Order not found');
+    }
+
+    if (order.status !== ORDER_STATUSES.PENDING_VALIDATION) {
+      throw new Meteor.Error('invalid-operation', 'Order is not pending validation');
+    }
+
+    // RMs can only reject orders for their own clients
+    if (user.role === 'rm') {
+      const client = await UsersCollection.findOneAsync(order.clientId);
+      if (!client || client.relationshipManagerId !== user._id) {
+        throw new Meteor.Error('not-authorized', 'You can only reject orders for your own clients');
+      }
+    }
+
+    await OrdersCollection.updateAsync(orderId, {
+      $set: {
+        status: ORDER_STATUSES.REJECTED,
+        rejectedBy: userId,
+        rejectedByName: userDisplayName,
+        rejectedAt: new Date(),
+        rejectionReason: reason || null,
+        updatedAt: new Date(),
+        updatedBy: userId
+      }
+    });
+
+    console.log(`[ORDERS] Rejected order ${order.orderReference} by ${userDisplayName} (${userId}) - Reason: ${reason || 'N/A'}`);
+
+    // Notify the creator that their order was rejected
+    try {
+      const { NotificationHelpers, EVENT_TYPES } = await import('../../imports/api/notifications.js');
+      await NotificationHelpers.create({
+        userId: order.createdBy,
+        type: 'error',
+        title: 'Order Rejected',
+        message: `Your order ${order.orderReference} (${order.securityName}) was rejected by ${userDisplayName}.${reason ? ` Reason: ${reason}` : ''}`,
+        metadata: { orderId, orderReference: order.orderReference, reason },
+        eventType: EVENT_TYPES.ORDER_REJECTED
+      });
+    } catch (notifError) {
+      console.error('[ORDERS] Error sending rejection notification:', notifError);
+    }
+
+    return { success: true, orderId };
+  },
+
+  /**
+   * List orders pending validation (for the validation blotter)
+   */
+  async 'orders.listPendingValidation'({ sessionId }) {
+    check(sessionId, String);
+
+    const { user } = await validateSession(sessionId);
+
+    // All staff can see the blotter (validate/reject buttons require canValidateOrders on the client)
+    const staffRoles = ['superadmin', 'admin', 'rm', 'compliance', 'staff'];
+    if (!staffRoles.includes(user.role)) {
+      return { orders: [] };
+    }
+
+    const query = { status: ORDER_STATUSES.PENDING_VALIDATION };
+
+    // RMs only see pending orders for their own clients
+    if (user.role === 'rm') {
+      const rmClients = await UsersCollection.find({ relationshipManagerId: user._id }).fetchAsync();
+      const clientIds = rmClients.map(c => c._id);
+      query.clientId = { $in: clientIds };
+    }
+
+    const orders = await OrdersCollection.find(
+      query,
+      { sort: { createdAt: -1 } }
+    ).fetchAsync();
+
+    // Enrich orders with client and bank names
+    const enrichedOrders = await Promise.all(orders.map(async (order) => {
+      const client = await UsersCollection.findOneAsync(order.clientId);
+      const bank = await BanksCollection.findOneAsync(order.bankId);
+      const creator = await UsersCollection.findOneAsync(order.createdBy);
+      const creatorName = creator
+        ? `${creator.profile?.firstName || ''} ${creator.profile?.lastName || ''}`.trim()
+        : 'Unknown';
+
+      return {
+        ...OrderHelpers.formatOrderDetails(order),
+        clientName: client ? `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() : 'Unknown',
+        bankName: bank?.name || 'Unknown',
+        createdByName: creatorName
+      };
+    }));
+
+    return { orders: enrichedOrders };
   }
 });
 
@@ -1502,16 +1881,84 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
   </div>
 
   <div class="section">
-    <h2>Security Details</h2>
+    <h2>${order.assetType === 'fx' ? 'FX Details' : order.assetType === 'term_deposit' ? 'Term Deposit Details' : 'Security Details'}</h2>
     <div class="info-grid">
       <div class="info-row full-width">
-        <span class="info-label">Security Name</span>
+        <span class="info-label">${order.assetType === 'fx' ? 'Description' : 'Security Name'}</span>
         <span class="info-value">${order.securityName}</span>
       </div>
+      ${order.assetType === 'fx' && order.fxPair ? `
+      <div class="info-row">
+        <span class="info-label">FX Pair</span>
+        <span class="info-value">${order.fxPair}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">FX Type</span>
+        <span class="info-value">${order.fxSubtype === 'forward' ? 'Forward' : 'Spot'}</span>
+      </div>
+      ${order.fxAmountCurrency ? `
+      <div class="info-row">
+        <span class="info-label">Amount Currency</span>
+        <span class="info-value">${order.fxAmountCurrency}</span>
+      </div>
+      ` : ''}
+      ${order.fxRate ? `
+      <div class="info-row">
+        <span class="info-label">Rate</span>
+        <span class="info-value">${order.fxRate.toFixed(6)}</span>
+      </div>
+      ` : ''}
+      ${order.limitPrice ? `
+      <div class="info-row">
+        <span class="info-label">Limit Price</span>
+        <span class="info-value">${order.limitPrice.toFixed(6)}</span>
+      </div>
+      ` : ''}
+      ${order.stopLossPrice ? `
+      <div class="info-row">
+        <span class="info-label">Stop Loss</span>
+        <span class="info-value">${order.stopLossPrice.toFixed(6)}</span>
+      </div>
+      ` : ''}
+      ${order.takeProfitPrice ? `
+      <div class="info-row">
+        <span class="info-label">Take Profit</span>
+        <span class="info-value">${order.takeProfitPrice.toFixed(6)}</span>
+      </div>
+      ` : ''}
+      ${order.fxValueDate ? `
+      <div class="info-row">
+        <span class="info-label">Value Date</span>
+        <span class="info-value">${OrderFormatters.formatDate(order.fxValueDate)}</span>
+      </div>
+      ` : ''}
+      ${order.fxForwardDate ? `
+      <div class="info-row">
+        <span class="info-label">Forward Date</span>
+        <span class="info-value">${OrderFormatters.formatDate(order.fxForwardDate)}</span>
+      </div>
+      ` : ''}
+      ` : order.assetType === 'term_deposit' ? `
+      <div class="info-row">
+        <span class="info-label">Deposit Currency</span>
+        <span class="info-value">${order.depositCurrency || order.currency}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Tenor</span>
+        <span class="info-value">${TERM_DEPOSIT_TENORS.find(t => t.value === order.depositTenor)?.label || order.depositTenor || 'N/A'}</span>
+      </div>
+      ${order.depositMaturityDate ? `
+      <div class="info-row">
+        <span class="info-label">Maturity Date</span>
+        <span class="info-value">${OrderFormatters.formatDate(order.depositMaturityDate)}</span>
+      </div>
+      ` : ''}
+      ` : `
       <div class="info-row">
         <span class="info-label">ISIN</span>
         <span class="info-value">${order.isin}</span>
       </div>
+      `}
       <div class="info-row">
         <span class="info-label">Asset Type</span>
         <span class="info-value">${OrderFormatters.getAssetTypeLabel(order.assetType)}</span>
@@ -1531,16 +1978,16 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
         <span class="highlight-value">${order.orderType.toUpperCase()}</span>
       </div>
       <div class="highlight-row">
-        <span class="highlight-label">Quantity</span>
+        <span class="highlight-label">${order.assetType === 'term_deposit' ? 'Amount' : 'Quantity'}</span>
         <span class="highlight-value">${OrderFormatters.formatQuantity(order.quantity)}</span>
       </div>
       <div class="highlight-row">
         <span class="highlight-label">Price Type</span>
-        <span class="highlight-value">${order.priceType === 'market' ? 'Market' : 'Limit'}</span>
+        <span class="highlight-value">${OrderFormatters.getPriceTypeLabel(order.priceType)}</span>
       </div>
-      ${order.priceType === 'limit' && order.limitPrice ? `
+      ${order.priceType !== 'market' && order.limitPrice ? `
       <div class="highlight-row">
-        <span class="highlight-label">Limit Price</span>
+        <span class="highlight-label">${OrderFormatters.getPriceTypeLabel(order.priceType)} Price</span>
         <span class="highlight-value">${OrderFormatters.formatWithCurrency(order.limitPrice, order.currency)}</span>
       </div>
       ` : ''}
@@ -1552,6 +1999,34 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
       ` : ''}
     </div>
   </div>
+
+  ${(order.limitHistory && order.limitHistory.length > 0) ? `
+  <div class="section">
+    <h2>Limit Modification History</h2>
+    <table style="width: 100%; border-collapse: collapse; font-size: 10pt;">
+      <thead>
+        <tr style="border-bottom: 1px solid #e5e7eb;">
+          <th style="text-align: left; padding: 6px 8px; color: #6b7280;">Date</th>
+          <th style="text-align: left; padding: 6px 8px; color: #6b7280;">Previous Type</th>
+          <th style="text-align: left; padding: 6px 8px; color: #6b7280;">Previous Price</th>
+          <th style="text-align: left; padding: 6px 8px; color: #6b7280;">Changed By</th>
+          <th style="text-align: left; padding: 6px 8px; color: #6b7280;">Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${order.limitHistory.map(entry => `
+        <tr style="border-bottom: 1px solid #f3f4f6;">
+          <td style="padding: 6px 8px;">${OrderFormatters.formatDateTime(entry.changedAt)}</td>
+          <td style="padding: 6px 8px;">${OrderFormatters.getPriceTypeLabel(entry.priceType)}</td>
+          <td style="padding: 6px 8px;">${entry.price != null ? OrderFormatters.formatWithCurrency(entry.price, order.currency) : 'N/A'}</td>
+          <td style="padding: 6px 8px;">${entry.changedByName || 'Unknown'}</td>
+          <td style="padding: 6px 8px;">${entry.reason || '-'}</td>
+        </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  </div>
+  ` : ''}
 
   <div class="section">
     <h2>Account Information</h2>
@@ -1586,9 +2061,32 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
   </div>
   ` : ''}
 
+  <div class="section">
+    <h2>Audit Trail</h2>
+    <div class="info-grid">
+      <div class="info-row">
+        <span class="info-label">Placed By</span>
+        <span class="info-value">${createdByName}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Placed At</span>
+        <span class="info-value">${OrderFormatters.formatDateTime(order.createdAt)}</span>
+      </div>
+      ${order.validatedByName ? `
+      <div class="info-row">
+        <span class="info-label">Validated By</span>
+        <span class="info-value">${order.validatedByName}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Validated At</span>
+        <span class="info-value">${OrderFormatters.formatDateTime(order.validatedAt)}</span>
+      </div>
+      ` : ''}
+    </div>
+  </div>
+
   <div class="footer">
     <div class="footer-line">Order Confirmation generated by Ambervision Platform</div>
-    <div class="footer-line">Created by: ${createdByName} | Generated: ${new Date().toISOString()}</div>
     <div class="footer-line">This document is for informational purposes only and does not constitute a trade confirmation.</div>
   </div>
 </body>
@@ -1616,7 +2114,7 @@ Meteor.methods({
 
     // RMs only see their assigned clients
     if (user.role === 'rm') {
-      query.rmId = user._id;
+      query.relationshipManagerId = user._id;
     }
     // Admins and superadmins see all clients
 
@@ -1649,7 +2147,7 @@ Meteor.methods({
     // Verify access to client
     if (user.role === 'rm') {
       const client = await UsersCollection.findOneAsync(clientId);
-      if (!client || client.rmId !== user._id) {
+      if (!client || client.relationshipManagerId !== user._id) {
         throw new Meteor.Error('not-authorized', 'You do not have access to this client');
       }
     }

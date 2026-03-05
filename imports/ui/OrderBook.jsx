@@ -5,8 +5,9 @@ import LiquidGlassCard from './components/LiquidGlassCard.jsx';
 import Modal from './components/common/Modal.jsx';
 import ActionButton from './components/common/ActionButton.jsx';
 import OrderModal from './components/OrderModal.jsx';
+import ValidationBlotter from './components/ValidationBlotter.jsx';
 import { useTheme } from './ThemeContext.jsx';
-import { OrdersCollection, ORDER_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, ASSET_TYPES, TERMSHEET_STATUSES, OrderFormatters, OrderHelpers } from '/imports/api/orders';
+import { OrdersCollection, ORDER_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, ASSET_TYPES, PRICE_TYPES, TERMSHEET_STATUSES, OrderFormatters, OrderHelpers } from '/imports/api/orders';
 import { BanksCollection } from '/imports/api/banks';
 import { UsersCollection } from '/imports/api/users';
 
@@ -57,6 +58,12 @@ const OrderBook = ({ user }) => {
   const [editPriceType, setEditPriceType] = useState('market');
   const [editLimitPrice, setEditLimitPrice] = useState('');
   const [editNotes, setEditNotes] = useState('');
+
+  // Limit modification modal (for sent orders)
+  const [limitModalOpen, setLimitModalOpen] = useState(false);
+  const [limitPriceType, setLimitPriceType] = useState('limit');
+  const [limitNewPrice, setLimitNewPrice] = useState('');
+  const [limitReason, setLimitReason] = useState('');
 
   // Execution form
   const [executedQuantity, setExecutedQuantity] = useState('');
@@ -499,6 +506,46 @@ const OrderBook = ({ user }) => {
     setEditModalOpen(true);
   };
 
+  const openLimitModal = (order) => {
+    setSelectedOrder({ order });
+    setLimitPriceType(order.priceType || 'limit');
+    setLimitNewPrice(order.limitPrice?.toString() || '');
+    setLimitReason('');
+    setLimitModalOpen(true);
+  };
+
+  const handleUpdateLimit = async () => {
+    if (!selectedOrder) return;
+
+    setIsActioning(true);
+    setActionError(null);
+
+    try {
+      const sessionId = getSessionId();
+      const data = {
+        orderId: selectedOrder.order._id,
+        priceType: limitPriceType,
+        sessionId
+      };
+      if (limitPriceType !== 'market' && limitNewPrice) {
+        data.limitPrice = parseFloat(limitNewPrice);
+      }
+      if (limitReason && limitReason.trim()) {
+        data.reason = limitReason.trim();
+      }
+
+      await Meteor.callAsync('orders.updateLimit', data);
+
+      setLimitModalOpen(false);
+      setSelectedOrder(null);
+      loadOrders();
+    } catch (err) {
+      setActionError(err.reason || err.message);
+    } finally {
+      setIsActioning(false);
+    }
+  };
+
   const handleEdit = async () => {
     if (!selectedOrder) return;
 
@@ -513,7 +560,7 @@ const OrderBook = ({ user }) => {
         notes: editNotes || undefined
       };
 
-      if (editPriceType === 'limit' && editLimitPrice) {
+      if (editPriceType !== 'market' && editLimitPrice) {
         updateData.limitPrice = parseFloat(editLimitPrice);
       }
 
@@ -750,6 +797,7 @@ const OrderBook = ({ user }) => {
                 onChange={(e) => setStatusFilter(e.target.value)}
               >
                 <option value="all">All Statuses</option>
+                <option value={ORDER_STATUSES.PENDING_VALIDATION}>Pending Validation</option>
                 <option value={ORDER_STATUSES.PENDING}>Pending</option>
                 <option value={ORDER_STATUSES.SENT}>Sent</option>
                 <option value={ORDER_STATUSES.EXECUTED}>Executed</option>
@@ -808,6 +856,9 @@ const OrderBook = ({ user }) => {
               </ActionButton>
             </div>
           </div>
+
+          {/* Validation Blotter (four-eyes principle) */}
+          <ValidationBlotter user={user} onOrderValidated={loadOrders} />
 
           {/* Orders Table */}
           {isLoading ? (
@@ -938,7 +989,9 @@ const OrderBook = ({ user }) => {
                         <td style={styles.td}>
                           <div style={{ fontWeight: '500' }}>{order.securityName}</div>
                           <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                            {order.isin}
+                            {order.assetType === ASSET_TYPES.FX ? (order.fxPairFormatted || 'FX') :
+                             order.assetType === ASSET_TYPES.TERM_DEPOSIT ? (order.depositTenorLabel || 'TD') :
+                             order.isin}
                           </div>
                         </td>
                         <td style={styles.td}>
@@ -1013,13 +1066,13 @@ const OrderBook = ({ user }) => {
                             <button
                               style={{
                                 ...styles.actionButton,
-                                opacity: loadingPDF === order._id ? 0.7 : 1,
-                                cursor: loadingPDF === order._id ? 'wait' : 'pointer',
+                                opacity: loadingPDF === order._id || order.status === ORDER_STATUSES.PENDING_VALIDATION ? 0.4 : 1,
+                                cursor: loadingPDF === order._id || order.status === ORDER_STATUSES.PENDING_VALIDATION ? 'not-allowed' : 'pointer',
                                 minWidth: '42px'
                               }}
                               onClick={() => handleGeneratePDF(order)}
-                              title="Download PDF"
-                              disabled={loadingPDF === order._id}
+                              title={order.status === ORDER_STATUSES.PENDING_VALIDATION ? 'PDF unavailable until validated' : 'Download PDF'}
+                              disabled={loadingPDF === order._id || order.status === ORDER_STATUSES.PENDING_VALIDATION}
                             >
                               {loadingPDF === order._id ? (
                                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
@@ -1029,25 +1082,27 @@ const OrderBook = ({ user }) => {
                             </button>
                             {order.status !== ORDER_STATUSES.CANCELLED && order.status !== ORDER_STATUSES.EXECUTED && (
                               <>
-                                <button
-                                  style={{
-                                    ...styles.actionButton,
-                                    opacity: loadingEmail === order._id ? 0.7 : 1,
-                                    cursor: loadingEmail === order._id ? 'wait' : 'pointer',
-                                    minWidth: '50px'
-                                  }}
-                                  onClick={() => handleSendEmail(order)}
-                                  title="Send to bank"
-                                  disabled={loadingEmail === order._id}
-                                >
-                                  {loadingEmail === order._id ? (
-                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                                      <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⏳</span>
-                                    </span>
-                                  ) : 'Email'}
-                                </button>
-                                {/* Edit button - only for pending orders */}
-                                {order.status === ORDER_STATUSES.PENDING && (
+                                {order.status !== ORDER_STATUSES.PENDING_VALIDATION && (
+                                  <button
+                                    style={{
+                                      ...styles.actionButton,
+                                      opacity: loadingEmail === order._id ? 0.7 : 1,
+                                      cursor: loadingEmail === order._id ? 'wait' : 'pointer',
+                                      minWidth: '50px'
+                                    }}
+                                    onClick={() => handleSendEmail(order)}
+                                    title="Send to bank"
+                                    disabled={loadingEmail === order._id}
+                                  >
+                                    {loadingEmail === order._id ? (
+                                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                        <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⏳</span>
+                                      </span>
+                                    ) : 'Email'}
+                                  </button>
+                                )}
+                                {/* Edit button - for pending and pending_validation orders */}
+                                {(order.status === ORDER_STATUSES.PENDING || order.status === ORDER_STATUSES.PENDING_VALIDATION) && (
                                   <button
                                     style={{ ...styles.actionButton, color: '#0ea5e9' }}
                                     onClick={() => openEditModal(order)}
@@ -1056,8 +1111,18 @@ const OrderBook = ({ user }) => {
                                     Edit
                                   </button>
                                 )}
-                                {/* Delete button - only for pending orders */}
-                                {order.status === ORDER_STATUSES.PENDING && (
+                                {/* Modify Limit button - for sent orders */}
+                                {order.status === ORDER_STATUSES.SENT && (
+                                  <button
+                                    style={{ ...styles.actionButton, color: '#f59e0b' }}
+                                    onClick={() => openLimitModal(order)}
+                                    title="Modify limit price"
+                                  >
+                                    Limit
+                                  </button>
+                                )}
+                                {/* Delete button - for pending and pending_validation orders */}
+                                {(order.status === ORDER_STATUSES.PENDING || order.status === ORDER_STATUSES.PENDING_VALIDATION) && (
                                   <button
                                     style={{ ...styles.actionButton, color: '#ef4444' }}
                                     onClick={() => {
@@ -1131,16 +1196,18 @@ const OrderBook = ({ user }) => {
                 >
                   Cancel Order
                 </ActionButton>
-                <ActionButton
-                  variant="success"
-                  onClick={() => {
-                    setDetailModalOpen(false);
-                    setExecutedQuantity(selectedOrder.order.quantity?.toString() || '');
-                    setExecuteModalOpen(true);
-                  }}
-                >
-                  Mark Executed
-                </ActionButton>
+                {selectedOrder.order.status !== ORDER_STATUSES.PENDING_VALIDATION && (
+                  <ActionButton
+                    variant="success"
+                    onClick={() => {
+                      setDetailModalOpen(false);
+                      setExecutedQuantity(selectedOrder.order.quantity?.toString() || '');
+                      setExecuteModalOpen(true);
+                    }}
+                  >
+                    Mark Executed
+                  </ActionButton>
+                )}
               </>
             )}
             <ActionButton variant="secondary" onClick={() => setDetailModalOpen(false)}>
@@ -1189,6 +1256,96 @@ const OrderBook = ({ user }) => {
                   <span style={styles.detailLabel}>Underlyings</span>
                   <span style={styles.detailValue}>{selectedOrder.order.underlyings}</span>
                 </div>
+              )}
+              {/* FX-specific details */}
+              {selectedOrder.order.assetType === ASSET_TYPES.FX && selectedOrder.order.fxPairFormatted && (
+                <>
+                  <div style={styles.detailRow}>
+                    <span style={styles.detailLabel}>FX Pair</span>
+                    <span style={styles.detailValue}>{selectedOrder.order.fxPairFormatted}</span>
+                  </div>
+                  <div style={styles.detailRow}>
+                    <span style={styles.detailLabel}>FX Type</span>
+                    <span style={styles.detailValue}>{selectedOrder.order.fxSubtypeLabel || 'Spot'}</span>
+                  </div>
+                  {selectedOrder.order.fxAmountCurrencyFormatted && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Amount Currency</span>
+                      <span style={styles.detailValue}>{selectedOrder.order.fxAmountCurrencyFormatted}</span>
+                    </div>
+                  )}
+                  {selectedOrder.order.fxRateFormatted && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Rate</span>
+                      <span style={styles.detailValue}>{selectedOrder.order.fxRateFormatted}</span>
+                    </div>
+                  )}
+                  {selectedOrder.order.limitPriceFormatted && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Limit Price</span>
+                      <span style={styles.detailValue}>{selectedOrder.order.limitPriceFormatted}</span>
+                    </div>
+                  )}
+                  {selectedOrder.order.stopLossPriceFormatted && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Stop Loss</span>
+                      <span style={styles.detailValue}>{selectedOrder.order.stopLossPriceFormatted}</span>
+                    </div>
+                  )}
+                  {selectedOrder.order.takeProfitPriceFormatted && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Take Profit</span>
+                      <span style={styles.detailValue}>{selectedOrder.order.takeProfitPriceFormatted}</span>
+                    </div>
+                  )}
+                  {selectedOrder.order.fxValueDateFormatted && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Value Date</span>
+                      <span style={styles.detailValue}>{selectedOrder.order.fxValueDateFormatted}</span>
+                    </div>
+                  )}
+                  {selectedOrder.order.fxForwardDateFormatted && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Forward Date</span>
+                      <span style={styles.detailValue}>{selectedOrder.order.fxForwardDateFormatted}</span>
+                    </div>
+                  )}
+                </>
+              )}
+              {/* Term Deposit-specific details */}
+              {selectedOrder.order.assetType === ASSET_TYPES.TERM_DEPOSIT && (
+                <>
+                  {selectedOrder.order.depositAction && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Action</span>
+                      <span style={{
+                        ...styles.detailValue,
+                        fontWeight: '600',
+                        color: selectedOrder.order.depositAction === 'increase' ? '#10b981' : '#ef4444'
+                      }}>
+                        {selectedOrder.order.depositAction === 'increase' ? 'Increase' : 'Decrease'}
+                      </span>
+                    </div>
+                  )}
+                  {selectedOrder.order.depositCurrency && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Deposit Currency</span>
+                      <span style={styles.detailValue}>{selectedOrder.order.depositCurrency}</span>
+                    </div>
+                  )}
+                  {selectedOrder.order.depositTenorLabel && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Tenor</span>
+                      <span style={styles.detailValue}>{selectedOrder.order.depositTenorLabel}</span>
+                    </div>
+                  )}
+                  {selectedOrder.order.depositMaturityDateFormatted && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Maturity Date</span>
+                      <span style={styles.detailValue}>{selectedOrder.order.depositMaturityDateFormatted}</span>
+                    </div>
+                  )}
+                </>
               )}
               {selectedOrder.order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT && (
                 <div style={styles.detailRow}>
@@ -1316,6 +1473,83 @@ const OrderBook = ({ user }) => {
                 <div style={styles.detailRow}>
                   <span style={styles.detailLabel}>Sent To</span>
                   <span style={styles.detailValue}>{selectedOrder.order.sentTo}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Audit Trail */}
+            <div style={styles.detailSection}>
+              <div style={styles.detailTitle}>Audit Trail</div>
+              <div style={styles.detailRow}>
+                <span style={styles.detailLabel}>Placed By</span>
+                <span style={styles.detailValue}>{selectedOrder.order.createdByName || 'Unknown'}</span>
+              </div>
+              <div style={styles.detailRow}>
+                <span style={styles.detailLabel}>Placed At</span>
+                <span style={styles.detailValue}>{selectedOrder.order.createdAtFull}</span>
+              </div>
+              {selectedOrder.order.validatedByName && (
+                <>
+                  <div style={styles.detailRow}>
+                    <span style={styles.detailLabel}>Validated By</span>
+                    <span style={styles.detailValue}>{selectedOrder.order.validatedByName}</span>
+                  </div>
+                  <div style={styles.detailRow}>
+                    <span style={styles.detailLabel}>Validated At</span>
+                    <span style={styles.detailValue}>{selectedOrder.order.validatedAtFormatted}</span>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Rejection Info */}
+            {selectedOrder.order.rejectedByName && (
+              <div style={styles.detailSection}>
+                <div style={{ ...styles.detailTitle, color: '#ef4444' }}>Rejection</div>
+                <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Rejected By</span>
+                  <span style={styles.detailValue}>{selectedOrder.order.rejectedByName}</span>
+                </div>
+                <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Rejected At</span>
+                  <span style={styles.detailValue}>{selectedOrder.order.rejectedAtFormatted}</span>
+                </div>
+                {selectedOrder.order.rejectionReason && (
+                  <div style={styles.detailRow}>
+                    <span style={styles.detailLabel}>Reason</span>
+                    <span style={styles.detailValue}>{selectedOrder.order.rejectionReason}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Limit History */}
+            {selectedOrder.order.limitHistoryFormatted && selectedOrder.order.limitHistoryFormatted.length > 0 && (
+              <div style={styles.detailSection}>
+                <div style={styles.detailTitle}>Limit Modification History</div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)', fontSize: '11px' }}>Date</th>
+                        <th style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)', fontSize: '11px' }}>Prev Type</th>
+                        <th style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)', fontSize: '11px' }}>Prev Price</th>
+                        <th style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)', fontSize: '11px' }}>By</th>
+                        <th style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)', fontSize: '11px' }}>Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedOrder.order.limitHistoryFormatted.map((entry, idx) => (
+                        <tr key={idx} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                          <td style={{ padding: '6px 8px', fontSize: '11px' }}>{entry.changedAtFormatted}</td>
+                          <td style={{ padding: '6px 8px', fontSize: '11px' }}>{entry.priceTypeLabel}</td>
+                          <td style={{ padding: '6px 8px', fontSize: '11px' }}>{entry.price != null ? OrderFormatters.formatWithCurrency(entry.price, selectedOrder.order.currency) : 'N/A'}</td>
+                          <td style={{ padding: '6px 8px', fontSize: '11px' }}>{entry.changedByName || 'Unknown'}</td>
+                          <td style={{ padding: '6px 8px', fontSize: '11px', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis' }}>{entry.reason || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             )}
@@ -1798,9 +2032,11 @@ const OrderBook = ({ user }) => {
               >
                 <option value="market">Market</option>
                 <option value="limit">Limit</option>
+                <option value="stop_loss">Stop Loss</option>
+                <option value="take_profit">Take Profit</option>
               </select>
             </div>
-            {editPriceType === 'limit' && (
+            {editPriceType !== 'market' && (
               <div style={{ marginBottom: '16px' }}>
                 <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
                   Limit Price
@@ -1881,6 +2117,120 @@ const OrderBook = ({ user }) => {
           <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: '#ef4444', fontSize: '13px' }}>
             {actionError}
           </div>
+        )}
+      </Modal>
+
+      {/* Modify Limit Modal (for sent orders) */}
+      <Modal
+        isOpen={limitModalOpen}
+        onClose={() => {
+          setLimitModalOpen(false);
+          setActionError(null);
+        }}
+        title="Modify Limit"
+        size="small"
+        footer={
+          <>
+            <ActionButton
+              variant="secondary"
+              onClick={() => setLimitModalOpen(false)}
+              disabled={isActioning}
+            >
+              Cancel
+            </ActionButton>
+            <ActionButton
+              variant="primary"
+              onClick={handleUpdateLimit}
+              loading={isActioning}
+            >
+              Update Limit
+            </ActionButton>
+          </>
+        }
+      >
+        {selectedOrder && (
+          <>
+            <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>Order Reference</div>
+              <div style={{ fontWeight: '600', fontFamily: 'monospace' }}>{selectedOrder.order.orderReference}</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{selectedOrder.order.securityName}</div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                Current: {OrderFormatters.getPriceTypeLabel(selectedOrder.order.priceType)}
+                {selectedOrder.order.limitPrice != null ? ` — ${OrderFormatters.formatWithCurrency(selectedOrder.order.limitPrice, selectedOrder.order.currency)}` : ''}
+              </div>
+            </div>
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
+                Price Type
+              </label>
+              <select
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  fontSize: '13px',
+                  background: 'var(--bg-primary)',
+                  color: 'var(--text-primary)'
+                }}
+                value={limitPriceType}
+                onChange={(e) => setLimitPriceType(e.target.value)}
+              >
+                <option value="market">Market</option>
+                <option value="limit">Limit</option>
+                <option value="stop_loss">Stop Loss</option>
+                <option value="take_profit">Take Profit</option>
+              </select>
+            </div>
+            {limitPriceType !== 'market' && (
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
+                  {OrderFormatters.getPriceTypeLabel(limitPriceType)} Price
+                </label>
+                <input
+                  type="number"
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '6px',
+                    fontSize: '13px',
+                    background: 'var(--bg-primary)',
+                    color: 'var(--text-primary)'
+                  }}
+                  value={limitNewPrice}
+                  onChange={(e) => setLimitNewPrice(e.target.value)}
+                  min="0"
+                  step="0.01"
+                />
+              </div>
+            )}
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
+                Reason for change
+              </label>
+              <input
+                type="text"
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  fontSize: '13px',
+                  background: 'var(--bg-primary)',
+                  color: 'var(--text-primary)'
+                }}
+                value={limitReason}
+                onChange={(e) => setLimitReason(e.target.value)}
+                placeholder="e.g. Client email 04/03/2026"
+              />
+            </div>
+            {actionError && (
+              <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: '#ef4444', fontSize: '13px' }}>
+                {actionError}
+              </div>
+            )}
+          </>
         )}
       </Modal>
 
