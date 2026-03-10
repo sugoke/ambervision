@@ -85,15 +85,21 @@ export const translations = {
     addedToMemory: 'Added to Memory',
     total: 'Total',
 
-    // Indicative maturity value
+    // Indicative maturity value / Final redemption result
     indicativeValueIfMaturedToday: 'Indicative Value If Matured Today',
+    finalRedemptionResult: 'Final Redemption Result',
+    finalResult: 'Final',
     hypothetical: 'Hypothetical',
     indicativeCalculationDisclaimer: 'This is an indicative calculation showing what you would receive if the product matured today based on current market prices. Actual redemption value at maturity may differ.',
+    finalRedemptionDisclaimer: 'Final redemption breakdown based on the product\'s observation schedule and barrier conditions at maturity.',
     currentTheoreticalTotalReturn: 'Current theoretical Total return',
+    totalRedemptionValue: 'Total Redemption Value',
+    netPnl: 'Net P&L',
     asOf: 'As of',
     capitalReturn: 'Capital Return',
     couponsEarned: 'Coupons Earned',
     totalCouponsPaidToDate: 'Total coupons paid to date',
+    totalCouponsPaid: 'Total coupons paid over product life',
     memoryCoupons: 'Memory Coupons',
     includesMemory: 'Incl.',
     accumulatedInMemory: 'Accumulated in memory',
@@ -157,6 +163,114 @@ export const translations = {
     // Report footer
     pageOf: 'Page {current} of {total}',
     confidential: 'Confidential',
+
+    // PDF Report - Product Timeline
+    productTimeline: 'Product Timeline',
+    tradeDate: 'Trade Date',
+    valueDate: 'Value Date',
+    finalObservationDate: 'Final Observation',
+    maturityDate: 'Maturity',
+
+    // PDF Report - Market Price
+    productMarketPrice: 'Product Market Price',
+    priceType: 'Price Type',
+    value: 'Value',
+    percentOfNominal: '% of Nominal',
+    bidPrice: 'Bid Price',
+    askPrice: 'Ask Price',
+    midPrice: 'Mid Price',
+    priceDate: 'Price Date',
+
+    // PDF Report - Underlying Table
+    ticker: 'Ticker',
+    underlyingName: 'Name',
+    initialPrice: 'Initial Price',
+    currentPrice: 'Current Price',
+    underlyingPerformance: 'Underlying Performance',
+    statusLabel: 'Status',
+    worst: 'Worst',
+    best: 'Best',
+
+    // PDF Report - Product Parameters
+    productParameters: 'Product Parameters',
+    parameter: 'Parameter',
+    notional: 'Notional',
+
+    // PDF Report - Barrier Status
+    barrierStatus: 'Barrier Status',
+    barrierType: 'Barrier Type',
+    level: 'Level',
+    distanceToBarrier: 'Distance to Barrier',
+    triggered: 'Triggered',
+    notTriggered: 'Not Triggered',
+    protectedStatus: 'Protected',
+    description: 'Description',
+
+    // PDF Report - Coupon
+    couponSummary: 'Coupon Summary',
+    metric: 'Metric',
+    couponRatePerObs: 'Coupon Rate (per observation)',
+    couponTypeLbl: 'Coupon Type',
+    guaranteedCouponDesc: 'Guaranteed (paid regardless of performance)',
+    couponsInMemory: 'Coupons in Memory',
+    observationsCompleted: 'Observations Completed',
+    remainingObservations: 'Remaining Observations',
+    guaranteedCouponRate: 'Guaranteed Coupon Rate',
+    memoryCouponRate: 'Memory Coupon Rate',
+
+    // PDF Report - Indicative Value
+    hypotheticalCalculation: 'This is a hypothetical calculation based on current market prices.',
+    accumulatedCoupons: 'Accumulated Coupons',
+    totalTheoreticalReturn: 'Total Theoretical Return',
+    totalTheoreticalValue: 'Total Theoretical Value',
+
+    // PDF Report - Observation Schedule
+    obsDate: 'Obs Date',
+    finalLabel: 'Final',
+    obsLabel: 'Obs',
+    nextLabel: 'Next',
+    missed: 'Missed',
+    reportGeneratedOn: 'Report generated on',
+    protection: 'Protection',
+
+    // PDF Report - Orion specific
+    basketConsideredPerformance: 'Basket Considered Performance',
+    averageOfConsideredPerformances: 'Average of Considered Performances',
+    cappedAtRebateDesc: 'Capped at rebate ({rebate}%) if upper barrier ({barrier}%) is hit',
+    upperBarrierCap: 'Upper Barrier (Cap)',
+    lowerBarrierProtection: 'Lower Barrier (Protection)',
+    rebateValueLbl: 'Rebate Value',
+    performanceCappedDesc: 'Performance capped at rebate if hit',
+    capitalProtectionLevelDesc: 'Capital protection level',
+    cappedUpsideDesc: 'Capped upside per underlying',
+    hit: 'HIT',
+    notHit: 'Not Hit',
+    upperBarrierHitCapped: 'Upper Barrier Hit (Capped)',
+    positiveUncapped: 'Positive (Uncapped)',
+    negativePerformance: 'Negative Performance',
+    worstPerformer: 'Worst Performer',
+    upperBarrierHits: 'Upper Barrier Hits',
+
+    // PDF Report - Participation specific
+    basketPerformance: 'Basket Performance',
+    referencePerformanceLbl: 'Reference Performance',
+    basedOnUnderlyings: 'Based on {count} underlying(s)',
+    positivePerformance: 'Positive Performance',
+    participationCalculation: 'Participation Calculation',
+    component: 'Component',
+    rawBasketPerformance: 'Raw Basket Performance',
+    participationRate: 'Participation Rate',
+    participatedPerformance: 'Participated Performance',
+    redemptionValue: 'Redemption Value',
+    baseCapital: 'Base Capital',
+    totalRedemption: 'Total Redemption',
+    participatedReturn: 'Participated Return',
+    issuerCallOption: 'Issuer Call Option',
+    yesCallable: 'Yes (Callable)',
+    issuerCallRebate: 'Issuer Call Rebate',
+    earlyRedeemedOn: 'Early redeemed on',
+    strikeLevel: 'Strike Level',
+    formula: 'Formula',
 
     // Misc
     noDataAvailable: 'No data available',
@@ -249,15 +363,21 @@ export const translations = {
     addedToMemory: 'Ajouté en Mémoire',
     total: 'Total',
 
-    // Indicative maturity value
+    // Indicative maturity value / Final redemption result
     indicativeValueIfMaturedToday: 'Valeur Indicative si Maturité Aujourd\'hui',
+    finalRedemptionResult: 'Résultat Final du Remboursement',
+    finalResult: 'Final',
     hypothetical: 'Hypothétique',
     indicativeCalculationDisclaimer: 'Ceci est un calcul indicatif montrant ce que vous recevriez si le produit arrivait à maturité aujourd\'hui aux prix actuels du marché. La valeur réelle de remboursement à maturité peut différer.',
+    finalRedemptionDisclaimer: 'Décomposition finale du remboursement basée sur le calendrier d\'observation du produit et les conditions de barrière à maturité.',
     currentTheoreticalTotalReturn: 'Rendement Total Théorique Actuel',
+    totalRedemptionValue: 'Valeur Totale de Remboursement',
+    netPnl: 'P&L Net',
     asOf: 'Au',
     capitalReturn: 'Retour du Capital',
     couponsEarned: 'Coupons Gagnés',
     totalCouponsPaidToDate: 'Total des coupons payés à ce jour',
+    totalCouponsPaid: 'Total des coupons payés sur la durée de vie du produit',
     memoryCoupons: 'Coupons Mémoire',
     includesMemory: 'Incl.',
     accumulatedInMemory: 'Accumulé en mémoire',
@@ -321,6 +441,114 @@ export const translations = {
     // Report footer
     pageOf: 'Page {current} sur {total}',
     confidential: 'Confidentiel',
+
+    // PDF Report - Product Timeline
+    productTimeline: 'Calendrier du Produit',
+    tradeDate: 'Date de Transaction',
+    valueDate: 'Date de Valeur',
+    finalObservationDate: 'Observation Finale',
+    maturityDate: 'Maturité',
+
+    // PDF Report - Market Price
+    productMarketPrice: 'Prix de Marché du Produit',
+    priceType: 'Type de Prix',
+    value: 'Valeur',
+    percentOfNominal: '% du Nominal',
+    bidPrice: 'Prix Bid',
+    askPrice: 'Prix Ask',
+    midPrice: 'Prix Mid',
+    priceDate: 'Date du Prix',
+
+    // PDF Report - Underlying Table
+    ticker: 'Ticker',
+    underlyingName: 'Nom',
+    initialPrice: 'Prix Initial',
+    currentPrice: 'Prix Actuel',
+    underlyingPerformance: 'Performance des Sous-jacents',
+    statusLabel: 'Statut',
+    worst: 'Pire',
+    best: 'Meilleur',
+
+    // PDF Report - Product Parameters
+    productParameters: 'Paramètres du Produit',
+    parameter: 'Paramètre',
+    notional: 'Nominal',
+
+    // PDF Report - Barrier Status
+    barrierStatus: 'Statut des Barrières',
+    barrierType: 'Type de Barrière',
+    level: 'Niveau',
+    distanceToBarrier: 'Distance à la Barrière',
+    triggered: 'Déclenché',
+    notTriggered: 'Non Déclenché',
+    protectedStatus: 'Protégé',
+    description: 'Description',
+
+    // PDF Report - Coupon
+    couponSummary: 'Résumé des Coupons',
+    metric: 'Métrique',
+    couponRatePerObs: 'Taux de Coupon (par observation)',
+    couponTypeLbl: 'Type de Coupon',
+    guaranteedCouponDesc: 'Garanti (payé indépendamment de la performance)',
+    couponsInMemory: 'Coupons en Mémoire',
+    observationsCompleted: 'Observations Terminées',
+    remainingObservations: 'Observations Restantes',
+    guaranteedCouponRate: 'Taux de Coupon Garanti',
+    memoryCouponRate: 'Taux de Coupon Mémoire',
+
+    // PDF Report - Indicative Value
+    hypotheticalCalculation: 'Ceci est un calcul hypothétique basé sur les prix actuels du marché.',
+    accumulatedCoupons: 'Coupons Accumulés',
+    totalTheoreticalReturn: 'Rendement Théorique Total',
+    totalTheoreticalValue: 'Valeur Théorique Totale',
+
+    // PDF Report - Observation Schedule
+    obsDate: 'Date Obs',
+    finalLabel: 'Final',
+    obsLabel: 'Obs',
+    nextLabel: 'Prochain',
+    missed: 'Manqué',
+    reportGeneratedOn: 'Rapport généré le',
+    protection: 'Protection',
+
+    // PDF Report - Orion specific
+    basketConsideredPerformance: 'Performance Considérée du Panier',
+    averageOfConsideredPerformances: 'Moyenne des Performances Considérées',
+    cappedAtRebateDesc: 'Plafonné au rebate ({rebate}%) si la barrière supérieure ({barrier}%) est atteinte',
+    upperBarrierCap: 'Barrière Supérieure (Plafond)',
+    lowerBarrierProtection: 'Barrière Inférieure (Protection)',
+    rebateValueLbl: 'Valeur de Rebate',
+    performanceCappedDesc: 'Performance plafonnée au rebate si atteinte',
+    capitalProtectionLevelDesc: 'Niveau de protection du capital',
+    cappedUpsideDesc: 'Hausse plafonnée par sous-jacent',
+    hit: 'ATTEINT',
+    notHit: 'Non Atteint',
+    upperBarrierHitCapped: 'Barrière Atteinte (Plafonné)',
+    positiveUncapped: 'Positif (Non Plafonné)',
+    negativePerformance: 'Performance Négative',
+    worstPerformer: 'Pire Performeur',
+    upperBarrierHits: 'Atteintes de la Barrière Supérieure',
+
+    // PDF Report - Participation specific
+    basketPerformance: 'Performance du Panier',
+    referencePerformanceLbl: 'Performance de Référence',
+    basedOnUnderlyings: 'Basé sur {count} sous-jacent(s)',
+    positivePerformance: 'Performance Positive',
+    participationCalculation: 'Calcul de la Participation',
+    component: 'Composant',
+    rawBasketPerformance: 'Performance Brute du Panier',
+    participationRate: 'Taux de Participation',
+    participatedPerformance: 'Performance avec Participation',
+    redemptionValue: 'Valeur de Remboursement',
+    baseCapital: 'Capital de Base',
+    totalRedemption: 'Remboursement Total',
+    participatedReturn: 'Rendement avec Participation',
+    issuerCallOption: 'Option de Rappel de l\'Émetteur',
+    yesCallable: 'Oui (Callable)',
+    issuerCallRebate: 'Rebate de Rappel de l\'Émetteur',
+    earlyRedeemedOn: 'Remboursé par anticipation le',
+    strikeLevel: 'Niveau de Strike',
+    formula: 'Formule',
 
     // Misc
     noDataAvailable: 'Aucune donnée disponible',

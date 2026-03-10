@@ -4,6 +4,7 @@ import { useTracker } from 'meteor/react-meteor-data';
 import { ProductsCollection } from '../../api/products';
 import { TemplateReportsCollection } from '../../api/templateReports';
 import StructuredProductChart from '../components/StructuredProductChart.jsx';
+import { getTranslation, getLocale, t } from '../../utils/reportTranslations';
 
 /**
  * Orion Report PDF Template
@@ -29,6 +30,8 @@ const OrionReportPDF = ({ productId: propProductId }) => {
   const isPDFMode = urlParams?.get('pdfToken') != null;
   const pdfToken = urlParams?.get('pdfToken');
   const pdfUserId = urlParams?.get('userId');
+  const lang = urlParams?.get('lang') || 'en';
+  const tr = getTranslation(lang);
 
   // Validate PDF token if in PDF mode
   useEffect(() => {
@@ -184,7 +187,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
   const formatDate = (date) => {
     if (!date) return '-';
     const d = new Date(date);
-    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    return d.toLocaleDateString(getLocale(lang), { day: '2-digit', month: 'short', year: 'numeric' });
   };
 
   return (
@@ -209,8 +212,8 @@ const OrionReportPDF = ({ productId: propProductId }) => {
               {displayProduct.title || displayProduct.productName || 'Orion Memory Report'}
             </h1>
             <div style={styles.headerMeta}>
-              <span style={styles.metaItem}>ISIN: {displayProduct.isin || '-'}</span>
-              <span style={styles.metaItem}>Currency: {displayProduct.currency || 'EUR'}</span>
+              <span style={styles.metaItem}>{tr.isin}: {displayProduct.isin || '-'}</span>
+              <span style={styles.metaItem}>{tr.currency}: {displayProduct.currency || 'EUR'}</span>
               <span style={{
                 ...styles.statusBadge,
                 background: results.currentStatus?.productStatus === 'live' ? '#d1fae5' : '#e5e7eb',
@@ -234,14 +237,14 @@ const OrionReportPDF = ({ productId: propProductId }) => {
 
       {/* Product Timeline */}
       <div style={styles.section}>
-        <h2 style={styles.sectionTitle}>Product Timeline</h2>
+        <h2 style={styles.sectionTitle}>{tr.productTimeline}</h2>
         <table style={styles.table}>
           <thead>
             <tr>
-              <th style={styles.th}>Trade Date</th>
-              <th style={styles.th}>Value Date</th>
-              <th style={styles.th}>Final Observation</th>
-              <th style={styles.th}>Maturity</th>
+              <th style={styles.th}>{tr.tradeDate}</th>
+              <th style={styles.th}>{tr.valueDate}</th>
+              <th style={styles.th}>{tr.finalObservationDate}</th>
+              <th style={styles.th}>{tr.maturityDate}</th>
             </tr>
           </thead>
           <tbody>
@@ -258,19 +261,19 @@ const OrionReportPDF = ({ productId: propProductId }) => {
       {/* Market Price Info */}
       {(displayProduct.marketPrice || displayProduct.bidPrice || displayProduct.askPrice || results.productPrice) && (
         <div style={styles.section}>
-          <h2 style={styles.sectionTitle}>💰 Product Market Price</h2>
+          <h2 style={styles.sectionTitle}>💰 {tr.productMarketPrice}</h2>
           <table style={styles.table}>
             <thead>
               <tr>
-                <th style={styles.th}>Price Type</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Value</th>
-                <th style={{...styles.th, textAlign: 'right'}}>% of Nominal</th>
+                <th style={styles.th}>{tr.priceType}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.value}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.percentOfNominal}</th>
               </tr>
             </thead>
             <tbody>
               {(displayProduct.bidPrice || results.productPrice?.bid) && (
                 <tr>
-                  <td style={styles.td}>Bid Price</td>
+                  <td style={styles.td}>{tr.bidPrice}</td>
                   <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>
                     {displayProduct.bidPrice?.toFixed(2) || results.productPrice?.bid?.toFixed(2) || '-'}
                   </td>
@@ -281,7 +284,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
               )}
               {(displayProduct.askPrice || results.productPrice?.ask) && (
                 <tr>
-                  <td style={styles.td}>Ask Price</td>
+                  <td style={styles.td}>{tr.askPrice}</td>
                   <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>
                     {displayProduct.askPrice?.toFixed(2) || results.productPrice?.ask?.toFixed(2) || '-'}
                   </td>
@@ -292,7 +295,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
               )}
               {(displayProduct.marketPrice || displayProduct.midPrice || results.productPrice?.mid) && (
                 <tr style={{background: '#f0f9ff'}}>
-                  <td style={{...styles.td, fontWeight: 600}}>Mid Price</td>
+                  <td style={{...styles.td, fontWeight: 600}}>{tr.midPrice}</td>
                   <td style={{...styles.td, textAlign: 'right', fontWeight: 700, color: '#1e3a5f', fontSize: '1.1rem'}}>
                     {displayProduct.marketPrice?.toFixed(2) || displayProduct.midPrice?.toFixed(2) || results.productPrice?.mid?.toFixed(2) || '-'}
                   </td>
@@ -303,7 +306,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
               )}
               {displayProduct.priceDate && (
                 <tr>
-                  <td style={styles.td}>Price Date</td>
+                  <td style={styles.td}>{tr.priceDate}</td>
                   <td style={{...styles.td, textAlign: 'right'}} colSpan={2}>
                     {formatDate(displayProduct.priceDate)}
                   </td>
@@ -317,17 +320,17 @@ const OrionReportPDF = ({ productId: propProductId }) => {
       {/* Underlying Performance with Considered Performance */}
       {underlyings.length > 0 && (
         <div style={styles.section}>
-          <h2 style={styles.sectionTitle}>📊 Underlying Assets Performance</h2>
+          <h2 style={styles.sectionTitle}>📊 {tr.underlyingAssetsPerformance}</h2>
           <table style={styles.table}>
             <thead>
               <tr>
-                <th style={styles.th}>Ticker</th>
-                <th style={styles.th}>Name</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Initial</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Current</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Performance</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Considered</th>
-                <th style={{...styles.th, textAlign: 'center'}}>Upper Barrier</th>
+                <th style={styles.th}>{tr.ticker}</th>
+                <th style={styles.th}>{tr.underlyingName}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.initialPrice}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.currentPrice}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.performance}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.considered}</th>
+                <th style={{...styles.th, textAlign: 'center'}}>{tr.upperBarrier}</th>
               </tr>
             </thead>
             <tbody>
@@ -369,7 +372,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
                           fontSize: '0.75rem',
                           fontWeight: 600
                         }}>
-                          ✓ HIT
+                          ✓ {tr.hit}
                         </span>
                       ) : (
                         <span style={{
@@ -380,7 +383,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
                           fontSize: '0.75rem',
                           fontWeight: 500
                         }}>
-                          Not Hit
+                          {tr.notHit}
                         </span>
                       )}
                     </td>
@@ -395,7 +398,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
       {/* Basket Considered Performance Summary */}
       {results.basketConsideredPerformanceFormatted && (
         <div style={styles.section}>
-          <h2 style={styles.sectionTitle}>📈 Basket Considered Performance</h2>
+          <h2 style={styles.sectionTitle}>📈 {tr.basketConsideredPerformance}</h2>
           <div style={{
             background: '#f8fafc',
             padding: '1.5rem',
@@ -407,10 +410,10 @@ const OrionReportPDF = ({ productId: propProductId }) => {
           }}>
             <div>
               <div style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: '0.25rem' }}>
-                Average of Considered Performances
+                {tr.averageOfConsideredPerformances}
               </div>
               <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
-                Capped at rebate ({orionParams.rebate}%) if upper barrier ({orionParams.upperBarrier}%) is hit
+                {t(lang, 'cappedAtRebateDesc', { rebate: orionParams.rebate, barrier: orionParams.upperBarrier })}
               </div>
             </div>
             <div style={{
@@ -429,7 +432,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
       {underlyings.length > 0 && (
         <div style={{...styles.section, pageBreakBefore: 'always'}}>
           <h2 style={styles.sectionTitle}>
-            📊 Performance Overview
+            📊 {tr.performanceOverview}
             {orionParams.lowerBarrier && (
               <span style={{
                 fontSize: '0.75rem',
@@ -440,7 +443,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
                 fontWeight: 500,
                 marginLeft: '0.75rem'
               }}>
-                Protection at {orionParams.lowerBarrier}%
+                {tr.protectionAt} {orionParams.lowerBarrier}%
               </span>
             )}
           </h2>
@@ -541,7 +544,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
                               padding: '1px 4px',
                               borderRadius: '2px'
                             }}>
-                              Protection
+                              {tr.protection}
                             </div>
                           )}
                         </div>
@@ -632,7 +635,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
                   background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
                   borderRadius: '2px'
                 }} />
-                <span>Upper Barrier Hit (Capped)</span>
+                <span>{tr.upperBarrierHitCapped}</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                 <div style={{
@@ -641,7 +644,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
                   background: 'linear-gradient(90deg, #3b82f6 0%, #2563eb 100%)',
                   borderRadius: '2px'
                 }} />
-                <span>Positive (Uncapped)</span>
+                <span>{tr.positiveUncapped}</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                 <div style={{
@@ -650,7 +653,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
                   background: 'linear-gradient(90deg, #f59e0b 0%, #d97706 100%)',
                   borderRadius: '2px'
                 }} />
-                <span>Negative Performance</span>
+                <span>{tr.negativePerformance}</span>
               </div>
               {orionParams.lowerBarrier && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
@@ -659,7 +662,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
                     height: '14px',
                     background: '#3b82f6'
                   }} />
-                  <span>Protection Barrier ({orionParams.lowerBarrier}%)</span>
+                  <span>{tr.protectionBarrier} ({orionParams.lowerBarrier}%)</span>
                 </div>
               )}
             </div>
@@ -669,22 +672,22 @@ const OrionReportPDF = ({ productId: propProductId }) => {
 
       {/* Barrier Status */}
       <div style={styles.section}>
-        <h2 style={styles.sectionTitle}>Barrier Status</h2>
+        <h2 style={styles.sectionTitle}>{tr.barrierStatus}</h2>
         <table style={styles.table}>
           <thead>
             <tr>
-              <th style={styles.th}>Barrier Type</th>
-              <th style={{...styles.th, textAlign: 'right'}}>Level</th>
-              <th style={{...styles.th, textAlign: 'center'}}>Description</th>
-              <th style={{...styles.th, textAlign: 'center'}}>Status</th>
+              <th style={styles.th}>{tr.barrierType}</th>
+              <th style={{...styles.th, textAlign: 'right'}}>{tr.level}</th>
+              <th style={{...styles.th, textAlign: 'center'}}>{tr.description}</th>
+              <th style={{...styles.th, textAlign: 'center'}}>{tr.statusLabel}</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td style={styles.td}>Upper Barrier (Cap)</td>
+              <td style={styles.td}>{tr.upperBarrierCap}</td>
               <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>{orionParams.upperBarrier || '-'}%</td>
               <td style={{...styles.td, textAlign: 'center', fontSize: '0.8rem', color: '#64748b'}}>
-                Performance capped at rebate if hit
+                {tr.performanceCappedDesc}
               </td>
               <td style={{...styles.td, textAlign: 'center'}}>
                 <span style={{
@@ -694,15 +697,15 @@ const OrionReportPDF = ({ productId: propProductId }) => {
                   borderRadius: '4px',
                   fontSize: '0.75rem'
                 }}>
-                  {indicativeValue.hitBarrierCount || 0}/{indicativeValue.totalUnderlyings || underlyings.length} Hit
+                  {indicativeValue.hitBarrierCount || 0}/{indicativeValue.totalUnderlyings || underlyings.length} {tr.hit}
                 </span>
               </td>
             </tr>
             <tr>
-              <td style={styles.td}>Lower Barrier (Protection)</td>
+              <td style={styles.td}>{tr.lowerBarrierProtection}</td>
               <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>{orionParams.lowerBarrier || '-'}%</td>
               <td style={{...styles.td, textAlign: 'center', fontSize: '0.8rem', color: '#64748b'}}>
-                Capital protection level
+                {tr.capitalProtectionLevelDesc}
               </td>
               <td style={{...styles.td, textAlign: 'center'}}>
                 <span style={{
@@ -712,15 +715,15 @@ const OrionReportPDF = ({ productId: propProductId }) => {
                   borderRadius: '4px',
                   fontSize: '0.75rem'
                 }}>
-                  {indicativeValue.protectionIntact ? 'Protected' : 'Breached'}
+                  {indicativeValue.protectionIntact ? tr.protectedStatus : tr.breached}
                 </span>
               </td>
             </tr>
             <tr>
-              <td style={styles.td}>Rebate Value</td>
+              <td style={styles.td}>{tr.rebateValueLbl}</td>
               <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>{orionParams.rebate || '-'}%</td>
               <td style={{...styles.td, textAlign: 'center', fontSize: '0.8rem', color: '#64748b'}}>
-                Capped upside per underlying
+                {tr.cappedUpsideDesc}
               </td>
               <td style={{...styles.td, textAlign: 'center'}}>-</td>
             </tr>
@@ -732,45 +735,45 @@ const OrionReportPDF = ({ productId: propProductId }) => {
       {indicativeValue && indicativeValue.isLive && (
         <div style={{...styles.section, pageBreakBefore: 'always'}}>
           <h2 style={styles.sectionTitle}>
-            💹 Indicative Value (If Matured Today)
+            💹 {tr.indicativeValueIfMaturedToday}
           </h2>
           <p style={{fontSize: '0.85rem', color: '#64748b', marginBottom: '1rem', fontStyle: 'italic'}}>
-            This is a hypothetical calculation based on current market prices.
+            {tr.hypotheticalCalculation}
           </p>
           <table style={styles.table}>
             <thead>
               <tr>
-                <th style={styles.th}>Metric</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Value</th>
+                <th style={styles.th}>{tr.metric}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.value}</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td style={styles.td}>Basket Considered Performance</td>
+                <td style={styles.td}>{tr.basketConsideredPerformance}</td>
                 <td style={{...styles.td, textAlign: 'right', fontWeight: 600, fontFamily: 'monospace', color: indicativeValue.basketPerformance >= 0 ? '#047857' : '#b91c1c'}}>
                   {indicativeValue.basketPerformanceFormatted || `${indicativeValue.basketPerformance || 0}%`}
                 </td>
               </tr>
               <tr>
-                <td style={styles.td}>Worst Performer</td>
+                <td style={styles.td}>{tr.worstPerformer}</td>
                 <td style={{...styles.td, textAlign: 'right', fontWeight: 600, fontFamily: 'monospace', color: indicativeValue.worstPerformer >= 0 ? '#047857' : '#b91c1c'}}>
                   {indicativeValue.worstPerformerFormatted || `${indicativeValue.worstPerformer || 0}%`}
                 </td>
               </tr>
               <tr>
-                <td style={styles.td}>Upper Barrier Hits</td>
+                <td style={styles.td}>{tr.upperBarrierHits}</td>
                 <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>
                   {indicativeValue.hitBarrierCount || 0} / {indicativeValue.totalUnderlyings || underlyings.length}
                 </td>
               </tr>
               <tr>
-                <td style={styles.td}>Capital Return</td>
+                <td style={styles.td}>{tr.capitalReturn}</td>
                 <td style={{...styles.td, textAlign: 'right', fontWeight: 600, fontFamily: 'monospace'}}>
                   {indicativeValue.capitalReturnFormatted || `${indicativeValue.capitalReturn || 100}%`}
                 </td>
               </tr>
               <tr style={{background: '#e8f4fc'}}>
-                <td style={{...styles.td, fontWeight: 700}}>Total Theoretical Return</td>
+                <td style={{...styles.td, fontWeight: 700}}>{tr.totalTheoreticalReturn}</td>
                 <td style={{...styles.td, textAlign: 'right', fontWeight: 700, fontSize: '1.25rem', color: '#1e3a5f', fontFamily: 'monospace'}}>
                   {indicativeValue.totalValueFormatted || `${indicativeValue.totalValue || 100}%`}
                 </td>
@@ -783,7 +786,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
       {/* Performance Chart */}
       {productId && (
         <div style={{...styles.section, pageBreakBefore: 'always'}}>
-          <h2 style={styles.sectionTitle}>Performance Evolution</h2>
+          <h2 style={styles.sectionTitle}>{tr.performanceEvolution}</h2>
           <div style={{height: '400px', marginTop: '1rem'}}>
             <StructuredProductChart productId={productId} height="400px" />
           </div>
@@ -792,33 +795,33 @@ const OrionReportPDF = ({ productId: propProductId }) => {
 
       {/* Product Parameters */}
       <div style={styles.section}>
-        <h2 style={styles.sectionTitle}>Product Parameters</h2>
+        <h2 style={styles.sectionTitle}>{tr.productParameters}</h2>
         <table style={styles.table}>
           <thead>
             <tr>
-              <th style={styles.th}>Parameter</th>
-              <th style={{...styles.th, textAlign: 'right'}}>Value</th>
+              <th style={styles.th}>{tr.parameter}</th>
+              <th style={{...styles.th, textAlign: 'right'}}>{tr.value}</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td style={styles.td}>Upper Barrier (Cap)</td>
+              <td style={styles.td}>{tr.upperBarrierCap}</td>
               <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>{orionParams.upperBarrier || '-'}%</td>
             </tr>
             <tr>
-              <td style={styles.td}>Rebate Value</td>
+              <td style={styles.td}>{tr.rebateValueLbl}</td>
               <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>{orionParams.rebate || '-'}%</td>
             </tr>
             <tr>
-              <td style={styles.td}>Lower Barrier (Protection)</td>
+              <td style={styles.td}>{tr.lowerBarrierProtection}</td>
               <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>{orionParams.lowerBarrier || '-'}%</td>
             </tr>
             <tr>
-              <td style={styles.td}>Observation Frequency</td>
+              <td style={styles.td}>{tr.observationFrequency}</td>
               <td style={{...styles.td, textAlign: 'right', textTransform: 'capitalize'}}>{orionParams.observationFrequency || '-'}</td>
             </tr>
             <tr>
-              <td style={styles.td}>Notional</td>
+              <td style={styles.td}>{tr.notional}</td>
               <td style={{...styles.td, textAlign: 'right'}}>
                 {displayProduct.notional ? `${displayProduct.currency || 'EUR'} ${displayProduct.notional.toLocaleString()}` : '-'}
               </td>
@@ -829,9 +832,9 @@ const OrionReportPDF = ({ productId: propProductId }) => {
 
       {/* Footer */}
       <div style={styles.footer}>
-        <p>Generated by Amberlake Partners • {new Date().toLocaleString()}</p>
+        <p>{tr.generatedBy} • {new Date().toLocaleString(getLocale(lang))}</p>
         <p style={{fontSize: '0.75rem', color: '#9ca3af'}}>
-          Report generated on {formatDate(latestReport.evaluationDate || latestReport.createdAt)}
+          {tr.reportGeneratedOn} {formatDate(latestReport.evaluationDate || latestReport.createdAt)}
         </p>
       </div>
     </div>

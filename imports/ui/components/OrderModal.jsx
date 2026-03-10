@@ -70,10 +70,23 @@ const OrderModal = ({
   const [fxSellCurrency, setFxSellCurrency] = useState('');
   const [fxRate, setFxRate] = useState('');
   const [fxForwardDate, setFxForwardDate] = useState('');
-  const [fxValueDate, setFxValueDate] = useState('');
+  const [fxValueDate, setFxValueDate] = useState(() => {
+    // Default T+2 business days for FX spot
+    const d = new Date();
+    let bd = 0;
+    while (bd < 2) {
+      d.setDate(d.getDate() + 1);
+      const day = d.getDay();
+      if (day !== 0 && day !== 6) bd++;
+    }
+    return d.toISOString().split('T')[0];
+  });
   const [fxAmountCurrency, setFxAmountCurrency] = useState('buy'); // 'buy' or 'sell'
   const [stopLossPrice, setStopLossPrice] = useState('');
   const [takeProfitPrice, setTakeProfitPrice] = useState('');
+  const [fxSpotRate, setFxSpotRate] = useState(null);
+  const [fxSpotLoading, setFxSpotLoading] = useState(false);
+  const [fxWarnings, setFxWarnings] = useState([]);
 
   // Term Deposit-specific
   const [depositTenor, setDepositTenor] = useState('');
@@ -120,6 +133,93 @@ const OrderModal = ({
 
   // Track whether user has manually edited estimated value
   const [estimatedValueManuallyEdited, setEstimatedValueManuallyEdited] = useState(false);
+
+  // Fetch FX spot rate when both currencies are selected
+  useEffect(() => {
+    if (assetType !== ASSET_TYPES.FX || !fxBuyCurrency || !fxSellCurrency) {
+      setFxSpotRate(null);
+      return;
+    }
+    const pair = `${fxBuyCurrency}${fxSellCurrency}.FOREX`;
+    setFxSpotLoading(true);
+    Meteor.callAsync('currencyCache.getRates', [pair])
+      .then(result => {
+        if (result?.success && result.rates[pair]) {
+          setFxSpotRate(result.rates[pair]);
+        } else {
+          setFxSpotRate(null);
+        }
+      })
+      .catch(err => {
+        console.error('Error fetching FX spot rate:', err);
+        setFxSpotRate(null);
+      })
+      .finally(() => setFxSpotLoading(false));
+  }, [assetType, fxBuyCurrency, fxSellCurrency]);
+
+  // Validate FX price coherence whenever spot, limit, SL, TP or mode change
+  useEffect(() => {
+    if (assetType !== ASSET_TYPES.FX || !fxSpotRate) {
+      setFxWarnings([]);
+      return;
+    }
+    const warnings = [];
+    const spot = fxSpotRate;
+    const limit = limitPrice ? parseFloat(limitPrice) : null;
+    const sl = stopLossPrice ? parseFloat(stopLossPrice) : null;
+    const tp = takeProfitPrice ? parseFloat(takeProfitPrice) : null;
+    const isBuy = mode === 'buy';
+
+    // For a BUY order on pair BUY_CCY/SELL_CCY:
+    //   Limit should be below spot (you want to buy cheaper)
+    //   Stop Loss should be below spot (if rate drops, cut losses)
+    //   Take Profit should be above spot (if rate rises, take gains)
+    // For a SELL order it's the opposite
+
+    if (limit) {
+      if (isBuy && limit > spot * 1.001) {
+        warnings.push(`Limit (${limit.toFixed(6)}) is above spot (${spot.toFixed(6)}) — for a buy order, limit is typically below spot to get a better entry`);
+      } else if (!isBuy && limit < spot * 0.999) {
+        warnings.push(`Limit (${limit.toFixed(6)}) is below spot (${spot.toFixed(6)}) — for a sell order, limit is typically above spot to get a better exit`);
+      }
+    }
+
+    if (sl) {
+      if (isBuy && sl > spot) {
+        warnings.push(`Stop Loss (${sl.toFixed(6)}) is above spot (${spot.toFixed(6)}) — for a buy order, stop loss should be below spot`);
+      } else if (!isBuy && sl < spot) {
+        warnings.push(`Stop Loss (${sl.toFixed(6)}) is below spot (${spot.toFixed(6)}) — for a sell order, stop loss should be above spot`);
+      }
+    }
+
+    if (tp) {
+      if (isBuy && tp < spot) {
+        warnings.push(`Take Profit (${tp.toFixed(6)}) is below spot (${spot.toFixed(6)}) — for a buy order, take profit should be above spot`);
+      } else if (!isBuy && tp > spot) {
+        warnings.push(`Take Profit (${tp.toFixed(6)}) is above spot (${spot.toFixed(6)}) — for a sell order, take profit should be below spot`);
+      }
+    }
+
+    if (sl && tp && sl === tp) {
+      warnings.push('Stop Loss and Take Profit are the same value');
+    }
+
+    if (isBuy && sl && tp && sl >= tp) {
+      warnings.push('Stop Loss should be below Take Profit for a buy order');
+    } else if (!isBuy && sl && tp && sl <= tp) {
+      warnings.push('Stop Loss should be above Take Profit for a sell order');
+    }
+
+    if (limit && sl) {
+      if (isBuy && sl > limit) {
+        warnings.push('Stop Loss is above Limit Price — stop loss should be below your entry for a buy');
+      } else if (!isBuy && sl < limit) {
+        warnings.push('Stop Loss is below Limit Price — stop loss should be above your entry for a sell');
+      }
+    }
+
+    setFxWarnings(warnings);
+  }, [assetType, fxSpotRate, limitPrice, stopLossPrice, takeProfitPrice, mode]);
 
   // Initialize from prefill data
   useEffect(() => {
@@ -208,10 +308,20 @@ const OrderModal = ({
       setFxSellCurrency('');
       setFxRate('');
       setFxForwardDate('');
-      setFxValueDate('');
+      // Reset value date to T+2 business days
+      const d = new Date();
+      let bd = 0;
+      while (bd < 2) {
+        d.setDate(d.getDate() + 1);
+        if (d.getDay() !== 0 && d.getDay() !== 6) bd++;
+      }
+      setFxValueDate(d.toISOString().split('T')[0]);
       setFxAmountCurrency('buy');
       setStopLossPrice('');
       setTakeProfitPrice('');
+      setFxSpotRate(null);
+      setFxSpotLoading(false);
+      setFxWarnings([]);
       // Reset Term Deposit fields
       setDepositTenor('');
       setDepositCurrency('EUR');
@@ -1158,11 +1268,18 @@ const OrderModal = ({
             </div>
           </div>
 
-          {/* Pair display */}
-          <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px', padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
-            {mode === 'buy' ? 'Buy' : 'Sell'} <strong>{fxBuyCurrency}/{fxSellCurrency}</strong>
-            {fxSubtype === FX_SUBTYPES.FORWARD ? ' Forward' : ' Spot'}
-            {quantity ? ` — ${parseFloat(quantity).toLocaleString()} ${fxAmountCurrency === 'buy' ? fxBuyCurrency : fxSellCurrency}` : ''}
+          {/* Pair display with spot rate */}
+          <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px', padding: '8px 12px', background: 'var(--bg-primary)', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>
+                {mode === 'buy' ? 'Buy' : 'Sell'} <strong>{fxBuyCurrency}/{fxSellCurrency}</strong>
+                {fxSubtype === FX_SUBTYPES.FORWARD ? ' Forward' : ' Spot'}
+                {quantity ? ` — ${parseFloat(quantity).toLocaleString()} ${fxAmountCurrency === 'buy' ? fxBuyCurrency : fxSellCurrency}` : ''}
+              </span>
+              <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>
+                {fxSpotLoading ? 'Loading...' : fxSpotRate ? `Spot: ${fxSpotRate.toFixed(6)}` : ''}
+              </span>
+            </div>
           </div>
 
           {/* Limit, Stop Loss, Take Profit */}
@@ -1210,6 +1327,23 @@ const OrderModal = ({
               </div>
             </div>
           </div>
+
+          {/* FX coherence warnings */}
+          {fxWarnings.length > 0 && (
+            <div style={{
+              padding: '10px 12px',
+              background: 'rgba(245, 158, 11, 0.1)',
+              border: '1px solid rgba(245, 158, 11, 0.3)',
+              borderRadius: '6px',
+              marginBottom: '12px'
+            }}>
+              {fxWarnings.map((w, i) => (
+                <div key={i} style={{ fontSize: '12px', color: '#f59e0b', marginBottom: i < fxWarnings.length - 1 ? '4px' : 0 }}>
+                  ⚠ {w}
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Value Date / Forward Date */}
           <div style={styles.row}>
@@ -1590,6 +1724,12 @@ const OrderModal = ({
                 <span style={styles.reviewLabel}>Amount</span>
                 <span style={styles.reviewValue}>{parseFloat(quantity).toLocaleString()} {fxAmountCurrency === 'buy' ? fxBuyCurrency : fxSellCurrency}</span>
               </div>
+              {fxSpotRate && (
+                <div style={styles.reviewRow}>
+                  <span style={styles.reviewLabel}>Indicative Spot</span>
+                  <span style={styles.reviewValue}>{fxSpotRate.toFixed(6)}</span>
+                </div>
+              )}
               {limitPrice && (
                 <div style={styles.reviewRow}>
                   <span style={styles.reviewLabel}>Limit Price</span>
@@ -1618,6 +1758,15 @@ const OrderModal = ({
                 <div style={styles.reviewRow}>
                   <span style={styles.reviewLabel}>Forward Date</span>
                   <span style={styles.reviewValue}>{fxForwardDate}</span>
+                </div>
+              )}
+              {fxWarnings.length > 0 && (
+                <div style={{ marginTop: '12px', padding: '10px 12px', background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: '6px' }}>
+                  {fxWarnings.map((w, i) => (
+                    <div key={i} style={{ fontSize: '12px', color: '#f59e0b', marginBottom: i < fxWarnings.length - 1 ? '4px' : 0 }}>
+                      ⚠ {w}
+                    </div>
+                  ))}
                 </div>
               )}
             </>

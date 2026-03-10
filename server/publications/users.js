@@ -13,7 +13,8 @@ Meteor.publish("customUsers", function () {
       username: 1,
       role: 1,
       profile: 1,
-      createdAt: 1
+      createdAt: 1,
+      canValidateOrders: 1
     }
   });
 });
@@ -137,7 +138,8 @@ Meteor.publish("users", async function () {
       email: 1,
       username: 1,
       role: 1,
-      profile: 1
+      profile: 1,
+      canValidateOrders: 1
     }
   });
 });

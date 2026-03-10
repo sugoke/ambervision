@@ -1244,6 +1244,47 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                 }} />
                 Active
               </span>
+
+              {/* Can Validate Orders Badge - staff roles only, togglable by SuperAdmin */}
+              {[USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.RELATIONSHIP_MANAGER, USER_ROLES.COMPLIANCE, USER_ROLES.STAFF].includes(user.role) && (() => {
+                const canToggle = currentUser?.role === USER_ROLES.SUPERADMIN;
+                const isEnabled = user.canValidateOrders === true;
+                return (
+                  <button
+                    onClick={async () => {
+                      if (!canToggle) return;
+                      try {
+                        await Meteor.callAsync('users.updateCanValidateOrders', user._id, !isEnabled, sessionId);
+                      } catch (err) {
+                        console.error('Error updating canValidateOrders:', err);
+                        alert(err.reason || 'Failed to update permission');
+                      }
+                    }}
+                    disabled={!canToggle}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '6px 14px',
+                      borderRadius: '20px',
+                      background: isEnabled ? 'rgba(16, 185, 129, 0.15)' : 'rgba(107, 114, 128, 0.15)',
+                      border: `1px solid ${isEnabled ? 'rgba(16, 185, 129, 0.3)' : 'rgba(107, 114, 128, 0.3)'}`,
+                      color: isEnabled ? '#10b981' : '#6b7280',
+                      fontSize: '0.75rem',
+                      fontWeight: '600',
+                      cursor: canToggle ? 'pointer' : 'default',
+                      transition: 'all 0.2s ease',
+                      userSelect: 'none',
+                      outline: 'none'
+                    }}
+                    title={canToggle
+                      ? `Click to ${isEnabled ? 'disable' : 'enable'} order validation permission`
+                      : 'Order validation permission'}
+                  >
+                    Can Validate Orders: {isEnabled ? 'Yes' : 'No'}
+                  </button>
+                );
+              })()}
             </div>
 
             <div style={{ display: 'flex', gap: '16px', marginBottom: '8px', flexWrap: 'wrap' }}>

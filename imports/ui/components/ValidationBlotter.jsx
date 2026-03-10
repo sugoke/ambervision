@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Meteor } from 'meteor/meteor';
-import { ORDER_STATUSES, ASSET_TYPES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, OrderFormatters } from '/imports/api/orders';
+import { ORDER_STATUSES, ASSET_TYPES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, OrderFormatters } from '/imports/api/orders';
 
 /**
  * ValidationBlotter - Displays orders pending four-eyes validation
@@ -8,13 +8,15 @@ import { ORDER_STATUSES, ASSET_TYPES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, Ord
  * Shows a compact table of PENDING_VALIDATION orders with approve/reject actions.
  * Auto-hides when no orders need validation or user lacks canValidateOrders.
  */
-const ValidationBlotter = ({ user, onOrderValidated }) => {
+const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
   const [orders, setOrders] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [rejectModalOrder, setRejectModalOrder] = useState(null);
   const [rejectionReason, setRejectionReason] = useState('');
   const [isActioning, setIsActioning] = useState(null); // orderId being actioned
   const [reviewOrder, setReviewOrder] = useState(null); // order being reviewed before validation
+  const [uploadingTrace, setUploadingTrace] = useState(false);
+  const [parsedEmails, setParsedEmails] = useState({}); // traceId -> parsed email data
 
   const getSessionId = () => localStorage.getItem('sessionId');
 
@@ -42,7 +44,52 @@ const ValidationBlotter = ({ user, onOrderValidated }) => {
     } else {
       setIsLoading(false);
     }
-  }, [isStaff]);
+  }, [isStaff, refreshKey]);
+
+  // Auto-parse .eml traces when review order is opened
+  useEffect(() => {
+    if (!reviewOrder) { setParsedEmails({}); return; }
+    const emlTraces = (reviewOrder.emailTraces || []).filter(t =>
+      (t.fileName || '').toLowerCase().endsWith('.eml')
+    );
+    emlTraces.forEach(async (trace) => {
+      if (parsedEmails[trace._id]) return; // already parsed
+      try {
+        const sessionId = getSessionId();
+        const result = await Meteor.callAsync('orders.parseEmailTrace', {
+          orderId: reviewOrder._id, traceId: trace._id, sessionId
+        });
+        if (result?.success) {
+          setParsedEmails(prev => ({ ...prev, [trace._id]: result }));
+        }
+      } catch (err) {
+        console.error('Error parsing .eml:', err);
+        setParsedEmails(prev => ({ ...prev, [trace._id]: { error: err.reason || 'Failed to parse' } }));
+      }
+    });
+
+    // Also parse modification instruction file if it's an .eml
+    const modFile = reviewOrder.pendingModification?.instructionFile;
+    if (modFile && (modFile.fileName || '').toLowerCase().endsWith('.eml')) {
+      const modKey = 'mod_' + reviewOrder._id;
+      if (!parsedEmails[modKey]) {
+        (async () => {
+          try {
+            const sessionId = getSessionId();
+            const result = await Meteor.callAsync('orders.parseEmailTrace', {
+              orderId: reviewOrder._id, traceId: modKey, sessionId
+            });
+            if (result?.success) {
+              setParsedEmails(prev => ({ ...prev, [modKey]: result }));
+            }
+          } catch (err) {
+            console.error('Error parsing modification .eml:', err);
+            setParsedEmails(prev => ({ ...prev, [modKey]: { error: err.reason || 'Failed to parse' } }));
+          }
+        })();
+      }
+    }
+  }, [reviewOrder?._id, reviewOrder?.emailTraces?.length, reviewOrder?.pendingModification?.instructionFile?.fileName]);
 
   const handleValidate = async (order) => {
     setIsActioning(order._id);
@@ -79,12 +126,48 @@ const ValidationBlotter = ({ user, onOrderValidated }) => {
     }
   };
 
+  const handleValidateModification = async (order) => {
+    setIsActioning(order._id);
+    try {
+      const sessionId = getSessionId();
+      await Meteor.callAsync('orders.validateModification', { orderId: order._id, sessionId });
+      setReviewOrder(null);
+      await loadPendingValidation();
+      if (onOrderValidated) onOrderValidated();
+    } catch (err) {
+      alert(err.reason || err.message || 'Validation failed');
+    } finally {
+      setIsActioning(null);
+    }
+  };
+
+  const handleRejectModification = async () => {
+    if (!rejectModalOrder) return;
+    setIsActioning(rejectModalOrder._id);
+    try {
+      const sessionId = getSessionId();
+      await Meteor.callAsync('orders.rejectModification', {
+        orderId: rejectModalOrder._id,
+        reason: rejectionReason || null,
+        sessionId
+      });
+      setRejectModalOrder(null);
+      setRejectionReason('');
+      await loadPendingValidation();
+      if (onOrderValidated) onOrderValidated();
+    } catch (err) {
+      alert(err.reason || err.message || 'Rejection failed');
+    } finally {
+      setIsActioning(null);
+    }
+  };
+
   // Don't render if not staff or no orders pending
   if (!isStaff || (!isLoading && orders.length === 0)) {
     return null;
   }
 
-  const canValidate = user?.canValidateOrders === true;
+  const canValidate = user?.canValidateOrders === true || user?.role === 'compliance';
 
   const isOwnOrder = (order) => order.createdBy === user._id;
 
@@ -128,6 +211,11 @@ const ValidationBlotter = ({ user, onOrderValidated }) => {
                       <span style={{ fontFamily: 'monospace', fontWeight: '600', fontSize: '12px' }}>
                         {order.orderReference}
                       </span>
+                      {order.status === 'pending_modification' && (
+                        <span style={{ marginLeft: '6px', fontSize: '9px', fontWeight: '700', color: '#a855f7', background: 'rgba(168,85,247,0.1)', padding: '1px 5px', borderRadius: '3px', textTransform: 'uppercase' }}>
+                          Modif.
+                        </span>
+                      )}
                       {order.emailTraces?.some(t => t.traceType === 'client_order') && (
                         <span title="Client order email attached" style={{ marginLeft: '4px', fontSize: '12px', cursor: 'help' }}>📎</span>
                       )}
@@ -216,7 +304,7 @@ const ValidationBlotter = ({ user, onOrderValidated }) => {
       {/* Review & Validate Modal */}
       {reviewOrder && (
         <div style={styles.modalOverlay} onClick={() => setReviewOrder(null)}>
-          <div style={{ ...styles.modalContent, maxWidth: '620px' }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ ...styles.modalContent, maxWidth: '720px', maxHeight: '90vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
               <div>
                 <h3 style={{ ...styles.modalTitle, marginBottom: '4px' }}>Review Order</h3>
@@ -314,120 +402,445 @@ const ValidationBlotter = ({ user, onOrderValidated }) => {
               </div>
             )}
 
-            {/* Email Traces / Attachments */}
+            {/* Email Traces / Attachments with inline preview */}
             {(() => {
               const traces = reviewOrder.emailTraces || [];
-              if (traces.length === 0) return null;
+              const hasClientOrder = traces.some(t => t.traceType === EMAIL_TRACE_TYPES.CLIENT_ORDER) ||
+                (reviewOrder.status === 'pending_modification' && reviewOrder.pendingModification?.instructionFile);
+
+              const getTraceUrl = (trace) => `/order_traces/${reviewOrder._id}/${trace.storedFileName}`;
+              const isPreviewable = (trace) => {
+                const ext = (trace.fileName || '').toLowerCase();
+                return ext.endsWith('.pdf') || ext.endsWith('.jpg') || ext.endsWith('.jpeg') ||
+                       ext.endsWith('.png') || ext.endsWith('.gif') || ext.endsWith('.html');
+              };
+
+              const handleUploadClientOrder = (file) => {
+                if (!file) return;
+                const ext = '.' + file.name.split('.').pop().toLowerCase();
+                if (!EMAIL_TRACE_ACCEPTED_TYPES.includes(ext)) {
+                  alert(`File type ${ext} not accepted. Use: ${EMAIL_TRACE_ACCEPTED_TYPES.join(', ')}`);
+                  return;
+                }
+                if (file.size > EMAIL_TRACE_MAX_SIZE) {
+                  alert('File exceeds maximum size of 15MB');
+                  return;
+                }
+                setUploadingTrace(true);
+                const reader = new FileReader();
+                reader.onload = async () => {
+                  try {
+                    const base64 = reader.result.split(',')[1];
+                    const sessionId = localStorage.getItem('sessionId');
+                    await Meteor.callAsync('orders.uploadEmailTrace', {
+                      orderId: reviewOrder._id,
+                      traceType: EMAIL_TRACE_TYPES.CLIENT_ORDER,
+                      fileName: file.name,
+                      base64Data: base64,
+                      mimeType: file.type || 'application/octet-stream',
+                      sessionId
+                    });
+                    // Reload orders to get updated traces
+                    await loadPendingValidation();
+                    // Update the reviewOrder with fresh data
+                    const freshOrders = await Meteor.callAsync('orders.listPendingValidation', { sessionId });
+                    const updated = (freshOrders?.orders || []).find(o => o._id === reviewOrder._id);
+                    if (updated) setReviewOrder(updated);
+                  } catch (err) {
+                    alert(err.reason || err.message || 'Upload failed');
+                  } finally {
+                    setUploadingTrace(false);
+                  }
+                };
+                reader.readAsDataURL(file);
+              };
+
               return (
                 <div style={{ marginBottom: '14px' }}>
                   <div style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: '8px' }}>
-                    Attached Documents
+                    Client Order Email
                   </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    {traces.map((trace) => (
-                      <div key={trace._id} style={{
-                        display: 'flex', alignItems: 'center', gap: '8px',
-                        padding: '8px 12px', borderRadius: '6px', background: 'var(--bg-secondary)',
-                        border: '1px solid var(--border-color)'
-                      }}>
-                        <span style={{ fontSize: '14px' }}>
-                          {trace.traceType === EMAIL_TRACE_TYPES.CLIENT_ORDER ? '📋' : '📎'}
-                        </span>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
-                            {EMAIL_TRACE_LABELS[trace.traceType] || trace.traceType}
+
+                  {/* Existing traces — shown inline automatically */}
+                  {traces.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: hasClientOrder ? 0 : '8px' }}>
+                      {traces.map((trace) => {
+                        const previewable = isPreviewable(trace);
+                        const url = getTraceUrl(trace);
+                        const isImage = /\.(jpg|jpeg|png|gif)$/i.test(trace.fileName || '');
+                        const isEml = /\.eml$/i.test(trace.fileName || '');
+                        const parsed = parsedEmails[trace._id];
+
+                        return (
+                          <div key={trace._id} style={{
+                            borderRadius: '6px', background: 'var(--bg-secondary)',
+                            border: '1px solid var(--border-color)', overflow: 'hidden'
+                          }}>
+                            <div style={{
+                              display: 'flex', alignItems: 'center', gap: '8px',
+                              padding: '8px 12px'
+                            }}>
+                              <span style={{ fontSize: '14px' }}>
+                                {trace.traceType === EMAIL_TRACE_TYPES.CLIENT_ORDER ? '📋' : '📎'}
+                              </span>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
+                                  {EMAIL_TRACE_LABELS[trace.traceType] || trace.traceType}
+                                </div>
+                                <div style={{ fontSize: '12px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {trace.fileName}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Inline preview for images / PDF / HTML */}
+                            {previewable && (
+                              <div style={{ borderTop: '1px solid var(--border-color)', padding: '8px', background: 'var(--bg-primary)' }}>
+                                {isImage ? (
+                                  <img
+                                    src={url}
+                                    alt={trace.fileName}
+                                    style={{ maxWidth: '100%', maxHeight: '500px', display: 'block', margin: '0 auto', borderRadius: '4px' }}
+                                  />
+                                ) : (
+                                  <iframe
+                                    src={url}
+                                    title={trace.fileName}
+                                    style={{ width: '100%', height: '500px', border: 'none', borderRadius: '4px', background: '#fff' }}
+                                  />
+                                )}
+                              </div>
+                            )}
+
+                            {/* Inline preview for .eml (parsed server-side) */}
+                            {isEml && (
+                              <div style={{ borderTop: '1px solid var(--border-color)', background: 'var(--bg-primary)' }}>
+                                {!parsed ? (
+                                  <div style={{ padding: '16px', textAlign: 'center', fontSize: '12px', color: 'var(--text-muted)' }}>
+                                    Loading email...
+                                  </div>
+                                ) : parsed.error ? (
+                                  <div style={{ padding: '16px', textAlign: 'center', fontSize: '12px', color: '#ef4444' }}>
+                                    Could not parse email: {parsed.error}
+                                  </div>
+                                ) : (
+                                  <div>
+                                    {/* Email header */}
+                                    <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-color)', fontSize: '12px' }}>
+                                      <div style={{ marginBottom: '3px' }}><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>From:</strong> <span style={{ color: 'var(--text-primary)' }}>{parsed.from}</span></div>
+                                      <div style={{ marginBottom: '3px' }}><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>To:</strong> <span style={{ color: 'var(--text-primary)' }}>{parsed.to}</span></div>
+                                      <div style={{ marginBottom: '3px' }}><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>Subject:</strong> <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{parsed.subject}</span></div>
+                                      {parsed.date && (
+                                        <div><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>Date:</strong> <span style={{ color: 'var(--text-primary)' }}>{new Date(parsed.date).toLocaleString()}</span></div>
+                                      )}
+                                      {parsed.hasAttachments && (
+                                        <div style={{ marginTop: '4px', color: 'var(--text-muted)', fontSize: '11px' }}>
+                                          Attachments: {parsed.attachmentNames.join(', ')}
+                                        </div>
+                                      )}
+                                    </div>
+                                    {/* Email body */}
+                                    {parsed.html ? (
+                                      <iframe
+                                        srcDoc={parsed.html}
+                                        title="Email content"
+                                        style={{ width: '100%', height: '400px', border: 'none', background: '#fff' }}
+                                        sandbox="allow-same-origin"
+                                      />
+                                    ) : (
+                                      <div style={{ padding: '12px', fontSize: '13px', color: 'var(--text-primary)', whiteSpace: 'pre-wrap', lineHeight: '1.5', maxHeight: '400px', overflowY: 'auto' }}>
+                                        {parsed.text}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* .msg files — download only */}
+                            {!previewable && !isEml && (
+                              <div style={{ borderTop: '1px solid var(--border-color)', padding: '12px', textAlign: 'center' }}>
+                                <button
+                                  style={{
+                                    padding: '6px 16px', borderRadius: '4px', border: '1px solid var(--border-color)',
+                                    background: 'transparent', color: 'var(--text-secondary)', fontSize: '12px',
+                                    fontWeight: '600', cursor: 'pointer'
+                                  }}
+                                  onClick={() => {
+                                    const a = document.createElement('a');
+                                    a.href = url; a.download = trace.fileName; a.click();
+                                  }}
+                                >
+                                  Download {trace.fileName}
+                                </button>
+                              </div>
+                            )}
                           </div>
-                          <div style={{ fontSize: '12px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {trace.fileName}
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Upload zone if no client order attached */}
+                  {!hasClientOrder && (
+                    <div
+                      style={{
+                        border: '2px dashed rgba(249, 115, 22, 0.4)',
+                        borderRadius: '6px',
+                        padding: '14px',
+                        textAlign: 'center',
+                        cursor: uploadingTrace ? 'wait' : 'pointer',
+                        background: 'rgba(249, 115, 22, 0.05)',
+                        transition: 'border-color 0.15s'
+                      }}
+                      onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleUploadClientOrder(e.dataTransfer.files[0]);
+                      }}
+                      onClick={() => {
+                        if (uploadingTrace) return;
+                        const input = document.createElement('input');
+                        input.type = 'file';
+                        input.accept = EMAIL_TRACE_ACCEPTED_TYPES.join(',');
+                        input.onchange = (e) => handleUploadClientOrder(e.target.files[0]);
+                        input.click();
+                      }}
+                    >
+                      {uploadingTrace ? (
+                        <span style={{ fontSize: '12px', color: '#f97316' }}>Uploading...</span>
+                      ) : (
+                        <div>
+                          <div style={{ fontSize: '12px', color: '#f97316', fontWeight: '600', marginBottom: '2px' }}>
+                            No client order email attached
+                          </div>
+                          <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                            Click or drag & drop to attach (.pdf, .jpg, .png, .msg, .eml, .html)
                           </div>
                         </div>
-                        <button
-                          style={{
-                            padding: '4px 10px', borderRadius: '4px', border: '1px solid var(--border-color)',
-                            background: 'transparent', color: 'var(--text-secondary)', fontSize: '11px',
-                            fontWeight: '600', cursor: 'pointer'
-                          }}
-                          onClick={async () => {
-                            try {
-                              const sessionId = localStorage.getItem('sessionId');
-                              const result = await Meteor.callAsync('orders.downloadEmailTrace', {
-                                orderId: reviewOrder._id, traceId: trace._id, sessionId
-                              });
-                              if (result?.base64Data) {
-                                const byteChars = atob(result.base64Data);
-                                const byteArray = new Uint8Array(byteChars.length);
-                                for (let i = 0; i < byteChars.length; i++) byteArray[i] = byteChars.charCodeAt(i);
-                                const blob = new Blob([byteArray], { type: result.mimeType || 'application/octet-stream' });
-                                const url = URL.createObjectURL(blob);
-                                const a = document.createElement('a');
-                                a.href = url; a.download = trace.fileName; a.click();
-                                URL.revokeObjectURL(url);
-                              }
-                            } catch (err) {
-                              console.error('Error downloading trace:', err);
-                            }
-                          }}
-                          title={`Download ${trace.fileName}`}
-                        >
-                          Download
-                        </button>
-                      </div>
-                    ))}
-                  </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })()}
 
-            {/* Limit History */}
+            {/* Modification History */}
             {reviewOrder.limitHistoryFormatted?.length > 0 && (
               <div style={{ marginBottom: '14px' }}>
                 <div style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: '8px' }}>
-                  Limit Price History
+                  Modification History
                 </div>
                 {reviewOrder.limitHistoryFormatted.map((entry, idx) => (
-                  <div key={idx} style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-                    {entry.changedAtFormatted} — {entry.priceTypeLabel}: {OrderFormatters.formatWithCurrency(entry.price, reviewOrder.currency)}
-                    {entry.changedByName && <span style={{ color: 'var(--text-muted)' }}> by {entry.changedByName}</span>}
-                    {entry.reason && <span style={{ color: 'var(--text-muted)' }}> ({entry.reason})</span>}
+                  <div key={idx} style={{
+                    fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '6px',
+                    padding: '6px 8px', background: 'var(--bg-secondary)', borderRadius: '4px',
+                    borderLeft: `3px solid ${entry.status === 'rejected' ? '#ef4444' : entry.validatedByName ? '#10b981' : 'var(--border-color)'}`
+                  }}>
+                    <div>
+                      {entry.changedAtFormatted} — {entry.changedByName || 'Unknown'}
+                      {entry.reason && <span style={{ color: 'var(--text-muted)' }}> — {entry.reason}</span>}
+                    </div>
+                    {entry.newPriceType && (
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        {entry.priceTypeLabel}: {entry.price ?? '—'} → {entry.newPriceTypeLabel}: {entry.newPrice ?? '—'}
+                        {entry.stopLossPrice !== undefined && ` | SL: ${entry.stopLossPrice ?? '—'} → ${entry.newStopLossPrice ?? '—'}`}
+                        {entry.takeProfitPrice !== undefined && ` | TP: ${entry.takeProfitPrice ?? '—'} → ${entry.newTakeProfitPrice ?? '—'}`}
+                      </div>
+                    )}
+                    {entry.validatedByName && (
+                      <div style={{ fontSize: '11px', color: '#10b981', marginTop: '2px' }}>
+                        Validated by {entry.validatedByName} on {entry.validatedAtFormatted}
+                      </div>
+                    )}
+                    {entry.status === 'rejected' && (
+                      <div style={{ fontSize: '11px', color: '#ef4444', marginTop: '2px' }}>
+                        Rejected by {entry.rejectedByName} on {entry.rejectedAtFormatted}
+                        {entry.rejectionReason && ` — ${entry.rejectionReason}`}
+                      </div>
+                    )}
+                    {entry.instructionFile && (
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        📎 {entry.instructionFile.fileName}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
             )}
+
+            {/* Pending Modification Details */}
+            {reviewOrder.status === 'pending_modification' && reviewOrder.pendingModification && (() => {
+              const mod = reviewOrder.pendingModification;
+              const isModRequester = mod.requestedBy === user._id;
+              const instrUrl = mod.instructionFile ? `/order_traces/${reviewOrder._id}/${mod.instructionFile.storedFileName}` : null;
+              const instrPreviewable = mod.instructionFile && /\.(pdf|jpg|jpeg|png|gif|html)$/i.test(mod.instructionFile.fileName || '');
+              const instrIsImage = mod.instructionFile && /\.(jpg|jpeg|png|gif)$/i.test(mod.instructionFile.fileName || '');
+              const instrIsEml = mod.instructionFile && /\.eml$/i.test(mod.instructionFile.fileName || '');
+              const modEmlKey = `mod_${reviewOrder._id}`;
+              const parsedEml = instrIsEml ? parsedEmails[modEmlKey] : null;
+
+              return (
+                <div style={{ marginBottom: '14px', padding: '14px', borderRadius: '8px', border: '2px solid #a855f7', background: 'rgba(168, 85, 247, 0.05)' }}>
+                  <div style={{ fontSize: '11px', fontWeight: '700', color: '#a855f7', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: '10px' }}>
+                    Proposed Modification
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                    Requested by <strong style={{ color: 'var(--text-primary)' }}>{mod.requestedByName}</strong> on {new Date(mod.requestedAt).toLocaleString()}
+                    {mod.reason && <span> — {mod.reason}</span>}
+                  </div>
+
+                  {/* Changes table */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '6px', fontSize: '12px', marginBottom: '10px' }}>
+                    <div style={{ fontWeight: '600', color: 'var(--text-muted)', fontSize: '10px', textTransform: 'uppercase' }}>Field</div>
+                    <div style={{ fontWeight: '600', color: 'var(--text-muted)', fontSize: '10px', textTransform: 'uppercase' }}>Current</div>
+                    <div style={{ fontWeight: '600', color: 'var(--text-muted)', fontSize: '10px', textTransform: 'uppercase' }}>Proposed</div>
+
+                    {mod.oldValues.priceType !== mod.newValues.priceType && (<>
+                      <div>Price Type</div>
+                      <div style={{ color: 'var(--text-secondary)' }}>{mod.oldValues.priceType}</div>
+                      <div style={{ color: '#a855f7', fontWeight: '600' }}>{mod.newValues.priceType}</div>
+                    </>)}
+
+                    {mod.oldValues.limitPrice !== mod.newValues.limitPrice && (<>
+                      <div>Limit Price</div>
+                      <div style={{ color: 'var(--text-secondary)' }}>{mod.oldValues.limitPrice ?? '—'}</div>
+                      <div style={{ color: '#a855f7', fontWeight: '600' }}>{mod.newValues.limitPrice ?? '—'}</div>
+                    </>)}
+
+                    {mod.oldValues.stopLossPrice !== mod.newValues.stopLossPrice && (<>
+                      <div>Stop Loss</div>
+                      <div style={{ color: '#ef4444' }}>{mod.oldValues.stopLossPrice ?? '—'}</div>
+                      <div style={{ color: '#a855f7', fontWeight: '600' }}>{mod.newValues.stopLossPrice ?? '—'}</div>
+                    </>)}
+
+                    {mod.oldValues.takeProfitPrice !== mod.newValues.takeProfitPrice && (<>
+                      <div>Take Profit</div>
+                      <div style={{ color: '#10b981' }}>{mod.oldValues.takeProfitPrice ?? '—'}</div>
+                      <div style={{ color: '#a855f7', fontWeight: '600' }}>{mod.newValues.takeProfitPrice ?? '—'}</div>
+                    </>)}
+                  </div>
+
+                  {/* Client Instruction Preview */}
+                  {instrUrl && (
+                    <div style={{ borderRadius: '6px', border: '1px solid var(--border-color)', overflow: 'hidden', background: 'var(--bg-secondary)' }}>
+                      <div style={{ padding: '6px 10px', fontSize: '11px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', borderBottom: '1px solid var(--border-color)' }}>
+                        Client Instruction: {mod.instructionFile.fileName}
+                      </div>
+                      {instrPreviewable && (
+                        <div style={{ padding: '8px', background: 'var(--bg-primary)' }}>
+                          {instrIsImage ? (
+                            <img src={instrUrl} alt="Client instruction" style={{ maxWidth: '100%', maxHeight: '400px', display: 'block', margin: '0 auto', borderRadius: '4px' }} />
+                          ) : (
+                            <iframe src={instrUrl} title="Client instruction" style={{ width: '100%', height: '400px', border: 'none', borderRadius: '4px', background: '#fff' }} />
+                          )}
+                        </div>
+                      )}
+                      {instrIsEml && !parsedEml && (
+                        <div style={{ padding: '12px', textAlign: 'center', fontSize: '12px', color: 'var(--text-muted)' }}>
+                          Loading email preview...
+                        </div>
+                      )}
+                      {instrIsEml && parsedEml?.error && (
+                        <div style={{ padding: '12px', textAlign: 'center', fontSize: '12px', color: '#ef4444' }}>
+                          Failed to parse email: {parsedEml.error}
+                        </div>
+                      )}
+                      {instrIsEml && parsedEml && !parsedEml.error && (
+                        <div>
+                          <div style={{ padding: '8px 10px', fontSize: '12px', borderBottom: '1px solid var(--border-color)' }}>
+                            {parsedEml.from && <div style={{ marginBottom: '3px' }}><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>From:</strong> <span style={{ color: 'var(--text-primary)' }}>{parsedEml.from}</span></div>}
+                            {parsedEml.to && <div style={{ marginBottom: '3px' }}><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>To:</strong> <span style={{ color: 'var(--text-primary)' }}>{parsedEml.to}</span></div>}
+                            <div style={{ marginBottom: '3px' }}><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>Subject:</strong> <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{parsedEml.subject}</span></div>
+                            {parsedEml.date && <div><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>Date:</strong> <span style={{ color: 'var(--text-primary)' }}>{new Date(parsedEml.date).toLocaleString()}</span></div>}
+                            {parsedEml.hasAttachments && (
+                              <div style={{ marginTop: '4px', color: 'var(--text-muted)', fontSize: '11px' }}>
+                                Attachments: {parsedEml.attachmentNames.join(', ')}
+                              </div>
+                            )}
+                          </div>
+                          {parsedEml.html ? (
+                            <iframe
+                              srcDoc={parsedEml.html}
+                              title="Email content"
+                              style={{ width: '100%', height: '300px', border: 'none', background: '#fff' }}
+                              sandbox="allow-same-origin"
+                            />
+                          ) : parsedEml.text ? (
+                            <div style={{ padding: '12px', fontSize: '13px', color: 'var(--text-primary)', whiteSpace: 'pre-wrap', lineHeight: '1.5', maxHeight: '300px', overflowY: 'auto' }}>{parsedEml.text}</div>
+                          ) : (
+                            <div style={{ padding: '10px', fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic' }}>Email has no body content (calendar invitation or empty message)</div>
+                          )}
+                        </div>
+                      )}
+                      {!instrPreviewable && !instrIsEml && (
+                        <div style={{ padding: '10px', textAlign: 'center' }}>
+                          <button
+                            style={{ padding: '6px 14px', borderRadius: '4px', border: '1px solid var(--border-color)', background: 'transparent', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: '600', cursor: 'pointer' }}
+                            onClick={() => { const a = document.createElement('a'); a.href = instrUrl; a.download = mod.instructionFile.fileName; a.click(); }}
+                          >
+                            Download {mod.instructionFile.fileName}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Actions */}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', borderTop: '1px solid var(--border-color)', paddingTop: '14px' }}>
               <button style={styles.modalCancelBtn} onClick={() => setReviewOrder(null)}>
                 Cancel
               </button>
-              <button
-                style={{
-                  ...styles.rejectBtn, padding: '8px 20px', fontSize: '13px',
-                  opacity: isActioning ? 0.5 : 1
-                }}
-                onClick={() => {
-                  setRejectModalOrder(reviewOrder);
-                  setRejectionReason('');
-                  setReviewOrder(null);
-                }}
-                disabled={!!isActioning}
-              >
-                Reject
-              </button>
-              <button
-                style={{
-                  ...styles.validateBtn, padding: '8px 20px', fontSize: '13px',
-                  opacity: isOwnOrder(reviewOrder) || isActioning ? 0.5 : 1,
-                  cursor: isOwnOrder(reviewOrder) || isActioning ? 'not-allowed' : 'pointer'
-                }}
-                onClick={async () => {
-                  await handleValidate(reviewOrder);
-                  setReviewOrder(null);
-                }}
-                disabled={isOwnOrder(reviewOrder) || !!isActioning}
-                title={isOwnOrder(reviewOrder) ? 'Cannot validate your own order (four-eyes)' : 'Validate this order'}
-              >
-                {isActioning === reviewOrder._id ? 'Validating...' : 'Validate Order'}
-              </button>
+
+              {reviewOrder.status === 'pending_modification' ? (
+                <>
+                  <button
+                    style={{ ...styles.rejectBtn, padding: '8px 20px', fontSize: '13px', opacity: isActioning ? 0.5 : 1 }}
+                    onClick={() => { setRejectModalOrder(reviewOrder); setRejectionReason(''); setReviewOrder(null); }}
+                    disabled={!!isActioning}
+                  >
+                    Reject Modification
+                  </button>
+                  <button
+                    style={{
+                      ...styles.validateBtn, padding: '8px 20px', fontSize: '13px',
+                      opacity: (reviewOrder.pendingModification?.requestedBy === user._id) || isActioning ? 0.5 : 1,
+                      cursor: (reviewOrder.pendingModification?.requestedBy === user._id) || isActioning ? 'not-allowed' : 'pointer'
+                    }}
+                    onClick={async () => { await handleValidateModification(reviewOrder); }}
+                    disabled={(reviewOrder.pendingModification?.requestedBy === user._id) || !!isActioning}
+                    title={(reviewOrder.pendingModification?.requestedBy === user._id) ? 'Cannot validate your own modification (four-eyes)' : 'Validate modification'}
+                  >
+                    {isActioning === reviewOrder._id ? 'Validating...' : 'Validate Modification'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    style={{ ...styles.rejectBtn, padding: '8px 20px', fontSize: '13px', opacity: isActioning ? 0.5 : 1 }}
+                    onClick={() => { setRejectModalOrder(reviewOrder); setRejectionReason(''); setReviewOrder(null); }}
+                    disabled={!!isActioning}
+                  >
+                    Reject
+                  </button>
+                  <button
+                    style={{
+                      ...styles.validateBtn, padding: '8px 20px', fontSize: '13px',
+                      opacity: isOwnOrder(reviewOrder) || isActioning ? 0.5 : 1,
+                      cursor: isOwnOrder(reviewOrder) || isActioning ? 'not-allowed' : 'pointer'
+                    }}
+                    onClick={async () => { await handleValidate(reviewOrder); setReviewOrder(null); }}
+                    disabled={isOwnOrder(reviewOrder) || !!isActioning}
+                    title={isOwnOrder(reviewOrder) ? 'Cannot validate your own order (four-eyes)' : 'Validate this order'}
+                  >
+                    {isActioning === reviewOrder._id ? 'Validating...' : 'Validate Order'}
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -437,9 +850,14 @@ const ValidationBlotter = ({ user, onOrderValidated }) => {
       {rejectModalOrder && (
         <div style={styles.modalOverlay} onClick={() => setRejectModalOrder(null)}>
           <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
-            <h3 style={styles.modalTitle}>Reject Order {rejectModalOrder.orderReference}</h3>
+            <h3 style={styles.modalTitle}>
+              {rejectModalOrder.status === 'pending_modification' ? 'Reject Modification' : 'Reject Order'} {rejectModalOrder.orderReference}
+            </h3>
             <p style={styles.modalDesc}>
-              This will reject the order for <strong>{rejectModalOrder.securityName}</strong> and notify the creator.
+              {rejectModalOrder.status === 'pending_modification'
+                ? <>This will reject the modification and revert the order to its previous status.</>
+                : <>This will reject the order for <strong>{rejectModalOrder.securityName}</strong> and notify the creator.</>
+              }
             </p>
             <div style={{ marginBottom: '16px' }}>
               <label style={styles.modalLabel}>Reason (optional)</label>
@@ -465,10 +883,10 @@ const ValidationBlotter = ({ user, onOrderValidated }) => {
                   fontSize: '13px',
                   opacity: isActioning ? 0.5 : 1
                 }}
-                onClick={handleReject}
+                onClick={rejectModalOrder.status === 'pending_modification' ? handleRejectModification : handleReject}
                 disabled={!!isActioning}
               >
-                {isActioning ? 'Rejecting...' : 'Reject Order'}
+                {isActioning ? 'Rejecting...' : (rejectModalOrder.status === 'pending_modification' ? 'Reject Modification' : 'Reject Order')}
               </button>
             </div>
           </div>

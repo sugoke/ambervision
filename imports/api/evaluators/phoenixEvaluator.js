@@ -475,14 +475,16 @@ export const PhoenixEvaluator = {
     // Memory Autocall: Track which underlyings have reached autocall level (across any observation)
     const underlyingAutocallFlags = {}; // {ticker: firstFlaggedDate}
 
-    // Pre-fetch trade date prices for all underlyings (for consistent performance calculation)
-    // This ensures the evaluator uses the same initial price as the chart builder
+    // Use contractual strike prices as initial reference for barrier/coupon evaluation
+    // Strike prices are the official reference levels from the term sheet
+    // underlyings[].initialPrice is already split-adjusted via extractUnderlyingAssetsData()
+    // Using market cache prices would give different values than the strike, causing
+    // inconsistent barrier evaluation (e.g., -29.8% vs -32.5% for the same underlying)
     const tradeDatePrices = {};
     for (const u of underlyings) {
       const fullTicker = u.fullTicker || `${u.ticker}.US`;
-      const tradeDatePrice = await this.getPriceAtDate(fullTicker, tradeDate, tradeDate);
-      tradeDatePrices[u.ticker] = tradeDatePrice || u.initialPrice || u.strike;
-      console.log(`📊 Phoenix: Trade date price for ${fullTicker}: ${tradeDatePrices[u.ticker]} (market data: ${tradeDatePrice}, stored strike: ${u.strike})`);
+      tradeDatePrices[u.ticker] = u.initialPrice || u.strike;
+      console.log(`📊 Phoenix: Using strike price for ${fullTicker}: ${tradeDatePrices[u.ticker]}`);
     }
 
     // Process each observation

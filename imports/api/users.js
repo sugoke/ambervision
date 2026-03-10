@@ -143,5 +143,13 @@ export const UserHelpers = {
 
   verifyPassword(password, hashedPassword) {
     return this.hashPassword(password) === hashedPassword;
+  },
+
+  // Check if user has order validation permission (four-eyes principle)
+  canValidateOrders(userId) {
+    const user = UsersCollection.findOne(userId);
+    if (!user) return false;
+    const staffRoles = [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.RELATIONSHIP_MANAGER, USER_ROLES.COMPLIANCE, USER_ROLES.STAFF];
+    return staffRoles.includes(user.role) && (user.canValidateOrders === true || user.role === USER_ROLES.COMPLIANCE);
   }
 };

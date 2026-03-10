@@ -7,7 +7,8 @@ import ActionButton from './components/common/ActionButton.jsx';
 import OrderModal from './components/OrderModal.jsx';
 import ValidationBlotter from './components/ValidationBlotter.jsx';
 import { useTheme } from './ThemeContext.jsx';
-import { OrdersCollection, ORDER_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, ASSET_TYPES, PRICE_TYPES, TERMSHEET_STATUSES, OrderFormatters, OrderHelpers } from '/imports/api/orders';
+import * as XLSX from 'xlsx';
+import { OrdersCollection, ORDER_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, ASSET_TYPES, PRICE_TYPES, TERMSHEET_STATUSES, OrderFormatters, OrderHelpers, getOrderHealthCheck } from '/imports/api/orders';
 import { BanksCollection } from '/imports/api/banks';
 import { UsersCollection } from '/imports/api/users';
 
@@ -35,6 +36,7 @@ const OrderBook = ({ user }) => {
   // Filters
   const [statusFilter, setStatusFilter] = useState('all');
   const [bankFilter, setBankFilter] = useState('all');
+  const [clientFilter, setClientFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -50,6 +52,7 @@ const OrderBook = ({ user }) => {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [executeModalOpen, setExecuteModalOpen] = useState(false);
   const [newOrderModalOpen, setNewOrderModalOpen] = useState(false);
+  const [blotterRefreshKey, setBlotterRefreshKey] = useState(0);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [cancellationReason, setCancellationReason] = useState('');
 
@@ -59,11 +62,14 @@ const OrderBook = ({ user }) => {
   const [editLimitPrice, setEditLimitPrice] = useState('');
   const [editNotes, setEditNotes] = useState('');
 
-  // Limit modification modal (for sent orders)
+  // Limit modification modal
   const [limitModalOpen, setLimitModalOpen] = useState(false);
   const [limitPriceType, setLimitPriceType] = useState('limit');
   const [limitNewPrice, setLimitNewPrice] = useState('');
+  const [limitNewStopLoss, setLimitNewStopLoss] = useState('');
+  const [limitNewTakeProfit, setLimitNewTakeProfit] = useState('');
   const [limitReason, setLimitReason] = useState('');
+  const [limitInstructionFile, setLimitInstructionFile] = useState(null);
 
   // Execution form
   const [executedQuantity, setExecutedQuantity] = useState('');
@@ -99,7 +105,7 @@ const OrderBook = ({ user }) => {
   // Load orders
   useEffect(() => {
     loadOrders();
-  }, [statusFilter, bankFilter, searchQuery, dateFrom, dateTo, currentPage, sortField, sortOrder]);
+  }, [statusFilter, bankFilter, clientFilter, searchQuery, dateFrom, dateTo, currentPage, sortField, sortOrder]);
 
   // Load clients for new order modal
   useEffect(() => {
@@ -126,6 +132,9 @@ const OrderBook = ({ user }) => {
       }
       if (bankFilter !== 'all') {
         filters.bankId = bankFilter;
+      }
+      if (clientFilter !== 'all') {
+        filters.clientId = clientFilter;
       }
       if (searchQuery) {
         filters.search = searchQuery;
@@ -173,6 +182,64 @@ const OrderBook = ({ user }) => {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleExportExcel = () => {
+    if (!orders.length) return;
+
+    const data = orders.map(order => {
+      const health = getOrderHealthCheck(order);
+      const traceCount = (order.emailTraces || []).length;
+      const maxTraces = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 4 : 3;
+
+      return {
+        'Reference': order.orderReference || '',
+        'Date': order.createdAtFormatted || '',
+        'Status': order.statusLabel || order.status || '',
+        'Booked': bookingResults[order._id] ? 'Yes' : '-',
+        'Ind/Bloc': order.tradeModeLabel || '',
+        'WA': order.wealthAmbassadorFormatted || '',
+        'Client': order.clientName || '',
+        'Bank': order.bankName || '',
+        'Type': order.orderTypeLabel || '',
+        'Security': order.securityName || '',
+        'ISIN': order.isin || '',
+        'Asset': order.assetTypeLabel || '',
+        'Currency': order.currency || '',
+        'Quantity': order.quantity || '',
+        'Price Type': order.priceTypeLabel || '',
+        'Limit Price': order.limitPrice || '',
+        'Stop Loss': order.stopLossPrice || '',
+        'Take Profit': order.takeProfitPrice || '',
+        'Exec Price': order.executedPrice || '',
+        'Broker': order.broker || '',
+        'Settl. Ccy': order.settlementCurrency || '',
+        'Termsheet': order.termsheetLabel || '',
+        'Traces': `${traceCount}/${maxTraces}`,
+        'Health': health.max > 0 ? health.label : '-',
+        'Missing': health.missing.join(', '),
+        'Validated By': order.validatedByName || '',
+        'Validated At': order.validatedAtFormatted || '',
+        'Notes': order.notes || '',
+        'Created By': order.createdByName || '',
+      };
+    });
+
+    const ws = XLSX.utils.json_to_sheet(data);
+
+    // Auto-size columns
+    const colWidths = Object.keys(data[0]).map(key => ({
+      wch: Math.max(key.length, ...data.map(row => String(row[key] || '').length)).toString().length > 40
+        ? 40
+        : Math.max(key.length + 2, ...data.map(row => String(row[key] || '').length + 2))
+    }));
+    ws['!cols'] = colWidths;
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Orders');
+
+    const dateStr = new Date().toISOString().split('T')[0];
+    XLSX.writeFile(wb, `order-book-${dateStr}.xlsx`);
   };
 
   const handleViewDetails = async (order) => {
@@ -311,6 +378,7 @@ const OrderBook = ({ user }) => {
   const handleOrderCreated = (result) => {
     setNewOrderModalOpen(false);
     loadOrders();
+    setBlotterRefreshKey(k => k + 1);
   };
 
   const handleSort = (field) => {
@@ -510,25 +578,53 @@ const OrderBook = ({ user }) => {
     setSelectedOrder({ order });
     setLimitPriceType(order.priceType || 'limit');
     setLimitNewPrice(order.limitPrice?.toString() || '');
+    setLimitNewStopLoss(order.stopLossPrice?.toString() || '');
+    setLimitNewTakeProfit(order.takeProfitPrice?.toString() || '');
     setLimitReason('');
+    setLimitInstructionFile(null);
     setLimitModalOpen(true);
   };
 
   const handleUpdateLimit = async () => {
     if (!selectedOrder) return;
 
+    if (!limitInstructionFile) {
+      setActionError('Client instruction email is required for modifications');
+      return;
+    }
+
     setIsActioning(true);
     setActionError(null);
 
     try {
       const sessionId = getSessionId();
+
+      // Read file as base64
+      const fileData = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(limitInstructionFile);
+      });
+
       const data = {
         orderId: selectedOrder.order._id,
         priceType: limitPriceType,
-        sessionId
+        sessionId,
+        clientInstructionFile: {
+          fileName: limitInstructionFile.name,
+          base64Data: fileData,
+          mimeType: limitInstructionFile.type || 'application/octet-stream'
+        }
       };
       if (limitPriceType !== 'market' && limitNewPrice) {
         data.limitPrice = parseFloat(limitNewPrice);
+      }
+      if (limitNewStopLoss) {
+        data.stopLossPrice = parseFloat(limitNewStopLoss);
+      }
+      if (limitNewTakeProfit) {
+        data.takeProfitPrice = parseFloat(limitNewTakeProfit);
       }
       if (limitReason && limitReason.trim()) {
         data.reason = limitReason.trim();
@@ -539,6 +635,7 @@ const OrderBook = ({ user }) => {
       setLimitModalOpen(false);
       setSelectedOrder(null);
       loadOrders();
+      setBlotterRefreshKey(k => k + 1);
     } catch (err) {
       setActionError(err.reason || err.message);
     } finally {
@@ -821,6 +918,29 @@ const OrderBook = ({ user }) => {
             </div>
 
             <div style={styles.filterGroup}>
+              <span style={styles.filterLabel}>Client</span>
+              <select
+                style={styles.select}
+                value={clientFilter}
+                onChange={(e) => setClientFilter(e.target.value)}
+              >
+                <option value="all">All Clients</option>
+                {clients
+                  .sort((a, b) => {
+                    const nameA = `${a.profile?.lastName || ''} ${a.profile?.firstName || ''}`.trim().toLowerCase();
+                    const nameB = `${b.profile?.lastName || ''} ${b.profile?.firstName || ''}`.trim().toLowerCase();
+                    return nameA.localeCompare(nameB);
+                  })
+                  .map(c => (
+                    <option key={c._id} value={c._id}>
+                      {`${c.profile?.firstName || ''} ${c.profile?.lastName || ''}`.trim() || c.username}
+                    </option>
+                  ))
+                }
+              </select>
+            </div>
+
+            <div style={styles.filterGroup}>
               <span style={styles.filterLabel}>From</span>
               <input
                 type="date"
@@ -840,7 +960,7 @@ const OrderBook = ({ user }) => {
               />
             </div>
 
-            <div style={{ marginLeft: 'auto' }}>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
               <ActionButton
                 variant="secondary"
                 size="small"
@@ -848,17 +968,84 @@ const OrderBook = ({ user }) => {
                   setSearchQuery('');
                   setStatusFilter('all');
                   setBankFilter('all');
+                  setClientFilter('all');
                   setDateFrom('');
                   setDateTo('');
                 }}
               >
                 Clear Filters
               </ActionButton>
+              <ActionButton
+                variant="secondary"
+                size="small"
+                onClick={handleExportExcel}
+                disabled={!orders.length}
+              >
+                Export Excel
+              </ActionButton>
             </div>
           </div>
 
           {/* Validation Blotter (four-eyes principle) */}
-          <ValidationBlotter user={user} onOrderValidated={loadOrders} />
+          <ValidationBlotter user={user} onOrderValidated={loadOrders} refreshKey={blotterRefreshKey} />
+
+          {/* Health Check Summary */}
+          {!isLoading && orders.length > 0 && (() => {
+            const healthStats = orders.reduce((acc, o) => {
+              const h = getOrderHealthCheck(o);
+              if (h.max > 0 && h.score < h.max) {
+                acc.incomplete++;
+                h.missing.forEach(m => { acc.missingCounts[m] = (acc.missingCounts[m] || 0) + 1; });
+              }
+              if (h.max > 0 && h.score === h.max) acc.complete++;
+              acc.total++;
+              return acc;
+            }, { incomplete: 0, complete: 0, total: 0, missingCounts: {} });
+
+            const topMissing = Object.entries(healthStats.missingCounts)
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 5);
+
+            const isAllGood = healthStats.incomplete === 0;
+            const trackable = healthStats.complete + healthStats.incomplete;
+            const barColor = isAllGood ? '#10b981' : healthStats.incomplete > 3 ? '#ef4444' : '#f59e0b';
+
+            return (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '14px', padding: '8px 14px',
+                marginBottom: '10px', borderRadius: '8px', fontSize: '12px',
+                background: `${barColor}0d`, border: `1px solid ${barColor}33`
+              }}>
+                {/* Score badge */}
+                <div style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  minWidth: '40px', height: '28px', borderRadius: '14px',
+                  background: `${barColor}20`, fontWeight: '700', fontSize: '13px',
+                  color: barColor, flexShrink: 0
+                }}>
+                  {healthStats.complete}/{trackable}
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                  <span style={{ fontWeight: '600', color: barColor }}>
+                    {isAllGood
+                      ? 'All orders complete'
+                      : `${healthStats.incomplete} order${healthStats.incomplete !== 1 ? 's' : ''} missing items`
+                    }
+                  </span>
+                  {topMissing.length > 0 && (
+                    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                      {topMissing.map(([name, count]) => (
+                        <span key={name} style={{ color: 'var(--text-secondary)', fontSize: '11px' }}>
+                          {name}: <strong style={{ color: barColor }}>{count}</strong>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Orders Table */}
           {isLoading ? (
@@ -897,6 +1084,7 @@ const OrderBook = ({ user }) => {
                       <SortableHeader field="settlementCurrency" label="Settl. Ccy" />
                       <th style={styles.th} title="Termsheet">TS</th>
                       <th style={styles.th}>Traces</th>
+                      <th style={styles.th} title="Health Check">Health</th>
                       <th style={styles.th}>Actions</th>
                     </tr>
                   </thead>
@@ -1061,6 +1249,28 @@ const OrderBook = ({ user }) => {
                             );
                           })()}
                         </td>
+                        <td style={styles.td}>
+                          {(() => {
+                            const health = getOrderHealthCheck(order);
+                            if (health.max === 0) return <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>-</span>;
+                            return (
+                              <span
+                                title={health.missing.length > 0 ? `Missing: ${health.missing.join(', ')}` : 'All complete'}
+                                style={{
+                                  fontSize: '11px',
+                                  fontWeight: '600',
+                                  color: health.color,
+                                  padding: '2px 8px',
+                                  borderRadius: '10px',
+                                  background: `${health.color}15`,
+                                  cursor: 'default'
+                                }}
+                              >
+                                {health.label}
+                              </span>
+                            );
+                          })()}
+                        </td>
                         <td style={styles.td} onClick={(e) => e.stopPropagation()}>
                           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                             <button
@@ -1111,14 +1321,14 @@ const OrderBook = ({ user }) => {
                                     Edit
                                   </button>
                                 )}
-                                {/* Modify Limit button - for sent orders */}
-                                {order.status === ORDER_STATUSES.SENT && (
+                                {/* Modify Limit button - for pending and sent orders */}
+                                {(order.status === ORDER_STATUSES.PENDING || order.status === ORDER_STATUSES.SENT) && (
                                   <button
                                     style={{ ...styles.actionButton, color: '#f59e0b' }}
                                     onClick={() => openLimitModal(order)}
-                                    title="Modify limit price"
+                                    title="Request order modification"
                                   >
-                                    Limit
+                                    Modify
                                   </button>
                                 )}
                                 {/* Delete button - for pending and pending_validation orders */}
@@ -2120,15 +2330,15 @@ const OrderBook = ({ user }) => {
         )}
       </Modal>
 
-      {/* Modify Limit Modal (for sent orders) */}
+      {/* Modify Order Modal */}
       <Modal
         isOpen={limitModalOpen}
         onClose={() => {
           setLimitModalOpen(false);
           setActionError(null);
         }}
-        title="Modify Limit"
-        size="small"
+        title="Request Modification"
+        size="medium"
         footer={
           <>
             <ActionButton
@@ -2142,89 +2352,187 @@ const OrderBook = ({ user }) => {
               variant="primary"
               onClick={handleUpdateLimit}
               loading={isActioning}
+              disabled={!limitInstructionFile}
             >
-              Update Limit
+              {isActioning ? 'Submitting...' : 'Submit Modification'}
             </ActionButton>
           </>
         }
       >
         {selectedOrder && (
           <>
-            <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
+            <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-primary)', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
               <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>Order Reference</div>
               <div style={{ fontWeight: '600', fontFamily: 'monospace' }}>{selectedOrder.order.orderReference}</div>
               <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{selectedOrder.order.securityName}</div>
               <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
                 Current: {OrderFormatters.getPriceTypeLabel(selectedOrder.order.priceType)}
                 {selectedOrder.order.limitPrice != null ? ` — ${OrderFormatters.formatWithCurrency(selectedOrder.order.limitPrice, selectedOrder.order.currency)}` : ''}
+                {selectedOrder.order.stopLossPrice != null ? ` | SL: ${selectedOrder.order.stopLossPrice}` : ''}
+                {selectedOrder.order.takeProfitPrice != null ? ` | TP: ${selectedOrder.order.takeProfitPrice}` : ''}
               </div>
             </div>
-            <div style={{ marginBottom: '16px' }}>
+
+            <div style={{ fontSize: '11px', color: '#f97316', background: 'rgba(249, 115, 22, 0.08)', padding: '8px 12px', borderRadius: '6px', marginBottom: '16px', border: '1px solid rgba(249, 115, 22, 0.2)' }}>
+              Modifications require four-eyes validation. Attach the client instruction email.
+            </div>
+
+            {/* Price Type */}
+            <div style={{ marginBottom: '12px' }}>
               <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
                 Price Type
               </label>
               <select
                 style={{
-                  width: '100%',
-                  padding: '10px 12px',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '6px',
-                  fontSize: '13px',
-                  background: 'var(--bg-primary)',
-                  color: 'var(--text-primary)'
+                  width: '100%', padding: '10px 12px',
+                  border: '1px solid var(--border-color)', borderRadius: '6px',
+                  fontSize: '13px', background: 'var(--bg-primary)', color: 'var(--text-primary)'
                 }}
                 value={limitPriceType}
                 onChange={(e) => setLimitPriceType(e.target.value)}
               >
                 <option value="market">Market</option>
                 <option value="limit">Limit</option>
-                <option value="stop_loss">Stop Loss</option>
-                <option value="take_profit">Take Profit</option>
               </select>
             </div>
-            {limitPriceType !== 'market' && (
-              <div style={{ marginBottom: '16px' }}>
-                <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
-                  {OrderFormatters.getPriceTypeLabel(limitPriceType)} Price
+
+            {/* Limit / SL / TP fields */}
+            <div style={{ display: 'flex', gap: '12px', marginBottom: '12px' }}>
+              {limitPriceType !== 'market' && (
+                <div style={{ flex: 1 }}>
+                  <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
+                    Limit Price
+                  </label>
+                  <input
+                    type="number"
+                    style={{
+                      width: '100%', padding: '10px 12px',
+                      border: '1px solid var(--border-color)', borderRadius: '6px',
+                      fontSize: '13px', background: 'var(--bg-primary)', color: 'var(--text-primary)'
+                    }}
+                    value={limitNewPrice}
+                    onChange={(e) => setLimitNewPrice(e.target.value)}
+                    min="0" step="0.000001"
+                  />
+                </div>
+              )}
+              <div style={{ flex: 1 }}>
+                <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500', color: '#ef4444' }}>
+                  Stop Loss
                 </label>
                 <input
                   type="number"
                   style={{
-                    width: '100%',
-                    padding: '10px 12px',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '6px',
-                    fontSize: '13px',
-                    background: 'var(--bg-primary)',
-                    color: 'var(--text-primary)'
+                    width: '100%', padding: '10px 12px',
+                    border: '1px solid var(--border-color)', borderRadius: '6px',
+                    fontSize: '13px', background: 'var(--bg-primary)', color: 'var(--text-primary)'
                   }}
-                  value={limitNewPrice}
-                  onChange={(e) => setLimitNewPrice(e.target.value)}
-                  min="0"
-                  step="0.01"
+                  value={limitNewStopLoss}
+                  onChange={(e) => setLimitNewStopLoss(e.target.value)}
+                  placeholder="Optional"
+                  min="0" step="0.000001"
                 />
               </div>
-            )}
-            <div style={{ marginBottom: '16px' }}>
+              <div style={{ flex: 1 }}>
+                <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500', color: '#10b981' }}>
+                  Take Profit
+                </label>
+                <input
+                  type="number"
+                  style={{
+                    width: '100%', padding: '10px 12px',
+                    border: '1px solid var(--border-color)', borderRadius: '6px',
+                    fontSize: '13px', background: 'var(--bg-primary)', color: 'var(--text-primary)'
+                  }}
+                  value={limitNewTakeProfit}
+                  onChange={(e) => setLimitNewTakeProfit(e.target.value)}
+                  placeholder="Optional"
+                  min="0" step="0.000001"
+                />
+              </div>
+            </div>
+
+            {/* Reason */}
+            <div style={{ marginBottom: '12px' }}>
               <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
                 Reason for change
               </label>
               <input
                 type="text"
                 style={{
-                  width: '100%',
-                  padding: '10px 12px',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '6px',
-                  fontSize: '13px',
-                  background: 'var(--bg-primary)',
-                  color: 'var(--text-primary)'
+                  width: '100%', padding: '10px 12px',
+                  border: '1px solid var(--border-color)', borderRadius: '6px',
+                  fontSize: '13px', background: 'var(--bg-primary)', color: 'var(--text-primary)'
                 }}
                 value={limitReason}
                 onChange={(e) => setLimitReason(e.target.value)}
-                placeholder="e.g. Client email 04/03/2026"
+                placeholder="e.g. Client requested via email"
               />
             </div>
+
+            {/* Client Instruction Email (required) */}
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
+                Client Instruction Email *
+              </label>
+              <div
+                style={{
+                  border: limitInstructionFile ? '2px solid #10b981' : '2px dashed var(--border-color)',
+                  borderRadius: '8px', padding: '14px', textAlign: 'center',
+                  cursor: 'pointer',
+                  background: limitInstructionFile ? 'rgba(16, 185, 129, 0.05)' : 'var(--bg-primary)',
+                  transition: 'border-color 0.15s'
+                }}
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                onDrop={(e) => {
+                  e.preventDefault(); e.stopPropagation();
+                  const file = e.dataTransfer.files[0];
+                  if (file) {
+                    if (file.size > EMAIL_TRACE_MAX_SIZE) { setActionError('File exceeds 15MB'); return; }
+                    setLimitInstructionFile(file); setActionError(null);
+                  }
+                }}
+                onClick={() => {
+                  const input = document.createElement('input');
+                  input.type = 'file';
+                  input.accept = EMAIL_TRACE_ACCEPTED_TYPES.join(',');
+                  input.onchange = (e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                      if (file.size > EMAIL_TRACE_MAX_SIZE) { setActionError('File exceeds 15MB'); return; }
+                      setLimitInstructionFile(file); setActionError(null);
+                    }
+                  };
+                  input.click();
+                }}
+              >
+                {limitInstructionFile ? (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '14px' }}>📎</span>
+                    <span style={{ fontSize: '13px', fontWeight: '600', color: '#10b981' }}>{limitInstructionFile.name}</span>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                      ({(limitInstructionFile.size / 1024).toFixed(0)} KB)
+                    </span>
+                    <button
+                      style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '14px', padding: '2px 6px' }}
+                      onClick={(e) => { e.stopPropagation(); setLimitInstructionFile(null); }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '2px' }}>
+                      Click or drag & drop client instruction
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                      .pdf, .jpg, .png, .eml, .msg, .html
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
             {actionError && (
               <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: '#ef4444', fontSize: '13px' }}>
                 {actionError}

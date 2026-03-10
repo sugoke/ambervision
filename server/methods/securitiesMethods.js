@@ -1293,65 +1293,77 @@ Meteor.methods({
       return [];
     }
 
+    // Escape regex special characters so input like "TSLA/AAPL" doesn't break the query
+    const escapedQuery = searchQuery.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
+
     const results = [];
     const seenISINs = new Set();
 
-    // 1. Search in SecuritiesMetadata
-    const metadataResults = await SecuritiesMetadataCollection.find({
+    // 1. Search in Products FIRST (richest data for structured products - includes issuer, underlyings, denomination)
+    const productResults = await ProductsCollection.find({
       $or: [
-        { isin: { $regex: searchQuery, $options: 'i' } },
-        { securityName: { $regex: searchQuery, $options: 'i' } },
-        { ticker: { $regex: searchQuery, $options: 'i' } }
+        { isin: { $regex: escapedQuery, $options: 'i' } },
+        { title: { $regex: escapedQuery, $options: 'i' } }
       ]
     }, { limit: Math.ceil(limit / 2) }).fetchAsync();
 
-    metadataResults.forEach(sec => {
-      if (sec.isin && !seenISINs.has(sec.isin.toUpperCase())) {
-        seenISINs.add(sec.isin.toUpperCase());
+    productResults.forEach(prod => {
+      if (prod.isin && !seenISINs.has(prod.isin.toUpperCase())) {
+        seenISINs.add(prod.isin.toUpperCase());
+        // Build underlyings string from product data (e.g. "TSLA/AAPL/MSFT")
+        const underlyingsStr = prod.underlyings && Array.isArray(prod.underlyings)
+          ? prod.underlyings.map(u => u.ticker || u.name).filter(Boolean).join('/')
+          : '';
         results.push({
-          _id: sec._id,
-          isin: sec.isin,
-          name: sec.securityName,
-          ticker: sec.ticker,
-          exchange: sec.listingExchange,
-          currency: sec.currency,
-          assetClass: sec.assetClass,
-          source: 'metadata'
+          _id: prod._id,
+          isin: prod.isin,
+          name: prod.title,
+          currency: prod.currency || prod.parameters?.currency || 'USD',
+          assetClass: 'structured_product',
+          source: 'product',
+          // Extra fields for auto-filling order details
+          issuer: prod.issuer || '',
+          denomination: prod.denomination || null,
+          underlyings: underlyingsStr,
+          notional: prod.notional || null
         });
       }
     });
 
-    // 2. Search in Products (for structured products)
+    // 2. Search in SecuritiesMetadata
     if (results.length < limit) {
-      const productResults = await ProductsCollection.find({
+      const metadataResults = await SecuritiesMetadataCollection.find({
         $or: [
-          { isin: { $regex: searchQuery, $options: 'i' } },
-          { title: { $regex: searchQuery, $options: 'i' } }
+          { isin: { $regex: escapedQuery, $options: 'i' } },
+          { securityName: { $regex: escapedQuery, $options: 'i' } },
+          { ticker: { $regex: escapedQuery, $options: 'i' } }
         ]
       }, { limit: Math.ceil(limit / 2) }).fetchAsync();
 
-      productResults.forEach(prod => {
-        if (prod.isin && !seenISINs.has(prod.isin.toUpperCase())) {
-          seenISINs.add(prod.isin.toUpperCase());
+      metadataResults.forEach(sec => {
+        if (sec.isin && !seenISINs.has(sec.isin.toUpperCase())) {
+          seenISINs.add(sec.isin.toUpperCase());
           results.push({
-            _id: prod._id,
-            isin: prod.isin,
-            name: prod.title,
-            currency: prod.currency || prod.parameters?.currency || 'USD',
-            assetClass: 'structured_product',
-            source: 'product'
+            _id: sec._id,
+            isin: sec.isin,
+            name: sec.securityName,
+            ticker: sec.ticker,
+            exchange: sec.listingExchange,
+            currency: sec.currency,
+            assetClass: sec.assetClass,
+            source: 'metadata'
           });
         }
       });
     }
 
-    // 3. Search in PMSHoldings (for securities not in metadata)
+    // 3. Search in PMSHoldings (for securities not in metadata or products)
     if (results.length < limit) {
       const holdingResults = await PMSHoldingsCollection.find({
         isLatest: true,
         $or: [
-          { isin: { $regex: searchQuery, $options: 'i' } },
-          { securityName: { $regex: searchQuery, $options: 'i' } }
+          { isin: { $regex: escapedQuery, $options: 'i' } },
+          { securityName: { $regex: escapedQuery, $options: 'i' } }
         ]
       }, { limit: Math.ceil(limit / 2) }).fetchAsync();
 

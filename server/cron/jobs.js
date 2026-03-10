@@ -858,15 +858,9 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
       results.consolidation = { success: false, error: consolidationError.message };
     }
 
-    // Regenerate today's snapshots after all connections processed
-    // This ensures snapshots reflect all banks that synced in this batch
-    try {
-      const snapshotResult = await regenerateTodaySnapshots();
-      results.snapshotRegeneration = snapshotResult;
-    } catch (snapshotError) {
-      console.error('[CRON] Failed to regenerate today snapshots:', snapshotError.message);
-      results.snapshotRegeneration = { success: false, error: snapshotError.message };
-    }
+    // NOTE: Do NOT regenerate snapshots here — CMB sync (the last bank) will do it.
+    // Taking snapshots before all banks are synced causes AUM dips in historical data.
+    // See cmbFileSyncJob() for final snapshot regeneration.
 
     // Send bank sync completion email with notifications
     try {
@@ -1367,9 +1361,11 @@ async function computeDashboardMetrics() {
     }
 
     // Filter out days with incomplete portfolio coverage, then sort
+    // Use current known portfolio count as the reference (not max from window,
+    // which could itself be incomplete)
     const allEntries = Array.from(dateMap.values());
-    const maxPortfolioCount = Math.max(...allEntries.map(e => e.portfolioCount));
-    const minThreshold = Math.floor(maxPortfolioCount * 0.8);
+    const referencePortfolioCount = Math.max(currentPortfolioKeys.size, ...allEntries.map(e => e.portfolioCount));
+    const minThreshold = Math.floor(referencePortfolioCount * 0.8);
 
     const wtdHistory = allEntries
       .filter(e => e.portfolioCount >= minThreshold)
