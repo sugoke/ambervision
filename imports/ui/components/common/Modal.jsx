@@ -86,7 +86,7 @@ const Modal = ({
   };
 
   const modalStyle = {
-    background: 'var(--bg-primary)',
+    background: 'var(--bg-secondary)',
     borderRadius: '12px',
     boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
     border: '1px solid var(--border-color)',

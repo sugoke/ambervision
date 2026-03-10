@@ -4,6 +4,7 @@ import { useTracker } from 'meteor/react-meteor-data';
 import { ProductsCollection } from '../../api/products';
 import { TemplateReportsCollection } from '../../api/templateReports';
 import StructuredProductChart from '../components/StructuredProductChart.jsx';
+import { getTranslation, getLocale } from '../../utils/reportTranslations';
 
 /**
  * Phoenix Report PDF Template
@@ -29,6 +30,8 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
   const isPDFMode = urlParams?.get('pdfToken') != null;
   const pdfToken = urlParams?.get('pdfToken');
   const pdfUserId = urlParams?.get('userId');
+  const lang = urlParams?.get('lang') || 'en';
+  const tr = getTranslation(lang);
 
   // Validate PDF token if in PDF mode
   useEffect(() => {
@@ -190,7 +193,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
   const formatDate = (date) => {
     if (!date) return '-';
     const d = new Date(date);
-    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    return d.toLocaleDateString(getLocale(lang), { day: '2-digit', month: 'short', year: 'numeric' });
   };
 
   return (
@@ -215,8 +218,8 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
               {displayProduct.title || displayProduct.productName || 'Phoenix Autocallable Report'}
             </h1>
             <div style={styles.headerMeta}>
-              <span style={styles.metaItem}>ISIN: {displayProduct.isin || '-'}</span>
-              <span style={styles.metaItem}>Currency: {displayProduct.currency || 'EUR'}</span>
+              <span style={styles.metaItem}>{tr.isin}: {displayProduct.isin || '-'}</span>
+              <span style={styles.metaItem}>{tr.currency}: {displayProduct.currency || 'EUR'}</span>
               <span style={{
                 ...styles.statusBadge,
                 background: results.currentStatus?.productStatus === 'live' ? '#d1fae5' : '#e5e7eb',
@@ -240,14 +243,14 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
 
       {/* Product Timeline */}
       <div style={styles.section}>
-        <h2 style={styles.sectionTitle}>Product Timeline</h2>
+        <h2 style={styles.sectionTitle}>{tr.productTimeline}</h2>
         <table style={styles.table}>
           <thead>
             <tr>
-              <th style={styles.th}>Trade Date</th>
-              <th style={styles.th}>Value Date</th>
-              <th style={styles.th}>Final Observation</th>
-              <th style={styles.th}>Maturity</th>
+              <th style={styles.th}>{tr.tradeDate}</th>
+              <th style={styles.th}>{tr.valueDate}</th>
+              <th style={styles.th}>{tr.finalObservationDate}</th>
+              <th style={styles.th}>{tr.maturityDate}</th>
             </tr>
           </thead>
           <tbody>
@@ -264,19 +267,19 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
       {/* Market Price Info */}
       {(displayProduct.marketPrice || displayProduct.bidPrice || displayProduct.askPrice || results.productPrice) && (
         <div style={styles.section}>
-          <h2 style={styles.sectionTitle}>💰 Product Market Price</h2>
+          <h2 style={styles.sectionTitle}>💰 {tr.productMarketPrice}</h2>
           <table style={styles.table}>
             <thead>
               <tr>
-                <th style={styles.th}>Price Type</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Value</th>
-                <th style={{...styles.th, textAlign: 'right'}}>% of Nominal</th>
+                <th style={styles.th}>{tr.priceType}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.value}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.percentOfNominal}</th>
               </tr>
             </thead>
             <tbody>
               {(displayProduct.bidPrice || results.productPrice?.bid) && (
                 <tr>
-                  <td style={styles.td}>Bid Price</td>
+                  <td style={styles.td}>{tr.bidPrice}</td>
                   <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>
                     {displayProduct.bidPrice?.toFixed(2) || results.productPrice?.bid?.toFixed(2) || '-'}
                   </td>
@@ -287,7 +290,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
               )}
               {(displayProduct.askPrice || results.productPrice?.ask) && (
                 <tr>
-                  <td style={styles.td}>Ask Price</td>
+                  <td style={styles.td}>{tr.askPrice}</td>
                   <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>
                     {displayProduct.askPrice?.toFixed(2) || results.productPrice?.ask?.toFixed(2) || '-'}
                   </td>
@@ -298,7 +301,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
               )}
               {(displayProduct.marketPrice || displayProduct.midPrice || results.productPrice?.mid) && (
                 <tr style={{background: '#f0f9ff'}}>
-                  <td style={{...styles.td, fontWeight: 600}}>Mid Price</td>
+                  <td style={{...styles.td, fontWeight: 600}}>{tr.midPrice}</td>
                   <td style={{...styles.td, textAlign: 'right', fontWeight: 700, color: '#1e3a5f', fontSize: '1.1rem'}}>
                     {displayProduct.marketPrice?.toFixed(2) || displayProduct.midPrice?.toFixed(2) || results.productPrice?.mid?.toFixed(2) || '-'}
                   </td>
@@ -309,7 +312,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
               )}
               {displayProduct.priceDate && (
                 <tr>
-                  <td style={styles.td}>Price Date</td>
+                  <td style={styles.td}>{tr.priceDate}</td>
                   <td style={{...styles.td, textAlign: 'right'}} colSpan={2}>
                     {formatDate(displayProduct.priceDate)}
                   </td>
@@ -323,16 +326,16 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
       {/* Underlying Performance */}
       {underlyings.length > 0 && (
         <div style={styles.section}>
-          <h2 style={styles.sectionTitle}>Underlying Performance</h2>
+          <h2 style={styles.sectionTitle}>{tr.underlyingPerformance}</h2>
           <table style={styles.table}>
             <thead>
               <tr>
-                <th style={styles.th}>Ticker</th>
-                <th style={styles.th}>Name</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Initial Price</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Current Price</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Performance</th>
-                <th style={{...styles.th, textAlign: 'center'}}>Status</th>
+                <th style={styles.th}>{tr.ticker}</th>
+                <th style={styles.th}>{tr.underlyingName}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.initialPrice}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.currentPrice}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.performance}</th>
+                <th style={{...styles.th, textAlign: 'center'}}>{tr.statusLabel}</th>
               </tr>
             </thead>
             <tbody>
@@ -360,7 +363,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                         fontSize: '0.75rem',
                         fontWeight: 500
                       }}>
-                        Worst
+                        {tr.worst}
                       </span>
                     )}
                   </td>
@@ -375,7 +378,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
       {underlyings.length > 0 && (
         <div style={{...styles.section, pageBreakBefore: 'always'}}>
           <h2 style={styles.sectionTitle}>
-            📊 Performance Overview
+            📊 {tr.performanceOverview}
             {phoenixParams.protectionBarrier && (
               <span style={{
                 fontSize: '0.75rem',
@@ -386,7 +389,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                 fontWeight: 500,
                 marginLeft: '0.75rem'
               }}>
-                Protection at {phoenixParams.protectionBarrier}%
+                {tr.protectionAt} {phoenixParams.protectionBarrier}%
               </span>
             )}
           </h2>
@@ -491,7 +494,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                               padding: '1px 4px',
                               borderRadius: '2px'
                             }}>
-                              Barrier
+                              {tr.barrier}
                             </div>
                           )}
                         </div>
@@ -590,7 +593,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                   background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
                   borderRadius: '2px'
                 }} />
-                <span>Above Barrier (Safe)</span>
+                <span>{tr.aboveBarrierSafe}</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                 <div style={{
@@ -599,7 +602,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                   background: 'linear-gradient(90deg, #f59e0b 0%, #d97706 100%)',
                   borderRadius: '2px'
                 }} />
-                <span>Near Barrier (Warning)</span>
+                <span>{tr.nearBarrierWarning}</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                 <div style={{
@@ -608,7 +611,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                   background: 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)',
                   borderRadius: '2px'
                 }} />
-                <span>Below Barrier (Breached)</span>
+                <span>{tr.belowBarrierBreached}</span>
               </div>
               {phoenixParams.protectionBarrier && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
@@ -617,7 +620,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                     height: '14px',
                     background: '#3b82f6'
                   }} />
-                  <span>Protection Barrier ({phoenixParams.protectionBarrier}%)</span>
+                  <span>{tr.protectionBarrier} ({phoenixParams.protectionBarrier}%)</span>
                 </div>
               )}
             </div>
@@ -628,19 +631,19 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
       {/* Barrier Status */}
       {basketAnalysis && (
         <div style={{...styles.section}}>
-          <h2 style={styles.sectionTitle}>Barrier Status</h2>
+          <h2 style={styles.sectionTitle}>{tr.barrierStatus}</h2>
           <table style={styles.table}>
             <thead>
               <tr>
-                <th style={styles.th}>Barrier Type</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Level</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Distance to Barrier</th>
-                <th style={{...styles.th, textAlign: 'center'}}>Status</th>
+                <th style={styles.th}>{tr.barrierType}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.level}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.distanceToBarrier}</th>
+                <th style={{...styles.th, textAlign: 'center'}}>{tr.statusLabel}</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td style={styles.td}>Autocall Barrier</td>
+                <td style={styles.td}>{tr.autocallBarrier}</td>
                 <td style={{...styles.td, textAlign: 'right'}}>{phoenixParams.autocallBarrier || '-'}%</td>
                 <td style={{
                   ...styles.td,
@@ -657,12 +660,12 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                     borderRadius: '4px',
                     fontSize: '0.75rem'
                   }}>
-                    {basketAnalysis.autocallTriggered ? 'Triggered' : 'Not Triggered'}
+                    {basketAnalysis.autocallTriggered ? tr.triggered : tr.notTriggered}
                   </span>
                 </td>
               </tr>
               <tr>
-                <td style={styles.td}>Protection Barrier</td>
+                <td style={styles.td}>{tr.protectionBarrier}</td>
                 <td style={{...styles.td, textAlign: 'right'}}>{phoenixParams.protectionBarrier || '-'}%</td>
                 <td style={{
                   ...styles.td,
@@ -679,13 +682,13 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                     borderRadius: '4px',
                     fontSize: '0.75rem'
                   }}>
-                    {basketAnalysis.breachedCount > 0 ? 'Breached' : 'Protected'}
+                    {basketAnalysis.breachedCount > 0 ? tr.breached : tr.protectedStatus}
                   </span>
                 </td>
               </tr>
               {phoenixParams.couponBarrier && (
                 <tr>
-                  <td style={styles.td}>Coupon Barrier</td>
+                  <td style={styles.td}>{tr.couponBarrier}</td>
                   <td style={{...styles.td, textAlign: 'right'}}>{phoenixParams.couponBarrier}%</td>
                   <td style={{...styles.td, textAlign: 'right'}}>-</td>
                   <td style={{...styles.td, textAlign: 'center'}}>-</td>
@@ -699,49 +702,49 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
       {/* Coupon Summary */}
       {observationAnalysis && (
         <div style={styles.section}>
-          <h2 style={styles.sectionTitle}>Coupon Summary</h2>
+          <h2 style={styles.sectionTitle}>{tr.couponSummary}</h2>
           <table style={styles.table}>
             <thead>
               <tr>
-                <th style={styles.th}>Metric</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Value</th>
+                <th style={styles.th}>{tr.metric}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.value}</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td style={styles.td}>Coupon Rate (per observation)</td>
+                <td style={styles.td}>{tr.couponRatePerObs}</td>
                 <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>{phoenixParams.couponRate || '-'}%</td>
               </tr>
               {observationAnalysis.hasGuaranteedCoupon && (
                 <tr>
-                  <td style={styles.td}>Coupon Type</td>
+                  <td style={styles.td}>{tr.couponTypeLbl}</td>
                   <td style={{...styles.td, textAlign: 'right', color: '#047857', fontWeight: 600}}>
-                    💰 Guaranteed (paid regardless of performance)
+                    💰 {tr.guaranteedCouponDesc}
                   </td>
                 </tr>
               )}
               <tr>
-                <td style={styles.td}>Total Coupons Earned</td>
+                <td style={styles.td}>{tr.totalCouponsEarned}</td>
                 <td style={{...styles.td, textAlign: 'right', fontWeight: 600, color: '#047857'}}>
                   {observationAnalysis.totalCouponsEarnedFormatted || `${observationAnalysis.totalCouponsEarned || 0}%`}
                 </td>
               </tr>
               {!observationAnalysis.hasGuaranteedCoupon && (
                 <tr>
-                  <td style={styles.td}>Coupons in Memory</td>
+                  <td style={styles.td}>{tr.couponsInMemory}</td>
                   <td style={{...styles.td, textAlign: 'right', color: observationAnalysis.totalMemoryCoupons > 0 ? '#b45309' : '#6b7280'}}>
                     {observationAnalysis.totalMemoryCouponsFormatted || `${observationAnalysis.totalMemoryCoupons || 0}%`}
                   </td>
                 </tr>
               )}
               <tr>
-                <td style={styles.td}>Observations Completed</td>
+                <td style={styles.td}>{tr.observationsCompleted}</td>
                 <td style={{...styles.td, textAlign: 'right'}}>
                   {observationAnalysis.completedObservations || 0} / {observationAnalysis.totalObservations || 0}
                 </td>
               </tr>
               <tr>
-                <td style={styles.td}>Remaining Observations</td>
+                <td style={styles.td}>{tr.remainingObservations}</td>
                 <td style={{...styles.td, textAlign: 'right'}}>{observationAnalysis.remainingObservations || 0}</td>
               </tr>
             </tbody>
@@ -749,50 +752,71 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
         </div>
       )}
 
-      {/* Indicative Value */}
-      {indicativeValue && indicativeValue.isLive && (
+      {/* Indicative Value (live) / Final Redemption Result (matured/autocalled) */}
+      {indicativeValue && (indicativeValue.isLive || indicativeValue.isMatured || indicativeValue.isAutocalled) && (() => {
+        const isFinal = indicativeValue.isMatured || indicativeValue.isAutocalled;
+        const pnlColor = indicativeValue.pnlIsPositive ? '#047857' : '#dc2626';
+        return (
         <div style={{...styles.section, pageBreakBefore: 'always'}}>
           <h2 style={styles.sectionTitle}>
-            💹 Indicative Value (If Matured Today)
+            {isFinal ? '🏁' : '💹'} {isFinal ? tr.finalRedemptionResult : tr.indicativeValueIfMaturedToday}
           </h2>
           <p style={{fontSize: '0.85rem', color: '#64748b', marginBottom: '1rem', fontStyle: 'italic'}}>
-            This is a hypothetical calculation based on current market prices.
+            {isFinal ? tr.finalRedemptionDisclaimer : tr.hypotheticalCalculation}
           </p>
           <table style={styles.table}>
             <thead>
               <tr>
-                <th style={styles.th}>Metric</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Value</th>
+                <th style={styles.th}>{tr.metric}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.value}</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td style={styles.td}>Capital Return</td>
-                <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>
+                <td style={styles.td}>{tr.capitalReturn}</td>
+                <td style={{...styles.td, textAlign: 'right', fontWeight: 600, color: indicativeValue.capitalReturn < 100 ? '#dc2626' : '#1e3a5f'}}>
                   {indicativeValue.capitalReturnFormatted || `${indicativeValue.capitalReturn || 100}%`}
                 </td>
               </tr>
               <tr>
-                <td style={styles.td}>Accumulated Coupons</td>
+                <td style={styles.td}>{tr.couponsEarned}</td>
                 <td style={{...styles.td, textAlign: 'right', fontWeight: 600, color: '#047857'}}>
-                  {indicativeValue.totalCouponsFormatted || `${indicativeValue.totalCoupons || 0}%`}
+                  {indicativeValue.couponsEarnedFormatted || '0.00%'}
                 </td>
               </tr>
+              {indicativeValue.hasMemoryCoupons && (
+                <tr>
+                  <td style={styles.td}>{tr.memoryCoupons}</td>
+                  <td style={{...styles.td, textAlign: 'right', fontWeight: 600, color: indicativeValue.memoryCouponsForfeit ? '#dc2626' : '#b45309', textDecoration: indicativeValue.memoryCouponsForfeit ? 'line-through' : 'none'}}>
+                    {indicativeValue.memoryCouponsForfeit ? indicativeValue.memoryCouponsForfeitFormatted : indicativeValue.memoryCouponsFormatted}
+                    {indicativeValue.memoryCouponsForfeit ? ` (${tr.forfeitedBelowBarrier})` : ''}
+                  </td>
+                </tr>
+              )}
               <tr style={{background: '#e8f4fc'}}>
-                <td style={{...styles.td, fontWeight: 700}}>Total Theoretical Return</td>
+                <td style={{...styles.td, fontWeight: 700}}>{isFinal ? tr.totalRedemptionValue : tr.totalTheoreticalReturn}</td>
                 <td style={{...styles.td, textAlign: 'right', fontWeight: 700, fontSize: '1.25rem', color: '#1e3a5f'}}>
                   {indicativeValue.totalValueFormatted || `${indicativeValue.totalValue || 100}%`}
                 </td>
               </tr>
+              {isFinal && (
+                <tr style={{background: indicativeValue.pnlIsPositive ? '#d1fae5' : '#fee2e2'}}>
+                  <td style={{...styles.td, fontWeight: 700}}>{tr.netPnl}</td>
+                  <td style={{...styles.td, textAlign: 'right', fontWeight: 700, fontSize: '1.25rem', color: pnlColor}}>
+                    {indicativeValue.pnlFormatted}
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
-      )}
+        );
+      })()}
 
       {/* Performance Chart */}
       {productId && (
         <div style={{...styles.section, pageBreakBefore: 'always'}}>
-          <h2 style={styles.sectionTitle}>Performance Evolution</h2>
+          <h2 style={styles.sectionTitle}>{tr.performanceEvolution}</h2>
           <div style={{height: '400px', marginTop: '1rem'}}>
             <StructuredProductChart productId={productId} height="400px" />
           </div>
@@ -802,20 +826,20 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
       {/* Observation Schedule */}
       {observationAnalysis.observations && observationAnalysis.observations.length > 0 && (
         <div style={{...styles.section, pageBreakBefore: 'always'}}>
-          <h2 style={styles.sectionTitle}>Observation Schedule</h2>
+          <h2 style={styles.sectionTitle}>{tr.observationSchedule}</h2>
           <table style={{...styles.table, fontSize: '0.8rem'}}>
             <thead>
               <tr>
                 <th style={{...styles.th, width: '30px'}}>#</th>
-                <th style={{...styles.th, width: '90px'}}>Obs Date</th>
-                <th style={{...styles.th, width: '90px'}}>Payment</th>
-                <th style={{...styles.th, textAlign: 'center', width: '70px'}}>Type</th>
-                <th style={{...styles.th, textAlign: 'right', width: '70px'}}>Autocall</th>
-                <th style={{...styles.th, textAlign: 'right', width: '70px'}}>Coupon</th>
+                <th style={{...styles.th, width: '90px'}}>{tr.obsDate}</th>
+                <th style={{...styles.th, width: '90px'}}>{tr.payment}</th>
+                <th style={{...styles.th, textAlign: 'center', width: '70px'}}>{tr.type}</th>
+                <th style={{...styles.th, textAlign: 'right', width: '70px'}}>{tr.autocall}</th>
+                <th style={{...styles.th, textAlign: 'right', width: '70px'}}>{tr.coupon}</th>
                 {!observationAnalysis.hasGuaranteedCoupon && (
-                  <th style={{...styles.th, textAlign: 'center', width: '60px'}}>Memory</th>
+                  <th style={{...styles.th, textAlign: 'center', width: '60px'}}>{tr.memory}</th>
                 )}
-                <th style={{...styles.th, textAlign: 'center', width: '70px'}}>Status</th>
+                <th style={{...styles.th, textAlign: 'center', width: '70px'}}>{tr.statusLabel}</th>
               </tr>
             </thead>
             <tbody>
@@ -839,14 +863,14 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                         background: isFinal ? '#fef3c7' : '#e0f2fe',
                         color: isFinal ? '#b45309' : '#0369a1'
                       }}>
-                        {isFinal ? 'Final' : 'Obs'}
+                        {isFinal ? tr.finalLabel : tr.obsLabel}
                       </span>
                     </td>
                     <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>{obs.autocallLevel || phoenixParams.autocallBarrier || '-'}%</td>
                     <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>{obs.couponRate || phoenixParams.couponRate || '-'}%</td>
                     {!observationAnalysis.hasGuaranteedCoupon && (
                       <td style={{...styles.td, textAlign: 'center'}}>
-                        {obs.hasMemory || observationAnalysis.hasMemoryCoupon ? 'Yes' : 'No'}
+                        {obs.hasMemory || observationAnalysis.hasMemoryCoupon ? tr.yes : tr.no}
                       </td>
                     )}
                     <td style={{...styles.td, textAlign: 'center'}}>
@@ -861,7 +885,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                             background: obs.paymentConfirmed ? '#d1fae5' : obs.isPastDue ? '#fee2e2' : '#f3f4f6',
                             color: obs.paymentConfirmed ? '#047857' : obs.isPastDue ? '#b91c1c' : '#6b7280'
                           }}>
-                            {obs.paymentConfirmed ? '✓ Paid' : obs.isPastDue ? '⚠ Due' : '? Cpn'}
+                            {obs.paymentConfirmed ? `✓ ${tr.paid}` : obs.isPastDue ? `⚠ ${tr.overdue}` : `? ${tr.coupon}`}
                           </span>
                         )}
                         {/* Redemption Status - for autocalled observations */}
@@ -874,7 +898,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                             background: obs.redemptionConfirmed ? '#dbeafe' : obs.redemptionIsPastDue ? '#fed7aa' : '#f3f4f6',
                             color: obs.redemptionConfirmed ? '#1d4ed8' : obs.redemptionIsPastDue ? '#c2410c' : '#6b7280'
                           }}>
-                            {obs.redemptionConfirmed ? '✓ Redeemed' : obs.redemptionIsPastDue ? '⚠ Redeem' : '? Redeem'}
+                            {obs.redemptionConfirmed ? `✓ ${tr.redeemed}` : obs.redemptionIsPastDue ? `⚠ ${tr.redeemed}` : `? ${tr.redeemed}`}
                           </span>
                         )}
                         {/* Fallback for observations without coupon payment */}
@@ -889,8 +913,8 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                             color: obs.status === 'completed' ? (obs.couponEarned ? '#047857' : '#b91c1c') :
                                    obs.isNext ? '#b45309' : '#6b7280'
                           }}>
-                            {obs.status === 'completed' ? (obs.couponEarned ? 'Paid' : 'Missed') :
-                             obs.isNext ? 'Next' : 'Pending'}
+                            {obs.status === 'completed' ? (obs.couponEarned ? tr.paid : tr.missed) :
+                             obs.isNext ? tr.nextLabel : tr.pending}
                           </span>
                         )}
                       </div>
@@ -905,33 +929,33 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
 
       {/* Product Parameters */}
       <div style={styles.section}>
-        <h2 style={styles.sectionTitle}>Product Parameters</h2>
+        <h2 style={styles.sectionTitle}>{tr.productParameters}</h2>
         <table style={styles.table}>
           <thead>
             <tr>
-              <th style={styles.th}>Parameter</th>
-              <th style={{...styles.th, textAlign: 'right'}}>Value</th>
+              <th style={styles.th}>{tr.parameter}</th>
+              <th style={{...styles.th, textAlign: 'right'}}>{tr.value}</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td style={styles.td}>Autocall Barrier</td>
+              <td style={styles.td}>{tr.autocallBarrier}</td>
               <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>{phoenixParams.autocallBarrier || '-'}%</td>
             </tr>
             <tr>
-              <td style={styles.td}>Protection Barrier</td>
+              <td style={styles.td}>{tr.protectionBarrier}</td>
               <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>{phoenixParams.protectionBarrier || '-'}%</td>
             </tr>
             <tr>
-              <td style={styles.td}>{observationAnalysis.hasGuaranteedCoupon ? 'Guaranteed Coupon Rate' : 'Memory Coupon Rate'}</td>
+              <td style={styles.td}>{observationAnalysis.hasGuaranteedCoupon ? tr.guaranteedCouponRate : tr.memoryCouponRate}</td>
               <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>{phoenixParams.couponRate || '-'}%</td>
             </tr>
             <tr>
-              <td style={styles.td}>Observation Frequency</td>
+              <td style={styles.td}>{tr.observationFrequency}</td>
               <td style={{...styles.td, textAlign: 'right', textTransform: 'capitalize'}}>{phoenixParams.observationFrequency || '-'}</td>
             </tr>
             <tr>
-              <td style={styles.td}>Notional</td>
+              <td style={styles.td}>{tr.notional}</td>
               <td style={{...styles.td, textAlign: 'right'}}>
                 {displayProduct.notional ? `${displayProduct.currency || 'EUR'} ${displayProduct.notional.toLocaleString()}` : '-'}
               </td>
@@ -942,9 +966,9 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
 
       {/* Footer */}
       <div style={styles.footer}>
-        <p>Generated by Amberlake Partners • {new Date().toLocaleString()}</p>
+        <p>{tr.generatedBy} • {new Date().toLocaleString(getLocale(lang))}</p>
         <p style={{fontSize: '0.75rem', color: '#9ca3af'}}>
-          Report generated on {formatDate(latestReport.evaluationDate || latestReport.createdAt)}
+          {tr.reportGeneratedOn} {formatDate(latestReport.evaluationDate || latestReport.createdAt)}
         </p>
       </div>
     </div>

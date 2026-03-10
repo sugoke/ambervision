@@ -632,7 +632,8 @@ Meteor.startup(async () => {
         username: 1,
         role: 1,
         profile: 1,
-        createdAt: 1
+        createdAt: 1,
+        canValidateOrders: 1
       }
     });
   });
@@ -752,7 +753,8 @@ Meteor.startup(async () => {
         email: 1,
         username: 1,
         role: 1,
-        profile: 1
+        profile: 1,
+        canValidateOrders: 1
       }
     });
   });
@@ -1559,7 +1561,8 @@ Meteor.methods({
         role: user.role,
         profile: user.profile,
         firstName: user.profile?.firstName,
-        lastName: user.profile?.lastName
+        lastName: user.profile?.lastName,
+        canValidateOrders: user.canValidateOrders || false
       },
       expiresAt: session.expiresAt,
       rememberMe: session.rememberMe
@@ -1640,6 +1643,7 @@ Meteor.methods({
         profile: user.profile,
         firstName: user.profile?.firstName,
         lastName: user.profile?.lastName,
+        canValidateOrders: user.canValidateOrders || false,
         sessionInfo: {
           createdAt: session.createdAt,
           lastUsed: session.lastUsed,
@@ -2026,6 +2030,42 @@ Meteor.methods({
     // Update the user's role
     return await UsersCollection.updateAsync(userId, {
       $set: { role: newRole }
+    });
+  },
+
+  /**
+   * Toggle canValidateOrders permission for a user (SuperAdmin only)
+   */
+  async 'users.updateCanValidateOrders'(userId, canValidate, sessionId) {
+    check(userId, String);
+    check(canValidate, Boolean);
+    check(sessionId, String);
+
+    const session = await SessionHelpers.validateSession(sessionId);
+    if (!session || !session.userId) {
+      throw new Meteor.Error('unauthorized', 'Invalid or expired session');
+    }
+
+    const currentUser = await UsersCollection.findOneAsync(session.userId);
+    if (!currentUser || currentUser.role !== USER_ROLES.SUPERADMIN) {
+      throw new Meteor.Error('unauthorized', 'Only superadmins can change validation permissions');
+    }
+
+    const targetUser = await UsersCollection.findOneAsync(userId);
+    if (!targetUser) {
+      throw new Meteor.Error('not-found', 'User not found');
+    }
+
+    // Only staff roles can validate orders
+    const staffRoles = [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.RELATIONSHIP_MANAGER, USER_ROLES.COMPLIANCE, USER_ROLES.STAFF];
+    if (!staffRoles.includes(targetUser.role)) {
+      throw new Meteor.Error('invalid-operation', 'Only staff users can be granted validation permission');
+    }
+
+    console.log(`[users.updateCanValidateOrders] Superadmin ${currentUser.email} setting canValidateOrders=${canValidate} for ${targetUser.email}`);
+
+    return await UsersCollection.updateAsync(userId, {
+      $set: { canValidateOrders: canValidate }
     });
   },
 

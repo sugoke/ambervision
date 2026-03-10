@@ -4,6 +4,7 @@ import { useTracker } from 'meteor/react-meteor-data';
 import { ProductsCollection } from '../../api/products';
 import { TemplateReportsCollection } from '../../api/templateReports';
 import StructuredProductChart from '../components/StructuredProductChart.jsx';
+import { getTranslation, getLocale, t } from '../../utils/reportTranslations';
 
 /**
  * Participation Note Report PDF Template
@@ -29,6 +30,8 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
   const isPDFMode = urlParams?.get('pdfToken') != null;
   const pdfToken = urlParams?.get('pdfToken');
   const pdfUserId = urlParams?.get('userId');
+  const lang = urlParams?.get('lang') || 'en';
+  const tr = getTranslation(lang);
 
   // Validate PDF token if in PDF mode
   useEffect(() => {
@@ -188,7 +191,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
   const formatDate = (date) => {
     if (!date) return '-';
     const d = new Date(date);
-    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    return d.toLocaleDateString(getLocale(lang), { day: '2-digit', month: 'short', year: 'numeric' });
   };
 
   // Get reference performance label
@@ -196,7 +199,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
     switch (ref) {
       case 'worst_of': return 'Worst-of';
       case 'best_of': return 'Best-of';
-      case 'average': return 'Average';
+      case 'average': return lang === 'fr' ? 'Moyenne' : 'Average';
       default: return ref || 'Worst-of';
     }
   };
@@ -223,8 +226,8 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
               {displayProduct.title || displayProduct.productName || 'Participation Note Report'}
             </h1>
             <div style={styles.headerMeta}>
-              <span style={styles.metaItem}>ISIN: {displayProduct.isin || '-'}</span>
-              <span style={styles.metaItem}>Currency: {displayProduct.currency || 'EUR'}</span>
+              <span style={styles.metaItem}>{tr.isin}: {displayProduct.isin || '-'}</span>
+              <span style={styles.metaItem}>{tr.currency}: {displayProduct.currency || 'EUR'}</span>
               <span style={{
                 ...styles.statusBadge,
                 background: issuerCall.isCalled ? '#fef3c7' :
@@ -232,7 +235,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
                 color: issuerCall.isCalled ? '#b45309' :
                        results.currentStatus?.productStatus === 'live' ? '#047857' : '#374151'
               }}>
-                {issuerCall.isCalled ? 'CALLED' : (results.currentStatus?.productStatus || 'unknown').toUpperCase()}
+                {issuerCall.isCalled ? tr.called.toUpperCase() : (results.currentStatus?.productStatus || 'unknown').toUpperCase()}
               </span>
             </div>
           </div>
@@ -266,14 +269,14 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
                 fontWeight: 700,
                 color: '#b45309'
               }}>
-                PRODUCT CALLED BY ISSUER
+                {tr.productCalledByIssuer}
               </h3>
               <p style={{
                 margin: '0.25rem 0 0 0',
                 fontSize: '0.9rem',
                 color: '#92400e'
               }}>
-                Early redeemed on <strong>{issuerCall.callDateFormatted}</strong>
+                {tr.earlyRedeemedOn} <strong>{issuerCall.callDateFormatted}</strong>
                 {issuerCall.callPrice && ` at ${issuerCall.callPriceFormatted}`}
                 {issuerCall.rebate && ` with ${issuerCall.rebateFormatted} rebate`}
               </p>
@@ -284,14 +287,14 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
 
       {/* Product Timeline */}
       <div style={styles.section}>
-        <h2 style={styles.sectionTitle}>Product Timeline</h2>
+        <h2 style={styles.sectionTitle}>{tr.productTimeline}</h2>
         <table style={styles.table}>
           <thead>
             <tr>
-              <th style={styles.th}>Trade Date</th>
-              <th style={styles.th}>Value Date</th>
-              <th style={styles.th}>Final Observation</th>
-              <th style={styles.th}>Maturity</th>
+              <th style={styles.th}>{tr.tradeDate}</th>
+              <th style={styles.th}>{tr.valueDate}</th>
+              <th style={styles.th}>{tr.finalObservationDate}</th>
+              <th style={styles.th}>{tr.maturityDate}</th>
             </tr>
           </thead>
           <tbody>
@@ -308,19 +311,19 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
       {/* Market Price Info */}
       {(displayProduct.marketPrice || displayProduct.bidPrice || displayProduct.askPrice || results.productPrice) && (
         <div style={styles.section}>
-          <h2 style={styles.sectionTitle}>💰 Product Market Price</h2>
+          <h2 style={styles.sectionTitle}>💰 {tr.productMarketPrice}</h2>
           <table style={styles.table}>
             <thead>
               <tr>
-                <th style={styles.th}>Price Type</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Value</th>
-                <th style={{...styles.th, textAlign: 'right'}}>% of Nominal</th>
+                <th style={styles.th}>{tr.priceType}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.value}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.percentOfNominal}</th>
               </tr>
             </thead>
             <tbody>
               {(displayProduct.bidPrice || results.productPrice?.bid) && (
                 <tr>
-                  <td style={styles.td}>Bid Price</td>
+                  <td style={styles.td}>{tr.bidPrice}</td>
                   <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>
                     {displayProduct.bidPrice?.toFixed(2) || results.productPrice?.bid?.toFixed(2) || '-'}
                   </td>
@@ -331,7 +334,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
               )}
               {(displayProduct.askPrice || results.productPrice?.ask) && (
                 <tr>
-                  <td style={styles.td}>Ask Price</td>
+                  <td style={styles.td}>{tr.askPrice}</td>
                   <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>
                     {displayProduct.askPrice?.toFixed(2) || results.productPrice?.ask?.toFixed(2) || '-'}
                   </td>
@@ -342,7 +345,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
               )}
               {(displayProduct.marketPrice || displayProduct.midPrice || results.productPrice?.mid) && (
                 <tr style={{background: '#f0f9ff'}}>
-                  <td style={{...styles.td, fontWeight: 600}}>Mid Price</td>
+                  <td style={{...styles.td, fontWeight: 600}}>{tr.midPrice}</td>
                   <td style={{...styles.td, textAlign: 'right', fontWeight: 700, color: '#1e3a5f', fontSize: '1.1rem'}}>
                     {displayProduct.marketPrice?.toFixed(2) || displayProduct.midPrice?.toFixed(2) || results.productPrice?.mid?.toFixed(2) || '-'}
                   </td>
@@ -353,7 +356,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
               )}
               {displayProduct.priceDate && (
                 <tr>
-                  <td style={styles.td}>Price Date</td>
+                  <td style={styles.td}>{tr.priceDate}</td>
                   <td style={{...styles.td, textAlign: 'right'}} colSpan={2}>
                     {formatDate(displayProduct.priceDate)}
                   </td>
@@ -367,16 +370,16 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
       {/* Underlying Performance */}
       {underlyings.length > 0 && (
         <div style={styles.section}>
-          <h2 style={styles.sectionTitle}>Underlying Performance</h2>
+          <h2 style={styles.sectionTitle}>{tr.underlyingPerformance}</h2>
           <table style={styles.table}>
             <thead>
               <tr>
-                <th style={styles.th}>Ticker</th>
-                <th style={styles.th}>Name</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Initial Price</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Current Price</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Performance</th>
-                <th style={{...styles.th, textAlign: 'center'}}>Status</th>
+                <th style={styles.th}>{tr.ticker}</th>
+                <th style={styles.th}>{tr.underlyingName}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.initialPrice}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.currentPrice}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.performance}</th>
+                <th style={{...styles.th, textAlign: 'center'}}>{tr.statusLabel}</th>
               </tr>
             </thead>
             <tbody>
@@ -405,7 +408,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
                         fontSize: '0.75rem',
                         fontWeight: 500
                       }}>
-                        Worst
+                        {tr.worst}
                       </span>
                     )}
                     {u.isBestPerforming && (
@@ -417,7 +420,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
                         fontSize: '0.75rem',
                         fontWeight: 500
                       }}>
-                        Best
+                        {tr.best}
                       </span>
                     )}
                   </td>
@@ -430,7 +433,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
 
       {/* Basket Performance Summary */}
       <div style={styles.section}>
-        <h2 style={styles.sectionTitle}>📊 Basket Performance</h2>
+        <h2 style={styles.sectionTitle}>📊 {tr.basketPerformance}</h2>
         <div style={{
           background: '#f8fafc',
           padding: '1.5rem',
@@ -442,10 +445,10 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
         }}>
           <div>
             <div style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: '0.25rem' }}>
-              Reference Performance ({getReferenceLabel(participationParams.referencePerformance)})
+              {tr.referencePerformanceLbl} ({getReferenceLabel(participationParams.referencePerformance)})
             </div>
             <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
-              Based on {underlyings.length} underlying{underlyings.length > 1 ? 's' : ''}
+              {t(lang, 'basedOnUnderlyings', { count: underlyings.length })}
             </div>
           </div>
           <div style={{
@@ -463,7 +466,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
       {underlyings.length > 0 && (
         <div style={{...styles.section, pageBreakBefore: 'always'}}>
           <h2 style={styles.sectionTitle}>
-            📊 Performance Overview
+            📊 {tr.performanceOverview}
             <span style={{
               fontSize: '0.75rem',
               background: 'linear-gradient(135deg, #1e3a5f 0%, #3b5998 100%)',
@@ -473,7 +476,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
               fontWeight: 500,
               marginLeft: '0.75rem'
             }}>
-              Participation: {participationParams.participationRateFormatted || `${participationParams.participationRate || 100}%`}
+              {tr.participationRate}: {participationParams.participationRateFormatted || `${participationParams.participationRate || 100}%`}
             </span>
           </h2>
 
@@ -633,7 +636,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
                   background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
                   borderRadius: '2px'
                 }} />
-                <span>Positive Performance</span>
+                <span>{tr.positivePerformance}</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                 <div style={{
@@ -642,7 +645,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
                   background: 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)',
                   borderRadius: '2px'
                 }} />
-                <span>Negative Performance</span>
+                <span>{tr.negativePerformance}</span>
               </div>
             </div>
           </div>
@@ -651,17 +654,17 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
 
       {/* Participation Calculation */}
       <div style={styles.section}>
-        <h2 style={styles.sectionTitle}>💫 Participation Calculation</h2>
+        <h2 style={styles.sectionTitle}>💫 {tr.participationCalculation}</h2>
         <table style={styles.table}>
           <thead>
             <tr>
-              <th style={styles.th}>Component</th>
-              <th style={{...styles.th, textAlign: 'right'}}>Value</th>
+              <th style={styles.th}>{tr.component}</th>
+              <th style={{...styles.th, textAlign: 'right'}}>{tr.value}</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td style={styles.td}>Raw Basket Performance</td>
+              <td style={styles.td}>{tr.rawBasketPerformance}</td>
               <td style={{
                 ...styles.td,
                 textAlign: 'right',
@@ -673,13 +676,13 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
               </td>
             </tr>
             <tr>
-              <td style={styles.td}>Participation Rate</td>
+              <td style={styles.td}>{tr.participationRate}</td>
               <td style={{...styles.td, textAlign: 'right', fontWeight: 600, fontFamily: 'monospace'}}>
                 × {participation.participationRateFormatted || `${participation.participationRate || participationParams.participationRate || 100}%`}
               </td>
             </tr>
             <tr style={{background: '#f0f9ff'}}>
-              <td style={{...styles.td, fontWeight: 700}}>Participated Performance</td>
+              <td style={{...styles.td, fontWeight: 700}}>{tr.participatedPerformance}</td>
               <td style={{
                 ...styles.td,
                 textAlign: 'right',
@@ -695,28 +698,28 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
         </table>
         {participation.formula && (
           <p style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '0.5rem', fontStyle: 'italic' }}>
-            Formula: {participation.formula}
+            {tr.formula}: {participation.formula}
           </p>
         )}
       </div>
 
       {/* Redemption Calculation */}
       <div style={styles.section}>
-        <h2 style={styles.sectionTitle}>💰 Redemption Value</h2>
+        <h2 style={styles.sectionTitle}>💰 {tr.redemptionValue}</h2>
         <table style={styles.table}>
           <thead>
             <tr>
-              <th style={styles.th}>Component</th>
-              <th style={{...styles.th, textAlign: 'right'}}>Value</th>
+              <th style={styles.th}>{tr.component}</th>
+              <th style={{...styles.th, textAlign: 'right'}}>{tr.value}</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td style={styles.td}>Base Capital</td>
+              <td style={styles.td}>{tr.baseCapital}</td>
               <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>100.00%</td>
             </tr>
             <tr>
-              <td style={styles.td}>Participated Performance</td>
+              <td style={styles.td}>{tr.participatedPerformance}</td>
               <td style={{
                 ...styles.td,
                 textAlign: 'right',
@@ -728,14 +731,14 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
             </tr>
             {issuerCall.isCalled && issuerCall.rebate && (
               <tr>
-                <td style={styles.td}>Issuer Call Rebate</td>
+                <td style={styles.td}>{tr.issuerCallRebate}</td>
                 <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace', color: '#b45309'}}>
                   +{issuerCall.rebateFormatted || `${issuerCall.rebate}%`}
                 </td>
               </tr>
             )}
             <tr style={{background: '#e8f4fc'}}>
-              <td style={{...styles.td, fontWeight: 700}}>Total Redemption</td>
+              <td style={{...styles.td, fontWeight: 700}}>{tr.totalRedemption}</td>
               <td style={{...styles.td, textAlign: 'right', fontWeight: 700, fontSize: '1.25rem', color: '#1e3a5f', fontFamily: 'monospace'}}>
                 {redemption.valueFormatted || `${(redemption.value || 100).toFixed(2)}%`}
               </td>
@@ -748,25 +751,25 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
       {indicativeValue && !issuerCall.isCalled && results.currentStatus?.productStatus === 'live' && (
         <div style={{...styles.section, pageBreakBefore: 'always'}}>
           <h2 style={styles.sectionTitle}>
-            💹 Indicative Value (If Matured Today)
+            💹 {tr.indicativeValueIfMaturedToday}
           </h2>
           <p style={{fontSize: '0.85rem', color: '#64748b', marginBottom: '1rem', fontStyle: 'italic'}}>
-            This is a hypothetical calculation based on current market prices.
+            {tr.hypotheticalCalculation}
           </p>
           <table style={styles.table}>
             <thead>
               <tr>
-                <th style={styles.th}>Metric</th>
-                <th style={{...styles.th, textAlign: 'right'}}>Value</th>
+                <th style={styles.th}>{tr.metric}</th>
+                <th style={{...styles.th, textAlign: 'right'}}>{tr.value}</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td style={styles.td}>Base Capital</td>
+                <td style={styles.td}>{tr.baseCapital}</td>
                 <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>100.00%</td>
               </tr>
               <tr>
-                <td style={styles.td}>Participated Return</td>
+                <td style={styles.td}>{tr.participatedReturn}</td>
                 <td style={{
                   ...styles.td,
                   textAlign: 'right',
@@ -778,7 +781,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
                 </td>
               </tr>
               <tr style={{background: '#e8f4fc'}}>
-                <td style={{...styles.td, fontWeight: 700}}>Total Theoretical Value</td>
+                <td style={{...styles.td, fontWeight: 700}}>{tr.totalTheoreticalValue}</td>
                 <td style={{...styles.td, textAlign: 'right', fontWeight: 700, fontSize: '1.25rem', color: '#1e3a5f', fontFamily: 'monospace'}}>
                   {indicativeValue.totalValueFormatted || redemption.valueFormatted || `${(redemption.value || 100).toFixed(2)}%`}
                 </td>
@@ -791,7 +794,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
       {/* Performance Chart */}
       {productId && (
         <div style={{...styles.section, pageBreakBefore: 'always'}}>
-          <h2 style={styles.sectionTitle}>Performance Evolution</h2>
+          <h2 style={styles.sectionTitle}>{tr.performanceEvolution}</h2>
           <div style={{height: '400px', marginTop: '1rem'}}>
             <StructuredProductChart productId={productId} height="400px" />
           </div>
@@ -800,35 +803,35 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
 
       {/* Product Parameters */}
       <div style={styles.section}>
-        <h2 style={styles.sectionTitle}>Product Parameters</h2>
+        <h2 style={styles.sectionTitle}>{tr.productParameters}</h2>
         <table style={styles.table}>
           <thead>
             <tr>
-              <th style={styles.th}>Parameter</th>
-              <th style={{...styles.th, textAlign: 'right'}}>Value</th>
+              <th style={styles.th}>{tr.parameter}</th>
+              <th style={{...styles.th, textAlign: 'right'}}>{tr.value}</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td style={styles.td}>Participation Rate</td>
+              <td style={styles.td}>{tr.participationRate}</td>
               <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>{participationParams.participationRateFormatted || `${participationParams.participationRate || '-'}%`}</td>
             </tr>
             <tr>
-              <td style={styles.td}>Strike Level</td>
+              <td style={styles.td}>{tr.strikeLevel}</td>
               <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>{participationParams.strikeFormatted || `${participationParams.strike || 100}%`}</td>
             </tr>
             <tr>
-              <td style={styles.td}>Reference Performance</td>
+              <td style={styles.td}>{tr.referencePerformanceLbl}</td>
               <td style={{...styles.td, textAlign: 'right', textTransform: 'capitalize'}}>{getReferenceLabel(participationParams.referencePerformance)}</td>
             </tr>
             <tr>
-              <td style={styles.td}>Issuer Call Option</td>
+              <td style={styles.td}>{tr.issuerCallOption}</td>
               <td style={{...styles.td, textAlign: 'right'}}>
-                {issuerCall.hasCallOption ? 'Yes (Callable)' : 'No'}
+                {issuerCall.hasCallOption ? tr.yesCallable : tr.no}
               </td>
             </tr>
             <tr>
-              <td style={styles.td}>Notional</td>
+              <td style={styles.td}>{tr.notional}</td>
               <td style={{...styles.td, textAlign: 'right'}}>
                 {displayProduct.notional ? `${displayProduct.currency || 'EUR'} ${displayProduct.notional.toLocaleString()}` : '-'}
               </td>
@@ -839,9 +842,9 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
 
       {/* Footer */}
       <div style={styles.footer}>
-        <p>Generated by Amberlake Partners • {new Date().toLocaleString()}</p>
+        <p>{tr.generatedBy} • {new Date().toLocaleString(getLocale(lang))}</p>
         <p style={{fontSize: '0.75rem', color: '#9ca3af'}}>
-          Report generated on {formatDate(latestReport.evaluationDate || latestReport.createdAt)}
+          {tr.reportGeneratedOn} {formatDate(latestReport.evaluationDate || latestReport.createdAt)}
         </p>
       </div>
     </div>

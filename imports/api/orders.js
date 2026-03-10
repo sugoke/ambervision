@@ -140,6 +140,7 @@ export const ORDER_STATUSES = {
   DRAFT: 'draft',
   PENDING_VALIDATION: 'pending_validation',
   PENDING: 'pending',
+  PENDING_MODIFICATION: 'pending_modification',
   SENT: 'sent',
   EXECUTED: 'executed',
   PARTIALLY_EXECUTED: 'partially_executed',
@@ -271,6 +272,7 @@ export const OrderFormatters = {
       [ORDER_STATUSES.DRAFT]: 'Draft',
       [ORDER_STATUSES.PENDING_VALIDATION]: 'Pending Validation',
       [ORDER_STATUSES.PENDING]: 'Pending',
+      [ORDER_STATUSES.PENDING_MODIFICATION]: 'Pending Modification',
       [ORDER_STATUSES.SENT]: 'Sent',
       [ORDER_STATUSES.EXECUTED]: 'Executed',
       [ORDER_STATUSES.PARTIALLY_EXECUTED]: 'Partially Executed',
@@ -286,6 +288,7 @@ export const OrderFormatters = {
       [ORDER_STATUSES.DRAFT]: '#6b7280',       // gray
       [ORDER_STATUSES.PENDING_VALIDATION]: '#f97316', // orange
       [ORDER_STATUSES.PENDING]: '#f59e0b',     // amber
+      [ORDER_STATUSES.PENDING_MODIFICATION]: '#a855f7', // purple
       [ORDER_STATUSES.SENT]: '#3b82f6',        // blue
       [ORDER_STATUSES.EXECUTED]: '#10b981',    // green
       [ORDER_STATUSES.PARTIALLY_EXECUTED]: '#8b5cf6', // purple
@@ -363,6 +366,74 @@ export const OrderFormatters = {
 };
 
 // Helper functions for order management
+/**
+ * Order health check - computes completeness score based on order status and required items.
+ * Returns { score, max, missing, color } where score/max is the fraction and missing lists what's absent.
+ */
+export function getOrderHealthCheck(order) {
+  if (!order) return { score: 0, max: 1, missing: [], color: '#6b7280' };
+
+  const traces = order.emailTraces || [];
+  const hasTrace = (type) => traces.some(t => t.traceType === type);
+  const checks = [];
+
+  // Terminal statuses — no health check needed
+  if (order.status === ORDER_STATUSES.CANCELLED || order.status === ORDER_STATUSES.REJECTED) {
+    return { score: 0, max: 0, missing: [], color: '#6b7280', label: '-' };
+  }
+
+  // 1. Client order email (always required once past draft)
+  if (order.status !== ORDER_STATUSES.DRAFT) {
+    const hasClientOrder = hasTrace(EMAIL_TRACE_TYPES.CLIENT_ORDER) ||
+      (order.pendingModification?.instructionFile != null);
+    checks.push({ name: 'Client order', ok: hasClientOrder });
+  }
+
+  // 2. Four-eyes validation (required once past pending_validation)
+  const postValidationStatuses = [ORDER_STATUSES.PENDING, ORDER_STATUSES.SENT, ORDER_STATUSES.EXECUTED, ORDER_STATUSES.PARTIALLY_EXECUTED];
+  if (postValidationStatuses.includes(order.status)) {
+    checks.push({ name: 'Validation', ok: !!order.validatedAt });
+  }
+
+  // 3. Order sent to bank (required for sent+ statuses)
+  const postSentStatuses = [ORDER_STATUSES.SENT, ORDER_STATUSES.EXECUTED, ORDER_STATUSES.PARTIALLY_EXECUTED];
+  if (postSentStatuses.includes(order.status)) {
+    checks.push({ name: 'Order to bank', ok: hasTrace(EMAIL_TRACE_TYPES.ORDER_TO_BANK) });
+  }
+
+  // 4. Termsheet signed (structured products only, once sent+)
+  if (order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT && postSentStatuses.includes(order.status)) {
+    checks.push({ name: 'Termsheet signed', ok: order.termsheetStatus === TERMSHEET_STATUSES.SIGNED });
+  }
+
+  // 5. Bank confirmation (required for executed orders)
+  const executedStatuses = [ORDER_STATUSES.EXECUTED, ORDER_STATUSES.PARTIALLY_EXECUTED];
+  if (executedStatuses.includes(order.status)) {
+    checks.push({ name: 'Bank confirmation', ok: hasTrace(EMAIL_TRACE_TYPES.BANK_CONFIRMATION) });
+  }
+
+  // 6. Execution price (required for executed orders)
+  if (executedStatuses.includes(order.status)) {
+    checks.push({ name: 'Exec price', ok: order.executedPrice != null && order.executedPrice > 0 });
+  }
+
+  if (checks.length === 0) {
+    return { score: 0, max: 0, missing: [], color: '#6b7280', label: '-' };
+  }
+
+  const score = checks.filter(c => c.ok).length;
+  const max = checks.length;
+  const missing = checks.filter(c => !c.ok).map(c => c.name);
+  const ratio = score / max;
+
+  let color;
+  if (ratio === 1) color = '#10b981';       // green — complete
+  else if (ratio >= 0.6) color = '#f59e0b';  // amber — some missing
+  else color = '#ef4444';                     // red — many missing
+
+  return { score, max, missing, color, label: `${score}/${max}` };
+}
+
 export const OrderHelpers = {
   // Get all orders for a client
   getClientOrders(clientId) {
@@ -394,7 +465,7 @@ export const OrderHelpers = {
   // Get pending orders count
   async getPendingOrdersCount() {
     return await OrdersCollection.find({
-      status: { $in: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING, ORDER_STATUSES.SENT] }
+      status: { $in: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING, ORDER_STATUSES.PENDING_MODIFICATION, ORDER_STATUSES.SENT] }
     }).countAsync();
   },
 
@@ -476,7 +547,10 @@ export const OrderHelpers = {
       limitHistoryFormatted: (order.limitHistory || []).map(entry => ({
         ...entry,
         changedAtFormatted: OrderFormatters.formatDateTime(entry.changedAt),
-        priceTypeLabel: OrderFormatters.getPriceTypeLabel(entry.priceType)
+        validatedAtFormatted: entry.validatedAt ? OrderFormatters.formatDateTime(entry.validatedAt) : null,
+        rejectedAtFormatted: entry.rejectedAt ? OrderFormatters.formatDateTime(entry.rejectedAt) : null,
+        priceTypeLabel: OrderFormatters.getPriceTypeLabel(entry.priceType),
+        newPriceTypeLabel: entry.newPriceType ? OrderFormatters.getPriceTypeLabel(entry.newPriceType) : null
       })),
       // Validation fields (four-eyes principle)
       validatedByName: order.validatedByName || null,

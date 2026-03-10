@@ -164,8 +164,8 @@ const TickerLogo = ({ symbol, name, type }) => {
 };
 
 // Fixed scroll speed in pixels per second (lower value = longer duration = slower scroll)
-// 15px/sec is comfortable reading speed for ticker ribbons
-const SCROLL_SPEED_PX_PER_SEC = 15;
+// 10px/sec is a comfortable reading speed for ticker ribbons
+const SCROLL_SPEED_PX_PER_SEC = 10;
 
 const MarketTicker = () => {
   // Ref to measure content width for dynamic animation duration
@@ -245,8 +245,8 @@ const MarketTicker = () => {
           const totalDistance = contentWidth / 2;
           const duration = totalDistance / SCROLL_SPEED_PX_PER_SEC;
 
-          // Minimum 60 seconds for comfortable reading, cap at 300 seconds
-          animationDurationRef.current = Math.min(Math.max(duration, 60), 300);
+          // Minimum 90 seconds for comfortable reading, cap at 600 seconds
+          animationDurationRef.current = Math.min(Math.max(duration, 90), 600);
 
           // Set CSS custom property for animation duration
           if (contentRef.current) {

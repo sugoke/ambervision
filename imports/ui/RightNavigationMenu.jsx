@@ -71,7 +71,7 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
     },
     {
       id: 'clients',
-      label: 'Clients',
+      label: 'Users',
       icon: '👥',
       description: 'Client management',
       role: 'rm',

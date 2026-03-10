@@ -69,8 +69,8 @@ async function validateOrderAccess(order, user) {
     throw new Meteor.Error('not-found', 'Order not found');
   }
 
-  // Admins and superadmins can access all orders
-  if (user.role === 'admin' || user.role === 'superadmin') {
+  // Admins, superadmins, and compliance can access all orders
+  if (user.role === 'admin' || user.role === 'superadmin' || user.role === 'compliance') {
     return true;
   }
 
@@ -617,12 +617,23 @@ Meteor.methods({
    * Update limit on a sent order (allows post-send limit changes)
    * Tracks change history for audit trail
    */
-  async 'orders.updateLimit'({ orderId, priceType, limitPrice, reason, sessionId }) {
+  /**
+   * Request a limit/SL/TP modification (four-eyes: goes to PENDING_MODIFICATION)
+   * Requires client instruction email attachment
+   */
+  async 'orders.updateLimit'({ orderId, priceType, limitPrice, stopLossPrice, takeProfitPrice, reason, clientInstructionFile, sessionId }) {
     check(orderId, String);
     check(sessionId, String);
-    check(priceType, Match.Where(x => Object.values(PRICE_TYPES).includes(x)));
+    check(priceType, Match.Maybe(Match.Where(x => Object.values(PRICE_TYPES).includes(x))));
     check(limitPrice, Match.Maybe(Number));
+    check(stopLossPrice, Match.Maybe(Number));
+    check(takeProfitPrice, Match.Maybe(Number));
     check(reason, Match.Maybe(String));
+    check(clientInstructionFile, Match.Maybe({
+      fileName: String,
+      base64Data: String,
+      mimeType: String
+    }));
 
     const { user, userId, userDisplayName } = await validateSession(sessionId);
     validateOrderPermission(user);
@@ -630,40 +641,267 @@ Meteor.methods({
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
 
-    // Allowed on pending, pending_validation, and sent orders
-    const allowedStatuses = [ORDER_STATUSES.PENDING, ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.SENT];
+    // Allowed on pending and sent orders (not pending_validation or already pending_modification)
+    const allowedStatuses = [ORDER_STATUSES.PENDING, ORDER_STATUSES.SENT];
     if (!allowedStatuses.includes(order.status)) {
-      throw new Meteor.Error('invalid-operation', 'Limit can only be modified on pending or sent orders');
+      throw new Meteor.Error('invalid-operation', 'Modifications can only be requested on pending or sent orders');
     }
+
+    // Client instruction is required
+    if (!clientInstructionFile) {
+      throw new Meteor.Error('missing-attachment', 'Client instruction email is required for modifications');
+    }
+
+    // Save client instruction file
+    let instructionFilePath = null;
+    if (clientInstructionFile) {
+      try {
+        const basePath = process.env.FICHIER_CENTRAL_PATH || './public/fichier_central';
+        const ordersDir = path.join(basePath, 'orders', orderId);
+        if (!fs.existsSync(ordersDir)) {
+          fs.mkdirSync(ordersDir, { recursive: true });
+        }
+        const ext = path.extname(clientInstructionFile.fileName).toLowerCase();
+        const timestamp = Date.now();
+        const storedFileName = `modification_instruction_${timestamp}${ext}`;
+        instructionFilePath = path.join(ordersDir, storedFileName);
+        const buffer = Buffer.from(clientInstructionFile.base64Data, 'base64');
+        fs.writeFileSync(instructionFilePath, buffer);
+      } catch (err) {
+        console.error('[ORDERS] Error saving modification instruction file:', err);
+        throw new Meteor.Error('file-system-error', 'Failed to save client instruction file');
+      }
+    }
+
+    // Build the pending modification object with proposed changes
+    const pendingModification = {
+      _id: Random.id(),
+      requestedBy: userId,
+      requestedByName: userDisplayName,
+      requestedAt: new Date(),
+      reason: reason || null,
+      // Snapshot old values
+      oldValues: {
+        priceType: order.priceType,
+        limitPrice: order.limitPrice || null,
+        stopLossPrice: order.stopLossPrice || null,
+        takeProfitPrice: order.takeProfitPrice || null
+      },
+      // Proposed new values
+      newValues: {
+        priceType: priceType || order.priceType,
+        limitPrice: (priceType === 'market') ? null : (limitPrice !== undefined ? limitPrice : order.limitPrice),
+        stopLossPrice: stopLossPrice !== undefined ? stopLossPrice : order.stopLossPrice,
+        takeProfitPrice: takeProfitPrice !== undefined ? takeProfitPrice : order.takeProfitPrice
+      },
+      // Client instruction
+      instructionFile: clientInstructionFile ? {
+        fileName: clientInstructionFile.fileName,
+        mimeType: clientInstructionFile.mimeType,
+        filePath: instructionFilePath,
+        storedFileName: path.basename(instructionFilePath)
+      } : null,
+      // Status tracking
+      statusBeforeModification: order.status,
+      status: 'pending' // pending | validated | rejected
+    };
+
+    await OrdersCollection.updateAsync(orderId, {
+      $set: {
+        status: ORDER_STATUSES.PENDING_MODIFICATION,
+        pendingModification,
+        updatedAt: new Date(),
+        updatedBy: userId
+      }
+    });
+
+    console.log(`[ORDERS] Modification requested on order ${order.orderReference} by ${userDisplayName} (${userId}) - reason: ${reason || 'none'}`);
+
+    // Notify validators
+    try {
+      const { NotificationHelpers, EVENT_TYPES } = await import('../../imports/api/notifications.js');
+      const validators = await UsersCollection.find({
+        $or: [{ canValidateOrders: true }, { role: 'compliance' }],
+        _id: { $ne: userId },
+        role: { $in: ['superadmin', 'admin', 'rm', 'compliance', 'staff'] }
+      }).fetchAsync();
+
+      for (const validator of validators) {
+        await NotificationHelpers.create({
+          userId: validator._id,
+          type: 'warning',
+          title: 'Order Modification Pending',
+          message: `${userDisplayName} requested a modification on order ${order.orderReference} (${order.securityName}).`,
+          metadata: { orderId, orderReference: order.orderReference },
+          eventType: EVENT_TYPES.ORDER_CREATED
+        });
+      }
+    } catch (notifError) {
+      console.error('[ORDERS] Error sending modification notification:', notifError);
+    }
+
+    return { success: true, orderId };
+  },
+
+  /**
+   * Validate a pending modification (four-eyes: apply the changes)
+   */
+  async 'orders.validateModification'({ orderId, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+
+    // Permission check
+    if (!user.canValidateOrders && user.role !== 'compliance') {
+      throw new Meteor.Error('not-authorized', 'You do not have order validation permission');
+    }
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    if (!order) throw new Meteor.Error('not-found', 'Order not found');
+    await validateOrderAccess(order, user);
+
+    if (order.status !== ORDER_STATUSES.PENDING_MODIFICATION || !order.pendingModification) {
+      throw new Meteor.Error('invalid-operation', 'Order has no pending modification');
+    }
+
+    // Four-eyes: requester cannot validate their own modification
+    if (order.pendingModification.requestedBy === userId) {
+      throw new Meteor.Error('four-eyes-violation', 'You cannot validate your own modification (four-eyes principle)');
+    }
+
+    const mod = order.pendingModification;
 
     // Build history entry for the old values
     const historyEntry = {
-      price: order.limitPrice,
-      priceType: order.priceType,
-      changedAt: new Date(),
-      changedBy: userId,
-      changedByName: userDisplayName,
-      reason: reason || null
+      price: mod.oldValues.limitPrice,
+      priceType: mod.oldValues.priceType,
+      stopLossPrice: mod.oldValues.stopLossPrice,
+      takeProfitPrice: mod.oldValues.takeProfitPrice,
+      newPrice: mod.newValues.limitPrice,
+      newPriceType: mod.newValues.priceType,
+      newStopLossPrice: mod.newValues.stopLossPrice,
+      newTakeProfitPrice: mod.newValues.takeProfitPrice,
+      changedAt: mod.requestedAt,
+      changedBy: mod.requestedBy,
+      changedByName: mod.requestedByName,
+      validatedAt: new Date(),
+      validatedBy: userId,
+      validatedByName: userDisplayName,
+      reason: mod.reason,
+      instructionFile: mod.instructionFile ? {
+        fileName: mod.instructionFile.fileName,
+        storedFileName: mod.instructionFile.storedFileName
+      } : null
     };
 
-    const updateFields = {
-      priceType,
-      updatedAt: new Date(),
-      updatedBy: userId
-    };
-
-    if (priceType === 'market') {
-      updateFields.limitPrice = null;
-    } else {
-      updateFields.limitPrice = limitPrice || null;
-    }
-
+    // Apply the modification
     await OrdersCollection.updateAsync(orderId, {
-      $set: updateFields,
+      $set: {
+        status: mod.statusBeforeModification,
+        priceType: mod.newValues.priceType,
+        limitPrice: mod.newValues.limitPrice,
+        stopLossPrice: mod.newValues.stopLossPrice,
+        takeProfitPrice: mod.newValues.takeProfitPrice,
+        pendingModification: null,
+        updatedAt: new Date(),
+        updatedBy: userId
+      },
       $push: { limitHistory: historyEntry }
     });
 
-    console.log(`[ORDERS] Updated limit on order ${order.orderReference} (${order.status}) by ${userDisplayName} (${userId}) - reason: ${reason || 'none'}`);
+    console.log(`[ORDERS] Modification validated on order ${order.orderReference} by ${userDisplayName} (${userId})`);
+
+    // Notify the requester
+    try {
+      const { NotificationHelpers, EVENT_TYPES } = await import('../../imports/api/notifications.js');
+      await NotificationHelpers.create({
+        userId: mod.requestedBy,
+        type: 'success',
+        title: 'Modification Validated',
+        message: `Your modification on order ${order.orderReference} (${order.securityName}) has been validated by ${userDisplayName}.`,
+        metadata: { orderId, orderReference: order.orderReference },
+        eventType: EVENT_TYPES.ORDER_VALIDATED
+      });
+    } catch (notifError) {
+      console.error('[ORDERS] Error sending modification validation notification:', notifError);
+    }
+
+    return { success: true, orderId };
+  },
+
+  /**
+   * Reject a pending modification (revert to previous status)
+   */
+  async 'orders.rejectModification'({ orderId, reason, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+    check(reason, Match.Maybe(String));
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+
+    if (!user.canValidateOrders && user.role !== 'compliance') {
+      throw new Meteor.Error('not-authorized', 'You do not have order validation permission');
+    }
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    if (!order) throw new Meteor.Error('not-found', 'Order not found');
+    await validateOrderAccess(order, user);
+
+    if (order.status !== ORDER_STATUSES.PENDING_MODIFICATION || !order.pendingModification) {
+      throw new Meteor.Error('invalid-operation', 'Order has no pending modification');
+    }
+
+    const mod = order.pendingModification;
+
+    // Build rejected history entry
+    const historyEntry = {
+      price: mod.oldValues.limitPrice,
+      priceType: mod.oldValues.priceType,
+      stopLossPrice: mod.oldValues.stopLossPrice,
+      takeProfitPrice: mod.oldValues.takeProfitPrice,
+      newPrice: mod.newValues.limitPrice,
+      newPriceType: mod.newValues.priceType,
+      newStopLossPrice: mod.newValues.stopLossPrice,
+      newTakeProfitPrice: mod.newValues.takeProfitPrice,
+      changedAt: mod.requestedAt,
+      changedBy: mod.requestedBy,
+      changedByName: mod.requestedByName,
+      rejectedAt: new Date(),
+      rejectedBy: userId,
+      rejectedByName: userDisplayName,
+      reason: mod.reason,
+      rejectionReason: reason || null,
+      status: 'rejected'
+    };
+
+    // Revert to previous status without applying changes
+    await OrdersCollection.updateAsync(orderId, {
+      $set: {
+        status: mod.statusBeforeModification,
+        pendingModification: null,
+        updatedAt: new Date(),
+        updatedBy: userId
+      },
+      $push: { limitHistory: historyEntry }
+    });
+
+    console.log(`[ORDERS] Modification rejected on order ${order.orderReference} by ${userDisplayName} (${userId}) - reason: ${reason || 'N/A'}`);
+
+    // Notify the requester
+    try {
+      const { NotificationHelpers, EVENT_TYPES } = await import('../../imports/api/notifications.js');
+      await NotificationHelpers.create({
+        userId: mod.requestedBy,
+        type: 'error',
+        title: 'Modification Rejected',
+        message: `Your modification on order ${order.orderReference} was rejected by ${userDisplayName}.${reason ? ` Reason: ${reason}` : ''}`,
+        metadata: { orderId, orderReference: order.orderReference, reason },
+        eventType: EVENT_TYPES.ORDER_REJECTED
+      });
+    } catch (notifError) {
+      console.error('[ORDERS] Error sending modification rejection notification:', notifError);
+    }
 
     return { success: true, orderId };
   },
@@ -1220,8 +1458,8 @@ Please find the full order confirmation attached as PDF.
 
     const { user, userId, userDisplayName } = await validateSession(sessionId);
 
-    // Check permission
-    if (!user.canValidateOrders) {
+    // Check permission (compliance role always has validation rights)
+    if (!user.canValidateOrders && user.role !== 'compliance') {
       throw new Meteor.Error('not-authorized', 'You do not have order validation permission');
     }
 
@@ -1288,8 +1526,8 @@ Please find the full order confirmation attached as PDF.
 
     const { user, userId, userDisplayName } = await validateSession(sessionId);
 
-    // Check permission
-    if (!user.canValidateOrders) {
+    // Check permission (compliance role always has validation rights)
+    if (!user.canValidateOrders && user.role !== 'compliance') {
       throw new Meteor.Error('not-authorized', 'You do not have order validation permission');
     }
 
@@ -1356,7 +1594,7 @@ Please find the full order confirmation attached as PDF.
       return { orders: [] };
     }
 
-    const query = { status: ORDER_STATUSES.PENDING_VALIDATION };
+    const query = { status: { $in: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING_MODIFICATION] } };
 
     // RMs only see pending orders for their own clients
     if (user.role === 'rm') {
@@ -1707,6 +1945,58 @@ Meteor.methods({
     }
 
     return `/order_traces/${orderId}/${trace.storedFileName}`;
+  },
+
+  /**
+   * Parse an .eml email trace and return its HTML/text content for inline preview
+   */
+  async 'orders.parseEmailTrace'({ orderId, traceId, sessionId }) {
+    check(orderId, String);
+    check(traceId, String);
+    check(sessionId, String);
+
+    const { user } = await validateSession(sessionId);
+    const order = await OrdersCollection.findOneAsync(orderId);
+    await validateOrderAccess(order, user);
+
+    let trace;
+    // Check if this is a modification instruction file request
+    if (traceId.startsWith('mod_') && order.pendingModification?.instructionFile) {
+      trace = order.pendingModification.instructionFile;
+    } else {
+      const traces = order.emailTraces || [];
+      trace = traces.find(t => t._id === traceId);
+    }
+    if (!trace) {
+      throw new Meteor.Error('not-found', 'Email trace not found');
+    }
+
+    const ext = (trace.fileName || '').toLowerCase();
+    if (!ext.endsWith('.eml')) {
+      throw new Meteor.Error('unsupported', 'Only .eml files can be parsed for preview');
+    }
+
+    try {
+      const { simpleParser } = require('mailparser');
+      const filePath = trace.filePath;
+      const fileContent = fs.readFileSync(filePath);
+      const parsed = await simpleParser(fileContent);
+
+      return {
+        success: true,
+        from: parsed.from?.text || '',
+        to: parsed.to?.text || '',
+        subject: parsed.subject || '',
+        date: parsed.date ? parsed.date.toISOString() : null,
+        html: parsed.html || null,
+        text: parsed.text || '',
+        hasAttachments: (parsed.attachments || []).length > 0,
+        attachmentNames: (parsed.attachments || []).map(a => a.filename || 'unnamed')
+      };
+    } catch (err) {
+      console.error(`[ORDERS] Error parsing .eml trace ${traceId}:`, err);
+      throw new Meteor.Error('parse-error', 'Failed to parse email file');
+    }
   }
 });
 

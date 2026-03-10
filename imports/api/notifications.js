@@ -54,7 +54,11 @@ export const EVENT_TYPES = {
   UNDERLYING_DOWN_20: 'underlying_down_20',
   // PMS events
   ALLOCATION_BREACH: 'allocation_breach',
-  UNAUTHORIZED_OVERDRAFT: 'unauthorized_overdraft'
+  UNAUTHORIZED_OVERDRAFT: 'unauthorized_overdraft',
+  // Order validation events (four-eyes principle)
+  ORDER_PENDING_VALIDATION: 'order_pending_validation',
+  ORDER_VALIDATED: 'order_validated',
+  ORDER_REJECTED: 'order_rejected'
 };
 
 // Event type display names
@@ -74,7 +78,11 @@ export const EVENT_TYPE_NAMES = {
   [EVENT_TYPES.UNDERLYING_DOWN_20]: 'Underlying -20% from Strike',
   // PMS event names
   [EVENT_TYPES.ALLOCATION_BREACH]: 'Allocation Breach',
-  [EVENT_TYPES.UNAUTHORIZED_OVERDRAFT]: 'Negative Cash'
+  [EVENT_TYPES.UNAUTHORIZED_OVERDRAFT]: 'Negative Cash',
+  // Order validation event names
+  [EVENT_TYPES.ORDER_PENDING_VALIDATION]: 'Order Pending Validation',
+  [EVENT_TYPES.ORDER_VALIDATED]: 'Order Validated',
+  [EVENT_TYPES.ORDER_REJECTED]: 'Order Rejected'
 };
 
 // Event priority levels (for UI display and sorting)
@@ -93,7 +101,11 @@ export const EVENT_PRIORITY = {
   [EVENT_TYPES.BARRIER_NEAR]: 4,
   [EVENT_TYPES.MEMORY_COUPON_ADDED]: 4,
   [EVENT_TYPES.PRICE_OVERRIDE]: 5,
-  [EVENT_TYPES.BARRIER_RECOVERED]: 5
+  [EVENT_TYPES.BARRIER_RECOVERED]: 5,
+  // Order validation priorities
+  [EVENT_TYPES.ORDER_PENDING_VALIDATION]: 2,
+  [EVENT_TYPES.ORDER_VALIDATED]: 3,
+  [EVENT_TYPES.ORDER_REJECTED]: 2
 };
 
 if (Meteor.isServer) {
@@ -314,13 +326,18 @@ export const NotificationHelpers = {
 
   /**
    * Get unread notification count for user
+   * Only counts notifications from the last 30 days to prevent badge inflation
    */
   async getUnreadCount(userId) {
     check(userId, String);
 
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
     return await NotificationsCollection.find({
       sentToUsers: userId,
-      readBy: { $ne: userId }
+      readBy: { $ne: userId },
+      createdAt: { $gte: thirtyDaysAgo }
     }).countAsync();
   },
 

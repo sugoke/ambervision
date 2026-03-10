@@ -424,7 +424,6 @@ export const PhoenixEvaluationHelpers = {
    * Only for live Phoenix products
    */
   calculateIndicativeMaturityValue(product, underlyings, observationSchedule, phoenixParams, currency = 'USD') {
-    // Only calculate for live products
     const now = new Date();
     const finalObsDate = product.finalObservation || product.finalObservationDate;
     const maturityDate = product.maturity || product.maturityDate;
@@ -436,13 +435,13 @@ export const PhoenixEvaluationHelpers = {
     // Check if product has autocalled
     const hasAutocalled = observationSchedule?.isEarlyAutocall || false;
 
-    if (hasMatured || hasAutocalled) {
-      return null; // Don't calculate for matured or autocalled products
+    if (!underlyings || underlyings.length === 0) {
+      return null;
     }
 
-    if (!underlyings || underlyings.length === 0) {
-      return null; // Can't calculate without underlyings
-    }
+    // For live products: hypothetical indicative value
+    // For matured/autocalled products: actual final redemption result
+    const isLive = !hasMatured && !hasAutocalled;
 
     // Calculate worst-of basket performance (minimum performance among all underlyings)
     const basketPerformance = Math.min(...underlyings.map(u => u.performance || 0));
@@ -458,7 +457,11 @@ export const PhoenixEvaluationHelpers = {
     let capitalReturn;
     let capitalExplanation;
 
-    if (basketPerformance >= (protectionBarrier - 100)) {
+    if (hasAutocalled) {
+      // Autocalled: full capital return
+      capitalReturn = 100;
+      capitalExplanation = `Product autocalled = 100% capital`;
+    } else if (basketPerformance >= (protectionBarrier - 100)) {
       // Above protection barrier: full capital return (100%)
       capitalReturn = 100;
       capitalExplanation = `Basket at ${currentLevel.toFixed(2)}% (above ${protectionBarrier}% barrier) = 100% capital`;
@@ -470,7 +473,6 @@ export const PhoenixEvaluationHelpers = {
       const gearedLoss = breachAmount * (100 / protectionBarrier);
       // Step 3: Calculate capital return
       capitalReturn = 100 - gearedLoss;
-      // Example: barrier 70%, current 63.28% → breach 6.72% → loss 6.72×(100/70) = 9.6% → capital 90.4%
       capitalExplanation = `Basket at ${currentLevel.toFixed(2)}% (below ${protectionBarrier}% barrier): breach ${breachAmount.toFixed(2)}% × (100/${protectionBarrier}) = loss ${gearedLoss.toFixed(2)}% → capital ${capitalReturn.toFixed(2)}%`;
     }
 
@@ -483,12 +485,18 @@ export const PhoenixEvaluationHelpers = {
     const isAboveBarrier = basketPerformance >= (protectionBarrier - 100);
     const memoryCouponsIncluded = isAboveBarrier ? totalMemoryCoupons : 0;
 
-    // Calculate total indicative value
-    const totalIndicativeValue = capitalReturn + totalCouponsEarned + memoryCouponsIncluded;
+    // Calculate total value
+    const totalValue = capitalReturn + totalCouponsEarned + memoryCouponsIncluded;
+
+    // P&L: net return vs 100% initial investment
+    const pnl = totalValue - 100;
 
     // Return pre-formatted object for display
     return {
-      isLive: true,
+      isLive: isLive,
+      isMatured: hasMatured,
+      isAutocalled: hasAutocalled,
+
       basketPerformance: basketPerformance,
       basketPerformanceFormatted: (basketPerformance >= 0 ? '+' : '') + basketPerformance.toFixed(2) + '%',
 
@@ -509,8 +517,12 @@ export const PhoenixEvaluationHelpers = {
       memoryCouponsForfeitAmount: !isAboveBarrier ? totalMemoryCoupons : 0,
       memoryCouponsForfeitFormatted: !isAboveBarrier ? this.formatCouponPercentage(totalMemoryCoupons, phoenixParams.couponRate) : '0%',
 
-      totalValue: totalIndicativeValue,
-      totalValueFormatted: totalIndicativeValue.toFixed(2) + '%',
+      totalValue: totalValue,
+      totalValueFormatted: totalValue.toFixed(2) + '%',
+
+      pnl: pnl,
+      pnlFormatted: (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%',
+      pnlIsPositive: pnl >= 0,
 
       evaluationDate: now,
       evaluationDateFormatted: now.toLocaleDateString('en-GB', {

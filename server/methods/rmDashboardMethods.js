@@ -909,9 +909,23 @@ Meteor.methods({
 
       // Filter out days with incomplete portfolio coverage
       // (e.g., not all banks synced yet — causes artificial AUM dips)
+      // Use both max-in-window and today's live count as reference to catch partial syncs
       const allEntries = Array.from(dateMap.values());
-      const maxPortfolioCount = Math.max(...allEntries.map(e => e.portfolioCount));
-      const minThreshold = Math.floor(maxPortfolioCount * 0.8);
+      const maxInWindow = Math.max(...allEntries.map(e => e.portfolioCount));
+
+      // Count current live portfolios for a more accurate reference
+      let livePortfolioCount = 0;
+      try {
+        const liveQuery = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE
+          ? { isActive: true, isLatest: true, portfolioCode: { $ne: 'CONSOLIDATED' } }
+          : { userId: { $in: (await getAssignedClients(currentUser)).map(c => c._id) }, isActive: true, isLatest: true, portfolioCode: { $ne: 'CONSOLIDATED' } };
+        const liveHoldings = await PMSHoldingsCollection.find(liveQuery, { fields: { portfolioCode: 1, bankId: 1 } }).fetchAsync();
+        const liveKeys = new Set(liveHoldings.map(h => `${h.portfolioCode}|${h.bankId}`));
+        livePortfolioCount = liveKeys.size;
+      } catch (e) { /* fallback to max in window */ }
+
+      const referenceCount = Math.max(maxInWindow, livePortfolioCount);
+      const minThreshold = Math.floor(referenceCount * 0.8);
 
       const aggregatedSnapshots = allEntries
         .filter(e => e.portfolioCount >= minThreshold)

@@ -820,11 +820,22 @@ const PhoenixReport = ({ results, productId }) => {
         </div>
       )}
 
-      {/* Indicative Maturity Value - Shows hypothetical redemption if product matured today */}
-      {results.indicativeMaturityValue && results.indicativeMaturityValue.isLive && (
+      {/* Indicative Maturity Value (live) / Final Redemption Result (matured/autocalled) */}
+      {results.indicativeMaturityValue && (results.indicativeMaturityValue.isLive || results.indicativeMaturityValue.isMatured || results.indicativeMaturityValue.isAutocalled) && (() => {
+        const iv = results.indicativeMaturityValue;
+        const isFinal = iv.isMatured || iv.isAutocalled;
+        const accentColor = isFinal ? (iv.pnlIsPositive ? '#10b981' : '#ef4444') : '#6366f1';
+        const accentBg = isFinal
+          ? (iv.pnlIsPositive ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)')
+          : 'rgba(99, 102, 241, 0.1)';
+        const accentBorder = isFinal
+          ? (iv.pnlIsPositive ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)')
+          : 'rgba(99, 102, 241, 0.3)';
+
+        return (
         <div className="pdf-card pdf-page-break-before" style={{
-          background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(79, 70, 229, 0.05) 100%)',
-          border: '2px solid rgba(99, 102, 241, 0.3)',
+          background: `linear-gradient(135deg, ${accentBg} 0%, transparent 100%)`,
+          border: `2px solid ${accentBorder}`,
           borderRadius: '12px',
           padding: '1.5rem',
           marginBottom: '1.5rem',
@@ -838,7 +849,7 @@ const PhoenixReport = ({ results, productId }) => {
             right: 0,
             width: '200px',
             height: '200px',
-            background: 'radial-gradient(circle, rgba(99, 102, 241, 0.15) 0%, transparent 70%)',
+            background: `radial-gradient(circle, ${accentBg} 0%, transparent 70%)`,
             pointerEvents: 'none'
           }} />
 
@@ -854,16 +865,18 @@ const PhoenixReport = ({ results, productId }) => {
               alignItems: 'center',
               gap: '0.5rem'
             }}>
-              💡 {tr.indicativeValueIfMaturedToday}
+              {isFinal ? '🏁' : '💡'} {isFinal ? tr.finalRedemptionResult : tr.indicativeValueIfMaturedToday}
             <span style={{
               fontSize: '0.75rem',
-              background: 'rgba(99, 102, 241, 0.2)',
-              color: '#6366f1',
+              background: isFinal
+                ? (iv.pnlIsPositive ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)')
+                : 'rgba(99, 102, 241, 0.2)',
+              color: accentColor,
               padding: '4px 8px',
               borderRadius: '4px',
               fontWeight: '600'
             }}>
-              {tr.hypothetical}
+              {isFinal ? tr.finalResult : tr.hypothetical}
             </span>
           </h4>
 
@@ -877,10 +890,10 @@ const PhoenixReport = ({ results, productId }) => {
             fontStyle: 'italic',
             border: '1px solid var(--border-color)'
           }}>
-            {tr.indicativeCalculationDisclaimer}
+            {isFinal ? tr.finalRedemptionDisclaimer : tr.indicativeCalculationDisclaimer}
           </div>
 
-          {/* Total Indicative Value - Large Display */}
+          {/* Total Value - Large Display */}
           <div style={{
             background: 'var(--bg-secondary)',
             padding: '2rem',
@@ -897,23 +910,34 @@ const PhoenixReport = ({ results, productId }) => {
               letterSpacing: '1px',
               marginBottom: '0.75rem'
             }}>
-              {tr.currentTheoreticalTotalReturn}
+              {isFinal ? tr.totalRedemptionValue : tr.currentTheoreticalTotalReturn}
             </div>
             <div style={{
               fontSize: '3rem',
               fontWeight: '800',
-              color: '#6366f1',
+              color: accentColor,
               fontFamily: 'monospace',
               lineHeight: '1'
             }}>
-              {results.indicativeMaturityValue.totalValueFormatted}
+              {iv.totalValueFormatted}
             </div>
+            {isFinal && (
+              <div style={{
+                fontSize: '1.5rem',
+                fontWeight: '700',
+                color: iv.pnlIsPositive ? '#10b981' : '#ef4444',
+                fontFamily: 'monospace',
+                marginTop: '0.5rem'
+              }}>
+                {tr.netPnl}: {iv.pnlFormatted}
+              </div>
+            )}
             <div style={{
               fontSize: '0.75rem',
               color: 'var(--text-muted)',
               marginTop: '0.5rem'
             }}>
-              {tr.asOf} {results.indicativeMaturityValue.evaluationDateFormatted}
+              {tr.asOf} {iv.evaluationDateFormatted}
             </div>
           </div>
 
@@ -943,18 +967,18 @@ const PhoenixReport = ({ results, productId }) => {
               <div style={{
                 fontSize: '1.8rem',
                 fontWeight: '700',
-                color: 'var(--text-primary)',
+                color: iv.capitalReturn < 100 ? '#ef4444' : 'var(--text-primary)',
                 marginBottom: '0.5rem',
                 fontFamily: 'monospace'
               }}>
-                {results.indicativeMaturityValue.capitalReturnFormatted}
+                {iv.capitalReturnFormatted}
               </div>
               <div style={{
                 fontSize: '0.7rem',
                 color: 'var(--text-muted)',
                 lineHeight: '1.4'
               }}>
-                {results.indicativeMaturityValue.capitalExplanation}
+                {iv.capitalExplanation}
               </div>
             </div>
 
@@ -978,22 +1002,22 @@ const PhoenixReport = ({ results, productId }) => {
               <div style={{
                 fontSize: '1.8rem',
                 fontWeight: '700',
-                color: results.indicativeMaturityValue.couponsEarned > 0 ? '#10b981' : 'var(--text-muted)',
+                color: iv.couponsEarned > 0 ? '#10b981' : 'var(--text-muted)',
                 marginBottom: '0.5rem',
                 fontFamily: 'monospace'
               }}>
-                {results.indicativeMaturityValue.couponsEarnedFormatted}
+                {iv.couponsEarnedFormatted}
               </div>
               <div style={{
                 fontSize: '0.7rem',
                 color: 'var(--text-muted)'
               }}>
-                {tr.totalCouponsPaidToDate}
+                {isFinal ? tr.totalCouponsPaid : tr.totalCouponsPaidToDate}
               </div>
             </div>
 
             {/* Memory Coupons */}
-            {results.indicativeMaturityValue.hasMemoryCoupons && (
+            {iv.hasMemoryCoupons && (
               <div style={{
                 background: 'var(--bg-secondary)',
                 padding: '1.25rem',
@@ -1013,20 +1037,20 @@ const PhoenixReport = ({ results, productId }) => {
                 <div style={{
                   fontSize: '1.8rem',
                   fontWeight: '700',
-                  color: results.indicativeMaturityValue.memoryCouponsForfeit ? '#ef4444' : '#f59e0b',
+                  color: iv.memoryCouponsForfeit ? '#ef4444' : '#f59e0b',
                   marginBottom: '0.5rem',
                   fontFamily: 'monospace',
-                  textDecoration: results.indicativeMaturityValue.memoryCouponsForfeit ? 'line-through' : 'none'
+                  textDecoration: iv.memoryCouponsForfeit ? 'line-through' : 'none'
                 }}>
-                  {results.indicativeMaturityValue.memoryCouponsForfeit
-                    ? results.indicativeMaturityValue.memoryCouponsForfeitFormatted
-                    : results.indicativeMaturityValue.memoryCouponsFormatted}
+                  {iv.memoryCouponsForfeit
+                    ? iv.memoryCouponsForfeitFormatted
+                    : iv.memoryCouponsFormatted}
                 </div>
                 <div style={{
                   fontSize: '0.7rem',
                   color: 'var(--text-muted)'
                 }}>
-                  {results.indicativeMaturityValue.memoryCouponsForfeit
+                  {iv.memoryCouponsForfeit
                     ? `⚠️ ${tr.forfeitedBelowBarrier}`
                     : tr.accumulatedInMemory}
                 </div>
@@ -1049,13 +1073,14 @@ const PhoenixReport = ({ results, productId }) => {
           }}>
             <span style={{ fontSize: '1rem' }}>🛡️</span>
             <div>
-              <strong>{tr.protectionBarrier}:</strong> {results.indicativeMaturityValue.protectionBarrierFormatted} |
-              <strong style={{ marginLeft: '0.5rem' }}>{tr.currentBasket}:</strong> {results.indicativeMaturityValue.basketPerformanceFormatted}
+              <strong>{tr.protectionBarrier}:</strong> {iv.protectionBarrierFormatted} |
+              <strong style={{ marginLeft: '0.5rem' }}>{tr.currentBasket}:</strong> {iv.basketPerformanceFormatted}
             </div>
           </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Observation Schedule */}
       {results.observationAnalysis && results.observationAnalysis.observations && results.observationAnalysis.observations.length > 0 && (
