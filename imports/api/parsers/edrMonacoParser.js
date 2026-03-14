@@ -331,8 +331,8 @@ export const EDRMonacoParser = {
       console.log(`[EDR_PARSER] Calculated unrealizedPnL for ${row.isin}: ${marketValueEur.toFixed(2)} - ${costBasisEur.toFixed(2)} = ${unrealizedPnL.toFixed(2)} EUR`);
     }
 
-    // Get currency
-    const positionCurrency = row.devise || 'EUR';
+    // Get currency - clean quotes/whitespace for consistent uniqueKey generation
+    const positionCurrency = row.devise ? String(row.devise).replace(/"/g, '').trim() || 'EUR' : 'EUR';
     const securityCurrency = this.mapCurrency(row.devise_val);
 
     // Parse dates
@@ -488,9 +488,22 @@ export const EDRMonacoParser = {
       })
       .map(row => this.mapToStandardSchema(row, bankId, bankName, sourceFile, fileDate, userId));
 
-    console.log(`[EDR_PARSER] Mapped ${positions.length} positions`);
+    // Deduplicate by uniqueKey - EDR CSV files can contain multiple rows for the same
+    // term deposit (e.g., principal + accrued interest rows with same id_cat).
+    // Keep the first occurrence (which typically has the correct market value).
+    const seen = new Set();
+    const deduplicated = positions.filter(pos => {
+      if (seen.has(pos.uniqueKey)) {
+        console.log(`[EDR_PARSER] Skipping duplicate position: ${pos.securityName} (uniqueKey already seen)`);
+        return false;
+      }
+      seen.add(pos.uniqueKey);
+      return true;
+    });
 
-    return positions;
+    console.log(`[EDR_PARSER] Mapped ${positions.length} positions, ${deduplicated.length} after dedup`);
+
+    return deduplicated;
   },
 
   /**

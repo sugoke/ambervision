@@ -75,6 +75,7 @@ import './migrations/migratePMSHoldingsVersioning';
 import './migrations/cleanupDuplicateVersions';
 import './migrations/cleanupDuplicateHoldings';
 import './migrations/cleanDuplicateCMBHoldings';
+import './migrations/cleanDuplicateEDRHoldings';
 import './migrations/activateCFMConnection';
 import './migrations/activateSGConnection';
 import './migrations/initializeSeenLocalFiles';
