@@ -206,7 +206,10 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
               </thead>
               <tbody>
                 {orders.map(order => (
-                  <tr key={order._id} style={styles.row}>
+                  <tr key={order._id} style={{ ...styles.row, cursor: 'pointer' }}
+                    onMouseEnter={(e) => Array.from(e.currentTarget.children).forEach(td => td.style.background = 'var(--bg-secondary)')}
+                    onMouseLeave={(e) => Array.from(e.currentTarget.children).forEach(td => td.style.background = 'var(--bg-primary)')}
+                  >
                     <td style={styles.td}>
                       <span style={{ fontFamily: 'monospace', fontWeight: '600', fontSize: '12px' }}>
                         {order.orderReference}
@@ -971,7 +974,8 @@ const styles = {
     textTransform: 'uppercase',
     letterSpacing: '0.3px',
     borderBottom: '1px solid var(--border-color)',
-    whiteSpace: 'nowrap'
+    whiteSpace: 'nowrap',
+    background: 'var(--bg-secondary)'
   },
   row: {
     borderBottom: '1px solid var(--border-color)',
@@ -981,7 +985,8 @@ const styles = {
     padding: '8px 12px',
     fontSize: '12px',
     color: 'var(--text-primary)',
-    whiteSpace: 'nowrap'
+    whiteSpace: 'nowrap',
+    background: 'var(--bg-primary)'
   },
   reviewBtn: {
     padding: '4px 12px',

@@ -104,7 +104,7 @@ Meteor.publish("userBankAccounts", async function (sessionId, viewAsFilter = nul
   self.ready();
 
   // Set up reactive observer for changes
-  const handle = BankAccountsCollection.find(query).observeChanges({
+  const handle = await BankAccountsCollection.find(query).observeChanges({
     added(id, fields) {
       // Skip if already added during initial fetch
       if (!accounts.find(a => a._id === id)) {

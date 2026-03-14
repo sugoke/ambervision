@@ -771,7 +771,10 @@ const OrderBook = ({ user }) => {
       fontWeight: '600',
       color: 'var(--text-secondary)',
       textTransform: 'uppercase',
-      letterSpacing: '0.5px'
+      letterSpacing: '0.5px',
+      position: 'sticky',
+      top: 0,
+      zIndex: 1
     },
     td: {
       padding: '12px 16px',
@@ -1062,14 +1065,13 @@ const OrderBook = ({ user }) => {
             </div>
           ) : (
             <>
-              <div style={{ overflowX: 'auto' }}>
+              <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 280px)' }}>
                 <table style={styles.table}>
                   <thead>
                     <tr>
                       <SortableHeader field="orderReference" label="Reference" />
                       <SortableHeader field="createdAt" label="Date" />
                       <SortableHeader field="status" label="Status" />
-                      <th style={styles.th}>Booked</th>
                       <SortableHeader field="bulkOrderGroupId" label="Ind/Bloc" />
                       <SortableHeader field="wealthAdvisor" label="WA" />
                       <SortableHeader field="clientName" label="Client" />
@@ -1084,18 +1086,18 @@ const OrderBook = ({ user }) => {
                       <SortableHeader field="settlementCurrency" label="Settl. Ccy" />
                       <th style={styles.th} title="Termsheet">TS</th>
                       <th style={styles.th}>Traces</th>
-                      <th style={styles.th} title="Health Check">Health</th>
-                      <th style={styles.th}>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {orders.map(order => (
+                    {orders.map((order, idx) => {
+                      const rowBg = idx % 2 === 0 ? 'var(--bg-primary)' : 'var(--bg-secondary)';
+                      return (
                       <tr
                         key={order._id}
-                        style={{ cursor: 'pointer' }}
+                        style={{ cursor: 'pointer', background: rowBg }}
                         onClick={() => handleViewDetails(order)}
-                        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary)'}
-                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-tertiary, var(--bg-secondary))'}
+                        onMouseLeave={(e) => e.currentTarget.style.background = rowBg}
                       >
                         <td style={styles.td}>
                           <span style={{ fontFamily: 'monospace', fontWeight: '500' }}>
@@ -1121,39 +1123,6 @@ const OrderBook = ({ user }) => {
                           </span>
                         </td>
                         <td style={styles.td}>
-                          {(() => {
-                            const booking = bookingResults[order._id];
-                            if (!booking || booking.bookingStatus === 'none') {
-                              return <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>-</span>;
-                            }
-                            const color = OrderFormatters.getBookingStatusColor(booking.bookingStatus);
-                            const label = OrderFormatters.getBookingStatusLabel(booking.bookingStatus);
-                            const tooltipParts = [];
-                            if (booking.matchedOperation) {
-                              const op = booking.matchedOperation;
-                              if (op.operationDate) tooltipParts.push(`Date: ${new Date(op.operationDate).toLocaleDateString('en-GB')}`);
-                              if (op.quantity) tooltipParts.push(`Qty: ${Math.abs(op.quantity).toLocaleString('en-US')}`);
-                              if (op.price) tooltipParts.push(`Price: ${op.price}`);
-                              if (op.operationCode) tooltipParts.push(`Ref: ${op.operationCode}`);
-                            }
-                            return (
-                              <span
-                                style={{
-                                  fontSize: '11px',
-                                  fontWeight: '600',
-                                  color,
-                                  padding: '2px 8px',
-                                  borderRadius: '10px',
-                                  background: `${color}15`
-                                }}
-                                title={tooltipParts.join('\n')}
-                              >
-                                {label}
-                              </span>
-                            );
-                          })()}
-                        </td>
-                        <td style={styles.td}>
                           <span style={{
                             fontSize: '11px',
                             fontWeight: '500',
@@ -1175,7 +1144,7 @@ const OrderBook = ({ user }) => {
                           </span>
                         </td>
                         <td style={styles.td}>
-                          <div style={{ fontWeight: '500' }}>{order.securityName}</div>
+                          <div title={order.securityName} style={{ fontWeight: '500', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>{order.securityName}</div>
                           <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
                             {order.assetType === ASSET_TYPES.FX ? (order.fxPairFormatted || 'FX') :
                              order.assetType === ASSET_TYPES.TERM_DEPOSIT ? (order.depositTenorLabel || 'TD') :
@@ -1249,107 +1218,8 @@ const OrderBook = ({ user }) => {
                             );
                           })()}
                         </td>
-                        <td style={styles.td}>
-                          {(() => {
-                            const health = getOrderHealthCheck(order);
-                            if (health.max === 0) return <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>-</span>;
-                            return (
-                              <span
-                                title={health.missing.length > 0 ? `Missing: ${health.missing.join(', ')}` : 'All complete'}
-                                style={{
-                                  fontSize: '11px',
-                                  fontWeight: '600',
-                                  color: health.color,
-                                  padding: '2px 8px',
-                                  borderRadius: '10px',
-                                  background: `${health.color}15`,
-                                  cursor: 'default'
-                                }}
-                              >
-                                {health.label}
-                              </span>
-                            );
-                          })()}
-                        </td>
-                        <td style={styles.td} onClick={(e) => e.stopPropagation()}>
-                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                            <button
-                              style={{
-                                ...styles.actionButton,
-                                opacity: loadingPDF === order._id || order.status === ORDER_STATUSES.PENDING_VALIDATION ? 0.4 : 1,
-                                cursor: loadingPDF === order._id || order.status === ORDER_STATUSES.PENDING_VALIDATION ? 'not-allowed' : 'pointer',
-                                minWidth: '42px'
-                              }}
-                              onClick={() => handleGeneratePDF(order)}
-                              title={order.status === ORDER_STATUSES.PENDING_VALIDATION ? 'PDF unavailable until validated' : 'Download PDF'}
-                              disabled={loadingPDF === order._id || order.status === ORDER_STATUSES.PENDING_VALIDATION}
-                            >
-                              {loadingPDF === order._id ? (
-                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                                  <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⏳</span>
-                                </span>
-                              ) : 'PDF'}
-                            </button>
-                            {order.status !== ORDER_STATUSES.CANCELLED && order.status !== ORDER_STATUSES.EXECUTED && (
-                              <>
-                                {order.status !== ORDER_STATUSES.PENDING_VALIDATION && (
-                                  <button
-                                    style={{
-                                      ...styles.actionButton,
-                                      opacity: loadingEmail === order._id ? 0.7 : 1,
-                                      cursor: loadingEmail === order._id ? 'wait' : 'pointer',
-                                      minWidth: '50px'
-                                    }}
-                                    onClick={() => handleSendEmail(order)}
-                                    title="Send to bank"
-                                    disabled={loadingEmail === order._id}
-                                  >
-                                    {loadingEmail === order._id ? (
-                                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                                        <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⏳</span>
-                                      </span>
-                                    ) : 'Email'}
-                                  </button>
-                                )}
-                                {/* Edit button - for pending and pending_validation orders */}
-                                {(order.status === ORDER_STATUSES.PENDING || order.status === ORDER_STATUSES.PENDING_VALIDATION) && (
-                                  <button
-                                    style={{ ...styles.actionButton, color: '#0ea5e9' }}
-                                    onClick={() => openEditModal(order)}
-                                    title="Edit order"
-                                  >
-                                    Edit
-                                  </button>
-                                )}
-                                {/* Modify Limit button - for pending and sent orders */}
-                                {(order.status === ORDER_STATUSES.PENDING || order.status === ORDER_STATUSES.SENT) && (
-                                  <button
-                                    style={{ ...styles.actionButton, color: '#f59e0b' }}
-                                    onClick={() => openLimitModal(order)}
-                                    title="Request order modification"
-                                  >
-                                    Modify
-                                  </button>
-                                )}
-                                {/* Delete button - for pending and pending_validation orders */}
-                                {(order.status === ORDER_STATUSES.PENDING || order.status === ORDER_STATUSES.PENDING_VALIDATION) && (
-                                  <button
-                                    style={{ ...styles.actionButton, color: '#ef4444' }}
-                                    onClick={() => {
-                                      setSelectedOrder({ order });
-                                      setDeleteModalOpen(true);
-                                    }}
-                                    title="Delete order"
-                                  >
-                                    Delete
-                                  </button>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        </td>
                       </tr>
-                    ))}
+                    ); })}
                   </tbody>
                 </table>
               </div>
@@ -1394,21 +1264,44 @@ const OrderBook = ({ user }) => {
         size="medium"
         footer={selectedOrder && (
           <>
+            <ActionButton
+              variant="secondary"
+              size="small"
+              disabled={loadingPDF === selectedOrder.order._id || selectedOrder.order.status === ORDER_STATUSES.PENDING_VALIDATION}
+              onClick={() => handleGeneratePDF(selectedOrder.order)}
+            >
+              {loadingPDF === selectedOrder.order._id ? '...' : 'PDF'}
+            </ActionButton>
             {selectedOrder.order.status !== ORDER_STATUSES.CANCELLED &&
              selectedOrder.order.status !== ORDER_STATUSES.EXECUTED && (
               <>
-                <ActionButton
-                  variant="danger"
-                  onClick={() => {
-                    setDetailModalOpen(false);
-                    setCancelModalOpen(true);
-                  }}
-                >
-                  Cancel Order
-                </ActionButton>
+                {selectedOrder.order.status !== ORDER_STATUSES.PENDING_VALIDATION && (
+                  <ActionButton
+                    variant="secondary"
+                    size="small"
+                    disabled={loadingEmail === selectedOrder.order._id}
+                    onClick={() => handleSendEmail(selectedOrder.order)}
+                  >
+                    {loadingEmail === selectedOrder.order._id ? '...' : 'Email'}
+                  </ActionButton>
+                )}
+                {(selectedOrder.order.status === ORDER_STATUSES.PENDING || selectedOrder.order.status === ORDER_STATUSES.SENT) && (
+                  <ActionButton
+                    variant="secondary"
+                    size="small"
+                    onClick={() => {
+                      setDetailModalOpen(false);
+                      openLimitModal(selectedOrder.order);
+                    }}
+                    style={{ color: '#f59e0b' }}
+                  >
+                    Modify
+                  </ActionButton>
+                )}
                 {selectedOrder.order.status !== ORDER_STATUSES.PENDING_VALIDATION && (
                   <ActionButton
                     variant="success"
+                    size="small"
                     onClick={() => {
                       setDetailModalOpen(false);
                       setExecutedQuantity(selectedOrder.order.quantity?.toString() || '');
@@ -1418,9 +1311,31 @@ const OrderBook = ({ user }) => {
                     Mark Executed
                   </ActionButton>
                 )}
+                <ActionButton
+                  variant="danger"
+                  size="small"
+                  onClick={() => {
+                    setDetailModalOpen(false);
+                    setCancelModalOpen(true);
+                  }}
+                >
+                  Cancel
+                </ActionButton>
+                {(selectedOrder.order.status === ORDER_STATUSES.PENDING || selectedOrder.order.status === ORDER_STATUSES.PENDING_VALIDATION) && (
+                  <ActionButton
+                    variant="danger"
+                    size="small"
+                    onClick={() => {
+                      setDetailModalOpen(false);
+                      setDeleteModalOpen(true);
+                    }}
+                  >
+                    Delete
+                  </ActionButton>
+                )}
               </>
             )}
-            <ActionButton variant="secondary" onClick={() => setDetailModalOpen(false)}>
+            <ActionButton variant="secondary" size="small" onClick={() => setDetailModalOpen(false)}>
               Close
             </ActionButton>
           </>
