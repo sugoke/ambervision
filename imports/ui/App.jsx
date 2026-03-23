@@ -654,7 +654,7 @@ const AppContent = () => {
                     </button>
 
                     {/* View As Button - For admins and RMs only */}
-                    {user && (user.role === 'admin' || user.role === 'superadmin' || user.role === 'rm') && (
+                    {user && (user.role === 'admin' || user.role === 'superadmin' || user.role === 'rm' || user.role === 'assistant') && (
                       <button
                         onClick={() => setMobileViewAsOpen(true)}
                         style={{

@@ -46,6 +46,61 @@ export const AccountProfilesCollection = new Mongo.Collection('accountProfiles')
  *    - Other
  */
 
+/**
+ * Map order asset type to the 4 profile categories (cash, bonds, equities, alternative)
+ * @param {String} assetType - ASSET_TYPES value from orders.js
+ * @param {Object} options - { capitalProtected: Boolean }
+ * @returns {String} - 'cash' | 'bonds' | 'equities' | 'alternative'
+ */
+export const mapOrderAssetTypeToProfileCategory = (assetType, options = {}) => {
+  switch (assetType) {
+    case 'equity':
+    case 'etf':
+      return 'equities';
+    case 'bond':
+      return 'bonds';
+    case 'structured_product':
+      return options.capitalProtected ? 'bonds' : 'equities';
+    case 'fx':
+    case 'term_deposit':
+      return 'cash';
+    case 'fund':
+      return 'equities';
+    case 'other':
+      return 'alternative';
+    default:
+      return 'alternative';
+  }
+};
+
+/**
+ * Map order asset type to the granular breakdown key used by aggregateToFourCategories
+ * @param {String} assetType - ASSET_TYPES value from orders.js
+ * @param {Boolean} capitalProtected - Whether structured product has capital protection
+ * @returns {String} - breakdown key (e.g. 'equity', 'fixed_income', 'structured_product_capital_guaranteed')
+ */
+export const getBreakdownKeyForAssetType = (assetType, capitalProtected) => {
+  switch (assetType) {
+    case 'equity':
+    case 'etf':
+      return 'equity';
+    case 'bond':
+      return 'fixed_income';
+    case 'structured_product':
+      return capitalProtected ? 'structured_product_capital_guaranteed' : 'structured_product_equity_linked';
+    case 'term_deposit':
+      return 'time_deposit';
+    case 'fx':
+      return 'cash';
+    case 'fund':
+      return 'equity';
+    case 'other':
+      return 'other';
+    default:
+      return 'other';
+  }
+};
+
 // Predefined profile templates
 export const PROFILE_TEMPLATES = {
   'flexible-security': {
@@ -67,14 +122,21 @@ export const PROFILE_TEMPLATES = {
     maxCash: 100,
     maxBonds: 75,
     maxEquities: 50,
-    maxAlternative: 2
+    maxAlternative: 25
+  },
+  'flexible-dynamic': {
+    name: 'Flexible Dynamic',
+    maxCash: 100,
+    maxBonds: 100,
+    maxEquities: 100,
+    maxAlternative: 100
   },
   'flexible': {
     name: 'Flexible',
-    maxCash: 100,
-    maxBonds: 50,
-    maxEquities: 100,
-    maxAlternative: 50
+    maxCash: 0,
+    maxBonds: 0,
+    maxEquities: 0,
+    maxAlternative: 0
   }
 };
 

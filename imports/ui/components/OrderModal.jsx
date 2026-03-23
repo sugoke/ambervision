@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Meteor } from 'meteor/meteor';
 import Modal from './common/Modal.jsx';
 import ActionButton from './common/ActionButton.jsx';
-import { ASSET_TYPES, PRICE_TYPES, TRADE_MODES, FX_SUBTYPES, TERM_DEPOSIT_TENORS, EMAIL_TRACE_TYPES, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, OrderFormatters } from '/imports/api/orders';
+import { ASSET_TYPES, PRICE_TYPES, TRADE_MODES, FX_SUBTYPES, VALIDITY_TYPES, TERM_DEPOSIT_TENORS, EMAIL_TRACE_TYPES, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, ORDER_SOURCE_TYPES, OrderFormatters } from '/imports/api/orders';
 
 const FX_CURRENCIES = [
   'USD', 'EUR', 'CHF', 'GBP', 'JPY', 'ILS',
@@ -14,9 +14,9 @@ const FX_CURRENCIES = [
  * OrderModal - Multi-step wizard for creating buy/sell orders
  *
  * Steps:
- * 1. Security - Search and select security (or pre-filled from PMS)
- * 2. Order Details - Quantity, price type, limit price
- * 3. Account Selection - Select client and bank account (or pre-filled)
+ * 1. Account Selection - Select client and bank account (or pre-filled)
+ * 2. Security - Search and select security (or pre-filled from PMS)
+ * 3. Order Details - Quantity, price type, limit price
  * 4. Review - Review and confirm order
  *
  * @param {Object} props
@@ -32,16 +32,46 @@ const FX_CURRENCIES = [
 const OrderModal = ({
   isOpen,
   onClose,
-  mode = 'buy',
+  mode: initialMode = 'buy',
   prefillData = null,
   clients = [],
   onOrderCreated,
   user,
   bulkMode = false
 }) => {
+  // Inject spinner keyframes once
+  useEffect(() => {
+    if (!document.getElementById('orderModalSpinStyle')) {
+      const style = document.createElement('style');
+      style.id = 'orderModalSpinStyle';
+      style.textContent = '@keyframes orderModalSpin { to { transform: rotate(360deg); } }';
+      document.head.appendChild(style);
+    }
+  }, []);
+
   const [currentStep, setCurrentStep] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false);
+
+  // Buy/Sell mode (now selected in step 2)
+  const [mode, setMode] = useState(initialMode);
+
+  // Holdings for sell mode
+  const [accountHoldings, setAccountHoldings] = useState([]);
+  const [isLoadingHoldings, setIsLoadingHoldings] = useState(false);
+  const [holdingSearchQuery, setHoldingSearchQuery] = useState('');
+  const [selectedHolding, setSelectedHolding] = useState(null);
+  const [sellManualSearch, setSellManualSearch] = useState(false);
+
+  // Cash balance for buy mode
+  const [cashBalance, setCashBalance] = useState(null);
+  const [isLoadingCash, setIsLoadingCash] = useState(false);
+
+  // Indicative price (fetched from holding or EOD)
+  const [indicativePrice, setIndicativePrice] = useState(null);
+  const [indicativePriceCurrency, setIndicativePriceCurrency] = useState(null);
+  const [isLoadingPrice, setIsLoadingPrice] = useState(false);
 
   // Step 1: Security
   const [searchQuery, setSearchQuery] = useState('');
@@ -63,6 +93,26 @@ const OrderModal = ({
   const [broker, setBroker] = useState('');
   const [settlementCurrency, setSettlementCurrency] = useState('');
   const [underlyings, setUnderlyings] = useState('');
+
+  // Stop price for stop loss / stop limit orders
+  const [stopPrice, setStopPrice] = useState('');
+
+  // Validity for non-market orders
+  const [validityType, setValidityType] = useState(VALIDITY_TYPES.DAY);
+  const [validityDate, setValidityDate] = useState('');
+
+  // Attached Take Profit / Stop Loss legs (creates linked orders)
+  const [showAttachedOrders, setShowAttachedOrders] = useState(false);
+  const [attachedTakeProfit, setAttachedTakeProfit] = useState('');
+  const [attachedStopLoss, setAttachedStopLoss] = useState('');
+
+  // Capital protected toggle (for structured products allocation classification)
+  const [capitalProtected, setCapitalProtected] = useState(false);
+
+  // Allocation compliance check
+  const [allocationCheck, setAllocationCheck] = useState(null);
+  const [isCheckingAllocation, setIsCheckingAllocation] = useState(false);
+  const [allocationJustification, setAllocationJustification] = useState('');
 
   // FX-specific
   const [fxSubtype, setFxSubtype] = useState(FX_SUBTYPES.SPOT);
@@ -102,13 +152,48 @@ const OrderModal = ({
   const [isLoadingClients, setIsLoadingClients] = useState(false);
 
   // Bulk mode state
-  const [bulkOrders, setBulkOrders] = useState([{ clientId: '', bankAccountId: '', quantity: '', estimatedValue: '' }]);
+  const [isBulkMode, setIsBulkMode] = useState(bulkMode);
+  const [bulkOrders, setBulkOrders] = useState([{ clientId: '', bankAccountId: '', quantity: '' }]);
+  const [bulkAccountsMap, setBulkAccountsMap] = useState({});
+  const [bulkAccountsLoading, setBulkAccountsLoading] = useState({});
 
-  // Client order email attachment
+  // Client order email attachments (single file for single mode, array for bulk)
   const [clientOrderFile, setClientOrderFile] = useState(null);
+  const [clientOrderFiles, setClientOrderFiles] = useState([]);
+
+  // Order source: email (default) or phone
+  const [orderSource, setOrderSource] = useState(ORDER_SOURCE_TYPES.EMAIL);
+  const [phoneCallTime, setPhoneCallTime] = useState(() => {
+    // Default to current datetime in local format for datetime-local input
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  });
 
   const searchTimeoutRef = useRef(null);
   const getSessionId = () => localStorage.getItem('sessionId');
+
+  // Check if the form has any user input
+  const isFormDirty = () => {
+    if (currentStep > 1) return true;
+    if (selectedSecurity) return true;
+    if (searchQuery || manualName || manualIsin) return true;
+    if (quantity || limitPrice || notes || broker) return true;
+    if (selectedClientId || selectedBankAccountId) return true;
+    if (fxBuyCurrency || fxSellCurrency || fxRate) return true;
+    if (clientOrderFile) return true;
+    return false;
+  };
+
+  // Always show confirmation when trying to close the order modal
+  const handleClose = () => {
+    setShowCloseConfirm(true);
+  };
+
+  const confirmClose = () => {
+    setShowCloseConfirm(false);
+    onClose();
+  };
 
   // Fetch clients when modal opens
   useEffect(() => {
@@ -265,16 +350,21 @@ const OrderModal = ({
     if (priceType === PRICE_TYPES.LIMIT) {
       const price = parseFloat(limitPrice);
       if (price && price > 0) {
-        const isPercentage = prefillData?.priceType === 'percentage';
+        const isPercentage = assetType === ASSET_TYPES.STRUCTURED_PRODUCT || assetType === ASSET_TYPES.BOND;
         const value = isPercentage ? qty * price / 100 : qty * price;
         setEstimatedValue(value.toFixed(2));
       }
+    } else if (indicativePrice && indicativePrice > 0) {
+      // Use indicative price from holding or EOD
+      const isPercentage = assetType === ASSET_TYPES.STRUCTURED_PRODUCT || assetType === ASSET_TYPES.BOND;
+      const value = isPercentage ? qty * indicativePrice : qty * indicativePrice;
+      setEstimatedValue(value.toFixed(2));
     } else if (prefillData?.marketPrice && prefillData.marketPrice > 0) {
       const isPercentage = prefillData?.priceType === 'percentage';
       const value = isPercentage ? qty * prefillData.marketPrice : qty * prefillData.marketPrice;
       setEstimatedValue(value.toFixed(2));
     }
-  }, [quantity, priceType, limitPrice, prefillData, estimatedValueManuallyEdited]);
+  }, [quantity, priceType, limitPrice, prefillData, estimatedValueManuallyEdited, indicativePrice, assetType]);
 
   // Reset form when modal closes
   useEffect(() => {
@@ -292,6 +382,12 @@ const OrderModal = ({
       setQuantity('');
       setPriceType(PRICE_TYPES.MARKET);
       setLimitPrice('');
+      setStopPrice('');
+      setValidityType(VALIDITY_TYPES.DAY);
+      setValidityDate('');
+      setShowAttachedOrders(false);
+      setAttachedTakeProfit('');
+      setAttachedStopLoss('');
       setEstimatedValue('');
       setNotes('');
       setBroker('');
@@ -300,7 +396,10 @@ const OrderModal = ({
       setSelectedClientId('');
       setSelectedBankAccountId('');
       setClientBankAccounts([]);
-      setBulkOrders([{ clientId: '', bankAccountId: '', quantity: '', estimatedValue: '' }]);
+      setIsBulkMode(bulkMode);
+      setBulkOrders([{ clientId: '', bankAccountId: '', quantity: '' }]);
+      setBulkAccountsMap({});
+      setBulkAccountsLoading({});
       setEstimatedValueManuallyEdited(false);
       // Reset FX fields
       setFxSubtype(FX_SUBTYPES.SPOT);
@@ -326,8 +425,22 @@ const OrderModal = ({
       setDepositTenor('');
       setDepositCurrency('EUR');
       setDepositAction('increase');
-      // Reset client order attachment
+      // Reset client order attachments
       setClientOrderFile(null);
+      setClientOrderFiles([]);
+      // Reset price data
+      setIndicativePrice(null);
+      setIndicativePriceCurrency(null);
+      setIsLoadingPrice(false);
+      // Reset mode and account data
+      setMode(initialMode);
+      setAccountHoldings([]);
+      setIsLoadingHoldings(false);
+      setHoldingSearchQuery('');
+      setSelectedHolding(null);
+      setSellManualSearch(false);
+      setCashBalance(null);
+      setIsLoadingCash(false);
     }
   }, [isOpen]);
 
@@ -348,7 +461,7 @@ const OrderModal = ({
       try {
         const sessionId = getSessionId();
         // Search in securities metadata (which includes products, equities, etc.)
-        const results = await Meteor.callAsync('securities.search', { query: searchQuery, limit: 15 }, sessionId);
+        const results = await Meteor.callAsync('securities.search', { query: searchQuery, limit: 15, assetType }, sessionId);
         setSearchResults(results || []);
       } catch (err) {
         console.error('Error searching securities:', err);
@@ -363,7 +476,7 @@ const OrderModal = ({
         clearTimeout(searchTimeoutRef.current);
       }
     };
-  }, [searchQuery, selectedSecurity]);
+  }, [searchQuery, selectedSecurity, assetType]);
 
   // Load bank accounts when client is selected
   useEffect(() => {
@@ -399,6 +512,106 @@ const OrderModal = ({
     }
   };
 
+  // Load bank accounts for a bulk row
+  const loadBulkRowAccounts = async (index, clientId) => {
+    if (!clientId) {
+      setBulkAccountsMap(prev => { const n = { ...prev }; delete n[index]; return n; });
+      return;
+    }
+    setBulkAccountsLoading(prev => ({ ...prev, [index]: true }));
+    try {
+      const sessionId = getSessionId();
+      const accounts = await Meteor.callAsync('bankAccounts.getForClient', { clientId }, sessionId);
+      setBulkAccountsMap(prev => ({ ...prev, [index]: accounts || [] }));
+      // Auto-select first account
+      if (accounts && accounts.length > 0) {
+        setBulkOrders(prev => {
+          const updated = [...prev];
+          if (updated[index]) updated[index] = { ...updated[index], bankAccountId: accounts[0]._id };
+          return updated;
+        });
+      }
+    } catch (err) {
+      console.error('Error loading bulk row accounts:', err);
+      setBulkAccountsMap(prev => ({ ...prev, [index]: [] }));
+    } finally {
+      setBulkAccountsLoading(prev => ({ ...prev, [index]: false }));
+    }
+  };
+
+  // Load holdings and cash when bank account changes
+  const loadAccountData = async (clientId, bankAccountId) => {
+    if (!clientId || !bankAccountId) return;
+    const sessionId = getSessionId();
+
+    // Load holdings for sell mode
+    setIsLoadingHoldings(true);
+    try {
+      const holdings = await Meteor.callAsync('orders.getAccountHoldings', { clientId, bankAccountId }, sessionId);
+      setAccountHoldings(holdings || []);
+    } catch (err) {
+      console.error('Error loading holdings:', err);
+      setAccountHoldings([]);
+    } finally {
+      setIsLoadingHoldings(false);
+    }
+
+    // Load cash balance for buy mode
+    setIsLoadingCash(true);
+    try {
+      const cash = await Meteor.callAsync('orders.getAccountCashBalance', { clientId, bankAccountId }, sessionId);
+      setCashBalance(cash);
+    } catch (err) {
+      console.error('Error loading cash balance:', err);
+      setCashBalance(null);
+    } finally {
+      setIsLoadingCash(false);
+    }
+  };
+
+  // Reload account data when bank account selection changes
+  useEffect(() => {
+    if (selectedClientId && selectedBankAccountId) {
+      loadAccountData(selectedClientId, selectedBankAccountId);
+    } else {
+      setAccountHoldings([]);
+      setCashBalance(null);
+    }
+  }, [selectedClientId, selectedBankAccountId]);
+
+  // Fetch real-time price from EOD for a ticker
+  const fetchEodPrice = async (ticker) => {
+    if (!ticker) return;
+    setIsLoadingPrice(true);
+    try {
+      const result = await Meteor.callAsync('eod.getRealTimePrice', ticker);
+      if (result?.close) {
+        setIndicativePrice(result.close);
+        setEstimatedValueManuallyEdited(false);
+      }
+    } catch (err) {
+      console.warn('Could not fetch EOD price:', err.message);
+    } finally {
+      setIsLoadingPrice(false);
+    }
+  };
+
+  // Look up Ambervision product data by ISIN to enrich order fields
+  const enrichFromProduct = async (isin) => {
+    if (!isin) return;
+    try {
+      const sessionId = getSessionId();
+      const product = await Meteor.callAsync('orders.getProductByIsin', { isin }, sessionId);
+      if (product) {
+        if (product.issuer) setBroker(product.issuer);
+        if (product.currency) setSettlementCurrency(product.currency);
+        if (product.currency) setIndicativePriceCurrency(product.currency);
+      }
+    } catch (err) {
+      console.warn('Could not look up product:', err.message);
+    }
+  };
+
   const handleSecuritySelect = (security) => {
     setSelectedSecurity(security);
     setSearchQuery(security.name || security.ticker || security.isin);
@@ -417,12 +630,26 @@ const OrderModal = ({
       setAssetType(assetClassMap[security.assetClass] || ASSET_TYPES.OTHER);
     }
 
-    // Auto-fill Step 2 fields from product data (structured products from Ambervision)
+    // Set currency
+    setIndicativePriceCurrency(security.currency || null);
+    if (security.currency) setSettlementCurrency(security.currency);
+
+    // Auto-fill from Ambervision product data (structured products)
     if (security.source === 'product') {
       if (security.issuer) setBroker(security.issuer);
-      if (security.currency) setSettlementCurrency(security.currency);
-      if (security.underlyings) setUnderlyings(security.underlyings);
       if (security.denomination) setQuantity(String(security.denomination));
+    } else {
+      // For any non-product source, try to enrich from Ambervision by ISIN
+      if (security.isin && security.isin.length >= 10) {
+        enrichFromProduct(security.isin);
+      }
+    }
+
+    // Fetch EOD price for market instruments
+    if ((security.source === 'eod' || security.source === 'metadata') && security.ticker) {
+      fetchEodPrice(security.ticker);
+    } else if (security.source !== 'product') {
+      setIndicativePrice(null);
     }
   };
 
@@ -440,7 +667,44 @@ const OrderModal = ({
     setError(null);
 
     switch (step) {
-      case 1: // Security
+      case 1: // Account Selection (now first)
+        if (isBulkMode) {
+          const validOrders = bulkOrders.filter(o => o.clientId && o.bankAccountId);
+          if (validOrders.length === 0) {
+            setError('Please add at least one account with client and bank account selected');
+            return false;
+          }
+          // Check for incomplete rows (client selected but no account)
+          const incompleteRows = bulkOrders.filter(o => o.clientId && !o.bankAccountId);
+          if (incompleteRows.length > 0) {
+            setError('Some rows have a client selected but no bank account. Please complete or remove them.');
+            return false;
+          }
+          // Check for quantity on each row
+          const missingQty = validOrders.filter(o => !o.quantity || parseFloat(o.quantity) <= 0);
+          if (missingQty.length > 0) {
+            setError('Please enter a valid quantity for each account');
+            return false;
+          }
+          // Block duplicate client+account pairs
+          const dupes = getBulkDuplicates();
+          if (dupes.size > 0) {
+            setError('Duplicate client + account pairs detected. Please remove duplicates before continuing.');
+            return false;
+          }
+        } else {
+          if (!selectedClientId) {
+            setError('Please select a client');
+            return false;
+          }
+          if (!selectedBankAccountId) {
+            setError('Please select a bank account');
+            return false;
+          }
+        }
+        return true;
+
+      case 2: // Security
         if (assetType === ASSET_TYPES.FX) {
           if (!fxBuyCurrency || !fxSellCurrency) {
             setError('Please enter both buy and sell currencies');
@@ -469,33 +733,32 @@ const OrderModal = ({
         }
         return true;
 
-      case 2: // Order Details
-        if (!quantity || parseFloat(quantity) <= 0) {
+      case 3: // Order Details
+        if (!isBulkMode && (!quantity || parseFloat(quantity) <= 0)) {
           setError(assetType === ASSET_TYPES.FX ? 'Please enter a valid amount' : assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Please enter a valid amount' : 'Please enter a valid quantity');
           return false;
         }
-        if (assetType !== ASSET_TYPES.FX && priceType !== PRICE_TYPES.MARKET && (!limitPrice || parseFloat(limitPrice) <= 0)) {
-          setError(`Please enter a valid ${OrderFormatters.getPriceTypeLabel(priceType).toLowerCase()} price`);
+        if (assetType !== ASSET_TYPES.FX && priceType === PRICE_TYPES.LIMIT && (!limitPrice || parseFloat(limitPrice) <= 0)) {
+          setError('Please enter a valid limit price');
           return false;
         }
-        return true;
-
-      case 3: // Account Selection
-        if (bulkMode) {
-          const validOrders = bulkOrders.filter(o => o.clientId && o.bankAccountId && o.quantity);
-          if (validOrders.length === 0) {
-            setError('Please add at least one order with client, account, and quantity');
+        if (priceType === PRICE_TYPES.STOP_LOSS && (!stopPrice || parseFloat(stopPrice) <= 0)) {
+          setError('Please enter a valid stop price');
+          return false;
+        }
+        if (priceType === PRICE_TYPES.STOP_LIMIT) {
+          if (!stopPrice || parseFloat(stopPrice) <= 0) {
+            setError('Please enter a valid stop price');
             return false;
           }
-        } else {
-          if (!selectedClientId) {
-            setError('Please select a client');
+          if (!limitPrice || parseFloat(limitPrice) <= 0) {
+            setError('Please enter a valid limit price');
             return false;
           }
-          if (!selectedBankAccountId) {
-            setError('Please select a bank account');
-            return false;
-          }
+        }
+        if (validityType === VALIDITY_TYPES.GTD && priceType !== PRICE_TYPES.MARKET && !validityDate) {
+          setError('Please select a validity date');
+          return false;
         }
         return true;
 
@@ -504,8 +767,33 @@ const OrderModal = ({
     }
   };
 
-  const handleNext = () => {
+  const handleNext = async () => {
     if (validateStep(currentStep)) {
+      // Run allocation check when moving to review step (step 3→4) for buy orders
+      if (currentStep === 3 && mode === 'buy' && !isBulkMode) {
+        const ev = parseFloat(estimatedValue);
+        if (ev && selectedBankAccountId && selectedClientId) {
+          setIsCheckingAllocation(true);
+          try {
+            const result = await Meteor.callAsync('orders.checkAllocationImpact', {
+              bankAccountId: selectedBankAccountId,
+              clientId: selectedClientId,
+              assetType,
+              estimatedValue: ev,
+              orderType: mode,
+              capitalProtected: assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? capitalProtected : undefined,
+              sessionId: getSessionId()
+            });
+            setAllocationCheck(result);
+          } catch (err) {
+            console.error('Allocation check failed:', err);
+            setAllocationCheck(null);
+          }
+          setIsCheckingAllocation(false);
+        } else {
+          setAllocationCheck(null);
+        }
+      }
       setCurrentStep(prev => Math.min(prev + 1, 4));
     }
   };
@@ -516,7 +804,7 @@ const OrderModal = ({
   };
 
   const handleSubmit = async () => {
-    if (!validateStep(3)) return;
+    if (!validateStep(1) || !validateStep(2) || !validateStep(3)) return;
 
     setIsSubmitting(true);
     setError(null);
@@ -525,39 +813,52 @@ const OrderModal = ({
       const sessionId = getSessionId();
       const selectedAccount = clientBankAccounts.find(a => a._id === selectedBankAccountId);
 
-      if (bulkMode) {
-        // Create bulk orders
-        // Note: Match.Maybe accepts undefined but NOT null, so we build objects conditionally
-        const validOrders = bulkOrders.filter(o => o.clientId && o.bankAccountId && o.quantity);
+      if (isBulkMode) {
+        // Create bulk orders - shared quantity across all accounts
+        const validOrders = bulkOrders.filter(o => o.clientId && o.bankAccountId);
+
+        // Determine ISIN and security name based on asset type (same logic as single mode)
+        let bulkIsin, bulkSecurityName, bulkCurrency;
+        if (assetType === ASSET_TYPES.FX) {
+          bulkIsin = 'FX';
+          const subtypeLabel = fxSubtype === FX_SUBTYPES.FORWARD ? 'Forward' : 'Spot';
+          bulkSecurityName = `FX ${subtypeLabel} ${fxBuyCurrency}/${fxSellCurrency}`;
+          bulkCurrency = fxBuyCurrency || 'USD';
+        } else if (assetType === ASSET_TYPES.TERM_DEPOSIT) {
+          bulkIsin = 'TD';
+          const tenorLabel = TERM_DEPOSIT_TENORS.find(t => t.value === depositTenor)?.label || depositTenor;
+          bulkSecurityName = `Term Deposit ${depositCurrency} ${tenorLabel}`;
+          bulkCurrency = depositCurrency || 'EUR';
+        } else {
+          bulkIsin = selectedSecurity.isin;
+          bulkSecurityName = selectedSecurity.name || selectedSecurity.ticker;
+          bulkCurrency = selectedSecurity.currency || 'USD';
+        }
 
         const bulkOrderData = {
           orderType: mode,
-          isin: selectedSecurity.isin,
-          securityName: selectedSecurity.name || selectedSecurity.ticker,
+          isin: bulkIsin,
+          securityName: bulkSecurityName,
           assetType,
-          currency: selectedSecurity.currency || 'USD',
+          currency: bulkCurrency,
           priceType,
           orders: validOrders.map(o => {
+            const rowAccounts = bulkAccountsMap[bulkOrders.indexOf(o)] || [];
+            const account = rowAccounts.find(a => a._id === o.bankAccountId);
             const orderItem = {
               clientId: o.clientId,
               bankAccountId: o.bankAccountId,
               quantity: parseFloat(o.quantity)
             };
-            if (o.estimatedValue) {
-              orderItem.estimatedValue = parseFloat(o.estimatedValue);
-            }
-            if (mode === 'sell' && prefillData?.holdingId) {
-              orderItem.sourceHoldingId = String(prefillData.holdingId);
-            }
-            if (o.portfolioCode) {
-              orderItem.portfolioCode = o.portfolioCode;
+            if (account?.accountNumber) {
+              orderItem.portfolioCode = account.accountNumber;
             }
             return orderItem;
           })
         };
 
         // Add optional fields only if they have values
-        if (priceType === PRICE_TYPES.LIMIT && limitPrice) {
+        if ((priceType === PRICE_TYPES.LIMIT || priceType === PRICE_TYPES.STOP_LIMIT) && limitPrice) {
           bulkOrderData.limitPrice = parseFloat(limitPrice);
         }
         if (notes && notes.trim()) {
@@ -573,10 +874,46 @@ const OrderModal = ({
           bulkOrderData.underlyings = underlyings.trim();
         }
 
+        // Order source (email or phone)
+        bulkOrderData.orderSource = orderSource;
+        if (orderSource === ORDER_SOURCE_TYPES.PHONE && phoneCallTime) {
+          bulkOrderData.phoneCallTime = phoneCallTime;
+        }
+
         const result = await Meteor.callAsync('orders.createBulk', {
           bulkOrderData,
           sessionId
         });
+
+        // Upload email attachments to all created orders
+        if (clientOrderFiles.length > 0 && result?.createdOrders?.length > 0) {
+          for (const file of clientOrderFiles) {
+            try {
+              const base64 = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result.split(',')[1]);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+              });
+              // Attach to each created order in the group
+              for (const created of result.createdOrders) {
+                const orderId = created?.orderId || created?._id;
+                if (orderId) {
+                  await Meteor.callAsync('orders.uploadEmailTrace', {
+                    orderId,
+                    traceType: EMAIL_TRACE_TYPES.CLIENT_ORDER,
+                    fileName: file.name,
+                    base64Data: base64,
+                    mimeType: file.type || 'application/octet-stream',
+                    sessionId
+                  });
+                }
+              }
+            } catch (uploadErr) {
+              console.error('Error uploading bulk email attachment:', uploadErr);
+            }
+          }
+        }
 
         onOrderCreated?.(result);
       } else {
@@ -617,8 +954,11 @@ const OrderModal = ({
         };
 
         // Add optional fields only if they have values (undefined is accepted by Match.Maybe, null is not)
-        if (priceType !== PRICE_TYPES.MARKET && limitPrice) {
+        if ((priceType === PRICE_TYPES.LIMIT || priceType === PRICE_TYPES.STOP_LIMIT) && limitPrice) {
           orderData.limitPrice = parseFloat(limitPrice);
+        }
+        if ((priceType === PRICE_TYPES.STOP_LOSS || priceType === PRICE_TYPES.STOP_LIMIT) && stopPrice) {
+          orderData.stopPrice = parseFloat(stopPrice);
         }
         if (estimatedValue) {
           orderData.estimatedValue = parseFloat(estimatedValue);
@@ -626,8 +966,8 @@ const OrderModal = ({
         if (selectedAccount?.accountNumber) {
           orderData.portfolioCode = selectedAccount.accountNumber;
         }
-        if (mode === 'sell' && prefillData?.holdingId) {
-          orderData.sourceHoldingId = String(prefillData.holdingId);
+        if (mode === 'sell' && (prefillData?.holdingId || selectedHolding?._id)) {
+          orderData.sourceHoldingId = String(prefillData?.holdingId || selectedHolding._id);
         }
         if (notes && notes.trim()) {
           orderData.notes = notes.trim();
@@ -650,8 +990,9 @@ const OrderModal = ({
           orderData.fxAmountCurrency = fxAmountCurrency === 'buy' ? fxBuyCurrency : fxSellCurrency;
           if (fxRate) orderData.fxRate = parseFloat(fxRate);
           if (limitPrice) orderData.limitPrice = parseFloat(limitPrice);
-          if (stopLossPrice) orderData.stopLossPrice = parseFloat(stopLossPrice);
-          if (takeProfitPrice) orderData.takeProfitPrice = parseFloat(takeProfitPrice);
+          // FX TP/SL create linked orders
+          if (takeProfitPrice) orderData.attachedTakeProfit = parseFloat(takeProfitPrice);
+          if (stopLossPrice) orderData.attachedStopLoss = parseFloat(stopLossPrice);
           if (fxForwardDate) orderData.fxForwardDate = fxForwardDate;
           if (fxValueDate) orderData.fxValueDate = fxValueDate;
           // For FX, set priceType based on which levels are set
@@ -665,7 +1006,38 @@ const OrderModal = ({
           orderData.depositCurrency = depositCurrency;
           orderData.depositAction = depositAction;
         }
+        // Capital protected flag for structured products
+        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && capitalProtected) {
+          orderData.capitalProtected = true;
+        }
         orderData.tradeMode = TRADE_MODES.INDIVIDUAL;
+
+        // Order source (email or phone)
+        orderData.orderSource = orderSource;
+        if (orderSource === ORDER_SOURCE_TYPES.PHONE && phoneCallTime) {
+          orderData.phoneCallTime = phoneCallTime;
+        }
+
+        // Add validity for non-market orders
+        if (priceType !== PRICE_TYPES.MARKET && assetType !== ASSET_TYPES.TERM_DEPOSIT) {
+          orderData.validityType = validityType;
+          if (validityType === VALIDITY_TYPES.GTD && validityDate) {
+            orderData.validityDate = validityDate;
+          }
+        }
+
+        // Add attached TP/SL info so server creates linked orders
+        if (attachedTakeProfit) {
+          orderData.attachedTakeProfit = parseFloat(attachedTakeProfit);
+        }
+        if (attachedStopLoss) {
+          orderData.attachedStopLoss = parseFloat(attachedStopLoss);
+        }
+
+        // Add allocation justification if breaches exist
+        if (allocationCheck?.hasBreaches && allocationJustification.trim()) {
+          orderData.allocationJustification = allocationJustification.trim();
+        }
 
         const result = await Meteor.callAsync('orders.create', {
           orderData,
@@ -709,19 +1081,63 @@ const OrderModal = ({
 
   // Bulk order management
   const addBulkOrder = () => {
-    setBulkOrders([...bulkOrders, { clientId: '', bankAccountId: '', quantity: '', estimatedValue: '' }]);
+    setBulkOrders([...bulkOrders, { clientId: '', bankAccountId: '', quantity: '' }]);
   };
 
   const removeBulkOrder = (index) => {
     if (bulkOrders.length > 1) {
-      setBulkOrders(bulkOrders.filter((_, i) => i !== index));
+      const newOrders = bulkOrders.filter((_, i) => i !== index);
+      setBulkOrders(newOrders);
+      // Re-index bulkAccountsMap
+      const newMap = {};
+      let newIdx = 0;
+      for (let i = 0; i < bulkOrders.length; i++) {
+        if (i !== index) {
+          newMap[newIdx] = bulkAccountsMap[i] || [];
+          newIdx++;
+        }
+      }
+      setBulkAccountsMap(newMap);
     }
   };
 
   const updateBulkOrder = (index, field, value) => {
     const updated = [...bulkOrders];
-    updated[index][field] = value;
+    updated[index] = { ...updated[index], [field]: value };
     setBulkOrders(updated);
+    // When client changes, load accounts for that row
+    if (field === 'clientId') {
+      updated[index].bankAccountId = '';
+      setBulkOrders([...updated]);
+      loadBulkRowAccounts(index, value);
+    }
+  };
+
+  // Format account display text with type info
+  const formatAccountLabel = (account) => {
+    if (!account) return 'N/A';
+    const parts = [account.bankName, account.accountNumber];
+    if (account.accountType && account.accountType !== 'personal') parts.push(`[${account.accountType}]`);
+    if (account.accountStructure && account.accountStructure !== 'direct') parts.push(`[${account.accountStructure.replace('_', ' ')}]`);
+    if (account.comment) parts.push(`- ${account.comment}`);
+    if (account.lifeInsuranceCompany) parts.push(`via ${account.lifeInsuranceCompany}`);
+    if (account.beneficiary) parts.push(`[${account.beneficiary}]`);
+    parts.push(`(${account.referenceCurrency})`);
+    return parts.join(' ');
+  };
+
+  // Check for duplicate client+account pairs in bulk mode
+  const getBulkDuplicates = () => {
+    const seen = new Set();
+    const dupes = new Set();
+    bulkOrders.forEach((o, i) => {
+      if (o.clientId && o.bankAccountId) {
+        const key = `${o.clientId}:${o.bankAccountId}`;
+        if (seen.has(key)) dupes.add(i);
+        seen.add(key);
+      }
+    });
+    return dupes;
   };
 
   // Styles
@@ -888,7 +1304,7 @@ const OrderModal = ({
     }
   };
 
-  const steps = ['Security', 'Details', 'Account', 'Review'];
+  const steps = ['Account', 'Order Type', 'Details', 'Review'];
 
   const renderStepIndicator = () => (
     <div style={styles.stepIndicator}>
@@ -908,6 +1324,32 @@ const OrderModal = ({
 
   const renderStep1 = () => (
     <div>
+      <div style={styles.formGroup}>
+        <label style={styles.label}>Asset Type</label>
+        <select
+          style={styles.select}
+          value={assetType}
+          onChange={(e) => {
+            setAssetType(e.target.value);
+            // Clear security selection when switching to FX/TD
+            if (e.target.value === ASSET_TYPES.FX || e.target.value === ASSET_TYPES.TERM_DEPOSIT) {
+              setSelectedSecurity(null);
+              setSearchQuery('');
+              setSearchResults([]);
+            }
+          }}
+        >
+          <option value={ASSET_TYPES.EQUITY}>Equity</option>
+          <option value={ASSET_TYPES.BOND}>Bond</option>
+          <option value={ASSET_TYPES.STRUCTURED_PRODUCT}>Structured Product</option>
+          <option value={ASSET_TYPES.FUND}>Fund</option>
+          <option value={ASSET_TYPES.ETF}>ETF</option>
+          <option value={ASSET_TYPES.FX}>FX</option>
+          <option value={ASSET_TYPES.TERM_DEPOSIT}>Term Deposit</option>
+          <option value={ASSET_TYPES.OTHER}>Other</option>
+        </select>
+      </div>
+
       {assetType !== ASSET_TYPES.FX && assetType !== ASSET_TYPES.TERM_DEPOSIT && (
       <div style={styles.formGroup}>
         <label style={styles.label}>Search Security</label>
@@ -1008,8 +1450,14 @@ const OrderModal = ({
               placeholder="Search by name, ISIN, or ticker..."
             />
             {isSearching && (
-              <div style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)' }}>
-                Loading...
+              <div style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{
+                  width: '18px', height: '18px',
+                  border: '2px solid var(--border-color)',
+                  borderTopColor: 'var(--accent-color)',
+                  borderRadius: '50%',
+                  animation: 'orderModalSpin 0.6s linear infinite'
+                }} />
               </div>
             )}
             {searchResults.length > 0 && (
@@ -1022,9 +1470,21 @@ const OrderModal = ({
                     onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary)'}
                     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                   >
-                    <div style={{ fontWeight: '500' }}>{result.name || result.ticker}</div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ fontWeight: '500' }}>{result.name || result.ticker}</div>
+                      <span style={{
+                        fontSize: '10px',
+                        padding: '2px 6px',
+                        borderRadius: '3px',
+                        fontWeight: '500',
+                        background: result.source === 'product' ? 'rgba(99, 102, 241, 0.15)' : result.source === 'eod' ? 'rgba(245, 158, 11, 0.15)' : 'rgba(107, 114, 128, 0.15)',
+                        color: result.source === 'product' ? '#6366f1' : result.source === 'eod' ? '#f59e0b' : '#6b7280'
+                      }}>
+                        {result.source === 'product' ? 'Ambervision' : result.source === 'eod' ? 'EOD' : result.source === 'metadata' ? 'Local' : 'PMS'}
+                      </span>
+                    </div>
                     <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                      {result.isin} {result.exchange && `| ${result.exchange}`} {result.currency && `| ${result.currency}`}
+                      {result.isin} {result.ticker && result.ticker !== result.isin ? `| ${result.ticker}` : ''} {result.exchange && `| ${result.exchange}`} {result.currency && `| ${result.currency}`}
                     </div>
                   </div>
                 ))}
@@ -1067,32 +1527,6 @@ const OrderModal = ({
         )}
       </div>
       )}
-
-      <div style={styles.formGroup}>
-        <label style={styles.label}>Asset Type</label>
-        <select
-          style={styles.select}
-          value={assetType}
-          onChange={(e) => {
-            setAssetType(e.target.value);
-            // Clear security selection when switching to FX/TD
-            if (e.target.value === ASSET_TYPES.FX || e.target.value === ASSET_TYPES.TERM_DEPOSIT) {
-              setSelectedSecurity(null);
-              setSearchQuery('');
-              setSearchResults([]);
-            }
-          }}
-        >
-          <option value={ASSET_TYPES.EQUITY}>Equity</option>
-          <option value={ASSET_TYPES.BOND}>Bond</option>
-          <option value={ASSET_TYPES.STRUCTURED_PRODUCT}>Structured Product</option>
-          <option value={ASSET_TYPES.FUND}>Fund</option>
-          <option value={ASSET_TYPES.ETF}>ETF</option>
-          <option value={ASSET_TYPES.FX}>FX</option>
-          <option value={ASSET_TYPES.TERM_DEPOSIT}>Term Deposit</option>
-          <option value={ASSET_TYPES.OTHER}>Other</option>
-        </select>
-      </div>
 
       {/* FX-specific form */}
       {assetType === ASSET_TYPES.FX && (
@@ -1375,13 +1809,38 @@ const OrderModal = ({
         </>
       ) : (
         <>
-          {/* Non-FX: standard quantity + price type */}
+          {/* Indicative price info */}
+          {(indicativePrice || isLoadingPrice) && assetType !== ASSET_TYPES.TERM_DEPOSIT && (
+            <div style={{
+              padding: '8px 12px',
+              background: 'var(--bg-secondary)',
+              borderRadius: '6px',
+              border: '1px solid var(--border-color)',
+              marginBottom: '12px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              fontSize: '13px'
+            }}>
+              <span style={{ color: 'var(--text-secondary)' }}>Indicative Price</span>
+              {isLoadingPrice ? (
+                <span style={{ color: 'var(--text-secondary)' }}>Fetching...</span>
+              ) : (
+                <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>
+                  {indicativePriceCurrency || ''} {indicativePrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Quantity first */}
           <div style={styles.row}>
             <div style={styles.col}>
               <div style={styles.formGroup}>
                 <label style={styles.label}>
                   {assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Amount' : 'Quantity'}
-                  {mode === 'sell' && prefillData?.quantity && ` (Max: ${prefillData.quantity})`}
+                  {mode === 'sell' && selectedHolding?.quantity && ` (Max: ${selectedHolding.quantity.toLocaleString()})`}
+                  {mode === 'sell' && !selectedHolding && prefillData?.quantity && ` (Max: ${prefillData.quantity})`}
                 </label>
                 <input
                   type="number"
@@ -1394,35 +1853,267 @@ const OrderModal = ({
                 />
               </div>
             </div>
-            {assetType !== ASSET_TYPES.TERM_DEPOSIT && (
-              <div style={styles.col}>
-                <div style={styles.formGroup}>
-                  <label style={styles.label}>Price Type</label>
-                  <select
-                    style={styles.select}
-                    value={priceType}
-                    onChange={(e) => setPriceType(e.target.value)}
-                  >
-                    <option value={PRICE_TYPES.MARKET}>Market</option>
-                    <option value={PRICE_TYPES.LIMIT}>Limit</option>
-                  </select>
-                </div>
-              </div>
-            )}
           </div>
 
-          {priceType !== PRICE_TYPES.MARKET && assetType !== ASSET_TYPES.TERM_DEPOSIT && (
+          {/* Cash sufficiency check for BUY equity/ETF orders */}
+          {mode === 'buy' && (assetType === ASSET_TYPES.EQUITY || assetType === ASSET_TYPES.ETF) && cashBalance?.cashPositions?.length > 0 && (() => {
+            const secCurrency = selectedSecurity?.currency || prefillData?.currency || settlementCurrency || '';
+            const cashInCurrency = cashBalance.cashPositions.find(p => p.currency === secCurrency);
+            const price = priceType === PRICE_TYPES.LIMIT && limitPrice ? parseFloat(limitPrice) : indicativePrice;
+            const maxShares = cashInCurrency && price && price > 0 ? Math.floor(cashInCurrency.amount / price) : null;
+            const qty = parseFloat(quantity) || 0;
+            const estCost = qty > 0 && price ? qty * price : 0;
+            const exceeds = cashInCurrency && estCost > cashInCurrency.amount;
+
+            return cashInCurrency || secCurrency ? (
+              <div style={{
+                padding: '10px 14px',
+                background: exceeds ? 'rgba(239, 68, 68, 0.08)' : 'rgba(16, 185, 129, 0.08)',
+                borderRadius: '8px',
+                border: `1px solid ${exceeds ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`,
+                marginBottom: '12px',
+                fontSize: '13px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: maxShares ? '4px' : 0 }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>Cash in {secCurrency}</span>
+                  <span style={{ fontWeight: '600', color: cashInCurrency ? (exceeds ? '#ef4444' : '#10b981') : 'var(--text-secondary)' }}>
+                    {cashInCurrency ? cashInCurrency.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : 'No balance'}
+                  </span>
+                </div>
+                {maxShares !== null && maxShares > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>
+                      Max shares at {price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {secCurrency}
+                    </span>
+                    <span
+                      style={{ fontWeight: '600', color: 'var(--accent-color)', cursor: 'pointer' }}
+                      title="Click to fill quantity"
+                      onClick={() => setQuantity(String(maxShares))}
+                    >
+                      {maxShares.toLocaleString()}
+                    </span>
+                  </div>
+                )}
+                {exceeds && qty > 0 && (
+                  <div style={{ marginTop: '4px', color: '#ef4444', fontSize: '12px', fontWeight: '500' }}>
+                    Estimated cost {secCurrency} {estCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} exceeds available cash
+                  </div>
+                )}
+              </div>
+            ) : null;
+          })()}
+
+          {/* Order type selector */}
+          {assetType !== ASSET_TYPES.TERM_DEPOSIT && (
             <div style={styles.formGroup}>
-              <label style={styles.label}>{OrderFormatters.getPriceTypeLabel(priceType)} Price ({getCurrencyForDisplay()})</label>
+              <label style={styles.label}>Order Type</label>
+              <div style={{ display: 'grid', gridTemplateColumns: (assetType === ASSET_TYPES.EQUITY || assetType === ASSET_TYPES.ETF) ? '1fr 1fr 1fr 1fr' : '1fr 1fr', gap: '6px' }}>
+                {[
+                  { value: PRICE_TYPES.MARKET, label: 'Market' },
+                  { value: PRICE_TYPES.LIMIT, label: 'Limit' },
+                  ...((assetType === ASSET_TYPES.EQUITY || assetType === ASSET_TYPES.ETF) ? [
+                    { value: PRICE_TYPES.STOP_LOSS, label: 'Stop Loss' },
+                    { value: PRICE_TYPES.STOP_LIMIT, label: 'Stop Limit' }
+                  ] : [])
+                ].map(opt => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => { setPriceType(opt.value); if (opt.value === PRICE_TYPES.MARKET) { setLimitPrice(''); setStopPrice(''); } }}
+                    style={{
+                      padding: '8px 4px',
+                      borderRadius: '6px',
+                      border: `2px solid ${priceType === opt.value ? 'var(--accent-color)' : 'var(--border-color)'}`,
+                      background: priceType === opt.value ? 'rgba(102, 126, 234, 0.1)' : 'var(--bg-secondary)',
+                      color: priceType === opt.value ? 'var(--accent-color)' : 'var(--text-secondary)',
+                      cursor: 'pointer',
+                      fontWeight: '600',
+                      fontSize: '12px',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Price fields based on order type */}
+          {priceType === PRICE_TYPES.LIMIT && assetType !== ASSET_TYPES.TERM_DEPOSIT && (
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Limit Price ({getCurrencyForDisplay()})</label>
               <input
                 type="number"
                 style={styles.input}
                 value={limitPrice}
                 onChange={(e) => setLimitPrice(e.target.value)}
-                placeholder={`Enter ${OrderFormatters.getPriceTypeLabel(priceType).toLowerCase()} price`}
+                placeholder={mode === 'buy' ? 'Maximum price to buy' : 'Minimum price to sell'}
                 min="0"
                 step="0.01"
               />
+            </div>
+          )}
+
+          {priceType === PRICE_TYPES.STOP_LOSS && (
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Stop Price ({getCurrencyForDisplay()})</label>
+              <input
+                type="number"
+                style={styles.input}
+                value={stopPrice}
+                onChange={(e) => setStopPrice(e.target.value)}
+                placeholder="Trigger price — executes at market when reached"
+                min="0"
+                step="0.01"
+              />
+            </div>
+          )}
+
+          {priceType === PRICE_TYPES.STOP_LIMIT && (
+            <div style={styles.row}>
+              <div style={styles.col}>
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>Stop Price ({getCurrencyForDisplay()})</label>
+                  <input
+                    type="number"
+                    style={styles.input}
+                    value={stopPrice}
+                    onChange={(e) => setStopPrice(e.target.value)}
+                    placeholder="Trigger price"
+                    min="0"
+                    step="0.01"
+                  />
+                </div>
+              </div>
+              <div style={styles.col}>
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>Limit Price ({getCurrencyForDisplay()})</label>
+                  <input
+                    type="number"
+                    style={styles.input}
+                    value={limitPrice}
+                    onChange={(e) => setLimitPrice(e.target.value)}
+                    placeholder="Max execution price"
+                    min="0"
+                    step="0.01"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Validity for non-market orders */}
+          {priceType !== PRICE_TYPES.MARKET && assetType !== ASSET_TYPES.TERM_DEPOSIT && (
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Validity</label>
+              <div style={{ display: 'grid', gridTemplateColumns: validityType === VALIDITY_TYPES.GTD ? '1fr 1fr 1fr 2fr' : '1fr 1fr 1fr', gap: '6px', alignItems: 'start' }}>
+                {[
+                  { value: VALIDITY_TYPES.DAY, label: 'Day' },
+                  { value: VALIDITY_TYPES.GTC, label: 'Good Till Canceled' },
+                  { value: VALIDITY_TYPES.GTD, label: 'Good Till Date' }
+                ].map(opt => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => { setValidityType(opt.value); if (opt.value !== VALIDITY_TYPES.GTD) setValidityDate(''); }}
+                    style={{
+                      padding: '8px 4px',
+                      borderRadius: '6px',
+                      border: `2px solid ${validityType === opt.value ? 'var(--accent-color)' : 'var(--border-color)'}`,
+                      background: validityType === opt.value ? 'rgba(102, 126, 234, 0.1)' : 'var(--bg-secondary)',
+                      color: validityType === opt.value ? 'var(--accent-color)' : 'var(--text-secondary)',
+                      cursor: 'pointer',
+                      fontWeight: '600',
+                      fontSize: '11px',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+                {validityType === VALIDITY_TYPES.GTD && (
+                  <input
+                    type="date"
+                    style={styles.input}
+                    value={validityDate}
+                    onChange={(e) => setValidityDate(e.target.value)}
+                    min={new Date().toISOString().split('T')[0]}
+                  />
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Attached Take Profit / Stop Loss legs - only for equities, ETFs, FX with market/limit orders */}
+          {(assetType === ASSET_TYPES.EQUITY || assetType === ASSET_TYPES.ETF || assetType === ASSET_TYPES.FX) && priceType !== PRICE_TYPES.STOP_LOSS && priceType !== PRICE_TYPES.STOP_LIMIT && (
+            <div style={{
+              background: 'var(--bg-secondary)',
+              borderRadius: '8px',
+              border: '1px solid var(--border-color)',
+              marginBottom: '12px',
+              overflow: 'hidden'
+            }}>
+              <div
+                onClick={() => setShowAttachedOrders(prev => !prev)}
+                style={{
+                  padding: '10px 12px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  userSelect: 'none'
+                }}
+              >
+                <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                  Attached Orders (Optional)
+                  {(attachedTakeProfit || attachedStopLoss) && (
+                    <span style={{ marginLeft: '8px', fontSize: '11px', color: '#10b981', fontWeight: '500' }}>
+                      {[attachedTakeProfit && 'TP', attachedStopLoss && 'SL'].filter(Boolean).join(' + ')} set
+                    </span>
+                  )}
+                </span>
+                <span style={{ fontSize: '12px', color: 'var(--text-secondary)', transition: 'transform 0.2s', transform: showAttachedOrders ? 'rotate(180deg)' : 'rotate(0)' }}>
+                  ▼
+                </span>
+              </div>
+              {showAttachedOrders && (
+                <div style={{ padding: '0 12px 12px' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '10px' }}>
+                    Creates linked orders with the same reference. Each can be edited separately.
+                  </div>
+                  <div style={styles.row}>
+                    <div style={styles.col}>
+                      <div style={styles.formGroup}>
+                        <label style={styles.label}>Take Profit ({getCurrencyForDisplay()})</label>
+                        <input
+                          type="number"
+                          style={styles.input}
+                          value={attachedTakeProfit}
+                          onChange={(e) => setAttachedTakeProfit(e.target.value)}
+                          placeholder="Target price"
+                          min="0"
+                          step="0.01"
+                        />
+                      </div>
+                    </div>
+                    <div style={styles.col}>
+                      <div style={styles.formGroup}>
+                        <label style={styles.label}>Stop Loss ({getCurrencyForDisplay()})</label>
+                        <input
+                          type="number"
+                          style={styles.input}
+                          value={attachedStopLoss}
+                          onChange={(e) => setAttachedStopLoss(e.target.value)}
+                          placeholder="Protection price"
+                          min="0"
+                          step="0.01"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </>
@@ -1430,7 +2121,7 @@ const OrderModal = ({
 
       {assetType !== ASSET_TYPES.TERM_DEPOSIT && assetType !== ASSET_TYPES.FX && (
         <div style={styles.formGroup}>
-          <label style={styles.label}>Estimated Value ({getCurrencyForDisplay()}){prefillData?.marketPrice ? '' : ' - Optional'}</label>
+          <label style={styles.label}>Estimated Value ({getCurrencyForDisplay()}){!indicativePrice && !prefillData?.marketPrice ? ' - Optional' : ''}</label>
           <input
             type="number"
             style={styles.input}
@@ -1443,6 +2134,52 @@ const OrderModal = ({
             min="0"
             step="0.01"
           />
+        </div>
+      )}
+
+      {/* Capital Protected toggle for structured products */}
+      {assetType === ASSET_TYPES.STRUCTURED_PRODUCT && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '10px 14px',
+          background: capitalProtected ? 'rgba(16, 185, 129, 0.08)' : 'var(--bg-secondary)',
+          borderRadius: '8px',
+          border: `1px solid ${capitalProtected ? 'rgba(16, 185, 129, 0.3)' : 'var(--border-color)'}`,
+          marginBottom: '12px',
+          cursor: 'pointer',
+          transition: 'all 0.15s ease'
+        }} onClick={() => setCapitalProtected(!capitalProtected)}>
+          <div>
+            <span style={{ fontSize: '13px', fontWeight: '600', color: capitalProtected ? '#10b981' : 'var(--text-primary)' }}>
+              Capital Protected
+            </span>
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+              Counts as Bonds for profile allocation (otherwise Equities)
+            </div>
+          </div>
+          <div style={{
+            width: '36px',
+            height: '20px',
+            borderRadius: '10px',
+            background: capitalProtected ? '#10b981' : 'var(--border-color)',
+            position: 'relative',
+            transition: 'background 0.2s ease',
+            flexShrink: 0
+          }}>
+            <div style={{
+              width: '16px',
+              height: '16px',
+              borderRadius: '50%',
+              background: 'white',
+              position: 'absolute',
+              top: '2px',
+              left: capitalProtected ? '18px' : '2px',
+              transition: 'left 0.2s ease',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.2)'
+            }} />
+          </div>
         </div>
       )}
 
@@ -1476,16 +2213,6 @@ const OrderModal = ({
             </div>
           </div>
 
-          <div style={styles.formGroup}>
-            <label style={styles.label}>Underlyings (Optional)</label>
-            <input
-              type="text"
-              style={styles.input}
-              value={underlyings}
-              onChange={(e) => setUnderlyings(e.target.value)}
-              placeholder="e.g. TSLA/AAPL/MSFT"
-            />
-          </div>
         </>
       )}
 
@@ -1499,202 +2226,407 @@ const OrderModal = ({
         />
       </div>
 
-      {/* Client Order Email Attachment */}
+      {/* Order Source Toggle + Client Order Attachment / Phone Call */}
       <div style={styles.formGroup}>
-        <label style={styles.label}>Client Order Email (Optional)</label>
-        <div
-          style={{
-            border: clientOrderFile ? '2px solid #10b981' : '2px dashed var(--border-color)',
-            borderRadius: '8px',
-            padding: '16px',
-            textAlign: 'center',
-            cursor: 'pointer',
-            background: clientOrderFile ? 'rgba(16, 185, 129, 0.05)' : 'var(--bg-secondary)',
-            transition: 'border-color 0.15s, background 0.15s'
-          }}
-          onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-          onDrop={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const file = e.dataTransfer.files[0];
-            if (file) {
-              const ext = '.' + file.name.split('.').pop().toLowerCase();
-              if (!EMAIL_TRACE_ACCEPTED_TYPES.includes(ext)) {
-                setError(`File type ${ext} not accepted. Use: ${EMAIL_TRACE_ACCEPTED_TYPES.join(', ')}`);
-                return;
-              }
-              if (file.size > EMAIL_TRACE_MAX_SIZE) {
-                setError('File exceeds maximum size of 15MB');
-                return;
-              }
-              setClientOrderFile(file);
-              setError(null);
-            }
-          }}
-          onClick={() => {
-            const input = document.createElement('input');
-            input.type = 'file';
-            input.accept = EMAIL_TRACE_ACCEPTED_TYPES.join(',');
-            input.onchange = (e) => {
-              const file = e.target.files[0];
-              if (file) {
-                if (file.size > EMAIL_TRACE_MAX_SIZE) {
-                  setError('File exceeds maximum size of 15MB');
-                  return;
-                }
-                setClientOrderFile(file);
-                setError(null);
-              }
-            };
-            input.click();
-          }}
-        >
-          {clientOrderFile ? (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '16px' }}>📎</span>
-              <span style={{ fontSize: '13px', fontWeight: '600', color: '#10b981' }}>{clientOrderFile.name}</span>
-              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                ({(clientOrderFile.size / 1024).toFixed(0)} KB)
-              </span>
-              <button
-                style={{
-                  background: 'none', border: 'none', color: '#ef4444',
-                  cursor: 'pointer', fontSize: '14px', padding: '2px 6px'
-                }}
-                onClick={(e) => { e.stopPropagation(); setClientOrderFile(null); }}
-                title="Remove file"
-              >
-                ✕
-              </button>
-            </div>
-          ) : (
-            <div>
-              <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-                Drop client order email here, or click to browse
-              </div>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                .msg, .eml, .pdf — Visible to validators for four-eyes check
-              </div>
-            </div>
-          )}
+        <label style={styles.label}>Client Instruction Source</label>
+        <div style={{ display: 'flex', gap: '0', marginBottom: '10px', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+          {[
+            { value: ORDER_SOURCE_TYPES.EMAIL, label: 'Email', icon: '📧' },
+            { value: ORDER_SOURCE_TYPES.PHONE, label: 'Phone', icon: '📞' }
+          ].map(({ value, label, icon }) => (
+            <button
+              key={value}
+              type="button"
+              style={{
+                flex: 1, padding: '8px 12px', border: 'none',
+                background: orderSource === value ? 'var(--accent-color)' : 'var(--bg-secondary)',
+                color: orderSource === value ? '#fff' : 'var(--text-secondary)',
+                fontSize: '13px', fontWeight: '600', cursor: 'pointer',
+                transition: 'background 0.15s, color 0.15s'
+              }}
+              onClick={() => setOrderSource(value)}
+            >
+              {icon} {label}
+            </button>
+          ))}
         </div>
+
+        {orderSource === ORDER_SOURCE_TYPES.PHONE ? (
+          <div style={{
+            padding: '12px', borderRadius: '8px',
+            background: 'rgba(59, 130, 246, 0.05)', border: '1px solid rgba(59, 130, 246, 0.2)'
+          }}>
+            <label style={{ fontSize: '12px', fontWeight: '600', color: '#3b82f6', display: 'block', marginBottom: '6px' }}>
+              Call received at
+            </label>
+            <input
+              type="datetime-local"
+              value={phoneCallTime}
+              onChange={(e) => setPhoneCallTime(e.target.value)}
+              style={{
+                ...styles.input,
+                marginBottom: '0'
+              }}
+            />
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
+              Use the Notes field above for call details if needed
+            </div>
+          </div>
+        ) : (
+          <>
+            <label style={{ ...styles.label, marginBottom: '6px' }}>
+              {isBulkMode ? `Client Order Emails (${clientOrderFiles.length} attached)` : 'Client Order Email (Optional)'}
+            </label>
+
+            {/* Show existing files for bulk mode */}
+            {isBulkMode && clientOrderFiles.length > 0 && (
+              <div style={{ marginBottom: '8px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {clientOrderFiles.map((file, idx) => (
+                  <div key={idx} style={{
+                    display: 'flex', alignItems: 'center', gap: '8px',
+                    padding: '6px 10px', background: 'rgba(16, 185, 129, 0.05)',
+                    border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '6px'
+                  }}>
+                    <span style={{ fontSize: '14px' }}>📎</span>
+                    <span style={{ fontSize: '12px', fontWeight: '500', color: '#10b981', flex: 1 }}>{file.name}</span>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                      ({(file.size / 1024).toFixed(0)} KB)
+                    </span>
+                    <button
+                      style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '13px', padding: '2px 6px' }}
+                      onClick={() => setClientOrderFiles(prev => prev.filter((_, i) => i !== idx))}
+                      title="Remove file"
+                    >
+                      x
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Show single file for non-bulk mode */}
+            {!isBulkMode && clientOrderFile && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px',
+                padding: '8px 12px', background: 'rgba(16, 185, 129, 0.05)',
+                border: '2px solid #10b981', borderRadius: '8px'
+              }}>
+                <span style={{ fontSize: '16px' }}>📎</span>
+                <span style={{ fontSize: '13px', fontWeight: '600', color: '#10b981', flex: 1 }}>{clientOrderFile.name}</span>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                  ({(clientOrderFile.size / 1024).toFixed(0)} KB)
+                </span>
+                <button
+                  style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '14px', padding: '2px 6px' }}
+                  onClick={() => setClientOrderFile(null)}
+                  title="Remove file"
+                >
+                  x
+                </button>
+              </div>
+            )}
+
+            {/* Drop zone / file picker — always shown for bulk (to add more), shown when no file for single */}
+            {(isBulkMode || !clientOrderFile) && (
+              <div
+                style={{
+                  border: '2px dashed var(--border-color)',
+                  borderRadius: '8px',
+                  padding: isBulkMode && clientOrderFiles.length > 0 ? '10px' : '16px',
+                  textAlign: 'center',
+                  cursor: 'pointer',
+                  background: 'var(--bg-secondary)',
+                  transition: 'border-color 0.15s, background 0.15s'
+                }}
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const droppedFiles = Array.from(e.dataTransfer.files);
+                  const validFiles = [];
+                  for (const file of droppedFiles) {
+                    const ext = '.' + file.name.split('.').pop().toLowerCase();
+                    if (!EMAIL_TRACE_ACCEPTED_TYPES.includes(ext)) {
+                      setError(`File type ${ext} not accepted. Use: ${EMAIL_TRACE_ACCEPTED_TYPES.join(', ')}`);
+                      return;
+                    }
+                    if (file.size > EMAIL_TRACE_MAX_SIZE) {
+                      setError(`${file.name} exceeds maximum size of 15MB`);
+                      return;
+                    }
+                    validFiles.push(file);
+                  }
+                  if (validFiles.length > 0) {
+                    if (isBulkMode) {
+                      setClientOrderFiles(prev => [...prev, ...validFiles]);
+                    } else {
+                      setClientOrderFile(validFiles[0]);
+                    }
+                    setError(null);
+                  }
+                }}
+                onClick={() => {
+                  const input = document.createElement('input');
+                  input.type = 'file';
+                  input.accept = EMAIL_TRACE_ACCEPTED_TYPES.join(',');
+                  if (isBulkMode) input.multiple = true;
+                  input.onchange = (e) => {
+                    const selectedFiles = Array.from(e.target.files);
+                    for (const file of selectedFiles) {
+                      if (file.size > EMAIL_TRACE_MAX_SIZE) {
+                        setError(`${file.name} exceeds maximum size of 15MB`);
+                        return;
+                      }
+                    }
+                    if (selectedFiles.length > 0) {
+                      if (isBulkMode) {
+                        setClientOrderFiles(prev => [...prev, ...selectedFiles]);
+                      } else {
+                        setClientOrderFile(selectedFiles[0]);
+                      }
+                      setError(null);
+                    }
+                  };
+                  input.click();
+                }}
+              >
+                <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                  {isBulkMode
+                    ? (clientOrderFiles.length > 0 ? '+ Add more client emails' : 'Drop client order emails here, or click to browse')
+                    : 'Drop client order email here, or click to browse'}
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                  .msg, .eml, .pdf — Visible to validators for four-eyes check
+                </div>
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
 
-  const renderStep3 = () => (
-    <div>
-      {!bulkMode ? (
-        <>
-          <div style={styles.formGroup}>
-            <label style={styles.label}>Client</label>
-            {isLoadingClients ? (
-              <div style={{ padding: '10px', color: 'var(--text-secondary)' }}>Loading clients...</div>
-            ) : (
-              <select
-                style={styles.select}
-                value={selectedClientId}
-                onChange={(e) => setSelectedClientId(e.target.value)}
-                disabled={!!prefillData?.clientId}
-              >
-                <option value="">Select a client...</option>
-                {availableClients.map(client => (
-                  <option key={client._id} value={client._id}>
-                    {client.profile?.firstName} {client.profile?.lastName} ({client.username})
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
+  const renderStep3 = () => {
+    const bulkDuplicates = isBulkMode ? getBulkDuplicates() : new Set();
 
-          <div style={styles.formGroup}>
-            <label style={styles.label}>Bank Account</label>
-            {isLoadingAccounts ? (
-              <div style={{ padding: '10px', color: 'var(--text-secondary)' }}>Loading accounts...</div>
-            ) : (
-              <select
-                style={styles.select}
-                value={selectedBankAccountId}
-                onChange={(e) => setSelectedBankAccountId(e.target.value)}
-                disabled={!selectedClientId || !!prefillData?.bankAccountId}
-              >
-                <option value="">Select a bank account...</option>
-                {clientBankAccounts.map(account => (
-                  <option key={account._id} value={account._id}>
-                    {account.bankName} - {account.accountNumber} ({account.referenceCurrency})
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-        </>
-      ) : (
-        /* Bulk Mode */
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <span style={{ fontWeight: '500' }}>Orders ({bulkOrders.length})</span>
-            <ActionButton variant="secondary" size="small" onClick={addBulkOrder}>
-              + Add Order
-            </ActionButton>
-          </div>
-
-          {bulkOrders.map((order, index) => (
-            <div key={index} style={{
-              padding: '12px',
-              background: 'var(--bg-secondary)',
-              borderRadius: '6px',
-              marginBottom: '12px',
-              border: '1px solid var(--border-color)'
+    return (
+      <div>
+        {/* Multi-account toggle */}
+        {!prefillData?.clientId && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '10px 14px',
+            background: isBulkMode ? 'rgba(99, 102, 241, 0.08)' : 'var(--bg-secondary)',
+            borderRadius: '8px',
+            border: `1px solid ${isBulkMode ? 'rgba(99, 102, 241, 0.3)' : 'var(--border-color)'}`,
+            marginBottom: '16px',
+            cursor: 'pointer',
+            transition: 'all 0.15s ease'
+          }} onClick={() => {
+            const next = !isBulkMode;
+            setIsBulkMode(next);
+            if (!next) {
+              setBulkOrders([{ clientId: '', bankAccountId: '', quantity: '' }]);
+              setBulkAccountsMap({});
+              setBulkAccountsLoading({});
+              setClientOrderFiles([]);
+            }
+          }}>
+            <span style={{ fontSize: '13px', fontWeight: '600', color: isBulkMode ? '#6366f1' : 'var(--text-primary)' }}>
+              Multi-account order
+            </span>
+            <div style={{
+              width: '36px',
+              height: '20px',
+              borderRadius: '10px',
+              background: isBulkMode ? '#6366f1' : 'var(--border-color)',
+              position: 'relative',
+              transition: 'background 0.2s ease'
             }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                <span style={{ fontWeight: '500', fontSize: '13px' }}>Order #{index + 1}</span>
-                {bulkOrders.length > 1 && (
-                  <button
-                    onClick={() => removeBulkOrder(index)}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: 'var(--danger-color)',
-                      cursor: 'pointer',
-                      fontSize: '16px'
-                    }}
-                  >
-                    ×
-                  </button>
-                )}
-              </div>
-              <div style={styles.row}>
-                <div style={styles.col}>
-                  <select
-                    style={styles.select}
-                    value={order.clientId}
-                    onChange={(e) => updateBulkOrder(index, 'clientId', e.target.value)}
-                  >
-                    <option value="">Select client...</option>
-                    {availableClients.map(client => (
-                      <option key={client._id} value={client._id}>
-                        {client.profile?.firstName} {client.profile?.lastName}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div style={styles.col}>
-                  <input
-                    type="number"
-                    style={styles.input}
-                    value={order.quantity}
-                    onChange={(e) => updateBulkOrder(index, 'quantity', e.target.value)}
-                    placeholder="Quantity"
-                    min="0"
-                  />
-                </div>
-              </div>
+              <div style={{
+                width: '16px',
+                height: '16px',
+                borderRadius: '50%',
+                background: 'white',
+                position: 'absolute',
+                top: '2px',
+                left: isBulkMode ? '18px' : '2px',
+                transition: 'left 0.2s ease',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.2)'
+              }} />
             </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+          </div>
+        )}
+
+        {!isBulkMode ? (
+          <>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Client</label>
+              {isLoadingClients ? (
+                <div style={{ padding: '10px', color: 'var(--text-secondary)' }}>Loading clients...</div>
+              ) : (
+                <select
+                  style={styles.select}
+                  value={selectedClientId}
+                  onChange={(e) => setSelectedClientId(e.target.value)}
+                  disabled={!!prefillData?.clientId}
+                >
+                  <option value="">Select a client...</option>
+                  {availableClients.map(client => {
+                    const isCompany = client.profile?.clientType === 'company';
+                    const name = isCompany && client.profile?.companyName
+                      ? client.profile.companyName
+                      : `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() || client.username;
+                    return (
+                      <option key={client._id} value={client._id}>
+                        {name}
+                      </option>
+                    );
+                  })}
+                </select>
+              )}
+            </div>
+
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Bank Account</label>
+              {isLoadingAccounts ? (
+                <div style={{ padding: '10px', color: 'var(--text-secondary)' }}>Loading accounts...</div>
+              ) : (
+                <select
+                  style={styles.select}
+                  value={selectedBankAccountId}
+                  onChange={(e) => setSelectedBankAccountId(e.target.value)}
+                  disabled={!selectedClientId || !!prefillData?.bankAccountId}
+                >
+                  <option value="">Select a bank account...</option>
+                  {clientBankAccounts.map(account => (
+                    <option key={account._id} value={account._id}>{formatAccountLabel(account)}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+          </>
+        ) : (
+          /* Bulk Mode */
+          <div>
+            {bulkOrders.map((order, index) => {
+              const rowAccounts = bulkAccountsMap[index] || [];
+              const isLoadingRow = bulkAccountsLoading[index] || false;
+              const isDuplicate = bulkDuplicates.has(index);
+
+              return (
+                <div key={index} style={{
+                  padding: '12px',
+                  background: isDuplicate ? 'rgba(245, 158, 11, 0.06)' : 'var(--bg-secondary)',
+                  borderRadius: '6px',
+                  marginBottom: '8px',
+                  border: `1px solid ${isDuplicate ? 'rgba(245, 158, 11, 0.4)' : 'var(--border-color)'}`
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <span style={{ fontWeight: '500', fontSize: '12px', color: 'var(--text-secondary)' }}>Account #{index + 1}</span>
+                    {bulkOrders.length > 1 && (
+                      <button
+                        onClick={() => removeBulkOrder(index)}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--danger-color)',
+                          cursor: 'pointer',
+                          fontSize: '16px',
+                          padding: '0 4px',
+                          lineHeight: '1'
+                        }}
+                      >
+                        x
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <div style={{ flex: 2 }}>
+                      <select
+                        style={styles.select}
+                        value={order.clientId}
+                        onChange={(e) => updateBulkOrder(index, 'clientId', e.target.value)}
+                      >
+                        <option value="">Select client...</option>
+                        {availableClients.map(client => {
+                          const isCompany = client.profile?.clientType === 'company';
+                          const name = isCompany && client.profile?.companyName
+                            ? client.profile.companyName
+                            : `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() || client.username;
+                          return (
+                            <option key={client._id} value={client._id}>
+                              {name}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+                    <div style={{ flex: 3 }}>
+                      {isLoadingRow ? (
+                        <div style={{ padding: '10px', color: 'var(--text-secondary)', fontSize: '13px' }}>Loading...</div>
+                      ) : (
+                        <select
+                          style={styles.select}
+                          value={order.bankAccountId}
+                          onChange={(e) => updateBulkOrder(index, 'bankAccountId', e.target.value)}
+                          disabled={!order.clientId}
+                        >
+                          <option value="">Select account...</option>
+                          {rowAccounts.map(account => (
+                            <option key={account._id} value={account._id}>
+                              {formatAccountLabel(account)}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <input
+                        type="number"
+                        style={styles.input}
+                        value={order.quantity}
+                        onChange={(e) => updateBulkOrder(index, 'quantity', e.target.value)}
+                        placeholder="Qty"
+                        min="0"
+                        step="1"
+                      />
+                    </div>
+                  </div>
+                  {isDuplicate && (
+                    <div style={{ marginTop: '6px', fontSize: '11px', color: '#f59e0b' }}>
+                      Duplicate client + account pair
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            <div
+              onClick={addBulkOrder}
+              style={{
+                padding: '10px',
+                textAlign: 'center',
+                borderRadius: '6px',
+                border: '1px dashed var(--border-color)',
+                cursor: 'pointer',
+                fontSize: '13px',
+                color: 'var(--accent-color)',
+                fontWeight: '500',
+                transition: 'background 0.15s ease'
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary)'}
+              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+            >
+              + Add Account
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const renderStep4 = () => {
     const selectedClient = availableClients.find(c => c._id === selectedClientId);
@@ -1709,6 +2641,163 @@ const OrderModal = ({
               : mode.toUpperCase() + ' ORDER'}
           </span>
         </div>
+
+        {/* Allocation compliance warning */}
+        {isCheckingAllocation && (
+          <div style={{
+            padding: '12px 16px', marginBottom: '16px', borderRadius: '8px',
+            background: 'rgba(99, 102, 241, 0.08)', border: '1px solid rgba(99, 102, 241, 0.3)',
+            fontSize: '13px', color: '#6366f1', textAlign: 'center'
+          }}>
+            Checking investment profile compliance...
+          </div>
+        )}
+        {allocationCheck?.hasProfile && (
+          <div style={{
+            padding: '14px 16px', marginBottom: '16px', borderRadius: '8px',
+            background: allocationCheck.hasBreaches ? 'rgba(245, 158, 11, 0.08)' : 'rgba(99, 102, 241, 0.05)',
+            border: `1px solid ${allocationCheck.hasBreaches ? 'rgba(245, 158, 11, 0.3)' : 'rgba(99, 102, 241, 0.15)'}`
+          }}>
+            <div style={{ fontSize: '13px', fontWeight: '700', color: allocationCheck.hasBreaches ? '#f59e0b' : 'var(--text-primary)', marginBottom: '10px' }}>
+              {allocationCheck.hasBreaches ? 'Investment Profile Warning' : 'Allocation Impact'}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {[
+                { key: 'cash', label: 'Cash', icon: '💵', color: '#3b82f6' },
+                { key: 'bonds', label: 'Bonds', icon: '📄', color: '#10b981' },
+                { key: 'equities', label: 'Equities', icon: '📈', color: '#f59e0b' },
+                { key: 'alternative', label: 'Alternative', icon: '🎯', color: '#8b5cf6' },
+              ].map(item => {
+                const current = allocationCheck.currentAllocation?.[item.key] ?? 0;
+                const projected = allocationCheck.projectedAllocation?.[item.key] ?? current;
+                const limitKey = 'max' + item.key.charAt(0).toUpperCase() + item.key.slice(1);
+                const max = allocationCheck.profileLimits?.[limitKey] ?? null;
+                const isOverLimit = max !== null && projected > max;
+                const isAffected = item.key === allocationCheck.orderCategory;
+                const showProjected = isAffected && Math.abs(projected - current) > 0.05;
+
+                return (
+                  <div key={item.key} style={{
+                    padding: '4px 6px',
+                    borderRadius: '6px',
+                    background: isAffected ? 'rgba(99, 102, 241, 0.06)' : 'transparent',
+                    border: isAffected ? '1px solid rgba(99, 102, 241, 0.15)' : '1px solid transparent'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                      <span style={{ color: 'var(--text-secondary)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <span>{item.icon}</span> {item.label}
+                        {isAffected && <span style={{ fontSize: '10px', color: '#6366f1', fontWeight: '600', marginLeft: '4px' }}>affected</span>}
+                      </span>
+                      <span style={{
+                        color: isOverLimit ? '#ef4444' : 'var(--text-primary)',
+                        fontSize: '12px',
+                        fontWeight: '600'
+                      }}>
+                        {showProjected ? (
+                          <>
+                            {current.toFixed(1)}% → <span style={{ color: isOverLimit ? '#ef4444' : item.color }}>{projected.toFixed(1)}%</span>
+                          </>
+                        ) : (
+                          <>{current.toFixed(1)}%</>
+                        )}
+                        {max !== null && <span style={{ color: 'var(--text-muted)', fontWeight: '400' }}> / {max}%</span>}
+                        {isOverLimit && <span style={{ marginLeft: '4px' }}>⚠️</span>}
+                      </span>
+                    </div>
+                    <div style={{
+                      position: 'relative',
+                      height: '16px',
+                      background: 'rgba(128, 128, 128, 0.1)',
+                      borderRadius: '8px',
+                      overflow: 'hidden'
+                    }}>
+                      {/* Limit indicator line */}
+                      {max !== null && (
+                        <div style={{
+                          position: 'absolute',
+                          left: `${max}%`,
+                          top: 0,
+                          bottom: 0,
+                          width: '2px',
+                          background: 'rgba(128, 128, 128, 0.4)',
+                          zIndex: 3
+                        }} />
+                      )}
+                      {/* Current allocation bar */}
+                      <div style={{
+                        position: 'absolute',
+                        left: 0, top: 0, bottom: 0,
+                        width: `${Math.min(current, 100)}%`,
+                        background: isOverLimit
+                          ? 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)'
+                          : `linear-gradient(90deg, ${item.color} 0%, ${item.color}dd 100%)`,
+                        borderRadius: '8px',
+                        transition: 'width 0.3s ease',
+                        zIndex: 1
+                      }} />
+                      {/* Projected extension bar (only for affected category) */}
+                      {showProjected && projected > current && (
+                        <div style={{
+                          position: 'absolute',
+                          left: `${Math.min(current, 100)}%`,
+                          top: 0, bottom: 0,
+                          width: `${Math.min(projected - current, 100 - current)}%`,
+                          background: isOverLimit
+                            ? 'repeating-linear-gradient(90deg, rgba(239, 68, 68, 0.4) 0px, rgba(239, 68, 68, 0.4) 3px, rgba(239, 68, 68, 0.2) 3px, rgba(239, 68, 68, 0.2) 6px)'
+                            : `repeating-linear-gradient(90deg, ${item.color}66 0px, ${item.color}66 3px, ${item.color}33 3px, ${item.color}33 6px)`,
+                          borderRadius: '0 8px 8px 0',
+                          transition: 'width 0.3s ease',
+                          zIndex: 1
+                        }} />
+                      )}
+                      {/* Projected reduction bar (sell orders - show gap) */}
+                      {showProjected && projected < current && (
+                        <div style={{
+                          position: 'absolute',
+                          left: `${Math.min(projected, 100)}%`,
+                          top: 0, bottom: 0,
+                          width: `${Math.min(current - projected, 100)}%`,
+                          background: `repeating-linear-gradient(90deg, ${item.color}33 0px, ${item.color}33 3px, transparent 3px, transparent 6px)`,
+                          borderRadius: '0 8px 8px 0',
+                          transition: 'width 0.3s ease',
+                          zIndex: 2
+                        }} />
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {allocationCheck.hasBreaches && (
+              <div style={{ marginTop: '10px' }}>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center', marginBottom: '8px' }}>
+                  This order can still proceed. The warning will be recorded on the order.
+                </div>
+                <textarea
+                  value={allocationJustification}
+                  onChange={e => setAllocationJustification(e.target.value)}
+                  placeholder="Justification for exceeding allocation limits..."
+                  rows={2}
+                  style={{
+                    width: '100%',
+                    padding: '8px 10px',
+                    borderRadius: '6px',
+                    border: '1px solid rgba(245, 158, 11, 0.3)',
+                    background: 'rgba(245, 158, 11, 0.04)',
+                    color: 'var(--text-primary)',
+                    fontSize: '12px',
+                    resize: 'vertical',
+                    outline: 'none',
+                    fontFamily: 'inherit',
+                    boxSizing: 'border-box'
+                  }}
+                  onFocus={e => e.target.style.borderColor = 'rgba(245, 158, 11, 0.6)'}
+                  onBlur={e => e.target.style.borderColor = 'rgba(245, 158, 11, 0.3)'}
+                />
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={styles.reviewSection}>
           <div style={styles.reviewTitle}>
@@ -1819,19 +2908,27 @@ const OrderModal = ({
 
         <div style={styles.reviewSection}>
           <div style={styles.reviewTitle}>Order Details</div>
-          <div style={styles.reviewRow}>
-            <span style={styles.reviewLabel}>{assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Amount' : 'Quantity'}</span>
-            <span style={styles.reviewValue}>{OrderFormatters.formatQuantity(parseFloat(quantity) || 0)}</span>
-          </div>
+          {!isBulkMode && (
+            <div style={styles.reviewRow}>
+              <span style={styles.reviewLabel}>{assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Amount' : 'Quantity'}</span>
+              <span style={styles.reviewValue}>{OrderFormatters.formatQuantity(parseFloat(quantity) || 0)}</span>
+            </div>
+          )}
           {assetType !== ASSET_TYPES.TERM_DEPOSIT && (
             <div style={styles.reviewRow}>
               <span style={styles.reviewLabel}>Price Type</span>
               <span style={styles.reviewValue}>{OrderFormatters.getPriceTypeLabel(priceType)}</span>
             </div>
           )}
-          {priceType !== PRICE_TYPES.MARKET && assetType !== ASSET_TYPES.TERM_DEPOSIT && limitPrice && (
+          {(priceType === PRICE_TYPES.STOP_LOSS || priceType === PRICE_TYPES.STOP_LIMIT) && stopPrice && (
             <div style={styles.reviewRow}>
-              <span style={styles.reviewLabel}>{OrderFormatters.getPriceTypeLabel(priceType)} Price</span>
+              <span style={styles.reviewLabel}>Stop Price</span>
+              <span style={styles.reviewValue}>{OrderFormatters.formatWithCurrency(parseFloat(stopPrice) || 0, getCurrencyForDisplay())}</span>
+            </div>
+          )}
+          {(priceType === PRICE_TYPES.LIMIT || priceType === PRICE_TYPES.STOP_LIMIT) && limitPrice && (
+            <div style={styles.reviewRow}>
+              <span style={styles.reviewLabel}>Limit Price</span>
               <span style={styles.reviewValue}>{OrderFormatters.formatWithCurrency(parseFloat(limitPrice) || 0, getCurrencyForDisplay())}</span>
             </div>
           )}
@@ -1853,15 +2950,86 @@ const OrderModal = ({
               <span style={styles.reviewValue}>{settlementCurrency.toUpperCase()}</span>
             </div>
           )}
-          {underlyings && (
+          {priceType !== PRICE_TYPES.MARKET && assetType !== ASSET_TYPES.TERM_DEPOSIT && (
             <div style={styles.reviewRow}>
-              <span style={styles.reviewLabel}>Underlyings</span>
-              <span style={styles.reviewValue}>{underlyings}</span>
+              <span style={styles.reviewLabel}>Validity</span>
+              <span style={styles.reviewValue}>
+                {validityType === VALIDITY_TYPES.GTC ? 'Good Till Canceled' : validityType === VALIDITY_TYPES.GTD ? `Good Till ${validityDate || 'Date'}` : 'Day Order'}
+              </span>
             </div>
           )}
         </div>
 
-        {!bulkMode && (
+        {(attachedTakeProfit || attachedStopLoss) && (
+          <div style={styles.reviewSection}>
+            <div style={styles.reviewTitle}>Linked Orders</div>
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+              Separate orders will be created with the same reference number
+            </div>
+            {attachedTakeProfit && (
+              <div style={styles.reviewRow}>
+                <span style={styles.reviewLabel}>Take Profit</span>
+                <span style={{ ...styles.reviewValue, color: '#10b981', fontWeight: '600' }}>
+                  {OrderFormatters.formatWithCurrency(parseFloat(attachedTakeProfit), getCurrencyForDisplay())}
+                </span>
+              </div>
+            )}
+            {attachedStopLoss && (
+              <div style={styles.reviewRow}>
+                <span style={styles.reviewLabel}>Stop Loss</span>
+                <span style={{ ...styles.reviewValue, color: '#ef4444', fontWeight: '600' }}>
+                  {OrderFormatters.formatWithCurrency(parseFloat(attachedStopLoss), getCurrencyForDisplay())}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {isBulkMode ? (
+          <div style={styles.reviewSection}>
+            <div style={styles.reviewTitle}>Accounts ({bulkOrders.filter(o => o.clientId && o.bankAccountId).length})</div>
+            {bulkOrders.filter(o => o.clientId && o.bankAccountId).map((order, idx) => {
+              const client = availableClients.find(c => c._id === order.clientId);
+              const accounts = bulkAccountsMap[bulkOrders.indexOf(order)] || [];
+              const account = accounts.find(a => a._id === order.bankAccountId);
+              const clientName = client
+                ? (client.profile?.clientType === 'company' && client.profile?.companyName
+                  ? client.profile.companyName
+                  : `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() || client.username)
+                : 'N/A';
+              return (
+                <div key={idx} style={{
+                  padding: '8px 0',
+                  borderBottom: '1px solid var(--border-color)',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: '12px'
+                }}>
+                  <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)', flex: '0 0 auto' }}>
+                    {clientName}
+                  </span>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)', flex: 1, textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {account ? `${account.bankName} - ${account.accountNumber}` : 'N/A'}
+                  </span>
+                  <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', flex: '0 0 auto' }}>
+                    {OrderFormatters.formatQuantity(parseFloat(order.quantity) || 0)}
+                  </span>
+                </div>
+              );
+            })}
+            <div style={{
+              padding: '8px 0', marginTop: '4px',
+              display: 'flex', justifyContent: 'space-between',
+              fontWeight: '600', fontSize: '13px', color: 'var(--text-primary)'
+            }}>
+              <span>Total</span>
+              <span>{OrderFormatters.formatQuantity(
+                bulkOrders.filter(o => o.clientId && o.bankAccountId).reduce((sum, o) => sum + (parseFloat(o.quantity) || 0), 0)
+              )}</span>
+            </div>
+          </div>
+        ) : (
           <div style={styles.reviewSection}>
             <div style={styles.reviewTitle}>Account Information</div>
             <div style={styles.reviewRow}>
@@ -1888,7 +3056,42 @@ const OrderModal = ({
           </div>
         )}
 
-        {clientOrderFile && (
+        {/* Client instruction source in review */}
+        {orderSource === ORDER_SOURCE_TYPES.PHONE && (
+          <div style={styles.reviewSection}>
+            <div style={styles.reviewTitle}>Client Instruction</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                padding: '3px 10px', borderRadius: '12px',
+                background: 'rgba(59, 130, 246, 0.1)', color: '#3b82f6',
+                fontSize: '12px', fontWeight: '600'
+              }}>
+                📞 Phone Order
+              </span>
+              {phoneCallTime && (
+                <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                  Call at {new Date(phoneCallTime).toLocaleString()}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+        {orderSource === ORDER_SOURCE_TYPES.EMAIL && isBulkMode && clientOrderFiles.length > 0 && (
+          <div style={styles.reviewSection}>
+            <div style={styles.reviewTitle}>Client Order Emails ({clientOrderFiles.length})</div>
+            {clientOrderFiles.map((file, idx) => (
+              <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'var(--text-secondary)', padding: '4px 0' }}>
+                <span>📎</span>
+                <span>{file.name}</span>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                  ({(file.size / 1024).toFixed(0)} KB)
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        {orderSource === ORDER_SOURCE_TYPES.EMAIL && !isBulkMode && clientOrderFile && (
           <div style={styles.reviewSection}>
             <div style={styles.reviewTitle}>Client Order Email</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'var(--text-secondary)' }}>
@@ -1904,12 +3107,229 @@ const OrderModal = ({
     );
   };
 
+  // Step 2: Buy/Sell selection + Security
+  const renderStepOrderType = () => {
+    const filteredHoldings = accountHoldings.filter(h => {
+      if (!holdingSearchQuery) return true;
+      const q = holdingSearchQuery.toLowerCase();
+      return (h.securityName || '').toLowerCase().includes(q) || (h.isin || '').toLowerCase().includes(q);
+    });
+
+    const selectedAccount = clientBankAccounts.find(a => a._id === selectedBankAccountId);
+
+    return (
+      <div>
+        {/* Buy/Sell Toggle */}
+        <div style={styles.formGroup}>
+          <label style={styles.label}>Order Type</label>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              onClick={() => { setMode('buy'); setSelectedHolding(null); setSelectedSecurity(null); setSearchQuery(''); setQuantity(''); setSellManualSearch(false); }}
+              style={{
+                flex: 1,
+                padding: '12px',
+                borderRadius: '8px',
+                border: `2px solid ${mode === 'buy' ? '#10b981' : 'var(--border-color)'}`,
+                background: mode === 'buy' ? 'rgba(16, 185, 129, 0.1)' : 'var(--bg-secondary)',
+                color: mode === 'buy' ? '#10b981' : 'var(--text-secondary)',
+                cursor: 'pointer',
+                fontWeight: '600',
+                fontSize: '15px',
+                transition: 'all 0.2s ease'
+              }}
+            >
+              BUY
+            </button>
+            <button
+              onClick={() => { setMode('sell'); setSelectedHolding(null); setSelectedSecurity(null); setSearchQuery(''); setQuantity(''); setSellManualSearch(false); }}
+              style={{
+                flex: 1,
+                padding: '12px',
+                borderRadius: '8px',
+                border: `2px solid ${mode === 'sell' ? '#ef4444' : 'var(--border-color)'}`,
+                background: mode === 'sell' ? 'rgba(239, 68, 68, 0.1)' : 'var(--bg-secondary)',
+                color: mode === 'sell' ? '#ef4444' : 'var(--text-secondary)',
+                cursor: 'pointer',
+                fontWeight: '600',
+                fontSize: '15px',
+                transition: 'all 0.2s ease'
+              }}
+            >
+              SELL
+            </button>
+          </div>
+        </div>
+
+        {/* Cash Balance (buy mode) - show all currencies */}
+        {mode === 'buy' && (
+          <div style={{
+            padding: '10px 14px',
+            background: 'var(--bg-secondary)',
+            borderRadius: '8px',
+            border: '1px solid var(--border-color)',
+            marginBottom: '16px'
+          }}>
+            <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: cashBalance?.cashPositions?.length > 0 ? '8px' : '0' }}>Cash Available</div>
+            {isLoadingCash ? (
+              <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Loading...</span>
+            ) : cashBalance?.cashPositions?.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {cashBalance.cashPositions.map((pos, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{pos.currency}</span>
+                    <span style={{
+                      fontWeight: '600',
+                      color: pos.amount >= 0 ? '#10b981' : '#ef4444',
+                      fontSize: '13px'
+                    }}>
+                      {pos.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>N/A</span>
+            )}
+          </div>
+        )}
+
+        {/* Security Selection */}
+        {mode === 'sell' && !sellManualSearch && !isBulkMode ? (
+          /* SELL: Pick from existing holdings */
+          <div style={styles.formGroup}>
+            <label style={styles.label}>Select Holding to Sell</label>
+            {selectedHolding || selectedSecurity ? (
+              <div style={styles.selectedSecurity}>
+                <div>
+                  <div style={{ fontWeight: '500' }}>{selectedHolding?.securityName || selectedSecurity?.name}</div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                    {selectedHolding?.isin || selectedSecurity?.isin}
+                    {selectedHolding ? ` | Qty: ${selectedHolding.quantity?.toLocaleString()}` : ''}
+                    {` | ${selectedHolding?.currency || selectedSecurity?.currency || ''}`}
+                  </div>
+                </div>
+                <ActionButton variant="secondary" size="small" onClick={() => {
+                  setSelectedHolding(null);
+                  setSelectedSecurity(null);
+                  setSearchQuery('');
+                  setQuantity('');
+                  setHoldingSearchQuery('');
+                }}>
+                  Change
+                </ActionButton>
+              </div>
+            ) : (
+              <div style={{ position: 'relative' }}>
+                <input
+                  type="text"
+                  style={styles.input}
+                  value={holdingSearchQuery}
+                  onChange={(e) => setHoldingSearchQuery(e.target.value)}
+                  placeholder="Search holdings by name or ISIN..."
+                  autoFocus
+                />
+                {isLoadingHoldings ? (
+                  <div style={{ padding: '12px', color: 'var(--text-secondary)', fontSize: '13px' }}>Loading holdings...</div>
+                ) : filteredHoldings.length === 0 ? (
+                  <div style={{ padding: '12px', color: 'var(--text-secondary)', fontSize: '13px' }}>
+                    {accountHoldings.length === 0 ? 'No holdings found for this account' : 'No matching holdings'}
+                  </div>
+                ) : (
+                  <div style={{
+                    maxHeight: '240px',
+                    overflowY: 'auto',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '6px',
+                    marginTop: '4px'
+                  }}>
+                    {filteredHoldings.map(holding => (
+                      <div
+                        key={holding._id}
+                        onClick={() => {
+                          setSelectedHolding(holding);
+                          setSelectedSecurity({
+                            isin: holding.isin,
+                            name: holding.securityName,
+                            currency: holding.currency
+                          });
+                          setSearchQuery(holding.securityName);
+                          setQuantity(String(holding.quantity || ''));
+                          setHoldingSearchQuery('');
+                          // Set price and currency from holding
+                          if (holding.marketPrice) {
+                            setIndicativePrice(holding.marketPrice);
+                          }
+                          setIndicativePriceCurrency(holding.currency || null);
+                          setSettlementCurrency(holding.currency || '');
+                          setEstimatedValueManuallyEdited(false);
+                          // Enrich from Ambervision product (issuer, etc.)
+                          if (holding.isin) {
+                            enrichFromProduct(holding.isin);
+                          }
+                          // Auto-detect asset type
+                          if (holding.assetClass) {
+                            const classMap = { equity: ASSET_TYPES.EQUITY, bond: ASSET_TYPES.BOND, structured_product: ASSET_TYPES.STRUCTURED_PRODUCT, fund: ASSET_TYPES.FUND, etf: ASSET_TYPES.ETF };
+                            setAssetType(classMap[holding.assetClass] || ASSET_TYPES.OTHER);
+                          }
+                        }}
+                        style={{
+                          padding: '10px 12px',
+                          cursor: 'pointer',
+                          borderBottom: '1px solid var(--border-color)',
+                          transition: 'background 0.15s ease'
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary)'}
+                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                      >
+                        <div style={{ fontWeight: '500', fontSize: '13px' }}>{holding.securityName}</div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
+                          <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{holding.isin}</span>
+                          <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                            Qty: {holding.quantity?.toLocaleString()} | {holding.currency} {holding.marketValue?.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* Manual entry link for sell */}
+                <div style={{ marginTop: '8px' }}>
+                  <span
+                    style={{ fontSize: '12px', color: 'var(--accent-color)', cursor: 'pointer' }}
+                    onClick={() => setSellManualSearch(true)}
+                  >
+                    + Holding not listed? Enter manually or search
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          /* BUY or SELL manual search: security search */
+          <div>
+            {mode === 'sell' && sellManualSearch && (
+              <div style={{ marginBottom: '12px' }}>
+                <span
+                  style={{ fontSize: '12px', color: 'var(--accent-color)', cursor: 'pointer' }}
+                  onClick={() => { setSellManualSearch(false); setSelectedSecurity(null); setSearchQuery(''); }}
+                >
+                  ← Back to holdings list
+                </span>
+              </div>
+            )}
+            {renderStep1()}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderCurrentStep = () => {
     switch (currentStep) {
-      case 1: return renderStep1();
-      case 2: return renderStep2();
-      case 3: return renderStep3();
-      case 4: return renderStep4();
+      case 1: return renderStep3(); // Account selection
+      case 2: return renderStepOrderType(); // Buy/Sell + Security
+      case 3: return renderStep2(); // Details
+      case 4: return renderStep4(); // Review
       default: return null;
     }
   };
@@ -1922,7 +3342,7 @@ const OrderModal = ({
         </ActionButton>
       )}
       <div style={{ flex: 1 }} />
-      <ActionButton variant="secondary" onClick={onClose} disabled={isSubmitting}>
+      <ActionButton variant="secondary" onClick={handleClose} disabled={isSubmitting}>
         Cancel
       </ActionButton>
       {currentStep < 4 ? (
@@ -1935,7 +3355,9 @@ const OrderModal = ({
           onClick={handleSubmit}
           loading={isSubmitting}
         >
-          {isSubmitting ? 'Creating...' : `Confirm ${assetType === ASSET_TYPES.TERM_DEPOSIT ? (depositAction === 'increase' ? 'INCREASE' : 'DECREASE') : mode.toUpperCase()}`}
+          {isSubmitting ? 'Creating...' : isBulkMode
+            ? `Confirm ${bulkOrders.filter(o => o.clientId && o.bankAccountId).length} Orders`
+            : `Confirm ${assetType === ASSET_TYPES.TERM_DEPOSIT ? (depositAction === 'increase' ? 'INCREASE' : 'DECREASE') : mode.toUpperCase()}`}
         </ActionButton>
       )}
     </>
@@ -1944,9 +3366,9 @@ const OrderModal = ({
   return (
     <Modal
       isOpen={isOpen}
-      onClose={onClose}
-      title={`${mode === 'buy' ? 'Buy' : 'Sell'} Order`}
-      size="medium"
+      onClose={handleClose}
+      title={isBulkMode ? (currentStep >= 2 ? `Bulk ${mode === 'buy' ? 'Buy' : 'Sell'} Order` : 'Bulk Order') : (currentStep >= 2 ? `${mode === 'buy' ? 'Buy' : 'Sell'} Order` : 'New Order')}
+      size={isBulkMode ? 'large' : 'medium'}
       footer={footer}
     >
       {renderStepIndicator()}
@@ -1956,6 +3378,46 @@ const OrderModal = ({
       )}
 
       {renderCurrentStep()}
+
+      {showCloseConfirm && (
+        <div style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.6)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderRadius: '12px',
+          zIndex: 10
+        }}>
+          <div style={{
+            background: 'var(--bg-secondary)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '10px',
+            padding: '1.5rem',
+            maxWidth: '360px',
+            width: '90%',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
+            textAlign: 'center'
+          }}>
+            <div style={{ fontSize: '1.5rem', marginBottom: '0.75rem' }}>Discard order?</div>
+            <p style={{ color: 'var(--text-secondary)', margin: '0 0 1.25rem 0', fontSize: '0.9rem' }}>
+              You have unsaved changes. Are you sure you want to close this form?
+            </p>
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
+              <ActionButton variant="secondary" onClick={() => setShowCloseConfirm(false)}>
+                Continue editing
+              </ActionButton>
+              <ActionButton variant="danger" onClick={confirmClose}>
+                Discard
+              </ActionButton>
+            </div>
+          </div>
+        </div>
+      )}
     </Modal>
   );
 };

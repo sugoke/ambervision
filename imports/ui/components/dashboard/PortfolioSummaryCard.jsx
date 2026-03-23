@@ -7,10 +7,10 @@ const CURRENCIES = [
   { code: 'GBP', symbol: '£', locale: 'en-GB', icon: '£' }
 ];
 
-const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, hideClientsCount = false }) => {
-  // Use selectedCurrency prop if provided, otherwise fall back to localStorage
+const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, userCurrency, hideClientsCount = false }) => {
+  // Use selectedCurrency prop if provided, otherwise fall back to localStorage, then user's referenceCurrency
   const [localCurrency, setLocalCurrency] = useState(() => {
-    return localStorage.getItem('dashboardCurrency') || 'EUR';
+    return localStorage.getItem('dashboardCurrency') || userCurrency || 'EUR';
   });
   const [dropdownOpen, setDropdownOpen] = useState(false);
 

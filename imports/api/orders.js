@@ -141,6 +141,8 @@ export const ORDER_STATUSES = {
   PENDING_VALIDATION: 'pending_validation',
   PENDING: 'pending',
   PENDING_MODIFICATION: 'pending_modification',
+  REVISION_REQUESTED: 'revision_requested',
+  TRANSMITTED: 'transmitted',
   SENT: 'sent',
   EXECUTED: 'executed',
   PARTIALLY_EXECUTED: 'partially_executed',
@@ -171,6 +173,7 @@ export const PRICE_TYPES = {
   MARKET: 'market',
   LIMIT: 'limit',
   STOP_LOSS: 'stop_loss',
+  STOP_LIMIT: 'stop_limit',
   TAKE_PROFIT: 'take_profit'
 };
 
@@ -192,6 +195,25 @@ export const TERM_DEPOSIT_TENORS = [
   { value: '1Y', label: '1 Year' },
   { value: '2Y', label: '2 Years' }
 ];
+
+// Order validity types
+export const VALIDITY_TYPES = {
+  DAY: 'day',
+  GTC: 'gtc',     // Good Till Canceled
+  GTD: 'gtd'      // Good Till Date
+};
+
+// Linked order types (TP/SL legs)
+export const LINKED_ORDER_TYPES = {
+  TAKE_PROFIT: 'take_profit',
+  STOP_LOSS: 'stop_loss'
+};
+
+// Order source types (how the client instruction was received)
+export const ORDER_SOURCE_TYPES = {
+  EMAIL: 'email',
+  PHONE: 'phone',
+};
 
 // Termsheet statuses (structured products only)
 export const TERMSHEET_STATUSES = {
@@ -273,6 +295,8 @@ export const OrderFormatters = {
       [ORDER_STATUSES.PENDING_VALIDATION]: 'Pending Validation',
       [ORDER_STATUSES.PENDING]: 'Pending',
       [ORDER_STATUSES.PENDING_MODIFICATION]: 'Pending Modification',
+      [ORDER_STATUSES.REVISION_REQUESTED]: 'Revision Requested',
+      [ORDER_STATUSES.TRANSMITTED]: 'Transmitted',
       [ORDER_STATUSES.SENT]: 'Sent',
       [ORDER_STATUSES.EXECUTED]: 'Executed',
       [ORDER_STATUSES.PARTIALLY_EXECUTED]: 'Partially Executed',
@@ -289,6 +313,8 @@ export const OrderFormatters = {
       [ORDER_STATUSES.PENDING_VALIDATION]: '#f97316', // orange
       [ORDER_STATUSES.PENDING]: '#f59e0b',     // amber
       [ORDER_STATUSES.PENDING_MODIFICATION]: '#a855f7', // purple
+      [ORDER_STATUSES.REVISION_REQUESTED]: '#e879f9', // pink
+      [ORDER_STATUSES.TRANSMITTED]: '#0ea5e9',  // sky blue
       [ORDER_STATUSES.SENT]: '#3b82f6',        // blue
       [ORDER_STATUSES.EXECUTED]: '#10b981',    // green
       [ORDER_STATUSES.PARTIALLY_EXECUTED]: '#8b5cf6', // purple
@@ -319,6 +345,7 @@ export const OrderFormatters = {
       [PRICE_TYPES.MARKET]: 'Market',
       [PRICE_TYPES.LIMIT]: 'Limit',
       [PRICE_TYPES.STOP_LOSS]: 'Stop Loss',
+      [PRICE_TYPES.STOP_LIMIT]: 'Stop Limit',
       [PRICE_TYPES.TAKE_PROFIT]: 'Take Profit'
     };
     return labels[priceType] || priceType || 'Market';
@@ -385,7 +412,8 @@ export function getOrderHealthCheck(order) {
   // 1. Client order email (always required once past draft)
   if (order.status !== ORDER_STATUSES.DRAFT) {
     const hasClientOrder = hasTrace(EMAIL_TRACE_TYPES.CLIENT_ORDER) ||
-      (order.pendingModification?.instructionFile != null);
+      (order.pendingModification?.instructionFile != null) ||
+      order.orderSource === 'phone';
     checks.push({ name: 'Client order', ok: hasClientOrder });
   }
 
@@ -471,7 +499,7 @@ export const OrderHelpers = {
 
   // Check if user can place orders (RM or Admin only)
   canPlaceOrders(userRole) {
-    return ['rm', 'admin', 'superadmin'].includes(userRole);
+    return ['rm', 'assistant', 'admin', 'superadmin'].includes(userRole);
   },
 
   // Validate sell order against position
@@ -552,6 +580,15 @@ export const OrderHelpers = {
         priceTypeLabel: OrderFormatters.getPriceTypeLabel(entry.priceType),
         newPriceTypeLabel: entry.newPriceType ? OrderFormatters.getPriceTypeLabel(entry.newPriceType) : null
       })),
+      // Validity fields
+      validityType: order.validityType || null,
+      validityLabel: order.validityType === 'gtc' ? 'Good Till Canceled' : order.validityType === 'gtd' ? `Good Till ${order.validityDate ? OrderFormatters.formatDate(order.validityDate) : 'Date'}` : order.validityType === 'day' ? 'Day Order' : null,
+      validityDateFormatted: order.validityDate ? OrderFormatters.formatDate(order.validityDate) : null,
+      // Linked orders (TP/SL legs)
+      parentOrderRef: order.parentOrderRef || null,
+      linkedOrderType: order.linkedOrderType || null,
+      linkedOrderGroup: order.linkedOrderGroup || null,
+      stopPriceFormatted: order.stopPrice ? OrderFormatters.formatWithCurrency(order.stopPrice, order.currency) : null,
       // Validation fields (four-eyes principle)
       validatedByName: order.validatedByName || null,
       validatedAtFormatted: order.validatedAt ? OrderFormatters.formatDateTime(order.validatedAt) : null,
@@ -569,84 +606,25 @@ export const OrderHelpers = {
 
   // Generate email body for mailto
   generateEmailBody(order, client, bank, bankAccount) {
+    const clientName = client
+      ? (client.profile?.clientType === 'company'
+        ? (client.profile?.companyName || 'our client')
+        : `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() || 'our client')
+      : 'our client';
+    const accountNumber = bankAccount?.accountNumber || order.portfolioCode || '';
+
     const lines = [
-      `Order Reference: ${order.orderReference}`,
-      `Date: ${OrderFormatters.formatDateTime(order.createdAt)}`,
+      'Dear Trading Desk,',
       '',
-      '--- ORDER DETAILS ---',
-      `Type: ${order.orderType.toUpperCase()}`,
-      `Security: ${order.securityName}`,
-      `ISIN: ${order.isin}`,
-      `Asset Type: ${OrderFormatters.getAssetTypeLabel(order.assetType)}`,
-      `Currency: ${order.currency}`,
-      `Quantity: ${OrderFormatters.formatQuantity(order.quantity)}`,
-      `Price Type: ${order.priceType === 'market' ? 'Market' : 'Limit'}`,
+      `Please find attached an order instruction (Ref: ${order.orderReference}) for the account of ${clientName}${accountNumber ? ` (account ${accountNumber})` : ''}.`,
+      '',
+      'We kindly ask you to process this order at your earliest convenience and confirm execution.',
+      '',
+      'Should you require any additional information, please do not hesitate to contact us.',
+      '',
+      'Kind regards,',
+      'Amberlake Partners'
     ];
-
-    if (order.priceType !== 'market' && order.limitPrice) {
-      lines.push(`${OrderFormatters.getPriceTypeLabel(order.priceType)} Price: ${OrderFormatters.formatWithCurrency(order.limitPrice, order.currency)}`);
-    }
-
-    if (order.estimatedValue) {
-      lines.push(`Estimated Value: ${OrderFormatters.formatWithCurrency(order.estimatedValue, order.currency)}`);
-    }
-
-    // FX-specific fields
-    if (order.assetType === 'fx') {
-      if (order.fxPair) lines.push(`FX Pair: ${order.fxPair}`);
-      if (order.fxSubtype) lines.push(`FX Type: ${order.fxSubtype === 'forward' ? 'Forward' : 'Spot'}`);
-      if (order.fxAmountCurrency) lines.push(`Amount Currency: ${order.fxAmountCurrency}`);
-      if (order.fxRate) lines.push(`Rate: ${order.fxRate.toFixed(6)}`);
-      if (order.limitPrice) lines.push(`Limit Price: ${order.limitPrice.toFixed(6)}`);
-      if (order.stopLossPrice) lines.push(`Stop Loss: ${order.stopLossPrice.toFixed(6)}`);
-      if (order.takeProfitPrice) lines.push(`Take Profit: ${order.takeProfitPrice.toFixed(6)}`);
-      if (order.fxValueDate) lines.push(`Value Date: ${OrderFormatters.formatDate(order.fxValueDate)}`);
-      if (order.fxForwardDate) lines.push(`Forward Date: ${OrderFormatters.formatDate(order.fxForwardDate)}`);
-    }
-
-    // Term Deposit-specific fields
-    if (order.assetType === 'term_deposit') {
-      if (order.depositCurrency) lines.push(`Deposit Currency: ${order.depositCurrency}`);
-      if (order.depositTenor) {
-        const tenorLabel = TERM_DEPOSIT_TENORS.find(t => t.value === order.depositTenor)?.label || order.depositTenor;
-        lines.push(`Tenor: ${tenorLabel}`);
-      }
-      if (order.depositMaturityDate) lines.push(`Maturity Date: ${OrderFormatters.formatDate(order.depositMaturityDate)}`);
-    }
-
-    if (order.broker) {
-      lines.push(`Broker / Issuer: ${order.broker}`);
-    }
-
-    if (order.underlyings) {
-      lines.push(`Underlyings: ${order.underlyings}`);
-    }
-
-    if (order.settlementCurrency) {
-      lines.push(`Settlement Currency: ${order.settlementCurrency}`);
-    }
-
-    lines.push(
-      '',
-      '--- ACCOUNT DETAILS ---',
-      `Client: ${client?.profile?.firstName || ''} ${client?.profile?.lastName || ''}`.trim(),
-      `Bank: ${bank?.name || 'N/A'}`,
-      `Account: ${bankAccount?.accountNumber || order.portfolioCode || 'N/A'}`,
-      `Portfolio: ${order.portfolioCode || 'N/A'}`
-    );
-
-    if (order.notes) {
-      lines.push('', '--- NOTES ---', order.notes);
-    }
-
-    lines.push(
-      '',
-      '---',
-      'Please find attached the Order Confirmation PDF.',
-      '',
-      'Best regards,',
-      'Ambervision Team'
-    );
 
     return lines.join('\n');
   },

@@ -963,8 +963,13 @@ if (Meteor.isServer) {
     }
     
     
+    // Remove cancelled observations (future events after an autocall)
+    const activeObservations = productCalled
+      ? processedObservations.filter(o => o.observationType !== 'N/A (Product Called)')
+      : processedObservations;
+
     // Determine if product was early autocalled or reached final maturity
-    const finalObservation = processedObservations[processedObservations.length - 1];
+    const finalObservation = activeObservations[activeObservations.length - 1];
     const isEarlyAutocall = productCalled && !finalObservation?.isFinalObservation;
     const isMaturedAtFinal = finalObservation?.isFinalObservation && finalObservation?.hasOccurred;
     
@@ -976,7 +981,7 @@ if (Meteor.isServer) {
 
     // FIXED: Correctly assign the accumulated values
     return {
-      observations: processedObservations,
+      observations: activeObservations,
       totalCouponsEarned: totalCouponsEarned,  // Actual coupons paid out
       totalCouponsEarnedFormatted: `${totalCouponsEarned.toFixed(2)}%`,
       totalMemoryCoupons: memoryCouponAccumulated,  // Memory accumulated but not paid
@@ -989,8 +994,8 @@ if (Meteor.isServer) {
       hasMemoryAutocall: hasMemoryAutocall,
       hasMemoryCoupon: hasMemoryCoupon,
       referencePerformance: referencePerformance,
-      totalObservations: processedObservations.length,
-      remainingObservations: productCalled ? 0 : processedObservations.filter(o => !o.hasOccurred).length
+      totalObservations: activeObservations.length,
+      remainingObservations: productCalled ? 0 : activeObservations.filter(o => !o.hasOccurred).length
     };
   };
 

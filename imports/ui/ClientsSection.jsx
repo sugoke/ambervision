@@ -59,9 +59,15 @@ const ClientsSection = ({ user: currentUser, theme }) => {
 
   // Helper to get user name (check both top-level and profile)
   const getUserName = (user) => {
+    const companyName = user.companyName || user.profile?.companyName || '';
+    const clientType = user.clientType || user.profile?.clientType || '';
+    // For company clients, use companyName as the display name
+    if (clientType === 'company' && companyName) {
+      return { firstName: companyName, lastName: '', companyName };
+    }
     const firstName = user.firstName || user.profile?.firstName || '';
     const lastName = user.lastName || user.profile?.lastName || '';
-    return { firstName, lastName };
+    return { firstName, lastName, companyName };
   };
 
   // Helper to get role display label and color
@@ -75,12 +81,16 @@ const ClientsSection = ({ user: currentUser, theme }) => {
         return { label: 'Compliance', color: '#0891b2', bg: 'rgba(8, 145, 178, 0.1)' };
       case USER_ROLES.RELATIONSHIP_MANAGER:
         return { label: 'RM', color: '#2563eb', bg: 'rgba(37, 99, 235, 0.1)' };
+      case USER_ROLES.ASSISTANT:
+        return { label: 'Assistant', color: '#7c3aed', bg: 'rgba(124, 58, 237, 0.1)' };
       case USER_ROLES.PROSPECT:
         return { label: 'Prospect', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.1)' };
       case USER_ROLES.STAFF:
         return { label: 'Staff', color: '#6366f1', bg: 'rgba(99, 102, 241, 0.1)' };
       case USER_ROLES.INTRODUCER:
         return { label: 'Introducer', color: '#ec4899', bg: 'rgba(236, 72, 153, 0.1)' };
+      case USER_ROLES.LIFE_INSURANCE:
+        return { label: 'Life Insurance', color: '#14b8a6', bg: 'rgba(20, 184, 166, 0.1)' };
       case USER_ROLES.CLIENT:
       default:
         return { label: 'Client', color: '#059669', bg: 'rgba(5, 150, 105, 0.1)' };
@@ -94,8 +104,10 @@ const ClientsSection = ({ user: currentUser, theme }) => {
       case USER_ROLES.ADMIN: return 2;
       case USER_ROLES.COMPLIANCE: return 3;
       case USER_ROLES.RELATIONSHIP_MANAGER: return 4;
-      case USER_ROLES.CLIENT: return 5;
-      default: return 6;
+      case USER_ROLES.ASSISTANT: return 5;
+      case USER_ROLES.CLIENT: return 6;
+      case USER_ROLES.LIFE_INSURANCE: return 7;
+      default: return 7;
     }
   };
 
@@ -107,8 +119,8 @@ const ClientsSection = ({ user: currentUser, theme }) => {
       if (userCategory !== selectedTab) return false;
 
       // Then filter by search term
-      const { firstName, lastName } = getUserName(user);
-      const fullName = `${firstName} ${lastName}`.toLowerCase();
+      const { firstName, lastName, companyName } = getUserName(user);
+      const fullName = `${firstName} ${lastName} ${companyName || ''}`.toLowerCase();
       const email = (user.email || '').toLowerCase();
       const roleDisplay = getRoleDisplay(user.role).label.toLowerCase();
       const search = searchTerm.toLowerCase();
@@ -119,11 +131,14 @@ const ClientsSection = ({ user: currentUser, theme }) => {
       const roleDiff = getRolePriority(a.role) - getRolePriority(b.role);
       if (roleDiff !== 0) return roleDiff;
       // Then sort by last name, first name
-      const { lastName: aLast, firstName: aFirst } = getUserName(a);
-      const { lastName: bLast, firstName: bFirst } = getUserName(b);
-      const lastNameCompare = (aLast || '').localeCompare(bLast || '');
-      if (lastNameCompare !== 0) return lastNameCompare;
-      return (aFirst || '').localeCompare(bFirst || '');
+      const aName = getUserName(a);
+      const bName = getUserName(b);
+      // Sort by lastName for persons, companyName for companies
+      const aSortKey = aName.companyName && !aName.lastName ? aName.companyName : aName.lastName || aName.firstName || '';
+      const bSortKey = bName.companyName && !bName.lastName ? bName.companyName : bName.lastName || bName.firstName || '';
+      const primaryCompare = aSortKey.localeCompare(bSortKey);
+      if (primaryCompare !== 0) return primaryCompare;
+      return (aName.firstName || '').localeCompare(bName.firstName || '');
     });
 
   // Count users per category for tab badges
@@ -132,7 +147,8 @@ const ClientsSection = ({ user: currentUser, theme }) => {
       [USER_TYPE_CATEGORIES.CLIENTS]: 0,
       [USER_TYPE_CATEGORIES.PROSPECTS]: 0,
       [USER_TYPE_CATEGORIES.STAFF]: 0,
-      [USER_TYPE_CATEGORIES.INTRODUCERS]: 0
+      [USER_TYPE_CATEGORIES.INTRODUCERS]: 0,
+      [USER_TYPE_CATEGORIES.LIFE_INSURANCE]: 0
     };
     users.forEach(user => {
       const category = getRoleCategory(user.role);
@@ -143,7 +159,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
     return counts;
   }, [users]);
 
-  const canCreateUsers = currentUser?.role === USER_ROLES.ADMIN || currentUser?.role === USER_ROLES.SUPERADMIN;
+  const canCreateUsers = currentUser?.role === USER_ROLES.ADMIN || currentUser?.role === USER_ROLES.SUPERADMIN || currentUser?.role === USER_ROLES.COMPLIANCE;
 
   const handleCreateUser = (e) => {
     e.preventDefault();
@@ -277,12 +293,14 @@ const ClientsSection = ({ user: currentUser, theme }) => {
         {/* Category Tabs */}
         <div style={{
           display: 'flex',
+          flexWrap: 'wrap',
           borderBottom: '1px solid var(--border-color)',
           background: 'var(--bg-primary)'
         }}>
           {[
             { id: USER_TYPE_CATEGORIES.CLIENTS, label: 'Clients', icon: '👤' },
             { id: USER_TYPE_CATEGORIES.PROSPECTS, label: 'Prospects', icon: '🎯' },
+            { id: USER_TYPE_CATEGORIES.LIFE_INSURANCE, label: 'Life Insurance', icon: '🛡️' },
             { id: USER_TYPE_CATEGORIES.STAFF, label: 'Staff', icon: '💼' },
             { id: USER_TYPE_CATEGORIES.INTRODUCERS, label: 'Introducers', icon: '🤝' }
           ].map(tab => (
@@ -293,8 +311,8 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                 setSelectedUserId(null); // Clear selection when switching tabs
               }}
               style={{
-                flex: 1,
-                padding: '0.75rem 0.5rem',
+                flex: '0 0 33.33%',
+                padding: '0.6rem 0.5rem',
                 background: selectedTab === tab.id ? 'var(--accent-color)' : 'transparent',
                 color: selectedTab === tab.id ? 'white' : 'var(--text-secondary)',
                 border: 'none',
@@ -392,6 +410,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                   onChange={(e) => setNewUserFirstName(e.target.value)}
                   style={{
                     flex: 1,
+                    minWidth: 0,
                     padding: '10px',
                     border: '1px solid var(--border-color)',
                     borderRadius: '6px',
@@ -407,6 +426,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                   onChange={(e) => setNewUserLastName(e.target.value)}
                   style={{
                     flex: 1,
+                    minWidth: 0,
                     padding: '10px',
                     border: '1px solid var(--border-color)',
                     borderRadius: '6px',
@@ -458,12 +478,16 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                   </optgroup>
                   <optgroup label="Staff">
                     <option value={USER_ROLES.RELATIONSHIP_MANAGER}>Relationship Manager</option>
+                    <option value={USER_ROLES.ASSISTANT}>Assistant</option>
                     <option value={USER_ROLES.COMPLIANCE}>Compliance</option>
                     <option value={USER_ROLES.STAFF}>Staff</option>
                     <option value={USER_ROLES.ADMIN}>Admin</option>
                     {currentUser?.role === USER_ROLES.SUPERADMIN && (
                       <option value={USER_ROLES.SUPERADMIN}>Super Admin</option>
                     )}
+                  </optgroup>
+                  <optgroup label="Life Insurance">
+                    <option value={USER_ROLES.LIFE_INSURANCE}>Life Insurance</option>
                   </optgroup>
                   <optgroup label="Introducers">
                     <option value={USER_ROLES.INTRODUCER}>Introducer</option>
@@ -537,9 +561,11 @@ const ClientsSection = ({ user: currentUser, theme }) => {
             </div>
           ) : (
             filteredUsers.map(user => {
-              const { firstName, lastName } = getUserName(user);
-              const displayName = firstName || lastName ? `${firstName} ${lastName}`.trim() : 'Unnamed';
-              const initials = `${firstName?.[0] || ''}${lastName?.[0] || ''}`.toUpperCase() || '?';
+              const { firstName, lastName, companyName } = getUserName(user);
+              const displayName = companyName && !lastName ? companyName : (firstName || lastName ? `${lastName} ${firstName}`.trim() : 'Unnamed');
+              const initials = companyName && !lastName
+                ? companyName.split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase()
+                : (`${firstName?.[0] || ''}${lastName?.[0] || ''}`.toUpperCase() || '?');
               const roleDisplay = getRoleDisplay(user.role);
 
               return (

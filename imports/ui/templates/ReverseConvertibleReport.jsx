@@ -1,6 +1,7 @@
 import React from 'react';
 import StructuredProductChart from '../components/StructuredProductChart.jsx';
 import UnderlyingNews from '../components/UnderlyingNews.jsx';
+import CopyableISIN from '../components/CopyableISIN.jsx';
 import PriceSparkline from '../components/PriceSparkline.jsx';
 
 /**
@@ -301,7 +302,7 @@ const ReverseConvertibleReport = ({ results, productId }) => {
                       {underlying.isin && (
                         <>
                           <span>•</span>
-                          <span>ISIN: {underlying.isin}</span>
+                          <CopyableISIN isin={underlying.isin} prefix="ISIN: " />
                         </>
                       )}
                     </div>

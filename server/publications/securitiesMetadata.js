@@ -35,7 +35,7 @@ Meteor.publish('securitiesMetadata', async function(sessionId, filters = {}) {
   }
 
   // Only publish to admin, superadmin, compliance, and relationship managers
-  const allowedRoles = ['admin', 'superadmin', 'compliance', 'rm'];
+  const allowedRoles = ['admin', 'superadmin', 'compliance', 'rm', 'assistant'];
   if (!allowedRoles.includes(user.role)) {
     console.log('[securitiesMetadata] User role not authorized:', user.role);
     return this.ready();

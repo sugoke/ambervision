@@ -2,7 +2,7 @@
 // Handles all product-related publications with role-based access control
 
 import { check } from 'meteor/check';
-import { UsersCollection, USER_ROLES } from '/imports/api/users';
+import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
 import { ProductsCollection } from '/imports/api/products';
 import { AllocationsCollection } from '/imports/api/allocations';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
@@ -89,12 +89,13 @@ Meteor.publish("products", async function (sessionId = null, viewAsFilter = null
     return ProductsCollection.find();
   }
 
-  // Relationship Manager sees products of their assigned clients
-  if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
-    // Get all clients assigned to this RM
+  // Relationship Manager / Assistant sees products of their assigned clients
+  if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT) {
+    // Get all clients assigned to this RM (or assistant's RMs)
+    const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
     const assignedClients = await UsersCollection.find({
       role: USER_ROLES.CLIENT,
-      relationshipManagerId: currentUser._id
+      relationshipManagerId: { $in: rmIds }
     }).fetchAsync();
 
     const clientIds = assignedClients.map(client => client._id);

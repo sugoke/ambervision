@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import CopyableISIN from './components/CopyableISIN.jsx';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Meteor } from 'meteor/meteor';
 import { ProductsCollection } from '/imports/api/products';
@@ -949,7 +950,9 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
                   fontFamily: 'monospace',
                   fontSize: '0.95rem'
                 }}>
-                  {displayProduct.isin || 'N/A'}
+                  {displayProduct.isin
+                    ? <CopyableISIN isin={displayProduct.isin} />
+                    : 'N/A'}
                 </div>
               </div>
 

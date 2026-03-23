@@ -4,7 +4,7 @@
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { OrdersCollection, ORDER_STATUSES } from '/imports/api/orders';
-import { UsersCollection, USER_ROLES } from '/imports/api/users';
+import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
 import { SessionsCollection } from '/imports/api/sessions';
 
 /**
@@ -26,9 +26,19 @@ async function validateSessionAndGetUser(sessionId) {
 }
 
 /**
+ * Get client IDs for an RM or assistant user
+ */
+async function getClientIdsForUser(user) {
+  const rmIds = UserHelpers.getEffectiveRmIds(user);
+  if (rmIds.length === 0) return [];
+  const clients = await UsersCollection.find({ relationshipManagerId: { $in: rmIds } }).fetchAsync();
+  return clients.map(c => c._id);
+}
+
+/**
  * Orders publication with role-based filtering
  * - Admins/Superadmins: All orders
- * - RMs: Orders for their clients only
+ * - RMs/Assistants: Orders for their clients only
  * - Clients: Their own orders only (read-only)
  */
 Meteor.publish('orders', async function(sessionId, filters = {}) {
@@ -52,10 +62,9 @@ Meteor.publish('orders', async function(sessionId, filters = {}) {
   if (user.role === USER_ROLES.CLIENT) {
     // Clients only see their own orders
     query.clientId = user._id;
-  } else if (user.role === 'rm') {
-    // RMs see orders for their clients
-    const rmClients = await UsersCollection.find({ relationshipManagerId: user._id }).fetchAsync();
-    const clientIds = rmClients.map(c => c._id);
+  } else if (user.role === 'rm' || user.role === 'assistant') {
+    // RMs/Assistants see orders for their clients
+    const clientIds = await getClientIdsForUser(user);
     query.clientId = { $in: clientIds };
   }
   // Admins and superadmins see all orders (no clientId filter)
@@ -65,7 +74,7 @@ Meteor.publish('orders', async function(sessionId, filters = {}) {
     query.status = Array.isArray(filters.status) ? { $in: filters.status } : filters.status;
   }
 
-  if (filters.clientId && (user.role === 'admin' || user.role === 'superadmin' || user.role === 'rm')) {
+  if (filters.clientId && (user.role === 'admin' || user.role === 'superadmin' || user.role === 'rm' || user.role === 'assistant')) {
     // Override for specific client filter (if user has permission)
     query.clientId = filters.clientId;
   }
@@ -79,7 +88,23 @@ Meteor.publish('orders', async function(sessionId, filters = {}) {
     limit: filters.limit || 100
   };
 
-  return OrdersCollection.find(query, options);
+  // Use observeChanges for reactivity (async publications can't return cursors reactively)
+  const pub = this;
+  const cursor = OrdersCollection.find(query, options);
+  const handle = cursor.observeChanges({
+    added(id, fields) {
+      pub.added('orders', id, fields);
+    },
+    changed(id, fields) {
+      pub.changed('orders', id, fields);
+    },
+    removed(id) {
+      pub.removed('orders', id);
+    }
+  });
+
+  this.ready();
+  this.onStop(() => handle.stop());
 });
 
 /**
@@ -107,16 +132,25 @@ Meteor.publish('orders.single', async function(sessionId, orderId) {
     if (order.clientId !== user._id) {
       return this.ready();
     }
-  } else if (user.role === 'rm') {
-    // RMs can see orders for their clients
+  } else if (user.role === 'rm' || user.role === 'assistant') {
+    // RMs/Assistants can see orders for their clients
     const client = await UsersCollection.findOneAsync(order.clientId);
-    if (!client || client.relationshipManagerId !== user._id) {
+    const rmIds = UserHelpers.getEffectiveRmIds(user);
+    if (!client || !rmIds.includes(client.relationshipManagerId)) {
       return this.ready();
     }
   }
   // Admins and superadmins can see all orders
 
-  return OrdersCollection.find({ _id: orderId });
+  const pub = this;
+  const cursor = OrdersCollection.find({ _id: orderId });
+  const handle = cursor.observeChanges({
+    added(id, fields) { pub.added('orders', id, fields); },
+    changed(id, fields) { pub.changed('orders', id, fields); },
+    removed(id) { pub.removed('orders', id); }
+  });
+  this.ready();
+  this.onStop(() => handle.stop());
 });
 
 /**
@@ -132,18 +166,17 @@ Meteor.publish('orders.pendingCount', async function(sessionId) {
   }
 
   // Only show pending count to RMs and Admins
-  if (!['rm', 'admin', 'superadmin'].includes(user.role)) {
+  if (!['rm', 'assistant', 'admin', 'superadmin'].includes(user.role)) {
     return this.ready();
   }
 
   const query = {
-    status: { $in: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING, ORDER_STATUSES.SENT] }
+    status: { $in: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING, ORDER_STATUSES.TRANSMITTED, ORDER_STATUSES.SENT] }
   };
 
-  // RMs only see count for their clients
-  if (user.role === 'rm') {
-    const rmClients = await UsersCollection.find({ relationshipManagerId: user._id }).fetchAsync();
-    const clientIds = rmClients.map(c => c._id);
+  // RMs/Assistants only see count for their clients
+  if (user.role === 'rm' || user.role === 'assistant') {
+    const clientIds = await getClientIdsForUser(user);
     query.clientId = { $in: clientIds };
   }
 
@@ -188,17 +221,16 @@ Meteor.publish('orders.bulkGroup', async function(sessionId, bulkOrderGroupId) {
     return this.ready();
   }
 
-  // Only RMs and Admins can view bulk groups
-  if (!['rm', 'admin', 'superadmin'].includes(user.role)) {
+  // Only RMs, Assistants, and Admins can view bulk groups
+  if (!['rm', 'assistant', 'admin', 'superadmin'].includes(user.role)) {
     return this.ready();
   }
 
   const query = { bulkOrderGroupId };
 
-  // RMs only see their clients' orders
-  if (user.role === 'rm') {
-    const rmClients = await UsersCollection.find({ relationshipManagerId: user._id }).fetchAsync();
-    const clientIds = rmClients.map(c => c._id);
+  // RMs/Assistants only see their clients' orders
+  if (user.role === 'rm' || user.role === 'assistant') {
+    const clientIds = await getClientIdsForUser(user);
     query.clientId = { $in: clientIds };
   }
 

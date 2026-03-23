@@ -52,7 +52,6 @@ const OrderBook = ({ user }) => {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [executeModalOpen, setExecuteModalOpen] = useState(false);
   const [newOrderModalOpen, setNewOrderModalOpen] = useState(false);
-  const [blotterRefreshKey, setBlotterRefreshKey] = useState(0);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [cancellationReason, setCancellationReason] = useState('');
 
@@ -82,6 +81,7 @@ const OrderBook = ({ user }) => {
 
   // Loading states for row actions
   const [loadingPDF, setLoadingPDF] = useState(null); // orderId currently generating PDF
+  const [loadingAuditPDF, setLoadingAuditPDF] = useState(null); // orderId currently generating audit trail PDF
   const [loadingEmail, setLoadingEmail] = useState(null); // orderId currently sending email
 
   // Email trace states
@@ -102,7 +102,7 @@ const OrderBook = ({ user }) => {
     };
   }, []);
 
-  // Load orders
+  // Load orders on filter changes
   useEffect(() => {
     loadOrders();
   }, [statusFilter, bankFilter, clientFilter, searchQuery, dateFrom, dateTo, currentPage, sortField, sortOrder]);
@@ -355,6 +355,36 @@ const OrderBook = ({ user }) => {
     }
   };
 
+  const handleGenerateAuditTrail = async (order) => {
+    setLoadingAuditPDF(order._id);
+    try {
+      const sessionId = getSessionId();
+      const result = await Meteor.callAsync('orders.generateAuditTrailPDF', { orderId: order._id, sessionId });
+
+      const byteCharacters = atob(result.pdfData);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: 'application/pdf' });
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${order.orderReference}_audit_trail.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Error generating Audit Trail PDF:', err);
+      alert('Failed to generate Audit Trail PDF: ' + (err.reason || err.message));
+    } finally {
+      setLoadingAuditPDF(null);
+    }
+  };
+
   const handleSendEmail = async (order) => {
     setLoadingEmail(order._id);
     try {
@@ -377,8 +407,6 @@ const OrderBook = ({ user }) => {
 
   const handleOrderCreated = (result) => {
     setNewOrderModalOpen(false);
-    loadOrders();
-    setBlotterRefreshKey(k => k + 1);
   };
 
   const handleSort = (field) => {
@@ -990,7 +1018,7 @@ const OrderBook = ({ user }) => {
           </div>
 
           {/* Validation Blotter (four-eyes principle) */}
-          <ValidationBlotter user={user} onOrderValidated={loadOrders} refreshKey={blotterRefreshKey} />
+          <ValidationBlotter user={user} />
 
           {/* Health Check Summary */}
           {!isLoading && orders.length > 0 && (() => {
@@ -1271,6 +1299,14 @@ const OrderBook = ({ user }) => {
               onClick={() => handleGeneratePDF(selectedOrder.order)}
             >
               {loadingPDF === selectedOrder.order._id ? '...' : 'PDF'}
+            </ActionButton>
+            <ActionButton
+              variant="secondary"
+              size="small"
+              disabled={loadingAuditPDF === selectedOrder.order._id}
+              onClick={() => handleGenerateAuditTrail(selectedOrder.order)}
+            >
+              {loadingAuditPDF === selectedOrder.order._id ? '...' : 'Audit Trail'}
             </ActionButton>
             {selectedOrder.order.status !== ORDER_STATUSES.CANCELLED &&
              selectedOrder.order.status !== ORDER_STATUSES.EXECUTED && (

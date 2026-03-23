@@ -7,7 +7,7 @@ console.log('🗓️ Loading schedule.js publication file...');
 import { Meteor } from 'meteor/meteor';
 import { Mongo } from 'meteor/mongo';
 import { check } from 'meteor/check';
-import { UsersCollection, USER_ROLES } from '/imports/api/users';
+import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
 import { ProductsCollection } from '/imports/api/products';
 import { AllocationsCollection } from '/imports/api/allocations';
 import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
@@ -78,11 +78,12 @@ Meteor.publish("schedule.observations", async function (sessionId = null, viewAs
   } else if (currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.ADMIN) {
     // Admin sees all products (when not using View As)
     productQuery = {};
-  } else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
-    // RM sees products of their assigned clients
+  } else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT) {
+    // RM/Assistant sees products of their assigned clients
+    const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
     const assignedClients = await UsersCollection.find({
       role: USER_ROLES.CLIENT,
-      relationshipManagerId: currentUser._id
+      relationshipManagerId: { $in: rmIds }
     }).fetchAsync();
 
     const clientIds = assignedClients.map(client => client._id);
@@ -185,7 +186,25 @@ Meteor.publish("schedule.observations", async function (sessionId = null, viewAs
 
     console.log('[SCHEDULE] Processing product:', product._id, 'Schedule items:', product.observationSchedule.length);
 
+    // Get product status to check if autocalled
+    const productStatus = productStatusMap[product._id] || { isEarlyAutocall: false, isMaturedAtFinal: false, productCalled: false };
+
+    // If product was autocalled, find the autocall observation index from report data
+    // so we can skip all subsequent observations
+    let autocallObsIndex = -1;
+    if (productStatus.isEarlyAutocall || productStatus.productCalled) {
+      const reportObservations = reportMap[product._id];
+      if (reportObservations) {
+        autocallObsIndex = reportObservations.findIndex(o => o.productCalled || o.autocalled);
+      }
+    }
+
     product.observationSchedule.forEach((obs, index) => {
+      // Skip observations after an autocall - they are cancelled
+      if (autocallObsIndex !== -1 && index > autocallObsIndex) {
+        return;
+      }
+
       // Log the actual observation object to see its structure
       console.log('[SCHEDULE] Observation', index, ':', JSON.stringify(obs));
 

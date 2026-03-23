@@ -4909,8 +4909,8 @@ const PortfolioManagementSystem = ({ user }) => {
         </div>
       )}
 
-      {/* Account Tab Layer - Show when viewing a specific client via viewAsFilter and they have multiple accounts */}
-      {viewAsFilter && accountTabs.length > 1 && (
+      {/* Account Tab Layer - Show when viewing a specific client via viewAsFilter, or for clients viewing their own accounts */}
+      {(viewAsFilter || user?.role === 'client') && accountTabs.length > 1 && (
         <div style={{
           display: 'flex',
           flexWrap: 'wrap',

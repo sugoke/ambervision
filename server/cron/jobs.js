@@ -18,6 +18,7 @@ import { UsersCollection, USER_ROLES } from '/imports/api/users.js';
 import { DashboardMetricsHelpers } from '/imports/api/dashboardMetrics.js';
 import { yieldToEventLoop } from '/imports/utils/asyncHelpers.js';
 import { ManualPriceTrackersCollection, ManualPriceTrackerHelpers } from '/imports/api/manualPriceTrackers.js';
+import { BankAccountsCollection } from '/imports/api/bankAccounts.js';
 import { scrapePrice } from '/imports/api/priceScraperService.js';
 
 /**
@@ -537,9 +538,10 @@ async function createConsolidatedHoldings() {
   console.log('[CRON] Creating consolidated holdings...');
 
   try {
-    // Get all unique userIds that have latest holdings (excluding existing CONSOLIDATED)
+    // Get all unique userIds that have latest active holdings (excluding existing CONSOLIDATED)
     const usersWithHoldings = await PMSHoldingsCollection.rawCollection().distinct('userId', {
       isLatest: true,
+      isActive: { $ne: false },
       portfolioCode: { $ne: 'CONSOLIDATED' }
     });
 
@@ -552,10 +554,12 @@ async function createConsolidatedHoldings() {
       const userId = usersWithHoldings[i];
       if (!userId) continue;
 
-      // Get all latest holdings for this user (excluding CONSOLIDATED)
+      // Get all latest active holdings for this user (excluding CONSOLIDATED)
+      // Must filter isActive to exclude sold/transferred positions that still have isLatest=true
       const holdings = await PMSHoldingsCollection.find({
         userId,
         isLatest: true,
+        isActive: { $ne: false },
         portfolioCode: { $ne: 'CONSOLIDATED' }
       }).fetchAsync();
 
@@ -1165,6 +1169,13 @@ async function regenerateTodaySnapshots() {
     operationCategory: 'CASH'
   }).fetchAsync();
 
+  // Exclude non-investment accounts from snapshots
+  const NON_INVESTMENT_COMMENTS = ['Credit line', 'Credit Card', 'Credit account', 'Spending'];
+  const nonInvestmentAccounts = await BankAccountsCollection.find({
+    comment: { $in: NON_INVESTMENT_COMMENTS }
+  }, { fields: { accountNumber: 1 } }).fetchAsync();
+  const excludedPortfolioCodes = nonInvestmentAccounts.map(a => a.accountNumber);
+
   let regenerated = 0;
   let errors = 0;
 
@@ -1175,11 +1186,12 @@ async function regenerateTodaySnapshots() {
       const bank = await BanksCollection.findOneAsync(connection.bankId);
       if (!bank) continue;
 
-      // Get today's latest holdings for this bank
+      // Get today's latest holdings for this bank (exclude CONSOLIDATED and non-investment accounts)
       const holdings = await PMSHoldingsCollection.find({
         bankId: connection.bankId,
         isLatest: true,
-        isActive: true
+        isActive: true,
+        portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes }
       }).fetchAsync();
 
       if (holdings.length === 0) continue;
@@ -1258,12 +1270,19 @@ async function computeDashboardMetrics() {
       'private_equity', 'private_debt', 'etf', 'fund'
     ];
 
-    // Step 1: Calculate current total AUM from latest holdings (exclude CONSOLIDATED to avoid double-counting)
+    // Exclude non-investment accounts (credit lines, credit cards, spending accounts)
+    const NON_INVESTMENT_COMMENTS = ['Credit line', 'Credit Card', 'Credit account', 'Spending'];
+    const nonInvestmentAccounts = await BankAccountsCollection.find({
+      comment: { $in: NON_INVESTMENT_COMMENTS }
+    }, { fields: { accountNumber: 1 } }).fetchAsync();
+    const excludedPortfolioCodes = nonInvestmentAccounts.map(a => a.accountNumber);
+
+    // Step 1: Calculate current total AUM from latest holdings (exclude CONSOLIDATED and non-investment accounts)
     const allHoldings = await PMSHoldingsCollection.find({
       isActive: true,
       isLatest: true,
       marketValue: { $exists: true, $gt: 0 },
-      portfolioCode: { $ne: 'CONSOLIDATED' },
+      portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
       $or: [
         { assetClass: { $in: aumAssetClasses } },
         { assetClass: null },

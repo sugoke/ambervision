@@ -63,6 +63,9 @@ settings-local.json
 # Bank files (sensitive - do not commit)
 bankfiles/
 
+# Order file storage (development fallback)
+.fichier_central/
+
 # Deployment configurations with credentials
 .deploy/
 deploy/mup.js

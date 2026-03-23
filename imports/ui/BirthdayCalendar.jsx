@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
-import { UsersCollection, USER_ROLES } from '/imports/api/users';
+import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
 import { useTheme } from './ThemeContext.jsx';
 
 const BirthdayCalendar = () => {
@@ -76,10 +76,11 @@ const BirthdayCalendar = () => {
       return allUsers;
     }
     
-    // Relationship Manager sees only their assigned clients
-    if (actualCurrentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
-      return allUsers.filter(user => 
-        user.role === USER_ROLES.CLIENT && user.relationshipManagerId === actualCurrentUser._id
+    // Relationship Manager / Assistant sees only their assigned clients
+    if (actualCurrentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || actualCurrentUser.role === USER_ROLES.ASSISTANT) {
+      const rmIds = UserHelpers.getEffectiveRmIds(actualCurrentUser);
+      return allUsers.filter(user =>
+        user.role === USER_ROLES.CLIENT && rmIds.includes(user.relationshipManagerId)
       );
     }
     
