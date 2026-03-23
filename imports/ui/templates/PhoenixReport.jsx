@@ -1,6 +1,7 @@
 import React from 'react';
 import StructuredProductChart from '../components/StructuredProductChart.jsx';
 import UnderlyingNews from '../components/UnderlyingNews.jsx';
+import CopyableISIN from '../components/CopyableISIN.jsx';
 import PriceSparkline from '../components/PriceSparkline.jsx';
 import { getTranslation, t } from '../../utils/reportTranslations';
 
@@ -193,9 +194,7 @@ const PhoenixReport = ({ results, productId }) => {
                       <span>{underlying.exchange}</span>
                       <span>{underlying.currency}</span>
                       {underlying.isin && (
-                        <>
-                          <span>ISIN: {underlying.isin}</span>
-                        </>
+                        <CopyableISIN isin={underlying.isin} prefix="ISIN: " />
                       )}
                     </div>
                   </div>

@@ -214,8 +214,13 @@ export const PhoenixChartBuilder = {
       }
     };
 
-    observationDates.forEach((obsDate, index) => {
-      const isFinal = index === observationDates.length - 1;
+    // If product was autocalled, only show observation dates up to the autocall
+    const activeObservationDates = (observationAnalysis && observationAnalysis.isEarlyAutocall && observationAnalysis.callDate)
+      ? observationDates.filter(d => d <= new Date(observationAnalysis.callDate).toISOString().split('T')[0])
+      : observationDates;
+
+    activeObservationDates.forEach((obsDate, index) => {
+      const isFinal = index === activeObservationDates.length - 1;
       annotations[`observation_${index}`] = {
         type: 'line',
         xMin: obsDate,
@@ -631,11 +636,13 @@ export const PhoenixChartBuilder = {
       const initialPriceRecord = history.find(p =>
         new Date(p.date).toISOString().split('T')[0] === tradeDateStr
       ) || history[0];
-      const initialPrice = initialPriceRecord?.adjustedClose || initialPriceRecord?.close || 100;
+      // Use close (actual/split-adjusted price), NOT adjustedClose (which includes dividend adjustments)
+      // Structured products reference the actual spot price for barrier/coupon evaluation
+      const initialPrice = initialPriceRecord?.close || initialPriceRecord?.adjustedClose || 100;
 
       return history.map(record => ({
         x: new Date(record.date).toISOString().split('T')[0],
-        y: ((record.adjustedClose || record.close) / initialPrice) * 100
+        y: ((record.close || record.adjustedClose) / initialPrice) * 100
       }));
 
     } catch (error) {

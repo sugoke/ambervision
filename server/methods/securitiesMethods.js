@@ -1262,9 +1262,10 @@ Meteor.methods({
    * Search securities for order creation (accessible by RM/Admin)
    * Searches across SecuritiesMetadata, Products, and PMS Holdings
    */
-  async 'securities.search'({ query, limit = 15 }, sessionId) {
+  async 'securities.search'({ query, limit = 15, assetType = null }, sessionId) {
     check(query, String);
     check(limit, Match.Optional(Number));
+    check(assetType, Match.Optional(Match.Maybe(String)));
     check(sessionId, String);
 
     // Validate session (not admin-only, but must be authenticated)
@@ -1283,8 +1284,8 @@ Meteor.methods({
       throw new Meteor.Error('not-authorized', 'User not found');
     }
 
-    // Only RMs and Admins can search securities for orders
-    if (!['rm', 'admin', 'superadmin'].includes(user.role)) {
+    // Only RMs, Assistants, and Admins can search securities for orders
+    if (!['rm', 'assistant', 'admin', 'superadmin'].includes(user.role)) {
       throw new Meteor.Error('not-authorized', 'Only RMs and Admins can search securities');
     }
 
@@ -1299,46 +1300,103 @@ Meteor.methods({
     const results = [];
     const seenISINs = new Set();
 
-    // 1. Search in Products FIRST (richest data for structured products - includes issuer, underlyings, denomination)
-    const productResults = await ProductsCollection.find({
-      $or: [
-        { isin: { $regex: escapedQuery, $options: 'i' } },
-        { title: { $regex: escapedQuery, $options: 'i' } }
-      ]
-    }, { limit: Math.ceil(limit / 2) }).fetchAsync();
+    // Determine which sources to search based on asset type
+    const isStructuredProduct = assetType === 'structured_product';
+    const isMarketInstrument = ['equity', 'etf', 'fund', 'bond'].includes(assetType);
 
-    productResults.forEach(prod => {
-      if (prod.isin && !seenISINs.has(prod.isin.toUpperCase())) {
-        seenISINs.add(prod.isin.toUpperCase());
-        // Build underlyings string from product data (e.g. "TSLA/AAPL/MSFT")
-        const underlyingsStr = prod.underlyings && Array.isArray(prod.underlyings)
-          ? prod.underlyings.map(u => u.ticker || u.name).filter(Boolean).join('/')
-          : '';
-        results.push({
-          _id: prod._id,
-          isin: prod.isin,
-          name: prod.title,
-          currency: prod.currency || prod.parameters?.currency || 'USD',
-          assetClass: 'structured_product',
-          source: 'product',
-          // Extra fields for auto-filling order details
-          issuer: prod.issuer || '',
-          denomination: prod.denomination || null,
-          underlyings: underlyingsStr,
-          notional: prod.notional || null
+    // 1. Ambervision Products — only for structured products (or no filter)
+    if (isStructuredProduct || !assetType) {
+      const productResults = await ProductsCollection.find({
+        $or: [
+          { isin: { $regex: escapedQuery, $options: 'i' } },
+          { title: { $regex: escapedQuery, $options: 'i' } }
+        ]
+      }, { limit: isStructuredProduct ? limit : Math.ceil(limit / 3) }).fetchAsync();
+
+      productResults.forEach(prod => {
+        if (prod.isin && !seenISINs.has(prod.isin.toUpperCase())) {
+          seenISINs.add(prod.isin.toUpperCase());
+          const underlyingsStr = prod.underlyings && Array.isArray(prod.underlyings)
+            ? prod.underlyings.map(u => u.ticker || u.name).filter(Boolean).join('/')
+            : '';
+          results.push({
+            _id: prod._id,
+            isin: prod.isin,
+            name: prod.title,
+            currency: prod.currency || prod.parameters?.currency || 'USD',
+            assetClass: 'structured_product',
+            source: 'product',
+            issuer: prod.issuer || '',
+            denomination: prod.denomination || null,
+            underlyings: underlyingsStr,
+            notional: prod.notional || null
+          });
+        }
+      });
+    }
+
+    // 2. EOD Historical live search — for market instruments (equity, etf, fund, bond) or no filter
+    if (isMarketInstrument || !assetType) {
+      try {
+        const eodResults = await EODApiHelpers.searchSecurities(query.trim(), isMarketInstrument ? limit : 10);
+        const typeMap = {
+          'Common Stock': 'equity',
+          'ETF': 'etf',
+          'Fund': 'fund',
+          'Bond': 'bond',
+          'Government Bond': 'bond',
+          'Corporate Bond': 'bond',
+          'Preferred Stock': 'equity',
+          'REIT': 'equity',
+          'Index': 'equity'
+        };
+
+        eodResults.forEach(eod => {
+          const eodIsin = eod.ISIN || '';
+          if (eodIsin && seenISINs.has(eodIsin.toUpperCase())) return;
+          if (eodIsin) seenISINs.add(eodIsin.toUpperCase());
+
+          // If a specific asset type is selected, filter EOD results to match
+          const eodType = (eod.Type || '').toLowerCase();
+          const eodAssetClass = typeMap[eod.Type] || (eodType.includes('bond') ? 'bond' : eodType.includes('fund') ? 'fund' : eodType.includes('etf') ? 'etf' : 'equity');
+          if (isMarketInstrument && assetType !== eodAssetClass && assetType !== 'other') return;
+
+          results.push({
+            _id: `eod_${eod.Code}_${eod.Exchange}`,
+            isin: eodIsin || `${eod.Code}.${eod.Exchange}`,
+            name: eod.Name,
+            ticker: `${eod.Code}.${eod.Exchange}`,
+            exchange: eod.Exchange,
+            currency: eod.Currency || 'USD',
+            assetClass: eodAssetClass,
+            source: 'eod'
+          });
         });
+      } catch (err) {
+        console.warn('[securities.search] EOD live search failed:', err.message);
       }
-    });
+    }
 
-    // 2. Search in SecuritiesMetadata
+    // 3. SecuritiesMetadata (local DB) — for any type as supplementary results
     if (results.length < limit) {
-      const metadataResults = await SecuritiesMetadataCollection.find({
+      const metaQuery = {
         $or: [
           { isin: { $regex: escapedQuery, $options: 'i' } },
           { securityName: { $regex: escapedQuery, $options: 'i' } },
           { ticker: { $regex: escapedQuery, $options: 'i' } }
         ]
-      }, { limit: Math.ceil(limit / 2) }).fetchAsync();
+      };
+      // Filter by asset class if specified
+      if (isMarketInstrument) {
+        metaQuery.assetClass = assetType;
+      } else if (isStructuredProduct) {
+        metaQuery.assetClass = 'structured_product';
+      }
+
+      const metadataResults = await SecuritiesMetadataCollection.find(
+        metaQuery,
+        { limit: limit - results.length }
+      ).fetchAsync();
 
       metadataResults.forEach(sec => {
         if (sec.isin && !seenISINs.has(sec.isin.toUpperCase())) {
@@ -1357,15 +1415,23 @@ Meteor.methods({
       });
     }
 
-    // 3. Search in PMSHoldings (for securities not in metadata or products)
+    // 4. PMSHoldings fallback — for anything not found above
     if (results.length < limit) {
-      const holdingResults = await PMSHoldingsCollection.find({
+      const holdingQuery = {
         isLatest: true,
         $or: [
           { isin: { $regex: escapedQuery, $options: 'i' } },
           { securityName: { $regex: escapedQuery, $options: 'i' } }
         ]
-      }, { limit: Math.ceil(limit / 2) }).fetchAsync();
+      };
+      if (isMarketInstrument || isStructuredProduct) {
+        holdingQuery.assetClass = isStructuredProduct ? 'structured_product' : assetType;
+      }
+
+      const holdingResults = await PMSHoldingsCollection.find(
+        holdingQuery,
+        { limit: limit - results.length }
+      ).fetchAsync();
 
       holdingResults.forEach(hold => {
         if (hold.isin && !seenISINs.has(hold.isin.toUpperCase())) {

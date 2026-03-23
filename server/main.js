@@ -377,12 +377,13 @@ Meteor.startup(async () => {
 
     // AllocationsCollection is already imported at the top
 
-    // Relationship Manager sees products of their assigned clients
-    if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
-      // Get all clients assigned to this RM
+    // Relationship Manager / Assistant sees products of their assigned clients
+    if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT) {
+      // Get all clients assigned to this RM (or assistant's RMs)
+      const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
       const assignedClients = await UsersCollection.find({
         role: USER_ROLES.CLIENT,
-        relationshipManagerId: currentUser._id
+        relationshipManagerId: { $in: rmIds }
       }).fetchAsync();
       
       const clientIds = assignedClients.map(client => client._id);
@@ -464,10 +465,11 @@ Meteor.startup(async () => {
         clientId: currentUser._id 
       });
       hasAccess = !!allocation;
-    } else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
+    } else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT) {
+      const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
       const assignedClients = await UsersCollection.find({
         role: USER_ROLES.CLIENT,
-        relationshipManagerId: currentUser._id
+        relationshipManagerId: { $in: rmIds }
       }).fetchAsync();
       
       const clientIds = assignedClients.map(client => client._id);
@@ -1820,8 +1822,8 @@ Meteor.methods({
       }
 
       // 2. Check if caller has permission to create users
-      if (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN) {
-        throw new Meteor.Error('access-denied', 'Only admins can create users');
+      if (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN && currentUser.role !== USER_ROLES.COMPLIANCE) {
+        throw new Meteor.Error('access-denied', 'Only admins and compliance can create users');
       }
 
       // 3. Check if admin is trying to create superadmin (only superadmin can do this)
@@ -2327,9 +2329,9 @@ Meteor.methods({
     // Validate session and get current user
     const currentUser = await validateSessionAndGetUser(sessionId);
 
-    // Only admins and superadmins can create bank accounts for users
-    if (!currentUser || (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN)) {
-      throw new Meteor.Error('not-authorized', 'Only administrators can create bank accounts for users');
+    // Only admins, superadmins, and compliance can create bank accounts for users
+    if (!currentUser || ![USER_ROLES.ADMIN, USER_ROLES.SUPERADMIN, USER_ROLES.COMPLIANCE].includes(currentUser.role)) {
+      throw new Meteor.Error('not-authorized', 'Only administrators or compliance can create bank accounts for users');
     }
 
     // Validate that the target user exists
@@ -2421,9 +2423,9 @@ Meteor.methods({
     // Validate session and get current user
     const currentUser = await validateSessionAndGetUser(sessionId);
     
-    // Only admins and superadmins can delete bank accounts
-    if (!currentUser || (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN)) {
-      throw new Meteor.Error('not-authorized', 'Only administrators can delete bank accounts');
+    // Only admins, superadmins, and compliance can delete bank accounts
+    if (!currentUser || ![USER_ROLES.ADMIN, USER_ROLES.SUPERADMIN, USER_ROLES.COMPLIANCE].includes(currentUser.role)) {
+      throw new Meteor.Error('not-authorized', 'Only administrators or compliance can delete bank accounts');
     }
 
     // Verify account exists
@@ -2488,10 +2490,10 @@ Meteor.methods({
 
   // Bank account linking methods
   async 'users.updateBankAccountLinks'(userId, linkedAccountIds) {
-    // Only admins and superadmins can link bank accounts to users
+    // Only admins, superadmins, and compliance can link bank accounts to users
     const currentUser = await UsersCollection.findOneAsync(this.userId);
-    if (!currentUser || (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN)) {
-      throw new Meteor.Error('not-authorized', 'Only administrators can link bank accounts to users');
+    if (!currentUser || ![USER_ROLES.ADMIN, USER_ROLES.SUPERADMIN, USER_ROLES.COMPLIANCE].includes(currentUser.role)) {
+      throw new Meteor.Error('not-authorized', 'Only administrators or compliance can link bank accounts to users');
     }
 
     // Validate that the target user exists
@@ -6692,10 +6694,10 @@ Meteor.methods({
 
     // Admins, superadmins, and RMs can use ViewAs filter
     const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
-    const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER;
+    const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
 
     if (!isAdmin && !isRM) {
-      throw new Meteor.Error('access-denied', 'Only admins and relationship managers can use ViewAs filter');
+      throw new Meteor.Error('access-denied', 'Only admins, relationship managers, and assistants can use ViewAs filter');
     }
 
     // If search term is empty, return empty results (don't load everything)
@@ -6716,9 +6718,10 @@ Meteor.methods({
       ]
     };
 
-    // RMs can only see their assigned clients
+    // RMs/Assistants can only see their assigned clients
     if (isRM) {
-      clientQuery.relationshipManagerId = currentUser._id;
+      const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
+      clientQuery.relationshipManagerId = { $in: rmIds };
     }
 
     // Search clients (limit to 5 results for performance)
@@ -7024,14 +7027,10 @@ WebApp.connectHandlers.use('/fichier_central', async (req, res, next) => {
   }
 });
 
-// Server-side routing for order email traces from persistent volume
+// Server-side routing for order email traces
 WebApp.connectHandlers.use('/order_traces', async (req, res, next) => {
   // URL format: /order_traces/{orderId}/{filename}
   const urlParts = req.url.split('/').filter(p => p);
-
-  if (!process.env.FICHIER_CENTRAL_PATH) {
-    return next();
-  }
 
   if (urlParts.length !== 2) {
     return next();
@@ -7040,11 +7039,23 @@ WebApp.connectHandlers.use('/order_traces', async (req, res, next) => {
   const [orderId, filename] = urlParts;
 
   try {
-    const filePath = path.join(process.env.FICHIER_CENTRAL_PATH, 'orders', orderId, filename);
+    // Resolve base path: FICHIER_CENTRAL_PATH in production, .fichier_central/ in dev
+    let ordersBase;
+    if (process.env.FICHIER_CENTRAL_PATH) {
+      ordersBase = path.join(process.env.FICHIER_CENTRAL_PATH, 'orders');
+    } else {
+      let projectRoot = process.cwd();
+      if (projectRoot.includes('.meteor')) {
+        projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
+      }
+      ordersBase = path.join(projectRoot, '.fichier_central', 'orders');
+    }
+
+    const filePath = path.join(ordersBase, orderId, filename);
 
     // Security: Prevent directory traversal
     const normalizedPath = path.normalize(filePath);
-    if (!normalizedPath.startsWith(path.join(process.env.FICHIER_CENTRAL_PATH, 'orders'))) {
+    if (!normalizedPath.startsWith(ordersBase)) {
       console.error('Security: Attempted directory traversal:', req.url);
       res.writeHead(403, { 'Content-Type': 'text/plain' });
       res.end('Forbidden');

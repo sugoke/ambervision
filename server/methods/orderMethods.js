@@ -5,14 +5,17 @@ import path from 'path';
 import { Random } from 'meteor/random';
 import { SessionsCollection } from '../../imports/api/sessions.js';
 import { generatePDFFromHTML } from '../helpers/pdfHelper.js';
-import { UsersCollection } from '../../imports/api/users.js';
+import { UsersCollection, UserHelpers } from '../../imports/api/users.js';
 import { BanksCollection } from '../../imports/api/banks.js';
 import { BankAccountsCollection } from '../../imports/api/bankAccounts.js';
 import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
+import { ProductsCollection } from '../../imports/api/products.js';
 import { PMSOperationsCollection } from '../../imports/api/pmsOperations.js';
-import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, FX_SUBTYPES, TERM_DEPOSIT_TENORS, OrderHelpers, OrderFormatters } from '../../imports/api/orders.js';
+import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, FX_SUBTYPES, TERM_DEPOSIT_TENORS, OrderHelpers, OrderFormatters } from '../../imports/api/orders.js';
 import { OrderCountersCollection, OrderCounterHelpers } from '../../imports/api/orderCounters.js';
 import { EmailService } from '../../imports/api/emailService.js';
+import { AccountProfilesCollection, aggregateToFourCategories, getBreakdownKeyForAssetType, mapOrderAssetTypeToProfileCategory } from '../../imports/api/accountProfiles.js';
+import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetadata.js';
 
 /**
  * Order Management Server Methods
@@ -74,16 +77,209 @@ async function validateOrderAccess(order, user) {
     return true;
   }
 
-  // RMs can access orders for their clients
-  if (user.role === 'rm') {
-    // Check if the order's client is managed by this RM
+  // RMs/Assistants can access orders for their clients
+  if (user.role === 'rm' || user.role === 'assistant') {
     const client = await UsersCollection.findOneAsync(order.clientId);
-    if (client && client.relationshipManagerId === user._id) {
+    const rmIds = UserHelpers.getEffectiveRmIds(user);
+    if (client && rmIds.includes(client.relationshipManagerId)) {
       return true;
     }
   }
 
   throw new Meteor.Error('not-authorized', 'You do not have access to this order');
+}
+
+/**
+ * Check allocation impact of a new order against profile limits.
+ * Reusable by both the preview method and inline in orders.create.
+ */
+async function checkAllocationImpact({ bankAccountId, clientId, assetType, estimatedValue, capitalProtected }) {
+  const profile = await AccountProfilesCollection.findOneAsync({ bankAccountId });
+  if (!profile) {
+    return { hasProfile: false, hasBreaches: false };
+  }
+
+  const bankAccount = await BankAccountsCollection.findOneAsync(bankAccountId);
+  if (!bankAccount) {
+    return { hasProfile: true, hasBreaches: false };
+  }
+
+  // Get all holdings for this account (including cash)
+  const holdings = await PMSHoldingsCollection.find({
+    userId: clientId,
+    isActive: true,
+    isLatest: true,
+    portfolioCode: { $regex: new RegExp('^' + bankAccount.accountNumber.split('-')[0]) }
+  }).fetchAsync();
+
+  // Separate cash and investment holdings
+  const cashHoldings = holdings.filter(h => {
+    const ac = (h.assetClass || '').toLowerCase();
+    const name = (h.securityName || '').toLowerCase();
+    return ac === 'cash' || ac === 'liquidity' || /^(cash|liquidity|compte|konto)/i.test(name);
+  });
+  const investmentHoldings = holdings.filter(h => {
+    const ac = (h.assetClass || '').toLowerCase();
+    const name = (h.securityName || '').toLowerCase();
+    return !(ac === 'cash' || ac === 'liquidity' || /^(cash|liquidity|compte|konto)/i.test(name));
+  });
+
+  // Build assetClassBreakdown from holdings (mirrors portfolioSnapshots.js logic)
+  const assetClassBreakdown = {};
+  const cashTotal = cashHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+  if (cashTotal > 0) {
+    assetClassBreakdown['cash'] = cashTotal;
+  }
+
+  // Batch lookup securities metadata
+  const isins = [...new Set(investmentHoldings.map(h => h.isin).filter(Boolean))];
+  const metadataMap = {};
+  if (isins.length > 0) {
+    const metadataRecords = await SecuritiesMetadataCollection.find({
+      isin: { $in: isins }
+    }).fetchAsync();
+    metadataRecords.forEach(record => { metadataMap[record.isin] = record; });
+  }
+
+  investmentHoldings.forEach(h => {
+    let holdingAssetClass = 'other';
+    let subClass = null;
+    let underlyingType = null;
+    let protectionType = null;
+
+    // Priority 1: metadata
+    if (h.isin && metadataMap[h.isin]) {
+      const metadata = metadataMap[h.isin];
+      if (metadata.assetClass) {
+        holdingAssetClass = metadata.assetClass;
+        subClass = metadata.assetSubClass;
+        underlyingType = metadata.structuredProductUnderlyingType;
+        protectionType = metadata.structuredProductProtectionType;
+      }
+    }
+
+    // Priority 2: holding's own assetClass
+    if (holdingAssetClass === 'other' && h.assetClass) {
+      holdingAssetClass = h.assetClass;
+      if (h.bankSpecificData) {
+        underlyingType = h.bankSpecificData.structuredProductUnderlyingType || underlyingType;
+        protectionType = h.bankSpecificData.structuredProductProtectionType || protectionType;
+      }
+    }
+
+    // Priority 3: heuristic detection
+    if (holdingAssetClass === 'other') {
+      const type = String(h.securityType || '').trim().toLowerCase();
+      const name = (h.securityName || '').toLowerCase();
+
+      const isStructuredByType = type === 'certificate' || type === 'structured' || type === '19';
+      const isStructuredByIssuer = name.includes('sg issuer') || name.includes('julius baer express') ||
+          name.includes('bnp paribas iss') || name.includes('raiffeisen ch') ||
+          name.includes('banque intern') || name.includes('credit suisse ag') ||
+          name.includes('credit agricole') || name.includes('citigroup') ||
+          name.includes('ubs ag') || name.includes('vontobel');
+      const isStructuredByName = name.includes('autocallable') || name.includes('phoenix') ||
+          name.includes('orion') || name.includes('himalaya') || name.includes('reverse convertible') ||
+          name.includes('bar.cap') || name.includes('barrier') || name.includes('express') ||
+          name.includes('cap.prot') || name.includes('capital prot') ||
+          (name.includes('cert') && !name.includes('certificate of deposit'));
+
+      if (isStructuredByType || isStructuredByIssuer || isStructuredByName) {
+        holdingAssetClass = 'structured_product';
+        if (name.includes('capital guaranteed') || name.includes('cap.prot') ||
+            name.includes('capital protection') || name.includes('100%')) {
+          protectionType = 'capital_guaranteed_100';
+        } else if (name.includes('bar.cap') || name.includes('barrier')) {
+          protectionType = 'capital_protected_conditional';
+        }
+      } else if (type === '13' || name.includes('private equity') || name.includes('schroders capital') ||
+          name.includes('kkr') || name.includes('blackstone')) {
+        holdingAssetClass = 'private_equity';
+      } else if (type === 'money_market_fund' || (name.includes('money market') && name.includes('fund'))) {
+        holdingAssetClass = 'monetary_products';
+      } else if (type === 'fund' || type === 'etf' || name.includes('sicav') || name.includes('ucits')) {
+        holdingAssetClass = 'fund';
+      } else if (type === '1' || type === 'equity' || type === 'stock') {
+        holdingAssetClass = 'equity';
+        if (name.includes('fund') || name.includes('etf')) subClass = 'equity_fund';
+        else subClass = 'direct_equity';
+      } else if (type === '2' || type === 'bond' || name.includes('treasury')) {
+        holdingAssetClass = 'fixed_income';
+        if (name.includes('fund')) subClass = 'fixed_income_fund';
+        else subClass = 'direct_bond';
+      } else if (type === 'cash') {
+        holdingAssetClass = 'cash';
+      } else if (type === 'term_deposit' || name.includes('term deposit') || name.includes('time deposit') || name.includes('fixed deposit')) {
+        holdingAssetClass = 'time_deposit';
+      } else if (name.includes('gold') || name.includes('commodity') || name.includes('metal')) {
+        holdingAssetClass = 'commodities';
+      }
+    }
+
+    // Build granular category key
+    let categoryKey = holdingAssetClass;
+    if (holdingAssetClass === 'structured_product') {
+      if (protectionType === 'capital_guaranteed_100') categoryKey = 'structured_product_capital_guaranteed';
+      else if (protectionType === 'capital_guaranteed_partial') categoryKey = 'structured_product_partial_guarantee';
+      else if (protectionType === 'capital_protected_conditional') categoryKey = 'structured_product_barrier_protected';
+      else if (underlyingType) categoryKey = `structured_product_${underlyingType}`;
+    } else if (holdingAssetClass === 'equity' && subClass) {
+      categoryKey = `equity_${subClass}`;
+    } else if (holdingAssetClass === 'fixed_income' && subClass) {
+      categoryKey = `fixed_income_${subClass}`;
+    }
+
+    assetClassBreakdown[categoryKey] = (assetClassBreakdown[categoryKey] || 0) + (h.marketValue || 0);
+  });
+
+  const totalValue = Object.values(assetClassBreakdown).reduce((sum, v) => sum + v, 0);
+  if (totalValue === 0) {
+    return { hasProfile: true, hasBreaches: false };
+  }
+
+  // Current allocation
+  const currentAllocation = aggregateToFourCategories(assetClassBreakdown, totalValue);
+
+  // Projected allocation: add estimated value to the appropriate breakdown key
+  const breakdownKey = getBreakdownKeyForAssetType(assetType, !!capitalProtected);
+  const projectedBreakdown = { ...assetClassBreakdown };
+  projectedBreakdown[breakdownKey] = (projectedBreakdown[breakdownKey] || 0) + estimatedValue;
+  const projectedTotal = totalValue + estimatedValue;
+  const projectedAllocation = aggregateToFourCategories(projectedBreakdown, projectedTotal);
+
+  // Compare against limits
+  const profileLimits = {
+    maxCash: profile.maxCash,
+    maxBonds: profile.maxBonds,
+    maxEquities: profile.maxEquities,
+    maxAlternative: profile.maxAlternative
+  };
+
+  const breaches = [];
+  const checks = [
+    { category: 'cash', projected: projectedAllocation.cash, current: currentAllocation.cash, limit: profile.maxCash },
+    { category: 'bonds', projected: projectedAllocation.bonds, current: currentAllocation.bonds, limit: profile.maxBonds },
+    { category: 'equities', projected: projectedAllocation.equities, current: currentAllocation.equities, limit: profile.maxEquities },
+    { category: 'alternative', projected: projectedAllocation.alternative, current: currentAllocation.alternative, limit: profile.maxAlternative }
+  ];
+
+  for (const c of checks) {
+    if (c.projected > c.limit) {
+      breaches.push(c);
+    }
+  }
+
+  const orderCategory = mapOrderAssetTypeToProfileCategory(assetType, { capitalProtected: !!capitalProtected });
+
+  return {
+    hasProfile: true,
+    hasBreaches: breaches.length > 0,
+    currentAllocation,
+    projectedAllocation,
+    profileLimits,
+    breaches,
+    orderCategory
+  };
 }
 
 Meteor.methods({
@@ -133,13 +329,26 @@ Meteor.methods({
       fxAmountCurrency: Match.Maybe(String),
       fxForwardDate: Match.Maybe(String),
       fxValueDate: Match.Maybe(String),
+      stopPrice: Match.Maybe(Number),
       stopLossPrice: Match.Maybe(Number),
       takeProfitPrice: Match.Maybe(Number),
+      // Validity
+      validityType: Match.Maybe(String),
+      validityDate: Match.Maybe(String),
+      // Attached TP/SL legs
+      attachedTakeProfit: Match.Maybe(Number),
+      attachedStopLoss: Match.Maybe(Number),
       // Term Deposit-specific fields
       depositTenor: Match.Maybe(String),
       depositCurrency: Match.Maybe(String),
       depositMaturityDate: Match.Maybe(String),
-      depositAction: Match.Maybe(String)
+      depositAction: Match.Maybe(String),
+      // Allocation check
+      capitalProtected: Match.Maybe(Boolean),
+      allocationJustification: Match.Maybe(String),
+      // Order source (email or phone)
+      orderSource: Match.Maybe(String),
+      phoneCallTime: Match.Maybe(String)
     });
 
     const { user, userId, userDisplayName } = await validateSession(sessionId);
@@ -196,7 +405,7 @@ Meteor.methods({
     const tradeMode = orderData.tradeMode || (orderData.bulkOrderGroupId ? TRADE_MODES.BLOCK : TRADE_MODES.INDIVIDUAL);
 
     // Create order document
-    const hasLimitPrice = orderData.priceType !== 'market';
+    const hasLimitPrice = orderData.priceType === 'limit' || orderData.priceType === 'stop_limit';
     const order = {
       orderReference,
       orderType: orderData.orderType,
@@ -218,6 +427,7 @@ Meteor.methods({
       notes: orderData.notes || null,
       bulkOrderGroupId: orderData.bulkOrderGroupId || null,
       wealthAmbassador: waInitials,
+      createdByName: userDisplayName,
       broker: orderData.broker || null,
       settlementCurrency: orderData.settlementCurrency || null,
       underlyings: orderData.underlyings || null,
@@ -231,6 +441,7 @@ Meteor.methods({
       fxAmountCurrency: orderData.fxAmountCurrency || null,
       fxForwardDate: orderData.fxForwardDate ? new Date(orderData.fxForwardDate) : null,
       fxValueDate: orderData.fxValueDate ? new Date(orderData.fxValueDate) : null,
+      stopPrice: orderData.stopPrice || null,
       stopLossPrice: orderData.stopLossPrice || null,
       takeProfitPrice: orderData.takeProfitPrice || null,
       // Term Deposit-specific fields
@@ -238,6 +449,16 @@ Meteor.methods({
       depositCurrency: orderData.depositCurrency || null,
       depositMaturityDate: orderData.depositMaturityDate ? new Date(orderData.depositMaturityDate) : null,
       depositAction: orderData.depositAction || null,
+      // Validity
+      validityType: orderData.validityType || null,
+      validityDate: orderData.validityDate ? new Date(orderData.validityDate) : null,
+      // Order source (email or phone)
+      orderSource: orderData.orderSource || 'email',
+      ...(orderData.phoneCallTime ? { phoneCallTime: orderData.phoneCallTime } : {}),
+      // Linked order group (set when TP/SL legs are attached)
+      linkedOrderGroup: null,
+      linkedOrderType: null,
+      parentOrderRef: null,
       // Limit modification history
       limitHistory: [],
       createdAt: new Date(),
@@ -245,6 +466,33 @@ Meteor.methods({
       updatedAt: new Date(),
       updatedBy: userId
     };
+
+    // Allocation compliance check (buy orders only, non-blocking)
+    if (orderData.orderType === 'buy' && orderData.estimatedValue) {
+      try {
+        const allocationResult = await checkAllocationImpact({
+          bankAccountId: orderData.bankAccountId,
+          clientId: orderData.clientId,
+          assetType: orderData.assetType,
+          estimatedValue: orderData.estimatedValue,
+          capitalProtected: orderData.capitalProtected
+        });
+        if (allocationResult.hasProfile && allocationResult.hasBreaches) {
+          order.allocationWarning = {
+            breaches: allocationResult.breaches,
+            currentAllocation: allocationResult.currentAllocation,
+            projectedAllocation: allocationResult.projectedAllocation,
+            profileLimits: allocationResult.profileLimits,
+            orderCategory: allocationResult.orderCategory,
+            checkedAt: new Date(),
+            ...(orderData.allocationJustification ? { justification: orderData.allocationJustification } : {})
+          };
+          console.log(`[ORDERS] Allocation warning on ${orderReference}: ${allocationResult.breaches.map(b => `${b.category} ${b.projected.toFixed(1)}%>${b.limit}%`).join(', ')}`);
+        }
+      } catch (allocErr) {
+        console.error('[ORDERS] Allocation check error (non-blocking):', allocErr.message);
+      }
+    }
 
     // Get source position quantity for sell orders
     if (orderData.orderType === 'sell' && orderData.sourceHoldingId) {
@@ -254,9 +502,57 @@ Meteor.methods({
       }
     }
 
+    // If attached TP/SL legs, set up linked group
+    const hasLinkedOrders = orderData.attachedTakeProfit || orderData.attachedStopLoss;
+    if (hasLinkedOrders) {
+      order.linkedOrderGroup = orderReference;
+    }
+
     const orderId = await OrdersCollection.insertAsync(order);
 
     console.log(`[ORDERS] Created order ${orderReference} (${orderId}) by ${userDisplayName} (${userId})`);
+
+    // Create linked Take Profit order
+    if (orderData.attachedTakeProfit) {
+      const tpRef = `${orderReference}-TP`;
+      const tpOrder = {
+        ...order,
+        _id: undefined,
+        orderReference: tpRef,
+        priceType: PRICE_TYPES.TAKE_PROFIT,
+        limitPrice: orderData.attachedTakeProfit,
+        stopPrice: null,
+        linkedOrderGroup: orderReference,
+        linkedOrderType: 'take_profit',
+        parentOrderRef: orderReference,
+        notes: `Take Profit leg for ${orderReference}${order.notes ? '. ' + order.notes : ''}`,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+      const tpId = await OrdersCollection.insertAsync(tpOrder);
+      console.log(`[ORDERS] Created linked TP order ${tpRef} (${tpId}) for ${orderReference}`);
+    }
+
+    // Create linked Stop Loss order
+    if (orderData.attachedStopLoss) {
+      const slRef = `${orderReference}-SL`;
+      const slOrder = {
+        ...order,
+        _id: undefined,
+        orderReference: slRef,
+        priceType: PRICE_TYPES.STOP_LOSS,
+        limitPrice: null,
+        stopPrice: orderData.attachedStopLoss,
+        linkedOrderGroup: orderReference,
+        linkedOrderType: 'stop_loss',
+        parentOrderRef: orderReference,
+        notes: `Stop Loss leg for ${orderReference}${order.notes ? '. ' + order.notes : ''}`,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+      const slId = await OrdersCollection.insertAsync(slOrder);
+      console.log(`[ORDERS] Created linked SL order ${slRef} (${slId}) for ${orderReference}`);
+    }
 
     // Notify users with canValidateOrders permission (excluding the creator)
     try {
@@ -315,6 +611,7 @@ Meteor.methods({
       fxAmountCurrency: Match.Maybe(String),
       fxForwardDate: Match.Maybe(String),
       fxValueDate: Match.Maybe(String),
+      stopPrice: Match.Maybe(Number),
       stopLossPrice: Match.Maybe(Number),
       takeProfitPrice: Match.Maybe(Number),
       // Term Deposit-specific fields
@@ -322,6 +619,9 @@ Meteor.methods({
       depositCurrency: Match.Maybe(String),
       depositMaturityDate: Match.Maybe(String),
       depositAction: Match.Maybe(String),
+      // Order source (email or phone)
+      orderSource: Match.Maybe(String),
+      phoneCallTime: Match.Maybe(String),
       orders: [{
         clientId: String,
         bankAccountId: String,
@@ -380,6 +680,8 @@ Meteor.methods({
         if (bulkOrderData.depositCurrency) sharedFields.depositCurrency = bulkOrderData.depositCurrency;
         if (bulkOrderData.depositMaturityDate) sharedFields.depositMaturityDate = bulkOrderData.depositMaturityDate;
         if (bulkOrderData.depositAction) sharedFields.depositAction = bulkOrderData.depositAction;
+        if (bulkOrderData.orderSource) sharedFields.orderSource = bulkOrderData.orderSource;
+        if (bulkOrderData.phoneCallTime) sharedFields.phoneCallTime = bulkOrderData.phoneCallTime;
 
         const result = await Meteor.callAsync('orders.create', {
           orderData: {
@@ -656,7 +958,7 @@ Meteor.methods({
     let instructionFilePath = null;
     if (clientInstructionFile) {
       try {
-        const basePath = process.env.FICHIER_CENTRAL_PATH || './public/fichier_central';
+        const basePath = process.env.FICHIER_CENTRAL_PATH || './.fichier_central';
         const ordersDir = path.join(basePath, 'orders', orderId);
         if (!fs.existsSync(ordersDir)) {
           fs.mkdirSync(ordersDir, { recursive: true });
@@ -964,6 +1266,14 @@ Meteor.methods({
       throw new Meteor.Error('invalid-operation', 'Cannot mark as executed while pending validation');
     }
 
+    // For transmitted orders, require bank confirmation email
+    if (order.status === ORDER_STATUSES.TRANSMITTED) {
+      const hasBankConfirmation = order.emailTraces?.some(t => t.traceType === 'bank_confirmation');
+      if (!hasBankConfirmation) {
+        throw new Meteor.Error('missing-trace', 'Please attach the bank execution email before marking as executed');
+      }
+    }
+
     // Determine status based on executed quantity
     let newStatus = ORDER_STATUSES.EXECUTED;
     if (executionData.executedQuantity < order.quantity) {
@@ -977,6 +1287,9 @@ Meteor.methods({
         executedPrice: executionData.executedPrice || null,
         executionDate: executionData.executionDate || new Date(),
         linkedHoldingId: executionData.linkedHoldingId || null,
+        executedBy: userId,
+        executedByName: userDisplayName,
+        executedAt: new Date(),
         updatedAt: new Date(),
         updatedBy: userId
       }
@@ -1086,9 +1399,10 @@ Meteor.methods({
     const query = {};
 
     // Role-based filtering
-    if (user.role === 'rm') {
-      // RMs only see orders for their clients
-      const rmClients = await UsersCollection.find({ relationshipManagerId: user._id }).fetchAsync();
+    if (user.role === 'rm' || user.role === 'assistant') {
+      // RMs/Assistants only see orders for their clients
+      const rmIds = UserHelpers.getEffectiveRmIds(user);
+      const rmClients = await UsersCollection.find({ relationshipManagerId: { $in: rmIds } }).fetchAsync();
       const clientIds = rmClients.map(c => c._id);
       query.clientId = { $in: clientIds };
     } else if (user.role === 'client') {
@@ -1186,10 +1500,7 @@ Meteor.methods({
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
 
-    // Cannot generate PDF for orders pending validation
-    if (order.status === ORDER_STATUSES.PENDING_VALIDATION) {
-      throw new Meteor.Error('invalid-operation', 'Cannot generate PDF for orders pending validation');
-    }
+    // PDF can be generated for any status
 
     // Get related data
     const client = await UsersCollection.findOneAsync(order.clientId);
@@ -1219,6 +1530,53 @@ Meteor.methods({
     } catch (error) {
       console.error('[ORDERS] Error generating PDF:', error);
       throw new Meteor.Error('pdf-generation-failed', `Failed to generate PDF: ${error.message}`);
+    }
+  },
+
+  /**
+   * Generate Audit Trail PDF for an order
+   * Includes order ticket, chronological lifecycle timeline, and attached documents
+   */
+  async 'orders.generateAuditTrailPDF'({ orderId, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    await validateOrderAccess(order, user);
+
+    // Get related data
+    const client = await UsersCollection.findOneAsync(order.clientId);
+    const bankAccount = await BankAccountsCollection.findOneAsync(order.bankAccountId);
+    const bank = await BanksCollection.findOneAsync(order.bankId);
+    const createdByUser = await UsersCollection.findOneAsync(order.createdBy);
+
+    // Build audit timeline
+    const timeline = buildAuditTimeline(order);
+
+    // Parse email trace contents
+    const parsedTraces = await parseEmailTraceContents(order);
+
+    // Build HTML
+    const html = generateAuditTrailPDFHTML(order, client, bankAccount, bank, createdByUser, timeline, parsedTraces);
+
+    console.log(`[ORDERS] Generating Audit Trail PDF for order: ${order.orderReference} by ${userDisplayName}`);
+
+    try {
+      const result = await generatePDFFromHTML(html, {
+        format: 'A4',
+        marginTop: '10mm',
+        marginRight: '15mm',
+        marginBottom: '10mm',
+        marginLeft: '15mm'
+      });
+
+      console.log('[ORDERS] Audit Trail PDF generated successfully for order:', order.orderReference);
+      return result;
+    } catch (error) {
+      console.error('[ORDERS] Error generating Audit Trail PDF:', error);
+      throw new Meteor.Error('pdf-generation-failed', `Failed to generate Audit Trail PDF: ${error.message}`);
     }
   },
 
@@ -1472,10 +1830,11 @@ Please find the full order confirmation attached as PDF.
       throw new Meteor.Error('invalid-operation', 'Order is not pending validation');
     }
 
-    // RMs can only validate orders for their own clients
-    if (user.role === 'rm') {
+    // RMs/Assistants can only validate orders for their own clients
+    if (user.role === 'rm' || user.role === 'assistant') {
       const client = await UsersCollection.findOneAsync(order.clientId);
-      if (!client || client.relationshipManagerId !== user._id) {
+      const rmIds = UserHelpers.getEffectiveRmIds(user);
+      if (!client || !rmIds.includes(client.relationshipManagerId)) {
         throw new Meteor.Error('not-authorized', 'You can only validate orders for your own clients');
       }
     }
@@ -1498,6 +1857,43 @@ Please find the full order confirmation attached as PDF.
 
     console.log(`[ORDERS] Validated order ${order.orderReference} by ${userDisplayName} (${userId})`);
 
+    // Generate PDF and prepare email data for Outlook
+    let pdfData = null;
+    let emailData = null;
+    try {
+      const client = await UsersCollection.findOneAsync(order.clientId);
+      const bankAccount = await BankAccountsCollection.findOneAsync(order.bankAccountId);
+      const bank = await BanksCollection.findOneAsync(order.bankId);
+      const createdByUser = await UsersCollection.findOneAsync(order.createdBy);
+
+      // Generate PDF
+      const html = generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser);
+      const pdfResult = await generatePDFFromHTML(html, {
+        format: 'A4',
+        marginTop: '10mm',
+        marginRight: '15mm',
+        marginBottom: '10mm',
+        marginLeft: '15mm'
+      });
+      pdfData = pdfResult.pdfData;
+
+      // Prepare email data
+      const subject = OrderHelpers.generateEmailSubject(order);
+      const body = OrderHelpers.generateEmailBody(order, client, bank, bankAccount);
+      emailData = {
+        to: bank?.deskEmail || '',
+        cc: (bank?.ccEmails || []).join(';'),
+        subject,
+        body,
+        bankName: bank?.name || ''
+      };
+
+      console.log(`[ORDERS] PDF generated and email data prepared for order ${order.orderReference}`);
+    } catch (pdfError) {
+      console.error('[ORDERS] Error generating PDF during validation:', pdfError);
+      // Don't fail the validation if PDF generation fails
+    }
+
     // Notify the creator that their order was validated
     try {
       const { NotificationHelpers, EVENT_TYPES } = await import('../../imports/api/notifications.js');
@@ -1513,7 +1909,94 @@ Please find the full order confirmation attached as PDF.
       console.error('[ORDERS] Error sending validation notification:', notifError);
     }
 
-    return { success: true, orderId, newStatus: ORDER_STATUSES.PENDING };
+    return {
+      success: true,
+      orderId,
+      orderReference: order.orderReference,
+      newStatus: ORDER_STATUSES.PENDING,
+      pdfData,
+      emailData
+    };
+  },
+
+  /**
+   * Confirm order was transmitted to bank (move from PENDING → TRANSMITTED)
+   */
+  async 'orders.confirmTransmitted'({ orderId, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+    validateOrderPermission(user);
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    if (!order) {
+      throw new Meteor.Error('not-found', 'Order not found');
+    }
+    await validateOrderAccess(order, user);
+
+    if (order.status !== ORDER_STATUSES.PENDING) {
+      throw new Meteor.Error('invalid-operation', 'Order is not in pending status');
+    }
+
+    await OrdersCollection.updateAsync(orderId, {
+      $set: {
+        status: ORDER_STATUSES.TRANSMITTED,
+        transmittedBy: userId,
+        transmittedByName: userDisplayName,
+        transmittedAt: new Date(),
+        updatedAt: new Date(),
+        updatedBy: userId
+      }
+    });
+
+    console.log(`[ORDERS] Order ${order.orderReference} marked as transmitted by ${userDisplayName} (${userId})`);
+
+    return { success: true, orderId, newStatus: ORDER_STATUSES.TRANSMITTED };
+  },
+
+  /**
+   * Write .eml file to temp and open it with the OS default email client
+   */
+  async 'orders.openEmlFile'({ emlBase64, fileName, sessionId }) {
+    check(emlBase64, String);
+    check(fileName, String);
+    check(sessionId, String);
+
+    await validateSession(sessionId);
+
+    const os = require('os');
+    const { exec } = require('child_process');
+    const tempDir = os.tmpdir();
+    const filePath = path.join(tempDir, fileName);
+
+    // Decode and write the .eml file
+    const emlContent = decodeURIComponent(escape(atob(emlBase64)));
+    fs.writeFileSync(filePath, emlContent, 'utf8');
+
+    console.log(`[ORDERS] Opening .eml file: ${filePath}`);
+
+    // Open with OS default handler (Outlook on Windows)
+    const platform = process.platform;
+    let command;
+    if (platform === 'win32') {
+      command = `start "" "${filePath}"`;
+    } else if (platform === 'darwin') {
+      command = `open "${filePath}"`;
+    } else {
+      command = `xdg-open "${filePath}"`;
+    }
+
+    return new Promise((resolve) => {
+      exec(command, (error) => {
+        if (error) {
+          console.error('[ORDERS] Error opening .eml file:', error);
+          resolve({ success: false, error: error.message });
+        } else {
+          resolve({ success: true, filePath });
+        }
+      });
+    });
   },
 
   /**
@@ -1540,10 +2023,11 @@ Please find the full order confirmation attached as PDF.
       throw new Meteor.Error('invalid-operation', 'Order is not pending validation');
     }
 
-    // RMs can only reject orders for their own clients
-    if (user.role === 'rm') {
+    // RMs/Assistants can only reject orders for their own clients
+    if (user.role === 'rm' || user.role === 'assistant') {
       const client = await UsersCollection.findOneAsync(order.clientId);
-      if (!client || client.relationshipManagerId !== user._id) {
+      const rmIds = UserHelpers.getEffectiveRmIds(user);
+      if (!client || !rmIds.includes(client.relationshipManagerId)) {
         throw new Meteor.Error('not-authorized', 'You can only reject orders for your own clients');
       }
     }
@@ -1581,6 +2065,131 @@ Please find the full order confirmation attached as PDF.
   },
 
   /**
+   * Request revision - send order back to creator for modifications
+   * Validator asks the original input person to revise and resubmit
+   */
+  async 'orders.requestRevision'({ orderId, reason, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+    check(reason, Match.Maybe(String));
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+
+    if (!user.canValidateOrders && user.role !== 'compliance') {
+      throw new Meteor.Error('not-authorized', 'You do not have order validation permission');
+    }
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    if (!order) {
+      throw new Meteor.Error('not-found', 'Order not found');
+    }
+
+    if (order.status !== ORDER_STATUSES.PENDING_VALIDATION) {
+      throw new Meteor.Error('invalid-operation', 'Order is not pending validation');
+    }
+
+    // RMs/Assistants can only act on orders for their own clients
+    if (user.role === 'rm' || user.role === 'assistant') {
+      const client = await UsersCollection.findOneAsync(order.clientId);
+      const rmIds = UserHelpers.getEffectiveRmIds(user);
+      if (!client || !rmIds.includes(client.relationshipManagerId)) {
+        throw new Meteor.Error('not-authorized', 'You can only modify orders for your own clients');
+      }
+    }
+
+    await OrdersCollection.updateAsync(orderId, {
+      $set: {
+        status: ORDER_STATUSES.REVISION_REQUESTED,
+        revisionRequestedBy: userId,
+        revisionRequestedByName: userDisplayName,
+        revisionRequestedAt: new Date(),
+        revisionReason: reason || null,
+        updatedAt: new Date(),
+        updatedBy: userId
+      }
+    });
+
+    console.log(`[ORDERS] Revision requested for order ${order.orderReference} by ${userDisplayName} (${userId}) - Reason: ${reason || 'N/A'}`);
+
+    // Notify the creator to revise their order
+    try {
+      const { NotificationHelpers, EVENT_TYPES } = await import('../../imports/api/notifications.js');
+      await NotificationHelpers.create({
+        userId: order.createdBy,
+        type: 'warning',
+        title: 'Order Revision Requested',
+        message: `${userDisplayName} requests you revise order ${order.orderReference} (${order.securityName}).${reason ? ` Note: ${reason}` : ''}`,
+        metadata: { orderId, orderReference: order.orderReference, reason },
+        eventType: EVENT_TYPES.ORDER_REVISION_REQUESTED || 'order_revision_requested'
+      });
+    } catch (notifError) {
+      console.error('[ORDERS] Error sending revision notification:', notifError);
+    }
+
+    return { success: true, orderId };
+  },
+
+  /**
+   * Resubmit a revised order - creator sends it back for validation
+   */
+  async 'orders.resubmitForValidation'({ orderId, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    if (!order) {
+      throw new Meteor.Error('not-found', 'Order not found');
+    }
+
+    if (order.status !== ORDER_STATUSES.REVISION_REQUESTED) {
+      throw new Meteor.Error('invalid-operation', 'Order is not in revision requested status');
+    }
+
+    // Only the original creator can resubmit
+    if (order.createdBy !== userId) {
+      throw new Meteor.Error('not-authorized', 'Only the original creator can resubmit this order');
+    }
+
+    await OrdersCollection.updateAsync(orderId, {
+      $set: {
+        status: ORDER_STATUSES.PENDING_VALIDATION,
+        revisionResubmittedAt: new Date(),
+        updatedAt: new Date(),
+        updatedBy: userId
+      }
+    });
+
+    console.log(`[ORDERS] Order ${order.orderReference} resubmitted for validation by ${userDisplayName} (${userId})`);
+
+    // Notify validators
+    try {
+      const { NotificationHelpers, EVENT_TYPES } = await import('../../imports/api/notifications.js');
+      const validators = await UsersCollection.find({
+        canValidateOrders: true,
+        _id: { $ne: userId },
+        role: { $in: ['superadmin', 'admin', 'rm', 'compliance', 'staff'] }
+      }).fetchAsync();
+
+      if (validators.length > 0) {
+        await NotificationHelpers.createForMultipleUsers({
+          userIds: validators.map(v => v._id),
+          type: 'warning',
+          title: 'Revised Order Pending Validation',
+          message: `Order ${order.orderReference} (${order.securityName}) has been revised by ${userDisplayName} and requires validation.`,
+          metadata: { orderId, orderReference: order.orderReference },
+          eventType: EVENT_TYPES.ORDER_PENDING_VALIDATION
+        });
+      }
+    } catch (notifError) {
+      console.error('[ORDERS] Error sending resubmit notification:', notifError);
+    }
+
+    return { success: true, orderId };
+  },
+
+  /**
    * List orders pending validation (for the validation blotter)
    */
   async 'orders.listPendingValidation'({ sessionId }) {
@@ -1594,11 +2203,12 @@ Please find the full order confirmation attached as PDF.
       return { orders: [] };
     }
 
-    const query = { status: { $in: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING_MODIFICATION] } };
+    const query = { status: { $in: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING_MODIFICATION, ORDER_STATUSES.REVISION_REQUESTED] } };
 
-    // RMs only see pending orders for their own clients
-    if (user.role === 'rm') {
-      const rmClients = await UsersCollection.find({ relationshipManagerId: user._id }).fetchAsync();
+    // RMs/Assistants only see pending orders for their own clients
+    if (user.role === 'rm' || user.role === 'assistant') {
+      const rmIds = UserHelpers.getEffectiveRmIds(user);
+      const rmClients = await UsersCollection.find({ relationshipManagerId: { $in: rmIds } }).fetchAsync();
       const clientIds = rmClients.map(c => c._id);
       query.clientId = { $in: clientIds };
     }
@@ -1762,11 +2372,12 @@ const getOrdersBasePath = () => {
   if (process.env.FICHIER_CENTRAL_PATH) {
     return path.join(process.env.FICHIER_CENTRAL_PATH, 'orders');
   }
+  // Store outside public/ to avoid triggering Meteor hot code push
   let projectRoot = process.cwd();
   if (projectRoot.includes('.meteor')) {
     projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
   }
-  return path.join(projectRoot, 'public', 'fichier_central', 'orders');
+  return path.join(projectRoot, '.fichier_central', 'orders');
 };
 
 /**
@@ -1873,10 +2484,22 @@ Meteor.methods({
       uploadedBy: userId
     };
 
-    // Push to order's emailTraces array
+    // Push to order's emailTraces array and auto-advance status based on trace type
+    const updateFields = { updatedAt: new Date(), updatedBy: userId };
+
+    if (traceType === EMAIL_TRACE_TYPES.ORDER_TO_BANK && order.status !== ORDER_STATUSES.EXECUTED) {
+      updateFields.status = ORDER_STATUSES.TRANSMITTED;
+      updateFields.transmittedAt = new Date();
+      console.log(`[ORDERS] Auto-advancing order ${order.orderReference} to TRANSMITTED (order-to-bank email uploaded)`);
+    } else if (traceType === EMAIL_TRACE_TYPES.BANK_CONFIRMATION) {
+      updateFields.status = ORDER_STATUSES.EXECUTED;
+      updateFields.executedAt = new Date();
+      console.log(`[ORDERS] Auto-advancing order ${order.orderReference} to EXECUTED (bank confirmation uploaded)`);
+    }
+
     await OrdersCollection.updateAsync(orderId, {
       $push: { emailTraces: trace },
-      $set: { updatedAt: new Date(), updatedBy: userId }
+      $set: updateFields
     });
 
     console.log(`[ORDERS] Email trace uploaded: ${traceType} for order ${order.orderReference} (${traceId}) by ${userDisplayName} (${userId})`);
@@ -1996,6 +2619,164 @@ Meteor.methods({
     } catch (err) {
       console.error(`[ORDERS] Error parsing .eml trace ${traceId}:`, err);
       throw new Meteor.Error('parse-error', 'Failed to parse email file');
+    }
+  },
+
+  /**
+   * AI compliance check — compare client email content against order details
+   * Spots incoherences between what the client asked and what was inputted
+   */
+  async 'orders.aiComplianceCheck'({ orderId, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+
+    const { user } = await validateSession(sessionId);
+    const order = await OrdersCollection.findOneAsync(orderId);
+    if (!order) throw new Meteor.Error('not-found', 'Order not found');
+    await validateOrderAccess(order, user);
+
+    const ANTHROPIC_API_KEY = Meteor.settings.private?.ANTHROPIC_API_KEY;
+    if (!ANTHROPIC_API_KEY) {
+      throw new Meteor.Error('config-error', 'Anthropic API key not configured');
+    }
+
+    // Gather email content from all traces
+    let emailContent = '';
+    const traces = order.emailTraces || [];
+    for (const trace of traces) {
+      if (!trace.filePath || !fs.existsSync(trace.filePath)) continue;
+      const ext = (trace.fileName || '').toLowerCase();
+      try {
+        if (ext.endsWith('.eml')) {
+          const { simpleParser } = require('mailparser');
+          const parsed = await simpleParser(fs.readFileSync(trace.filePath));
+          emailContent += `--- Email: ${trace.fileName} ---\n`;
+          emailContent += `From: ${parsed.from?.text || ''}\n`;
+          emailContent += `To: ${parsed.to?.text || ''}\n`;
+          emailContent += `Subject: ${parsed.subject || ''}\n`;
+          emailContent += `Date: ${parsed.date || ''}\n\n`;
+          emailContent += parsed.text || '';
+          emailContent += '\n\n';
+        } else if (ext.endsWith('.pdf')) {
+          // For PDFs, extract text if possible
+          try {
+            const pdfParse = require('pdf-parse');
+            const pdfData = await pdfParse(fs.readFileSync(trace.filePath));
+            emailContent += `--- PDF: ${trace.fileName} ---\n`;
+            emailContent += pdfData.text || '[Could not extract text]';
+            emailContent += '\n\n';
+          } catch (pdfErr) {
+            emailContent += `--- PDF: ${trace.fileName} (could not extract text) ---\n\n`;
+          }
+        } else {
+          // Plain text / HTML files
+          const content = fs.readFileSync(trace.filePath, 'utf8');
+          emailContent += `--- File: ${trace.fileName} ---\n`;
+          emailContent += content.replace(/<[^>]+>/g, ' ').substring(0, 5000);
+          emailContent += '\n\n';
+        }
+      } catch (err) {
+        console.warn(`[AI_CHECK] Could not read trace ${trace.fileName}:`, err.message);
+      }
+    }
+
+    if (!emailContent.trim()) {
+      return { success: true, result: { status: 'no_email', message: 'No client email content found to compare against.' } };
+    }
+
+    // Build order summary for comparison
+    const client = await UsersCollection.findOneAsync(order.clientId);
+    const clientName = client ? `${client.profile?.firstName || ''} ${client.profile?.lastName || ''} ${client.profile?.companyName || ''}`.trim() : 'Unknown';
+    const bank = await BanksCollection.findOneAsync(order.bankId);
+
+    const orderSummary = [
+      `Order Reference: ${order.orderReference}`,
+      `Direction: ${order.orderType?.toUpperCase()} (${order.orderType === 'buy' ? 'Purchase' : 'Sale'})`,
+      `Security: ${order.securityName}`,
+      `ISIN: ${order.isin}`,
+      `Asset Type: ${order.assetType}`,
+      `Quantity: ${order.quantity}`,
+      `Currency: ${order.currency}`,
+      `Price Type: ${order.priceType}`,
+      order.limitPrice ? `Limit Price: ${order.limitPrice}` : null,
+      order.stopPrice ? `Stop Price: ${order.stopPrice}` : null,
+      order.estimatedValue ? `Estimated Value: ${order.estimatedValue} ${order.currency}` : null,
+      `Client: ${clientName}`,
+      `Bank: ${bank?.name || 'Unknown'}`,
+      `Account: ${order.portfolioCode || 'N/A'}`,
+      order.settlementCurrency ? `Settlement Currency: ${order.settlementCurrency}` : null,
+      order.broker ? `Broker: ${order.broker}` : null,
+      order.notes ? `Notes: ${order.notes}` : null,
+      // FX specific
+      order.fxPair ? `FX Pair: ${order.fxPair}` : null,
+      order.fxSubtype ? `FX Type: ${order.fxSubtype}` : null,
+      order.fxRate ? `FX Rate: ${order.fxRate}` : null,
+      // Validity
+      order.validityType ? `Validity: ${order.validityType}` : null,
+    ].filter(Boolean).join('\n');
+
+    const prompt = `You are a compliance officer at a wealth management firm. Compare the client's email/instruction below with the order that was entered into the system. Identify any discrepancies or potential issues.
+
+ORDER ENTERED IN SYSTEM:
+${orderSummary}
+
+CLIENT EMAIL/INSTRUCTION:
+${emailContent.substring(0, 8000)}
+
+Analyze and respond with a JSON object (no markdown, just raw JSON):
+{
+  "status": "match" | "warning" | "mismatch",
+  "confidence": 0-100,
+  "summary": "One sentence overall assessment",
+  "checks": [
+    {
+      "field": "field name (e.g. Direction, Security, Quantity, Price, Currency, Client)",
+      "status": "ok" | "warning" | "mismatch",
+      "detail": "Brief explanation"
+    }
+  ],
+  "notes": "Any additional observations (e.g. email seems unrelated to the order, or email is a general inquiry not a trade instruction)"
+}
+
+Important:
+- If the email does not appear to be a trade instruction at all, set status to "warning" and note this.
+- Compare direction (buy/sell), security/ISIN, quantity, price, currency, client identity.
+- A missing field in the email is not a mismatch, just note it.
+- Be concise. Focus on real discrepancies.`;
+
+    try {
+      console.log(`[AI_CHECK] Running compliance check for order ${order.orderReference}`);
+
+      const response = await HTTP.post('https://api.anthropic.com/v1/messages', {
+        headers: {
+          'x-api-key': ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json'
+        },
+        data: {
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 1500,
+          messages: [{ role: 'user', content: prompt }]
+        }
+      });
+
+      const textContent = response.data?.content
+        ?.filter(block => block.type === 'text')
+        ?.map(block => block.text)
+        ?.join('') || '';
+
+      // Parse JSON from response
+      const jsonMatch = textContent.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const result = JSON.parse(jsonMatch[0]);
+        console.log(`[AI_CHECK] Order ${order.orderReference}: ${result.status} (confidence: ${result.confidence}%)`);
+        return { success: true, result };
+      }
+
+      return { success: true, result: { status: 'warning', summary: 'Could not parse AI response', notes: textContent, checks: [], confidence: 0 } };
+    } catch (err) {
+      console.error(`[AI_CHECK] Error for order ${order.orderReference}:`, err.message);
+      throw new Meteor.Error('ai-error', `AI check failed: ${err.message}`);
     }
   }
 });
@@ -2160,13 +2941,34 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
 <body>
   <div class="header">
     <div>
-      <div class="logo">AMBERVISION</div>
-      <div class="logo-sub">Wealth Management Platform</div>
+      <img src="https://amberlakepartners.com/assets/logos/horizontal_logo2.png" alt="Amberlake Partners" style="height: 40px; object-fit: contain;" />
     </div>
     <div class="order-info">
       <div class="order-ref">${order.orderReference}</div>
       <div class="order-date">${orderDate}</div>
       <div class="order-type">${order.orderType.toUpperCase()}</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Account Information</h2>
+    <div class="info-grid">
+      <div class="info-row">
+        <span class="info-label">Client</span>
+        <span class="info-value">${clientName}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Bank</span>
+        <span class="info-value">${bank?.name || 'N/A'}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Account Number</span>
+        <span class="info-value">${bankAccount?.accountNumber || order.portfolioCode || 'N/A'}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Reference Currency</span>
+        <span class="info-value">${bankAccount?.referenceCurrency || order.currency}</span>
+      </div>
     </div>
   </div>
 
@@ -2318,6 +3120,402 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
   </div>
   ` : ''}
 
+  ${order.notes ? `
+  <div class="notes">
+    <div class="notes-title">Notes</div>
+    <div class="notes-content">${order.notes}</div>
+  </div>
+  ` : ''}
+
+  <div class="footer">
+    <div class="footer-line">Order Confirmation generated by Ambervision Platform</div>
+    <div class="footer-line">This document is for informational purposes only and does not constitute a trade confirmation.</div>
+  </div>
+</body>
+</html>
+  `;
+}
+
+/**
+ * Build chronological audit timeline from order fields
+ */
+function buildAuditTimeline(order) {
+  const events = [];
+
+  // Created
+  if (order.createdAt) {
+    events.push({ date: order.createdAt, event: 'Order Created', by: order.createdByName || '', details: `${(order.orderType || '').toUpperCase()} ${order.securityName || ''}` });
+  }
+
+  // Allocation warning
+  if (order.allocationWarning?.checkedAt) {
+    const breachSummary = (order.allocationWarning.breaches || []).map(b => `${b.category}: ${(b.projected || 0).toFixed(1)}% > ${b.limit}%`).join(', ');
+    events.push({ date: order.allocationWarning.checkedAt, event: 'Allocation Warning', by: 'System', details: breachSummary });
+  }
+
+  // Validated
+  if (order.validatedAt) {
+    events.push({ date: order.validatedAt, event: 'Validated (Four-Eyes)', by: order.validatedByName || '', details: '' });
+  }
+
+  // Rejected
+  if (order.rejectedAt) {
+    events.push({ date: order.rejectedAt, event: 'Rejected', by: order.rejectedByName || '', details: order.rejectionReason || '' });
+  }
+
+  // Limit modifications
+  (order.limitHistory || []).forEach(entry => {
+    events.push({
+      date: entry.changedAt,
+      event: 'Limit Modified',
+      by: entry.changedByName || '',
+      details: entry.reason || `Changed to ${OrderFormatters.getPriceTypeLabel(entry.newPriceType || 'limit')}`
+    });
+    if (entry.validatedAt) {
+      events.push({ date: entry.validatedAt, event: 'Modification Validated', by: entry.validatedByName || '', details: '' });
+    }
+    if (entry.rejectedAt) {
+      events.push({ date: entry.rejectedAt, event: 'Modification Rejected', by: entry.rejectedByName || '', details: entry.rejectionReason || '' });
+    }
+  });
+
+  // Transmitted
+  if (order.transmittedAt) {
+    events.push({ date: order.transmittedAt, event: 'Transmitted to Bank', by: order.transmittedByName || '', details: '' });
+  }
+
+  // Email sent
+  if (order.sentAt) {
+    events.push({ date: order.sentAt, event: 'Email Sent', by: '', details: `To: ${order.sentTo || 'bank desk'}` });
+  }
+
+  // Termsheet updates
+  if (order.termsheetUpdatedAt) {
+    events.push({ date: order.termsheetUpdatedAt, event: `Termsheet: ${order.termsheetStatus || 'updated'}`, by: order.termsheetUpdatedBy || '', details: '' });
+  }
+
+  // Email trace uploads
+  (order.emailTraces || []).forEach(trace => {
+    events.push({
+      date: trace.uploadedAt,
+      event: `Document Attached: ${EMAIL_TRACE_LABELS[trace.traceType] || trace.traceType}`,
+      by: trace.uploadedByName || '',
+      details: trace.fileName || ''
+    });
+  });
+
+  // Executed
+  if (order.executedAt) {
+    const execDetails = [];
+    if (order.executedQuantity) execDetails.push(`Qty: ${OrderFormatters.formatQuantity(order.executedQuantity)}`);
+    if (order.executedPrice) execDetails.push(`Price: ${OrderFormatters.formatWithCurrency(order.executedPrice, order.currency)}`);
+    if (order.executionDate) execDetails.push(`Date: ${OrderFormatters.formatDate(order.executionDate)}`);
+    events.push({ date: order.executedAt, event: 'Marked as Executed', by: order.executedByName || '', details: execDetails.join(', ') });
+  }
+
+  // Cancelled
+  if (order.cancelledAt) {
+    events.push({ date: order.cancelledAt, event: 'Cancelled', by: order.cancelledBy || '', details: order.cancellationReason || '' });
+  }
+
+  // Sort chronologically
+  events.sort((a, b) => new Date(a.date) - new Date(b.date));
+  return events;
+}
+
+/**
+ * Parse email trace file contents for audit trail PDF
+ * Reads .eml, .pdf, .html files and extracts displayable content
+ * Returns a map of traceId -> parsed content
+ */
+async function parseEmailTraceContents(order) {
+  const traces = order.emailTraces || [];
+  const parsed = {};
+
+  for (const trace of traces) {
+    if (!trace.filePath || !fs.existsSync(trace.filePath)) {
+      parsed[trace._id] = { error: 'File not found on disk' };
+      continue;
+    }
+
+    const ext = (trace.fileName || '').toLowerCase();
+    try {
+      if (ext.endsWith('.eml')) {
+        const { simpleParser } = require('mailparser');
+        const fileContent = fs.readFileSync(trace.filePath);
+        const email = await simpleParser(fileContent);
+        parsed[trace._id] = {
+          type: 'email',
+          from: email.from?.text || '',
+          to: email.to?.text || '',
+          cc: email.cc?.text || '',
+          subject: email.subject || '',
+          date: email.date || null,
+          text: email.text || '',
+          html: email.html || null,
+          hasAttachments: (email.attachments || []).length > 0,
+          attachmentNames: (email.attachments || []).map(a => a.filename || 'unnamed')
+        };
+      } else if (ext.endsWith('.pdf')) {
+        try {
+          const pdfParse = require('pdf-parse');
+          const pdfData = await pdfParse(fs.readFileSync(trace.filePath));
+          parsed[trace._id] = {
+            type: 'pdf',
+            text: pdfData.text || '[Could not extract text]'
+          };
+        } catch (pdfErr) {
+          parsed[trace._id] = { type: 'pdf', error: 'Could not extract PDF text' };
+        }
+      } else if (ext.endsWith('.html') || ext.endsWith('.htm')) {
+        const content = fs.readFileSync(trace.filePath, 'utf8');
+        // Strip HTML tags for plain text display in PDF
+        const textContent = content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        parsed[trace._id] = {
+          type: 'html',
+          text: textContent.substring(0, 10000)
+        };
+      } else if (ext.endsWith('.msg')) {
+        parsed[trace._id] = { type: 'msg', error: 'MSG files cannot be parsed for inline display' };
+      } else {
+        // Images and other files — just metadata
+        parsed[trace._id] = { type: 'other' };
+      }
+    } catch (err) {
+      console.warn(`[AUDIT_TRAIL] Could not parse trace ${trace.fileName}:`, err.message);
+      parsed[trace._id] = { error: `Parse error: ${err.message}` };
+    }
+  }
+
+  return parsed;
+}
+
+/**
+ * Generate HTML for Audit Trail PDF
+ */
+function generateAuditTrailPDFHTML(order, client, bankAccount, bank, createdByUser, timeline, parsedTraces) {
+  const orderDate = OrderFormatters.formatDateTime(order.createdAt);
+  const clientName = client ? `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() : 'Unknown';
+  const createdByName = createdByUser ? `${createdByUser.profile?.firstName || ''} ${createdByUser.profile?.lastName || ''}`.trim() : 'System';
+
+  // Lifecycle order for email traces display
+  const traceLifecycleOrder = ['client_order', 'order_to_bank', 'order_to_issuer', 'bank_confirmation', 'client_confirmation'];
+  const sortedTraces = (order.emailTraces || []).slice().sort((a, b) => {
+    const aIdx = traceLifecycleOrder.indexOf(a.traceType);
+    const bIdx = traceLifecycleOrder.indexOf(b.traceType);
+    return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
+  });
+
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Audit Trail - ${order.orderReference}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      font-size: 10pt;
+      line-height: 1.5;
+      color: #1f2937;
+      background: white;
+      padding: 20px 30px;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 2px solid #0ea5e9;
+      padding-bottom: 16px;
+      margin-bottom: 24px;
+    }
+    .order-info { text-align: right; }
+    .order-ref { font-size: 13pt; font-weight: 600; color: #1f2937; }
+    .order-date { font-size: 9pt; color: #6b7280; margin-top: 2px; }
+    .order-type {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 4px;
+      font-weight: 600;
+      font-size: 10pt;
+      margin-top: 6px;
+      color: white;
+      background: ${order.orderType === 'buy' ? '#10b981' : '#ef4444'};
+    }
+    .doc-title {
+      font-size: 9pt;
+      color: #6b7280;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-top: 4px;
+    }
+    h2 {
+      font-size: 11pt;
+      font-weight: 600;
+      color: #374151;
+      border-bottom: 1px solid #e5e7eb;
+      padding-bottom: 6px;
+      margin: 20px 0 12px 0;
+    }
+    .section { margin-bottom: 20px; }
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 24px;
+    }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 5px 0;
+      border-bottom: 1px solid #f3f4f6;
+    }
+    .info-row.full-width { grid-column: 1 / -1; }
+    .info-label { color: #6b7280; font-size: 9pt; }
+    .info-value { font-weight: 500; color: #1f2937; text-align: right; font-size: 9pt; }
+    .highlight {
+      background: #f0f9ff;
+      padding: 12px;
+      border-radius: 6px;
+      border-left: 3px solid #0ea5e9;
+    }
+    .highlight-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+    .highlight-row:last-child { margin-bottom: 0; }
+    .highlight-label { font-weight: 500; color: #374151; font-size: 9pt; }
+    .highlight-value { font-weight: 600; color: #0ea5e9; font-size: 10pt; }
+    .execution-box {
+      background: #f0fdf4;
+      padding: 12px;
+      border-radius: 6px;
+      border-left: 3px solid #10b981;
+      margin-top: 12px;
+    }
+    .execution-box .highlight-value { color: #10b981; }
+    .timeline-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 9pt;
+    }
+    .timeline-table th {
+      text-align: left;
+      padding: 6px 8px;
+      color: #6b7280;
+      font-weight: 600;
+      border-bottom: 2px solid #e5e7eb;
+      font-size: 8pt;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .timeline-table td {
+      padding: 6px 8px;
+      border-bottom: 1px solid #f3f4f6;
+      vertical-align: top;
+    }
+    .timeline-table tr:last-child td { border-bottom: none; }
+    .event-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-size: 8pt;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .event-created { background: #dbeafe; color: #1e40af; }
+    .event-validated { background: #d1fae5; color: #065f46; }
+    .event-rejected { background: #fee2e2; color: #991b1b; }
+    .event-modified { background: #fef3c7; color: #92400e; }
+    .event-transmitted { background: #e0e7ff; color: #3730a3; }
+    .event-sent { background: #dbeafe; color: #1e40af; }
+    .event-executed { background: #d1fae5; color: #065f46; }
+    .event-cancelled { background: #fee2e2; color: #991b1b; }
+    .event-document { background: #f3e8ff; color: #6b21a8; }
+    .event-warning { background: #fef3c7; color: #92400e; }
+    .event-termsheet { background: #e0e7ff; color: #3730a3; }
+    .trace-card {
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 16px;
+      page-break-inside: avoid;
+    }
+    .trace-type {
+      font-weight: 600;
+      font-size: 10pt;
+      color: #374151;
+      margin-bottom: 4px;
+    }
+    .trace-meta { font-size: 8pt; color: #6b7280; }
+    .trace-filename { font-size: 9pt; color: #1f2937; margin-top: 4px; }
+    .email-header {
+      background: #f9fafb;
+      padding: 8px 10px;
+      border-radius: 4px;
+      margin-top: 8px;
+      font-size: 8pt;
+      color: #374151;
+    }
+    .email-header-row { margin-bottom: 2px; }
+    .email-header-label { font-weight: 600; color: #6b7280; display: inline-block; width: 55px; }
+    .email-body {
+      margin-top: 8px;
+      padding: 10px;
+      background: #fff;
+      border: 1px solid #f3f4f6;
+      border-radius: 4px;
+      font-size: 8pt;
+      color: #374151;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      max-height: 500px;
+      overflow: hidden;
+    }
+    .email-attachments {
+      margin-top: 6px;
+      font-size: 8pt;
+      color: #6b7280;
+    }
+    .notes {
+      background: #fef3c7;
+      padding: 12px;
+      border-radius: 6px;
+      border-left: 3px solid #f59e0b;
+      margin-top: 12px;
+    }
+    .notes-title { font-weight: 600; color: #92400e; margin-bottom: 4px; font-size: 9pt; }
+    .notes-content { color: #78350f; font-size: 9pt; white-space: pre-wrap; }
+    .page-break { page-break-before: always; }
+    .footer {
+      margin-top: 20px;
+      padding-top: 10px;
+      border-top: 1px solid #e5e7eb;
+      font-size: 8pt;
+      color: #9ca3af;
+      text-align: center;
+    }
+    .footer-line { margin-bottom: 2px; }
+    .no-data { color: #9ca3af; font-style: italic; font-size: 9pt; padding: 12px 0; }
+  </style>
+</head>
+<body>
+
+  <!-- PAGE 1: ORDER TICKET -->
+  <div class="header">
+    <div>
+      <img src="https://amberlakepartners.com/assets/logos/horizontal_logo2.png" alt="Amberlake Partners" style="height: 36px; object-fit: contain;" />
+      <div class="doc-title">Order Audit Trail</div>
+    </div>
+    <div class="order-info">
+      <div class="order-ref">${order.orderReference}</div>
+      <div class="order-date">${orderDate}</div>
+      <div class="order-type">${(order.orderType || '').toUpperCase()}</div>
+    </div>
+  </div>
+
   <div class="section">
     <h2>Account Information</h2>
     <div class="info-grid">
@@ -2334,14 +3532,105 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
         <span class="info-value">${bankAccount?.accountNumber || order.portfolioCode || 'N/A'}</span>
       </div>
       <div class="info-row">
-        <span class="info-label">Portfolio Code</span>
-        <span class="info-value">${order.portfolioCode || 'N/A'}</span>
-      </div>
-      <div class="info-row">
         <span class="info-label">Reference Currency</span>
         <span class="info-value">${bankAccount?.referenceCurrency || order.currency}</span>
       </div>
+      <div class="info-row">
+        <span class="info-label">Created By</span>
+        <span class="info-value">${createdByName}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Status</span>
+        <span class="info-value">${OrderFormatters.getStatusLabel(order.status)}</span>
+      </div>
     </div>
+  </div>
+
+  <div class="section">
+    <h2>${order.assetType === 'fx' ? 'FX Details' : order.assetType === 'term_deposit' ? 'Term Deposit Details' : 'Security Details'}</h2>
+    <div class="info-grid">
+      <div class="info-row full-width">
+        <span class="info-label">${order.assetType === 'fx' ? 'Description' : 'Security Name'}</span>
+        <span class="info-value">${order.securityName || 'N/A'}</span>
+      </div>
+      ${order.isin && order.assetType !== 'fx' ? `
+      <div class="info-row">
+        <span class="info-label">ISIN</span>
+        <span class="info-value">${order.isin}</span>
+      </div>
+      ` : ''}
+      <div class="info-row">
+        <span class="info-label">Asset Type</span>
+        <span class="info-value">${OrderFormatters.getAssetTypeLabel(order.assetType)}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Currency</span>
+        <span class="info-value">${order.currency}</span>
+      </div>
+      ${order.assetType === 'fx' && order.fxPair ? `
+      <div class="info-row">
+        <span class="info-label">FX Pair</span>
+        <span class="info-value">${order.fxPair}</span>
+      </div>
+      ` : ''}
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Order Details</h2>
+    <div class="highlight">
+      <div class="highlight-row">
+        <span class="highlight-label">Order Type</span>
+        <span class="highlight-value">${(order.orderType || '').toUpperCase()}</span>
+      </div>
+      <div class="highlight-row">
+        <span class="highlight-label">${order.assetType === 'term_deposit' ? 'Amount' : 'Quantity'}</span>
+        <span class="highlight-value">${OrderFormatters.formatQuantity(order.quantity)}</span>
+      </div>
+      <div class="highlight-row">
+        <span class="highlight-label">Price Type</span>
+        <span class="highlight-value">${OrderFormatters.getPriceTypeLabel(order.priceType)}</span>
+      </div>
+      ${order.priceType !== 'market' && order.limitPrice ? `
+      <div class="highlight-row">
+        <span class="highlight-label">${OrderFormatters.getPriceTypeLabel(order.priceType)} Price</span>
+        <span class="highlight-value">${OrderFormatters.formatWithCurrency(order.limitPrice, order.currency)}</span>
+      </div>
+      ` : ''}
+      ${order.estimatedValue ? `
+      <div class="highlight-row">
+        <span class="highlight-label">Estimated Value</span>
+        <span class="highlight-value">${OrderFormatters.formatWithCurrency(order.estimatedValue, order.currency)}</span>
+      </div>
+      ` : ''}
+    </div>
+
+    ${order.executedAt ? `
+    <div class="execution-box">
+      <div class="highlight-row">
+        <span class="highlight-label">Execution Status</span>
+        <span class="highlight-value" style="color: #10b981;">EXECUTED</span>
+      </div>
+      ${order.executedQuantity ? `
+      <div class="highlight-row">
+        <span class="highlight-label">Executed Quantity</span>
+        <span class="highlight-value" style="color: #10b981;">${OrderFormatters.formatQuantity(order.executedQuantity)}</span>
+      </div>
+      ` : ''}
+      ${order.executedPrice ? `
+      <div class="highlight-row">
+        <span class="highlight-label">Executed Price</span>
+        <span class="highlight-value" style="color: #10b981;">${OrderFormatters.formatWithCurrency(order.executedPrice, order.currency)}</span>
+      </div>
+      ` : ''}
+      ${order.executionDate ? `
+      <div class="highlight-row">
+        <span class="highlight-label">Execution Date</span>
+        <span class="highlight-value" style="color: #10b981;">${OrderFormatters.formatDate(order.executionDate)}</span>
+      </div>
+      ` : ''}
+    </div>
+    ` : ''}
   </div>
 
   ${order.notes ? `
@@ -2351,33 +3640,114 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
   </div>
   ` : ''}
 
-  <div class="section">
-    <h2>Audit Trail</h2>
-    <div class="info-grid">
-      <div class="info-row">
-        <span class="info-label">Placed By</span>
-        <span class="info-value">${createdByName}</span>
-      </div>
-      <div class="info-row">
-        <span class="info-label">Placed At</span>
-        <span class="info-value">${OrderFormatters.formatDateTime(order.createdAt)}</span>
-      </div>
-      ${order.validatedByName ? `
-      <div class="info-row">
-        <span class="info-label">Validated By</span>
-        <span class="info-value">${order.validatedByName}</span>
-      </div>
-      <div class="info-row">
-        <span class="info-label">Validated At</span>
-        <span class="info-value">${OrderFormatters.formatDateTime(order.validatedAt)}</span>
-      </div>
-      ` : ''}
+  <!-- PAGE 2: AUDIT TIMELINE -->
+  <div class="page-break"></div>
+  <div class="header">
+    <div>
+      <img src="https://amberlakepartners.com/assets/logos/horizontal_logo2.png" alt="Amberlake Partners" style="height: 36px; object-fit: contain;" />
+      <div class="doc-title">Order Audit Trail</div>
+    </div>
+    <div class="order-info">
+      <div class="order-ref">${order.orderReference}</div>
+      <div class="order-date">Status: ${OrderFormatters.getStatusLabel(order.status)}</div>
     </div>
   </div>
 
+  <div class="section">
+    <h2>Order Lifecycle — Audit Trail</h2>
+    ${timeline.length > 0 ? `
+    <table class="timeline-table">
+      <thead>
+        <tr>
+          <th style="width: 18%;">Date / Time</th>
+          <th style="width: 25%;">Event</th>
+          <th style="width: 20%;">By</th>
+          <th style="width: 37%;">Details</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${timeline.map(entry => {
+          let badgeClass = 'event-created';
+          const evt = entry.event.toLowerCase();
+          if (evt.includes('validated') || evt.includes('executed')) badgeClass = 'event-executed';
+          else if (evt.includes('rejected') || evt.includes('cancelled')) badgeClass = 'event-rejected';
+          else if (evt.includes('modified')) badgeClass = 'event-modified';
+          else if (evt.includes('transmitted')) badgeClass = 'event-transmitted';
+          else if (evt.includes('email sent')) badgeClass = 'event-sent';
+          else if (evt.includes('document')) badgeClass = 'event-document';
+          else if (evt.includes('warning')) badgeClass = 'event-warning';
+          else if (evt.includes('termsheet')) badgeClass = 'event-termsheet';
+
+          return `
+        <tr>
+          <td>${OrderFormatters.formatDateTime(entry.date)}</td>
+          <td><span class="event-badge ${badgeClass}">${entry.event}</span></td>
+          <td>${entry.by || '—'}</td>
+          <td>${entry.details || '—'}</td>
+        </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+    ` : '<div class="no-data">No lifecycle events recorded.</div>'}
+  </div>
+
+  <!-- PAGE 3: ATTACHED DOCUMENTS -->
+  ${sortedTraces.length > 0 ? `
+  <div class="page-break"></div>
+  <div class="header">
+    <div>
+      <img src="https://amberlakepartners.com/assets/logos/horizontal_logo2.png" alt="Amberlake Partners" style="height: 36px; object-fit: contain;" />
+      <div class="doc-title">Order Audit Trail</div>
+    </div>
+    <div class="order-info">
+      <div class="order-ref">${order.orderReference}</div>
+      <div class="order-date">Attached Documents</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Attached Documents</h2>
+    ${sortedTraces.map(trace => {
+      const parsed = parsedTraces[trace._id];
+      const isEmail = parsed?.type === 'email';
+      const isPdf = parsed?.type === 'pdf';
+      const isHtml = parsed?.type === 'html';
+      const hasContent = isEmail || ((isPdf || isHtml) && parsed?.text);
+
+      // Escape HTML entities in text content for safe embedding
+      const escapeHtml = (str) => (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+      return `
+    <div class="trace-card">
+      <div class="trace-type">${EMAIL_TRACE_LABELS[trace.traceType] || trace.traceType}</div>
+      <div class="trace-filename">${trace.fileName || 'Unknown file'}</div>
+      <div class="trace-meta">
+        Uploaded: ${OrderFormatters.formatDateTime(trace.uploadedAt)}
+        ${trace.uploadedByName ? ` · By: ${trace.uploadedByName}` : ''}
+      </div>
+      ${isEmail ? `
+      <div class="email-header">
+        <div class="email-header-row"><span class="email-header-label">From:</span> ${escapeHtml(parsed.from)}</div>
+        <div class="email-header-row"><span class="email-header-label">To:</span> ${escapeHtml(parsed.to)}</div>
+        ${parsed.cc ? `<div class="email-header-row"><span class="email-header-label">Cc:</span> ${escapeHtml(parsed.cc)}</div>` : ''}
+        <div class="email-header-row"><span class="email-header-label">Subject:</span> ${escapeHtml(parsed.subject)}</div>
+        <div class="email-header-row"><span class="email-header-label">Date:</span> ${parsed.date ? OrderFormatters.formatDateTime(parsed.date) : 'N/A'}</div>
+      </div>
+      <div class="email-body">${escapeHtml(parsed.text).substring(0, 5000)}</div>
+      ${parsed.hasAttachments ? `<div class="email-attachments">Attachments: ${parsed.attachmentNames.join(', ')}</div>` : ''}
+      ` : ''}
+      ${(isPdf || isHtml) && parsed?.text ? `
+      <div class="email-body">${escapeHtml(parsed.text).substring(0, 5000)}</div>
+      ` : ''}
+      ${parsed?.error ? `<div class="trace-meta" style="margin-top: 6px; font-style: italic;">${escapeHtml(parsed.error)}</div>` : ''}
+    </div>`;
+    }).join('')}
+  </div>
+  ` : ''}
+
   <div class="footer">
-    <div class="footer-line">Order Confirmation generated by Ambervision Platform</div>
-    <div class="footer-line">This document is for informational purposes only and does not constitute a trade confirmation.</div>
+    <div class="footer-line">Audit Trail generated by Ambervision Platform — ${OrderFormatters.formatDateTime(new Date())}</div>
+    <div class="footer-line">This document is for internal compliance and record-keeping purposes.</div>
   </div>
 </body>
 </html>
@@ -2402,9 +3772,10 @@ Meteor.methods({
 
     let query = { role: 'client' };
 
-    // RMs only see their assigned clients
-    if (user.role === 'rm') {
-      query.relationshipManagerId = user._id;
+    // RMs/Assistants only see their assigned clients
+    if (user.role === 'rm' || user.role === 'assistant') {
+      const rmIds = UserHelpers.getEffectiveRmIds(user);
+      query.relationshipManagerId = { $in: rmIds };
     }
     // Admins and superadmins see all clients
 
@@ -2435,9 +3806,10 @@ Meteor.methods({
     }
 
     // Verify access to client
-    if (user.role === 'rm') {
+    if (user.role === 'rm' || user.role === 'assistant') {
       const client = await UsersCollection.findOneAsync(clientId);
-      if (!client || client.relationshipManagerId !== user._id) {
+      const rmIds = UserHelpers.getEffectiveRmIds(user);
+      if (!client || !rmIds.includes(client.relationshipManagerId)) {
         throw new Meteor.Error('not-authorized', 'You do not have access to this client');
       }
     }
@@ -2447,15 +3819,206 @@ Meteor.methods({
       isActive: true
     }).fetchAsync();
 
-    // Enrich with bank names
+    // Enrich with bank names and beneficiary info
+    const client = await UsersCollection.findOneAsync(clientId);
+    const isCompany = client?.profile?.clientType === 'company';
+    const clientDisplayName = isCompany && client?.profile?.companyName
+      ? client.profile.companyName
+      : `${client?.profile?.firstName || ''} ${client?.profile?.lastName || ''}`.trim() || '';
+
     const enrichedAccounts = await Promise.all(accounts.map(async (account) => {
       const bank = await BanksCollection.findOneAsync(account.bankId);
+      // For life insurance: beneficiary is the client (the person the policy is for)
+      // For companies: show the beneficial owner from stakeholders if available
+      let beneficiary = null;
+      if (account.accountStructure === 'life_insurance' || account.accountType === 'life_insurance') {
+        beneficiary = clientDisplayName;
+      } else if (isCompany && client?.profile?.stakeholders?.length > 0) {
+        const owners = client.profile.stakeholders
+          .filter(s => s.role === 'beneficial_owner' || s.role === 'director')
+          .map(s => `${s.firstName || ''} ${s.lastName || ''}`.trim())
+          .filter(Boolean);
+        if (owners.length > 0) beneficiary = owners.join(', ');
+      }
       return {
         ...account,
-        bankName: bank?.name || 'Unknown Bank'
+        bankName: bank?.name || 'Unknown Bank',
+        beneficiary
       };
     }));
 
     return enrichedAccounts;
+  },
+
+  /**
+   * Get holdings for a specific bank account (for sell order selection)
+   */
+  async 'orders.getAccountHoldings'({ clientId, bankAccountId }, sessionId) {
+    check(clientId, String);
+    check(bankAccountId, String);
+    check(sessionId, String);
+
+    const { user } = await validateSession(sessionId);
+
+    if (!OrderHelpers.canPlaceOrders(user.role)) {
+      throw new Meteor.Error('not-authorized', 'Not authorized to access holdings');
+    }
+
+    // Verify access to client
+    if (user.role === 'rm' || user.role === 'assistant') {
+      const client = await UsersCollection.findOneAsync(clientId);
+      const rmIds = UserHelpers.getEffectiveRmIds(user);
+      if (!client || !rmIds.includes(client.relationshipManagerId)) {
+        throw new Meteor.Error('not-authorized', 'You do not have access to this client');
+      }
+    }
+
+    // Get the bank account to find portfolioCode
+    const bankAccount = await BankAccountsCollection.findOneAsync(bankAccountId);
+    if (!bankAccount) {
+      return [];
+    }
+
+    // Find latest active holdings for this account (exclude cash positions)
+    const holdings = await PMSHoldingsCollection.find({
+      userId: clientId,
+      isActive: true,
+      isLatest: true,
+      portfolioCode: { $regex: new RegExp('^' + bankAccount.accountNumber.split('-')[0]) },
+      assetClass: { $nin: ['cash', 'liquidity', 'Cash', 'Liquidity', 'CASH'] },
+      securityName: { $not: /^(cash|liquidity|compte|konto)/i }
+    }, {
+      fields: {
+        isin: 1,
+        securityName: 1,
+        quantity: 1,
+        marketValue: 1,
+        currency: 1,
+        assetClass: 1,
+        marketPrice: 1
+      },
+      sort: { securityName: 1 }
+    }).fetchAsync();
+
+    return holdings;
+  },
+
+  /**
+   * Get cash balance for a specific bank account
+   */
+  async 'orders.getAccountCashBalance'({ clientId, bankAccountId }, sessionId) {
+    check(clientId, String);
+    check(bankAccountId, String);
+    check(sessionId, String);
+
+    const { user } = await validateSession(sessionId);
+
+    if (!OrderHelpers.canPlaceOrders(user.role)) {
+      throw new Meteor.Error('not-authorized', 'Not authorized to access cash data');
+    }
+
+    // Verify access
+    if (user.role === 'rm' || user.role === 'assistant') {
+      const client = await UsersCollection.findOneAsync(clientId);
+      const rmIds = UserHelpers.getEffectiveRmIds(user);
+      if (!client || !rmIds.includes(client.relationshipManagerId)) {
+        throw new Meteor.Error('not-authorized', 'You do not have access to this client');
+      }
+    }
+
+    const bankAccount = await BankAccountsCollection.findOneAsync(bankAccountId);
+    if (!bankAccount) {
+      return { cashBalance: null, currency: null };
+    }
+
+    // Find cash holdings (asset class typically 'cash' or 'liquidity')
+    const cashHoldings = await PMSHoldingsCollection.find({
+      userId: clientId,
+      isActive: true,
+      isLatest: true,
+      portfolioCode: { $regex: new RegExp('^' + bankAccount.accountNumber.split('-')[0]) },
+      $or: [
+        { assetClass: { $in: ['cash', 'liquidity', 'Cash', 'Liquidity', 'CASH'] } },
+        { securityName: { $regex: /cash|liquidity|compte|konto/i } }
+      ]
+    }).fetchAsync();
+
+    const totalCash = cashHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+    const currency = bankAccount.referenceCurrency || cashHoldings[0]?.currency || 'EUR';
+
+    return {
+      cashBalance: totalCash,
+      currency,
+      cashPositions: cashHoldings.map(h => ({
+        currency: h.currency,
+        amount: h.marketValue || 0,
+        name: h.securityName
+      }))
+    };
+  },
+
+  /**
+   * Look up product info by ISIN (for auto-filling order fields)
+   */
+  async 'orders.getProductByIsin'({ isin }, sessionId) {
+    check(isin, String);
+    check(sessionId, String);
+
+    const { user } = await validateSession(sessionId);
+    if (!OrderHelpers.canPlaceOrders(user.role)) {
+      return null;
+    }
+
+    const product = await ProductsCollection.findOneAsync(
+      { isin: { $regex: new RegExp('^' + isin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') } },
+      { fields: { title: 1, isin: 1, issuer: 1, currency: 1, denomination: 1 } }
+    );
+
+    if (!product) return null;
+
+    return {
+      name: product.title,
+      isin: product.isin,
+      issuer: product.issuer || '',
+      currency: product.currency || '',
+      denomination: product.denomination || null
+    };
+  },
+
+  /**
+   * Check allocation impact of a buy order against investment profile limits
+   * Returns current vs projected allocation and any breaches (warning only)
+   */
+  async 'orders.checkAllocationImpact'({ bankAccountId, clientId, assetType, estimatedValue, orderType, capitalProtected, sessionId }) {
+    check(bankAccountId, String);
+    check(clientId, String);
+    check(assetType, String);
+    check(estimatedValue, Match.Maybe(Number));
+    check(orderType, String);
+    check(capitalProtected, Match.Maybe(Boolean));
+    check(sessionId, String);
+
+    const { user } = await validateSession(sessionId);
+    if (!OrderHelpers.canPlaceOrders(user.role)) {
+      throw new Meteor.Error('not-authorized', 'Not authorized');
+    }
+
+    // Skip check for sell orders
+    if (orderType === 'sell') {
+      return { hasBreaches: false };
+    }
+
+    // Skip if no estimated value
+    if (!estimatedValue) {
+      return { hasBreaches: false, noEstimate: true };
+    }
+
+    return await checkAllocationImpact({
+      bankAccountId,
+      clientId,
+      assetType,
+      estimatedValue,
+      capitalProtected: !!capitalProtected
+    });
   }
 });

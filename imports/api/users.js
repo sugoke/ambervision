@@ -9,8 +9,9 @@ export const UsersCollection = new Mongo.Collection('customUsers');
 // {
 //   username: String,
 //   password: String (hashed),
-//   role: String (superadmin/admin/compliance/rm/client),
+//   role: String (superadmin/admin/compliance/rm/assistant/client),
 //   relationshipManagerId: String (userId of the RM assigned to this client, only for CLIENT role),
+//   assignedRmIds: [String] (array of RM userIds, only for ASSISTANT role),
 //   profile: {
 //     firstName: String,
 //     lastName: String,
@@ -34,10 +35,12 @@ export const USER_ROLES = {
   ADMIN: 'admin',
   COMPLIANCE: 'compliance',
   RELATIONSHIP_MANAGER: 'rm',
+  ASSISTANT: 'assistant',
   CLIENT: 'client',
   PROSPECT: 'prospect',
   STAFF: 'staff',
-  INTRODUCER: 'introducer'
+  INTRODUCER: 'introducer',
+  LIFE_INSURANCE: 'life_insurance'
 };
 
 // User type categories for filtering in the Clients section
@@ -45,7 +48,8 @@ export const USER_TYPE_CATEGORIES = {
   CLIENTS: 'clients',
   PROSPECTS: 'prospects',
   STAFF: 'staff',
-  INTRODUCERS: 'introducers'
+  INTRODUCERS: 'introducers',
+  LIFE_INSURANCE: 'life_insurance'
 };
 
 // Map roles to categories
@@ -59,10 +63,13 @@ export const getRoleCategory = (role) => {
     case USER_ROLES.ADMIN:
     case USER_ROLES.COMPLIANCE:
     case USER_ROLES.RELATIONSHIP_MANAGER:
+    case USER_ROLES.ASSISTANT:
     case USER_ROLES.STAFF:
       return USER_TYPE_CATEGORIES.STAFF;
     case USER_ROLES.INTRODUCER:
       return USER_TYPE_CATEGORIES.INTRODUCERS;
+    case USER_ROLES.LIFE_INSURANCE:
+      return USER_TYPE_CATEGORIES.LIFE_INSURANCE;
     default:
       return USER_TYPE_CATEGORIES.CLIENTS;
   }
@@ -89,6 +96,21 @@ export const UserHelpers = {
 
   isRelationshipManager(userId) {
     return this.hasRole(userId, USER_ROLES.RELATIONSHIP_MANAGER);
+  },
+
+  isAssistant(userId) {
+    return this.hasRole(userId, USER_ROLES.ASSISTANT);
+  },
+
+  // Get the effective RM IDs for a user (for RM/superadmin: own ID, for assistant: their assigned RM IDs)
+  getEffectiveRmIds(user) {
+    if (user.role === USER_ROLES.RELATIONSHIP_MANAGER || user.role === USER_ROLES.SUPERADMIN) {
+      return [user._id];
+    }
+    if (user.role === USER_ROLES.ASSISTANT) {
+      return user.assignedRmIds || [];
+    }
+    return [];
   },
 
   isCompliance(userId) {
@@ -149,7 +171,7 @@ export const UserHelpers = {
   canValidateOrders(userId) {
     const user = UsersCollection.findOne(userId);
     if (!user) return false;
-    const staffRoles = [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.RELATIONSHIP_MANAGER, USER_ROLES.COMPLIANCE, USER_ROLES.STAFF];
+    const staffRoles = [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.RELATIONSHIP_MANAGER, USER_ROLES.ASSISTANT, USER_ROLES.COMPLIANCE, USER_ROLES.STAFF];
     return staffRoles.includes(user.role) && (user.canValidateOrders === true || user.role === USER_ROLES.COMPLIANCE);
   }
 };

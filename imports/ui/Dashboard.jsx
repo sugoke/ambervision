@@ -7,6 +7,7 @@ import { AllocationsCollection } from '/imports/api/allocations';
 import { useTheme } from './ThemeContext.jsx';
 import { useViewAs } from './ViewAsContext.jsx';
 import LiquidGlassCard from './components/LiquidGlassCard.jsx';
+import UnlinkedProductsBlotter from './components/UnlinkedProductsBlotter.jsx';
 
 /**
  * Processing Issue Indicator Component
@@ -380,7 +381,7 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
   const sessionId = useMemo(() => localStorage.getItem('sessionId'), []);
   
   // Check if user is a relationship manager
-  const isRelationshipManager = user && user.role === 'rm';
+  const isRelationshipManager = user && (user.role === 'rm' || user.role === 'assistant');
 
   // Use useTracker for more stable subscription handling
   const { products, allocations, productPrices, isLoading } = useTracker(() => {
@@ -1169,6 +1170,9 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
         </LiquidGlassCard>
       </div>
       )}
+
+      {/* Unlinked Structured Products Blotter */}
+      <UnlinkedProductsBlotter user={user} />
 
       {/* Products Display */}
       {filteredAndSortedProducts.length === 0 ? (

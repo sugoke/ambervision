@@ -1,6 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Meteor } from 'meteor/meteor';
-import { ORDER_STATUSES, ASSET_TYPES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, OrderFormatters } from '/imports/api/orders';
+import { useTracker } from 'meteor/react-meteor-data';
+import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, OrderFormatters, OrderHelpers } from '/imports/api/orders';
+import { UsersCollection } from '/imports/api/users';
+import { BanksCollection } from '/imports/api/banks';
 
 /**
  * ValidationBlotter - Displays orders pending four-eyes validation
@@ -8,43 +11,98 @@ import { ORDER_STATUSES, ASSET_TYPES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMA
  * Shows a compact table of PENDING_VALIDATION orders with approve/reject actions.
  * Auto-hides when no orders need validation or user lacks canValidateOrders.
  */
-const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
-  const [orders, setOrders] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+const ValidationBlotter = ({ user }) => {
   const [rejectModalOrder, setRejectModalOrder] = useState(null);
   const [rejectionReason, setRejectionReason] = useState('');
-  const [isActioning, setIsActioning] = useState(null); // orderId being actioned
-  const [reviewOrder, setReviewOrder] = useState(null); // order being reviewed before validation
+  const [revisionModalOrder, setRevisionModalOrder] = useState(null);
+  const [revisionReason, setRevisionReason] = useState('');
+  const [isActioning, setIsActioning] = useState(null);
+  const [reviewOrder, setReviewOrder] = useState(null);
   const [uploadingTrace, setUploadingTrace] = useState(false);
-  const [parsedEmails, setParsedEmails] = useState({}); // traceId -> parsed email data
+  const [parsedEmails, setParsedEmails] = useState({});
+  const [selectedTraceType, setSelectedTraceType] = useState(null);
+  const [aiCheckResult, setAiCheckResult] = useState(null); // { loading, result, error }
+  const [aiCheckOrderId, setAiCheckOrderId] = useState(null);
 
   const getSessionId = () => localStorage.getItem('sessionId');
 
-  // Staff roles that can see the order book
-  const isStaff = ['superadmin', 'admin', 'rm', 'compliance', 'staff'].includes(user?.role);
+  // Inject spinner keyframes once
+  useEffect(() => {
+    if (!document.getElementById('orderModalSpinStyle')) {
+      const style = document.createElement('style');
+      style.id = 'orderModalSpinStyle';
+      style.textContent = '@keyframes orderModalSpin { to { transform: rotate(360deg); } }';
+      document.head.appendChild(style);
+    }
+  }, []);
 
-  const loadPendingValidation = async () => {
+  const isStaff = ['superadmin', 'admin', 'rm', 'assistant', 'compliance', 'staff'].includes(user?.role);
+
+  const sessionId = useMemo(() => localStorage.getItem('sessionId'), []);
+
+  // Pure Meteor reactivity — subscribe + read from minimongo
+  const { displayOrders, isLoading } = useTracker(() => {
+    if (!isStaff || !sessionId) {
+      return { displayOrders: [], isLoading: false };
+    }
+
+    const handle = Meteor.subscribe('orders', sessionId, {
+      status: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING_MODIFICATION, ORDER_STATUSES.REVISION_REQUESTED]
+    });
+
+    if (!handle.ready()) {
+      return { displayOrders: [], isLoading: true };
+    }
+
+    const rawOrders = OrdersCollection.find(
+      { status: { $in: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING_MODIFICATION, ORDER_STATUSES.REVISION_REQUESTED] } },
+      { sort: { createdAt: -1 } }
+    ).fetch();
+
+    // Enrich with client names from the already-subscribed users collection
+    const enriched = rawOrders.map(order => {
+      const formatted = OrderHelpers.formatOrderDetails(order);
+      const client = order.clientId ? UsersCollection.findOne(order.clientId) : null;
+      const creator = order.createdBy ? UsersCollection.findOne(order.createdBy) : null;
+      const bank = order.bankId ? BanksCollection.findOne(order.bankId) : null;
+      return {
+        ...formatted,
+        clientName: client
+          ? `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() || client.email
+          : order.clientName || 'Unknown',
+        createdByName: creator
+          ? `${creator.profile?.firstName || ''} ${creator.profile?.lastName || ''}`.trim() || creator.email
+          : order.createdByName || 'Unknown',
+        bankName: bank?.name || order.bankName || ''
+      };
+    });
+
+    return { displayOrders: enriched, isLoading: false };
+  }, [isStaff, sessionId]);
+
+  // Auto-run AI check when review modal opens with email traces
+  useEffect(() => {
+    if (!reviewOrder) {
+      setAiCheckResult(null);
+      setAiCheckOrderId(null);
+      return;
+    }
+    if (reviewOrder.emailTraces?.length > 0 && aiCheckOrderId !== reviewOrder._id) {
+      runAiCheck(reviewOrder._id);
+    }
+  }, [reviewOrder?._id]);
+
+  const runAiCheck = async (orderId) => {
+    setAiCheckResult({ loading: true });
+    setAiCheckOrderId(orderId);
     try {
-      const sessionId = getSessionId();
-      const result = await Meteor.callAsync('orders.listPendingValidation', { sessionId });
-      setOrders(result?.orders || []);
+      const sid = getSessionId();
+      const res = await Meteor.callAsync('orders.aiComplianceCheck', { orderId, sessionId: sid });
+      setAiCheckResult({ loading: false, result: res.result });
     } catch (err) {
-      console.error('Error loading pending validation orders:', err);
-    } finally {
-      setIsLoading(false);
+      setAiCheckResult({ loading: false, error: err.reason || err.message || 'AI check failed' });
     }
   };
-
-  useEffect(() => {
-    if (isStaff) {
-      loadPendingValidation();
-      // Refresh every 30 seconds
-      const interval = setInterval(loadPendingValidation, 30000);
-      return () => clearInterval(interval);
-    } else {
-      setIsLoading(false);
-    }
-  }, [isStaff, refreshKey]);
 
   // Auto-parse .eml traces when review order is opened
   useEffect(() => {
@@ -91,18 +149,96 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
     }
   }, [reviewOrder?._id, reviewOrder?.emailTraces?.length, reviewOrder?.pendingModification?.instructionFile?.fileName]);
 
+  // Build a .eml file (RFC 2822 MIME) with the PDF attached
+  const buildEmlFile = (emailData, pdfBase64, pdfFilename) => {
+    const boundary = '----=_NextPart_' + Date.now().toString(36);
+    const to = emailData.to;
+    const cc = emailData.cc || '';
+    const subject = emailData.subject || '';
+    const body = emailData.body || '';
+
+    const lines = [
+      `To: ${to}`,
+      cc ? `Cc: ${cc}` : null,
+      `Subject: ${subject}`,
+      'X-Unsent: 1',
+      'MIME-Version: 1.0',
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/plain; charset="utf-8"',
+      'Content-Transfer-Encoding: quoted-printable',
+      '',
+      body,
+      '',
+      `--${boundary}`,
+      `Content-Type: application/pdf; name="${pdfFilename}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${pdfFilename}"`,
+      '',
+      // Split base64 into 76-char lines per MIME spec
+      ...pdfBase64.match(/.{1,76}/g),
+      '',
+      `--${boundary}--`
+    ].filter(l => l !== null);
+
+    return lines.join('\r\n');
+  };
+
   const handleValidate = async (order) => {
     setIsActioning(order._id);
     try {
       const sessionId = getSessionId();
-      await Meteor.callAsync('orders.validate', { orderId: order._id, sessionId });
-      await loadPendingValidation();
-      if (onOrderValidated) onOrderValidated();
+      const result = await Meteor.callAsync('orders.validate', { orderId: order._id, sessionId });
+
+      // Validation done — order moves to PENDING status
+      // Email generation and transmission to bank happens separately from the OrderBook
     } catch (err) {
       alert(err.reason || err.message || 'Validation failed');
     } finally {
       setIsActioning(null);
     }
+  };
+
+  const handleUploadTrace = (file, traceType) => {
+    if (!file || !reviewOrder) return;
+    const ext = '.' + file.name.split('.').pop().toLowerCase();
+    if (!EMAIL_TRACE_ACCEPTED_TYPES.includes(ext)) {
+      alert(`File type ${ext} not accepted. Use: ${EMAIL_TRACE_ACCEPTED_TYPES.join(', ')}`);
+      return;
+    }
+    if (file.size > EMAIL_TRACE_MAX_SIZE) {
+      alert('File exceeds maximum size of 15MB');
+      return;
+    }
+    setUploadingTrace(true);
+    setSelectedTraceType(traceType);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const base64 = reader.result.split(',')[1];
+        const sid = getSessionId();
+        await Meteor.callAsync('orders.uploadEmailTrace', {
+          orderId: reviewOrder._id,
+          traceType,
+          fileName: file.name,
+          base64Data: base64,
+          mimeType: file.type || 'application/octet-stream',
+          sessionId: sid
+        });
+        const updated = OrdersCollection.findOne(reviewOrder._id);
+        if (updated) {
+          const formatted = OrderHelpers.formatOrderDetails(updated);
+          setReviewOrder({ ...formatted, clientName: reviewOrder.clientName, createdByName: reviewOrder.createdByName });
+        }
+      } catch (err) {
+        alert(err.reason || err.message || 'Upload failed');
+      } finally {
+        setUploadingTrace(false);
+        setSelectedTraceType(null);
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleReject = async () => {
@@ -117,8 +253,6 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
       });
       setRejectModalOrder(null);
       setRejectionReason('');
-      await loadPendingValidation();
-      if (onOrderValidated) onOrderValidated();
     } catch (err) {
       alert(err.reason || err.message || 'Rejection failed');
     } finally {
@@ -132,8 +266,6 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
       const sessionId = getSessionId();
       await Meteor.callAsync('orders.validateModification', { orderId: order._id, sessionId });
       setReviewOrder(null);
-      await loadPendingValidation();
-      if (onOrderValidated) onOrderValidated();
     } catch (err) {
       alert(err.reason || err.message || 'Validation failed');
     } finally {
@@ -153,8 +285,6 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
       });
       setRejectModalOrder(null);
       setRejectionReason('');
-      await loadPendingValidation();
-      if (onOrderValidated) onOrderValidated();
     } catch (err) {
       alert(err.reason || err.message || 'Rejection failed');
     } finally {
@@ -162,8 +292,42 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
     }
   };
 
+  const handleRequestRevision = async () => {
+    if (!revisionModalOrder) return;
+    setIsActioning(revisionModalOrder._id);
+    try {
+      const sessionId = getSessionId();
+      await Meteor.callAsync('orders.requestRevision', {
+        orderId: revisionModalOrder._id,
+        reason: revisionReason || null,
+        sessionId
+      });
+      setRevisionModalOrder(null);
+      setRevisionReason('');
+    } catch (err) {
+      alert(err.reason || err.message || 'Request revision failed');
+    } finally {
+      setIsActioning(null);
+    }
+  };
+
+  const handleResubmit = async (order) => {
+    setIsActioning(order._id);
+    try {
+      const sessionId = getSessionId();
+      await Meteor.callAsync('orders.resubmitForValidation', {
+        orderId: order._id,
+        sessionId
+      });
+    } catch (err) {
+      alert(err.reason || err.message || 'Resubmit failed');
+    } finally {
+      setIsActioning(null);
+    }
+  };
+
   // Don't render if not staff or no orders pending
-  if (!isStaff || (!isLoading && orders.length === 0)) {
+  if (!isStaff || (!isLoading && displayOrders.length === 0)) {
     return null;
   }
 
@@ -178,7 +342,7 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
           <div style={styles.headerLeft}>
             <span style={styles.headerIcon}>⚠️</span>
             <span style={styles.headerTitle}>Orders Pending Validation</span>
-            <span style={styles.badge}>{orders.length}</span>
+            <span style={styles.badge}>{displayOrders.length}</span>
           </div>
           <span style={styles.headerSubtitle}>Four-eyes principle — a different person must validate each order</span>
         </div>
@@ -193,25 +357,27 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
                   <th style={styles.th}>Reference</th>
                   <th style={styles.th}>Date</th>
                   <th style={styles.th}>Created By</th>
+                  <th style={styles.th}>WA</th>
                   <th style={styles.th}>Client</th>
                   <th style={styles.th}>Bank</th>
                   <th style={styles.th}>Type</th>
-                  <th style={styles.th}>ISIN</th>
                   <th style={styles.th}>Security</th>
+                  <th style={styles.th}>Asset</th>
+                  <th style={styles.th}>Ccy</th>
                   <th style={styles.th}>Qty</th>
                   <th style={styles.th}>Price</th>
-                  <th style={styles.th}>Ccy</th>
-                  <th style={{ ...styles.th, textAlign: 'center' }}>Actions</th>
+                  <th style={styles.th}>Broker</th>
                 </tr>
               </thead>
               <tbody>
-                {orders.map(order => (
+                {displayOrders.map(order => (
                   <tr key={order._id} style={{ ...styles.row, cursor: 'pointer' }}
+                    onClick={() => setReviewOrder(order)}
                     onMouseEnter={(e) => Array.from(e.currentTarget.children).forEach(td => td.style.background = 'var(--bg-secondary)')}
                     onMouseLeave={(e) => Array.from(e.currentTarget.children).forEach(td => td.style.background = 'var(--bg-primary)')}
                   >
                     <td style={styles.td}>
-                      <span style={{ fontFamily: 'monospace', fontWeight: '600', fontSize: '12px' }}>
+                      <span style={{ fontFamily: 'monospace', fontWeight: '500' }}>
                         {order.orderReference}
                       </span>
                       {order.status === 'pending_modification' && (
@@ -219,11 +385,16 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
                           Modif.
                         </span>
                       )}
+                      {order.status === 'revision_requested' && (
+                        <span style={{ marginLeft: '6px', fontSize: '9px', fontWeight: '700', color: '#e879f9', background: 'rgba(232,121,249,0.1)', padding: '1px 5px', borderRadius: '3px', textTransform: 'uppercase' }}>
+                          {isOwnOrder(order) ? 'Revise' : 'Revision'}
+                        </span>
+                      )}
                       {order.emailTraces?.some(t => t.traceType === 'client_order') && (
                         <span title="Client order email attached" style={{ marginLeft: '4px', fontSize: '12px', cursor: 'help' }}>📎</span>
                       )}
                     </td>
-                    <td style={styles.td}>{order.createdAtFormatted}</td>
+                    <td style={styles.td} title={order.createdAtFull}>{order.createdAtFormatted}</td>
                     <td style={styles.td}>
                       <span style={{
                         fontSize: '12px',
@@ -234,67 +405,44 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
                         {isOwnOrder(order) && <span style={{ fontSize: '10px', marginLeft: '4px' }}>(you)</span>}
                       </span>
                     </td>
+                    <td style={styles.td}>
+                      <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-secondary)' }}>
+                        {order.wealthAmbassadorFormatted || order.wealthAmbassador || ''}
+                      </span>
+                    </td>
                     <td style={styles.td}>{order.clientName}</td>
                     <td style={styles.td}>{order.bankName}</td>
                     <td style={styles.td}>
                       <span style={{
-                        fontSize: '11px',
-                        fontWeight: '700',
-                        textTransform: 'uppercase',
-                        color: order.orderType === 'buy' ? '#10b981' : '#ef4444'
+                        fontSize: '11px', fontWeight: '700', textTransform: 'uppercase',
+                        color: order.orderType === 'buy' ? '#10b981' : '#ef4444',
+                        padding: '2px 6px', borderRadius: '4px',
+                        background: order.orderType === 'buy' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)'
                       }}>
                         {order.orderType}
                       </span>
                     </td>
                     <td style={styles.td}>
-                      <span style={{ fontFamily: 'monospace', fontSize: '11px' }}>
+                      <div title={order.securityName} style={{ fontWeight: '500', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>{order.securityName}</div>
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
                         {order.assetType === ASSET_TYPES.FX ? (order.fxPairFormatted || 'FX') :
                          order.assetType === ASSET_TYPES.TERM_DEPOSIT ? (order.depositTenorLabel || 'TD') :
                          order.isin}
-                      </span>
+                      </div>
                     </td>
-                    <td style={{ ...styles.td, maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {order.securityName}
+                    <td style={styles.td}>
+                      <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{order.assetTypeLabel || ''}</span>
                     </td>
+                    <td style={styles.td}>{order.currency || ''}</td>
                     <td style={styles.td}>{order.quantityFormatted}</td>
                     <td style={styles.td}>
                       {order.priceType !== 'market' && order.limitPrice
-                        ? <span style={{ fontSize: '11px' }} title={order.priceTypeLabel}>{order.limitPriceFormatted}</span>
+                        ? <span style={{ fontSize: '12px', fontWeight: '500' }} title={order.priceTypeLabel}>{order.limitPriceFormatted}</span>
                         : <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{order.priceTypeLabel || 'Market'}</span>
                       }
                     </td>
-                    <td style={styles.td}>{order.currency}</td>
-                    <td style={{ ...styles.td, textAlign: 'center' }}>
-                      {canValidate ? (
-                        <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
-                          <button
-                            style={{
-                              ...styles.reviewBtn,
-                              opacity: isOwnOrder(order) || isActioning === order._id ? 0.4 : 1,
-                              cursor: isOwnOrder(order) || isActioning === order._id ? 'not-allowed' : 'pointer'
-                            }}
-                            onClick={() => setReviewOrder(order)}
-                            disabled={isOwnOrder(order) || isActioning === order._id}
-                            title={isOwnOrder(order) ? 'Cannot validate your own order (four-eyes)' : 'Review & validate order'}
-                          >
-                            {isActioning === order._id ? '...' : 'Review'}
-                          </button>
-                          <button
-                            style={{
-                              ...styles.rejectBtn,
-                              opacity: isActioning === order._id ? 0.4 : 1,
-                              cursor: isActioning === order._id ? 'not-allowed' : 'pointer'
-                            }}
-                            onClick={() => { setRejectModalOrder(order); setRejectionReason(''); }}
-                            disabled={isActioning === order._id}
-                            title="Reject order"
-                          >
-                            Reject
-                          </button>
-                        </div>
-                      ) : (
-                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>—</span>
-                      )}
+                    <td style={styles.td}>
+                      <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{order.broker || ''}</span>
                     </td>
                   </tr>
                 ))}
@@ -306,24 +454,103 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
 
       {/* Review & Validate Modal */}
       {reviewOrder && (
-        <div style={styles.modalOverlay} onClick={() => setReviewOrder(null)}>
-          <div style={{ ...styles.modalContent, maxWidth: '720px', maxHeight: '90vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ ...styles.modalOverlay, alignItems: 'flex-start', overflowY: 'auto', padding: '40px 0' }} onClick={() => setReviewOrder(null)}>
+          <div style={{ ...styles.modalContent, maxWidth: '1100px', margin: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
               <div>
                 <h3 style={{ ...styles.modalTitle, marginBottom: '4px' }}>Review Order</h3>
-                <span style={{ fontFamily: 'monospace', fontSize: '13px', color: 'var(--text-muted)' }}>{reviewOrder.orderReference}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <span style={{ fontFamily: 'monospace', fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)' }}>{reviewOrder.orderReference}</span>
+                  <span style={{
+                    fontSize: '12px', fontWeight: '700', textTransform: 'uppercase',
+                    color: reviewOrder.orderType === 'buy' ? '#10b981' : '#ef4444',
+                    padding: '3px 10px', borderRadius: '4px',
+                    background: reviewOrder.orderType === 'buy' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'
+                  }}>
+                    {reviewOrder.orderType}
+                  </span>
+                  <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                    {reviewOrder.securityName}
+                  </span>
+                  <span style={{ fontSize: '11px', fontFamily: 'monospace', color: 'var(--text-muted)' }}>
+                    {reviewOrder.isin}
+                  </span>
+                </div>
               </div>
-              <span style={{
-                fontSize: '12px', fontWeight: '700', textTransform: 'uppercase',
-                color: reviewOrder.orderType === 'buy' ? '#10b981' : '#ef4444',
-                padding: '4px 10px', borderRadius: '4px',
-                background: reviewOrder.orderType === 'buy' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)'
-              }}>
-                {reviewOrder.orderType}
-              </span>
+              <button
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '20px', cursor: 'pointer', padding: '4px' }}
+                onClick={() => setReviewOrder(null)}
+              >
+                ✕
+              </button>
             </div>
 
-            {/* Order Details Grid */}
+            {/* AI Compliance Hint */}
+            {reviewOrder.emailTraces?.length > 0 && (
+              <div style={{
+                marginBottom: '14px',
+                borderRadius: '8px',
+                border: `1px solid ${!aiCheckResult ? 'var(--border-color)' : aiCheckResult.loading ? 'var(--border-color)' : aiCheckResult.error ? 'rgba(239,68,68,0.3)' : aiCheckResult.result?.status === 'match' ? 'rgba(16,185,129,0.3)' : aiCheckResult.result?.status === 'mismatch' ? 'rgba(239,68,68,0.3)' : 'rgba(245,158,11,0.3)'}`,
+                background: !aiCheckResult ? 'var(--bg-secondary)' : aiCheckResult.loading ? 'var(--bg-secondary)' : aiCheckResult.error ? 'rgba(239,68,68,0.05)' : aiCheckResult.result?.status === 'match' ? 'rgba(16,185,129,0.05)' : aiCheckResult.result?.status === 'mismatch' ? 'rgba(239,68,68,0.05)' : 'rgba(245,158,11,0.05)',
+                overflow: 'hidden'
+              }}>
+                {!aiCheckResult || aiCheckResult.loading ? (
+                  <div style={{ padding: '10px 14px', fontSize: '12px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ display: 'inline-block', width: '14px', height: '14px', border: '2px solid var(--border-color)', borderTopColor: 'var(--accent-color)', borderRadius: '50%', animation: 'orderModalSpin 0.6s linear infinite' }} />
+                    Analyzing email vs order...
+                  </div>
+                ) : aiCheckResult.error ? (
+                  <div style={{ padding: '10px 14px', fontSize: '12px', color: '#ef4444' }}>
+                    AI check failed: {aiCheckResult.error}
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '16px' }}>
+                        {aiCheckResult.result.status === 'match' ? '✅' : aiCheckResult.result.status === 'mismatch' ? '🚨' : '⚠️'}
+                      </span>
+                      <span style={{ fontSize: '13px', fontWeight: '600', color: aiCheckResult.result.status === 'match' ? '#10b981' : aiCheckResult.result.status === 'mismatch' ? '#ef4444' : '#f59e0b' }}>
+                        {aiCheckResult.result.summary}
+                      </span>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        AI hint
+                        <span
+                          style={{ cursor: 'pointer', opacity: 0.6, fontSize: '12px' }}
+                          onClick={() => runAiCheck(reviewOrder._id)}
+                          title="Re-run AI check"
+                        >↻</span>
+                      </span>
+                    </div>
+                    {aiCheckResult.result.checks?.length > 0 && (
+                      <div style={{ padding: '0 14px 10px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {aiCheckResult.result.checks.map((check, i) => (
+                          <span key={i} style={{
+                            fontSize: '11px', padding: '3px 8px', borderRadius: '4px',
+                            background: check.status === 'ok' ? 'rgba(16,185,129,0.1)' : check.status === 'mismatch' ? 'rgba(239,68,68,0.1)' : 'rgba(245,158,11,0.1)',
+                            color: check.status === 'ok' ? '#10b981' : check.status === 'mismatch' ? '#ef4444' : '#f59e0b',
+                            fontWeight: '600'
+                          }} title={check.detail}>
+                            {check.status === 'ok' ? '✓' : check.status === 'mismatch' ? '✗' : '!'} {check.field}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {aiCheckResult.result.notes && (
+                      <div style={{ padding: '0 14px 10px', fontSize: '11px', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                        {aiCheckResult.result.notes}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Two-column layout: Order Details (left) | Email/Attachments (right) */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '14px' }}>
+
+            {/* LEFT COLUMN: Order Details */}
+            <div>
             <div style={{
               display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 20px',
               padding: '14px', borderRadius: '8px', background: 'var(--bg-secondary)',
@@ -337,10 +564,13 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
               </div></div>
               <div><span style={styles.reviewLabel}>Asset Type</span><div style={styles.reviewValue}>{reviewOrder.assetTypeLabel}</div></div>
               <div><span style={styles.reviewLabel}>Currency</span><div style={styles.reviewValue}>{reviewOrder.currency}</div></div>
-              <div><span style={styles.reviewLabel}>Quantity</span><div style={{ ...styles.reviewValue, fontWeight: '700' }}>{reviewOrder.quantityFormatted}</div></div>
-              <div><span style={styles.reviewLabel}>Price Type</span><div style={styles.reviewValue}>{reviewOrder.priceTypeLabel || 'Market'}</div></div>
-              {reviewOrder.priceType !== 'market' && reviewOrder.limitPrice && (
+              <div><span style={styles.reviewLabel}>Quantity</span><div style={{ ...styles.reviewValue, fontWeight: '700', fontSize: '15px' }}>{reviewOrder.quantityFormatted}</div></div>
+              <div><span style={styles.reviewLabel}>Order Type</span><div style={styles.reviewValue}>{reviewOrder.priceTypeLabel || 'Market'}</div></div>
+              {(reviewOrder.priceType === 'limit' || reviewOrder.priceType === 'stop_limit') && reviewOrder.limitPrice && (
                 <div><span style={styles.reviewLabel}>Limit Price</span><div style={{ ...styles.reviewValue, fontWeight: '700', color: '#0ea5e9' }}>{reviewOrder.limitPriceFormatted}</div></div>
+              )}
+              {reviewOrder.stopPrice && (
+                <div><span style={styles.reviewLabel}>Stop Price</span><div style={{ ...styles.reviewValue, fontWeight: '700', color: '#f59e0b' }}>{OrderFormatters.formatWithCurrency(reviewOrder.stopPrice, reviewOrder.currency)}</div></div>
               )}
               {reviewOrder.stopLossPriceFormatted && (
                 <div><span style={styles.reviewLabel}>Stop Loss</span><div style={{ ...styles.reviewValue, color: '#ef4444' }}>{reviewOrder.stopLossPriceFormatted}</div></div>
@@ -349,18 +579,31 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
                 <div><span style={styles.reviewLabel}>Take Profit</span><div style={{ ...styles.reviewValue, color: '#10b981' }}>{reviewOrder.takeProfitPriceFormatted}</div></div>
               )}
               {reviewOrder.estimatedValueFormatted && (
-                <div><span style={styles.reviewLabel}>Est. Value</span><div style={styles.reviewValue}>{reviewOrder.estimatedValueFormatted}</div></div>
+                <div><span style={styles.reviewLabel}>Est. Value</span><div style={{ ...styles.reviewValue, fontWeight: '700' }}>{reviewOrder.estimatedValueFormatted}</div></div>
               )}
-              <div><span style={styles.reviewLabel}>Client</span><div style={styles.reviewValue}>{reviewOrder.clientName}</div></div>
-              <div><span style={styles.reviewLabel}>Bank</span><div style={styles.reviewValue}>{reviewOrder.bankName}</div></div>
+              {reviewOrder.validityType && reviewOrder.validityType !== 'day' && (
+                <div><span style={styles.reviewLabel}>Validity</span><div style={styles.reviewValue}>
+                  {reviewOrder.validityType === 'gtc' ? 'Good Till Canceled' : reviewOrder.validityType === 'gtd' ? `Good Till ${reviewOrder.validityDateFormatted || reviewOrder.validityDate || 'Date'}` : reviewOrder.validityType}
+                </div></div>
+              )}
+              {reviewOrder.settlementCurrency && (
+                <div><span style={styles.reviewLabel}>Settlement Ccy</span><div style={styles.reviewValue}>{reviewOrder.settlementCurrency}</div></div>
+              )}
+              <div><span style={styles.reviewLabel}>Client</span><div style={{ ...styles.reviewValue, fontWeight: '600' }}>{reviewOrder.clientName}</div></div>
+              <div><span style={styles.reviewLabel}>Bank / Account</span><div style={styles.reviewValue}>{reviewOrder.bankName || ''}{reviewOrder.portfolioCode ? ` - ${reviewOrder.portfolioCode}` : ''}</div></div>
               {reviewOrder.wealthAmbassador && (
                 <div><span style={styles.reviewLabel}>Wealth Ambassador</span><div style={styles.reviewValue}>{reviewOrder.wealthAmbassador}</div></div>
               )}
               {reviewOrder.broker && (
-                <div><span style={styles.reviewLabel}>Broker</span><div style={styles.reviewValue}>{reviewOrder.broker}</div></div>
+                <div><span style={styles.reviewLabel}>Broker / Issuer</span><div style={styles.reviewValue}>{reviewOrder.broker}</div></div>
               )}
               {reviewOrder.underlyings && (
                 <div style={{ gridColumn: 'span 2' }}><span style={styles.reviewLabel}>Underlyings</span><div style={styles.reviewValue}>{reviewOrder.underlyings}</div></div>
+              )}
+              {reviewOrder.linkedOrderGroup && (
+                <div style={{ gridColumn: 'span 2' }}><span style={styles.reviewLabel}>Linked Group</span><div style={{ ...styles.reviewValue, fontFamily: 'monospace' }}>
+                  {reviewOrder.linkedOrderGroup}{reviewOrder.linkedOrderType ? ` (${reviewOrder.linkedOrderType === 'take_profit' ? 'Take Profit' : reviewOrder.linkedOrderType === 'stop_loss' ? 'Stop Loss' : reviewOrder.linkedOrderType})` : ''}
+                </div></div>
               )}
               {/* FX-specific */}
               {reviewOrder.assetType === ASSET_TYPES.FX && reviewOrder.fxSubtypeLabel && (
@@ -405,11 +648,12 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
               </div>
             )}
 
-            {/* Email Traces / Attachments with inline preview */}
+            </div>{/* END LEFT COLUMN */}
+
+            {/* RIGHT COLUMN: Email / Attachments */}
+            <div>
             {(() => {
               const traces = reviewOrder.emailTraces || [];
-              const hasClientOrder = traces.some(t => t.traceType === EMAIL_TRACE_TYPES.CLIENT_ORDER) ||
-                (reviewOrder.status === 'pending_modification' && reviewOrder.pendingModification?.instructionFile);
 
               const getTraceUrl = (trace) => `/order_traces/${reviewOrder._id}/${trace.storedFileName}`;
               const isPreviewable = (trace) => {
@@ -418,216 +662,233 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
                        ext.endsWith('.png') || ext.endsWith('.gif') || ext.endsWith('.html');
               };
 
-              const handleUploadClientOrder = (file) => {
-                if (!file) return;
-                const ext = '.' + file.name.split('.').pop().toLowerCase();
-                if (!EMAIL_TRACE_ACCEPTED_TYPES.includes(ext)) {
-                  alert(`File type ${ext} not accepted. Use: ${EMAIL_TRACE_ACCEPTED_TYPES.join(', ')}`);
-                  return;
-                }
-                if (file.size > EMAIL_TRACE_MAX_SIZE) {
-                  alert('File exceeds maximum size of 15MB');
-                  return;
-                }
-                setUploadingTrace(true);
-                const reader = new FileReader();
-                reader.onload = async () => {
-                  try {
-                    const base64 = reader.result.split(',')[1];
-                    const sessionId = localStorage.getItem('sessionId');
-                    await Meteor.callAsync('orders.uploadEmailTrace', {
-                      orderId: reviewOrder._id,
-                      traceType: EMAIL_TRACE_TYPES.CLIENT_ORDER,
-                      fileName: file.name,
-                      base64Data: base64,
-                      mimeType: file.type || 'application/octet-stream',
-                      sessionId
-                    });
-                    // Reload orders to get updated traces
-                    await loadPendingValidation();
-                    // Update the reviewOrder with fresh data
-                    const freshOrders = await Meteor.callAsync('orders.listPendingValidation', { sessionId });
-                    const updated = (freshOrders?.orders || []).find(o => o._id === reviewOrder._id);
-                    if (updated) setReviewOrder(updated);
-                  } catch (err) {
-                    alert(err.reason || err.message || 'Upload failed');
-                  } finally {
-                    setUploadingTrace(false);
-                  }
-                };
-                reader.readAsDataURL(file);
+              const traceSlots = [
+                { type: EMAIL_TRACE_TYPES.CLIENT_ORDER, label: 'Client Order', icon: '📋', color: '#f97316', statusHint: null },
+                { type: EMAIL_TRACE_TYPES.ORDER_TO_BANK, label: 'Order to Bank', icon: '📤', color: '#0ea5e9', statusHint: 'Transmitted' },
+                { type: EMAIL_TRACE_TYPES.BANK_CONFIRMATION, label: 'Bank Confirmation', icon: '✅', color: '#10b981', statusHint: 'Executed' },
+              ];
+
+              const triggerUpload = (traceType) => {
+                if (uploadingTrace) return;
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = EMAIL_TRACE_ACCEPTED_TYPES.join(',');
+                input.onchange = (e) => handleUploadTrace(e.target.files[0], traceType);
+                input.click();
               };
 
               return (
                 <div style={{ marginBottom: '14px' }}>
                   <div style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: '8px' }}>
-                    Client Order Email
+                    Email Traces
                   </div>
 
-                  {/* Existing traces — shown inline automatically */}
-                  {traces.length > 0 && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: hasClientOrder ? 0 : '8px' }}>
-                      {traces.map((trace) => {
-                        const previewable = isPreviewable(trace);
-                        const url = getTraceUrl(trace);
-                        const isImage = /\.(jpg|jpeg|png|gif)$/i.test(trace.fileName || '');
-                        const isEml = /\.eml$/i.test(trace.fileName || '');
-                        const parsed = parsedEmails[trace._id];
+                  {/* Phone order indicator */}
+                  {reviewOrder.orderSource === 'phone' && (
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: '8px',
+                      padding: '8px 12px', marginBottom: '6px', borderRadius: '6px',
+                      background: 'rgba(59, 130, 246, 0.06)', border: '1px solid rgba(59, 130, 246, 0.25)'
+                    }}>
+                      <span style={{ fontSize: '14px' }}>📞</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: '11px', fontWeight: '600', color: '#3b82f6', textTransform: 'uppercase' }}>
+                          Phone Order
+                        </div>
+                        <div style={{ fontSize: '12px', color: 'var(--text-primary)' }}>
+                          {reviewOrder.phoneCallTime
+                            ? `Call at ${new Date(reviewOrder.phoneCallTime).toLocaleString()}`
+                            : 'No call time recorded'}
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
-                        return (
-                          <div key={trace._id} style={{
-                            borderRadius: '6px', background: 'var(--bg-secondary)',
-                            border: '1px solid var(--border-color)', overflow: 'hidden'
+                  {/* Trace slots */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {traceSlots.map(({ type, label, icon, color, statusHint }) => {
+                      const trace = traces.find(t => t.traceType === type);
+                      const previewable = trace && isPreviewable(trace);
+                      const url = trace && getTraceUrl(trace);
+                      const isImage = trace && /\.(jpg|jpeg|png|gif)$/i.test(trace.fileName || '');
+                      const isEml = trace && /\.eml$/i.test(trace.fileName || '');
+                      const parsed = trace && parsedEmails[trace._id];
+
+                      return (
+                        <div key={type} style={{
+                          borderRadius: '6px', background: 'var(--bg-secondary)',
+                          border: `1px solid ${trace ? color + '40' : 'var(--border-color)'}`, overflow: 'hidden'
+                        }}>
+                          <div style={{
+                            display: 'flex', alignItems: 'center', gap: '8px',
+                            padding: '8px 12px'
                           }}>
-                            <div style={{
-                              display: 'flex', alignItems: 'center', gap: '8px',
-                              padding: '8px 12px'
-                            }}>
-                              <span style={{ fontSize: '14px' }}>
-                                {trace.traceType === EMAIL_TRACE_TYPES.CLIENT_ORDER ? '📋' : '📎'}
-                              </span>
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
-                                  {EMAIL_TRACE_LABELS[trace.traceType] || trace.traceType}
-                                </div>
+                            <span style={{ fontSize: '14px' }}>{icon}</span>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: '11px', fontWeight: '600', color: color, textTransform: 'uppercase' }}>
+                                {label}
+                                {statusHint && <span style={{ fontWeight: '400', color: 'var(--text-muted)', textTransform: 'none', marginLeft: '6px' }}>→ {statusHint}</span>}
+                              </div>
+                              {trace ? (
                                 <div style={{ fontSize: '12px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                   {trace.fileName}
                                 </div>
-                              </div>
+                              ) : (
+                                <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Not attached</div>
+                              )}
                             </div>
-
-                            {/* Inline preview for images / PDF / HTML */}
-                            {previewable && (
-                              <div style={{ borderTop: '1px solid var(--border-color)', padding: '8px', background: 'var(--bg-primary)' }}>
-                                {isImage ? (
-                                  <img
-                                    src={url}
-                                    alt={trace.fileName}
-                                    style={{ maxWidth: '100%', maxHeight: '500px', display: 'block', margin: '0 auto', borderRadius: '4px' }}
-                                  />
-                                ) : (
-                                  <iframe
-                                    src={url}
-                                    title={trace.fileName}
-                                    style={{ width: '100%', height: '500px', border: 'none', borderRadius: '4px', background: '#fff' }}
-                                  />
-                                )}
-                              </div>
+                            {!trace && (
+                              <button
+                                style={{
+                                  padding: '4px 10px', borderRadius: '4px', border: `1px solid ${color}40`,
+                                  background: `${color}10`, color: color, fontSize: '11px',
+                                  fontWeight: '600', cursor: uploadingTrace ? 'wait' : 'pointer', whiteSpace: 'nowrap'
+                                }}
+                                onClick={() => triggerUpload(type)}
+                                disabled={uploadingTrace}
+                              >
+                                {uploadingTrace && selectedTraceType === type ? 'Uploading...' : 'Attach'}
+                              </button>
                             )}
+                            {trace && (
+                              <button
+                                style={{
+                                  padding: '4px 10px', borderRadius: '4px', border: '1px solid var(--border-color)',
+                                  background: 'transparent', color: 'var(--text-muted)', fontSize: '11px',
+                                  fontWeight: '600', cursor: uploadingTrace ? 'wait' : 'pointer', whiteSpace: 'nowrap'
+                                }}
+                                onClick={() => triggerUpload(type)}
+                                disabled={uploadingTrace}
+                              >
+                                Replace
+                              </button>
+                            )}
+                          </div>
 
-                            {/* Inline preview for .eml (parsed server-side) */}
-                            {isEml && (
-                              <div style={{ borderTop: '1px solid var(--border-color)', background: 'var(--bg-primary)' }}>
-                                {!parsed ? (
-                                  <div style={{ padding: '16px', textAlign: 'center', fontSize: '12px', color: 'var(--text-muted)' }}>
-                                    Loading email...
-                                  </div>
-                                ) : parsed.error ? (
-                                  <div style={{ padding: '16px', textAlign: 'center', fontSize: '12px', color: '#ef4444' }}>
-                                    Could not parse email: {parsed.error}
-                                  </div>
-                                ) : (
-                                  <div>
-                                    {/* Email header */}
-                                    <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-color)', fontSize: '12px' }}>
-                                      <div style={{ marginBottom: '3px' }}><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>From:</strong> <span style={{ color: 'var(--text-primary)' }}>{parsed.from}</span></div>
-                                      <div style={{ marginBottom: '3px' }}><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>To:</strong> <span style={{ color: 'var(--text-primary)' }}>{parsed.to}</span></div>
-                                      <div style={{ marginBottom: '3px' }}><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>Subject:</strong> <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{parsed.subject}</span></div>
-                                      {parsed.date && (
-                                        <div><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>Date:</strong> <span style={{ color: 'var(--text-primary)' }}>{new Date(parsed.date).toLocaleString()}</span></div>
-                                      )}
-                                      {parsed.hasAttachments && (
-                                        <div style={{ marginTop: '4px', color: 'var(--text-muted)', fontSize: '11px' }}>
-                                          Attachments: {parsed.attachmentNames.join(', ')}
-                                        </div>
-                                      )}
-                                    </div>
-                                    {/* Email body */}
-                                    {parsed.html ? (
-                                      <iframe
-                                        srcDoc={parsed.html}
-                                        title="Email content"
-                                        style={{ width: '100%', height: '400px', border: 'none', background: '#fff' }}
-                                        sandbox="allow-same-origin"
-                                      />
-                                    ) : (
-                                      <div style={{ padding: '12px', fontSize: '13px', color: 'var(--text-primary)', whiteSpace: 'pre-wrap', lineHeight: '1.5', maxHeight: '400px', overflowY: 'auto' }}>
-                                        {parsed.text}
+                          {/* Inline preview for attached trace */}
+                          {trace && previewable && (
+                            <div style={{ borderTop: '1px solid var(--border-color)', padding: '8px', background: 'var(--bg-primary)' }}>
+                              {isImage ? (
+                                <img
+                                  src={url}
+                                  alt={trace.fileName}
+                                  style={{ maxWidth: '100%', maxHeight: '500px', display: 'block', margin: '0 auto', borderRadius: '4px' }}
+                                />
+                              ) : (
+                                <iframe
+                                  src={url}
+                                  title={trace.fileName}
+                                  style={{ width: '100%', height: '500px', border: 'none', borderRadius: '4px', background: '#fff' }}
+                                />
+                              )}
+                            </div>
+                          )}
+
+                          {/* Inline preview for .eml (parsed server-side) */}
+                          {trace && isEml && (
+                            <div style={{ borderTop: '1px solid var(--border-color)', background: 'var(--bg-primary)' }}>
+                              {!parsed ? (
+                                <div style={{ padding: '16px', textAlign: 'center', fontSize: '12px', color: 'var(--text-muted)' }}>
+                                  Loading email...
+                                </div>
+                              ) : parsed.error ? (
+                                <div style={{ padding: '16px', textAlign: 'center', fontSize: '12px', color: '#ef4444' }}>
+                                  Could not parse email: {parsed.error}
+                                </div>
+                              ) : (
+                                <div>
+                                  <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-color)', fontSize: '12px' }}>
+                                    <div style={{ marginBottom: '3px' }}><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>From:</strong> <span style={{ color: 'var(--text-primary)' }}>{parsed.from}</span></div>
+                                    <div style={{ marginBottom: '3px' }}><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>To:</strong> <span style={{ color: 'var(--text-primary)' }}>{parsed.to}</span></div>
+                                    <div style={{ marginBottom: '3px' }}><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>Subject:</strong> <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{parsed.subject}</span></div>
+                                    {parsed.date && (
+                                      <div><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>Date:</strong> <span style={{ color: 'var(--text-primary)' }}>{new Date(parsed.date).toLocaleString()}</span></div>
+                                    )}
+                                    {parsed.hasAttachments && (
+                                      <div style={{ marginTop: '4px', color: 'var(--text-muted)', fontSize: '11px' }}>
+                                        Attachments: {parsed.attachmentNames.join(', ')}
                                       </div>
                                     )}
                                   </div>
-                                )}
-                              </div>
-                            )}
+                                  {parsed.html ? (
+                                    <iframe
+                                      srcDoc={parsed.html}
+                                      title="Email content"
+                                      style={{ width: '100%', height: '400px', border: 'none', background: '#fff' }}
+                                      sandbox="allow-same-origin"
+                                    />
+                                  ) : (
+                                    <div style={{ padding: '12px', fontSize: '13px', color: 'var(--text-primary)', whiteSpace: 'pre-wrap', lineHeight: '1.5', maxHeight: '400px', overflowY: 'auto' }}>
+                                      {parsed.text}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
 
-                            {/* .msg files — download only */}
-                            {!previewable && !isEml && (
-                              <div style={{ borderTop: '1px solid var(--border-color)', padding: '12px', textAlign: 'center' }}>
-                                <button
-                                  style={{
-                                    padding: '6px 16px', borderRadius: '4px', border: '1px solid var(--border-color)',
-                                    background: 'transparent', color: 'var(--text-secondary)', fontSize: '12px',
-                                    fontWeight: '600', cursor: 'pointer'
-                                  }}
-                                  onClick={() => {
-                                    const a = document.createElement('a');
-                                    a.href = url; a.download = trace.fileName; a.click();
-                                  }}
-                                >
-                                  Download {trace.fileName}
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {/* Upload zone if no client order attached */}
-                  {!hasClientOrder && (
-                    <div
-                      style={{
-                        border: '2px dashed rgba(249, 115, 22, 0.4)',
-                        borderRadius: '6px',
-                        padding: '14px',
-                        textAlign: 'center',
-                        cursor: uploadingTrace ? 'wait' : 'pointer',
-                        background: 'rgba(249, 115, 22, 0.05)',
-                        transition: 'border-color 0.15s'
-                      }}
-                      onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleUploadClientOrder(e.dataTransfer.files[0]);
-                      }}
-                      onClick={() => {
-                        if (uploadingTrace) return;
-                        const input = document.createElement('input');
-                        input.type = 'file';
-                        input.accept = EMAIL_TRACE_ACCEPTED_TYPES.join(',');
-                        input.onchange = (e) => handleUploadClientOrder(e.target.files[0]);
-                        input.click();
-                      }}
-                    >
-                      {uploadingTrace ? (
-                        <span style={{ fontSize: '12px', color: '#f97316' }}>Uploading...</span>
-                      ) : (
-                        <div>
-                          <div style={{ fontSize: '12px', color: '#f97316', fontWeight: '600', marginBottom: '2px' }}>
-                            No client order email attached
-                          </div>
-                          <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                            Click or drag & drop to attach (.pdf, .jpg, .png, .msg, .eml, .html)
-                          </div>
+                          {/* .msg files — download only */}
+                          {trace && !previewable && !isEml && (
+                            <div style={{ borderTop: '1px solid var(--border-color)', padding: '12px', textAlign: 'center' }}>
+                              <button
+                                style={{
+                                  padding: '6px 16px', borderRadius: '4px', border: '1px solid var(--border-color)',
+                                  background: 'transparent', color: 'var(--text-secondary)', fontSize: '12px',
+                                  fontWeight: '600', cursor: 'pointer'
+                                }}
+                                onClick={() => {
+                                  const a = document.createElement('a');
+                                  a.href = url; a.download = trace.fileName; a.click();
+                                }}
+                              >
+                                Download {trace.fileName}
+                              </button>
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  )}
+                      );
+                    })}
+                  </div>
                 </div>
               );
             })()}
+            </div>{/* END RIGHT COLUMN */}
+
+            </div>{/* END TWO-COLUMN GRID */}
+
+            {/* Allocation Warning */}
+            {reviewOrder.allocationWarning && reviewOrder.allocationWarning.breaches?.length > 0 && (
+              <div style={{
+                padding: '14px 16px', marginBottom: '14px', borderRadius: '8px',
+                background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.3)'
+              }}>
+                <div style={{ fontSize: '12px', fontWeight: '700', color: '#f59e0b', marginBottom: '8px' }}>
+                  Investment Profile Warning
+                </div>
+                {reviewOrder.allocationWarning.breaches.map((b, idx) => (
+                  <div key={idx} style={{
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    padding: '5px 0', borderBottom: idx < reviewOrder.allocationWarning.breaches.length - 1 ? '1px solid rgba(245, 158, 11, 0.15)' : 'none',
+                    fontSize: '12px'
+                  }}>
+                    <span style={{ fontWeight: '600', color: 'var(--text-primary)', textTransform: 'capitalize' }}>{b.category}</span>
+                    <span style={{ color: 'var(--text-secondary)' }}>
+                      {b.current.toFixed(1)}% → <span style={{ color: '#f59e0b', fontWeight: '600' }}>{b.projected.toFixed(1)}%</span>
+                      <span style={{ color: 'var(--text-muted)', marginLeft: '6px' }}>limit {b.limit}%</span>
+                    </span>
+                  </div>
+                ))}
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
+                  This order was flagged for exceeding the account's investment profile allocation limits.
+                </div>
+                {reviewOrder.allocationWarning.justification && (
+                  <div style={{ fontSize: '12px', color: 'var(--text-primary)', marginTop: '8px', padding: '8px 10px', borderRadius: '6px', background: 'rgba(245, 158, 11, 0.05)', border: '1px solid rgba(245, 158, 11, 0.15)' }}>
+                    <span style={{ fontWeight: '600', color: '#f59e0b', fontSize: '11px' }}>Justification:</span>{' '}
+                    {reviewOrder.allocationWarning.justification}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Modification History */}
             {reviewOrder.limitHistoryFormatted?.length > 0 && (
@@ -821,6 +1082,27 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
                     {isActioning === reviewOrder._id ? 'Validating...' : 'Validate Modification'}
                   </button>
                 </>
+              ) : reviewOrder.status === ORDER_STATUSES.REVISION_REQUESTED ? (
+                <>
+                  {reviewOrder.revisionReason && (
+                    <div style={{ flex: 1, fontSize: '12px', color: '#e879f9', marginRight: '8px' }}>
+                      Revision note: {reviewOrder.revisionReason}
+                    </div>
+                  )}
+                  {reviewOrder.createdBy === user._id ? (
+                    <button
+                      style={{ ...styles.validateBtn, padding: '8px 20px', fontSize: '13px', opacity: isActioning ? 0.5 : 1 }}
+                      onClick={async () => { await handleResubmit(reviewOrder); setReviewOrder(null); }}
+                      disabled={!!isActioning}
+                    >
+                      {isActioning === reviewOrder._id ? 'Resubmitting...' : 'Resubmit for Validation'}
+                    </button>
+                  ) : (
+                    <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                      Waiting for {reviewOrder.createdByName || 'creator'} to revise
+                    </span>
+                  )}
+                </>
               ) : (
                 <>
                   <button
@@ -829,6 +1111,19 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
                     disabled={!!isActioning}
                   >
                     Reject
+                  </button>
+                  <button
+                    style={{
+                      padding: '8px 20px', fontSize: '13px', borderRadius: '4px', border: 'none',
+                      background: '#e879f9', color: '#fff', fontWeight: '600', cursor: 'pointer',
+                      transition: 'opacity 0.15s',
+                      opacity: isActioning ? 0.5 : 1
+                    }}
+                    onClick={() => { setRevisionModalOrder(reviewOrder); setRevisionReason(''); setReviewOrder(null); }}
+                    disabled={!!isActioning}
+                    title="Send back to creator for modifications"
+                  >
+                    Request Modification
                   </button>
                   <button
                     style={{
@@ -895,6 +1190,55 @@ const ValidationBlotter = ({ user, onOrderValidated, refreshKey }) => {
           </div>
         </div>
       )}
+      {/* Revision Reason Modal */}
+      {revisionModalOrder && (
+        <div style={styles.modalOverlay} onClick={() => setRevisionModalOrder(null)}>
+          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>
+              Request Modification — {revisionModalOrder.orderReference}
+            </h3>
+            <p style={styles.modalDesc}>
+              This will send the order for <strong>{revisionModalOrder.securityName}</strong> back to {revisionModalOrder.createdByName || 'the creator'} for revision.
+            </p>
+            <div style={{ marginBottom: '16px' }}>
+              <label style={styles.modalLabel}>What needs to be changed? (optional)</label>
+              <textarea
+                style={styles.modalTextarea}
+                value={revisionReason}
+                onChange={(e) => setRevisionReason(e.target.value)}
+                placeholder="e.g. Wrong quantity, check the client instruction email..."
+                rows={3}
+              />
+            </div>
+            <div style={styles.modalActions}>
+              <button
+                style={styles.modalCancelBtn}
+                onClick={() => setRevisionModalOrder(null)}
+              >
+                Cancel
+              </button>
+              <button
+                style={{
+                  padding: '8px 20px',
+                  borderRadius: '4px',
+                  border: 'none',
+                  background: '#e879f9',
+                  color: '#fff',
+                  fontSize: '13px',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  opacity: isActioning ? 0.5 : 1
+                }}
+                onClick={handleRequestRevision}
+                disabled={!!isActioning}
+              >
+                {isActioning ? 'Sending...' : 'Send Back for Revision'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Confirm Transmitted Modal */}
     </>
   );
 };

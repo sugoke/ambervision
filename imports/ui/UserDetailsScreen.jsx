@@ -59,7 +59,20 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
     preferredLanguage: 'en',
     referenceCurrency: 'EUR',
     relationshipManagerId: '',
-    newPassword: ''
+    newPassword: '',
+    clientType: 'natural',
+    companyName: ''
+  });
+
+  // Stakeholders state (UBO, directors) for company clients
+  const [stakeholders, setStakeholders] = useState([]);
+  const [showAddStakeholder, setShowAddStakeholder] = useState(false);
+  const [newStakeholder, setNewStakeholder] = useState({
+    name: '',
+    role: 'ubo',
+    nationality: '',
+    ownership: '',
+    notes: ''
   });
 
   // Bank account creation state
@@ -104,10 +117,12 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
   // Key: bankAccountId, Value: { maxCash, maxBonds, maxEquities, maxAlternative }
   const [editingAccountProfile, setEditingAccountProfile] = useState(null); // accountId being edited
   const [accountProfileDraft, setAccountProfileDraft] = useState({
+    profileName: '',
     maxCash: 0,
     maxBonds: 0,
     maxEquities: 0,
-    maxAlternative: 0
+    maxAlternative: 0,
+    isProfessionalInvestor: false
   });
 
   // Tab navigation state
@@ -134,7 +149,7 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
     const portfolioSnapshotsHandle = Meteor.subscribe('portfolioSnapshots', sessionId, {}, { type: 'client', id: userId });
 
     const userData = UsersCollection.findOne(userId);
-    const rms = UsersCollection.find({ role: USER_ROLES.RELATIONSHIP_MANAGER }).fetch();
+    const rms = UsersCollection.find({ role: { $in: [USER_ROLES.RELATIONSHIP_MANAGER, USER_ROLES.SUPERADMIN] } }).fetch();
     const introducersData = UsersCollection.find({ role: USER_ROLES.INTRODUCER }).fetch();
     const banksData = BanksCollection.find().fetch();
     const accountsData = BankAccountsCollection.find({
@@ -178,8 +193,11 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
         preferredLanguage: user.profile?.preferredLanguage || 'en',
         referenceCurrency: user.profile?.referenceCurrency || 'EUR',
         relationshipManagerId: user.relationshipManagerId || '',
-        newPassword: ''
+        newPassword: '',
+        clientType: user.profile?.clientType || 'natural',
+        companyName: user.profile?.companyName || ''
       });
+      setStakeholders(user.profile?.stakeholders || []);
     }
   }, [user]);
 
@@ -239,6 +257,9 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
           birthday: formData.birthday ? new Date(formData.birthday) : null,
           preferredLanguage: formData.preferredLanguage,
           referenceCurrency: formData.referenceCurrency,
+          clientType: formData.clientType,
+          companyName: formData.clientType === 'company' ? formData.companyName : '',
+          stakeholders: formData.clientType === 'company' ? stakeholders : [],
           updatedAt: new Date()
         }
       }, sessionId);
@@ -567,10 +588,12 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
   const handleStartEditAccountProfile = (accountId) => {
     const existingProfile = accountProfiles?.find(p => p.bankAccountId === accountId);
     setAccountProfileDraft({
+      profileName: existingProfile?.profileName || '',
       maxCash: existingProfile?.maxCash || 0,
       maxBonds: existingProfile?.maxBonds || 0,
       maxEquities: existingProfile?.maxEquities || 0,
-      maxAlternative: existingProfile?.maxAlternative || 0
+      maxAlternative: existingProfile?.maxAlternative || 0,
+      isProfessionalInvestor: existingProfile?.isProfessionalInvestor || false
     });
     setEditingAccountProfile(accountId);
   };
@@ -609,12 +632,14 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
   const applyTemplate = (templateKey) => {
     const template = PROFILE_TEMPLATES[templateKey];
     if (template) {
-      setAccountProfileDraft({
+      setAccountProfileDraft(prev => ({
+        ...prev,
+        profileName: template.name,
         maxCash: template.maxCash,
         maxBonds: template.maxBonds,
         maxEquities: template.maxEquities,
         maxAlternative: template.maxAlternative
-      });
+      }));
     }
   };
 
@@ -626,6 +651,21 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
 
   const getProfileForAccount = (accountId) => {
     return accountProfiles?.find(p => p.bankAccountId === accountId);
+  };
+
+  const getProfileName = (profile) => {
+    if (!profile) return null;
+    if (profile.profileName) return profile.profileName;
+    // Derive from template match
+    for (const [, template] of Object.entries(PROFILE_TEMPLATES)) {
+      if (profile.maxCash === template.maxCash &&
+          profile.maxBonds === template.maxBonds &&
+          profile.maxEquities === template.maxEquities &&
+          profile.maxAlternative === template.maxAlternative) {
+        return template.name;
+      }
+    }
+    return null;
   };
 
   const getSnapshotForAccount = (account) => {
@@ -1288,10 +1328,6 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
             </div>
 
             <div style={{ display: 'flex', gap: '16px', marginBottom: '8px', flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                <span>✉️</span>
-                <span>{user.email || user.username}</span>
-              </div>
               {user.profile?.createdAt && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
                   <span>📅</span>
@@ -1453,18 +1489,39 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
               padding: isMobile ? '1rem' : '1rem',
               background: 'rgba(79, 166, 255, 0.1)',
               border: '1px solid rgba(79, 166, 255, 0.2)',
-              borderRadius: '12px',
-              textAlign: 'center'
+              borderRadius: '12px'
             }}>
-              <div style={{ fontSize: isMobile ? '1.5rem' : '1.75rem', fontWeight: '700', color: '#4da6ff', marginBottom: '4px' }}>
-                {bankAccounts.length}
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: '600', letterSpacing: '0.5px', marginBottom: '6px' }}>
+                Accounts
               </div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: '600', letterSpacing: '0.5px' }}>
-                Bank Accounts
-              </div>
+              {(() => {
+                const categoryCounts = {};
+                bankAccounts.forEach(acc => {
+                  let category;
+                  const comment = (acc.comment || '').toLowerCase();
+                  if (comment.includes('credit')) {
+                    category = 'Credit';
+                  } else if (comment === 'spending') {
+                    category = 'Spending';
+                  } else if (acc.accountType === 'life_insurance') {
+                    category = 'Life Insurance';
+                  } else {
+                    category = 'Investment';
+                  }
+                  categoryCounts[category] = (categoryCounts[category] || 0) + 1;
+                });
+                return Object.entries(categoryCounts).map(([cat, count]) => (
+                  <div key={cat} style={{ fontSize: '13px', color: '#4da6ff', fontWeight: '600', lineHeight: '1.6' }}>
+                    {count} {cat}
+                  </div>
+                ));
+              })()}
+              {bankAccounts.length === 0 && (
+                <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No accounts</div>
+              )}
             </div>
 
-            {user.profile?.familyMembers && (
+            {user.profile?.familyMembers && user.profile?.clientType !== 'company' && (
               <div style={{
                 padding: isMobile ? '1rem' : '1rem',
                 background: 'rgba(139, 92, 246, 0.1)',
@@ -1491,10 +1548,11 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
           { id: 'rmClients', label: 'Clients', icon: '👥', rmOnly: true },
           { id: 'introducerAccounts', label: 'Accounts Introduced', icon: '🤝', introducerOnly: true },
           { id: 'accounts', label: 'Accounts', icon: '🏦', clientOnly: true },
+          { id: 'stakeholders', label: 'Stakeholders', icon: '🏛️', companyOnly: true },
           { id: 'documents', label: 'Documents', icon: '📋', clientOnly: true },
           { id: 'kyc', label: 'KYC', icon: '✅', clientOnly: true },
           { id: 'riskScore', label: 'Risk Score', icon: '📊', clientOnly: true },
-          { id: 'family', label: 'Family', icon: '👨‍👩‍👧‍👦', clientOnly: true },
+          { id: 'family', label: 'Linked People', icon: '👨‍👩‍👧‍👦', clientOnly: true, personOnly: true },
           { id: 'password', label: 'Password', icon: '🔒', adminOnly: true }
         ];
 
@@ -1503,14 +1561,18 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
         const isViewingRM = user.role === USER_ROLES.RELATIONSHIP_MANAGER;
         const isViewingIntroducer = user.role === USER_ROLES.INTRODUCER;
 
+        const isCompanyClient = isViewingClient && user.profile?.clientType === 'company';
+
         const visibleTabs = tabs.filter(tab => {
-          // Admins see everything when viewing a client
-          if (isAdmin && isViewingClient) return true;
-          // RM-only tabs shown when viewing an RM
+          // RM-only tabs shown only when viewing an RM
           if (tab.rmOnly && !isViewingRM) return false;
-          // Introducer-only tabs shown when viewing an Introducer
+          // Introducer-only tabs shown only when viewing an Introducer
           if (tab.introducerOnly && !isViewingIntroducer) return false;
-          // Client-only tabs shown for clients viewing their own profile
+          // Company-only tabs shown only for company clients
+          if (tab.companyOnly && !isCompanyClient) return false;
+          // Person-only tabs hidden for company clients
+          if (tab.personOnly && isCompanyClient) return false;
+          // Client-only tabs shown when viewing a client (admins included)
           if (tab.clientOnly && !isViewingClient) return false;
           // Admin-only tabs shown only for admins
           if (tab.adminOnly && !isAdmin) return false;
@@ -1650,99 +1712,83 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                   </div>
                 </div>
 
-                <div>
-                  <label style={{
-                    display: 'block',
-                    marginBottom: '8px',
-                    color: 'var(--text-secondary)',
-                    fontSize: '0.8rem',
-                    fontWeight: '600',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.5px'
-                  }}>
-                    First Name
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.firstName}
-                    onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
-                    style={{
-                      width: '100%',
-                      padding: '12px',
-                      background: 'var(--bg-secondary)',
-                      border: '2px solid var(--border-color)',
-                      borderRadius: '6px',
-                      color: 'var(--text-primary)',
-                      fontSize: '0.95rem',
-                      transition: 'all 0.3s ease',
-                      outline: 'none'
-                    }}
-                    onFocus={(e) => e.currentTarget.style.borderColor = 'var(--accent-color)'}
-                    onBlur={(e) => e.currentTarget.style.borderColor = 'var(--border-color)'}
-                  />
-                </div>
-
-                <div>
-                  <label style={{
-                    display: 'block',
-                    marginBottom: '8px',
-                    color: 'var(--text-secondary)',
-                    fontSize: '0.8rem',
-                    fontWeight: '600',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.5px'
-                  }}>
-                    Last Name
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.lastName}
-                    onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
-                    style={{
-                      width: '100%',
-                      padding: '12px',
-                      background: 'var(--bg-secondary)',
-                      border: '2px solid var(--border-color)',
-                      borderRadius: '6px',
-                      color: 'var(--text-primary)',
-                      fontSize: '0.95rem',
-                      transition: 'all 0.3s ease',
-                      outline: 'none'
-                    }}
-                    onFocus={(e) => e.currentTarget.style.borderColor = 'var(--accent-color)'}
-                    onBlur={(e) => e.currentTarget.style.borderColor = 'var(--border-color)'}
-                  />
-                </div>
-
-                <div>
-                  <label style={{
-                    display: 'block',
-                    marginBottom: '8px',
-                    color: 'var(--text-secondary)',
-                    fontSize: '0.8rem',
-                    fontWeight: '600',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.5px'
-                  }}>
-                    Birthday
-                  </label>
-                  <div style={{ position: 'relative' }}>
-                    <span style={{
-                      position: 'absolute',
-                      left: '12px',
-                      top: '50%',
-                      transform: 'translateY(-50%)',
-                      fontSize: '16px'
+                {/* Client Type (only for client role) */}
+                {user.role === USER_ROLES.CLIENT && (
+                  <div>
+                    <label style={{
+                      display: 'block',
+                      marginBottom: '8px',
+                      color: 'var(--text-secondary)',
+                      fontSize: '0.8rem',
+                      fontWeight: '600',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.5px'
                     }}>
-                      🎂
-                    </span>
+                      Client Type
+                    </label>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, clientType: 'natural' })}
+                        style={{
+                          flex: 1,
+                          padding: '10px',
+                          borderRadius: '6px',
+                          border: `2px solid ${formData.clientType === 'natural' ? 'var(--accent-color)' : 'var(--border-color)'}`,
+                          background: formData.clientType === 'natural' ? 'rgba(99, 102, 241, 0.1)' : 'var(--bg-secondary)',
+                          color: formData.clientType === 'natural' ? 'var(--accent-color)' : 'var(--text-secondary)',
+                          cursor: 'pointer',
+                          fontWeight: '500',
+                          fontSize: '0.9rem',
+                          transition: 'all 0.2s ease'
+                        }}
+                      >
+                        Natural Person
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, clientType: 'company' })}
+                        style={{
+                          flex: 1,
+                          padding: '10px',
+                          borderRadius: '6px',
+                          border: `2px solid ${formData.clientType === 'company' ? 'var(--accent-color)' : 'var(--border-color)'}`,
+                          background: formData.clientType === 'company' ? 'rgba(99, 102, 241, 0.1)' : 'var(--bg-secondary)',
+                          color: formData.clientType === 'company' ? 'var(--accent-color)' : 'var(--text-secondary)',
+                          cursor: 'pointer',
+                          fontWeight: '500',
+                          fontSize: '0.9rem',
+                          transition: 'all 0.2s ease'
+                        }}
+                      >
+                        Company
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Company Name (only for company clients) */}
+                {user.role === USER_ROLES.CLIENT && formData.clientType === 'company' && (
+                  <div>
+                    <label style={{
+                      display: 'block',
+                      marginBottom: '8px',
+                      color: 'var(--text-secondary)',
+                      fontSize: '0.8rem',
+                      fontWeight: '600',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.5px'
+                    }}>
+                      Company Name
+                    </label>
                     <input
-                      type="date"
-                      value={formData.birthday}
-                      onChange={(e) => setFormData({ ...formData, birthday: e.target.value })}
+                      type="text"
+                      value={formData.companyName}
+                      onChange={(e) => setFormData({ ...formData, companyName: e.target.value })}
+                      placeholder="Enter company name"
                       style={{
                         width: '100%',
-                        padding: '12px 12px 12px 40px',
+                        padding: '12px',
                         background: 'var(--bg-secondary)',
                         border: '2px solid var(--border-color)',
                         borderRadius: '6px',
@@ -1755,7 +1801,122 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                       onBlur={(e) => e.currentTarget.style.borderColor = 'var(--border-color)'}
                     />
                   </div>
-                </div>
+                )}
+
+                {/* First/Last Name (only for natural persons or non-client roles) */}
+                {(user.role !== USER_ROLES.CLIENT || formData.clientType !== 'company') && (
+                  <>
+                    <div>
+                      <label style={{
+                        display: 'block',
+                        marginBottom: '8px',
+                        color: 'var(--text-secondary)',
+                        fontSize: '0.8rem',
+                        fontWeight: '600',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.5px'
+                      }}>
+                        First Name
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.firstName}
+                        onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
+                        style={{
+                          width: '100%',
+                          padding: '12px',
+                          background: 'var(--bg-secondary)',
+                          border: '2px solid var(--border-color)',
+                          borderRadius: '6px',
+                          color: 'var(--text-primary)',
+                          fontSize: '0.95rem',
+                          transition: 'all 0.3s ease',
+                          outline: 'none'
+                        }}
+                        onFocus={(e) => e.currentTarget.style.borderColor = 'var(--accent-color)'}
+                        onBlur={(e) => e.currentTarget.style.borderColor = 'var(--border-color)'}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{
+                        display: 'block',
+                        marginBottom: '8px',
+                        color: 'var(--text-secondary)',
+                        fontSize: '0.8rem',
+                        fontWeight: '600',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.5px'
+                      }}>
+                        Last Name
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.lastName}
+                        onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
+                        style={{
+                          width: '100%',
+                          padding: '12px',
+                          background: 'var(--bg-secondary)',
+                          border: '2px solid var(--border-color)',
+                          borderRadius: '6px',
+                          color: 'var(--text-primary)',
+                          fontSize: '0.95rem',
+                          transition: 'all 0.3s ease',
+                          outline: 'none'
+                        }}
+                        onFocus={(e) => e.currentTarget.style.borderColor = 'var(--accent-color)'}
+                        onBlur={(e) => e.currentTarget.style.borderColor = 'var(--border-color)'}
+                      />
+                    </div>
+                  </>
+                )}
+
+                {/* Date of Birth - hide for company clients */}
+                {(user.role !== USER_ROLES.CLIENT || formData.clientType !== 'company') && (
+                  <div>
+                    <label style={{
+                      display: 'block',
+                      marginBottom: '8px',
+                      color: 'var(--text-secondary)',
+                      fontSize: '0.8rem',
+                      fontWeight: '600',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.5px'
+                    }}>
+                      Date of Birth
+                    </label>
+                    <div style={{ position: 'relative' }}>
+                      <span style={{
+                        position: 'absolute',
+                        left: '12px',
+                        top: '50%',
+                        transform: 'translateY(-50%)',
+                        fontSize: '16px'
+                      }}>
+                        🎂
+                      </span>
+                      <input
+                        type="date"
+                        value={formData.birthday}
+                        onChange={(e) => setFormData({ ...formData, birthday: e.target.value })}
+                        style={{
+                          width: '100%',
+                          padding: '12px 12px 12px 40px',
+                          background: 'var(--bg-secondary)',
+                          border: '2px solid var(--border-color)',
+                          borderRadius: '6px',
+                          color: 'var(--text-primary)',
+                          fontSize: '0.95rem',
+                          transition: 'all 0.3s ease',
+                          outline: 'none'
+                        }}
+                        onFocus={(e) => e.currentTarget.style.borderColor = 'var(--accent-color)'}
+                        onBlur={(e) => e.currentTarget.style.borderColor = 'var(--border-color)'}
+                      />
+                    </div>
+                  </div>
+                )}
 
                 <div>
                   <label style={{
@@ -1866,8 +2027,11 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                         preferredLanguage: user.profile?.preferredLanguage || 'en',
                         referenceCurrency: user.profile?.referenceCurrency || 'EUR',
                         relationshipManagerId: user.relationshipManagerId || '',
-                        newPassword: ''
+                        newPassword: '',
+                        clientType: user.profile?.clientType || 'natural',
+                        companyName: user.profile?.companyName || ''
                       });
+                      setStakeholders(user.profile?.stakeholders || []);
                     }}
                     style={{
                       padding: '12px 24px',
@@ -1922,44 +2086,63 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                   </p>
                 </div>
 
-                <div style={{
-                  padding: '1rem',
-                  background: 'var(--bg-tertiary)',
-                  borderRadius: '10px',
-                  border: '1px solid var(--border-color)'
-                }}>
-                  <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    Full Name
-                  </p>
-                  <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: '500' }}>
-                    {fullName}
-                  </p>
-                </div>
+                {user.profile?.clientType === 'company' ? (
+                  <div style={{
+                    padding: '1rem',
+                    background: 'var(--bg-tertiary)',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border-color)'
+                  }}>
+                    <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      Company Name
+                    </p>
+                    <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: '500' }}>
+                      {user.profile?.companyName || <span style={{ color: 'var(--text-secondary)' }}>Not set</span>}
+                    </p>
+                  </div>
+                ) : (
+                  <div style={{
+                    padding: '1rem',
+                    background: 'var(--bg-tertiary)',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border-color)'
+                  }}>
+                    <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      Full Name
+                    </p>
+                    <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: '500' }}>
+                      {fullName}
+                    </p>
+                  </div>
+                )}
 
-                <div style={{
-                  padding: '1rem',
-                  background: 'var(--bg-tertiary)',
-                  borderRadius: '10px',
-                  border: '1px solid var(--border-color)'
-                }}>
-                  <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    Birthday
-                  </p>
-                  <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: '500' }}>
-                    {user.profile?.birthday ? (
-                      <>
-                        {new Date(user.profile.birthday).toLocaleDateString()}
-                        {calculateAge(user.profile.birthday) && (
-                          <span style={{ marginLeft: '8px', color: 'var(--text-secondary)', fontSize: '13px' }}>
-                            ({calculateAge(user.profile.birthday)} years)
-                          </span>
-                        )}
-                      </>
-                    ) : (
-                      <span style={{ color: 'var(--text-secondary)' }}>Not set</span>
-                    )}
-                  </p>
-                </div>
+                {/* Date of Birth - hide for company clients */}
+                {user.profile?.clientType !== 'company' && (
+                  <div style={{
+                    padding: '1rem',
+                    background: 'var(--bg-tertiary)',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border-color)'
+                  }}>
+                    <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      Date of Birth
+                    </p>
+                    <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: '500' }}>
+                      {user.profile?.birthday ? (
+                        <>
+                          {new Date(user.profile.birthday).toLocaleDateString()}
+                          {calculateAge(user.profile.birthday) && (
+                            <span style={{ marginLeft: '8px', color: 'var(--text-secondary)', fontSize: '13px' }}>
+                              ({calculateAge(user.profile.birthday)} years)
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span style={{ color: 'var(--text-secondary)' }}>Not set</span>
+                      )}
+                    </p>
+                  </div>
+                )}
 
                 <div style={{
                   padding: '1rem',
@@ -1989,6 +2172,40 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                     {user.profile?.referenceCurrency || 'EUR'}
                   </p>
                 </div>
+
+                {/* Client Type */}
+                {user.role === USER_ROLES.CLIENT && (
+                  <div style={{
+                    padding: '1rem',
+                    background: 'var(--bg-tertiary)',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border-color)'
+                  }}>
+                    <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      Client Type
+                    </p>
+                    <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: '500' }}>
+                      {user.profile?.clientType === 'company' ? 'Company' : 'Natural Person'}
+                    </p>
+                  </div>
+                )}
+
+                {/* Company Name */}
+                {user.role === USER_ROLES.CLIENT && user.profile?.clientType === 'company' && user.profile?.companyName && (
+                  <div style={{
+                    padding: '1rem',
+                    background: 'var(--bg-tertiary)',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border-color)'
+                  }}>
+                    <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      Company Name
+                    </p>
+                    <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: '500' }}>
+                      {user.profile.companyName}
+                    </p>
+                  </div>
+                )}
               </div>
             )}
           </LiquidGlassCard>
@@ -3037,6 +3254,34 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                             </h3>
                             <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
                               {account.referenceCurrency} • {account.accountType === 'life_insurance' ? 'Life Insurance' : account.accountType?.charAt(0).toUpperCase() + account.accountType?.slice(1)}
+                              {profile?.profileName && (
+                                <span style={{
+                                  marginLeft: '8px',
+                                  padding: '1px 8px',
+                                  background: 'linear-gradient(135deg, #667eea20, #764ba220)',
+                                  border: '1px solid #667eea40',
+                                  borderRadius: '4px',
+                                  color: '#667eea',
+                                  fontSize: '11px',
+                                  fontWeight: '600'
+                                }}>
+                                  {profile.profileName}
+                                </span>
+                              )}
+                              {profile?.isProfessionalInvestor && (
+                                <span style={{
+                                  marginLeft: '8px',
+                                  padding: '1px 8px',
+                                  background: 'rgba(16, 185, 129, 0.1)',
+                                  border: '1px solid rgba(16, 185, 129, 0.3)',
+                                  borderRadius: '4px',
+                                  color: '#10b981',
+                                  fontSize: '11px',
+                                  fontWeight: '600'
+                                }}>
+                                  Professional Investor
+                                </span>
+                              )}
                             </span>
                           </div>
                         </div>
@@ -3067,8 +3312,21 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                           background: isDarkMode ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)',
                           borderRadius: '10px'
                         }}>
-                          <h4 style={{ margin: '0 0 16px', color: 'var(--text-primary)', fontSize: '14px', fontWeight: '600' }}>
+                          <h4 style={{ margin: '0 0 16px', color: 'var(--text-primary)', fontSize: '14px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                             Maximum Allocation Limits
+                            {!isEditing && getProfileName(profile) && (
+                              <span style={{
+                                padding: '2px 10px',
+                                background: 'linear-gradient(135deg, #667eea20, #764ba220)',
+                                border: '1px solid #667eea40',
+                                borderRadius: '4px',
+                                color: '#667eea',
+                                fontSize: '12px',
+                                fontWeight: '600'
+                              }}>
+                                {getProfileName(profile)}
+                              </span>
+                            )}
                           </h4>
 
                           {isEditing ? (
@@ -3095,6 +3353,29 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                                     <option key={key} value={key}>{template.name}</option>
                                   ))}
                                 </select>
+                              </div>
+
+                              {/* Profile Name */}
+                              <div style={{ marginBottom: '16px' }}>
+                                <label style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '12px', marginBottom: '6px' }}>
+                                  Profile Name
+                                </label>
+                                <input
+                                  type="text"
+                                  value={accountProfileDraft.profileName}
+                                  onChange={(e) => setAccountProfileDraft(prev => ({ ...prev, profileName: e.target.value }))}
+                                  placeholder="e.g. Flexible Balanced"
+                                  style={{
+                                    width: '100%',
+                                    padding: '8px 12px',
+                                    background: 'var(--bg-secondary)',
+                                    border: '1px solid var(--border-color)',
+                                    borderRadius: '6px',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '13px',
+                                    boxSizing: 'border-box'
+                                  }}
+                                />
                               </div>
 
                               {/* Allocation Inputs */}
@@ -3137,6 +3418,26 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                                   </div>
                                 ))}
                               </div>
+
+                              {/* Professional Investor Checkbox */}
+                              <label style={{
+                                display: 'flex', alignItems: 'center', gap: '8px',
+                                marginBottom: '16px', cursor: 'pointer',
+                                padding: '10px 12px', borderRadius: '8px',
+                                background: accountProfileDraft.isProfessionalInvestor ? 'rgba(16, 185, 129, 0.08)' : 'var(--bg-secondary)',
+                                border: `1px solid ${accountProfileDraft.isProfessionalInvestor ? 'rgba(16, 185, 129, 0.3)' : 'var(--border-color)'}`,
+                                transition: 'all 0.15s'
+                              }}>
+                                <input
+                                  type="checkbox"
+                                  checked={accountProfileDraft.isProfessionalInvestor}
+                                  onChange={(e) => setAccountProfileDraft(prev => ({ ...prev, isProfessionalInvestor: e.target.checked }))}
+                                  style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: '#10b981' }}
+                                />
+                                <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>
+                                  Professional Investor
+                                </span>
+                              </label>
 
                               {/* Save/Cancel */}
                               <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
@@ -3326,6 +3627,207 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                   );
                 })}
               </div>
+            </LiquidGlassCard>
+          )}
+
+          {/* Stakeholders - stakeholders tab (company clients only) */}
+          {activeTab === 'stakeholders' && user.role === USER_ROLES.CLIENT && user.profile?.clientType === 'company' && (
+            <LiquidGlassCard style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                <h2 style={{ margin: 0, fontSize: '20px', fontWeight: '600', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '1.3rem' }}>🏛️</span>
+                  Stakeholders
+                </h2>
+                <button
+                  onClick={() => setShowAddStakeholder(true)}
+                  style={{
+                    padding: '8px 16px',
+                    background: 'var(--accent-color)',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontWeight: '500',
+                    fontSize: '0.85rem'
+                  }}
+                >
+                  + Add Stakeholder
+                </button>
+              </div>
+
+              {/* Add stakeholder form */}
+              {showAddStakeholder && (
+                <div style={{
+                  padding: '16px',
+                  background: 'var(--bg-tertiary)',
+                  borderRadius: '10px',
+                  border: '1px solid var(--border-color)',
+                  marginBottom: '20px'
+                }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', marginBottom: '12px' }}>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase' }}>Full Name *</label>
+                      <input
+                        type="text"
+                        value={newStakeholder.name}
+                        onChange={(e) => setNewStakeholder({ ...newStakeholder, name: e.target.value })}
+                        placeholder="Full name"
+                        style={{ width: '100%', padding: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', fontSize: '0.9rem' }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase' }}>Role *</label>
+                      <select
+                        value={newStakeholder.role}
+                        onChange={(e) => setNewStakeholder({ ...newStakeholder, role: e.target.value })}
+                        style={{ width: '100%', padding: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', fontSize: '0.9rem', cursor: 'pointer' }}
+                      >
+                        <option value="ubo">Ultimate Beneficial Owner (UBO)</option>
+                        <option value="director">Director</option>
+                        <option value="signatory">Authorized Signatory</option>
+                        <option value="shareholder">Shareholder</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase' }}>Nationality</label>
+                      <input
+                        type="text"
+                        value={newStakeholder.nationality}
+                        onChange={(e) => setNewStakeholder({ ...newStakeholder, nationality: e.target.value })}
+                        placeholder="e.g. French"
+                        style={{ width: '100%', padding: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', fontSize: '0.9rem' }}
+                      />
+                    </div>
+                    {(newStakeholder.role === 'ubo' || newStakeholder.role === 'shareholder') && (
+                      <div>
+                        <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase' }}>Ownership %</label>
+                        <input
+                          type="number"
+                          value={newStakeholder.ownership}
+                          onChange={(e) => setNewStakeholder({ ...newStakeholder, ownership: e.target.value })}
+                          placeholder="e.g. 25"
+                          min="0"
+                          max="100"
+                          style={{ width: '100%', padding: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', fontSize: '0.9rem' }}
+                        />
+                      </div>
+                    )}
+                    <div style={{ gridColumn: '1 / -1' }}>
+                      <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase' }}>Notes</label>
+                      <input
+                        type="text"
+                        value={newStakeholder.notes}
+                        onChange={(e) => setNewStakeholder({ ...newStakeholder, notes: e.target.value })}
+                        placeholder="Additional notes"
+                        style={{ width: '100%', padding: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', fontSize: '0.9rem' }}
+                      />
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                    <button
+                      onClick={() => { setShowAddStakeholder(false); setNewStakeholder({ name: '', role: 'ubo', nationality: '', ownership: '', notes: '' }); }}
+                      style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (!newStakeholder.name.trim()) return;
+                        const updated = [...stakeholders, { ...newStakeholder, _id: Date.now().toString(), createdAt: new Date() }];
+                        setStakeholders(updated);
+                        try {
+                          await Meteor.callAsync('users.updateProfile', userId, {
+                            profile: { ...user.profile, stakeholders: updated, updatedAt: new Date() }
+                          }, sessionId);
+                        } catch (err) {
+                          console.error('Error saving stakeholder:', err);
+                        }
+                        setNewStakeholder({ name: '', role: 'ubo', nationality: '', ownership: '', notes: '' });
+                        setShowAddStakeholder(false);
+                      }}
+                      disabled={!newStakeholder.name.trim()}
+                      style={{ padding: '8px 16px', background: 'var(--accent-color)', border: 'none', borderRadius: '6px', color: 'white', cursor: 'pointer', fontWeight: '500', fontSize: '0.85rem', opacity: !newStakeholder.name.trim() ? 0.5 : 1 }}
+                    >
+                      Add
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Stakeholders list */}
+              {stakeholders.length === 0 && !showAddStakeholder ? (
+                <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-secondary)' }}>
+                  <p style={{ fontSize: '2rem', marginBottom: '8px' }}>🏛️</p>
+                  <p style={{ margin: 0, fontSize: '0.95rem' }}>No stakeholders added yet</p>
+                  <p style={{ margin: '4px 0 0', fontSize: '0.85rem' }}>Add UBOs, directors, and other key persons</p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {stakeholders.map((sh, idx) => {
+                    const roleLabels = { ubo: 'UBO', director: 'Director', signatory: 'Signatory', shareholder: 'Shareholder' };
+                    const roleColors = { ubo: '#dc2626', director: '#2563eb', signatory: '#059669', shareholder: '#7c3aed' };
+                    return (
+                      <div key={sh._id || idx} style={{
+                        padding: '14px 16px',
+                        background: 'var(--bg-tertiary)',
+                        borderRadius: '10px',
+                        border: '1px solid var(--border-color)',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center'
+                      }}>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                            <span style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.95rem' }}>{sh.name}</span>
+                            <span style={{
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              fontSize: '0.7rem',
+                              fontWeight: '600',
+                              color: roleColors[sh.role] || '#6b7280',
+                              background: `${roleColors[sh.role] || '#6b7280'}15`
+                            }}>
+                              {roleLabels[sh.role] || sh.role}
+                            </span>
+                            {sh.ownership && (
+                              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{sh.ownership}%</span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                            {sh.nationality && <span>{sh.nationality}</span>}
+                            {sh.nationality && sh.notes && <span> · </span>}
+                            {sh.notes && <span>{sh.notes}</span>}
+                          </div>
+                        </div>
+                        <button
+                          onClick={async () => {
+                            const updated = stakeholders.filter((_, i) => i !== idx);
+                            setStakeholders(updated);
+                            try {
+                              await Meteor.callAsync('users.updateProfile', userId, {
+                                profile: { ...user.profile, stakeholders: updated, updatedAt: new Date() }
+                              }, sessionId);
+                            } catch (err) {
+                              console.error('Error removing stakeholder:', err);
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--text-secondary)',
+                            cursor: 'pointer',
+                            fontSize: '1.2rem',
+                            padding: '4px'
+                          }}
+                          title="Remove stakeholder"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </LiquidGlassCard>
           )}
 
@@ -4084,7 +4586,7 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                         textTransform: 'uppercase',
                         letterSpacing: '0.5px'
                       }}>
-                        Birthday
+                        Date of Birth
                       </label>
                       <input
                         type="date"
@@ -4302,7 +4804,7 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                                 )}
                               </>
                             ) : (
-                              <span>Birthday not set</span>
+                              <span>Date of birth not set</span>
                             )}
                           </div>
                         </div>

@@ -4,7 +4,7 @@
 import { check, Match } from 'meteor/check';
 import { PMSHoldingsCollection } from '/imports/api/pmsHoldings';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
-import { UsersCollection, USER_ROLES } from '/imports/api/users';
+import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
 import { SessionsCollection } from '/imports/api/sessions';
 import { Meteor } from 'meteor/meteor';
 
@@ -154,21 +154,22 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
     // Build query filter based on role and viewAsFilter
     let queryFilter = { isActive: true };
 
-    const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
-    const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER;
+    const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE;
+    const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
     const isClient = currentUser.role === USER_ROLES.CLIENT;
 
-    // Handle viewAsFilter for admins and RMs
+    // Handle viewAsFilter for admins and RMs/Assistants
     if (viewAsFilter && (isAdmin || isRM)) {
       if (viewAsFilter.type === 'client') {
-        // For RMs, verify they have access to this client
+        // For RMs/Assistants, verify they have access to this client
         if (isRM) {
+          const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
           const targetClient = await UsersCollection.findOneAsync({
             _id: viewAsFilter.id,
-            relationshipManagerId: currentUser._id
+            relationshipManagerId: { $in: rmIds }
           });
           if (!targetClient) {
-            console.log('[PMS_HOLDINGS] RM does not have access to client:', viewAsFilter.id);
+            console.log('[PMS_HOLDINGS] RM/Assistant does not have access to client:', viewAsFilter.id);
             return this.ready();
           }
         }
@@ -178,14 +179,15 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
         // Filter by specific bank account
         const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
         if (bankAccount) {
-          // For RMs, verify they have access to this client
+          // For RMs/Assistants, verify they have access to this client
           if (isRM) {
+            const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
             const targetClient = await UsersCollection.findOneAsync({
               _id: bankAccount.userId,
-              relationshipManagerId: currentUser._id
+              relationshipManagerId: { $in: rmIds }
             });
             if (!targetClient) {
-              console.log('[PMS_HOLDINGS] RM does not have access to account owner:', bankAccount.userId);
+              console.log('[PMS_HOLDINGS] RM/Assistant does not have access to account owner:', bankAccount.userId);
               return this.ready();
             }
           }
@@ -355,7 +357,9 @@ Meteor.publish('pmsHoldings.snapshotDates', async function (sessionId = null, vi
     // Build query filter based on role and viewAsFilter (same logic as main publication)
     let queryFilter = { isActive: true };
 
-    if (viewAsFilter && (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN)) {
+    const isSnapshotAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE;
+
+    if (viewAsFilter && isSnapshotAdmin) {
       if (viewAsFilter.type === 'client') {
         queryFilter.userId = viewAsFilter.id;
       } else if (viewAsFilter.type === 'account') {
@@ -368,11 +372,12 @@ Meteor.publish('pmsHoldings.snapshotDates', async function (sessionId = null, vi
           return this.ready();
         }
       }
-    } else if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN) {
+    } else if (isSnapshotAdmin) {
       // No filter
-    } else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
+    } else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT) {
+      const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
       const assignedClients = await UsersCollection.find({
-        relationshipManagerId: currentUser._id
+        relationshipManagerId: { $in: rmIds }
       }).fetchAsync();
       const clientIds = assignedClients.map(c => c._id);
       clientIds.push(currentUser._id);
@@ -443,7 +448,7 @@ Meteor.publish('pmsHoldings.byProduct', async function(isin, sessionId = null) {
     if (!currentUser) return this.ready();
 
     const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
-    const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER;
+    const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
 
     if (!isAdmin && !isRM) return this.ready();
 

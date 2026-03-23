@@ -19,7 +19,7 @@ const RMDashboard = ({ user, onNavigate }) => {
   const [error, setError] = useState(null);
   const [dailyQuote, setDailyQuote] = useState(null);
   const [dashboardCurrency, setDashboardCurrency] = useState(() => {
-    return localStorage.getItem('dashboardCurrency') || 'EUR';
+    return localStorage.getItem('dashboardCurrency') || user?.referenceCurrency || 'EUR';
   });
   const [data, setData] = useState({
     alerts: [],
@@ -301,6 +301,7 @@ const RMDashboard = ({ user, onNavigate }) => {
         <PortfolioSummaryCard
           summary={data.summary}
           selectedCurrency={dashboardCurrency}
+          userCurrency={user?.referenceCurrency}
           onCurrencyChange={handleCurrencyChange}
           hideClientsCount={isClient}
         />

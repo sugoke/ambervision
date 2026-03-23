@@ -3,12 +3,12 @@ import { Mongo } from 'meteor/mongo';
 import { check, Match } from 'meteor/check';
 import { HTTP } from 'meteor/http';
 import { SessionsCollection } from '../../imports/api/sessions.js';
-import { UsersCollection, USER_ROLES } from '../../imports/api/users.js';
+import { UsersCollection, USER_ROLES, UserHelpers } from '../../imports/api/users.js';
 import { ProductsCollection } from '../../imports/api/products.js';
 import { AllocationsCollection } from '../../imports/api/allocations.js';
 import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
 import { AccountProfilesCollection, aggregateToFourCategories } from '../../imports/api/accountProfiles.js';
-import { PortfolioSnapshotsCollection } from '../../imports/api/portfolioSnapshots.js';
+import { PortfolioSnapshotsCollection, filterSnapshotsByBankStartDate } from '../../imports/api/portfolioSnapshots.js';
 import { BankAccountsCollection } from '../../imports/api/bankAccounts.js';
 import { BanksCollection } from '../../imports/api/banks.js';
 import { TickerPriceCacheCollection } from '../../imports/api/tickerCache.js';
@@ -63,6 +63,7 @@ async function validateRMSession(sessionId) {
   // Data filtering is handled per-role in individual methods
   const allowedRoles = [
     USER_ROLES.RELATIONSHIP_MANAGER,
+    USER_ROLES.ASSISTANT,
     USER_ROLES.ADMIN,
     USER_ROLES.SUPERADMIN,
     USER_ROLES.COMPLIANCE,
@@ -93,10 +94,11 @@ async function getAssignedClients(currentUser) {
     return await UsersCollection.find({ role: USER_ROLES.CLIENT }).fetchAsync();
   }
 
-  // RM sees only assigned clients
+  // RM/Assistant sees only assigned clients
+  const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
   return await UsersCollection.find({
     role: USER_ROLES.CLIENT,
-    relationshipManagerId: currentUser._id
+    relationshipManagerId: { $in: rmIds }
   }).fetchAsync();
 }
 
@@ -109,7 +111,7 @@ async function getAssignedClients(currentUser) {
  */
 async function getFilteredClientIds(currentUser, viewAsFilter = null) {
   const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
-  const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER;
+  const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
   const isCompliance = currentUser.role === USER_ROLES.COMPLIANCE;
   const isClient = currentUser.role === USER_ROLES.CLIENT;
 
@@ -121,14 +123,15 @@ async function getFilteredClientIds(currentUser, viewAsFilter = null) {
   // If viewAsFilter is active, filter to specific client
   if (viewAsFilter && (isAdmin || isRM || isCompliance)) {
     if (viewAsFilter.type === 'client') {
-      // For RMs, verify they have access to this client
+      // For RMs/Assistants, verify they have access to this client
       if (isRM) {
+        const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
         const targetClient = await UsersCollection.findOneAsync({
           _id: viewAsFilter.id,
-          relationshipManagerId: currentUser._id
+          relationshipManagerId: { $in: rmIds }
         });
         if (!targetClient) {
-          console.warn(`[getFilteredClientIds] RM ${currentUser._id} attempted to access unauthorized client ${viewAsFilter.id}`);
+          console.warn(`[getFilteredClientIds] RM/Assistant ${currentUser._id} attempted to access unauthorized client ${viewAsFilter.id}`);
           return [];
         }
       }
@@ -137,14 +140,15 @@ async function getFilteredClientIds(currentUser, viewAsFilter = null) {
       // Get the client who owns this account
       const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
       if (bankAccount) {
-        // For RMs, verify they have access to this client
+        // For RMs/Assistants, verify they have access to this client
         if (isRM) {
+          const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
           const targetClient = await UsersCollection.findOneAsync({
             _id: bankAccount.userId,
-            relationshipManagerId: currentUser._id
+            relationshipManagerId: { $in: rmIds }
           });
           if (!targetClient) {
-            console.warn(`[getFilteredClientIds] RM ${currentUser._id} attempted to access unauthorized account ${viewAsFilter.id}`);
+            console.warn(`[getFilteredClientIds] RM/Assistant ${currentUser._id} attempted to access unauthorized account ${viewAsFilter.id}`);
             return [];
           }
         }
@@ -533,6 +537,14 @@ Meteor.methods({
       // For admin/superadmin, get ALL holdings; for RM get only their clients' holdings
       let totalAUMInEUR = 0;
 
+      // Exclude non-investment accounts (credit lines, credit cards, spending accounts)
+      // Only investment accounts should count toward AUM
+      const NON_INVESTMENT_COMMENTS = ['Credit line', 'Credit Card', 'Credit account', 'Spending'];
+      const nonInvestmentAccounts = await BankAccountsCollection.find({
+        comment: { $in: NON_INVESTMENT_COMMENTS }
+      }, { fields: { accountNumber: 1, bankId: 1 } }).fetchAsync();
+      const excludedPortfolioCodes = nonInvestmentAccounts.map(a => a.accountNumber);
+
       // Asset classes to include in AUM (cash and securities only)
       // Excludes: fx_forward (hedging, large notionals), derivatives (mark-to-market)
       const aumAssetClasses = [
@@ -566,7 +578,7 @@ Meteor.methods({
           isActive: true,
           isLatest: true,
           marketValue: { $exists: true, $gt: 0 },
-          portfolioCode: { $ne: 'CONSOLIDATED' },
+          portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
           $or: [
             { assetClass: { $in: aumAssetClasses } },
             { assetClass: null },
@@ -591,17 +603,20 @@ Meteor.methods({
           console.log(`[RM Dashboard] Holdings - Portfolio: ${p.portfolioCode}, Bank: ${p.bankId}, User: ${p.userId}, Value: ${p.total.toLocaleString('en-US', { maximumFractionDigits: 2 })} EUR`);
         });
         console.log('[RM Dashboard] Total holdings user count:', new Set(Object.values(holdingsByPortfolio).map(p => p.userId)).size);
+        if (excludedPortfolioCodes.length > 0) {
+          console.log('[RM Dashboard] Excluded non-investment accounts:', excludedPortfolioCodes.join(', '));
+        }
       } else if (clientIds.length > 0) {
         // RM sees only their clients' holdings
         // Include whitelisted asset classes + unclassified (null) holdings
         // Must match PMS publication filter: isActive: true, isLatest: true
-        // Exclude CONSOLIDATED to avoid double-counting
+        // Exclude CONSOLIDATED and non-investment accounts
         const clientHoldings = await PMSHoldingsCollection.find({
           userId: { $in: clientIds },
           isActive: true,
           isLatest: true,
           marketValue: { $exists: true, $gt: 0 },
-          portfolioCode: { $ne: 'CONSOLIDATED' },
+          portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
           $or: [
             { assetClass: { $in: aumAssetClasses } },
             { assetClass: null },
@@ -721,6 +736,7 @@ Meteor.methods({
                 isActive: true,
                 isLatest: true,
                 marketValue: { $exists: true, $gt: 0 },
+                portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
                 $or: [
                   { assetClass: { $in: ['cash', 'equity', 'fixed_income', 'structured_product', 'time_deposit', 'monetary_products', 'commodities', 'private_equity', 'private_debt', 'etf', 'fund'] } },
                   { assetClass: null },
@@ -733,6 +749,7 @@ Meteor.methods({
                 isActive: true,
                 isLatest: true,
                 marketValue: { $exists: true, $gt: 0 },
+                portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
                 $or: [
                   { assetClass: { $in: ['cash', 'equity', 'fixed_income', 'structured_product', 'time_deposit', 'monetary_products', 'commodities', 'private_equity', 'private_debt', 'etf', 'fund'] } },
                   { assetClass: null },
@@ -850,12 +867,12 @@ Meteor.methods({
       // Get all snapshots in date range, aggregated by date
       // For admin/superadmin: all portfolios
       // For RM: only their clients' portfolios
-      let snapshots;
+      let rawSnapshots;
 
       if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE) {
         // Admin/Compliance sees all portfolios - aggregate by date
         // Exclude CONSOLIDATED snapshots to avoid double-counting
-        snapshots = await PortfolioSnapshotsCollection.find({
+        rawSnapshots = await PortfolioSnapshotsCollection.find({
           snapshotDate: { $gte: startDate, $lte: endDate },
           portfolioCode: { $ne: 'CONSOLIDATED' }
         }, {
@@ -871,7 +888,7 @@ Meteor.methods({
         }
 
         // Exclude CONSOLIDATED snapshots to avoid double-counting
-        snapshots = await PortfolioSnapshotsCollection.find({
+        rawSnapshots = await PortfolioSnapshotsCollection.find({
           userId: { $in: clientIds },
           snapshotDate: { $gte: startDate, $lte: endDate },
           portfolioCode: { $ne: 'CONSOLIDATED' }
@@ -879,6 +896,9 @@ Meteor.methods({
           sort: { snapshotDate: 1 }
         }).fetchAsync();
       }
+
+      // Filter out snapshots from banks with known bad historical data
+      const snapshots = filterSnapshotsByBankStartDate(rawSnapshots);
 
       if (snapshots.length === 0) {
         return { hasData: false, labels: [], values: [], snapshots: [] };
@@ -1700,6 +1720,86 @@ Meteor.methods({
     } catch (error) {
       console.error('[RM Dashboard] Error getting cash monitoring:', error);
       return { negativeCashAccounts: [], highCashAccounts: [] };
+    }
+  },
+
+  /**
+   * Get unlinked structured products from PMS holdings
+   * Admin/superadmin only — returns SP holdings not linked to any ProductsCollection entry
+   */
+  async 'products.getUnlinkedStructuredProducts'({ sessionId }) {
+    check(sessionId, String);
+
+    const currentUser = await validateRMSession(sessionId);
+
+    if (currentUser.role !== 'admin' && currentUser.role !== 'superadmin') {
+      throw new Meteor.Error('not-authorized', 'Admin access required');
+    }
+
+    try {
+      // Get all ISINs known in ProductsCollection to exclude holdings that match
+      const knownProducts = await ProductsCollection.find(
+        { isin: { $exists: true, $ne: '' } },
+        { fields: { isin: 1 } }
+      ).fetchAsync();
+      const knownIsins = new Set(knownProducts.map(p => p.isin).filter(Boolean));
+
+      const holdings = await PMSHoldingsCollection.find({
+        assetClass: { $in: ['structured_product', 'Structured Products'] },
+        isLatest: true,
+        isActive: true,
+        portfolioCode: { $ne: 'CONSOLIDATED' },
+        $or: [
+          { linkingStatus: 'unlinked' },
+          { linkingStatus: { $exists: false } },
+          { linkedProductId: { $exists: false } },
+          { linkedProductId: null }
+        ]
+      }).fetchAsync();
+
+      // Filter out holdings whose ISIN matches a known product
+      const unlinkedHoldings = holdings.filter(h => {
+        const holdingIsin = h.isin || h.instrumentISIN || '';
+        return !holdingIsin || !knownIsins.has(holdingIsin);
+      });
+
+      if (unlinkedHoldings.length === 0) return [];
+
+      // Batch-resolve userIds to display names
+      const userIds = [...new Set(unlinkedHoldings.map(h => h.userId).filter(Boolean))];
+      const users = userIds.length > 0
+        ? await UsersCollection.find({ _id: { $in: userIds } }).fetchAsync()
+        : [];
+      const userMap = {};
+      users.forEach(u => {
+        userMap[u._id] = u.displayName || `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.email || u._id;
+      });
+
+      // Deduplicate by ISIN — keep one entry per ISIN, aggregate holder count
+      const isinMap = {};
+      for (const h of unlinkedHoldings) {
+        const isin = h.isin || h.instrumentISIN || h._id;
+        if (!isinMap[isin]) {
+          isinMap[isin] = {
+            _id: h._id,
+            securityName: h.securityName || h.instrumentName || 'Unknown',
+            isin: h.isin || h.instrumentISIN || '',
+            bankName: h.bankName || '',
+            currency: h.currency || h.positionCurrency || '',
+            holders: 1
+          };
+        } else {
+          isinMap[isin].holders += 1;
+        }
+      }
+
+      const result = Object.values(isinMap);
+      result.sort((a, b) => (a.securityName || '').localeCompare(b.securityName || ''));
+
+      return result;
+    } catch (error) {
+      console.error('[RM Dashboard] Error getting unlinked structured products:', error);
+      return [];
     }
   }
 });

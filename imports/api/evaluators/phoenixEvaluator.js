@@ -362,7 +362,9 @@ export const PhoenixEvaluator = {
       );
 
       if (priceRecord) {
-        const price = priceRecord.adjustedClose || priceRecord.close;
+        // Use close (actual/split-adjusted price), NOT adjustedClose (which includes dividend adjustments)
+        // Structured products reference the actual spot price, not dividend-adjusted prices
+        const price = priceRecord.close || priceRecord.adjustedClose;
         console.log(`✅ Found exact price for ${ticker} at ${targetDateStr}: $${price}`);
         return price;
       }
@@ -375,7 +377,7 @@ export const PhoenixEvaluator = {
 
       if (priorRecords.length > 0) {
         const closest = priorRecords[priorRecords.length - 1];
-        const price = closest.adjustedClose || closest.close;
+        const price = closest.close || closest.adjustedClose;
         const closestDate = new Date(closest.date).toISOString().split('T')[0];
         console.log(`✅ Using closest prior price for ${ticker}: $${price} from ${closestDate} (requested ${targetDateStr})`);
         return price;
@@ -478,13 +480,33 @@ export const PhoenixEvaluator = {
     // Use contractual strike prices as initial reference for barrier/coupon evaluation
     // Strike prices are the official reference levels from the term sheet
     // underlyings[].initialPrice is already split-adjusted via extractUnderlyingAssetsData()
-    // Using market cache prices would give different values than the strike, causing
-    // inconsistent barrier evaluation (e.g., -29.8% vs -32.5% for the same underlying)
+    //
+    // IMPORTANT: We validate strike prices against the market close on the trade date.
+    // If EOD retroactively adjusted historical close prices for a corporate action
+    // (split, rights issue, etc.) that the splits API didn't detect, the strike won't
+    // match the close on trade date. In that case, we use the close as the reference
+    // to ensure consistent performance calculations with historical observation prices.
     const tradeDatePrices = {};
     for (const u of underlyings) {
       const fullTicker = u.fullTicker || `${u.ticker}.US`;
-      tradeDatePrices[u.ticker] = u.initialPrice || u.strike;
-      console.log(`📊 Phoenix: Using strike price for ${fullTicker}: ${tradeDatePrices[u.ticker]}`);
+      const strike = u.initialPrice || u.strike;
+      tradeDatePrices[u.ticker] = strike;
+
+      // Validate strike against close on trade date from market cache
+      const closeOnTradeDate = await this.getPriceAtDate(fullTicker, tradeDate, tradeDate);
+      if (closeOnTradeDate && strike && closeOnTradeDate > 0) {
+        const ratio = strike / closeOnTradeDate;
+        if (Math.abs(ratio - 1.0) > 0.02) {
+          // Significant discrepancy: EOD adjusted historical prices for a corporate action
+          // Use close on trade date as reference so observation prices are consistent
+          console.warn(`⚠️ Phoenix: Corporate action detected for ${fullTicker}: strike=${strike}, close on trade date=${closeOnTradeDate}, ratio=${ratio.toFixed(4)}. Using close as reference for performance calculation.`);
+          tradeDatePrices[u.ticker] = closeOnTradeDate;
+        } else {
+          console.log(`📊 Phoenix: Using strike price for ${fullTicker}: ${strike} (matches close ${closeOnTradeDate})`);
+        }
+      } else {
+        console.log(`📊 Phoenix: Using strike price for ${fullTicker}: ${strike} (no close validation available)`);
+      }
     }
 
     // Process each observation
@@ -749,8 +771,11 @@ export const PhoenixEvaluator = {
       isLastObservation: nextObservationPrediction?.isLastObservation
     });
 
+    // Remove cancelled observations (future events after an autocall)
+    const activeObservations = observations.filter(o => o.status !== 'cancelled');
+
     // Match scheduled payments with actual PMS operations
-    const enhancedObservations = await matchAllScheduledPayments(product, observations);
+    const enhancedObservations = await matchAllScheduledPayments(product, activeObservations);
 
     return {
       totalObservations: schedule.length,

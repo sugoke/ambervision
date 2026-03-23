@@ -11,6 +11,28 @@ import { PMSOperationsCollection } from './pmsOperations';
 export const PortfolioSnapshotsCollection = new Mongo.Collection('portfolioSnapshots');
 
 /**
+ * Bank-specific minimum valid snapshot dates.
+ * Snapshots before these dates had incorrect pricing and should be excluded
+ * from charts and performance calculations.
+ * Key: bankId, Value: earliest valid date (inclusive)
+ */
+export const BANK_SNAPSHOT_START_DATES = {
+  'LfngefkMppWQcqMnN': new Date('2026-01-09T00:00:00Z'), // CMB — prices corrected from Jan 9, 2026
+};
+
+/**
+ * Filter out snapshots from banks with known bad historical data
+ */
+export function filterSnapshotsByBankStartDate(snapshots) {
+  return snapshots.filter(s => {
+    if (!s.bankId) return true;
+    const minDate = BANK_SNAPSHOT_START_DATES[s.bankId];
+    if (!minDate) return true;
+    return s.snapshotDate >= minDate;
+  });
+}
+
+/**
  * Schema:
  * {
  *   _id: String,
@@ -460,9 +482,11 @@ export const PortfolioSnapshotHelpers = {
       if (endDate) query.snapshotDate.$lte = endDate;
     }
 
-    return await PortfolioSnapshotsCollection.find(query, {
+    const snapshots = await PortfolioSnapshotsCollection.find(query, {
       sort: { snapshotDate: 1 }
     }).fetchAsync();
+
+    return filterSnapshotsByBankStartDate(snapshots);
   },
 
   /**
@@ -479,9 +503,12 @@ export const PortfolioSnapshotHelpers = {
     }
 
     // Get all snapshots for this user across all portfolios (exclude CONSOLIDATED to avoid double-counting)
-    const snapshots = await PortfolioSnapshotsCollection.find(query, {
+    const rawSnapshots = await PortfolioSnapshotsCollection.find(query, {
       sort: { snapshotDate: 1 }
     }).fetchAsync();
+
+    // Filter out snapshots from banks with known bad historical data
+    const snapshots = filterSnapshotsByBankStartDate(rawSnapshots);
 
     // Group by date and sum values
     const dateMap = {};
@@ -621,11 +648,14 @@ export const PortfolioSnapshotHelpers = {
     console.log(`[SNAPSHOTS] getAggregatedSnapshots query:`, JSON.stringify(query));
 
     // Get all snapshots across all users/portfolios (exclude CONSOLIDATED to avoid double-counting)
-    const snapshots = await PortfolioSnapshotsCollection.find(query, {
+    const rawSnapshots = await PortfolioSnapshotsCollection.find(query, {
       sort: { snapshotDate: 1 }
     }).fetchAsync();
 
-    console.log(`[SNAPSHOTS] getAggregatedSnapshots found ${snapshots.length} raw snapshots`);
+    console.log(`[SNAPSHOTS] getAggregatedSnapshots found ${rawSnapshots.length} raw snapshots`);
+
+    // Filter out snapshots from banks with known bad historical data
+    const snapshots = filterSnapshotsByBankStartDate(rawSnapshots);
 
     // Group by date and sum values (skip weekends - banks don't report on weekends)
     const dateMap = {};

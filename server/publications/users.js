@@ -66,11 +66,8 @@ Meteor.publish("rmClients", async function (sessionId) {
       }
     );
   } else if (currentUser.role === USER_ROLES.COMPLIANCE) {
-    // Compliance sees all clients (but not admin users)
-    const query = {
-      role: USER_ROLES.CLIENT,
-      isActive: { $ne: false }
-    };
+    // Compliance sees all users: clients, prospects, employees (staff/rm/compliance/admin), and introducers
+    const query = { isActive: { $ne: false } };
     console.log('[rmClients] Compliance query:', JSON.stringify(query));
     return UsersCollection.find(
       query,
@@ -87,13 +84,16 @@ Meteor.publish("rmClients", async function (sessionId) {
         }
       }
     );
-  } else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
-    // RMs see only their assigned clients
+  } else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT) {
+    // RMs see their assigned clients, assistants see clients of all their assigned RMs
+    const rmIds = currentUser.role === USER_ROLES.ASSISTANT
+      ? (currentUser.assignedRmIds || [])
+      : [currentUser._id];
     return UsersCollection.find(
       {
         role: USER_ROLES.CLIENT,
         isActive: { $ne: false },
-        relationshipManagerId: currentUser._id
+        relationshipManagerId: { $in: rmIds }
       },
       {
         fields: {

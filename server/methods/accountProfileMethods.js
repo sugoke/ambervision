@@ -15,10 +15,12 @@ Meteor.methods({
   async 'accountProfiles.upsert'(bankAccountId, profile, sessionId) {
     check(bankAccountId, String);
     check(profile, {
+      profileName: Match.Maybe(String),
       maxCash: Match.Integer,
       maxBonds: Match.Integer,
       maxEquities: Match.Integer,
-      maxAlternative: Match.Integer
+      maxAlternative: Match.Integer,
+      isProfessionalInvestor: Match.Maybe(Boolean)
     });
     check(sessionId, String);
 
@@ -45,9 +47,10 @@ Meteor.methods({
       throw new Meteor.Error('not-found', 'Bank account not found');
     }
 
-    // Authorization: Admin/Superadmin can edit any, RM can edit assigned clients, clients can't edit
+    // Authorization: Admin/Superadmin/Compliance can edit any, RM can edit assigned clients, clients can't edit
     const canEdit = currentUser.role === USER_ROLES.ADMIN ||
                     currentUser.role === USER_ROLES.SUPERADMIN ||
+                    currentUser.role === USER_ROLES.COMPLIANCE ||
                     (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER &&
                      (await UsersCollection.findOneAsync({
                        _id: bankAccount.userId,
@@ -119,6 +122,7 @@ Meteor.methods({
     // Authorization check
     const canView = currentUser.role === USER_ROLES.ADMIN ||
                     currentUser.role === USER_ROLES.SUPERADMIN ||
+                    currentUser.role === USER_ROLES.COMPLIANCE ||
                     currentUser._id === bankAccount.userId ||
                     (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER &&
                      (await UsersCollection.findOneAsync({

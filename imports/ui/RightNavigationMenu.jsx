@@ -71,7 +71,7 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
     },
     {
       id: 'clients',
-      label: 'Users',
+      label: 'Contacts',
       icon: '👥',
       description: 'Client management',
       role: 'rm',
@@ -103,7 +103,7 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
   ];
 
   const getRoleLevel = (role) => {
-    const levels = { client: 1, rm: 2, compliance: 3, admin: 3, superadmin: 4 };
+    const levels = { client: 1, assistant: 2, rm: 2, compliance: 3, admin: 3, superadmin: 4 };
     return levels[role] || 0;
   };
 
@@ -113,7 +113,7 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
   const userRoleLevel = getRoleLevel(userRole);
   const visibleItems = menuItems.filter(item => {
     if (getRoleLevel(item.role) > userRoleLevel) return false;
-    if (userRole === 'rm' && rmExcludedItems.includes(item.id)) return false;
+    if ((userRole === 'rm' || userRole === 'assistant') && rmExcludedItems.includes(item.id)) return false;
     return true;
   });
   
