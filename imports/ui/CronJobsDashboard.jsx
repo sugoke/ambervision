@@ -99,7 +99,8 @@ const CronJobsDashboard = ({ user }) => {
       'productRevaluation': 'Product Re-evaluation',
       'bankFileSync': 'Bank File Sync',
       'marketTickerUpdate': 'Market Ticker Update',
-      'priceTrackerScrape': 'Price Tracker Scrape'
+      'priceTrackerScrape': 'Price Tracker Scrape',
+      'settlementCheck': 'Settlement Check'
     };
     return names[jobName] || jobName;
   };
@@ -137,9 +138,13 @@ const CronJobsDashboard = ({ user }) => {
         productRevaluation: 'cronJobs.triggerProductRevaluation',
         bankFileSync: 'cronJobs.triggerBankFileSync',
         marketTickerUpdate: 'cronJobs.triggerMarketTickerUpdate',
-        priceTrackerScrape: 'cronJobs.triggerPriceTrackerScrape'
+        priceTrackerScrape: 'cronJobs.triggerPriceTrackerScrape',
+        settlementCheck: 'cronJobs.triggerSettlementCheck'
       };
-      const methodName = methodMap[jobName] || 'cronJobs.triggerMarketTickerUpdate';
+      const methodName = methodMap[jobName];
+      if (!methodName) {
+        throw new Error(`No manual trigger configured for job "${jobName}"`);
+      }
 
       await new Promise((resolve, reject) => {
         Meteor.call(methodName, sessionId, (err, result) => {
@@ -299,6 +304,7 @@ const CronJobsDashboard = ({ user }) => {
                      job.name === 'productRevaluation' ? '🔄 Product Re-evaluation' :
                      job.name === 'bankFileSync' ? '🏦 Bank File Sync' :
                      job.name === 'priceTrackerScrape' ? '🔍 Price Tracker Scrape' :
+                     job.name === 'settlementCheck' ? '✅ Settlement Check' :
                      '📈 Market Ticker Update'}
                   </h4>
                   <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
@@ -306,6 +312,7 @@ const CronJobsDashboard = ({ user }) => {
                      job.name === 'productRevaluation' ? 'Re-evaluates live products' :
                      job.name === 'bankFileSync' ? 'Downloads & processes bank files' :
                      job.name === 'priceTrackerScrape' ? 'Scrapes manually tracked securities' :
+                     job.name === 'settlementCheck' ? 'Reconciles executed orders against PMS operations' :
                      'Updates ticker prices'}
                   </p>
                 </div>
@@ -482,6 +489,20 @@ const CronJobsDashboard = ({ user }) => {
             >
               Price Tracker
             </button>
+            <button
+              onClick={() => setSelectedJob('settlementCheck')}
+              style={{
+                padding: '0.5rem 1rem',
+                background: selectedJob === 'settlementCheck' ? 'var(--accent-color)' : 'var(--bg-tertiary)',
+                color: selectedJob === 'settlementCheck' ? 'white' : 'var(--text-primary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '0.85rem'
+              }}
+            >
+              Settlement
+            </button>
           </div>
         </div>
 
@@ -548,6 +569,7 @@ const CronJobsDashboard = ({ user }) => {
                              log.jobName === 'productRevaluation' ? '🔄 Re-evaluation' :
                              log.jobName === 'bankFileSync' ? '🏦 Bank Sync' :
                              log.jobName === 'priceTrackerScrape' ? '🔍 Price Tracker' :
+                             log.jobName === 'settlementCheck' ? '✅ Settlement' :
                              '📈 Ticker Update'}
                           </td>
                           <td style={{ padding: '1rem', color: 'var(--text-primary)' }}>
@@ -595,6 +617,15 @@ const CronJobsDashboard = ({ user }) => {
                                 {log.tickersFailed > 0 && (
                                   <span style={{ color: '#ef4444', marginLeft: '0.5rem' }}>
                                     ({log.tickersFailed} failed)
+                                  </span>
+                                )}
+                              </span>
+                            ) : log.jobName === 'settlementCheck' ? (
+                              <span>
+                                {log.settled || 0}/{log.checked || 0} settled
+                                {log.total > log.checked && (
+                                  <span style={{ color: '#f59e0b', marginLeft: '0.5rem' }}>
+                                    ({log.total - log.checked} skipped)
                                   </span>
                                 )}
                               </span>

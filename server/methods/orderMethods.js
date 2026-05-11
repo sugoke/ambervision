@@ -11,15 +11,55 @@ import { BankAccountsCollection } from '../../imports/api/bankAccounts.js';
 import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
 import { ProductsCollection } from '../../imports/api/products.js';
 import { PMSOperationsCollection } from '../../imports/api/pmsOperations.js';
-import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, FX_SUBTYPES, TERM_DEPOSIT_TENORS, OrderHelpers, OrderFormatters } from '../../imports/api/orders.js';
+import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, FX_SUBTYPES, TERM_DEPOSIT_TENORS, EXECUTION_TYPE_LABELS, OrderHelpers, OrderFormatters } from '../../imports/api/orders.js';
 import { OrderCountersCollection, OrderCounterHelpers } from '../../imports/api/orderCounters.js';
 import { EmailService } from '../../imports/api/emailService.js';
-import { AccountProfilesCollection, aggregateToFourCategories, getBreakdownKeyForAssetType, mapOrderAssetTypeToProfileCategory } from '../../imports/api/accountProfiles.js';
+import { AccountProfilesCollection, aggregateToFourCategories, getBreakdownKeyForAssetType, mapOrderAssetTypeToProfileCategory, getProfileName } from '../../imports/api/accountProfiles.js';
 import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetadata.js';
+import { IssuersCollection } from '../../imports/api/issuers.js';
 
 /**
  * Order Management Server Methods
  */
+
+const TERMSHEET_MIME_BY_EXT = {
+  '.pdf': 'application/pdf',
+  '.html': 'text/html',
+  '.htm': 'text/html',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.eml': 'message/rfc822',
+  '.msg': 'application/vnd.ms-outlook'
+};
+
+/**
+ * Load the initial termsheet attachment for a structured-product order, if available.
+ * Returns { name, content, contentType } with content base64-encoded, or null.
+ */
+function loadInitialTermsheetAttachment(order) {
+  if (!order || order.assetType !== ASSET_TYPES.STRUCTURED_PRODUCT) return null;
+  const trace = (order.emailTraces || []).find(t => t.traceType === EMAIL_TRACE_TYPES.INITIAL_TERMSHEET);
+  if (!trace?.filePath) return null;
+  try {
+    if (!fs.existsSync(trace.filePath)) {
+      console.warn(`[ORDERS] Termsheet file missing on disk for order ${order.orderReference}: ${trace.filePath}`);
+      return null;
+    }
+    const buffer = fs.readFileSync(trace.filePath);
+    const fileName = trace.fileName || `termsheet_${order.orderReference}.pdf`;
+    const ext = path.extname(fileName).toLowerCase();
+    return {
+      name: fileName,
+      content: buffer.toString('base64'),
+      contentType: TERMSHEET_MIME_BY_EXT[ext] || 'application/octet-stream'
+    };
+  } catch (err) {
+    console.error(`[ORDERS] Failed to read termsheet for order ${order.orderReference}:`, err);
+    return null;
+  }
+}
 
 /**
  * Validate session and return user info
@@ -77,16 +117,65 @@ async function validateOrderAccess(order, user) {
     return true;
   }
 
-  // RMs/Assistants can access orders for their clients
+  // RMs/Assistants can access orders for their clients (user-based or entity-based)
   if (user.role === 'rm' || user.role === 'assistant') {
-    const client = await UsersCollection.findOneAsync(order.clientId);
     const rmIds = UserHelpers.getEffectiveRmIds(user);
+    // Check user-based client
+    const client = await UsersCollection.findOneAsync(order.clientId);
     if (client && rmIds.includes(client.relationshipManagerId)) {
+      return true;
+    }
+    // Check entity-based client
+    const { ClientEntitiesCollection: EntCol } = require('../../imports/api/clientEntities.js');
+    const entity = await EntCol.findOneAsync({
+      $or: [
+        ...(order.entityId ? [{ _id: order.entityId }] : []),
+        { _id: order.clientId },
+        { migratedFromUserId: order.clientId }
+      ],
+      isActive: true
+    });
+    if (entity && rmIds.includes(entity.relationshipManagerId)) {
       return true;
     }
   }
 
   throw new Meteor.Error('not-authorized', 'You do not have access to this order');
+}
+
+/**
+ * Resolve a clientId that may be a user ID or entity ID.
+ * Returns { holdingsUserId, relationshipManagerId, profile, entityId }
+ */
+async function resolveClientId(clientId) {
+  // Try user first
+  const userClient = await UsersCollection.findOneAsync(clientId);
+  if (userClient) {
+    return {
+      holdingsUserId: clientId,
+      relationshipManagerId: userClient.relationshipManagerId,
+      profile: userClient.profile,
+      entityId: null
+    };
+  }
+
+  // Try entity (direct ID or migratedFromUserId)
+  const { ClientEntitiesCollection: EntCol } = require('../../imports/api/clientEntities.js');
+  let entity = await EntCol.findOneAsync({ _id: clientId, isActive: true });
+  if (!entity) {
+    entity = await EntCol.findOneAsync({ migratedFromUserId: clientId, isActive: true });
+  }
+
+  if (entity) {
+    return {
+      holdingsUserId: entity.migratedFromUserId || clientId,
+      relationshipManagerId: entity.relationshipManagerId,
+      profile: entity.profile,
+      entityId: entity._id
+    };
+  }
+
+  throw new Meteor.Error('invalid-client', 'Client not found');
 }
 
 /**
@@ -104,13 +193,33 @@ async function checkAllocationImpact({ bankAccountId, clientId, assetType, estim
     return { hasProfile: true, hasBreaches: false };
   }
 
+  // Resolve client for holdings lookup
+  let holdingsUserId = clientId;
+  try {
+    const resolved = await resolveClientId(clientId);
+    holdingsUserId = resolved.holdingsUserId;
+  } catch (e) {
+    // If client can't be resolved, return without breach check
+    return { hasProfile: true, hasBreaches: false };
+  }
+
   // Get all holdings for this account (including cash)
-  const holdings = await PMSHoldingsCollection.find({
-    userId: clientId,
+  const portfolioRegex = new RegExp('^' + bankAccount.accountNumber.split('-')[0]);
+  let holdings = await PMSHoldingsCollection.find({
+    userId: holdingsUserId,
     isActive: true,
     isLatest: true,
-    portfolioCode: { $regex: new RegExp('^' + bankAccount.accountNumber.split('-')[0]) }
+    portfolioCode: { $regex: portfolioRegex }
   }).fetchAsync();
+  // Fallback: try by bankId + portfolioCode for entity-based accounts
+  if (holdings.length === 0) {
+    holdings = await PMSHoldingsCollection.find({
+      bankId: bankAccount.bankId,
+      isActive: true,
+      isLatest: true,
+      portfolioCode: { $regex: portfolioRegex }
+    }).fetchAsync();
+  }
 
   // Separate cash and investment holdings
   const cashHoldings = holdings.filter(h => {
@@ -219,10 +328,18 @@ async function checkAllocationImpact({ bankAccountId, clientId, assetType, estim
     // Build granular category key
     let categoryKey = holdingAssetClass;
     if (holdingAssetClass === 'structured_product') {
-      if (protectionType === 'capital_guaranteed_100') categoryKey = 'structured_product_capital_guaranteed';
-      else if (protectionType === 'capital_guaranteed_partial') categoryKey = 'structured_product_partial_guarantee';
-      else if (protectionType === 'capital_protected_conditional') categoryKey = 'structured_product_barrier_protected';
-      else if (underlyingType) categoryKey = `structured_product_${underlyingType}`;
+      if (protectionType === 'capital_guaranteed_100') {
+        categoryKey = 'structured_product_capital_guaranteed';
+      } else if (protectionType === 'capital_guaranteed_partial') {
+        categoryKey = 'structured_product_partial_guarantee';
+      } else if (protectionType === 'capital_protected_conditional') {
+        // Equity-linked barrier-protected SPs still carry equity risk → Equities (mirrors PMS)
+        categoryKey = (underlyingType === 'equity_linked')
+          ? 'structured_product_equity_linked_barrier_protected'
+          : 'structured_product_barrier_protected';
+      } else if (underlyingType) {
+        categoryKey = `structured_product_${underlyingType}`;
+      }
     } else if (holdingAssetClass === 'equity' && subClass) {
       categoryKey = `equity_${subClass}`;
     } else if (holdingAssetClass === 'fixed_income' && subClass) {
@@ -274,6 +391,7 @@ async function checkAllocationImpact({ bankAccountId, clientId, assetType, estim
   return {
     hasProfile: true,
     hasBreaches: breaches.length > 0,
+    profileName: getProfileName(profile),
     currentAllocation,
     projectedAllocation,
     profileLimits,
@@ -315,8 +433,10 @@ Meteor.methods({
       portfolioCode: Match.Maybe(String),
       sourceHoldingId: Match.Maybe(String),
       notes: Match.Maybe(String),
+      bankComment: Match.Maybe(String),
       bulkOrderGroupId: Match.Maybe(String),
       broker: Match.Maybe(String),
+      issuerId: Match.Maybe(String),
       settlementCurrency: Match.Maybe(String),
       underlyings: Match.Maybe(String),
       tradeMode: Match.Maybe(Match.Where(x => Object.values(TRADE_MODES).includes(x))),
@@ -348,26 +468,50 @@ Meteor.methods({
       allocationJustification: Match.Maybe(String),
       // Order source (email or phone)
       orderSource: Match.Maybe(String),
-      phoneCallTime: Match.Maybe(String)
+      phoneCallTime: Match.Maybe(String),
+      phoneCallLine: Match.Maybe(String),
+      // Execution type
+      executionType: Match.Maybe(String)
     });
 
     const { user, userId, userDisplayName } = await validateSession(sessionId);
     validateOrderPermission(user);
 
-    // Validate client exists
-    const client = await UsersCollection.findOneAsync(orderData.clientId);
-    if (!client) {
-      throw new Meteor.Error('invalid-client', 'Client not found');
-    }
-
-    // Validate bank account exists and belongs to client
+    // Validate bank account exists
     const bankAccount = await BankAccountsCollection.findOneAsync({
       _id: orderData.bankAccountId,
-      userId: orderData.clientId,
       isActive: true
     });
     if (!bankAccount) {
-      throw new Meteor.Error('invalid-account', 'Bank account not found or does not belong to client');
+      throw new Meteor.Error('invalid-account', 'Bank account not found');
+    }
+
+    // Resolve client: try user first, then entity (via bank account's entityId or direct lookup)
+    const { ClientEntitiesCollection: EntCol } = require('../../imports/api/clientEntities.js');
+    let client = await UsersCollection.findOneAsync(orderData.clientId);
+    let resolvedEntityId = bankAccount.entityId || null;
+
+    if (!client) {
+      // clientId might be an entity ID directly, or linked via migratedFromUserId
+      let entity = await EntCol.findOneAsync({ _id: orderData.clientId, isActive: true });
+      if (!entity) {
+        entity = await EntCol.findOneAsync({ migratedFromUserId: orderData.clientId, isActive: true });
+      }
+      if (!entity && bankAccount.entityId) {
+        entity = await EntCol.findOneAsync({ _id: bankAccount.entityId, isActive: true });
+      }
+      if (!entity) {
+        throw new Meteor.Error('invalid-client', 'Client not found');
+      }
+      resolvedEntityId = entity._id;
+      // Create minimal client-like object from entity
+      client = {
+        _id: entity.migratedFromUserId || entity._id,
+        profile: entity.profile,
+        role: 'client',
+        email: null,
+        _entityId: entity._id
+      };
     }
 
     // For SELL orders, validate position (skip for term deposit decreases)
@@ -392,14 +536,8 @@ Meteor.methods({
     // Get bank info for the order
     const bank = await BanksCollection.findOneAsync(bankAccount.bankId);
 
-    // Auto-generate wealth ambassador initials from creating user
-    const waInitials = (() => {
-      const fn = user.profile?.firstName;
-      const ln = user.profile?.lastName;
-      if (fn && ln) return (fn[0] + ln[0]).toUpperCase();
-      if (fn) return fn[0].toUpperCase();
-      return '';
-    })();
+    // Auto-generate wealth ambassador name from creating user
+    const waInitials = `${user.profile?.firstName || ''} ${user.profile?.lastName || ''}`.trim() || user.email || '';
 
     // Auto-determine trade mode
     const tradeMode = orderData.tradeMode || (orderData.bulkOrderGroupId ? TRADE_MODES.BLOCK : TRADE_MODES.INDIVIDUAL);
@@ -417,7 +555,9 @@ Meteor.methods({
       priceType: orderData.priceType,
       limitPrice: hasLimitPrice ? orderData.limitPrice : null,
       estimatedValue: orderData.estimatedValue || null,
-      clientId: orderData.clientId,
+      clientId: client._id,
+      entityId: resolvedEntityId,
+      clientName: client.profile?.companyName || `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() || 'Unknown',
       bankAccountId: orderData.bankAccountId,
       bankId: bankAccount.bankId,
       portfolioCode: orderData.portfolioCode || bankAccount.accountNumber,
@@ -429,6 +569,8 @@ Meteor.methods({
       wealthAmbassador: waInitials,
       createdByName: userDisplayName,
       broker: orderData.broker || null,
+      issuerId: orderData.issuerId || null,
+      bankComment: orderData.bankComment || null,
       settlementCurrency: orderData.settlementCurrency || null,
       underlyings: orderData.underlyings || null,
       tradeMode,
@@ -455,6 +597,9 @@ Meteor.methods({
       // Order source (email or phone)
       orderSource: orderData.orderSource || 'email',
       ...(orderData.phoneCallTime ? { phoneCallTime: orderData.phoneCallTime } : {}),
+      ...(orderData.phoneCallLine ? { phoneCallLine: orderData.phoneCallLine } : {}),
+      // Execution type
+      executionType: orderData.executionType || 'to_execute',
       // Linked order group (set when TP/SL legs are attached)
       linkedOrderGroup: null,
       linkedOrderType: null,
@@ -480,6 +625,7 @@ Meteor.methods({
         if (allocationResult.hasProfile && allocationResult.hasBreaches) {
           order.allocationWarning = {
             breaches: allocationResult.breaches,
+            profileName: allocationResult.profileName,
             currentAllocation: allocationResult.currentAllocation,
             projectedAllocation: allocationResult.projectedAllocation,
             profileLimits: allocationResult.profileLimits,
@@ -511,6 +657,13 @@ Meteor.methods({
     const orderId = await OrdersCollection.insertAsync(order);
 
     console.log(`[ORDERS] Created order ${orderReference} (${orderId}) by ${userDisplayName} (${userId})`);
+
+    // Save phone number to user profile for future defaults
+    if (orderData.phoneCallLine && orderData.phoneCallLine.trim()) {
+      try {
+        await UsersCollection.updateAsync(userId, { $set: { 'profile.phoneNumber': orderData.phoneCallLine.trim() } });
+      } catch (e) { /* non-blocking */ }
+    }
 
     // Create linked Take Profit order
     if (orderData.attachedTakeProfit) {
@@ -578,6 +731,121 @@ Meteor.methods({
       console.error('[ORDERS] Error sending validation notification:', notifError);
     }
 
+    // Send email to RM, backup RMs, and superadmins
+    try {
+      const recipientIds = new Set();
+      if (bankAccount.relationshipManagerId) recipientIds.add(bankAccount.relationshipManagerId);
+      if (Array.isArray(bankAccount.backupRmIds)) {
+        bankAccount.backupRmIds.forEach(id => id && recipientIds.add(id));
+      }
+      const superadmins = await UsersCollection.find(
+        { role: 'superadmin' },
+        { fields: { _id: 1, email: 1, username: 1, profile: 1 } }
+      ).fetchAsync();
+      superadmins.forEach(sa => recipientIds.add(sa._id));
+      recipientIds.delete(userId); // never notify the creator
+
+      if (recipientIds.size > 0) {
+        const recipientUsers = await UsersCollection.find(
+          { _id: { $in: [...recipientIds] } },
+          { fields: { _id: 1, email: 1, username: 1, profile: 1 } }
+        ).fetchAsync();
+        const toList = recipientUsers
+          .map(u => {
+            const email = u.email || u.username;
+            if (!email) return null;
+            const name = `${u.profile?.firstName || ''} ${u.profile?.lastName || ''}`.trim() || email;
+            return { email, name };
+          })
+          .filter(Boolean);
+
+        if (toList.length > 0) {
+          const accountLabel = bankAccount.name || bankAccount.accountNumber || order.portfolioCode || '';
+          const isStructuredProduct = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT;
+          const quantityLabel = isStructuredProduct ? 'Nominal' : (order.assetType === 'term_deposit' ? 'Amount' : 'Quantity');
+          const priceDisplay = order.limitPrice
+            ? (isStructuredProduct
+                ? `${Number(order.limitPrice).toFixed(2)}%`
+                : OrderFormatters.formatWithCurrency(order.limitPrice, order.currency))
+            : null;
+          const orderBookUrl = Meteor.absoluteUrl('#order-book');
+          const subject = `[Pending Validation] ${orderReference} — ${order.securityName || ''}`.trim();
+          const html = `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white; padding: 18px 24px; border-radius: 8px 8px 0 0;">
+                <h1 style="margin: 0; font-size: 20px;">Order Pending Validation</h1>
+                <p style="margin: 6px 0 0 0; opacity: 0.95;">${orderReference}</p>
+              </div>
+              <div style="padding: 24px; background: #f8fafc; border-radius: 0 0 8px 8px;">
+                <p style="margin: 0 0 16px 0; color: #374151;">
+                  ${userDisplayName} just created an order that requires four-eyes validation. Please review it in the Orders blotter.
+                </p>
+                <div style="margin: 0 0 20px 0;">
+                  <a href="${orderBookUrl}" style="display: inline-block; background: #0ea5e9; color: white; padding: 10px 18px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 13px;">Open Order Book →</a>
+                </div>
+                <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); font-size: 13px;">
+                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280; width: 140px;">Direction</td>
+                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; text-transform: uppercase; color: ${order.orderType === 'buy' ? '#166534' : '#991b1b'};">${(order.orderType || '').toUpperCase()}</td></tr>
+                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">Security</td>
+                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb;">${order.securityName || ''}</td></tr>
+                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">ISIN</td>
+                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-family: monospace;">${order.isin || ''}</td></tr>
+                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">${quantityLabel}</td>
+                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #0ea5e9;">${OrderFormatters.formatQuantity(order.quantity)}</td></tr>
+                  ${priceDisplay ? `
+                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">Price</td>
+                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb;">${priceDisplay}</td></tr>
+                  ` : ''}
+                  ${order.estimatedValue ? `
+                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">Estimated Value</td>
+                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb;">${OrderFormatters.formatWithCurrency(order.estimatedValue, order.currency)}</td></tr>
+                  ` : ''}
+                  ${order.broker ? `
+                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">Broker</td>
+                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb;">${order.broker}</td></tr>
+                  ` : ''}
+                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">Client</td>
+                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb;">${order.clientName || ''}</td></tr>
+                  <tr><td style="padding: 10px 14px; font-weight: 600; color: #6b7280;">Account</td>
+                      <td style="padding: 10px 14px;">${accountLabel}</td></tr>
+                </table>
+                <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #e5e7eb; color: #374151; font-size: 13px;">
+                  Best regards,<br/>
+                  <strong>${userDisplayName}</strong>
+                </div>
+              </div>
+            </div>
+          `;
+          const text = `
+Order Pending Validation: ${orderReference}
+
+${userDisplayName} just created an order that requires four-eyes validation.
+
+Direction: ${(order.orderType || '').toUpperCase()}
+Security: ${order.securityName || ''}
+ISIN: ${order.isin || ''}
+${quantityLabel}: ${OrderFormatters.formatQuantity(order.quantity)}
+${priceDisplay ? `Price: ${priceDisplay}` : ''}
+${order.estimatedValue ? `Estimated Value: ${OrderFormatters.formatWithCurrency(order.estimatedValue, order.currency)}` : ''}
+${order.broker ? `Broker: ${order.broker}` : ''}
+Client: ${order.clientName || ''}
+Account: ${accountLabel}
+
+Please review it in the Orders blotter:
+${orderBookUrl}
+
+Best regards,
+${userDisplayName}
+          `.trim();
+
+          await EmailService.sendEmail({ subject, html, text, to: toList });
+          console.log(`[ORDERS] Pending-validation email sent to ${toList.length} recipient(s) for ${orderReference}: ${toList.map(r => r.email).join(', ')}`);
+        }
+      }
+    } catch (emailErr) {
+      console.error('[ORDERS] Error sending pending-validation email:', emailErr);
+    }
+
     return {
       orderId,
       orderReference,
@@ -600,6 +868,7 @@ Meteor.methods({
       limitPrice: Match.Maybe(Number),
       notes: Match.Maybe(String),
       broker: Match.Maybe(String),
+      issuerId: Match.Maybe(String),
       settlementCurrency: Match.Maybe(String),
       underlyings: Match.Maybe(String),
       // FX-specific fields (passed through to individual orders)
@@ -622,6 +891,12 @@ Meteor.methods({
       // Order source (email or phone)
       orderSource: Match.Maybe(String),
       phoneCallTime: Match.Maybe(String),
+      phoneCallLine: Match.Maybe(String),
+      // Execution type
+      executionType: Match.Maybe(String),
+      // Validity
+      validityType: Match.Maybe(String),
+      validityDate: Match.Maybe(String),
       orders: [{
         clientId: String,
         bankAccountId: String,
@@ -659,7 +934,9 @@ Meteor.methods({
           priceType: bulkOrderData.priceType,
           limitPrice: bulkOrderData.limitPrice,
           notes: bulkOrderData.notes,
+          bankComment: bulkOrderData.bankComment,
           broker: bulkOrderData.broker,
+          issuerId: bulkOrderData.issuerId,
           settlementCurrency: bulkOrderData.settlementCurrency,
           underlyings: bulkOrderData.underlyings,
           tradeMode: TRADE_MODES.BLOCK,
@@ -682,6 +959,10 @@ Meteor.methods({
         if (bulkOrderData.depositAction) sharedFields.depositAction = bulkOrderData.depositAction;
         if (bulkOrderData.orderSource) sharedFields.orderSource = bulkOrderData.orderSource;
         if (bulkOrderData.phoneCallTime) sharedFields.phoneCallTime = bulkOrderData.phoneCallTime;
+        if (bulkOrderData.phoneCallLine) sharedFields.phoneCallLine = bulkOrderData.phoneCallLine;
+        if (bulkOrderData.executionType) sharedFields.executionType = bulkOrderData.executionType;
+        if (bulkOrderData.validityType) sharedFields.validityType = bulkOrderData.validityType;
+        if (bulkOrderData.validityDate) sharedFields.validityDate = bulkOrderData.validityDate;
 
         const result = await Meteor.callAsync('orders.create', {
           orderData: {
@@ -731,6 +1012,13 @@ Meteor.methods({
 
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
+
+    // Structured products cannot move to an executed status until the final signed termsheet is uploaded
+    if ((status === ORDER_STATUSES.EXECUTED || status === ORDER_STATUSES.PARTIALLY_EXECUTED)
+        && order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT
+        && order.termsheetStatus !== TERMSHEET_STATUSES.SIGNED) {
+      throw new Meteor.Error('missing-termsheet', 'Final signed termsheet must be uploaded before this structured product order can be marked executed');
+    }
 
     const updateData = {
       status,
@@ -1274,6 +1562,11 @@ Meteor.methods({
       }
     }
 
+    // Structured products cannot be marked executed until the final (signed) termsheet is uploaded
+    if (order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT && order.termsheetStatus !== TERMSHEET_STATUSES.SIGNED) {
+      throw new Meteor.Error('missing-termsheet', 'Final signed termsheet must be uploaded before this structured product order can be marked executed');
+    }
+
     // Determine status based on executed quantity
     let newStatus = ORDER_STATUSES.EXECUTED;
     if (executionData.executedQuantity < order.quantity) {
@@ -1290,6 +1583,7 @@ Meteor.methods({
         executedBy: userId,
         executedByName: userDisplayName,
         executedAt: new Date(),
+        settlementStatus: 'pending',
         updatedAt: new Date(),
         updatedBy: userId
       }
@@ -1301,7 +1595,45 @@ Meteor.methods({
   },
 
   /**
-   * Update termsheet status for structured product orders
+   * Force-settle an order (manual override for edge cases)
+   */
+  async 'orders.forceSettle'({ orderId, reason, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+    check(reason, Match.Maybe(String));
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+    validateOrderPermission(user);
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    await validateOrderAccess(order, user);
+
+    if (order.status !== ORDER_STATUSES.EXECUTED && order.status !== ORDER_STATUSES.PARTIALLY_EXECUTED) {
+      throw new Meteor.Error('invalid-operation', 'Only executed orders can be marked as settled');
+    }
+
+    await OrdersCollection.updateAsync(orderId, {
+      $set: {
+        settlementStatus: 'forced',
+        settlementForcedBy: userId,
+        settlementForcedByName: userDisplayName,
+        settlementForcedAt: new Date(),
+        settlementForcedReason: reason || null,
+        updatedAt: new Date(),
+        updatedBy: userId
+      }
+    });
+
+    console.log(`[ORDERS] Force-settled order ${order.orderReference} by ${userDisplayName}: ${reason || 'no reason'}`);
+
+    return { success: true };
+  },
+
+  /**
+   * Revert termsheet status back to "none" for structured product orders.
+   * Forward transitions (none -> sent, sent -> signed) require evidence and must
+   * go through orders.advanceTermsheetWithEvidence. The trace files are kept on
+   * revert as audit history.
    */
   async 'orders.updateTermsheetStatus'({ orderId, termsheetStatus, sessionId }) {
     check(orderId, String);
@@ -1318,6 +1650,10 @@ Meteor.methods({
       throw new Meteor.Error('invalid-operation', 'Termsheet status is only applicable to structured products');
     }
 
+    if (termsheetStatus !== TERMSHEET_STATUSES.NONE) {
+      throw new Meteor.Error('invalid-operation', 'Forward termsheet transitions require evidence. Use orders.advanceTermsheetWithEvidence.');
+    }
+
     const now = new Date();
     await OrdersCollection.updateAsync(orderId, {
       $set: {
@@ -1329,9 +1665,65 @@ Meteor.methods({
       }
     });
 
-    console.log(`[ORDERS] Updated termsheet status to "${termsheetStatus}" for order ${order.orderReference} by ${userDisplayName} (${userId})`);
+    console.log(`[ORDERS] Reverted termsheet status to "${termsheetStatus}" for order ${order.orderReference} by ${userDisplayName} (${userId})`);
 
     return { success: true, orderId, termsheetStatus };
+  },
+
+  /**
+   * Advance termsheet status to "sent" or "signed" with mandatory evidence file.
+   * Atomically writes the evidence file (replacing any prior evidence of the same
+   * type) and updates the termsheet status fields. If the file write fails, no DB
+   * mutation happens.
+   */
+  async 'orders.advanceTermsheetWithEvidence'({ orderId, targetStatus, fileName, base64Data, mimeType, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+    check(fileName, String);
+    check(base64Data, String);
+    check(mimeType, String);
+    check(targetStatus, Match.Where(x => x === TERMSHEET_STATUSES.SENT || x === TERMSHEET_STATUSES.SIGNED));
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+    validateOrderPermission(user);
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    await validateOrderAccess(order, user);
+
+    if (order.assetType !== ASSET_TYPES.STRUCTURED_PRODUCT) {
+      throw new Meteor.Error('invalid-operation', 'Termsheet status is only applicable to structured products');
+    }
+
+    const traceType = targetStatus === TERMSHEET_STATUSES.SIGNED
+      ? EMAIL_TRACE_TYPES.TERMSHEET_SIGNED
+      : EMAIL_TRACE_TYPES.TERMSHEET_SENT;
+
+    const trace = await writeTraceFileToOrder({
+      order,
+      traceType,
+      fileName,
+      base64Data,
+      mimeType,
+      userId,
+      userDisplayName,
+      acceptedExtensions: TERMSHEET_EVIDENCE_TYPES
+    });
+
+    const now = new Date();
+    await OrdersCollection.updateAsync(orderId, {
+      $push: { emailTraces: trace },
+      $set: {
+        termsheetStatus: targetStatus,
+        termsheetUpdatedBy: userDisplayName,
+        termsheetUpdatedAt: now,
+        updatedAt: now,
+        updatedBy: userId
+      }
+    });
+
+    console.log(`[ORDERS] Advanced termsheet to "${targetStatus}" for order ${order.orderReference} by ${userDisplayName} (${userId}) with evidence ${trace.storedFileName}`);
+
+    return { success: true, orderId, termsheetStatus: targetStatus, traceId: trace._id };
   },
 
   /**
@@ -1346,8 +1738,19 @@ Meteor.methods({
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
 
-    // Enrich with related data
-    const client = await UsersCollection.findOneAsync(order.clientId);
+    // Enrich with related data (supports both user-based and entity-based clients)
+    let client = await UsersCollection.findOneAsync(order.clientId);
+    if (!client && (order.entityId || order.clientId)) {
+      const { ClientEntitiesCollection: EntCol } = require('../../imports/api/clientEntities.js');
+      const entity = await EntCol.findOneAsync({ $or: [
+        ...(order.entityId ? [{ _id: order.entityId }] : []),
+        { _id: order.clientId },
+        { migratedFromUserId: order.clientId }
+      ].filter(Boolean), isActive: true });
+      if (entity) {
+        client = { _id: entity._id, profile: entity.profile, username: null };
+      }
+    }
     const bankAccount = await BankAccountsCollection.findOneAsync(order.bankAccountId);
     const bank = await BanksCollection.findOneAsync(order.bankId);
 
@@ -1357,8 +1760,9 @@ Meteor.methods({
         _id: client._id,
         firstName: client.profile?.firstName,
         lastName: client.profile?.lastName,
+        companyName: client.profile?.companyName,
         email: client.username
-      } : null,
+      } : (order.clientName ? { _id: order.clientId, firstName: order.clientName, lastName: '', email: null } : null),
       bankAccount: bankAccount ? {
         _id: bankAccount._id,
         accountNumber: bankAccount.accountNumber,
@@ -1400,11 +1804,18 @@ Meteor.methods({
 
     // Role-based filtering
     if (user.role === 'rm' || user.role === 'assistant') {
-      // RMs/Assistants only see orders for their clients
+      // RMs/Assistants see orders for their user-based AND entity-based clients
       const rmIds = UserHelpers.getEffectiveRmIds(user);
       const rmClients = await UsersCollection.find({ relationshipManagerId: { $in: rmIds } }).fetchAsync();
       const clientIds = rmClients.map(c => c._id);
-      query.clientId = { $in: clientIds };
+      // Also include entity-based clients
+      const { ClientEntitiesCollection: EntColFilter } = require('../../imports/api/clientEntities.js');
+      const rmEntities = await EntColFilter.find({ relationshipManagerId: { $in: rmIds }, isActive: true }, { fields: { _id: 1, migratedFromUserId: 1 } }).fetchAsync();
+      for (const ent of rmEntities) {
+        clientIds.push(ent._id);
+        if (ent.migratedFromUserId) clientIds.push(ent.migratedFromUserId);
+      }
+      query.clientId = { $in: [...new Set(clientIds)] };
     } else if (user.role === 'client') {
       // Clients only see their own orders
       query.clientId = user._id;
@@ -1466,16 +1877,33 @@ Meteor.methods({
     }).fetchAsync();
 
     // Enrich orders with client, bank, and creator names
+    const { ClientEntitiesCollection: EntColList } = require('../../imports/api/clientEntities.js');
     const enrichedOrders = await Promise.all(orders.map(async (order) => {
-      const client = await UsersCollection.findOneAsync(order.clientId);
+      let client = await UsersCollection.findOneAsync(order.clientId);
+      if (!client) {
+        // Try entity lookup
+        const entity = await EntColList.findOneAsync({ $or: [
+          ...(order.entityId ? [{ _id: order.entityId }] : []),
+          { _id: order.clientId },
+          { migratedFromUserId: order.clientId }
+        ], isActive: true });
+        if (entity) client = { profile: entity.profile };
+      }
       const bank = await BanksCollection.findOneAsync(order.bankId);
       const creator = await UsersCollection.findOneAsync(order.createdBy);
+      const bankAccount = order.bankAccountId ? await BankAccountsCollection.findOneAsync(order.bankAccountId) : null;
+
+      const clientName = client
+        ? (client.profile?.companyName || `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() || 'Unknown')
+        : (order.clientName || 'Unknown');
 
       return {
         ...OrderHelpers.formatOrderDetails(order),
-        clientName: client ? `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() : 'Unknown',
+        clientName,
         bankName: bank?.name || 'Unknown',
-        createdByName: creator ? `${creator.profile?.firstName || ''} ${creator.profile?.lastName || ''}`.trim() : 'Unknown'
+        createdByName: creator ? `${creator.profile?.firstName || ''} ${creator.profile?.lastName || ''}`.trim() : 'Unknown',
+        accountNumber: bankAccount?.accountNumber || order.portfolioCode || '',
+        accountName: bankAccount?.name || ''
       };
     }));
 
@@ -1608,6 +2036,59 @@ Meteor.methods({
   },
 
   /**
+   * Prepare email data + PDF for an order (returns data for .eml generation client-side)
+   */
+  async 'orders.prepareEmail'({ orderId, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+    validateOrderPermission(user);
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    await validateOrderAccess(order, user);
+
+    if (order.status === ORDER_STATUSES.PENDING_VALIDATION) {
+      throw new Meteor.Error('invalid-operation', 'Cannot prepare email for orders pending validation');
+    }
+
+    const client = await UsersCollection.findOneAsync(order.clientId);
+    const bankAccount = await BankAccountsCollection.findOneAsync(order.bankAccountId);
+    const bank = await BanksCollection.findOneAsync(order.bankId);
+    const createdByUser = await UsersCollection.findOneAsync(order.createdBy);
+
+    // Generate PDF
+    const html = generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser);
+    const pdfResult = await generatePDFFromHTML(html, {
+      format: 'A4', marginTop: '10mm', marginRight: '15mm', marginBottom: '10mm', marginLeft: '15mm'
+    });
+
+    // Prepare email data
+    const subject = OrderHelpers.generateEmailSubject(order);
+    const body = OrderHelpers.generateEmailBody(order, client, bank, bankAccount);
+
+    // Build CC list: bank CC emails + order creator's email
+    const ccList2 = [...(bank?.ccEmails || [])];
+    const creatorEmail2 = createdByUser?.email;
+    if (creatorEmail2 && !ccList2.includes(creatorEmail2)) {
+      ccList2.push(creatorEmail2);
+    }
+
+    return {
+      success: true,
+      orderReference: order.orderReference,
+      pdfData: pdfResult.pdfData,
+      emailData: {
+        to: bank?.deskEmail || '',
+        cc: ccList2.join(';'),
+        subject,
+        body
+      },
+      termsheet: loadInitialTermsheetAttachment(order)
+    };
+  },
+
+  /**
    * Send order email with PDF attachment via SendPulse
    */
   async 'orders.sendEmailWithPDF'({ orderId, sessionId }) {
@@ -1651,6 +2132,35 @@ Meteor.methods({
     const subject = OrderHelpers.generateEmailSubject(order);
     const clientName = client ? `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() : 'Unknown';
 
+    const isStructuredProduct = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT;
+
+    // For structured products, look up issuer contact info to include in the email
+    let issuer = null;
+    if (isStructuredProduct && order.issuerId) {
+      issuer = await IssuersCollection.findOneAsync(order.issuerId);
+    }
+    const issuerContactHtml = (issuer && (issuer.contactName || issuer.contactEmail || issuer.contactPhone)) ? `
+          <div style="margin-top: 20px; padding: 16px 20px; background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+            <div style="font-size: 12px; font-weight: bold; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px;">Issuer Contact &mdash; ${issuer.name}</div>
+            ${issuer.contactName ? `<div style="font-size: 14px; color: #111827;">${issuer.contactName}</div>` : ''}
+            ${issuer.contactEmail ? `<div style="font-size: 13px; color: #374151;">${issuer.contactEmail}</div>` : ''}
+            ${issuer.contactPhone ? `<div style="font-size: 13px; color: #374151;">${issuer.contactPhone}</div>` : ''}
+          </div>` : '';
+    const issuerContactText = (issuer && (issuer.contactName || issuer.contactEmail || issuer.contactPhone))
+      ? `\nIssuer Contact (${issuer.name}):\n${issuer.contactName ? issuer.contactName + '\n' : ''}${issuer.contactEmail ? issuer.contactEmail + '\n' : ''}${issuer.contactPhone ? issuer.contactPhone + '\n' : ''}`
+      : '';
+    const quantityLabel = isStructuredProduct ? 'Nominal' : (order.assetType === 'term_deposit' ? 'Amount' : 'Quantity');
+    const priceCellHtml = order.limitPrice
+      ? (isStructuredProduct
+          ? `${Number(order.limitPrice).toFixed(2)}%`
+          : OrderFormatters.formatWithCurrency(order.limitPrice, order.currency))
+      : null;
+    const priceTextValue = order.limitPrice
+      ? (isStructuredProduct
+          ? `${Number(order.limitPrice).toFixed(2)}%`
+          : OrderFormatters.formatWithCurrency(order.limitPrice, order.currency))
+      : null;
+
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background: linear-gradient(135deg, #1A2B40 0%, #2D4A6A 100%); color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
@@ -1674,17 +2184,36 @@ Meteor.methods({
               <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-family: monospace;">${order.isin}</td>
             </tr>
             <tr>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">Quantity</td>
+              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">${quantityLabel}</td>
               <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #0ea5e9;">${OrderFormatters.formatQuantity(order.quantity)}</td>
             </tr>
+            ${isStructuredProduct ? (priceCellHtml ? `
+            <tr>
+              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">Price</td>
+              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb;">${priceCellHtml}</td>
+            </tr>
+            ` : '') : `
             <tr>
               <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">Price Type</td>
               <td style="padding: 15px; border-bottom: 1px solid #e5e7eb;">${order.priceType === 'market' ? 'Market' : 'Limit'}</td>
             </tr>
-            ${order.priceType === 'limit' && order.limitPrice ? `
+            ${order.priceType === 'limit' && priceCellHtml ? `
             <tr>
               <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">Limit Price</td>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb;">${OrderFormatters.formatWithCurrency(order.limitPrice, order.currency)}</td>
+              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb;">${priceCellHtml}</td>
+            </tr>
+            ` : ''}
+            ${order.validityType ? `
+            <tr>
+              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">Validity</td>
+              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb;">${order.validityType === 'gtc' ? 'Good Till Canceled' : order.validityType === 'gtd' ? `Good Till ${order.validityDate ? OrderFormatters.formatDate(order.validityDate) : 'Date'}` : 'Day Order'}</td>
+            </tr>
+            ` : ''}
+            `}
+            ${order.broker ? `
+            <tr>
+              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">Broker</td>
+              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb;">${order.broker}</td>
             </tr>
             ` : ''}
             <tr>
@@ -1696,15 +2225,14 @@ Meteor.methods({
               <td style="padding: 15px;">${bankAccount?.accountNumber || order.portfolioCode || 'N/A'}</td>
             </tr>
           </table>
-          ${order.notes ? `
-          <div style="margin-top: 20px; padding: 15px; background: #fef3c7; border-left: 4px solid #f59e0b; border-radius: 4px;">
-            <strong style="color: #92400e;">Notes:</strong>
-            <p style="margin: 8px 0 0 0; color: #78350f;">${order.notes}</p>
-          </div>
-          ` : ''}
+          ${issuerContactHtml}
           <p style="margin-top: 20px; color: #6b7280; font-size: 13px; text-align: center;">
             Please find the full order confirmation attached as PDF.
           </p>
+          <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #e5e7eb; color: #374151; font-size: 13px;">
+            Best regards,<br/>
+            <strong>${userDisplayName}</strong>
+          </div>
         </div>
       </div>
     `;
@@ -1715,28 +2243,48 @@ Order Confirmation: ${order.orderReference}
 Order Type: ${order.orderType.toUpperCase()}
 Security: ${order.securityName}
 ISIN: ${order.isin}
-Quantity: ${OrderFormatters.formatQuantity(order.quantity)}
-Price Type: ${order.priceType === 'market' ? 'Market' : 'Limit'}
-${order.priceType === 'limit' && order.limitPrice ? `Limit Price: ${OrderFormatters.formatWithCurrency(order.limitPrice, order.currency)}` : ''}
+${quantityLabel}: ${OrderFormatters.formatQuantity(order.quantity)}
+${isStructuredProduct
+  ? (priceTextValue ? `Price: ${priceTextValue}` : '')
+  : `Price Type: ${order.priceType === 'market' ? 'Market' : 'Limit'}
+${order.priceType === 'limit' && priceTextValue ? `Limit Price: ${priceTextValue}` : ''}
+${order.validityType ? `Validity: ${order.validityType === 'gtc' ? 'Good Till Canceled' : order.validityType === 'gtd' ? `Good Till ${order.validityDate ? OrderFormatters.formatDate(order.validityDate) : 'Date'}` : 'Day Order'}` : ''}`
+}
+${order.broker ? `Broker: ${order.broker}` : ''}
 Client: ${clientName}
 Account: ${bankAccount?.accountNumber || order.portfolioCode || 'N/A'}
 ${order.notes ? `\nNotes: ${order.notes}` : ''}
-
+${issuerContactText}
 Please find the full order confirmation attached as PDF.
+
+Best regards,
+${userDisplayName}
     `.trim();
 
-    // Step 3: Send email with PDF attachment
+    // Step 3: Send email with PDF attachment (and termsheet for structured products)
+    const attachments = [{
+      name: `${order.orderReference}.pdf`,
+      content: pdfResult.pdfData,
+      isBase64: true
+    }];
+
+    // For structured products, attach the initial termsheet uploaded at order creation
+    const termsheetAttachment = loadInitialTermsheetAttachment(order);
+    if (termsheetAttachment) {
+      attachments.push({
+        name: termsheetAttachment.name,
+        content: termsheetAttachment.content,
+        isBase64: true
+      });
+    }
+
     try {
       await EmailService.sendEmail({
         subject,
         html: emailHtml,
         text: emailText,
         to: [{ email: bank.deskEmail, name: bank.name }],
-        attachments: [{
-          name: `${order.orderReference}.pdf`,
-          content: pdfResult.pdfData,
-          isBase64: true
-        }]
+        attachments
       });
 
       console.log(`[ORDERS] Email sent successfully to: ${bank.deskEmail} by ${userDisplayName}`);
@@ -1831,13 +2379,7 @@ Please find the full order confirmation attached as PDF.
     }
 
     // RMs/Assistants can only validate orders for their own clients
-    if (user.role === 'rm' || user.role === 'assistant') {
-      const client = await UsersCollection.findOneAsync(order.clientId);
-      const rmIds = UserHelpers.getEffectiveRmIds(user);
-      if (!client || !rmIds.includes(client.relationshipManagerId)) {
-        throw new Meteor.Error('not-authorized', 'You can only validate orders for your own clients');
-      }
-    }
+    await validateOrderAccess(order, user);
 
     // Four-eyes: creator cannot validate their own order
     if (order.createdBy === userId) {
@@ -1880,9 +2422,20 @@ Please find the full order confirmation attached as PDF.
       // Prepare email data
       const subject = OrderHelpers.generateEmailSubject(order);
       const body = OrderHelpers.generateEmailBody(order, client, bank, bankAccount);
+      // Build CC list: bank CC emails + order creator's email
+      const ccList = [...(bank?.ccEmails || [])];
+      const creatorEmail = createdByUser?.email;
+      if (creatorEmail && !ccList.includes(creatorEmail)) {
+        ccList.push(creatorEmail);
+      }
+
+      if (!bank?.deskEmail) {
+        console.warn(`[ORDERS] Bank ${bank?.name || order.bankId} has no deskEmail configured`);
+      }
+
       emailData = {
         to: bank?.deskEmail || '',
-        cc: (bank?.ccEmails || []).join(';'),
+        cc: ccList.join(';'),
         subject,
         body,
         bankName: bank?.name || ''
@@ -1909,13 +2462,16 @@ Please find the full order confirmation attached as PDF.
       console.error('[ORDERS] Error sending validation notification:', notifError);
     }
 
+    const termsheet = loadInitialTermsheetAttachment(order);
+
     return {
       success: true,
       orderId,
       orderReference: order.orderReference,
       newStatus: ORDER_STATUSES.PENDING,
       pdfData,
-      emailData
+      emailData,
+      termsheet
     };
   },
 
@@ -2024,13 +2580,7 @@ Please find the full order confirmation attached as PDF.
     }
 
     // RMs/Assistants can only reject orders for their own clients
-    if (user.role === 'rm' || user.role === 'assistant') {
-      const client = await UsersCollection.findOneAsync(order.clientId);
-      const rmIds = UserHelpers.getEffectiveRmIds(user);
-      if (!client || !rmIds.includes(client.relationshipManagerId)) {
-        throw new Meteor.Error('not-authorized', 'You can only reject orders for your own clients');
-      }
-    }
+    await validateOrderAccess(order, user);
 
     await OrdersCollection.updateAsync(orderId, {
       $set: {
@@ -2089,13 +2639,7 @@ Please find the full order confirmation attached as PDF.
     }
 
     // RMs/Assistants can only act on orders for their own clients
-    if (user.role === 'rm' || user.role === 'assistant') {
-      const client = await UsersCollection.findOneAsync(order.clientId);
-      const rmIds = UserHelpers.getEffectiveRmIds(user);
-      if (!client || !rmIds.includes(client.relationshipManagerId)) {
-        throw new Meteor.Error('not-authorized', 'You can only modify orders for your own clients');
-      }
-    }
+    await validateOrderAccess(order, user);
 
     await OrdersCollection.updateAsync(orderId, {
       $set: {
@@ -2205,12 +2749,18 @@ Please find the full order confirmation attached as PDF.
 
     const query = { status: { $in: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING_MODIFICATION, ORDER_STATUSES.REVISION_REQUESTED] } };
 
-    // RMs/Assistants only see pending orders for their own clients
+    // RMs/Assistants only see pending orders for their own clients (user + entity based)
     if (user.role === 'rm' || user.role === 'assistant') {
       const rmIds = UserHelpers.getEffectiveRmIds(user);
       const rmClients = await UsersCollection.find({ relationshipManagerId: { $in: rmIds } }).fetchAsync();
       const clientIds = rmClients.map(c => c._id);
-      query.clientId = { $in: clientIds };
+      const { ClientEntitiesCollection: EntColPending } = require('../../imports/api/clientEntities.js');
+      const rmEntities = await EntColPending.find({ relationshipManagerId: { $in: rmIds }, isActive: true }, { fields: { _id: 1, migratedFromUserId: 1 } }).fetchAsync();
+      for (const ent of rmEntities) {
+        clientIds.push(ent._id);
+        if (ent.migratedFromUserId) clientIds.push(ent.migratedFromUserId);
+      }
+      query.clientId = { $in: [...new Set(clientIds)] };
     }
 
     const orders = await OrdersCollection.find(
@@ -2242,7 +2792,7 @@ Please find the full order confirmation attached as PDF.
 /**
  * Match an order against PMSOperations to detect if it was booked
  */
-async function matchOrderToOperations(order) {
+export async function matchOrderToOperations(order) {
   if (!order.isin || !order.portfolioCode) {
     return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'Missing ISIN or portfolio code' };
   }
@@ -2284,18 +2834,29 @@ async function matchOrderToOperations(order) {
   for (const op of operations) {
     let score = 0;
 
-    // Quantity similarity
+    // Magnitude similarity. For structured-product orders `order.quantity`
+    // holds the notional in currency while `op.quantity` holds units, so we
+    // also compare the order's notional against op.grossAmount/netAmount and
+    // take whichever ratio is highest.
     const opQty = Math.abs(op.quantity || 0);
     const orderQty = Math.abs(order.quantity || 0);
-    if (orderQty > 0 && opQty > 0) {
-      const qtyRatio = Math.min(opQty, orderQty) / Math.max(opQty, orderQty);
-      if (qtyRatio >= 0.99) {
-        score += 50; // Exact match
-      } else if (qtyRatio >= 0.90) {
-        score += 30; // Within 10%
-      } else if (qtyRatio >= 0.70) {
-        score += 10; // Within 30%
-      }
+    const opAmount = Math.abs(op.grossAmount || op.netAmount || 0);
+    const orderAmount = Math.abs(order.estimatedValue || order.quantity || 0);
+
+    const qtyRatio = orderQty > 0 && opQty > 0
+      ? Math.min(opQty, orderQty) / Math.max(opQty, orderQty)
+      : 0;
+    const amountRatio = orderAmount > 0 && opAmount > 0
+      ? Math.min(orderAmount, opAmount) / Math.max(orderAmount, opAmount)
+      : 0;
+    const bestRatio = Math.max(qtyRatio, amountRatio);
+
+    if (bestRatio >= 0.99) {
+      score += 50; // Exact match
+    } else if (bestRatio >= 0.90) {
+      score += 30; // Within 10%
+    } else if (bestRatio >= 0.70) {
+      score += 10; // Within 30%
     }
 
     // Date proximity (closer = better)
@@ -2324,10 +2885,15 @@ async function matchOrderToOperations(order) {
   // Determine status based on score
   const opQty = Math.abs(bestMatch.quantity || 0);
   const orderQty = Math.abs(order.quantity || 0);
+  const opAmount = Math.abs(bestMatch.grossAmount || bestMatch.netAmount || 0);
+  const orderAmount = Math.abs(order.estimatedValue || order.quantity || 0);
   const qtyRatio = orderQty > 0 && opQty > 0
     ? Math.min(opQty, orderQty) / Math.max(opQty, orderQty)
     : 0;
-  const isExact = qtyRatio >= 0.99;
+  const amountRatio = orderAmount > 0 && opAmount > 0
+    ? Math.min(orderAmount, opAmount) / Math.max(orderAmount, opAmount)
+    : 0;
+  const isExact = Math.max(qtyRatio, amountRatio) >= 0.99;
 
   let bookingStatus, confidence;
   if (bestScore >= 70 && isExact) {
@@ -2399,6 +2965,82 @@ const ensureOrderDirectory = (orderId) => {
 };
 
 /**
+ * Write a trace file to disk for an order, replacing any prior trace of the same type.
+ * Performs the disk write and the $pull of the prior trace, but does NOT $push the new
+ * trace — the caller is responsible for combining the $push with whatever other $set
+ * fields are needed (status changes, termsheet status, etc.) so the final DB mutation
+ * is atomic.
+ */
+const writeTraceFileToOrder = async ({
+  order,
+  traceType,
+  fileName,
+  base64Data,
+  mimeType,
+  userId,
+  userDisplayName,
+  acceptedExtensions = EMAIL_TRACE_ACCEPTED_TYPES
+}) => {
+  const ext = path.extname(fileName).toLowerCase();
+  if (!acceptedExtensions.includes(ext)) {
+    throw new Meteor.Error('invalid-file-type', `File type ${ext} is not accepted. Accepted types: ${acceptedExtensions.join(', ')}`);
+  }
+
+  const estimatedSize = Math.ceil(base64Data.length * 0.75);
+  if (estimatedSize > EMAIL_TRACE_MAX_SIZE) {
+    throw new Meteor.Error('file-too-large', `File exceeds maximum size of 15MB`);
+  }
+
+  const timestamp = Date.now();
+  const storedFileName = `${traceType}_${timestamp}${ext}`;
+  const orderDir = ensureOrderDirectory(order._id);
+  const filePath = path.join(orderDir, storedFileName);
+
+  console.log(`[ORDERS] Writing trace: ${traceType} for order ${order.orderReference} by ${userDisplayName} (${userId})`);
+  console.log(`   File: ${fileName} -> ${storedFileName}`);
+
+  // Remove existing trace of same type (file from disk + entry from DB) if it exists
+  const existingTraces = order.emailTraces || [];
+  const existingTrace = existingTraces.find(t => t.traceType === traceType);
+  if (existingTrace) {
+    try {
+      if (existingTrace.filePath && fs.existsSync(existingTrace.filePath)) {
+        fs.unlinkSync(existingTrace.filePath);
+        console.log(`   Deleted old trace: ${existingTrace.filePath}`);
+      }
+    } catch (err) {
+      console.error('Error deleting old trace file:', err);
+    }
+
+    await OrdersCollection.updateAsync(order._id, {
+      $pull: { emailTraces: { _id: existingTrace._id } }
+    });
+  }
+
+  try {
+    const buffer = Buffer.from(base64Data, 'base64');
+    fs.writeFileSync(filePath, buffer);
+    console.log(`   Trace saved: ${filePath} (${buffer.length} bytes)`);
+  } catch (error) {
+    console.error('Error saving trace file:', error);
+    throw new Meteor.Error('file-system-error', 'Failed to save trace file');
+  }
+
+  return {
+    _id: Random.id(),
+    traceType,
+    traceMode: 'file',
+    fileName,
+    storedFileName,
+    filePath,
+    mimeType: mimeType || 'application/octet-stream',
+    fileSize: estimatedSize,
+    uploadedAt: new Date(),
+    uploadedBy: userId
+  };
+};
+
+/**
  * Email Trace Management Methods
  */
 Meteor.methods({
@@ -2419,70 +3061,21 @@ Meteor.methods({
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
 
-    // Validate file extension
-    const ext = path.extname(fileName).toLowerCase();
-    if (!EMAIL_TRACE_ACCEPTED_TYPES.includes(ext)) {
-      throw new Meteor.Error('invalid-file-type', `File type ${ext} is not accepted. Accepted types: ${EMAIL_TRACE_ACCEPTED_TYPES.join(', ')}`);
+    // Termsheet evidence has its own dedicated method that requires status transition
+    if (traceType === EMAIL_TRACE_TYPES.TERMSHEET_SENT || traceType === EMAIL_TRACE_TYPES.TERMSHEET_SIGNED) {
+      throw new Meteor.Error('invalid-operation', 'Use orders.advanceTermsheetWithEvidence to upload termsheet evidence');
     }
 
-    // Validate file size (base64 is ~33% larger than binary)
-    const estimatedSize = Math.ceil(base64Data.length * 0.75);
-    if (estimatedSize > EMAIL_TRACE_MAX_SIZE) {
-      throw new Meteor.Error('file-too-large', `File exceeds maximum size of 15MB`);
-    }
-
-    // Generate unique stored filename
-    const timestamp = Date.now();
-    const storedFileName = `${traceType}_${timestamp}${ext}`;
-
-    // Ensure order directory exists
-    const orderDir = ensureOrderDirectory(orderId);
-    const filePath = path.join(orderDir, storedFileName);
-
-    console.log(`[ORDERS] Uploading email trace: ${traceType} for order ${order.orderReference} by ${userDisplayName} (${userId})`);
-    console.log(`   File: ${fileName} -> ${storedFileName}`);
-
-    // Remove existing trace of same type if exists
-    const existingTraces = order.emailTraces || [];
-    const existingTrace = existingTraces.find(t => t.traceType === traceType);
-    if (existingTrace) {
-      try {
-        if (fs.existsSync(existingTrace.filePath)) {
-          fs.unlinkSync(existingTrace.filePath);
-          console.log(`   Deleted old trace: ${existingTrace.filePath}`);
-        }
-      } catch (err) {
-        console.error('Error deleting old trace file:', err);
-      }
-
-      await OrdersCollection.updateAsync(orderId, {
-        $pull: { emailTraces: { _id: existingTrace._id } }
-      });
-    }
-
-    // Save file to disk
-    try {
-      const buffer = Buffer.from(base64Data, 'base64');
-      fs.writeFileSync(filePath, buffer);
-      console.log(`   Trace saved: ${filePath} (${buffer.length} bytes)`);
-    } catch (error) {
-      console.error('Error saving email trace file:', error);
-      throw new Meteor.Error('file-system-error', 'Failed to save email trace file');
-    }
-
-    // Build trace object
-    const traceId = Random.id();
-    const trace = {
-      _id: traceId,
+    const trace = await writeTraceFileToOrder({
+      order,
       traceType,
       fileName,
-      storedFileName,
-      filePath,
-      mimeType: mimeType || 'application/octet-stream',
-      fileSize: estimatedSize,
-      uploadedAt: new Date(),
-      uploadedBy: userId
-    };
+      base64Data,
+      mimeType,
+      userId,
+      userDisplayName
+    });
+    const traceId = trace._id;
 
     // Push to order's emailTraces array and auto-advance status based on trace type
     const updateFields = { updatedAt: new Date(), updatedBy: userId };
@@ -2527,25 +3120,116 @@ Meteor.methods({
       throw new Meteor.Error('not-found', 'Email trace not found');
     }
 
-    // Delete file from disk
-    try {
-      if (fs.existsSync(trace.filePath)) {
-        fs.unlinkSync(trace.filePath);
-        console.log(`[ORDERS] Deleted trace file: ${trace.filePath}`);
+    // Delete file from disk (only for file traces, not phone traces)
+    if (trace.filePath && trace.traceMode !== 'phone') {
+      try {
+        if (fs.existsSync(trace.filePath)) {
+          fs.unlinkSync(trace.filePath);
+          console.log(`[ORDERS] Deleted trace file: ${trace.filePath}`);
+        }
+      } catch (err) {
+        console.error('Error deleting trace file:', err);
       }
-    } catch (err) {
-      console.error('Error deleting trace file:', err);
     }
 
     // Remove from order document
+    const updateSet = { updatedAt: new Date(), updatedBy: userId };
+
+    // Revert status if the deleted trace was what caused the auto-advance
+    const remainingTraces = traces.filter(t => t._id !== traceId);
+    const hasBankConfirmation = remainingTraces.some(t => t.traceType === EMAIL_TRACE_TYPES.BANK_CONFIRMATION);
+    const hasOrderToBank = remainingTraces.some(t => t.traceType === EMAIL_TRACE_TYPES.ORDER_TO_BANK);
+
+    if (trace.traceType === EMAIL_TRACE_TYPES.BANK_CONFIRMATION && order.status === ORDER_STATUSES.EXECUTED && !hasBankConfirmation) {
+      // Removed the bank confirmation that caused EXECUTED → revert to TRANSMITTED or PENDING
+      updateSet.status = hasOrderToBank ? ORDER_STATUSES.TRANSMITTED : ORDER_STATUSES.PENDING;
+      console.log(`[ORDERS] Reverting order ${order.orderReference} from EXECUTED to ${updateSet.status} (bank confirmation removed)`);
+    } else if (trace.traceType === EMAIL_TRACE_TYPES.ORDER_TO_BANK && order.status === ORDER_STATUSES.TRANSMITTED && !hasOrderToBank) {
+      // Removed the order-to-bank that caused TRANSMITTED → revert to PENDING
+      updateSet.status = ORDER_STATUSES.PENDING;
+      console.log(`[ORDERS] Reverting order ${order.orderReference} from TRANSMITTED to PENDING (order-to-bank removed)`);
+    }
+
     await OrdersCollection.updateAsync(orderId, {
       $pull: { emailTraces: { _id: traceId } },
-      $set: { updatedAt: new Date(), updatedBy: userId }
+      $set: updateSet
     });
 
     console.log(`[ORDERS] Email trace deleted: ${trace.traceType} from order ${order.orderReference} by ${userDisplayName} (${userId})`);
 
     return { success: true };
+  },
+
+  /**
+   * Save a phone call trace for an order
+   */
+  async 'orders.savePhoneTrace'({ orderId, traceType, phoneCallTime, phoneCaller, phoneCallee, phoneNotes, sessionId }) {
+    check(orderId, String);
+    check(traceType, Match.Where(x => Object.values(EMAIL_TRACE_TYPES).includes(x)));
+    check(phoneCallTime, String);
+    check(phoneCaller, String);
+    check(phoneCallee, String);
+    check(sessionId, String);
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+    validateOrderPermission(user);
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    await validateOrderAccess(order, user);
+
+    // Remove existing trace of same type if exists
+    const existingTraces = order.emailTraces || [];
+    const existingTrace = existingTraces.find(t => t.traceType === traceType);
+    if (existingTrace) {
+      // If it was a file trace, delete the file from disk
+      if (existingTrace.filePath && existingTrace.traceMode !== 'phone') {
+        try {
+          if (fs.existsSync(existingTrace.filePath)) {
+            fs.unlinkSync(existingTrace.filePath);
+          }
+        } catch (err) {
+          console.error('Error deleting old trace file:', err);
+        }
+      }
+      await OrdersCollection.updateAsync(orderId, {
+        $pull: { emailTraces: { _id: existingTrace._id } }
+      });
+    }
+
+    const traceId = Random.id();
+    const trace = {
+      _id: traceId,
+      traceType,
+      traceMode: 'phone',
+      phoneCallTime: new Date(phoneCallTime),
+      phoneCaller,
+      phoneCallee,
+      phoneNotes: phoneNotes || '',
+      loggedAt: new Date(),
+      loggedBy: userId
+    };
+
+    // Auto-advance status based on trace type (same as file traces)
+    const updateFields = { updatedAt: new Date(), updatedBy: userId };
+
+    if (traceType === EMAIL_TRACE_TYPES.ORDER_TO_BANK && order.status !== ORDER_STATUSES.EXECUTED) {
+      updateFields.status = ORDER_STATUSES.TRANSMITTED;
+      updateFields.transmittedAt = new Date();
+      console.log(`[ORDERS] Auto-advancing order ${order.orderReference} to TRANSMITTED (order-to-bank phone trace)`);
+    } else if (traceType === EMAIL_TRACE_TYPES.BANK_CONFIRMATION) {
+      updateFields.status = ORDER_STATUSES.EXECUTED;
+      updateFields.executedAt = new Date();
+      console.log(`[ORDERS] Auto-advancing order ${order.orderReference} to EXECUTED (bank confirmation phone trace)`);
+    }
+
+    await OrdersCollection.updateAsync(orderId, {
+      $push: { emailTraces: trace },
+      $set: updateFields
+    });
+
+    console.log(`[ORDERS] Phone trace saved: ${traceType} for order ${order.orderReference} (${traceId}) by ${userDisplayName} (${userId})`);
+
+    return { success: true, traceId, trace };
   },
 
   /**
@@ -2642,6 +3326,7 @@ Meteor.methods({
 
     // Gather email content from all traces
     let emailContent = '';
+    const senderAddresses = new Set(); // lowercase, from: addresses collected across traces
     const traces = order.emailTraces || [];
     for (const trace of traces) {
       if (!trace.filePath || !fs.existsSync(trace.filePath)) continue;
@@ -2657,6 +3342,12 @@ Meteor.methods({
           emailContent += `Date: ${parsed.date || ''}\n\n`;
           emailContent += parsed.text || '';
           emailContent += '\n\n';
+
+          // Collect sender addresses for the deterministic authorized-email check below
+          const fromValues = parsed.from?.value || [];
+          for (const v of fromValues) {
+            if (v.address) senderAddresses.add(v.address.trim().toLowerCase());
+          }
         } else if (ext.endsWith('.pdf')) {
           // For PDFs, extract text if possible
           try {
@@ -2688,6 +3379,47 @@ Meteor.methods({
     const client = await UsersCollection.findOneAsync(order.clientId);
     const clientName = client ? `${client.profile?.firstName || ''} ${client.profile?.lastName || ''} ${client.profile?.companyName || ''}`.trim() : 'Unknown';
     const bank = await BanksCollection.findOneAsync(order.bankId);
+    const bankAccount = order.bankAccountId
+      ? await BankAccountsCollection.findOneAsync(order.bankAccountId)
+      : null;
+
+    // Deterministic authorized-email check: compare email sender(s) vs. bank account's authorized contacts
+    const buildAuthorizedEmailCheck = () => {
+      const authorized = bankAccount?.authorizedEmail ? bankAccount.authorizedEmail.trim().toLowerCase() : '';
+      const ccList = Array.isArray(bankAccount?.authorizedCcEmails)
+        ? bankAccount.authorizedCcEmails.map(e => String(e).trim().toLowerCase()).filter(Boolean)
+        : [];
+      const authorizedSet = new Set([authorized, ...ccList].filter(Boolean));
+
+      if (authorizedSet.size === 0) {
+        return {
+          field: 'Authorized email',
+          status: 'warning',
+          detail: 'No authorized email configured on this bank account — cannot verify sender.'
+        };
+      }
+      if (senderAddresses.size === 0) {
+        return {
+          field: 'Authorized email',
+          status: 'warning',
+          detail: 'No sender address found in the email traces.'
+        };
+      }
+      const matched = [...senderAddresses].some(addr => authorizedSet.has(addr));
+      if (matched) {
+        return {
+          field: 'Authorized email',
+          status: 'ok',
+          detail: `Sender matches an authorized email on the bank account.`
+        };
+      }
+      return {
+        field: 'Authorized email',
+        status: 'mismatch',
+        detail: `Sender (${[...senderAddresses].join(', ')}) does not match the account's authorized email(s) (${[...authorizedSet].join(', ')}).`
+      };
+    };
+    const authorizedEmailCheck = buildAuthorizedEmailCheck();
 
     const orderSummary = [
       `Order Reference: ${order.orderReference}`,
@@ -2712,16 +3444,27 @@ Meteor.methods({
       order.fxSubtype ? `FX Type: ${order.fxSubtype}` : null,
       order.fxRate ? `FX Rate: ${order.fxRate}` : null,
       // Validity
-      order.validityType ? `Validity: ${order.validityType}` : null,
+      order.validityType ? `Validity: ${order.validityType === 'gtc' ? 'Good Till Canceled' : order.validityType === 'gtd' ? `Good Till ${order.validityDate ? OrderFormatters.formatDate(order.validityDate) : 'Date'}` : 'Day Order'}` : null,
     ].filter(Boolean).join('\n');
 
-    const prompt = `You are a compliance officer at a wealth management firm. Compare the client's email/instruction below with the order that was entered into the system. Identify any discrepancies or potential issues.
+    const prompt = `You are a compliance officer at Amber Lake Partners, a wealth-management advisory firm. Amber Lake proposes investments to clients by email; clients then reply with their approval, often briefly ("ok", "ok pour moi", "yes", "accepted", "go", "perfect"). You must compare the client's instruction against the order that was entered into the system and identify real discrepancies.
+
+KEY CONTEXT — READ CAREFULLY:
+- Amber Lake Partners IS the firm running this system. Emails sent FROM @amberlakepartners.com to the client are Amber Lake's advisory proposals, NOT third-party intermediary issues. Do not flag "is Amber Lake authorized" — Amber Lake is the advisor and the question is moot.
+- The client typically replies on top of a long email thread (their reply is usually short and the proposal details are in quoted text BELOW their reply, or earlier in the thread). You MUST read the whole thread, including quoted/forwarded portions, before judging completeness. A short "ok" approving a fully-detailed proposal earlier in the thread IS a complete instruction, not a vague approval.
+- Authorized signatories for the account are configured separately on the bank account (authorizedEmail / authorizedCcEmails / authorizedPhone). A separate deterministic check already verifies the sender against those fields — do NOT re-flag the authorized-email match in your output (it will be added automatically).
+- Price for structured products is in % of par (e.g., 100 means 100% of nominal), not in currency units.
+
+PRICE/QUANTITY GUIDELINES:
+- For structured products: "Price" in the order = % of par. The notional/face value is the "Quantity" field (e.g., 750,000 EUR notional at 100% = 750,000 EUR).
+- For equities/ETFs: Quantity = number of shares; Price = per-share currency price.
+- An exact quantity in the email is required. A range (e.g., "500k–750k") is a proposal, not an instruction; treat as a warning if the order's quantity falls within the range and was confirmed; treat as mismatch if outside.
 
 ORDER ENTERED IN SYSTEM:
 ${orderSummary}
 
-CLIENT EMAIL/INSTRUCTION:
-${emailContent.substring(0, 8000)}
+CLIENT EMAIL/INSTRUCTION (full thread, may include quoted text below the reply):
+${emailContent.substring(0, 12000)}
 
 Analyze and respond with a JSON object (no markdown, just raw JSON):
 {
@@ -2730,19 +3473,20 @@ Analyze and respond with a JSON object (no markdown, just raw JSON):
   "summary": "One sentence overall assessment",
   "checks": [
     {
-      "field": "field name (e.g. Direction, Security, Quantity, Price, Currency, Client)",
+      "field": "field name (e.g. Direction, Security, Quantity, Price, Currency, Settlement Date)",
       "status": "ok" | "warning" | "mismatch",
-      "detail": "Brief explanation"
+      "detail": "Brief explanation grounded in the email thread"
     }
   ],
-  "notes": "Any additional observations (e.g. email seems unrelated to the order, or email is a general inquiry not a trade instruction)"
+  "notes": "Any additional observations"
 }
 
 Important:
-- If the email does not appear to be a trade instruction at all, set status to "warning" and note this.
-- Compare direction (buy/sell), security/ISIN, quantity, price, currency, client identity.
-- A missing field in the email is not a mismatch, just note it.
-- Be concise. Focus on real discrepancies.`;
+- Read the FULL thread before judging. Look in quoted/forwarded portions for the proposal details that the client is approving.
+- Do NOT include an "Authorized email" check — that is added separately.
+- Do NOT question whether Amber Lake Partners is an authorized intermediary — Amber Lake IS the firm.
+- Compare direction (buy/sell), security/ISIN, quantity, price, currency. Missing fields → warning, not mismatch.
+- Be concise. Focus on real discrepancies between the order and what the client (or the proposal they approved) specified.`;
 
     try {
       console.log(`[AI_CHECK] Running compliance check for order ${order.orderReference}`);
@@ -2769,11 +3513,29 @@ Important:
       const jsonMatch = textContent.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const result = JSON.parse(jsonMatch[0]);
-        console.log(`[AI_CHECK] Order ${order.orderReference}: ${result.status} (confidence: ${result.confidence}%)`);
+        // Prepend deterministic authorized-email check so it shows first in the UI
+        result.checks = Array.isArray(result.checks) ? result.checks : [];
+        result.checks = [authorizedEmailCheck, ...result.checks];
+        // Escalate overall status on a hard mismatch of the authorized email
+        if (authorizedEmailCheck.status === 'mismatch') {
+          result.status = 'mismatch';
+        } else if (authorizedEmailCheck.status === 'warning' && result.status === 'match') {
+          result.status = 'warning';
+        }
+        console.log(`[AI_CHECK] Order ${order.orderReference}: ${result.status} (confidence: ${result.confidence}%) — authorizedEmail: ${authorizedEmailCheck.status}`);
         return { success: true, result };
       }
 
-      return { success: true, result: { status: 'warning', summary: 'Could not parse AI response', notes: textContent, checks: [], confidence: 0 } };
+      return {
+        success: true,
+        result: {
+          status: authorizedEmailCheck.status === 'mismatch' ? 'mismatch' : 'warning',
+          summary: 'Could not parse AI response',
+          notes: textContent,
+          checks: [authorizedEmailCheck],
+          confidence: 0
+        }
+      };
     } catch (err) {
       console.error(`[AI_CHECK] Error for order ${order.orderReference}:`, err.message);
       throw new Meteor.Error('ai-error', `AI check failed: ${err.message}`);
@@ -2786,7 +3548,14 @@ Important:
  */
 function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
   const orderDate = OrderFormatters.formatDateTime(order.createdAt);
-  const clientName = client ? `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() : 'Unknown';
+  // Use bank account name first, then resolve client/entity name
+  const clientName = bankAccount?.name
+    || (client?.profile?.companyName)
+    || (client?.profile?.firstName || client?.profile?.lastName
+      ? `${client.profile.firstName || ''} ${client.profile.lastName || ''}`.trim()
+      : null)
+    || order.clientName
+    || 'Unknown';
   const createdByName = createdByUser ? `${createdByUser.profile?.firstName || ''} ${createdByUser.profile?.lastName || ''}`.trim() : 'System';
 
   return `
@@ -2908,6 +3677,46 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
       color: #0ea5e9;
       font-size: 12pt;
     }
+    .execution-type {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 4px;
+      font-weight: 600;
+      font-size: 10pt;
+      margin-top: 6px;
+    }
+    .execution-type.to-execute {
+      background: #dbeafe;
+      color: #1d4ed8;
+    }
+    .execution-type.pre-executed {
+      background: #fef3c7;
+      color: #92400e;
+    }
+    .allocation-warning {
+      background: #fef3c7;
+      padding: 16px;
+      border-radius: 8px;
+      border-left: 4px solid #f59e0b;
+      margin-top: 20px;
+    }
+    .allocation-warning .warning-title {
+      font-weight: 600;
+      color: #92400e;
+      margin-bottom: 8px;
+      font-size: 11pt;
+    }
+    .allocation-warning .breach-item {
+      font-size: 10pt;
+      color: #78350f;
+      margin-bottom: 4px;
+    }
+    .allocation-warning .justification {
+      margin-top: 8px;
+      font-size: 10pt;
+      color: #78350f;
+      font-style: italic;
+    }
     .notes {
       background: #fef3c7;
       padding: 16px;
@@ -2947,6 +3756,7 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
       <div class="order-ref">${order.orderReference}</div>
       <div class="order-date">${orderDate}</div>
       <div class="order-type">${order.orderType.toUpperCase()}</div>
+      <div class="execution-type ${order.executionType === 'pre_executed' ? 'pre-executed' : 'to-execute'}">${EXECUTION_TYPE_LABELS[order.executionType] || 'Order to be Executed'}</div>
     </div>
   </div>
 
@@ -2954,7 +3764,7 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
     <h2>Account Information</h2>
     <div class="info-grid">
       <div class="info-row">
-        <span class="info-label">Client</span>
+        <span class="info-label">Account Name</span>
         <span class="info-value">${clientName}</span>
       </div>
       <div class="info-row">
@@ -2997,25 +3807,25 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
       ${order.fxRate ? `
       <div class="info-row">
         <span class="info-label">Rate</span>
-        <span class="info-value">${order.fxRate.toFixed(6)}</span>
+        <span class="info-value">${order.fxRate.toFixed(4)}</span>
       </div>
       ` : ''}
       ${order.limitPrice ? `
       <div class="info-row">
         <span class="info-label">Limit Price</span>
-        <span class="info-value">${order.limitPrice.toFixed(6)}</span>
+        <span class="info-value">${order.limitPrice.toFixed(4)}</span>
       </div>
       ` : ''}
       ${order.stopLossPrice ? `
       <div class="info-row">
         <span class="info-label">Stop Loss</span>
-        <span class="info-value">${order.stopLossPrice.toFixed(6)}</span>
+        <span class="info-value">${order.stopLossPrice.toFixed(4)}</span>
       </div>
       ` : ''}
       ${order.takeProfitPrice ? `
       <div class="info-row">
         <span class="info-label">Take Profit</span>
-        <span class="info-value">${order.takeProfitPrice.toFixed(6)}</span>
+        <span class="info-value">${order.takeProfitPrice.toFixed(4)}</span>
       </div>
       ` : ''}
       ${order.fxValueDate ? `
@@ -3070,17 +3880,38 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
         <span class="highlight-value">${order.orderType.toUpperCase()}</span>
       </div>
       <div class="highlight-row">
-        <span class="highlight-label">${order.assetType === 'term_deposit' ? 'Amount' : 'Quantity'}</span>
+        <span class="highlight-label">${order.assetType === 'structured_product' ? 'Nominal' : (order.assetType === 'term_deposit' ? 'Amount' : 'Quantity')}</span>
         <span class="highlight-value">${OrderFormatters.formatQuantity(order.quantity)}</span>
       </div>
+      ${order.assetType === 'structured_product' ? `
+        ${order.limitPrice ? `
+        <div class="highlight-row">
+          <span class="highlight-label">Price</span>
+          <span class="highlight-value">${Number(order.limitPrice).toFixed(2)}%</span>
+        </div>
+        ` : ''}
+      ` : `
+        <div class="highlight-row">
+          <span class="highlight-label">Price Type</span>
+          <span class="highlight-value">${OrderFormatters.getPriceTypeLabel(order.priceType)}</span>
+        </div>
+        ${order.priceType !== 'market' && order.limitPrice ? `
+        <div class="highlight-row">
+          <span class="highlight-label">${OrderFormatters.getPriceTypeLabel(order.priceType)} Price</span>
+          <span class="highlight-value">${OrderFormatters.formatWithCurrency(order.limitPrice, order.currency)}</span>
+        </div>
+        ` : ''}
+        ${order.validityType ? `
+        <div class="highlight-row">
+          <span class="highlight-label">Validity</span>
+          <span class="highlight-value">${order.validityType === 'gtc' ? 'Good Till Canceled' : order.validityType === 'gtd' ? `Good Till ${order.validityDate ? OrderFormatters.formatDate(order.validityDate) : 'Date'}` : 'Day Order'}</span>
+        </div>
+        ` : ''}
+      `}
+      ${order.broker ? `
       <div class="highlight-row">
-        <span class="highlight-label">Price Type</span>
-        <span class="highlight-value">${OrderFormatters.getPriceTypeLabel(order.priceType)}</span>
-      </div>
-      ${order.priceType !== 'market' && order.limitPrice ? `
-      <div class="highlight-row">
-        <span class="highlight-label">${OrderFormatters.getPriceTypeLabel(order.priceType)} Price</span>
-        <span class="highlight-value">${OrderFormatters.formatWithCurrency(order.limitPrice, order.currency)}</span>
+        <span class="highlight-label">Broker</span>
+        <span class="highlight-value">${order.broker}</span>
       </div>
       ` : ''}
       ${order.estimatedValue ? `
@@ -3120,10 +3951,12 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
   </div>
   ` : ''}
 
-  ${order.notes ? `
+  <!-- Allocation warnings excluded from bank PDF — kept in audit trail only -->
+  <!-- Internal notes excluded from bank PDF — kept in audit trail only -->
+  ${order.bankComment ? `
   <div class="notes">
-    <div class="notes-title">Notes</div>
-    <div class="notes-content">${order.notes}</div>
+    <div class="notes-title">Comments</div>
+    <div class="notes-content">${order.bankComment}</div>
   </div>
   ` : ''}
 
@@ -3145,6 +3978,12 @@ function buildAuditTimeline(order) {
   // Created
   if (order.createdAt) {
     events.push({ date: order.createdAt, event: 'Order Created', by: order.createdByName || '', details: `${(order.orderType || '').toUpperCase()} ${order.securityName || ''}` });
+  }
+
+  // Phone order source
+  if (order.orderSource === 'phone') {
+    const phoneDetails = [order.phoneCallLine, order.phoneCallTime ? `at ${new Date(order.phoneCallTime).toLocaleString()}` : ''].filter(Boolean).join(' ');
+    events.push({ date: order.createdAt, event: 'Phone Order', by: order.createdByName || '', details: phoneDetails || 'Phone call' });
   }
 
   // Allocation warning
@@ -3299,7 +4138,7 @@ function generateAuditTrailPDFHTML(order, client, bankAccount, bank, createdByUs
   const createdByName = createdByUser ? `${createdByUser.profile?.firstName || ''} ${createdByUser.profile?.lastName || ''}`.trim() : 'System';
 
   // Lifecycle order for email traces display
-  const traceLifecycleOrder = ['client_order', 'order_to_bank', 'order_to_issuer', 'bank_confirmation', 'client_confirmation'];
+  const traceLifecycleOrder = ['client_order', 'order_to_bank', 'order_to_issuer', 'bank_confirmation'];
   const sortedTraces = (order.emailTraces || []).slice().sort((a, b) => {
     const aIdx = traceLifecycleOrder.indexOf(a.traceType);
     const bIdx = traceLifecycleOrder.indexOf(b.traceType);
@@ -3520,7 +4359,7 @@ function generateAuditTrailPDFHTML(order, client, bankAccount, bank, createdByUs
     <h2>Account Information</h2>
     <div class="info-grid">
       <div class="info-row">
-        <span class="info-label">Client</span>
+        <span class="info-label">Account Name</span>
         <span class="info-value">${clientName}</span>
       </div>
       <div class="info-row">
@@ -3584,17 +4423,38 @@ function generateAuditTrailPDFHTML(order, client, bankAccount, bank, createdByUs
         <span class="highlight-value">${(order.orderType || '').toUpperCase()}</span>
       </div>
       <div class="highlight-row">
-        <span class="highlight-label">${order.assetType === 'term_deposit' ? 'Amount' : 'Quantity'}</span>
+        <span class="highlight-label">${order.assetType === 'structured_product' ? 'Nominal' : (order.assetType === 'term_deposit' ? 'Amount' : 'Quantity')}</span>
         <span class="highlight-value">${OrderFormatters.formatQuantity(order.quantity)}</span>
       </div>
+      ${order.assetType === 'structured_product' ? `
+        ${order.limitPrice ? `
+        <div class="highlight-row">
+          <span class="highlight-label">Price</span>
+          <span class="highlight-value">${Number(order.limitPrice).toFixed(2)}%</span>
+        </div>
+        ` : ''}
+      ` : `
+        <div class="highlight-row">
+          <span class="highlight-label">Price Type</span>
+          <span class="highlight-value">${OrderFormatters.getPriceTypeLabel(order.priceType)}</span>
+        </div>
+        ${order.priceType !== 'market' && order.limitPrice ? `
+        <div class="highlight-row">
+          <span class="highlight-label">${OrderFormatters.getPriceTypeLabel(order.priceType)} Price</span>
+          <span class="highlight-value">${OrderFormatters.formatWithCurrency(order.limitPrice, order.currency)}</span>
+        </div>
+        ` : ''}
+        ${order.validityType ? `
+        <div class="highlight-row">
+          <span class="highlight-label">Validity</span>
+          <span class="highlight-value">${order.validityType === 'gtc' ? 'Good Till Canceled' : order.validityType === 'gtd' ? `Good Till ${order.validityDate ? OrderFormatters.formatDate(order.validityDate) : 'Date'}` : 'Day Order'}</span>
+        </div>
+        ` : ''}
+      `}
+      ${order.broker ? `
       <div class="highlight-row">
-        <span class="highlight-label">Price Type</span>
-        <span class="highlight-value">${OrderFormatters.getPriceTypeLabel(order.priceType)}</span>
-      </div>
-      ${order.priceType !== 'market' && order.limitPrice ? `
-      <div class="highlight-row">
-        <span class="highlight-label">${OrderFormatters.getPriceTypeLabel(order.priceType)} Price</span>
-        <span class="highlight-value">${OrderFormatters.formatWithCurrency(order.limitPrice, order.currency)}</span>
+        <span class="highlight-label">Broker</span>
+        <span class="highlight-value">${order.broker}</span>
       </div>
       ` : ''}
       ${order.estimatedValue ? `
@@ -3633,12 +4493,7 @@ function generateAuditTrailPDFHTML(order, client, bankAccount, bank, createdByUs
     ` : ''}
   </div>
 
-  ${order.notes ? `
-  <div class="notes">
-    <div class="notes-title">Notes</div>
-    <div class="notes-content">${order.notes}</div>
-  </div>
-  ` : ''}
+  <!-- Notes excluded from bank PDF — kept in audit trail only -->
 
   <!-- PAGE 2: AUDIT TIMELINE -->
   <div class="page-break"></div>
@@ -3805,17 +4660,26 @@ Meteor.methods({
       throw new Meteor.Error('not-authorized', 'Only RMs and Admins can access bank accounts');
     }
 
-    // Verify access to client
+    // Verify access to client (supports both user IDs and entity IDs)
     if (user.role === 'rm' || user.role === 'assistant') {
-      const client = await UsersCollection.findOneAsync(clientId);
       const rmIds = UserHelpers.getEffectiveRmIds(user);
-      if (!client || !rmIds.includes(client.relationshipManagerId)) {
-        throw new Meteor.Error('not-authorized', 'You do not have access to this client');
+      const client = await UsersCollection.findOneAsync(clientId);
+      if (client) {
+        if (!rmIds.includes(client.relationshipManagerId)) {
+          throw new Meteor.Error('not-authorized', 'You do not have access to this client');
+        }
+      } else {
+        const { ClientEntitiesCollection: EntCol } = require('../../imports/api/clientEntities.js');
+        const entity = await EntCol.findOneAsync({ $or: [{ _id: clientId }, { migratedFromUserId: clientId }], isActive: true });
+        if (!entity || !rmIds.includes(entity.relationshipManagerId)) {
+          throw new Meteor.Error('not-authorized', 'You do not have access to this client');
+        }
       }
     }
 
+    // Find accounts by userId OR entityId (supports both legacy users and entity-based clients)
     const accounts = await BankAccountsCollection.find({
-      userId: clientId,
+      $or: [{ userId: clientId }, { entityId: clientId }],
       isActive: true
     }).fetchAsync();
 
@@ -3864,11 +4728,13 @@ Meteor.methods({
       throw new Meteor.Error('not-authorized', 'Not authorized to access holdings');
     }
 
+    // Resolve client: supports both user IDs and entity IDs
+    const resolved = await resolveClientId(clientId);
+
     // Verify access to client
     if (user.role === 'rm' || user.role === 'assistant') {
-      const client = await UsersCollection.findOneAsync(clientId);
       const rmIds = UserHelpers.getEffectiveRmIds(user);
-      if (!client || !rmIds.includes(client.relationshipManagerId)) {
+      if (!rmIds.includes(resolved.relationshipManagerId)) {
         throw new Meteor.Error('not-authorized', 'You do not have access to this client');
       }
     }
@@ -3880,25 +4746,22 @@ Meteor.methods({
     }
 
     // Find latest active holdings for this account (exclude cash positions)
-    const holdings = await PMSHoldingsCollection.find({
-      userId: clientId,
+    const holdingsQuery = {
       isActive: true,
       isLatest: true,
       portfolioCode: { $regex: new RegExp('^' + bankAccount.accountNumber.split('-')[0]) },
       assetClass: { $nin: ['cash', 'liquidity', 'Cash', 'Liquidity', 'CASH'] },
       securityName: { $not: /^(cash|liquidity|compte|konto)/i }
-    }, {
-      fields: {
-        isin: 1,
-        securityName: 1,
-        quantity: 1,
-        marketValue: 1,
-        currency: 1,
-        assetClass: 1,
-        marketPrice: 1
-      },
+    };
+    const holdingsOpts = {
+      fields: { isin: 1, securityName: 1, quantity: 1, marketValue: 1, currency: 1, assetClass: 1, marketPrice: 1 },
       sort: { securityName: 1 }
-    }).fetchAsync();
+    };
+    // Try with userId first, then by bankId for entity-based accounts
+    let holdings = await PMSHoldingsCollection.find({ ...holdingsQuery, userId: resolved.holdingsUserId }, holdingsOpts).fetchAsync();
+    if (holdings.length === 0) {
+      holdings = await PMSHoldingsCollection.find({ ...holdingsQuery, bankId: bankAccount.bankId }, holdingsOpts).fetchAsync();
+    }
 
     return holdings;
   },
@@ -3917,11 +4780,13 @@ Meteor.methods({
       throw new Meteor.Error('not-authorized', 'Not authorized to access cash data');
     }
 
-    // Verify access
+    // Resolve client: supports both user IDs and entity IDs
+    const resolved = await resolveClientId(clientId);
+
+    // Verify RM access
     if (user.role === 'rm' || user.role === 'assistant') {
-      const client = await UsersCollection.findOneAsync(clientId);
       const rmIds = UserHelpers.getEffectiveRmIds(user);
-      if (!client || !rmIds.includes(client.relationshipManagerId)) {
+      if (!rmIds.includes(resolved.relationshipManagerId)) {
         throw new Meteor.Error('not-authorized', 'You do not have access to this client');
       }
     }
@@ -3931,17 +4796,23 @@ Meteor.methods({
       return { cashBalance: null, currency: null };
     }
 
-    // Find cash holdings (asset class typically 'cash' or 'liquidity')
-    const cashHoldings = await PMSHoldingsCollection.find({
-      userId: clientId,
+    // Find cash holdings (try by userId first, then by bankId+portfolioCode for entity-based accounts)
+    const portfolioRegex = new RegExp('^' + bankAccount.accountNumber.split('-')[0]);
+    const cashQuery = {
       isActive: true,
       isLatest: true,
-      portfolioCode: { $regex: new RegExp('^' + bankAccount.accountNumber.split('-')[0]) },
+      portfolioCode: { $regex: portfolioRegex },
       $or: [
         { assetClass: { $in: ['cash', 'liquidity', 'Cash', 'Liquidity', 'CASH'] } },
         { securityName: { $regex: /cash|liquidity|compte|konto/i } }
       ]
-    }).fetchAsync();
+    };
+    // Try with userId first
+    let cashHoldings = await PMSHoldingsCollection.find({ ...cashQuery, userId: resolved.holdingsUserId }).fetchAsync();
+    // If no results, try with bankId + portfolioCode only (entity-based accounts)
+    if (cashHoldings.length === 0) {
+      cashHoldings = await PMSHoldingsCollection.find({ ...cashQuery, bankId: bankAccount.bankId }).fetchAsync();
+    }
 
     const totalCash = cashHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
     const currency = bankAccount.referenceCurrency || cashHoldings[0]?.currency || 'EUR';

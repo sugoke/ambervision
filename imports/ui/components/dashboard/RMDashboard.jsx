@@ -5,6 +5,7 @@ import PortfolioSummaryCard from './PortfolioSummaryCard.jsx';
 import BirthdaysCard from './BirthdaysCard.jsx';
 import UpcomingEventsCard from './UpcomingEventsCard.jsx';
 import MarketWatchlistCard from './MarketWatchlistCard.jsx';
+import MarketWatch from './MarketWatch.jsx';
 import RecentActivityCard from './RecentActivityCard.jsx';
 import CashMonitoringCard from './CashMonitoringCard.jsx';
 import AUMMiniChart from './AUMMiniChart.jsx';
@@ -18,8 +19,12 @@ const RMDashboard = ({ user, onNavigate }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [dailyQuote, setDailyQuote] = useState(null);
+  // Scope the saved currency preference per user so it doesn't leak across
+  // logins on a shared browser (e.g. an admin who tested USD shouldn't lock
+  // every compliance/RM user that logs in afterwards into USD).
+  const currencyStorageKey = user?._id ? `dashboardCurrency_${user._id}` : 'dashboardCurrency';
   const [dashboardCurrency, setDashboardCurrency] = useState(() => {
-    return localStorage.getItem('dashboardCurrency') || user?.referenceCurrency || 'EUR';
+    return localStorage.getItem(currencyStorageKey) || user?.referenceCurrency || 'EUR';
   });
   const [data, setData] = useState({
     alerts: [],
@@ -91,7 +96,7 @@ const RMDashboard = ({ user, onNavigate }) => {
   // Handle currency change from PortfolioSummaryCard - refresh only the summary
   const handleCurrencyChange = async (newCurrency) => {
     setDashboardCurrency(newCurrency);
-    localStorage.setItem('dashboardCurrency', newCurrency);
+    localStorage.setItem(currencyStorageKey, newCurrency);
 
     const sessionId = localStorage.getItem('sessionId');
     if (!sessionId) return;
@@ -338,6 +343,8 @@ const RMDashboard = ({ user, onNavigate }) => {
           watchlist={data.watchlist}
           onTickerClick={handleTickerClick}
         />
+
+        <MarketWatch />
 
         <RecentActivityCard
           activities={data.activity}

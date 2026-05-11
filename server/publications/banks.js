@@ -4,7 +4,8 @@
 import { Meteor } from 'meteor/meteor';
 import { BanksCollection } from '/imports/api/banks';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
-import { UsersCollection, USER_ROLES } from '/imports/api/users';
+import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
+import { ClientEntitiesCollection } from '/imports/api/clientEntities';
 import { SessionsCollection } from '/imports/api/sessions';
 
 // Publish banks for bank selection
@@ -36,15 +37,35 @@ Meteor.publish("userBankAccounts", async function (sessionId, viewAsFilter = nul
     return this.ready();
   }
 
-  const isAdmin = user.role === USER_ROLES.ADMIN || user.role === USER_ROLES.SUPERADMIN;
-  const isRM = user.role === USER_ROLES.RELATIONSHIP_MANAGER;
+  // Role groupings mirror `pmsHoldings` publication: compliance has the same
+  // visibility as admins, assistants the same as their RMs.
+  const isAdmin = user.role === USER_ROLES.ADMIN || user.role === USER_ROLES.SUPERADMIN || user.role === USER_ROLES.COMPLIANCE;
+  const isRM = user.role === USER_ROLES.RELATIONSHIP_MANAGER || user.role === USER_ROLES.ASSISTANT;
   const isClient = user.role === USER_ROLES.CLIENT;
 
   // Determine the query based on role and viewAsFilter
   let query = { isActive: true };
 
   if (viewAsFilter && (isAdmin || isRM)) {
-    if (viewAsFilter.type === 'client') {
+    if (viewAsFilter.type === 'entity') {
+      // Entity-based filter: show accounts owned by this entity
+      if (isRM) {
+        const rmIds = UserHelpers.getEffectiveRmIds(user);
+        const entity = await ClientEntitiesCollection.findOneAsync({
+          _id: viewAsFilter.id,
+          relationshipManagerId: { $in: rmIds }
+        });
+        if (!entity) {
+          return this.ready();
+        }
+      }
+      // Show accounts owned by this entity OR where entity is a beneficial owner
+      query.$or = [
+        { entityId: viewAsFilter.id },
+        { beneficialOwnerIds: viewAsFilter.id },
+        { beneficialOwnerId: viewAsFilter.id }
+      ];
+    } else if (viewAsFilter.type === 'client') {
       if (isRM) {
         const targetClient = await UsersCollection.findOneAsync({
           _id: viewAsFilter.id,
@@ -81,12 +102,26 @@ Meteor.publish("userBankAccounts", async function (sessionId, viewAsFilter = nul
   } else if (isAdmin) {
     // Admin without filter sees all
   } else if (isRM) {
+    // RM without filter: see accounts for assigned entities and legacy clients
+    const rmIds = UserHelpers.getEffectiveRmIds(user);
+    const rmEntities = await ClientEntitiesCollection.find(
+      { relationshipManagerId: { $in: rmIds }, isActive: true },
+      { fields: { _id: 1 } }
+    ).fetchAsync();
+    const entityIds = rmEntities.map(e => e._id);
+
     const assignedClients = await UsersCollection.find({
       role: USER_ROLES.CLIENT,
-      relationshipManagerId: user._id
+      relationshipManagerId: { $in: rmIds }
     }, { fields: { _id: 1 } }).fetchAsync();
     const clientIds = assignedClients.map(c => c._id);
-    query.userId = { $in: clientIds };
+
+    query.$or = [
+      ...(entityIds.length > 0 ? [{ entityId: { $in: entityIds } }] : []),
+      ...(clientIds.length > 0 ? [{ userId: { $in: clientIds } }] : []),
+      { backupRmIds: { $in: rmIds } },
+      { relationshipManagerId: { $in: rmIds } }
+    ];
   } else {
     // Client sees only their own
     query.userId = user._id;
