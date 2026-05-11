@@ -13,6 +13,7 @@ import { checkDataFreshness, formatDataDate } from '/imports/api/helpers/dataFre
 import { PMSHoldingsCollection } from '/imports/api/pmsHoldings.js';
 import { PortfolioSnapshotsCollection, PortfolioSnapshotHelpers } from '/imports/api/portfolioSnapshots.js';
 import { PMSOperationsCollection } from '/imports/api/pmsOperations.js';
+import { matchOrderToOperations } from '../methods/orderMethods.js';
 import { BanksCollection } from '/imports/api/banks.js';
 import { UsersCollection, USER_ROLES } from '/imports/api/users.js';
 import { DashboardMetricsHelpers } from '/imports/api/dashboardMetrics.js';
@@ -105,7 +106,8 @@ let cronJobs = {
   marketTickerUpdate: null,
   bankFileSync: null,
   cmbFileSync: null,  // CMB-specific sync (runs later due to late file uploads)
-  priceTrackerScrape: null  // Manual price tracker scrape for securities without EOD coverage
+  priceTrackerScrape: null,  // Manual price tracker scrape for securities without EOD coverage
+  settlementCheck: null      // Daily settlement reconciliation for executed orders
 };
 
 // Store next run times for the dashboard
@@ -143,6 +145,12 @@ let scheduleInfo = {
   priceTrackerScrape: {
     name: 'priceTrackerScrape',
     schedule: '15 9 * * 1-5', // 09:15 CET Mon-Fri (scrape manually tracked securities)
+    lastFinishedAt: null,
+    nextScheduledRun: null
+  },
+  settlementCheck: {
+    name: 'settlementCheck',
+    schedule: '30 9 * * 1-5', // 09:30 CET Mon-Fri (after all bank file syncs)
     lastFinishedAt: null,
     nextScheduledRun: null
   }
@@ -578,8 +586,14 @@ async function createConsolidatedHoldings() {
 
       holdings.forEach(pos => {
         // Key by ISIN if available, otherwise ticker, otherwise securityName
-        const key = pos.isin || pos.ticker || pos.securityName;
+        // For term deposits, append endDate to differentiate deposits with same name but different maturities
+        let key = pos.isin || pos.ticker || pos.securityName;
         if (!key) return; // Skip positions without identifier
+        if (pos.securityType === 'TERM_DEPOSIT' && pos.bankSpecificData?.instrumentDates?.endDate) {
+          const endDate = pos.bankSpecificData.instrumentDates.endDate;
+          const endDateStr = endDate instanceof Date ? endDate.toISOString().split('T')[0] : String(endDate).split('T')[0];
+          key = `${key}_${endDateStr}`;
+        }
 
         if (!consolidated[key]) {
           // First occurrence - clone the position as base
@@ -635,7 +649,13 @@ async function createConsolidatedHoldings() {
       const consolidatedPositions = Object.values(consolidated);
       if (consolidatedPositions.length > 0) {
         const bulkOps = consolidatedPositions.map(pos => {
-          pos.uniqueKey = `CONSOLIDATED_${userId}_${pos.isin || pos.ticker || pos.securityName}`;
+          let posKey = pos.isin || pos.ticker || pos.securityName;
+          if (pos.securityType === 'TERM_DEPOSIT' && pos.bankSpecificData?.instrumentDates?.endDate) {
+            const endDate = pos.bankSpecificData.instrumentDates.endDate;
+            const endDateStr = endDate instanceof Date ? endDate.toISOString().split('T')[0] : String(endDate).split('T')[0];
+            posKey = `${posKey}_${endDateStr}`;
+          }
+          pos.uniqueKey = `CONSOLIDATED_${userId}_${posKey}`;
           return { insertOne: { document: pos } };
         });
         await PMSHoldingsCollection.rawCollection().bulkWrite(bulkOps, { ordered: false });
@@ -1196,7 +1216,7 @@ async function regenerateTodaySnapshots() {
 
       if (holdings.length === 0) continue;
 
-      // Group by userId + portfolioCode
+      // Group by userId + portfolioCode (include entityId for entity architecture)
       const portfolioGroups = {};
       for (const h of holdings) {
         if (!h.userId) continue;
@@ -1204,10 +1224,15 @@ async function regenerateTodaySnapshots() {
         if (!portfolioGroups[key]) {
           portfolioGroups[key] = {
             userId: h.userId,
+            entityId: h.entityId || null,
             portfolioCode: h.portfolioCode || 'UNKNOWN',
             accountNumber: h.accountNumber || null,
             positions: []
           };
+        }
+        // Use first non-null entityId found
+        if (!portfolioGroups[key].entityId && h.entityId) {
+          portfolioGroups[key].entityId = h.entityId;
         }
         portfolioGroups[key].positions.push(h);
       }
@@ -1220,6 +1245,7 @@ async function regenerateTodaySnapshots() {
         try {
           await PortfolioSnapshotHelpers.createSnapshot({
             userId: group.userId,
+            entityId: group.entityId,
             bankId: connection.bankId,
             bankName: bank.name,
             connectionId: connection._id,
@@ -1440,6 +1466,77 @@ async function computeDashboardMetrics() {
 }
 
 /**
+ * JOB 7: Settlement Check
+ * Runs daily at 09:30 CET Mon-Fri (after bank file syncs)
+ * Checks executed orders against PMS operations to confirm settlement
+ */
+async function settlementCheckJob(triggerSource = 'cron') {
+  const logId = await CronJobLogHelpers.startJob('settlementCheck', triggerSource);
+  try {
+    const { OrdersCollection, ORDER_STATUSES } = require('../../imports/api/orders.js');
+
+    // Find all executed orders pending settlement. Includes legacy orders
+    // executed before the settlementStatus field existed (field missing is
+    // treated as equivalent to 'pending').
+    const pendingOrders = await OrdersCollection.find({
+      status: { $in: [ORDER_STATUSES.EXECUTED, ORDER_STATUSES.PARTIALLY_EXECUTED] },
+      $or: [
+        { settlementStatus: 'pending' },
+        { settlementStatus: { $exists: false } },
+        { settlementStatus: null }
+      ]
+    }).fetchAsync();
+
+    console.log(`[SETTLEMENT] Checking ${pendingOrders.length} orders pending settlement`);
+
+    let settled = 0;
+    let checked = 0;
+
+    for (const order of pendingOrders) {
+      try {
+        // Call matchOrderToOperations directly: the auth-gated
+        // `orders.batchCheckBooking` Meteor method needs a sessionId we
+        // don't have in cron context.
+        const bookingResult = await matchOrderToOperations(order);
+        checked++;
+
+        if (bookingResult && bookingResult.bookingStatus === 'confirmed') {
+          await OrdersCollection.updateAsync(order._id, {
+            $set: {
+              settlementStatus: 'settled',
+              settlementConfirmedAt: new Date(),
+              settlementCheckedAt: new Date()
+            }
+          });
+          settled++;
+          console.log(`[SETTLEMENT] Order ${order.orderReference} confirmed settled`);
+        } else {
+          await OrdersCollection.updateAsync(order._id, {
+            $set: { settlementCheckedAt: new Date() }
+          });
+        }
+      } catch (err) {
+        console.error(`[SETTLEMENT] Error checking order ${order.orderReference}:`, err.message);
+      }
+    }
+
+    const summary = `Checked ${checked}/${pendingOrders.length} orders, ${settled} confirmed settled`;
+    console.log(`[SETTLEMENT] ${summary}`);
+
+    await CronJobLogHelpers.completeJob(logId, { checked, settled, total: pendingOrders.length, summary });
+    scheduleInfo.settlementCheck.lastFinishedAt = new Date();
+    scheduleInfo.settlementCheck.nextScheduledRun = getNextRunTime(scheduleInfo.settlementCheck.schedule);
+
+    return { checked, settled };
+  } catch (error) {
+    console.error('[SETTLEMENT] Job failed:', error);
+    await CronJobLogHelpers.failJob(logId, error);
+    scheduleInfo.settlementCheck.lastFinishedAt = new Date();
+    throw error;
+  }
+}
+
+/**
  * JOB 6: Price Tracker Scrape
  * Runs daily at 09:15 CET Mon-Fri
  * Scrapes all active manually-tracked securities and records prices
@@ -1637,6 +1734,23 @@ export async function initializeCronJobs() {
 
   console.log('✓ Price Tracker Scrape scheduled for 09:15 CET Mon-Fri');
 
+  // Settlement Check — 09:30 CET Mon-Fri (after bank file syncs)
+  cronJobs.settlementCheck = cron.schedule(scheduleInfo.settlementCheck.schedule, Meteor.bindEnvironment(async () => {
+    console.log('[CRON] ========================================');
+    console.log('[CRON] Settlement Check CRON trigger fired at:', new Date().toISOString());
+    console.log('[CRON] ========================================');
+    try {
+      await settlementCheckJob();
+    } catch (error) {
+      console.error('[CRON] Settlement Check job error:', error);
+    }
+  }), {
+    scheduled: true,
+    timezone: "Europe/Paris"
+  });
+
+  console.log('✓ Settlement Check scheduled for 09:30 CET Mon-Fri');
+
   console.log('✓ Cron jobs initialized and started');
   console.log('✓ All jobs configured for Europe/Zurich timezone (CET/CEST)');
 }
@@ -1792,6 +1906,28 @@ if (Meteor.isServer) {
     },
 
     /**
+     * Manually trigger settlement check
+     */
+    async 'cronJobs.triggerSettlementCheck'(sessionId) {
+      check(sessionId, String);
+      this.unblock();
+
+      const currentUser = await Meteor.callAsync('auth.getCurrentUser', sessionId);
+      if (!currentUser || (currentUser.role !== 'admin' && currentUser.role !== 'superadmin')) {
+        throw new Meteor.Error('access-denied', 'Admin privileges required');
+      }
+
+      console.log(`[MANUAL] Settlement Check triggered by ${currentUser.email}`);
+
+      try {
+        const result = await settlementCheckJob('manual');
+        return { success: true, result };
+      } catch (error) {
+        throw new Meteor.Error('job-execution-failed', error.message);
+      }
+    },
+
+    /**
      * Get dashboard metrics cache status
      */
     async 'cronJobs.getDashboardMetricsStatus'(sessionId) {
@@ -1861,6 +1997,11 @@ if (Meteor.isServer) {
           name: scheduleInfo.priceTrackerScrape.name,
           nextScheduledRun: scheduleInfo.priceTrackerScrape.nextScheduledRun,
           lastFinishedAt: scheduleInfo.priceTrackerScrape.lastFinishedAt
+        },
+        {
+          name: scheduleInfo.settlementCheck.name,
+          nextScheduledRun: scheduleInfo.settlementCheck.nextScheduledRun,
+          lastFinishedAt: scheduleInfo.settlementCheck.lastFinishedAt
         }
       ];
     }
