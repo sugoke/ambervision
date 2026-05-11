@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import Login from './Login.jsx';
 import MainContent from './MainContent.jsx';
 import PasswordReset from './PasswordReset.jsx';
+import OAuthConsent from './OAuthConsent.jsx';
 import PrintableProductReport from './PrintableProductReport.jsx';
 import LandingPage from './LandingPage.jsx';
 import InfinePage from './InfinePage.jsx';
@@ -26,7 +27,7 @@ const MarketTicker = lazy(() => import('./MarketTicker.jsx'));
 
 const AppContent = () => {
   const { theme } = useTheme();
-  const { viewAsFilter, favorites, setFilter } = useViewAs();
+  const { viewAsFilter, favorites, setFilter, removeFavorite } = useViewAs();
   const [user, setUser] = useState(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true); // Add loading state for authentication
   const [isComponentLibraryOpen, setIsComponentLibraryOpen] = useState(false);
@@ -66,6 +67,12 @@ const AppContent = () => {
 
     const pathname = window.location.pathname;
     const hash = window.location.hash.slice(1);
+
+    // Check for OAuth consent route: /oauth-consent?req=...
+    if (pathname === '/oauth-consent') {
+      console.log('App: Found OAuth consent route');
+      return { section: 'oauth-consent' };
+    }
 
     // Check for print-report route: /print-report/:productId
     const printReportMatch = pathname.match(/^\/print-report\/([a-zA-Z0-9]+)$/);
@@ -865,8 +872,13 @@ const AppContent = () => {
           />
         )}
 
+        {/* OAuth Consent Page - Shows regardless of login state; page handles its own login prompt */}
+        {!isAuthLoading && currentSection === 'oauth-consent' && (
+          <OAuthConsent user={user} onUserChange={handleUserChange} />
+        )}
+
         {/* Login Form Section - Only show when not logged in, not loading, not on reset password page, and not in PDF mode */}
-        {!user && !isAuthLoading && currentSection !== 'reset-password' && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'infine' && (
+        {!user && !isAuthLoading && currentSection !== 'reset-password' && currentSection !== 'oauth-consent' && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'infine' && (
           <section style={{
             padding: '0 1rem',
             background: theme === 'light' ? 'transparent' : 'transparent'
@@ -886,7 +898,7 @@ const AppContent = () => {
 
 
         {/* Main Content - Protected (or PDF mode) */}
-        {(user || isPDFMode) && currentSection !== 'reset-password' && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'infine' && <MainContent user={user} currentSection={currentSection} setCurrentSection={handleSectionChange} onComponentLibraryStateChange={setIsComponentLibraryOpen} currentRoute={currentRoute} isMenuOpen={isMenuOpen} setIsMenuOpen={setIsMenuOpen} isSettingsOpen={isSettingsOpen} setIsSettingsOpen={setIsSettingsOpen} isMobile={isMobile} />}
+        {(user || isPDFMode) && currentSection !== 'reset-password' && currentSection !== 'oauth-consent' && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'infine' && <MainContent user={user} currentSection={currentSection} setCurrentSection={handleSectionChange} onComponentLibraryStateChange={setIsComponentLibraryOpen} currentRoute={currentRoute} isMenuOpen={isMenuOpen} setIsMenuOpen={setIsMenuOpen} isSettingsOpen={isSettingsOpen} setIsSettingsOpen={setIsSettingsOpen} isMobile={isMobile} />}
 
         {/* Spacer to prevent content from being hidden behind fixed bottom bar - Hide on mobile */}
         {user && !isMobile && <div style={{ height: '40px' }} />}
@@ -1090,7 +1102,7 @@ const AppContent = () => {
                     gap: '0.5rem'
                   }}>
                     {favorites.map(fav => (
-                      <button
+                      <div
                         key={fav.id}
                         onClick={() => {
                           setFilter({
@@ -1101,6 +1113,8 @@ const AppContent = () => {
                           });
                           setMobileViewAsOpen(false);
                         }}
+                        role="button"
+                        tabIndex={0}
                         style={{
                           display: 'flex',
                           alignItems: 'center',
@@ -1142,7 +1156,36 @@ const AppContent = () => {
                             </div>
                           )}
                         </div>
-                      </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeFavorite(fav.id);
+                          }}
+                          aria-label="Remove from favorites"
+                          title="Remove from favorites"
+                          style={{
+                            flexShrink: 0,
+                            width: '32px',
+                            height: '32px',
+                            borderRadius: '8px',
+                            border: 'none',
+                            background: 'transparent',
+                            color: 'var(--text-muted)',
+                            fontSize: '1.1rem',
+                            lineHeight: 1,
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            transition: 'all 0.15s ease'
+                          }}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.12)'; e.currentTarget.style.color = '#ef4444'; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+                        >
+                          ×
+                        </button>
+                      </div>
                     ))}
                   </div>
                 </div>

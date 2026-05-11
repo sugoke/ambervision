@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import UserInfoDisplay from './UserInfoDisplay.jsx';
 import UserProfileForm from './UserProfileForm.jsx';
 import BankAccountManagement from './BankAccountManagement.jsx';
+import McpApiTokens from './components/McpApiTokens.jsx';
 import { useTheme } from './ThemeContext.jsx';
 
 const ProfileManagement = ({ user, currentSection }) => {
@@ -11,6 +12,7 @@ const ProfileManagement = ({ user, currentSection }) => {
       case 'profile-information': return 'profile';
       case 'banking': return 'banking';
       case 'settings': return 'settings';
+      case 'api-access': return 'api-access';
       case 'profile': return 'profile'; // Default to first tab
       default: return 'profile';
     }
@@ -195,6 +197,12 @@ const ProfileManagement = ({ user, currentSection }) => {
       label: 'Bank Accounts',
       icon: '🏛️',
       component: <BankAccountManagement user={user} />
+    },
+    {
+      id: 'api-access',
+      label: 'API Access',
+      icon: '🔑',
+      component: <McpApiTokens />
     },
     {
       id: 'settings',

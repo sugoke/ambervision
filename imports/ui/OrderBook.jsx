@@ -8,9 +8,10 @@ import OrderModal from './components/OrderModal.jsx';
 import ValidationBlotter from './components/ValidationBlotter.jsx';
 import { useTheme } from './ThemeContext.jsx';
 import * as XLSX from 'xlsx';
-import { OrdersCollection, ORDER_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, ASSET_TYPES, PRICE_TYPES, TERMSHEET_STATUSES, OrderFormatters, OrderHelpers, getOrderHealthCheck } from '/imports/api/orders';
+import { OrdersCollection, ORDER_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, TERMSHEET_TRACE_TYPES, ASSET_TYPES, PRICE_TYPES, TERMSHEET_STATUSES, OrderFormatters, OrderHelpers, getOrderHealthCheck } from '/imports/api/orders';
 import { BanksCollection } from '/imports/api/banks';
 import { UsersCollection } from '/imports/api/users';
+import FormattedNumberInput from './components/FormattedNumberInput.jsx';
 
 /**
  * OrderBook - Main component for managing orders
@@ -40,6 +41,7 @@ const OrderBook = ({ user }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
 
   // Sorting
   const [sortField, setSortField] = useState('createdAt');
@@ -70,6 +72,10 @@ const OrderBook = ({ user }) => {
   const [limitReason, setLimitReason] = useState('');
   const [limitInstructionFile, setLimitInstructionFile] = useState(null);
 
+  // Force settle modal
+  const [forceSettleOrder, setForceSettleOrder] = useState(null);
+  const [forceSettleReason, setForceSettleReason] = useState('');
+
   // Execution form
   const [executedQuantity, setExecutedQuantity] = useState('');
   const [executedPrice, setExecutedPrice] = useState('');
@@ -84,9 +90,16 @@ const OrderBook = ({ user }) => {
   const [loadingAuditPDF, setLoadingAuditPDF] = useState(null); // orderId currently generating audit trail PDF
   const [loadingEmail, setLoadingEmail] = useState(null); // orderId currently sending email
 
-  // Email trace states
+  // Trace states
   const [uploadingTrace, setUploadingTrace] = useState(null); // traceType currently uploading
   const [traceError, setTraceError] = useState(null);
+  const [tracePhoneForms, setTracePhoneForms] = useState({}); // { [traceType]: { callTime, caller, callee, notes } }
+
+  // Termsheet evidence modal state
+  const [termsheetEvidenceModal, setTermsheetEvidenceModal] = useState(null); // { orderId, targetStatus } | null
+  const [termsheetEvidenceFile, setTermsheetEvidenceFile] = useState(null);
+  const [termsheetEvidenceError, setTermsheetEvidenceError] = useState(null);
+  const [termsheetEvidenceUploading, setTermsheetEvidenceUploading] = useState(false);
 
   // Booking check results (keyed by orderId)
   const [bookingResults, setBookingResults] = useState({});
@@ -96,7 +109,7 @@ const OrderBook = ({ user }) => {
 
   // Subscribe to banks for filter dropdown
   const { banks } = useTracker(() => {
-    const handle = Meteor.subscribe('banks');
+    Meteor.subscribe('banks');
     return {
       banks: BanksCollection.find({ isActive: true }).fetch()
     };
@@ -195,11 +208,12 @@ const OrderBook = ({ user }) => {
       return {
         'Reference': order.orderReference || '',
         'Date': order.createdAtFormatted || '',
-        'Status': order.statusLabel || order.status || '',
+        'Status': order.effectiveStatusLabel || order.statusLabel || order.status || '',
         'Booked': bookingResults[order._id] ? 'Yes' : '-',
         'Ind/Bloc': order.tradeModeLabel || '',
         'WA': order.wealthAmbassadorFormatted || '',
-        'Client': order.clientName || '',
+        'Account #': order.accountNumber || '',
+        'Account Name': order.accountName || '',
         'Bank': order.bankName || '',
         'Type': order.orderTypeLabel || '',
         'Security': order.securityName || '',
@@ -240,6 +254,24 @@ const OrderBook = ({ user }) => {
 
     const dateStr = new Date().toISOString().split('T')[0];
     XLSX.writeFile(wb, `order-book-${dateStr}.xlsx`);
+  };
+
+  const handleForceSettle = async () => {
+    if (!forceSettleOrder) return;
+    try {
+      const sessionId = getSessionId();
+      await Meteor.callAsync('orders.forceSettle', { orderId: forceSettleOrder._id || forceSettleOrder.order?._id, reason: forceSettleReason.trim() || null, sessionId });
+      setForceSettleOrder(null);
+      setForceSettleReason('');
+      loadOrders();
+      // Refresh detail modal if open
+      if (selectedOrder && detailModalOpen) {
+        const updated = await Meteor.callAsync('orders.get', { orderId: selectedOrder.order._id, sessionId });
+        setSelectedOrder(updated);
+      }
+    } catch (err) {
+      alert(err.reason || err.message || 'Failed to force settle');
+    }
   };
 
   const handleViewDetails = async (order) => {
@@ -385,21 +417,78 @@ const OrderBook = ({ user }) => {
     }
   };
 
+  // Build .eml file with PDF (and optional termsheet) attached — opens as draft in Outlook
+  const buildEmlFile = (emailData, pdfBase64, pdfFilename, termsheet) => {
+    const boundary = '----=_NextPart_' + Date.now().toString(36);
+    const extraAttachments = [];
+    if (termsheet?.content && termsheet?.name) {
+      extraAttachments.push({
+        name: termsheet.name,
+        content: termsheet.content,
+        contentType: termsheet.contentType || 'application/octet-stream'
+      });
+    }
+    const lines = [
+      `To: ${emailData.to}`,
+      emailData.cc ? `Cc: ${emailData.cc}` : null,
+      `Subject: ${emailData.subject || ''}`,
+      'X-Unsent: 1',
+      'MIME-Version: 1.0',
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/plain; charset="utf-8"',
+      'Content-Transfer-Encoding: quoted-printable',
+      '',
+      emailData.body || '',
+      '',
+      `--${boundary}`,
+      `Content-Type: application/pdf; name="${pdfFilename}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${pdfFilename}"`,
+      '',
+      ...pdfBase64.match(/.{1,76}/g),
+      ''
+    ];
+    extraAttachments.forEach(att => {
+      lines.push(
+        `--${boundary}`,
+        `Content-Type: ${att.contentType}; name="${att.name}"`,
+        'Content-Transfer-Encoding: base64',
+        `Content-Disposition: attachment; filename="${att.name}"`,
+        '',
+        ...att.content.match(/.{1,76}/g),
+        ''
+      );
+    });
+    lines.push(`--${boundary}--`);
+    return lines.filter(l => l !== null).join('\r\n');
+  };
+
   const handleSendEmail = async (order) => {
     setLoadingEmail(order._id);
     try {
       const sessionId = getSessionId();
 
-      // Send email with PDF attachment via SendPulse
-      const result = await Meteor.callAsync('orders.sendEmailWithPDF', { orderId: order._id, sessionId });
+      // Get PDF + email data from server, open mailto: for Outlook and download PDF
+      const result = await Meteor.callAsync('orders.prepareEmail', { orderId: order._id, sessionId });
 
-      if (result.success) {
-        alert(`Order sent successfully to ${result.sentTo}`);
-        loadOrders();
+      // Download .eml with PDF (and termsheet if present) attached — opens as Outlook draft with everything prefilled
+      if (result.success && result.pdfData && result.emailData) {
+        const pdfFilename = `${result.orderReference || order.orderReference || 'order'}.pdf`;
+        const emlContent = buildEmlFile(result.emailData, result.pdfData, pdfFilename, result.termsheet);
+        const blob = new Blob([emlContent], { type: 'message/rfc822' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `${result.orderReference || order.orderReference || 'order'}.eml`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(link.href);
       }
     } catch (err) {
-      console.error('Error sending email:', err);
-      alert('Failed to send email: ' + (err.reason || err.message));
+      console.error('Error preparing email:', err);
+      alert('Failed to prepare email: ' + (err.reason || err.message));
     } finally {
       setLoadingEmail(null);
     }
@@ -407,6 +496,7 @@ const OrderBook = ({ user }) => {
 
   const handleOrderCreated = (result) => {
     setNewOrderModalOpen(false);
+    loadOrders();
   };
 
   const handleSort = (field) => {
@@ -433,25 +523,99 @@ const OrderBook = ({ user }) => {
     );
   };
 
-  // Termsheet status handler - cycles: none -> sent -> signed -> none
-  const handleTermsheetToggle = async (e, order) => {
-    e.stopPropagation();
+  // Termsheet status handler - cycles: none -> sent -> signed -> none.
+  // Forward transitions (none -> sent, sent -> signed) require an evidence file
+  // and open the upload modal. The revert path (signed -> none) calls the server
+  // directly without a modal.
+  const requestTermsheetAdvance = (order) => {
     if (order.assetType !== ASSET_TYPES.STRUCTURED_PRODUCT) return;
 
     const cycle = [TERMSHEET_STATUSES.NONE, TERMSHEET_STATUSES.SENT, TERMSHEET_STATUSES.SIGNED];
     const currentIdx = cycle.indexOf(order.termsheetStatus || TERMSHEET_STATUSES.NONE);
     const nextStatus = cycle[(currentIdx + 1) % cycle.length];
 
+    if (nextStatus === TERMSHEET_STATUSES.NONE) {
+      // Revert path — no evidence required, server keeps trace files
+      (async () => {
+        try {
+          const sessionId = getSessionId();
+          await Meteor.callAsync('orders.updateTermsheetStatus', {
+            orderId: order._id,
+            termsheetStatus: nextStatus,
+            sessionId
+          });
+          if (selectedOrder?.order?._id === order._id) {
+            const result = await Meteor.callAsync('orders.get', { orderId: order._id, sessionId });
+            setSelectedOrder(result);
+          }
+          loadOrders();
+        } catch (err) {
+          console.error('Error reverting termsheet status:', err);
+        }
+      })();
+      return;
+    }
+
+    // Forward path — open modal to collect evidence
+    setTermsheetEvidenceFile(null);
+    setTermsheetEvidenceError(null);
+    setTermsheetEvidenceUploading(false);
+    setTermsheetEvidenceModal({ orderId: order._id, targetStatus: nextStatus });
+  };
+
+  const submitTermsheetEvidence = async () => {
+    if (!termsheetEvidenceModal) return;
+    const { orderId, targetStatus } = termsheetEvidenceModal;
+    const file = termsheetEvidenceFile;
+
+    if (!file) {
+      setTermsheetEvidenceError('Please select a file.');
+      return;
+    }
+
+    const ext = '.' + file.name.split('.').pop().toLowerCase();
+    if (!TERMSHEET_EVIDENCE_TYPES.includes(ext)) {
+      setTermsheetEvidenceError(`File type ${ext} is not accepted. Use: ${TERMSHEET_EVIDENCE_TYPES.join(', ')}`);
+      return;
+    }
+    if (file.size > EMAIL_TRACE_MAX_SIZE) {
+      setTermsheetEvidenceError('File exceeds 15MB limit.');
+      return;
+    }
+
+    setTermsheetEvidenceUploading(true);
+    setTermsheetEvidenceError(null);
+
     try {
+      const base64Data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
       const sessionId = getSessionId();
-      await Meteor.callAsync('orders.updateTermsheetStatus', {
-        orderId: order._id,
-        termsheetStatus: nextStatus,
+      await Meteor.callAsync('orders.advanceTermsheetWithEvidence', {
+        orderId,
+        targetStatus,
+        fileName: file.name,
+        base64Data,
+        mimeType: file.type || 'application/octet-stream',
         sessionId
       });
+
+      if (selectedOrder?.order?._id === orderId) {
+        const result = await Meteor.callAsync('orders.get', { orderId, sessionId });
+        setSelectedOrder(result);
+      }
       loadOrders();
+      setTermsheetEvidenceModal(null);
+      setTermsheetEvidenceFile(null);
     } catch (err) {
-      console.error('Error updating termsheet status:', err);
+      console.error('Error advancing termsheet status:', err);
+      setTermsheetEvidenceError(err.reason || err.message);
+    } finally {
+      setTermsheetEvidenceUploading(false);
     }
   };
 
@@ -493,9 +657,10 @@ const OrderBook = ({ user }) => {
         sessionId
       });
 
-      // Refresh order details
+      // Refresh order details and list (status may have changed)
       const result = await Meteor.callAsync('orders.get', { orderId, sessionId });
       setSelectedOrder(result);
+      loadOrders();
     } catch (err) {
       console.error('Error uploading trace:', err);
       setTraceError(err.reason || err.message);
@@ -509,9 +674,10 @@ const OrderBook = ({ user }) => {
       const sessionId = getSessionId();
       await Meteor.callAsync('orders.deleteEmailTrace', { orderId, traceId, sessionId });
 
-      // Refresh order details
+      // Refresh order details and list (status may have reverted)
       const result = await Meteor.callAsync('orders.get', { orderId, sessionId });
       setSelectedOrder(result);
+      loadOrders();
     } catch (err) {
       console.error('Error deleting trace:', err);
       setTraceError(err.reason || err.message);
@@ -530,6 +696,42 @@ const OrderBook = ({ user }) => {
       document.body.removeChild(a);
     } catch (err) {
       console.error('Error downloading trace:', err);
+    }
+  };
+
+  const handleSavePhoneTrace = async (traceType, orderId) => {
+    const form = tracePhoneForms[traceType];
+    if (!form?.callTime || !form?.caller || !form?.callee) {
+      setTraceError('Please fill in call time, caller, and callee.');
+      return;
+    }
+    try {
+      setUploadingTrace(traceType);
+      setTraceError(null);
+      const sessionId = getSessionId();
+      await Meteor.callAsync('orders.savePhoneTrace', {
+        orderId,
+        traceType,
+        phoneCallTime: new Date(form.callTime).toISOString(),
+        phoneCaller: form.caller,
+        phoneCallee: form.callee,
+        phoneNotes: form.notes || '',
+        sessionId
+      });
+      // Refresh order details and list (status may have changed)
+      const result = await Meteor.callAsync('orders.get', { orderId, sessionId });
+      setSelectedOrder(result);
+      loadOrders();
+      setTracePhoneForms(prev => {
+        const next = { ...prev };
+        delete next[traceType];
+        return next;
+      });
+    } catch (err) {
+      console.error('Error saving phone trace:', err);
+      setTraceError(err.reason || err.message);
+    } finally {
+      setUploadingTrace(null);
     }
   };
 
@@ -575,6 +777,7 @@ const OrderBook = ({ user }) => {
                 });
                 const result = await Meteor.callAsync('orders.get', { orderId, sessionId });
                 setSelectedOrder(result);
+                loadOrders();
               } catch (err) {
                 setTraceError(err.reason || err.message);
               } finally {
@@ -904,7 +1107,40 @@ const OrderBook = ({ user }) => {
             </ActionButton>
           </div>
 
-          {/* Filters */}
+          {/* Filters (collapsible) */}
+          {(() => {
+            const activeCount =
+              (searchQuery ? 1 : 0) +
+              (statusFilter !== 'all' ? 1 : 0) +
+              (bankFilter !== 'all' ? 1 : 0) +
+              (clientFilter !== 'all' ? 1 : 0) +
+              (dateFrom ? 1 : 0) +
+              (dateTo ? 1 : 0);
+            return (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '8px',
+                padding: '8px 12px', marginBottom: filtersExpanded ? '8px' : '12px',
+                borderRadius: '8px', background: 'var(--bg-secondary)',
+                border: '1px solid var(--border-color)', cursor: 'pointer'
+              }} onClick={() => setFiltersExpanded(v => !v)}>
+                <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>
+                  {filtersExpanded ? '▾' : '▸'} Search & Filters
+                </span>
+                {activeCount > 0 && (
+                  <span style={{
+                    fontSize: '11px', fontWeight: '700', color: '#fff',
+                    background: '#3b82f6', padding: '2px 8px', borderRadius: '10px'
+                  }}>
+                    {activeCount} active
+                  </span>
+                )}
+                <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'var(--text-muted)' }}>
+                  {filtersExpanded ? 'Click to collapse' : 'Click to expand'}
+                </span>
+              </div>
+            );
+          })()}
+          {filtersExpanded && (
           <div style={styles.filters}>
             <div style={styles.filterGroup}>
               <span style={styles.filterLabel}>Search</span>
@@ -1016,9 +1252,10 @@ const OrderBook = ({ user }) => {
               </ActionButton>
             </div>
           </div>
+          )}
 
           {/* Validation Blotter (four-eyes principle) */}
-          <ValidationBlotter user={user} />
+          <ValidationBlotter user={user} onOrderUpdate={loadOrders} />
 
           {/* Health Check Summary */}
           {!isLoading && orders.length > 0 && (() => {
@@ -1039,41 +1276,40 @@ const OrderBook = ({ user }) => {
 
             const isAllGood = healthStats.incomplete === 0;
             const trackable = healthStats.complete + healthStats.incomplete;
-            const barColor = isAllGood ? '#10b981' : healthStats.incomplete > 3 ? '#ef4444' : '#f59e0b';
+            const barColor = isAllGood ? '#10b981' : '#f59e0b';
 
             return (
               <div style={{
-                display: 'flex', alignItems: 'center', gap: '14px', padding: '8px 14px',
+                display: 'flex', alignItems: 'center', gap: '10px', padding: '6px 12px',
                 marginBottom: '10px', borderRadius: '8px', fontSize: '12px',
-                background: `${barColor}0d`, border: `1px solid ${barColor}33`
+                background: `${barColor}15`, border: `1px solid ${barColor}40`,
+                flexWrap: 'wrap'
               }}>
-                {/* Score badge */}
-                <div style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  minWidth: '40px', height: '28px', borderRadius: '14px',
-                  background: `${barColor}20`, fontWeight: '700', fontSize: '13px',
-                  color: barColor, flexShrink: 0
+                {!isAllGood && (
+                  <span style={{ fontSize: '14px', flexShrink: 0 }}>&#9888;</span>
+                )}
+                <span style={{
+                  fontWeight: '700', fontSize: '12px', color: barColor,
+                  padding: '2px 8px', borderRadius: '10px',
+                  background: `${barColor}25`, flexShrink: 0
                 }}>
                   {healthStats.complete}/{trackable}
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                  <span style={{ fontWeight: '600', color: barColor }}>
-                    {isAllGood
-                      ? 'All orders complete'
-                      : `${healthStats.incomplete} order${healthStats.incomplete !== 1 ? 's' : ''} missing items`
-                    }
+                </span>
+                <span style={{ fontWeight: '600', color: barColor, fontSize: '12px' }}>
+                  {isAllGood
+                    ? 'All orders complete'
+                    : `${healthStats.incomplete} order${healthStats.incomplete !== 1 ? 's' : ''} missing items`
+                  }
+                </span>
+                {topMissing.map(([name, count]) => (
+                  <span key={name} style={{
+                    padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600',
+                    background: `${barColor}18`, color: barColor,
+                    border: `1px solid ${barColor}30`
+                  }}>
+                    {name}: {count}
                   </span>
-                  {topMissing.length > 0 && (
-                    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                      {topMissing.map(([name, count]) => (
-                        <span key={name} style={{ color: 'var(--text-secondary)', fontSize: '11px' }}>
-                          {name}: <strong style={{ color: barColor }}>{count}</strong>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                ))}
               </div>
             );
           })()}
@@ -1102,7 +1338,8 @@ const OrderBook = ({ user }) => {
                       <SortableHeader field="status" label="Status" />
                       <SortableHeader field="bulkOrderGroupId" label="Ind/Bloc" />
                       <SortableHeader field="wealthAdvisor" label="WA" />
-                      <SortableHeader field="clientName" label="Client" />
+                      <SortableHeader field="accountNumber" label="Account #" />
+                      <SortableHeader field="accountName" label="Account Name" />
                       <SortableHeader field="bankName" label="Bank" />
                       <SortableHeader field="orderType" label="Type" />
                       <SortableHeader field="securityName" label="Security" />
@@ -1145,9 +1382,33 @@ const OrderBook = ({ user }) => {
                           )}
                         </td>
                         <td style={styles.td} title={order.createdAtFull}>{order.createdAtFormatted}</td>
-                        <td style={styles.td}>
-                          <span style={styles.statusBadge(order.status)}>
-                            {order.statusLabel}
+                        <td style={styles.td} onClick={order.canForceSettle ? (e) => e.stopPropagation() : undefined}>
+                          <span
+                            style={{
+                              display: 'inline-block',
+                              padding: '4px 10px',
+                              borderRadius: '12px',
+                              fontSize: '11px',
+                              fontWeight: '600',
+                              background: `${order.effectiveStatusColor || OrderFormatters.getStatusColor(order.status)}20`,
+                              color: order.effectiveStatusColor || OrderFormatters.getStatusColor(order.status),
+                              cursor: order.canForceSettle ? 'pointer' : 'default',
+                              textDecoration: order.canForceSettle ? 'underline dotted' : 'none'
+                            }}
+                            title={
+                              order.settlementStatus === 'forced'
+                                ? `Forced${order.settlementForcedReason ? ': ' + order.settlementForcedReason : ''}`
+                                : order.settlementStatus === 'settled' && order.settlementConfirmedAt
+                                  ? `Confirmed ${new Date(order.settlementConfirmedAt).toLocaleDateString()}`
+                                  : order.canForceSettle
+                                    ? 'Click to force settle'
+                                    : undefined
+                            }
+                            onClick={order.canForceSettle
+                              ? () => setForceSettleOrder({ _id: order._id, orderReference: order.orderReference, securityName: order.securityName })
+                              : undefined}
+                          >
+                            {order.effectiveStatusLabel || order.statusLabel}
                           </span>
                         </td>
                         <td style={styles.td}>
@@ -1164,8 +1425,37 @@ const OrderBook = ({ user }) => {
                             {order.wealthAmbassadorFormatted || ''}
                           </span>
                         </td>
-                        <td style={styles.td}>{order.clientName}</td>
-                        <td style={styles.td}>{order.bankName}</td>
+                        <td style={styles.td}>
+                          <div style={{ fontWeight: '500', whiteSpace: 'nowrap' }}>{order.accountNumber}</div>
+                        </td>
+                        <td style={styles.td}>
+                          <div
+                            title={order.accountName}
+                            style={{
+                              fontSize: '12px',
+                              color: 'var(--text-secondary)',
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              maxWidth: '160px'
+                            }}
+                          >
+                            {order.accountName || ''}
+                          </div>
+                        </td>
+                        <td style={styles.td}>
+                          <div
+                            title={order.bankName}
+                            style={{
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              maxWidth: '140px'
+                            }}
+                          >
+                            {order.bankName}
+                          </div>
+                        </td>
                         <td style={styles.td}>
                           <span style={styles.orderTypeBadge(order.orderType)}>
                             {order.orderType}
@@ -1216,10 +1506,10 @@ const OrderBook = ({ user }) => {
                                 cursor: 'pointer',
                                 userSelect: 'none'
                               }}
-                              onClick={(e) => handleTermsheetToggle(e, order)}
+                              onClick={(e) => { e.stopPropagation(); requestTermsheetAdvance(order); }}
                               title={order.termsheetUpdatedByFormatted
-                                ? `${order.termsheetUpdatedByFormatted} — ${order.termsheetUpdatedAtFormatted}\nClick to cycle: None → Sent → Signed`
-                                : 'Click to cycle: None → Sent → Signed'}
+                                ? `${order.termsheetUpdatedByFormatted} — ${order.termsheetUpdatedAtFormatted}\nClick to cycle: None → Sent → Signed (file required)`
+                                : 'Click to cycle: None → Sent → Signed (file required)'}
                             >
                               {order.termsheetLabel || 'None'}
                             </span>
@@ -1229,7 +1519,8 @@ const OrderBook = ({ user }) => {
                         </td>
                         <td style={styles.td}>
                           {(() => {
-                            const traceCount = (order.emailTraces || []).length;
+                            const validTypes = new Set(Object.values(EMAIL_TRACE_TYPES));
+                            const traceCount = (order.emailTraces || []).filter(t => validTypes.has(t.traceType) && !TERMSHEET_TRACE_TYPES.has(t.traceType)).length;
                             const maxTraces = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 4 : 3;
                             const color = traceCount === maxTraces ? '#10b981' : traceCount > 0 ? '#f59e0b' : 'var(--text-muted)';
                             return (
@@ -1334,29 +1625,25 @@ const OrderBook = ({ user }) => {
                     Modify
                   </ActionButton>
                 )}
-                {selectedOrder.order.status !== ORDER_STATUSES.PENDING_VALIDATION && (
-                  <ActionButton
-                    variant="success"
-                    size="small"
-                    onClick={() => {
-                      setDetailModalOpen(false);
-                      setExecutedQuantity(selectedOrder.order.quantity?.toString() || '');
-                      setExecuteModalOpen(true);
-                    }}
-                  >
-                    Mark Executed
-                  </ActionButton>
-                )}
-                <ActionButton
-                  variant="danger"
-                  size="small"
-                  onClick={() => {
-                    setDetailModalOpen(false);
-                    setCancelModalOpen(true);
-                  }}
-                >
-                  Cancel
-                </ActionButton>
+                {selectedOrder.order.status !== ORDER_STATUSES.PENDING_VALIDATION && (() => {
+                  const needsTermsheet = selectedOrder.order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT
+                    && selectedOrder.order.termsheetStatus !== TERMSHEET_STATUSES.SIGNED;
+                  return (
+                    <ActionButton
+                      variant="success"
+                      size="small"
+                      disabled={needsTermsheet}
+                      title={needsTermsheet ? 'Upload the final signed termsheet before marking this structured product as executed' : undefined}
+                      onClick={() => {
+                        setDetailModalOpen(false);
+                        setExecutedQuantity(selectedOrder.order.quantity?.toString() || '');
+                        setExecuteModalOpen(true);
+                      }}
+                    >
+                      Mark Executed
+                    </ActionButton>
+                  );
+                })()}
                 {(selectedOrder.order.status === ORDER_STATUSES.PENDING || selectedOrder.order.status === ORDER_STATUSES.PENDING_VALIDATION) && (
                   <ActionButton
                     variant="danger"
@@ -1523,23 +1810,10 @@ const OrderBook = ({ user }) => {
                         cursor: 'pointer',
                         userSelect: 'none'
                       }}
-                      onClick={() => {
-                        const cycle = [TERMSHEET_STATUSES.NONE, TERMSHEET_STATUSES.SENT, TERMSHEET_STATUSES.SIGNED];
-                        const currentIdx = cycle.indexOf(selectedOrder.order.termsheetStatus || TERMSHEET_STATUSES.NONE);
-                        const nextStatus = cycle[(currentIdx + 1) % cycle.length];
-                        const sessionId = getSessionId();
-                        Meteor.callAsync('orders.updateTermsheetStatus', {
-                          orderId: selectedOrder.order._id,
-                          termsheetStatus: nextStatus,
-                          sessionId
-                        }).then(() => {
-                          handleViewDetails(selectedOrder.order);
-                          loadOrders();
-                        });
-                      }}
+                      onClick={() => requestTermsheetAdvance(selectedOrder.order)}
                       title={selectedOrder.order.termsheetUpdatedByFormatted
-                        ? `${selectedOrder.order.termsheetUpdatedByFormatted} — ${selectedOrder.order.termsheetUpdatedAtFormatted}\nClick to cycle: None → Sent → Signed`
-                        : 'Click to cycle: None → Sent → Signed'}
+                        ? `${selectedOrder.order.termsheetUpdatedByFormatted} — ${selectedOrder.order.termsheetUpdatedAtFormatted}\nClick to cycle: None → Sent → Signed (file required)`
+                        : 'Click to cycle: None → Sent → Signed (file required)'}
                     >
                       {selectedOrder.order.termsheetLabel || 'None'}
                     </span>
@@ -1548,6 +1822,33 @@ const OrderBook = ({ user }) => {
                         by {selectedOrder.order.termsheetUpdatedByFormatted}, {selectedOrder.order.termsheetUpdatedAtFormatted}
                       </span>
                     )}
+                  </span>
+                </div>
+              )}
+              {selectedOrder.order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT &&
+                (selectedOrder.order.termsheetSentTrace || selectedOrder.order.termsheetSignedTrace) && (
+                <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Evidence</span>
+                  <span style={{ ...styles.detailValue, display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    {[
+                      { label: 'Sent', trace: selectedOrder.order.termsheetSentTrace },
+                      { label: 'Signed', trace: selectedOrder.order.termsheetSignedTrace }
+                    ].filter(item => item.trace).map(item => (
+                      <span key={item.label} style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                        <strong style={{ color: 'var(--text-primary)' }}>{item.label}:</strong>{' '}
+                        <a
+                          href="#"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            handleDownloadTrace(selectedOrder.order._id, item.trace._id, item.trace.fileName);
+                          }}
+                          style={{ color: '#0ea5e9', textDecoration: 'underline' }}
+                        >
+                          {item.trace.fileName}
+                        </a>
+                        {' '}— uploaded {OrderFormatters.formatDateTime(item.trace.uploadedAt)}
+                      </span>
+                    ))}
                   </span>
                 </div>
               )}
@@ -1604,7 +1905,7 @@ const OrderBook = ({ user }) => {
               <div style={styles.detailRow}>
                 <span style={styles.detailLabel}>Client</span>
                 <span style={styles.detailValue}>
-                  {selectedOrder.client ? `${selectedOrder.client.firstName} ${selectedOrder.client.lastName}` : 'N/A'}
+                  {selectedOrder.client ? (selectedOrder.client.companyName || `${selectedOrder.client.firstName || ''} ${selectedOrder.client.lastName || ''}`.trim() || 'N/A') : (selectedOrder.order?.clientName || 'N/A')}
                 </span>
               </div>
               <div style={styles.detailRow}>
@@ -1618,7 +1919,7 @@ const OrderBook = ({ user }) => {
               {selectedOrder.order.wealthAmbassador && (
                 <div style={styles.detailRow}>
                   <span style={styles.detailLabel}>Wealth Ambassador</span>
-                  <span style={styles.detailValue}>{selectedOrder.order.wealthAmbassador}</span>
+                  <span style={styles.detailValue}>{selectedOrder.order.createdByName || selectedOrder.order.wealthAmbassador}</span>
                 </div>
               )}
             </div>
@@ -1635,6 +1936,41 @@ const OrderBook = ({ user }) => {
                   <span style={styles.detailLabel}>Sent To</span>
                   <span style={styles.detailValue}>{selectedOrder.order.sentTo}</span>
                 </div>
+              </div>
+            )}
+
+            {/* Settlement Status */}
+            {selectedOrder.order.settlementStatus && (
+              <div style={styles.detailSection}>
+                <div style={styles.detailTitle}>Settlement</div>
+                <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Status</span>
+                  <span style={{ ...styles.detailValue, fontWeight: '600', color: selectedOrder.order.settlementStatus === 'settled' ? '#10b981' : selectedOrder.order.settlementStatus === 'forced' ? '#6366f1' : '#f59e0b' }}>
+                    {selectedOrder.order.settlementStatus === 'settled' ? 'Settled' : selectedOrder.order.settlementStatus === 'forced' ? 'Forced' : 'Pending'}
+                  </span>
+                </div>
+                {selectedOrder.order.settlementConfirmedAt && (
+                  <div style={styles.detailRow}>
+                    <span style={styles.detailLabel}>Confirmed</span>
+                    <span style={styles.detailValue}>{new Date(selectedOrder.order.settlementConfirmedAt).toLocaleString()}</span>
+                  </div>
+                )}
+                {selectedOrder.order.settlementForcedReason && (
+                  <div style={styles.detailRow}>
+                    <span style={styles.detailLabel}>Reason</span>
+                    <span style={styles.detailValue}>{selectedOrder.order.settlementForcedReason}</span>
+                  </div>
+                )}
+              </div>
+            )}
+            {(selectedOrder.order.status === 'executed' || selectedOrder.order.status === 'partially_executed') && selectedOrder.order.settlementStatus !== 'settled' && selectedOrder.order.settlementStatus !== 'forced' && (
+              <div style={{ marginBottom: '16px' }}>
+                <button
+                  onClick={() => setForceSettleOrder({ _id: selectedOrder.order._id, orderReference: selectedOrder.order.orderReference, securityName: selectedOrder.order.securityName })}
+                  style={{ padding: '8px 16px', background: 'rgba(99, 102, 241, 0.1)', border: '1px solid rgba(99, 102, 241, 0.3)', borderRadius: '6px', color: '#6366f1', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
+                >
+                  Force Settle
+                </button>
               </div>
             )}
 
@@ -1766,7 +2102,7 @@ const OrderBook = ({ user }) => {
                       {op.price != null && (
                         <div style={styles.detailRow}>
                           <span style={styles.detailLabel}>Price</span>
-                          <span style={styles.detailValue}>{op.price}</span>
+                          <span style={styles.detailValue}>{Number(op.price).toFixed(4)}</span>
                         </div>
                       )}
                       {op.grossAmount != null && (
@@ -1824,9 +2160,9 @@ const OrderBook = ({ user }) => {
               );
             })()}
 
-            {/* Email Traces Section */}
+            {/* Traces Section */}
             <div style={styles.detailSection}>
-              <div style={styles.detailTitle}>Email Traces</div>
+              <div style={styles.detailTitle}>Traces</div>
               <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
                 {Object.values(EMAIL_TRACE_TYPES)
                   .filter(traceType => traceType !== EMAIL_TRACE_TYPES.ORDER_TO_ISSUER || selectedOrder.order.assetType === 'structured_product')
@@ -1834,13 +2170,14 @@ const OrderBook = ({ user }) => {
                   const traces = selectedOrder.order.emailTraces || [];
                   const trace = traces.find(t => t.traceType === traceType);
                   const isUploading = uploadingTrace === traceType;
+                  const isPhoneMode = !!tracePhoneForms[traceType];
 
                   return (
                     <div
                       key={traceType}
                       style={{
                         flex: '1 1 0',
-                        minWidth: '160px',
+                        minWidth: '200px',
                         border: trace ? '2px solid #10b981' : '2px dashed var(--border-color)',
                         borderRadius: '8px',
                         padding: '12px',
@@ -1851,101 +2188,168 @@ const OrderBook = ({ user }) => {
                         opacity: isUploading ? 0.6 : 1
                       }}
                       onDragOver={(e) => {
+                        if (isPhoneMode) return;
                         e.preventDefault();
                         e.stopPropagation();
                         e.currentTarget.style.borderColor = '#0ea5e9';
                         e.currentTarget.style.background = 'rgba(14, 165, 233, 0.08)';
                       }}
                       onDragLeave={(e) => {
+                        if (isPhoneMode) return;
                         e.preventDefault();
                         e.stopPropagation();
                         e.currentTarget.style.borderColor = trace ? '#10b981' : 'var(--border-color)';
                         e.currentTarget.style.background = trace ? 'rgba(16, 185, 129, 0.05)' : 'var(--bg-primary)';
                       }}
-                      onDrop={(e) => handleDropTrace(e, traceType, selectedOrder.order._id)}
+                      onDrop={(e) => {
+                        if (isPhoneMode) { e.preventDefault(); return; }
+                        handleDropTrace(e, traceType, selectedOrder.order._id);
+                      }}
                     >
                       <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
                         {EMAIL_TRACE_LABELS[traceType]}
                       </div>
 
                       {isUploading ? (
-                        <div style={{ fontSize: '12px', color: '#0ea5e9' }}>Uploading...</div>
+                        <div style={{ fontSize: '12px', color: '#0ea5e9' }}>Saving...</div>
                       ) : trace ? (
-                        <div>
-                          <div style={{ fontSize: '18px', marginBottom: '4px', color: '#10b981' }}>&#10003;</div>
-                          <div style={{ fontSize: '11px', color: 'var(--text-primary)', wordBreak: 'break-all', marginBottom: '6px' }}>
-                            {trace.fileName}
+                        trace.traceMode === 'phone' ? (
+                          /* Phone trace completed */
+                          <div>
+                            <div style={{ fontSize: '18px', marginBottom: '4px', color: '#10b981' }}>&#9742; &#10003;</div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-primary)', marginBottom: '2px' }}>
+                              {trace.phoneCaller} &rarr; {trace.phoneCallee}
+                            </div>
+                            <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '2px' }}>
+                              {new Date(trace.phoneCallTime).toLocaleString()}
+                            </div>
+                            {trace.phoneNotes && (
+                              <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '6px', fontStyle: 'italic' }}>
+                                {trace.phoneNotes}
+                              </div>
+                            )}
+                            <div style={{ display: 'flex', gap: '4px', justifyContent: 'center' }}>
+                              <button
+                                style={{ padding: '3px 8px', fontSize: '10px', border: '1px solid #ef4444', borderRadius: '4px', background: 'transparent', color: '#ef4444', cursor: 'pointer' }}
+                                onClick={(e) => { e.stopPropagation(); handleDeleteTrace(selectedOrder.order._id, trace._id); }}
+                              >
+                                Remove
+                              </button>
+                            </div>
                           </div>
-                          <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '8px' }}>
-                            {new Date(trace.uploadedAt).toLocaleDateString()}
+                        ) : (
+                          /* File trace completed */
+                          <div>
+                            <div style={{ fontSize: '18px', marginBottom: '4px', color: '#10b981' }}>&#10003;</div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-primary)', wordBreak: 'break-all', marginBottom: '6px' }}>
+                              {trace.fileName}
+                            </div>
+                            <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                              {new Date(trace.uploadedAt).toLocaleDateString()}
+                            </div>
+                            <div style={{ display: 'flex', gap: '4px', justifyContent: 'center' }}>
+                              <button
+                                style={{ padding: '3px 8px', fontSize: '10px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-secondary)', cursor: 'pointer' }}
+                                onClick={(e) => { e.stopPropagation(); handleDownloadTrace(selectedOrder.order._id, trace._id, trace.fileName); }}
+                              >
+                                Download
+                              </button>
+                              <button
+                                style={{ padding: '3px 8px', fontSize: '10px', border: '1px solid #ef4444', borderRadius: '4px', background: 'transparent', color: '#ef4444', cursor: 'pointer' }}
+                                onClick={(e) => { e.stopPropagation(); handleDeleteTrace(selectedOrder.order._id, trace._id); }}
+                              >
+                                Remove
+                              </button>
+                            </div>
                           </div>
-                          <div style={{ display: 'flex', gap: '4px', justifyContent: 'center' }}>
-                            <button
-                              style={{
-                                padding: '3px 8px',
-                                fontSize: '10px',
-                                border: '1px solid var(--border-color)',
-                                borderRadius: '4px',
-                                background: 'var(--bg-secondary)',
-                                color: 'var(--text-secondary)',
-                                cursor: 'pointer'
-                              }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDownloadTrace(selectedOrder.order._id, trace._id, trace.fileName);
-                              }}
-                            >
-                              Download
-                            </button>
-                            <button
-                              style={{
-                                padding: '3px 8px',
-                                fontSize: '10px',
-                                border: '1px solid #ef4444',
-                                borderRadius: '4px',
-                                background: 'transparent',
-                                color: '#ef4444',
-                                cursor: 'pointer'
-                              }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteTrace(selectedOrder.order._id, trace._id);
-                              }}
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        </div>
+                        )
                       ) : (
+                        /* Empty state with file/phone toggle */
                         <div>
-                          <div style={{ fontSize: '22px', marginBottom: '4px', opacity: 0.3 }}>&#128233;</div>
-                          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '6px' }}>
-                            Drop .msg file here
-                          </div>
-                          <label style={{
-                            padding: '4px 14px',
-                            fontSize: '11px',
-                            fontWeight: '500',
-                            border: '1px solid #0ea5e9',
-                            borderRadius: '4px',
-                            background: 'rgba(14, 165, 233, 0.1)',
-                            color: '#0ea5e9',
-                            cursor: 'pointer',
-                            display: 'inline-block'
-                          }}>
-                            Browse
-                            <input
-                              type="file"
-                              accept=".msg,.eml,.pdf,.jpg,.jpeg,.png,.gif,.html"
-                              style={{ display: 'none' }}
-                              onChange={(e) => {
-                                if (e.target.files && e.target.files.length > 0) {
-                                  handleTraceFile(e.target.files[0], traceType, selectedOrder.order._id);
-                                  e.target.value = '';
-                                }
+                          <div style={{ display: 'flex', justifyContent: 'center', gap: '4px', marginBottom: '8px' }}>
+                            <button
+                              onClick={() => setTracePhoneForms(prev => { const n = {...prev}; delete n[traceType]; return n; })}
+                              style={{
+                                padding: '2px 10px', fontSize: '10px', borderRadius: '4px', border: 'none', cursor: 'pointer',
+                                background: !isPhoneMode ? '#0ea5e9' : 'var(--bg-secondary)',
+                                color: !isPhoneMode ? '#fff' : 'var(--text-secondary)'
                               }}
-                            />
-                          </label>
+                            >File</button>
+                            <button
+                              onClick={() => {
+                                const now = new Date();
+                                const pad = (n) => String(n).padStart(2, '0');
+                                const defaultTime = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+                                setTracePhoneForms(prev => ({
+                                  ...prev, [traceType]: prev[traceType] || { callTime: defaultTime, caller: '', callee: '', notes: '' }
+                                }));
+                              }}
+                              style={{
+                                padding: '2px 10px', fontSize: '10px', borderRadius: '4px', border: 'none', cursor: 'pointer',
+                                background: isPhoneMode ? '#0ea5e9' : 'var(--bg-secondary)',
+                                color: isPhoneMode ? '#fff' : 'var(--text-secondary)'
+                              }}
+                            >Phone</button>
+                          </div>
+
+                          {isPhoneMode ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', textAlign: 'left' }}>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '9px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '2px' }}>Call Time</label>
+                                <input type="datetime-local" value={tracePhoneForms[traceType]?.callTime || ''}
+                                  onChange={e => { const val = e.target.value; setTracePhoneForms(prev => ({...prev, [traceType]: {...prev[traceType], callTime: val}})); }}
+                                  style={{ width: '100%', padding: '4px 6px', fontSize: '11px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', boxSizing: 'border-box' }} />
+                              </div>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '9px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '2px' }}>Caller</label>
+                                <input placeholder="Who called" value={tracePhoneForms[traceType]?.caller || ''}
+                                  onChange={e => { const val = e.target.value; setTracePhoneForms(prev => ({...prev, [traceType]: {...prev[traceType], caller: val}})); }}
+                                  style={{ width: '100%', padding: '4px 6px', fontSize: '11px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', boxSizing: 'border-box' }} />
+                              </div>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '9px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '2px' }}>Callee</label>
+                                <input placeholder="Who was called" value={tracePhoneForms[traceType]?.callee || ''}
+                                  onChange={e => { const val = e.target.value; setTracePhoneForms(prev => ({...prev, [traceType]: {...prev[traceType], callee: val}})); }}
+                                  style={{ width: '100%', padding: '4px 6px', fontSize: '11px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', boxSizing: 'border-box' }} />
+                              </div>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '9px', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '2px' }}>Notes</label>
+                                <input placeholder="Optional notes" value={tracePhoneForms[traceType]?.notes || ''}
+                                  onChange={e => { const val = e.target.value; setTracePhoneForms(prev => ({...prev, [traceType]: {...prev[traceType], notes: val}})); }}
+                                  style={{ width: '100%', padding: '4px 6px', fontSize: '11px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', boxSizing: 'border-box' }} />
+                              </div>
+                              <button
+                                onClick={() => handleSavePhoneTrace(traceType, selectedOrder.order._id)}
+                                style={{ marginTop: '4px', padding: '5px', fontSize: '11px', fontWeight: '600', background: '#10b981', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+                              >Save</button>
+                            </div>
+                          ) : (
+                            <div>
+                              <div style={{ fontSize: '22px', marginBottom: '4px', opacity: 0.3 }}>&#128233;</div>
+                              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '6px' }}>
+                                Drop file here
+                              </div>
+                              <label style={{
+                                padding: '4px 14px', fontSize: '11px', fontWeight: '500',
+                                border: '1px solid #0ea5e9', borderRadius: '4px',
+                                background: 'rgba(14, 165, 233, 0.1)', color: '#0ea5e9',
+                                cursor: 'pointer', display: 'inline-block'
+                              }}>
+                                Browse
+                                <input
+                                  type="file"
+                                  accept=".msg,.eml,.pdf,.jpg,.jpeg,.png,.gif,.html"
+                                  style={{ display: 'none' }}
+                                  onChange={(e) => {
+                                    if (e.target.files && e.target.files.length > 0) {
+                                      handleTraceFile(e.target.files[0], traceType, selectedOrder.order._id);
+                                      e.target.value = '';
+                                    }
+                                  }}
+                                />
+                              </label>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -2056,8 +2460,7 @@ const OrderBook = ({ user }) => {
           <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
             Executed Quantity *
           </label>
-          <input
-            type="number"
+          <FormattedNumberInput
             style={{
               width: '100%',
               padding: '10px 12px',
@@ -2069,15 +2472,14 @@ const OrderBook = ({ user }) => {
             }}
             value={executedQuantity}
             onChange={(e) => setExecutedQuantity(e.target.value)}
-            min="0"
+            maxDecimals={0}
           />
         </div>
         <div style={{ marginBottom: '16px' }}>
           <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
             Executed Price (Optional)
           </label>
-          <input
-            type="number"
+          <FormattedNumberInput
             style={{
               width: '100%',
               padding: '10px 12px',
@@ -2089,8 +2491,7 @@ const OrderBook = ({ user }) => {
             }}
             value={executedPrice}
             onChange={(e) => setExecutedPrice(e.target.value)}
-            min="0"
-            step="0.01"
+            maxDecimals={2}
           />
         </div>
         <div style={{ marginBottom: '16px' }}>
@@ -2158,8 +2559,7 @@ const OrderBook = ({ user }) => {
               <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
                 Quantity *
               </label>
-              <input
-                type="number"
+              <FormattedNumberInput
                 style={{
                   width: '100%',
                   padding: '10px 12px',
@@ -2171,7 +2571,7 @@ const OrderBook = ({ user }) => {
                 }}
                 value={editQuantity}
                 onChange={(e) => setEditQuantity(e.target.value)}
-                min="0"
+                maxDecimals={0}
               />
             </div>
             <div style={{ marginBottom: '16px' }}>
@@ -2202,8 +2602,7 @@ const OrderBook = ({ user }) => {
                 <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
                   Limit Price
                 </label>
-                <input
-                  type="number"
+                <FormattedNumberInput
                   style={{
                     width: '100%',
                     padding: '10px 12px',
@@ -2215,8 +2614,7 @@ const OrderBook = ({ user }) => {
                   }}
                   value={editLimitPrice}
                   onChange={(e) => setEditLimitPrice(e.target.value)}
-                  min="0"
-                  step="0.01"
+                  maxDecimals={2}
                 />
               </div>
             )}
@@ -2354,8 +2752,7 @@ const OrderBook = ({ user }) => {
                   <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
                     Limit Price
                   </label>
-                  <input
-                    type="number"
+                  <FormattedNumberInput
                     style={{
                       width: '100%', padding: '10px 12px',
                       border: '1px solid var(--border-color)', borderRadius: '6px',
@@ -2363,7 +2760,7 @@ const OrderBook = ({ user }) => {
                     }}
                     value={limitNewPrice}
                     onChange={(e) => setLimitNewPrice(e.target.value)}
-                    min="0" step="0.000001"
+                    maxDecimals={6}
                   />
                 </div>
               )}
@@ -2371,8 +2768,7 @@ const OrderBook = ({ user }) => {
                 <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500', color: '#ef4444' }}>
                   Stop Loss
                 </label>
-                <input
-                  type="number"
+                <FormattedNumberInput
                   style={{
                     width: '100%', padding: '10px 12px',
                     border: '1px solid var(--border-color)', borderRadius: '6px',
@@ -2381,15 +2777,14 @@ const OrderBook = ({ user }) => {
                   value={limitNewStopLoss}
                   onChange={(e) => setLimitNewStopLoss(e.target.value)}
                   placeholder="Optional"
-                  min="0" step="0.000001"
+                  maxDecimals={6}
                 />
               </div>
               <div style={{ flex: 1 }}>
                 <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500', color: '#10b981' }}>
                   Take Profit
                 </label>
-                <input
-                  type="number"
+                <FormattedNumberInput
                   style={{
                     width: '100%', padding: '10px 12px',
                     border: '1px solid var(--border-color)', borderRadius: '6px',
@@ -2398,7 +2793,7 @@ const OrderBook = ({ user }) => {
                   value={limitNewTakeProfit}
                   onChange={(e) => setLimitNewTakeProfit(e.target.value)}
                   placeholder="Optional"
-                  min="0" step="0.000001"
+                  maxDecimals={6}
                 />
               </div>
             </div>
@@ -2490,6 +2885,172 @@ const OrderBook = ({ user }) => {
               </div>
             )}
           </>
+        )}
+      </Modal>
+
+      {/* Force Settle Modal */}
+      <Modal
+        isOpen={!!forceSettleOrder}
+        onClose={() => { setForceSettleOrder(null); setForceSettleReason(''); }}
+        title={`Force Settle ${forceSettleOrder?.orderReference || ''}`}
+        size="small"
+        footer={
+          <>
+            <ActionButton variant="secondary" onClick={() => { setForceSettleOrder(null); setForceSettleReason(''); }}>
+              Cancel
+            </ActionButton>
+            <ActionButton variant="primary" onClick={handleForceSettle}>
+              Confirm Settlement
+            </ActionButton>
+          </>
+        }
+      >
+        <p style={{ marginBottom: '16px', color: 'var(--text-secondary)', fontSize: '13px' }}>
+          Manually mark <strong>{forceSettleOrder?.securityName || 'this order'}</strong> as settled. Use this for edge cases where the automatic settlement check cannot confirm.
+        </p>
+        <div style={{ marginBottom: '16px' }}>
+          <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
+            Reason (Optional)
+          </label>
+          <textarea
+            style={{
+              width: '100%', padding: '10px 12px',
+              border: '1px solid var(--border-color)', borderRadius: '6px',
+              fontSize: '13px', background: 'var(--bg-primary)', color: 'var(--text-primary)',
+              minHeight: '80px', resize: 'vertical', boxSizing: 'border-box'
+            }}
+            value={forceSettleReason}
+            onChange={(e) => setForceSettleReason(e.target.value)}
+            placeholder="e.g. Confirmed with bank via phone, settlement visible on next statement..."
+          />
+        </div>
+      </Modal>
+
+      {/* Termsheet Evidence Modal */}
+      <Modal
+        isOpen={!!termsheetEvidenceModal}
+        onClose={() => {
+          if (termsheetEvidenceUploading) return;
+          setTermsheetEvidenceModal(null);
+          setTermsheetEvidenceFile(null);
+          setTermsheetEvidenceError(null);
+        }}
+        title={termsheetEvidenceModal
+          ? `Mark termsheet as ${termsheetEvidenceModal.targetStatus} — upload evidence`
+          : 'Termsheet evidence'}
+        size="small"
+        footer={
+          <>
+            <ActionButton
+              variant="secondary"
+              onClick={() => {
+                setTermsheetEvidenceModal(null);
+                setTermsheetEvidenceFile(null);
+                setTermsheetEvidenceError(null);
+              }}
+              disabled={termsheetEvidenceUploading}
+            >
+              Cancel
+            </ActionButton>
+            <ActionButton
+              variant="primary"
+              onClick={submitTermsheetEvidence}
+              disabled={!termsheetEvidenceFile || termsheetEvidenceUploading}
+            >
+              {termsheetEvidenceUploading ? 'Uploading…' : 'Confirm & advance'}
+            </ActionButton>
+          </>
+        }
+      >
+        <p style={{ marginBottom: '12px', color: 'var(--text-secondary)', fontSize: '13px' }}>
+          {termsheetEvidenceModal?.targetStatus === TERMSHEET_STATUSES.SIGNED
+            ? 'Attach the signed termsheet (PDF) returned by the client.'
+            : 'Attach the email sent to the client (.eml or .msg) or a PDF of the termsheet that was sent.'}
+        </p>
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (termsheetEvidenceUploading) return;
+            e.currentTarget.style.borderColor = '#0ea5e9';
+            e.currentTarget.style.background = 'rgba(14, 165, 233, 0.05)';
+          }}
+          onDragLeave={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.currentTarget.style.borderColor = 'var(--border-color)';
+            e.currentTarget.style.background = 'var(--bg-primary)';
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.currentTarget.style.borderColor = 'var(--border-color)';
+            e.currentTarget.style.background = 'var(--bg-primary)';
+            if (termsheetEvidenceUploading) return;
+            setTermsheetEvidenceError(null);
+
+            // Standard file drop
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+              setTermsheetEvidenceFile(e.dataTransfer.files[0]);
+              return;
+            }
+
+            // Outlook-style drag (dataTransfer.items)
+            if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+              for (const item of e.dataTransfer.items) {
+                if (item.kind === 'file') {
+                  const file = item.getAsFile();
+                  if (file) {
+                    setTermsheetEvidenceFile(file);
+                    return;
+                  }
+                }
+              }
+            }
+
+            setTermsheetEvidenceError(
+              'No file received. Drag the email from Outlook to your Desktop first (creates a .msg file), then drag the .msg file here.'
+            );
+          }}
+          style={{
+            border: '2px dashed var(--border-color)',
+            borderRadius: '6px',
+            padding: '16px',
+            textAlign: 'center',
+            background: 'var(--bg-primary)',
+            transition: 'border-color 0.15s, background 0.15s',
+            marginBottom: '8px',
+            cursor: termsheetEvidenceUploading ? 'not-allowed' : 'pointer',
+            opacity: termsheetEvidenceUploading ? 0.6 : 1
+          }}
+        >
+          <p style={{ margin: '0 0 8px 0', color: 'var(--text-muted)', fontSize: '12px' }}>
+            Drag &amp; drop a file here, or
+          </p>
+          <input
+            type="file"
+            accept={TERMSHEET_EVIDENCE_TYPES.join(',')}
+            onChange={(e) => {
+              const file = e.target.files && e.target.files[0];
+              setTermsheetEvidenceFile(file || null);
+              setTermsheetEvidenceError(null);
+            }}
+            disabled={termsheetEvidenceUploading}
+            style={{ width: '100%', fontSize: '13px' }}
+          />
+          <p style={{ margin: '8px 0 0 0', color: 'var(--text-muted)', fontSize: '11px' }}>
+            Accepted: {TERMSHEET_EVIDENCE_TYPES.join(', ')} — max 15MB
+          </p>
+        </div>
+        {termsheetEvidenceFile && (
+          <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+            Selected: <strong>{termsheetEvidenceFile.name}</strong> ({Math.ceil(termsheetEvidenceFile.size / 1024)} KB)
+          </div>
+        )}
+        {termsheetEvidenceError && (
+          <div style={{ fontSize: '12px', color: '#ef4444', marginTop: '8px' }}>
+            {termsheetEvidenceError}
+          </div>
         )}
       </Modal>
 

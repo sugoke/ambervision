@@ -5,6 +5,7 @@ import { check, Match } from 'meteor/check';
 import { EquityHoldingsCollection } from '/imports/api/equityHoldings';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { UsersCollection, USER_ROLES } from '/imports/api/users';
+import { ClientEntitiesCollection } from '/imports/api/clientEntities';
 import { SessionsCollection } from '/imports/api/sessions';
 import { Meteor } from 'meteor/meteor';
 
@@ -60,7 +61,23 @@ Meteor.publish('equityHoldings', async function (sessionId = null, viewAsFilter 
 
     // Admins and superadmins with viewAsFilter
     if (viewAsFilter && (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN)) {
-      if (viewAsFilter.type === 'client') {
+      if (viewAsFilter.type === 'entity') {
+        // Entity-based filter: find bank accounts owned by this entity
+        const entityAccounts = await BankAccountsCollection.find({
+          $or: [
+            { entityId: viewAsFilter.id },
+            // Fallback for unmigrated accounts
+            ...(() => {
+              const entity = Promise.await(ClientEntitiesCollection.findOneAsync(viewAsFilter.id));
+              return entity?.migratedFromUserId ? [{ userId: entity.migratedFromUserId }] : [];
+            })()
+          ],
+          isActive: true
+        }).fetchAsync();
+        const accountIds = entityAccounts.map(acc => acc._id);
+        if (accountIds.length === 0) return this.ready();
+        queryFilter = { bankAccountId: { $in: accountIds } };
+      } else if (viewAsFilter.type === 'client') {
         // Get all bank accounts for the selected client
         const clientAccounts = await BankAccountsCollection.find({
           userId: viewAsFilter.id,
@@ -93,16 +110,24 @@ Meteor.publish('equityHoldings', async function (sessionId = null, viewAsFilter 
       console.log('[EQUITY PUB] Admin viewing all holdings');
     }
     // Relationship Managers
-    else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
-      // Get all bank accounts for clients assigned to this RM
-      const assignedClients = await UsersCollection.find({
-        relationshipManagerId: currentUser._id
-      }).fetchAsync();
-      const clientIds = assignedClients.map(c => c._id);
-      clientIds.push(currentUser._id); // Include RM's own accounts
+    else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT) {
+      // Get accounts for entity-based clients
+      const rmEntities = await ClientEntitiesCollection.find(
+        { relationshipManagerId: currentUser._id, isActive: true },
+        { fields: { _id: 1, migratedFromUserId: 1 } }
+      ).fetchAsync();
+      const entityIds = rmEntities.map(e => e._id);
+      const migratedUserIds = rmEntities.map(e => e.migratedFromUserId).filter(Boolean);
+
+      // Get accounts for legacy user-based clients
+      const assignedClients = await UsersCollection.find({ relationshipManagerId: currentUser._id }).fetchAsync();
+      const clientIds = [...new Set([...assignedClients.map(c => c._id), ...migratedUserIds, currentUser._id])];
 
       const accessibleAccounts = await BankAccountsCollection.find({
-        userId: { $in: clientIds },
+        $or: [
+          { entityId: { $in: entityIds } },
+          { userId: { $in: clientIds } }
+        ],
         isActive: true
       }).fetchAsync();
       const accountIds = accessibleAccounts.map(acc => acc._id);
@@ -112,10 +137,11 @@ Meteor.publish('equityHoldings', async function (sessionId = null, viewAsFilter 
     }
     // Clients - only their own holdings
     else if (currentUser.role === USER_ROLES.CLIENT) {
-      const userAccounts = await BankAccountsCollection.find({
-        userId: currentUser._id,
-        isActive: true
-      }).fetchAsync();
+      const entity = await ClientEntitiesCollection.findOneAsync({ migratedFromUserId: currentUser._id, isActive: true });
+      const accountQuery = entity
+        ? { $or: [{ entityId: entity._id }, { userId: currentUser._id }], isActive: true }
+        : { userId: currentUser._id, isActive: true };
+      const userAccounts = await BankAccountsCollection.find(accountQuery).fetchAsync();
       const accountIds = userAccounts.map(acc => acc._id);
 
       queryFilter = { bankAccountId: { $in: accountIds } };

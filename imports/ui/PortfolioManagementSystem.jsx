@@ -402,7 +402,9 @@ const PortfolioManagementSystem = ({ user }) => {
   const [sortBy, setSortBy] = useState('marketValue'); // Default sort by market value
   const [sortDirection, setSortDirection] = useState('desc');
   const [filterAssetClass, setFilterAssetClass] = useState('all');
-  const [expandedSections, setExpandedSections] = useState({});
+  const [expandedSections, setExpandedSections] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('pms_expandedSections')) || {}; } catch { return {}; }
+  });
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
 
   // Handle window resize for mobile detection
@@ -737,6 +739,8 @@ const PortfolioManagementSystem = ({ user }) => {
         portfolioCurrency: holding.portfolioCurrency || null,  // Add portfolioCurrency from holding for fallback
         priceType: holding.priceType || 'absolute',
         isin: holding.isin,
+        securityType: holding.securityType || null,
+        maturityDate: holding.bankSpecificData?.instrumentDates?.endDate || null,
         bankId: holding.bankId,
         bankName: holding.bankName,
         portfolioCode: holding.portfolioCode,
@@ -820,10 +824,22 @@ const PortfolioManagementSystem = ({ user }) => {
       return { bankAccounts: [], accountProfiles: [], isLoadingAccounts: true };
     }
 
-    // Build query - filter by selected client's userId if viewAsFilter is set
+    // Build query - filter by entity or client when viewAsFilter is set
     const query = { isActive: true };
-    if (viewAsFilter && viewAsFilter.type === 'client' && viewAsFilter.id) {
-      query.userId = viewAsFilter.id;
+    if (viewAsFilter && viewAsFilter.id) {
+      if (viewAsFilter.type === 'entity') {
+        // Show accounts owned by this entity OR where entity is a beneficial owner
+        query.$or = [
+          { entityId: viewAsFilter.id },
+          { beneficialOwnerIds: viewAsFilter.id },
+          { beneficialOwnerId: viewAsFilter.id }
+        ];
+      } else if (viewAsFilter.type === 'account') {
+        // Single account selected
+        query._id = viewAsFilter.id;
+      } else if (viewAsFilter.type === 'client') {
+        query.userId = viewAsFilter.id;
+      }
     }
 
     const accounts = BankAccountsCollection.find(query, { sort: { accountNumber: 1 } }).fetch();
@@ -907,11 +923,16 @@ const PortfolioManagementSystem = ({ user }) => {
       return dummyPositions.filter(pos => pos.portfolioCode !== 'CONSOLIDATED');
     }
 
-    return dummyPositions.filter(pos =>
-      pos.portfolioCode === selectedTab.accountNumber &&
-      pos.bankId === selectedTab.bankId &&
-      pos.portfolioCode !== 'CONSOLIDATED'
-    );
+    // Match portfolioCode using base account number with startsWith
+    // Handles: "5040241" matches "5040241", "5040241-1", "5040241200001" (JB long format)
+    const baseAccountNumber = selectedTab.accountNumber.split('-')[0];
+
+    return dummyPositions.filter(pos => {
+      const portfolioCode = pos.portfolioCode || '';
+      return portfolioCode !== 'CONSOLIDATED' &&
+        portfolioCode.startsWith(baseAccountNumber) &&
+        pos.bankId === selectedTab.bankId;
+    });
   }, [dummyPositions, activeAccountTab, accountTabs]);
 
   // Filter operations by active account tab
@@ -1290,9 +1311,9 @@ const PortfolioManagementSystem = ({ user }) => {
     if (selectedAccount && selectedAccount.referenceCurrency) {
       portfolioCurrency = selectedAccount.referenceCurrency;
     }
-  } else if (viewAsFilter && viewAsFilter.type === 'client') {
-    // Priority 2: Client's profile.referenceCurrency
-    const clientCurrency = viewAsFilter.data?.profile?.referenceCurrency || viewAsFilter.data?.referenceCurrency;
+  } else if (viewAsFilter && (viewAsFilter.type === 'client' || viewAsFilter.type === 'entity')) {
+    // Priority 2: Entity/Client's referenceCurrency
+    const clientCurrency = viewAsFilter.data?.referenceCurrency || viewAsFilter.data?.profile?.referenceCurrency;
     if (clientCurrency) {
       portfolioCurrency = clientCurrency;
     } else if (bankAccounts.length > 0) {
@@ -1372,6 +1393,24 @@ const PortfolioManagementSystem = ({ user }) => {
 
     return groups;
   }, {});
+
+  // Sort positions alphabetically by name within each leaf group
+  const sortByName = (a, b) => (a.name || '').localeCompare(b.name || '');
+  Object.values(groupedPositions).forEach(group => {
+    group.positions.sort(sortByName);
+    Object.values(group.subGroups).forEach(subGroup => {
+      if (Array.isArray(subGroup)) {
+        // Simple structure (equity/fixed_income subClass)
+        subGroup.sort(sortByName);
+      } else {
+        // Nested structure (structured products: underlyingType -> protectionType)
+        subGroup.positions?.sort(sortByName);
+        Object.values(subGroup.subGroups || {}).forEach(level2Positions => {
+          if (Array.isArray(level2Positions)) level2Positions.sort(sortByName);
+        });
+      }
+    });
+  });
 
   // Helper function to calculate totals for a list of positions
   const calculatePositionsTotals = (positions) => {
@@ -1495,7 +1534,9 @@ const PortfolioManagementSystem = ({ user }) => {
       }
     });
     if (Object.keys(initial).length > 0) {
-      setExpandedSections({ ...expandedSections, ...initial });
+      const merged = { ...expandedSections, ...initial };
+      setExpandedSections(merged);
+      try { localStorage.setItem('pms_expandedSections', JSON.stringify(merged)); } catch {}
     }
   };
 
@@ -1507,31 +1548,109 @@ const PortfolioManagementSystem = ({ user }) => {
   }, [Object.keys(groupedPositions).join(',')]);
 
   // Export holdings to Excel
-  const exportToExcel = () => {
+  const exportToExcel = async () => {
     // Combine all holdings (cash + non-cash sorted positions) for export
     const allHoldings = [...cashPositions, ...sortedPositions];
 
-    const data = allHoldings.map(h => ({
-      'Name': h.name || '',
-      'ISIN': h.isin || '',
-      'Ticker': h.ticker || '',
-      'Asset Class': h.assetClass ? h.assetClass.replace(/_/g, ' ') : '',
-      'Sub Class': h.assetSubClass ? h.assetSubClass.replace(/_/g, ' ') : '',
-      'Quantity': h.quantity || 0,
-      'Avg Price': h.avgPrice || 0,
-      'Current Price': h.currentPrice || 0,
-      'Price Type': h.priceType || '',
-      'Cost Basis': h.costBasis || 0,
-      'Market Value': h.marketValue || 0,
-      'Gain/Loss': h.gainLoss || 0,
-      'Gain/Loss %': h.gainLossPercent || 0,
-      'Currency': h.currency || '',
-      'Portfolio Currency': h.portfolioCurrency || portfolioCurrency || '',
-      'Bank': h.bankName || '',
-      'Portfolio Code': h.portfolioCode || '',
-      'Price Date': h.priceDate ? new Date(h.priceDate).toLocaleDateString() : '',
-      'Data Date': h.dataDate ? new Date(h.dataDate).toLocaleDateString() : ''
-    }));
+    // Per-booking-portfolio totals (sum of marketValue grouped by portfolioCode + currency).
+    // marketValue is already in the holding's portfolioCurrency; within one portfolioCode
+    // all holdings share one portfolioCurrency, so this sum is currency-consistent.
+    const portfolioTotals = allHoldings.reduce((acc, h) => {
+      const code = h.portfolioCode || '';
+      const ccy = h.portfolioCurrency || portfolioCurrency || '';
+      const key = `${code}|${ccy}`;
+      acc[key] = (acc[key] || 0) + (h.marketValue || 0);
+      return acc;
+    }, {});
+
+    const productIds = [...new Set(
+      allHoldings.map(h => h.linkedProductId).filter(Boolean)
+    )];
+
+    let enrichmentByProductId = {};
+    if (productIds.length > 0) {
+      try {
+        const sessionId = localStorage.getItem('sessionId');
+        enrichmentByProductId = await Meteor.callAsync(
+          'templateReports.getExportFieldsForProducts',
+          productIds,
+          sessionId
+        );
+      } catch (err) {
+        console.error('[exportToExcel] Failed to load report enrichment:', err);
+      }
+    }
+
+    const cashFromPercent = (qty, percent) => {
+      if (percent === null || percent === undefined || !Number.isFinite(percent)) return '';
+      return (qty || 0) * percent / 100;
+    };
+
+    const TEMPLATE_LABELS = {
+      phoenix_autocallable: 'Phoenix',
+      orion_memory: 'Orion',
+      himalaya: 'Himalaya',
+      shark_note: 'Shark Note',
+      participation_note: 'Participation Note',
+      reverse_convertible: 'Reverse Convertible',
+      reverse_convertible_bond: 'Reverse Convertible Bond'
+    };
+
+    const titleCase = (s) => s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+    const data = allHoldings.map(h => {
+      const enrichment = h.linkedProductId ? enrichmentByProductId[h.linkedProductId] : null;
+      const minPct = enrichment?.minGuaranteedPercent ?? null;
+      const capPct = enrichment?.capitalReturnPercent ?? null;
+      const indPct = enrichment?.indicativeMaturityValuePercent ?? null;
+      const cpnPct = enrichment?.totalCouponsEarnedPercent ?? null;
+      const minCash = cashFromPercent(h.quantity, minPct);
+      const indCash = cashFromPercent(h.quantity, indPct);
+      const indPnL = (indCash !== '' && h.costBasis !== undefined && h.costBasis !== null)
+        ? indCash - h.costBasis
+        : '';
+
+      const productType = enrichment?.templateId
+        ? (TEMPLATE_LABELS[enrichment.templateId] || titleCase(enrichment.templateId))
+        : (h.assetClass ? titleCase(h.assetClass) : '');
+
+      const portfolioKey = `${h.portfolioCode || ''}|${h.portfolioCurrency || portfolioCurrency || ''}`;
+      const portfolioTotal = portfolioTotals[portfolioKey] || 0;
+      const weightInPortfolio = portfolioTotal > 0
+        ? (h.marketValue || 0) / portfolioTotal * 100
+        : '';
+
+      return {
+        'Name': h.name || '',
+        'ISIN': h.isin || '',
+        'Ticker': h.ticker || '',
+        'Product Type': productType,
+        'Asset Class': h.assetClass ? h.assetClass.replace(/_/g, ' ') : '',
+        'Sub Class': h.assetSubClass ? h.assetSubClass.replace(/_/g, ' ') : '',
+        'Quantity': h.quantity || 0,
+        'Avg Price': h.avgPrice || 0,
+        'Current Price': h.currentPrice || 0,
+        'Price Type': h.priceType || '',
+        'Cost Basis': h.costBasis || 0,
+        'Market Value': h.marketValue || 0,
+        'Gain/Loss': h.gainLoss || 0,
+        'Gain/Loss %': h.gainLossPercent || 0,
+        'Min Guaranteed (% of par)': minPct ?? '',
+        'Capital Return (% of par)': capPct ?? '',
+        'Indicative Maturity Value (% of par)': indPct ?? '',
+        'Total Coupons Earned (% of par)': cpnPct ?? '',
+        'Min Guaranteed Cash': minCash,
+        'Indicative Maturity Cash Value': indCash,
+        'Indicative P&L if Matured Today': indPnL,
+        'Currency': h.currency || '',
+        'Portfolio Currency': h.portfolioCurrency || portfolioCurrency || '',
+        'Bank': h.bankName || '',
+        'Portfolio Code': h.portfolioCode || '',
+        'Weight in Portfolio %': weightInPortfolio,
+        'Price Date': h.priceDate ? new Date(h.priceDate).toLocaleDateString() : '',
+        'Data Date': h.dataDate ? new Date(h.dataDate).toLocaleDateString() : ''
+      };
+    });
 
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
@@ -1723,10 +1842,11 @@ const PortfolioManagementSystem = ({ user }) => {
   }, [snapshotDates]);
 
   const toggleSection = (assetClass) => {
-    setExpandedSections(prev => ({
-      ...prev,
-      [assetClass]: !prev[assetClass]
-    }));
+    setExpandedSections(prev => {
+      const next = { ...prev, [assetClass]: !prev[assetClass] };
+      try { localStorage.setItem('pms_expandedSections', JSON.stringify(next)); } catch {}
+      return next;
+    });
   };
 
   const tabs = [
@@ -1989,70 +2109,6 @@ const PortfolioManagementSystem = ({ user }) => {
         }}>
           {formatCurrency(totalPortfolioValue, portfolioCurrency)}
         </span>
-      </div>
-
-      {/* Secondary Stats Row */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-        gap: '1rem',
-        marginBottom: '2rem',
-        padding: '0 1.5rem'
-      }}>
-        <div style={{
-          padding: '1rem 1.25rem',
-          background: 'var(--bg-secondary)',
-          borderRadius: '8px',
-          border: '1px solid var(--border-color)'
-        }}>
-          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem' }}>
-            Cash Balance
-          </div>
-          <div style={{ fontSize: '1.25rem', fontWeight: '600', color: '#3b82f6', fontVariantNumeric: 'tabular-nums' }}>
-            {Object.keys(cashByCurrency).length === 1
-              ? formatCurrency(totalCashValue, Object.keys(cashByCurrency)[0])
-              : Object.keys(cashByCurrency).length > 1
-              ? formatCurrency(totalCashValue, portfolioCurrency)
-              : formatCurrency(0, portfolioCurrency)}
-          </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-            {Object.keys(cashByCurrency).length === 0 ? 'No cash' :
-             Object.keys(cashByCurrency).length === 1 ? 'Available' :
-             `${Object.keys(cashByCurrency).length} currencies`}
-          </div>
-        </div>
-        <div style={{
-          padding: '1rem 1.25rem',
-          background: 'var(--bg-secondary)',
-          borderRadius: '8px',
-          border: '1px solid var(--border-color)'
-        }}>
-          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem' }}>
-            Invested Value
-          </div>
-          <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>
-            {formatCurrency(totalNonCashPortfolioValue, portfolioCurrency)}
-          </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-            {nonCashPositions.length} position{nonCashPositions.length !== 1 ? 's' : ''}
-          </div>
-        </div>
-        <div style={{
-          padding: '1rem 1.25rem',
-          background: 'var(--bg-secondary)',
-          borderRadius: '8px',
-          border: '1px solid var(--border-color)'
-        }}>
-          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem' }}>
-            Total Cost Basis
-          </div>
-          <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
-            {formatCurrency(totalCostBasis, portfolioCurrency)}
-          </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-            Original investment
-          </div>
-        </div>
       </div>
 
       {/* Cash Table */}
@@ -2586,7 +2642,10 @@ const PortfolioManagementSystem = ({ user }) => {
                             ) : position.name}
                           </div>
                           <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                            {position.isin || 'N/A'}
+                            {position.isin
+                              || (position.maturityDate
+                                ? `Matures ${new Date(position.maturityDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}`
+                                : 'N/A')}
                             {position.isin && (
                               <HoldingPriceChart
                                 isin={position.isin}

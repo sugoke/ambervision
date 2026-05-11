@@ -99,41 +99,70 @@ export const OrdersCollection = new Mongo.Collection('orders');
 //   cancelledBy: String,
 //   cancellationReason: String,
 //
-//   // Email traces
+//   // Traces (file or phone call)
 //   emailTraces: [{
 //     _id: String,
-//     traceType: 'client_confirmation' | 'order_to_bank' | 'bank_confirmation' | 'order_to_issuer',
+//     traceType: 'client_order' | 'order_to_bank' | 'bank_confirmation' | 'order_to_issuer' | 'initial_termsheet' | 'termsheet_sent' | 'termsheet_signed',
+//     traceMode: 'file' | 'phone',
+//     // File mode fields:
 //     fileName: String,
 //     storedFileName: String,
 //     filePath: String,
 //     mimeType: String,
 //     fileSize: Number,
 //     uploadedAt: Date,
-//     uploadedBy: String
+//     uploadedBy: String,
+//     // Phone mode fields:
+//     phoneCallTime: Date,
+//     phoneCaller: String,
+//     phoneCallee: String,
+//     phoneNotes: String,
+//     loggedAt: Date,
+//     loggedBy: String
 //   }]
 // }
 
-// Email trace types for order documentation
+// Trace types for order documentation
 export const EMAIL_TRACE_TYPES = {
   CLIENT_ORDER: 'client_order',
-  CLIENT_CONFIRMATION: 'client_confirmation',
   ORDER_TO_BANK: 'order_to_bank',
   BANK_CONFIRMATION: 'bank_confirmation',
-  ORDER_TO_ISSUER: 'order_to_issuer'
+  ORDER_TO_ISSUER: 'order_to_issuer',
+  INITIAL_TERMSHEET: 'initial_termsheet',
+  TERMSHEET_SENT: 'termsheet_sent',
+  TERMSHEET_SIGNED: 'termsheet_signed'
 };
 
-// Email trace type labels for display
+// Trace type labels for display
 export const EMAIL_TRACE_LABELS = {
   [EMAIL_TRACE_TYPES.CLIENT_ORDER]: 'Client Order',
-  [EMAIL_TRACE_TYPES.CLIENT_CONFIRMATION]: 'Client Confirmation',
   [EMAIL_TRACE_TYPES.ORDER_TO_BANK]: 'Order to Bank',
   [EMAIL_TRACE_TYPES.BANK_CONFIRMATION]: 'Bank Confirmation',
-  [EMAIL_TRACE_TYPES.ORDER_TO_ISSUER]: 'Order to Issuer'
+  [EMAIL_TRACE_TYPES.ORDER_TO_ISSUER]: 'Order to Issuer',
+  [EMAIL_TRACE_TYPES.INITIAL_TERMSHEET]: 'Initial Termsheet',
+  [EMAIL_TRACE_TYPES.TERMSHEET_SENT]: 'Termsheet Sent',
+  [EMAIL_TRACE_TYPES.TERMSHEET_SIGNED]: 'Termsheet Signed'
+};
+
+// Trace types that document the termsheet workflow (separate from order trace count)
+export const TERMSHEET_TRACE_TYPES = new Set([
+  EMAIL_TRACE_TYPES.INITIAL_TERMSHEET,
+  EMAIL_TRACE_TYPES.TERMSHEET_SENT,
+  EMAIL_TRACE_TYPES.TERMSHEET_SIGNED
+]);
+
+// Trace modes (file upload or phone call log)
+export const TRACE_MODES = {
+  FILE: 'file',
+  PHONE: 'phone'
 };
 
 // Accepted file types for email traces
 export const EMAIL_TRACE_ACCEPTED_TYPES = ['.msg', '.eml', '.pdf', '.jpg', '.jpeg', '.png', '.gif', '.html'];
 export const EMAIL_TRACE_MAX_SIZE = 15 * 1024 * 1024; // 15MB
+
+// Stricter accepted file types when uploading termsheet evidence (no images / HTML)
+export const TERMSHEET_EVIDENCE_TYPES = ['.pdf', '.eml', '.msg'];
 
 // Valid order statuses
 export const ORDER_STATUSES = {
@@ -148,6 +177,13 @@ export const ORDER_STATUSES = {
   PARTIALLY_EXECUTED: 'partially_executed',
   CANCELLED: 'cancelled',
   REJECTED: 'rejected'
+};
+
+// Settlement tracking (orthogonal to order status)
+export const SETTLEMENT_STATUSES = {
+  PENDING: 'pending',       // Order executed, awaiting settlement confirmation
+  SETTLED: 'settled',       // Confirmed settled via PMS operations matching
+  FORCED: 'forced'          // Manually marked as settled (edge case)
 };
 
 // Valid asset types
@@ -213,6 +249,17 @@ export const LINKED_ORDER_TYPES = {
 export const ORDER_SOURCE_TYPES = {
   EMAIL: 'email',
   PHONE: 'phone',
+};
+
+// Execution types (order timing relative to trade)
+export const EXECUTION_TYPES = {
+  TO_EXECUTE: 'to_execute',
+  PRE_EXECUTED: 'pre_executed',
+};
+
+export const EXECUTION_TYPE_LABELS = {
+  [EXECUTION_TYPES.TO_EXECUTE]: 'Order to be Executed',
+  [EXECUTION_TYPES.PRE_EXECUTED]: 'Pre-Executed Order',
 };
 
 // Termsheet statuses (structured products only)
@@ -423,18 +470,23 @@ export function getOrderHealthCheck(order) {
     checks.push({ name: 'Validation', ok: !!order.validatedAt });
   }
 
-  // 3. Order sent to bank (required for sent+ statuses)
+  // 3. Order sent to bank (required once validated, even before SENT)
   const postSentStatuses = [ORDER_STATUSES.SENT, ORDER_STATUSES.EXECUTED, ORDER_STATUSES.PARTIALLY_EXECUTED];
-  if (postSentStatuses.includes(order.status)) {
+  if (postValidationStatuses.includes(order.status)) {
     checks.push({ name: 'Order to bank', ok: hasTrace(EMAIL_TRACE_TYPES.ORDER_TO_BANK) });
   }
 
-  // 4. Termsheet signed (structured products only, once sent+)
+  // 4. Order sent to issuer (structured products only, required once validated)
+  if (order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT && postValidationStatuses.includes(order.status)) {
+    checks.push({ name: 'Order to issuer', ok: hasTrace(EMAIL_TRACE_TYPES.ORDER_TO_ISSUER) });
+  }
+
+  // 5. Termsheet signed (structured products only, once sent+)
   if (order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT && postSentStatuses.includes(order.status)) {
     checks.push({ name: 'Termsheet signed', ok: order.termsheetStatus === TERMSHEET_STATUSES.SIGNED });
   }
 
-  // 5. Bank confirmation (required for executed orders)
+  // 6. Bank confirmation (required for executed orders)
   const executedStatuses = [ORDER_STATUSES.EXECUTED, ORDER_STATUSES.PARTIALLY_EXECUTED];
   if (executedStatuses.includes(order.status)) {
     checks.push({ name: 'Bank confirmation', ok: hasTrace(EMAIL_TRACE_TYPES.BANK_CONFIRMATION) });
@@ -532,6 +584,14 @@ export const OrderHelpers = {
   formatOrderDetails(order) {
     if (!order) return null;
 
+    const isStructuredProduct = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT;
+    const formatPriceForOrder = (price) => {
+      if (price === null || price === undefined) return null;
+      return isStructuredProduct
+        ? `${Number(price).toFixed(2)}%`
+        : OrderFormatters.formatWithCurrency(price, order.currency);
+    };
+
     return {
       ...order,
       // Pre-format dates
@@ -543,12 +603,31 @@ export const OrderHelpers = {
       // Pre-format numbers
       quantityFormatted: OrderFormatters.formatQuantity(order.quantity),
       executedQuantityFormatted: OrderFormatters.formatQuantity(order.executedQuantity || 0),
-      limitPriceFormatted: order.limitPrice ? OrderFormatters.formatWithCurrency(order.limitPrice, order.currency) : null,
-      executedPriceFormatted: order.executedPrice ? OrderFormatters.formatWithCurrency(order.executedPrice, order.currency) : null,
+      limitPriceFormatted: order.limitPrice ? formatPriceForOrder(order.limitPrice) : null,
+      executedPriceFormatted: order.executedPrice ? formatPriceForOrder(order.executedPrice) : null,
       estimatedValueFormatted: order.estimatedValue ? OrderFormatters.formatWithCurrency(order.estimatedValue, order.currency) : null,
       // Pre-format labels
       statusLabel: OrderFormatters.getStatusLabel(order.status),
       statusColor: OrderFormatters.getStatusColor(order.status),
+      // Effective status: overlays "Settled" on executed orders once settlement is confirmed/forced.
+      // Keeps settlement orthogonal in the data model but presents it as a unified status in the UI.
+      ...(() => {
+        const isSettled = order.settlementStatus === SETTLEMENT_STATUSES.SETTLED;
+        const isForced = order.settlementStatus === SETTLEMENT_STATUSES.FORCED;
+        if (isSettled || isForced) {
+          return {
+            effectiveStatusLabel: isForced ? 'Settled (Forced)' : 'Settled',
+            effectiveStatusColor: isForced ? '#6366f1' : '#059669',
+            canForceSettle: false
+          };
+        }
+        const canForceSettle = order.status === ORDER_STATUSES.EXECUTED || order.status === ORDER_STATUSES.PARTIALLY_EXECUTED;
+        return {
+          effectiveStatusLabel: OrderFormatters.getStatusLabel(order.status),
+          effectiveStatusColor: OrderFormatters.getStatusColor(order.status),
+          canForceSettle
+        };
+      })(),
       assetTypeLabel: OrderFormatters.getAssetTypeLabel(order.assetType),
       orderTypeLabel: order.orderType === 'buy' ? 'Buy' : 'Sell',
       priceTypeLabel: OrderFormatters.getPriceTypeLabel(order.priceType),
@@ -558,15 +637,17 @@ export const OrderHelpers = {
       termsheetColor: OrderFormatters.getTermsheetColor(order.termsheetStatus),
       termsheetUpdatedByFormatted: order.termsheetUpdatedBy || null,
       termsheetUpdatedAtFormatted: order.termsheetUpdatedAt ? OrderFormatters.formatDateTime(order.termsheetUpdatedAt) : null,
+      termsheetSentTrace: (order.emailTraces || []).find(t => t.traceType === EMAIL_TRACE_TYPES.TERMSHEET_SENT) || null,
+      termsheetSignedTrace: (order.emailTraces || []).find(t => t.traceType === EMAIL_TRACE_TYPES.TERMSHEET_SIGNED) || null,
       // FX-specific formatted fields
       fxPairFormatted: order.fxPair || null,
       fxSubtypeLabel: order.fxSubtype === 'forward' ? 'Forward' : order.fxSubtype === 'spot' ? 'Spot' : null,
-      fxRateFormatted: order.fxRate ? order.fxRate.toFixed(6) : null,
+      fxRateFormatted: order.fxRate ? order.fxRate.toFixed(4) : null,
       fxAmountCurrencyFormatted: order.fxAmountCurrency || null,
       fxForwardDateFormatted: order.fxForwardDate ? OrderFormatters.formatDate(order.fxForwardDate) : null,
       fxValueDateFormatted: order.fxValueDate ? OrderFormatters.formatDate(order.fxValueDate) : null,
-      stopLossPriceFormatted: order.stopLossPrice ? order.stopLossPrice.toFixed(6) : null,
-      takeProfitPriceFormatted: order.takeProfitPrice ? order.takeProfitPrice.toFixed(6) : null,
+      stopLossPriceFormatted: order.stopLossPrice ? order.stopLossPrice.toFixed(4) : null,
+      takeProfitPriceFormatted: order.takeProfitPrice ? order.takeProfitPrice.toFixed(4) : null,
       // Term Deposit-specific formatted fields
       depositTenorLabel: order.depositTenor ? (TERM_DEPOSIT_TENORS.find(t => t.value === order.depositTenor)?.label || order.depositTenor) : null,
       depositMaturityDateFormatted: order.depositMaturityDate ? OrderFormatters.formatDate(order.depositMaturityDate) : null,

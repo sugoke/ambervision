@@ -287,11 +287,17 @@ export const ParticipationNoteEvaluator = {
     const now = new Date();
 
     // For Participation Notes:
-    // Total return = 100% + (basket performance × participation rate / 100)
+    // Total return = 100% + (basket performance × participation rate / 100), floored
+    // by the capital-protection level (if any). Protection applies at maturity, not
+    // only on issuer call.
     const participationRate = participationParams.participationRate || 100;
     const rawPerformance = basketPerformance || 0;
     const participatedPerformance = (rawPerformance * participationRate) / 100;
-    const totalValue = 100 + participatedPerformance;
+    const rawTotalValue = 100 + participatedPerformance;
+    const protectionLevel = redemptionCalc?.protectionLevel ?? null;
+    const totalValue = (protectionLevel !== null && protectionLevel !== undefined)
+      ? Math.max(rawTotalValue, protectionLevel)
+      : rawTotalValue;
 
     // Find worst and best performers
     const performances = underlyings.map(u => u.performance || 0);

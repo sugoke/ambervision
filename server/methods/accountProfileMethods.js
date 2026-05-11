@@ -47,15 +47,28 @@ Meteor.methods({
       throw new Meteor.Error('not-found', 'Bank account not found');
     }
 
-    // Authorization: Admin/Superadmin/Compliance can edit any, RM can edit assigned clients, clients can't edit
-    const canEdit = currentUser.role === USER_ROLES.ADMIN ||
+    // Authorization: Admin/Superadmin/Compliance can edit any, RM can edit assigned clients/entities
+    let canEdit = currentUser.role === USER_ROLES.ADMIN ||
                     currentUser.role === USER_ROLES.SUPERADMIN ||
-                    currentUser.role === USER_ROLES.COMPLIANCE ||
-                    (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER &&
-                     (await UsersCollection.findOneAsync({
-                       _id: bankAccount.userId,
-                       relationshipManagerId: currentUser._id
-                     })));
+                    currentUser.role === USER_ROLES.COMPLIANCE;
+
+    if (!canEdit && currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
+      // Check user-based assignment
+      if (bankAccount.userId) {
+        canEdit = !!(await UsersCollection.findOneAsync({
+          _id: bankAccount.userId,
+          relationshipManagerId: currentUser._id
+        }));
+      }
+      // Check entity-based assignment
+      if (!canEdit && bankAccount.entityId) {
+        const { ClientEntitiesCollection } = require('../../imports/api/clientEntities.js');
+        canEdit = !!(await ClientEntitiesCollection.findOneAsync({
+          _id: bankAccount.entityId,
+          relationshipManagerId: currentUser._id
+        }));
+      }
+    }
 
     if (!canEdit) {
       throw new Meteor.Error('not-authorized', 'You do not have permission to edit this profile');

@@ -107,6 +107,39 @@ export const formatLargeNumber = (value, options = {}) => {
 };
 
 /**
+ * Format a raw numeric string for display in an input field with thousand separators.
+ * Preserves trailing decimal point and trailing zeros during active editing.
+ */
+export const formatNumberForInput = (rawValue, { maxDecimals = 2 } = {}) => {
+  if (rawValue === null || rawValue === undefined) return '';
+  const str = String(rawValue);
+  if (str === '' || str === '-') return str;
+
+  // Split on decimal point
+  const parts = str.split('.');
+  const intPart = parts[0];
+  const decPart = parts.length > 1 ? parts[1] : null;
+
+  // Format integer part with commas
+  const sign = intPart.startsWith('-') ? '-' : '';
+  const absInt = intPart.replace('-', '');
+  const formattedInt = sign + absInt.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+  if (decPart !== null) {
+    return formattedInt + '.' + decPart.slice(0, maxDecimals);
+  }
+  return formattedInt;
+};
+
+/**
+ * Strip thousand-separator commas from a formatted string to get a raw numeric value.
+ */
+export const stripNumberFormatting = (formattedValue) => {
+  if (!formattedValue && formattedValue !== 0) return '';
+  return String(formattedValue).replace(/,/g, '');
+};
+
+/**
  * Date formatting utilities
  */
 export const formatDate = (date, options = {}) => {

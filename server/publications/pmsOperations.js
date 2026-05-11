@@ -4,7 +4,8 @@
 import { check, Match } from 'meteor/check';
 import { PMSOperationsCollection } from '/imports/api/pmsOperations';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
-import { UsersCollection, USER_ROLES } from '/imports/api/users';
+import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
+import { ClientEntitiesCollection } from '/imports/api/clientEntities';
 import { SessionsCollection } from '/imports/api/sessions';
 import { Meteor } from 'meteor/meteor';
 
@@ -73,7 +74,40 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
 
     // Handle viewAsFilter for admins and RMs
     if (viewAsFilter && (isAdmin || isRM)) {
-      if (viewAsFilter.type === 'client') {
+      if (viewAsFilter.type === 'entity') {
+        // Entity-based filter
+        const entity = await ClientEntitiesCollection.findOneAsync(viewAsFilter.id);
+        if (!entity) return this.ready();
+        if (isRM && entity.relationshipManagerId !== currentUser._id) return this.ready();
+
+        // Find bank accounts owned by this entity
+        const entityAccounts = await BankAccountsCollection.find({
+          $or: [
+            { entityId: entity._id },
+            { beneficialOwnerIds: entity._id },
+            { beneficialOwnerId: entity._id }
+          ],
+          isActive: true
+        }).fetchAsync();
+        const accountNumbers = entityAccounts.map(a => a.accountNumber).filter(Boolean);
+
+        // Build OR conditions: entityId, legacy userId, or portfolioCode match
+        const orConditions = [
+          { entityId: entity._id }
+        ];
+        if (entity.migratedFromUserId) {
+          orConditions.push({ userId: entity.migratedFromUserId, entityId: { $exists: false } });
+        }
+        if (accountNumbers.length > 0) {
+          // Match operations by portfolioCode (may have suffixes like -1)
+          const portfolioRegexes = accountNumbers.map(num => {
+            const base = num.split('-')[0];
+            return { portfolioCode: { $regex: `^${base}` } };
+          });
+          orConditions.push(...portfolioRegexes);
+        }
+        queryFilter.$or = orConditions;
+      } else if (viewAsFilter.type === 'client') {
         // For RMs, verify they have access to this client
         if (isRM) {
           const targetClient = await UsersCollection.findOneAsync({
@@ -90,28 +124,32 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
       } else if (viewAsFilter.type === 'account') {
         // Filter by specific bank account
         const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-        if (bankAccount) {
-          // For RMs, verify they have access to this client
-          if (isRM) {
-            const targetClient = await UsersCollection.findOneAsync({
-              _id: bankAccount.userId,
-              relationshipManagerId: currentUser._id
-            });
-            if (!targetClient) {
-              console.log('[PMS_OPERATIONS] RM does not have access to account owner:', bankAccount.userId);
-              return this.ready();
-            }
+        if (!bankAccount) return this.ready();
+        // For RMs, verify access via user or entity
+        if (isRM) {
+          let hasAccess = false;
+          if (bankAccount.userId) {
+            const targetClient = await UsersCollection.findOneAsync({ _id: bankAccount.userId, relationshipManagerId: currentUser._id });
+            if (targetClient) hasAccess = true;
           }
-          queryFilter.userId = bankAccount.userId;
-          // Match portfolioCode - strip suffix from bankAccount if present, use regex to match with/without suffix
-          // Handles: "5040241", "5040241-1", "5040241200001" (JB long format)
-          const baseAccountNumber = bankAccount.accountNumber.split('-')[0];
-          queryFilter.portfolioCode = { $regex: `^${baseAccountNumber}` };
-          queryFilter.bankId = bankAccount.bankId;
-        } else {
-          // Account not found - return empty result
-          return this.ready();
+          if (!hasAccess && bankAccount.entityId) {
+            const targetEntity = await ClientEntitiesCollection.findOneAsync({ _id: bankAccount.entityId, relationshipManagerId: currentUser._id });
+            if (targetEntity) hasAccess = true;
+          }
+          if (!hasAccess) return this.ready();
         }
+        // Build query with entity support
+        if (bankAccount.entityId) {
+          queryFilter.$or = [
+            { entityId: bankAccount.entityId },
+            ...(bankAccount.userId ? [{ userId: bankAccount.userId, entityId: { $exists: false } }] : [])
+          ];
+        } else if (bankAccount.userId) {
+          queryFilter.userId = bankAccount.userId;
+        }
+        const baseAccountNumber = bankAccount.accountNumber.split('-')[0];
+        queryFilter.portfolioCode = { $regex: `^${baseAccountNumber}` };
+        queryFilter.bankId = bankAccount.bankId;
       }
     }
     // Handle viewAsFilter for clients - only allow filtering to their OWN accounts
@@ -141,18 +179,42 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
     }
     // Relationship Managers without filter - see all assigned clients' operations
     else if (isRM) {
-      // Get all clients assigned to this RM
-      const assignedClients = await UsersCollection.find({
-        relationshipManagerId: currentUser._id
-      }).fetchAsync();
-      const clientIds = assignedClients.map(c => c._id);
-      clientIds.push(currentUser._id); // Include RM's own operations
+      // Get entity-based clients
+      const rmEntities = await ClientEntitiesCollection.find(
+        { relationshipManagerId: currentUser._id, isActive: true },
+        { fields: { _id: 1, migratedFromUserId: 1 } }
+      ).fetchAsync();
+      const entityIds = rmEntities.map(e => e._id);
+      const migratedUserIds = rmEntities.map(e => e.migratedFromUserId).filter(Boolean);
 
-      queryFilter.userId = { $in: clientIds };
+      // Get legacy user-based clients
+      const assignedClients = await UsersCollection.find({ relationshipManagerId: currentUser._id }).fetchAsync();
+      const clientIds = [...new Set([...assignedClients.map(c => c._id), ...migratedUserIds, currentUser._id])];
+
+      // Also find portfolio codes from entity bank accounts (for legacy operations without entityId)
+      const entityAccounts = await BankAccountsCollection.find({
+        entityId: { $in: entityIds },
+        isActive: true
+      }, { fields: { accountNumber: 1 } }).fetchAsync();
+      const portfolioRegexes = entityAccounts
+        .map(a => a.accountNumber?.split('-')[0])
+        .filter(Boolean)
+        .map(base => ({ portfolioCode: { $regex: `^${base}` } }));
+
+      const orConditions = [];
+      if (entityIds.length > 0) orConditions.push({ entityId: { $in: entityIds } });
+      if (clientIds.length > 0) orConditions.push({ userId: { $in: clientIds } });
+      if (portfolioRegexes.length > 0) orConditions.push(...portfolioRegexes);
+      queryFilter.$or = orConditions.length > 0 ? orConditions : [{ userId: currentUser._id }];
     }
     // Clients - only their own operations
     else if (isClient) {
-      queryFilter.userId = currentUser._id;
+      const entity = await ClientEntitiesCollection.findOneAsync({ migratedFromUserId: currentUser._id, isActive: true });
+      if (entity) {
+        queryFilter.$or = [{ entityId: entity._id }, { userId: currentUser._id }];
+      } else {
+        queryFilter.userId = currentUser._id;
+      }
     }
 
     // Return operations sorted by date (most recent first)

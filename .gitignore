@@ -63,8 +63,23 @@ settings-local.json
 # Bank files (sensitive - do not commit)
 bankfiles/
 
+# Generated meeting-report PDFs
+public/meetingReports/
+
 # Order file storage (development fallback)
 .fichier_central/
+
+# Order traces stored under public (real client order PDFs/emails — sensitive)
+public/fichier_central/
+
+# Termsheet PDFs (bank documents — sensitive)
+public/termsheets/
+
+# One-off scripts kept locally
+_parse_excel.js
+
+# Claude Code worktrees
+.claude/worktrees/
 
 # Deployment configurations with credentials
 .deploy/

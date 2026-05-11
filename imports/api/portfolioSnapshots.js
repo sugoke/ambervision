@@ -198,6 +198,7 @@ export const PortfolioSnapshotHelpers = {
    */
   async createSnapshot({
     userId,
+    entityId = null,  // Client entity ID (entity architecture)
     bankId,
     bankName,
     connectionId,
@@ -398,6 +399,7 @@ export const PortfolioSnapshotHelpers = {
     // Create snapshot object
     const snapshot = {
       userId,
+      ...(entityId && { entityId }),
       bankId,
       bankName,
       connectionId,
@@ -470,7 +472,8 @@ export const PortfolioSnapshotHelpers = {
    * Get portfolio snapshots for a date range
    */
   async getSnapshots({ userId, portfolioCode = null, startDate, endDate }) {
-    const query = { userId };
+    // Support both userId and entityId for entity-based architecture
+    const query = { $or: [{ userId }, { entityId: userId }] };
 
     if (portfolioCode) {
       query.portfolioCode = portfolioCode;
@@ -494,7 +497,7 @@ export const PortfolioSnapshotHelpers = {
    * Groups snapshots by date and sums values (prevents zigzag chart when user has multiple accounts)
    */
   async getAggregatedSnapshotsForUser({ userId, startDate, endDate }) {
-    const query = { userId, portfolioCode: { $ne: 'CONSOLIDATED' } };
+    const query = { $or: [{ userId }, { entityId: userId }], portfolioCode: { $ne: 'CONSOLIDATED' } };
 
     if (startDate || endDate) {
       query.snapshotDate = {};

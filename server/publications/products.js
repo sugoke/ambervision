@@ -32,85 +32,132 @@ Meteor.publish("products", async function (sessionId = null, viewAsFilter = null
     return this.ready();
   }
 
-  // Handle View As filter for admins
-  if (viewAsFilter && (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN)) {
-    console.log(`[PRODUCTS] Admin ${currentUser.email} viewing as:`, viewAsFilter);
+  const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE;
+  const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
 
-    // Determine the client ID to filter by
-    let targetClientId = null;
+  // Helper: find allocations for an entity (reused by viewAs and RM paths)
+  const findEntityAllocations = async (entityId) => {
+    const { ClientEntitiesCollection } = await import('/imports/api/clientEntities');
+    const entity = await ClientEntitiesCollection.findOneAsync(entityId);
+    if (!entity) return [];
 
-    if (viewAsFilter.type === 'client') {
-      targetClientId = viewAsFilter.id;
-    } else if (viewAsFilter.type === 'account') {
-      // Find the user associated with this bank account
-      const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-      if (bankAccount) {
-        targetClientId = bankAccount.userId;
-      }
-    }
+    const entityAccounts = await BankAccountsCollection.find({
+      $or: [
+        { entityId: entity._id },
+        { beneficialOwnerIds: entity._id },
+        { beneficialOwnerId: entity._id }
+      ],
+      isActive: true
+    }).fetchAsync();
 
-    if (targetClientId) {
-      // Find allocations for this specific client
-      const allocations = await AllocationsCollection.find({
-        clientId: targetClientId
+    const userIdsFromAccounts = [...new Set(entityAccounts.map(a => a.userId).filter(Boolean))];
+    const accountNumbers = [...new Set(entityAccounts.map(a => a.accountNumber).filter(Boolean))];
+    let allBankAccountIds = entityAccounts.map(a => a._id);
+
+    if (accountNumbers.length > 0) {
+      const allAccountRecords = await BankAccountsCollection.find({
+        accountNumber: { $in: accountNumbers }
       }).fetchAsync();
-
-      const productIds = [...new Set(allocations.map(alloc => alloc.productId))];
-
-      console.log(`[PRODUCTS] Filtering to ${productIds.length} products for client ${targetClientId}`);
-
-      if (productIds.length === 0) {
-        return this.ready();
-      }
-
-      return ProductsCollection.find({ _id: { $in: productIds } });
-    } else {
-      // ViewAs filter is active but couldn't determine target client - return empty
-      console.log(`[PRODUCTS] ViewAs filter active but no valid target client found - returning empty`);
-      return this.ready();
+      allBankAccountIds = [...new Set([...allBankAccountIds, ...allAccountRecords.map(a => a._id)])];
+      allAccountRecords.forEach(a => { if (a.userId) userIdsFromAccounts.push(a.userId); });
     }
+    const uniqueUserIds = [...new Set(userIdsFromAccounts)];
+
+    const orConditions = [];
+    if (entity.migratedFromUserId) orConditions.push({ clientId: entity.migratedFromUserId });
+    if (allBankAccountIds.length > 0) orConditions.push({ bankAccountId: { $in: allBankAccountIds } });
+    if (uniqueUserIds.length > 0) orConditions.push({ clientId: { $in: uniqueUserIds } });
+
+    if (orConditions.length === 0) return [];
+    return AllocationsCollection.find({ $or: orConditions }).fetchAsync();
+  };
+
+  // Handle View As filter for admins and RMs
+  if (viewAsFilter && (isAdmin || isRM)) {
+    console.log(`[PRODUCTS] ${currentUser.email} viewing as:`, viewAsFilter);
+
+    let allocations = [];
+
+    if (viewAsFilter.type === 'entity') {
+      if (isRM) {
+        const { ClientEntitiesCollection } = await import('/imports/api/clientEntities');
+        const entity = await ClientEntitiesCollection.findOneAsync(viewAsFilter.id);
+        if (!entity) return this.ready();
+        const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
+        if (!rmIds.includes(entity.relationshipManagerId) &&
+            !(entity.assignedUserIds || []).some(id => rmIds.includes(id))) {
+          return this.ready();
+        }
+      }
+      allocations = await findEntityAllocations(viewAsFilter.id);
+    } else if (viewAsFilter.type === 'client') {
+      allocations = await AllocationsCollection.find({ clientId: viewAsFilter.id }).fetchAsync();
+    } else if (viewAsFilter.type === 'account') {
+      const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
+      if (bankAccount?.userId) {
+        allocations = await AllocationsCollection.find({ clientId: bankAccount.userId }).fetchAsync();
+      }
+    }
+
+    const productIds = [...new Set(allocations.map(alloc => alloc.productId))];
+    console.log(`[PRODUCTS] Filtering to ${productIds.length} products`);
+
+    if (productIds.length === 0) return this.ready();
+    return ProductsCollection.find({ _id: { $in: productIds } });
   }
 
-  // SuperAdmin sees everything (when not using View As)
-  if (currentUser.role === USER_ROLES.SUPERADMIN) {
-    console.log(`[PRODUCTS] SuperAdmin ${currentUser.email} accessing products`);
-    return ProductsCollection.find();
-  }
-
-  // Admin sees everything (same as superadmin for now, when not using View As)
-  if (currentUser.role === USER_ROLES.ADMIN) {
-    console.log(`[PRODUCTS] Admin ${currentUser.email} accessing products`);
-    return ProductsCollection.find();
-  }
-
-  // Compliance sees everything (for compliance review purposes)
-  if (currentUser.role === USER_ROLES.COMPLIANCE) {
-    console.log(`[PRODUCTS] Compliance ${currentUser.email} accessing products`);
+  // Admin/Compliance sees everything (when not using View As)
+  if (isAdmin) {
     return ProductsCollection.find();
   }
 
   // Relationship Manager / Assistant sees products of their assigned clients
-  if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT) {
-    // Get all clients assigned to this RM (or assistant's RMs)
+  if (isRM) {
     const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
+
+    // Legacy: users with relationshipManagerId
     const assignedClients = await UsersCollection.find({
       role: USER_ROLES.CLIENT,
       relationshipManagerId: { $in: rmIds }
     }).fetchAsync();
-
     const clientIds = assignedClients.map(client => client._id);
 
-    if (clientIds.length === 0) {
-      return this.ready();
-    }
-
-    // Find all allocations for these clients
-    const clientAllocations = await AllocationsCollection.find({
-      clientId: { $in: clientIds }
+    // Entity-based: entities assigned to this RM
+    const { ClientEntitiesCollection } = await import('/imports/api/clientEntities');
+    const rmEntities = await ClientEntitiesCollection.find({
+      $or: [
+        { assignedUserIds: { $in: rmIds } },
+        { relationshipManagerId: { $in: rmIds } }
+      ],
+      isActive: true
     }).fetchAsync();
 
-    const productIds = [...new Set(clientAllocations.map(alloc => alloc.productId))];
+    const migratedUserIds = rmEntities.map(e => e.migratedFromUserId).filter(Boolean);
+    const entityIds = rmEntities.map(e => e._id);
 
+    let bankAccountUserIds = [];
+    let bankAccountIds = [];
+    if (entityIds.length > 0) {
+      const entityAccounts = await BankAccountsCollection.find({
+        entityId: { $in: entityIds },
+        isActive: true
+      }).fetchAsync();
+      bankAccountIds = entityAccounts.map(a => a._id);
+      bankAccountUserIds = entityAccounts.map(a => a.userId).filter(Boolean);
+    }
+
+    const allClientIds = [...new Set([...clientIds, ...migratedUserIds, ...bankAccountUserIds])];
+    if (allClientIds.length === 0 && bankAccountIds.length === 0) return this.ready();
+
+    const orConditions = [];
+    if (allClientIds.length > 0) orConditions.push({ clientId: { $in: allClientIds } });
+    if (bankAccountIds.length > 0) orConditions.push({ bankAccountId: { $in: bankAccountIds } });
+
+    const clientAllocations = await AllocationsCollection.find(
+      orConditions.length === 1 ? orConditions[0] : { $or: orConditions }
+    ).fetchAsync();
+
+    const productIds = [...new Set(clientAllocations.map(alloc => alloc.productId))];
     return ProductsCollection.find({ _id: { $in: productIds } });
   }
 
@@ -318,51 +365,148 @@ Meteor.publish("allAllocations", async function (sessionId = null, viewAsFilter 
   }
 
   try {
-    // Handle View As filter for admins
-    if (viewAsFilter && (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN)) {
-      console.log(`[ALLOCATIONS] Admin ${currentUser.email} viewing as:`, viewAsFilter);
+    const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
+    const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
 
-      // Determine the client ID to filter by
-      let targetClientId = null;
+    // Handle View As filter for admins and RMs
+    if (viewAsFilter && (isAdmin || isRM)) {
+      console.log(`[ALLOCATIONS] ${currentUser.email} viewing as:`, viewAsFilter);
 
-      if (viewAsFilter.type === 'client') {
-        targetClientId = viewAsFilter.id;
-      } else if (viewAsFilter.type === 'account') {
-        // Find the user associated with this bank account
-        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-        if (bankAccount) {
-          targetClientId = bankAccount.userId;
+      if (viewAsFilter.type === 'entity') {
+        // Entity-based filter
+        const { ClientEntitiesCollection } = await import('/imports/api/clientEntities');
+        const entity = await ClientEntitiesCollection.findOneAsync(viewAsFilter.id);
+        if (!entity) return this.ready();
+
+        // For RMs, verify they manage this entity
+        if (isRM) {
+          const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
+          if (!rmIds.includes(entity.relationshipManagerId) &&
+              !(entity.assignedUserIds || []).some(id => rmIds.includes(id))) {
+            return this.ready();
+          }
         }
-      }
 
-      if (targetClientId) {
-        console.log(`[ALLOCATIONS] Filtering to allocations for client ${targetClientId}`);
-        return AllocationsCollection.find({ clientId: targetClientId });
+        // Find bank accounts for this entity
+        const entityAccounts = await BankAccountsCollection.find({
+          $or: [
+            { entityId: entity._id },
+            { beneficialOwnerIds: entity._id },
+            { beneficialOwnerId: entity._id }
+          ],
+          isActive: true
+        }).fetchAsync();
+
+        const bankAccountIds = entityAccounts.map(a => a._id);
+        const userIdsFromAccounts = [...new Set(entityAccounts.map(a => a.userId).filter(Boolean))];
+
+        // Also find ALL bank account records sharing the same account numbers
+        const accountNumbers = [...new Set(entityAccounts.map(a => a.accountNumber).filter(Boolean))];
+        let allBankAccountIds = [...bankAccountIds];
+        if (accountNumbers.length > 0) {
+          const allAccountRecords = await BankAccountsCollection.find({
+            accountNumber: { $in: accountNumbers }
+          }).fetchAsync();
+          allBankAccountIds = [...new Set([...bankAccountIds, ...allAccountRecords.map(a => a._id)])];
+          allAccountRecords.forEach(a => { if (a.userId) userIdsFromAccounts.push(a.userId); });
+        }
+        const uniqueUserIds = [...new Set(userIdsFromAccounts)];
+
+        // Build OR conditions for allocations
+        const orConditions = [];
+        if (entity.migratedFromUserId) {
+          orConditions.push({ clientId: entity.migratedFromUserId });
+        }
+        if (allBankAccountIds.length > 0) {
+          orConditions.push({ bankAccountId: { $in: allBankAccountIds } });
+        }
+        if (uniqueUserIds.length > 0) {
+          orConditions.push({ clientId: { $in: uniqueUserIds } });
+        }
+
+        if (orConditions.length === 0) return this.ready();
+
+        return AllocationsCollection.find({ $or: orConditions });
+
       } else {
-        // ViewAs filter is active but couldn't determine target client - return empty
-        console.log(`[ALLOCATIONS] ViewAs filter active but no valid target client found - returning empty`);
-        return this.ready();
+        // Client or account filter
+        let targetClientId = null;
+
+        if (viewAsFilter.type === 'client') {
+          targetClientId = viewAsFilter.id;
+        } else if (viewAsFilter.type === 'account') {
+          const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
+          if (bankAccount) {
+            targetClientId = bankAccount.userId;
+          }
+        }
+
+        if (targetClientId) {
+          if (isRM) {
+            const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
+            const targetClient = await UsersCollection.findOneAsync({
+              _id: targetClientId,
+              relationshipManagerId: { $in: rmIds }
+            });
+            if (!targetClient) return this.ready();
+          }
+          return AllocationsCollection.find({ clientId: targetClientId });
+        } else {
+          return this.ready();
+        }
       }
     }
 
     // SuperAdmin and Admin see all allocations (when not using View As)
-    if (currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.ADMIN) {
+    if (isAdmin) {
       return AllocationsCollection.find();
     }
 
-    // Relationship Manager sees allocations for their assigned clients only
-    if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
+    // Relationship Manager/Assistant sees allocations for their assigned clients only
+    if (isRM) {
+      const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
+
+      // Legacy: users with relationshipManagerId
       const assignedClients = await UsersCollection.find({
         role: USER_ROLES.CLIENT,
-        relationshipManagerId: currentUser._id
+        relationshipManagerId: { $in: rmIds }
+      }).fetchAsync();
+      const clientIds = assignedClients.map(client => client._id);
+
+      // Entity-based: entities assigned to this RM
+      const { ClientEntitiesCollection } = await import('/imports/api/clientEntities');
+      const rmEntities = await ClientEntitiesCollection.find({
+        $or: [
+          { assignedUserIds: { $in: rmIds } },
+          { relationshipManagerId: { $in: rmIds } }
+        ],
+        isActive: true
       }).fetchAsync();
 
-      const clientIds = assignedClients.map(client => client._id);
-      if (clientIds.length === 0) {
-        return this.ready();
+      const migratedUserIds = rmEntities.map(e => e.migratedFromUserId).filter(Boolean);
+      const entityIds = rmEntities.map(e => e._id);
+
+      let bankAccountIds = [];
+      let bankAccountUserIds = [];
+      if (entityIds.length > 0) {
+        const entityAccounts = await BankAccountsCollection.find({
+          entityId: { $in: entityIds },
+          isActive: true
+        }).fetchAsync();
+        bankAccountIds = entityAccounts.map(a => a._id);
+        bankAccountUserIds = entityAccounts.map(a => a.userId).filter(Boolean);
       }
 
-      return AllocationsCollection.find({ clientId: { $in: clientIds } });
+      const allClientIds = [...new Set([...clientIds, ...migratedUserIds, ...bankAccountUserIds])];
+      if (allClientIds.length === 0 && bankAccountIds.length === 0) return this.ready();
+
+      const orConditions = [];
+      if (allClientIds.length > 0) orConditions.push({ clientId: { $in: allClientIds } });
+      if (bankAccountIds.length > 0) orConditions.push({ bankAccountId: { $in: bankAccountIds } });
+
+      return AllocationsCollection.find(
+        orConditions.length === 1 ? orConditions[0] : { $or: orConditions }
+      );
     }
 
     // Client sees only their own allocations

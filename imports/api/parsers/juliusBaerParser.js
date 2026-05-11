@@ -146,6 +146,14 @@ export const JuliusBaerParser = {
       return SECURITY_TYPES.FUND;
     }
 
+    // Term Deposits / Fiduciary Deposits (check BEFORE cash — they share some codes)
+    if (ficatGrpCode === '70') {
+      return SECURITY_TYPES.TERM_DEPOSIT;
+    }
+    if (this.isTermDeposit(row)) {
+      return SECURITY_TYPES.TERM_DEPOSIT;
+    }
+
     // Cash
     if (ficatGrpCode === '71' || ficatGrpCode === '2') {
       return SECURITY_TYPES.CASH;
@@ -233,6 +241,8 @@ export const JuliusBaerParser = {
    * (they can't be classified by SecurityResolver which requires an ISIN)
    */
   isCashPosition(row) {
+    // Term deposits are NOT cash — check first to avoid misclassification
+    if (this.isTermDeposit(row)) return false;
     // FICAT Group Code 71 = Cash
     if (row.INSTR_FICAT_GRP_CODE === '71') return true;
     // INST_NAT_E 4 = Cash Account (numeric or text)
@@ -249,6 +259,27 @@ export const JuliusBaerParser = {
       // Pattern: currency code followed by 8+ digits
       if (/^[A-Z]{3}\s+\d{8,}$/.test(instrName)) return true;
     }
+
+    return false;
+  },
+
+  /**
+   * Check if a row represents a term deposit / fiduciary deposit
+   * Term deposits are non-cash fixed-term instruments without ISINs
+   */
+  isTermDeposit(row) {
+    const instrName = (row.INSTR_NAME || '').toLowerCase();
+    const subtypeName = (row.INSTR_SUBTYPE_NAME || '').toLowerCase();
+    const ficatGrpName = (row.INSTR_FICAT_GRP_NAME || '').toLowerCase();
+
+    // Detect by name keywords (fiduciary deposits, term deposits, Festgeld, Treuhand)
+    const termDepositKeywords = ['fiduciary', 'fiduc', 'fid dep', 'festgeld', 'treuhand', 'term deposit', 'time deposit', 'fixed deposit', 'call deposit'];
+    if (termDepositKeywords.some(kw => instrName.includes(kw) || subtypeName.includes(kw) || ficatGrpName.includes(kw))) {
+      return true;
+    }
+
+    // Detect by FICAT group code 70 (Treuhandanlagen / Fiduciary deposits in JB)
+    if (row.INSTR_FICAT_GRP_CODE === '70') return true;
 
     return false;
   },
@@ -438,8 +469,8 @@ export const JuliusBaerParser = {
       ticker: row.INSTR_SAT_CODE || null,
       securityName: row.INSTR_NAME || null,
       // securityType: For positions WITH valid ISINs, set to null for SecurityResolver classification
-      // For cash positions (no ISIN), set directly since SecurityResolver can't classify them
-      securityType: this.isCashPosition(row) ? SECURITY_TYPES.CASH : null,
+      // For cash/term deposit positions (no ISIN), set directly since SecurityResolver can't classify them
+      securityType: this.isTermDeposit(row) ? SECURITY_TYPES.TERM_DEPOSIT : this.isCashPosition(row) ? SECURITY_TYPES.CASH : null,
       // Store raw bank codes for classification hints (used by SecurityResolver if needed)
       securityTypeCode: row.INST_NAT_E || null, // Bank's raw code (1, 2, 13, 19, etc.)
       securityTypeDesc: row.INSTR_SUBTYPE_NAME || null, // Bank's description
@@ -530,6 +561,8 @@ export const JuliusBaerParser = {
           beginDate: this.parseDate(row.INSTR_BEGIN_DATE),
           endDate: this.parseDate(row.INSTR_END_DATE)
         },
+        // Reference for term deposits (used in uniqueKey generation to differentiate from cash)
+        reference: row.INSTR_CODE || row.DEPOSIT_CODE || null,
         interestRate: this.parseNumber(row.INSTR_INTEREST_RATE),
         accruedInterest: this.parseNumber(row.PTF_ACCR_INT),
         exchangeRates: {
@@ -577,12 +610,12 @@ export const JuliusBaerParser = {
     console.log(`[JB_PARSER] Found ${rows.length} rows`);
 
     // Map each row to standard schema
-    // Include rows with ISIN OR cash positions (which may not have ISIN)
+    // Include rows with ISIN, cash positions, term deposits, or market value
     const positions = rows
-      .filter(row => row.INSTR_ISIN_CODE || row.INST_NAT_E === 'Cash' || row.PTF_MKT_VAL)
+      .filter(row => row.INSTR_ISIN_CODE || row.INST_NAT_E === 'Cash' || this.isCashPosition(row) || this.isTermDeposit(row) || row.PTF_MKT_VAL)
       .map(row => this.mapToStandardSchema(row, bankId, bankName, sourceFile, fileDate, userId));
 
-    console.log(`[JB_PARSER] Mapped ${positions.length} positions (${rows.length - positions.length} skipped - no ISIN or cash)`);
+    console.log(`[JB_PARSER] Mapped ${positions.length} positions (${rows.length - positions.length} skipped - no ISIN, cash, or term deposit)`);
 
     return positions;
   },

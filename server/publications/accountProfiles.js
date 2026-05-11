@@ -9,9 +9,10 @@ import { BankAccountsCollection } from '../../imports/api/bankAccounts.js';
  * Publish account profiles for authorized users
  * Each bank account can have its own investment profile (max allocations)
  */
-Meteor.publish('accountProfiles', async function(sessionId, userId = null) {
+Meteor.publish('accountProfiles', async function(sessionId, userId = null, entityId = null) {
   check(sessionId, String);
   check(userId, Match.Maybe(String));
+  check(entityId, Match.Maybe(String));
 
   // Validate session
   if (!sessionId) {
@@ -40,17 +41,8 @@ Meteor.publish('accountProfiles', async function(sessionId, userId = null) {
                               currentUser.role === USER_ROLES.SUPERADMIN ||
                               currentUser.role === USER_ROLES.COMPLIANCE;
 
-  // Admins/Superadmins/Compliance viewing a specific user
-  if (userId && isAdminOrCompliance) {
-    const accounts = await BankAccountsCollection.find({
-      userId: userId,
-      isActive: true
-    }).fetchAsync();
-    bankAccountIds = accounts.map(a => a._id);
-  }
-  // Admins/Superadmins/Compliance without filter - see all profiles
-  else if (isAdminOrCompliance) {
-    // Return all profiles
+  // Admins/Superadmins/Compliance - return all profiles (simplest and most reliable)
+  if (isAdminOrCompliance) {
     return AccountProfilesCollection.find({});
   }
   // Relationship Managers - see profiles for assigned clients' accounts

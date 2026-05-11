@@ -21,6 +21,8 @@ import annotationPlugin from 'chartjs-plugin-annotation';
 // Register Chart.js components
 ChartJS.register(LinearScale, PointElement, Tooltip, Legend, annotationPlugin);
 
+const asOfStringToDate = (s) => (s ? new Date(`${s}T23:59:59.999`) : null);
+
 const UnderlyingsView = ({ user, onNavigateToReport }) => {
   const { isDarkMode } = useTheme();
   const { viewAsFilter } = useViewAs();
@@ -31,6 +33,11 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
   const [refreshError, setRefreshError] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(25);
+
+  // As-of historical date ('' = live). Stored as YYYY-MM-DD string from <input type="date">.
+  const [asOfDateStr, setAsOfDateStr] = useState('');
+  const [historicalAnalysis, setHistoricalAnalysis] = useState(null);
+  const [isLoadingHistorical, setIsLoadingHistorical] = useState(false);
 
   // Risk Report State
   const [isRiskReportModalOpen, setIsRiskReportModalOpen] = useState(false);
@@ -59,11 +66,42 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
     return { accessibleProductIds: productIds };
   }, [sessionId, viewAsFilter]);
 
-  // Get the analysis from database (NO client-side calculations)
-  const analysisData = useTracker(() => {
+  // Get the live analysis from database (NO client-side calculations)
+  const liveAnalysis = useTracker(() => {
     const analysis = UnderlyingsAnalysisCollection.findOne({ _id: 'phoenix_live_underlyings' });
     return analysis || null;
   }, []);
+
+  // When an as-of date is selected, swap the data source to the on-demand historical result
+  const analysisData = asOfDateStr ? historicalAnalysis : liveAnalysis;
+
+  // Fetch historical analysis whenever the as-of date changes
+  React.useEffect(() => {
+    if (!asOfDateStr) {
+      setHistoricalAnalysis(null);
+      setRefreshError(null);
+      return;
+    }
+    let cancelled = false;
+    const asOfDate = asOfStringToDate(asOfDateStr);
+    setIsLoadingHistorical(true);
+    setRefreshError(null);
+    Meteor.callAsync('underlyingsAnalysis.generateAsOf', asOfDate)
+      .then((doc) => {
+        if (!cancelled) setHistoricalAnalysis(doc);
+      })
+      .catch((err) => {
+        console.error('Error generating historical analysis:', err);
+        if (!cancelled) {
+          setHistoricalAnalysis(null);
+          setRefreshError(err.message || err.reason || 'Failed to load historical analysis');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingHistorical(false);
+      });
+    return () => { cancelled = true; };
+  }, [asOfDateStr]);
 
   // Extract data from analysis (all pre-computed server-side)
   // Filter by accessible products if ViewAs is active
@@ -119,7 +157,15 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
     setIsRefreshing(true);
     setRefreshError(null);
     try {
-      await Meteor.callAsync('underlyingsAnalysis.generate');
+      if (asOfDateStr) {
+        const doc = await Meteor.callAsync(
+          'underlyingsAnalysis.generateAsOf',
+          asOfStringToDate(asOfDateStr)
+        );
+        setHistoricalAnalysis(doc);
+      } else {
+        await Meteor.callAsync('underlyingsAnalysis.generate');
+      }
     } catch (error) {
       console.error('Error refreshing analysis:', error);
       setRefreshError(error.message || 'Failed to refresh analysis');
@@ -159,8 +205,9 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
         throw new Error('No valid session found. Please log in first.');
       }
 
-      console.log(`Generating risk analysis report in ${language}...`);
-      const result = await Meteor.callAsync('riskAnalysis.generate', sessionId, language);
+      const asOfDate = asOfStringToDate(asOfDateStr);
+      console.log(`Generating risk analysis report in ${language}${asOfDate ? ` as of ${asOfDateStr}` : ''}...`);
+      const result = await Meteor.callAsync('riskAnalysis.generate', sessionId, language, asOfDate);
 
       console.log('Risk report generated:', result);
       setRiskReportId(result.reportId);
@@ -450,7 +497,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
     };
   }, [bubbleChartData, isDarkMode, onNavigateToReport]);
 
-  if (isLoading()) {
+  if (isLoading() || (asOfDateStr && isLoadingHistorical && !historicalAnalysis)) {
     return (
       <div style={{
         display: 'flex',
@@ -459,7 +506,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
         height: '400px',
         color: 'var(--text-secondary)'
       }}>
-        Loading underlying data...
+        {asOfDateStr ? `Loading underlying data as of ${asOfDateStr}...` : 'Loading underlying data...'}
       </div>
     );
   }
@@ -497,11 +544,61 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
             fontSize: '1rem',
             color: 'var(--text-secondary)'
           }}>
-            Track performance of underlying assets in live Phoenix products
+            {asOfDateStr
+              ? `Historical view of Phoenix underlyings as of ${asOfDateStr}`
+              : 'Track performance of underlying assets in live Phoenix products'}
             {generatedAt && <span> • Generated: {generatedAt}</span>}
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '1rem' }}>
+        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+            background: 'var(--bg-primary)',
+            padding: '0.5rem 0.75rem',
+            border: '1px solid var(--border-color)',
+            borderRadius: '10px'
+          }}>
+            <label
+              htmlFor="underlyings-asof-date"
+              style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600 }}
+            >
+              As of
+            </label>
+            <input
+              id="underlyings-asof-date"
+              type="date"
+              value={asOfDateStr}
+              max={new Date().toISOString().slice(0, 10)}
+              onChange={(e) => setAsOfDateStr(e.target.value)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--text-primary)',
+                fontSize: '0.9rem',
+                outline: 'none',
+                colorScheme: isDarkMode ? 'dark' : 'light'
+              }}
+            />
+            {asOfDateStr && (
+              <button
+                onClick={() => setAsOfDateStr('')}
+                title="Switch back to live"
+                style={{
+                  background: 'transparent',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  color: 'var(--text-secondary)',
+                  padding: '0.15rem 0.5rem',
+                  fontSize: '0.75rem',
+                  cursor: 'pointer'
+                }}
+              >
+                Today
+              </button>
+            )}
+          </div>
           <button
             onClick={handleRefresh}
             disabled={isRefreshing}

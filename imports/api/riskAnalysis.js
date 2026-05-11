@@ -1,8 +1,8 @@
 import { Mongo } from 'meteor/mongo';
 import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
+import { check, Match } from 'meteor/check';
 import { HTTP } from 'meteor/http';
-import { UnderlyingsAnalysisCollection } from './underlyingsAnalysis';
+import { UnderlyingsAnalysisCollection, buildUnderlyingsAnalysis } from './underlyingsAnalysis';
 import { EODApiHelpers } from './eodApi';
 import { ReportsCollection } from './reports';
 import { TemplateReportsCollection } from './templateReports';
@@ -334,17 +334,21 @@ Write the summary now:`;
      * @param {string} language - Language for report ('en' or 'fr')
      * @returns {Promise<Object>} - Generated report with ID
      */
-    async 'riskAnalysis.generate'(sessionId, language = 'en') {
+    async 'riskAnalysis.generate'(sessionId, language = 'en', asOfDate = null) {
       check(sessionId, String);
       check(language, String);
+      check(asOfDate, Match.Maybe(Date));
 
-      console.log('[RiskAnalysis] Starting risk analysis generation...');
+      if (asOfDate && asOfDate.getTime() > Date.now()) {
+        throw new Meteor.Error('invalid-date', 'asOfDate cannot be in the future');
+      }
+
+      console.log(`[RiskAnalysis] Starting risk analysis generation${asOfDate ? ` as of ${asOfDate.toISOString().slice(0, 10)}` : ''}...`);
       const startTime = Date.now();
 
-      // Get the latest underlyings analysis
-      const analysisData = await UnderlyingsAnalysisCollection.findOneAsync(
-        { _id: 'phoenix_live_underlyings' }
-      );
+      const analysisData = asOfDate
+        ? await buildUnderlyingsAnalysis(asOfDate)
+        : await UnderlyingsAnalysisCollection.findOneAsync({ _id: 'phoenix_live_underlyings' });
 
       if (!analysisData) {
         throw new Meteor.Error('no-analysis-data', 'No underlyings analysis found. Please refresh the analysis first.');
@@ -364,6 +368,7 @@ Write the summary now:`;
         const healthReport = {
           generatedAt: new Date(),
           generatedBy: this.userId,
+          asOfDate: asOfDate || null,
           summary: {
             totalAtRisk: 0,
             uniqueUnderlyings: 0,
@@ -478,6 +483,7 @@ Write the summary now:`;
       const report = {
         generatedAt: new Date(),
         generatedBy: this.userId,
+        asOfDate: asOfDate || null,
         language, // Store language for reference
         summary,
         analyses: analyses.map(a => ({

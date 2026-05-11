@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { USER_ROLES } from '/imports/api/users';
+import { ClientEntityHelpers, ENTITY_TYPES, ENTITY_STATUSES } from '/imports/api/clientEntities';
 import { useViewAs } from '../ViewAsContext.jsx';
 
 const ViewAsFilter = ({ currentUser, onSelect }) => {
@@ -8,14 +9,13 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(0);
-  const [searchResults, setSearchResults] = useState({ clients: [] });
+  const [searchResults, setSearchResults] = useState({ entities: [] });
   const [isSearching, setIsSearching] = useState(false);
   const dropdownRef = useRef(null);
   const inputRef = useRef(null);
   const searchTimeoutRef = useRef(null);
 
   // Show for admins, superadmins, compliance, and relationship managers only
-  // CLIENTs use the account tiles in the PMS page directly
   if (!currentUser || (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN && currentUser.role !== USER_ROLES.COMPLIANCE && currentUser.role !== USER_ROLES.RELATIONSHIP_MANAGER)) {
     return null;
   }
@@ -26,15 +26,13 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
       clearTimeout(searchTimeoutRef.current);
     }
 
-    // Don't search if term is too short or if a filter is already selected
     if (!searchTerm || searchTerm.trim().length < 2 || viewAsFilter) {
-      setSearchResults({ clients: [] });
+      setSearchResults({ entities: [] });
       return;
     }
 
     setIsSearching(true);
 
-    // Debounce search by 300ms
     searchTimeoutRef.current = setTimeout(async () => {
       try {
         const sessionId = localStorage.getItem('sessionId');
@@ -42,7 +40,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
         setSearchResults(results);
       } catch (error) {
         console.error('ViewAs search error:', error);
-        setSearchResults({ clients: [] });
+        setSearchResults({ entities: [] });
       } finally {
         setIsSearching(false);
       }
@@ -55,41 +53,13 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
     };
   }, [searchTerm, viewAsFilter]);
 
-  // Build results: clients from direct search + clients from account number search
+  // Build results from entities
   const allResults = React.useMemo(() => {
-    const results = [];
-    const addedClientIds = new Set();
-
-    // Add clients from direct name/email search
-    (searchResults.clients || []).forEach(c => {
-      if (!addedClientIds.has(c._id)) {
-        results.push({ type: 'client', data: c, matchedBy: 'name' });
-        addedClientIds.add(c._id);
-      }
-    });
-
-    // Add clients from account number search (if not already added)
-    (searchResults.bankAccounts || []).forEach(acc => {
-      if (acc.userId && !addedClientIds.has(acc.userId)) {
-        // Create a client-like object from the account's user info
-        results.push({
-          type: 'client',
-          data: {
-            _id: acc.userId,
-            email: acc.userEmail,
-            profile: {
-              firstName: acc.userName?.split(' ')[0] || '',
-              lastName: acc.userName?.split(' ').slice(1).join(' ') || ''
-            }
-          },
-          matchedBy: 'account',
-          matchedAccount: acc.accountNumber
-        });
-        addedClientIds.add(acc.userId);
-      }
-    });
-
-    return results;
+    return (searchResults.entities || []).map(entity => ({
+      type: 'entity',
+      data: entity,
+      matchedBy: entity.matchedByAccount ? 'account' : 'name'
+    }));
   }, [searchResults]);
 
   // Handle click outside
@@ -137,16 +107,38 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
 
   const handleSelect = (result) => {
     const filter = {
-      type: 'client',
-      id: result.data._id || result.data.userId,
-      label: `${result.data.profile?.firstName || ''} ${result.data.profile?.lastName || ''}`.trim(),
+      type: 'entity',
+      id: result.data._id,
+      label: ClientEntityHelpers.getEntityDisplayName(result.data),
       data: result.data
     };
     setFilter(filter);
     setSearchTerm('');
     setIsOpen(false);
 
-    // Call onSelect callback if provided (for mobile overlay auto-close)
+    if (onSelect) {
+      onSelect(filter);
+    }
+  };
+
+  const handleSelectAccount = (e, account, entity) => {
+    e.stopPropagation();
+    const entityName = ClientEntityHelpers.getEntityDisplayName(entity);
+    const filter = {
+      type: 'account',
+      id: account._id,
+      label: `${entityName} - ${account.accountNumber}`,
+      data: {
+        ...account,
+        entityName,
+        entityId: entity._id,
+        entityData: entity
+      }
+    };
+    setFilter(filter);
+    setSearchTerm('');
+    setIsOpen(false);
+
     if (onSelect) {
       onSelect(filter);
     }
@@ -159,18 +151,17 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
   };
 
   const toggleFavorite = (e, result) => {
-    e.stopPropagation(); // Prevent selecting the result
-    const id = result.data._id || result.data.userId;
+    e.stopPropagation();
+    const id = result.data._id;
     if (isFavorite(id)) {
       removeFavorite(id);
     } else {
-      const favoriteItem = {
-        type: 'client',
+      addFavorite({
+        type: 'entity',
         id: id,
-        label: `${result.data.profile?.firstName || ''} ${result.data.profile?.lastName || ''}`.trim(),
+        label: ClientEntityHelpers.getEntityDisplayName(result.data),
         data: result.data
-      };
-      addFavorite(favoriteItem);
+      });
     }
   };
 
@@ -188,11 +179,9 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
     }
   };
 
-  // Filter favorites to only show clients (in case old account favorites exist)
-  const clientFavorites = favorites.filter(f => f.type === 'client');
-
   // Show favorites when focused with no search term and no active filter
-  const showFavorites = isOpen && !viewAsFilter && !searchTerm && clientFavorites.length > 0;
+  const allFavorites = favorites.filter(f => f.type === 'entity' || f.type === 'client');
+  const showFavorites = isOpen && !viewAsFilter && !searchTerm && allFavorites.length > 0;
 
   const displayValue = viewAsFilter
     ? viewAsFilter.label
@@ -225,11 +214,9 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
             }}
             onKeyDown={handleKeyDown}
             onFocus={() => {
-              // Open dropdown on focus - for search results or favorites
               if (!viewAsFilter) setIsOpen(true);
             }}
-            placeholder={viewAsFilter ? '' : 'Search clients...'}
-            disabled={false}
+            placeholder={viewAsFilter ? '' : 'Search entities...'}
             style={{
               width: '100%',
               padding: '0.5rem 2.5rem 0.5rem 0.75rem',
@@ -303,90 +290,140 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
               border: '1px solid var(--border-color)',
               borderRadius: '8px',
               boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
-              maxHeight: '300px',
+              maxHeight: '400px',
               overflowY: 'auto',
               zIndex: 1000
             }}>
-              {allResults.map((result, index) => (
-                <div
-                  key={`${result.type}-${result.data._id}`}
-                  onClick={() => handleSelect(result)}
-                  onMouseEnter={() => setHighlightedIndex(index)}
-                  style={{
-                    padding: '0.75rem 1rem',
-                    cursor: 'pointer',
-                    background: highlightedIndex === index ? 'rgba(59, 130, 246, 0.1)' : 'transparent',
-                    borderBottom: index < allResults.length - 1 ? '1px solid var(--border-color)' : 'none',
-                    transition: 'background 0.15s'
-                  }}
-                >
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.5rem',
-                    marginBottom: '0.25rem'
-                  }}>
-                    {/* Icon */}
-                    <span style={{ fontSize: '1rem' }}>👤</span>
+              {allResults.map((result, index) => {
+                const entity = result.data;
+                const accounts = entity.accounts || [];
+                const entityType = entity.type;
+                const isInsurance = entity.isInsurance;
+                const statusDisplay = entity.status && entity.status !== ENTITY_STATUSES.ACTIVE
+                  ? ClientEntityHelpers.getEntityStatusDisplay(entity.status)
+                  : null;
 
-                    {/* Main text */}
-                    <span style={{
-                      fontSize: '0.875rem',
-                      fontWeight: '600',
-                      color: 'var(--text-primary)',
-                      flex: 1
+                return (
+                  <div
+                    key={entity._id}
+                    onClick={() => handleSelect(result)}
+                    onMouseEnter={() => setHighlightedIndex(index)}
+                    style={{
+                      padding: '0.75rem 1rem',
+                      cursor: 'pointer',
+                      background: highlightedIndex === index ? 'rgba(59, 130, 246, 0.1)' : 'transparent',
+                      borderBottom: index < allResults.length - 1 ? '1px solid var(--border-color)' : 'none',
+                      transition: 'background 0.15s'
+                    }}
+                  >
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      marginBottom: accounts.length > 0 ? '0.35rem' : 0
                     }}>
-                      {`${result.data.profile?.firstName || ''} ${result.data.profile?.lastName || ''}`.trim()}
-                    </span>
-
-                    {/* Badge */}
-                    <span style={{
-                      fontSize: '0.65rem',
-                      padding: '0.15rem 0.4rem',
-                      borderRadius: '4px',
-                      background: '#dbeafe',
-                      color: '#1e40af',
-                      fontWeight: '600',
-                      textTransform: 'uppercase'
-                    }}>
-                      Client
-                    </span>
-
-                    {/* Favorite star button */}
-                    <button
-                      onClick={(e) => toggleFavorite(e, result)}
-                      style={{
-                        background: 'transparent',
-                        border: 'none',
-                        cursor: 'pointer',
-                        fontSize: '1rem',
-                        padding: '0.25rem',
-                        color: isFavorite(result.data._id || result.data.userId) ? '#f59e0b' : 'var(--text-muted)',
-                        transition: 'color 0.15s'
-                      }}
-                      title={isFavorite(result.data._id || result.data.userId) ? 'Remove from favorites' : 'Add to favorites'}
-                    >
-                      {isFavorite(result.data._id || result.data.userId) ? '★' : '☆'}
-                    </button>
-                  </div>
-
-                  {/* Secondary text - Email or Account match */}
-                  <div style={{
-                    fontSize: '0.75rem',
-                    color: 'var(--text-muted)',
-                    paddingLeft: '1.5rem'
-                  }}>
-                    {result.matchedBy === 'account' ? (
-                      <span>
-                        <span style={{ color: '#10b981', fontWeight: '500' }}>Account: {result.matchedAccount}</span>
-                        {result.data.email && <span> • {result.data.email}</span>}
+                      {/* Icon */}
+                      <span style={{ fontSize: '1rem' }}>
+                        {isInsurance ? '\ud83d\udee1\ufe0f' : entityType === ENTITY_TYPES.COMPANY ? '\ud83c\udfe2' : '\ud83d\udc64'}
                       </span>
-                    ) : (
-                      result.data.email
+
+                      {/* Name */}
+                      <span style={{
+                        fontSize: '0.875rem',
+                        fontWeight: '600',
+                        color: 'var(--text-primary)',
+                        flex: 1
+                      }}>
+                        {ClientEntityHelpers.getEntityDisplayName(entity)}
+                      </span>
+
+                      {/* Type badge */}
+                      <span style={{
+                        fontSize: '0.6rem',
+                        padding: '0.15rem 0.4rem',
+                        borderRadius: '4px',
+                        background: entityType === ENTITY_TYPES.COMPANY ? '#fef3c7' : '#dcfce7',
+                        color: entityType === ENTITY_TYPES.COMPANY ? '#92400e' : '#166534',
+                        fontWeight: '600',
+                        textTransform: 'uppercase'
+                      }}>
+                        {isInsurance ? 'Insurance' : ClientEntityHelpers.getEntityTypeLabel(entityType)}
+                      </span>
+
+                      {/* Status badge (non-active only) */}
+                      {statusDisplay && (
+                        <span style={{
+                          fontSize: '0.55rem',
+                          padding: '0.1rem 0.35rem',
+                          borderRadius: '3px',
+                          background: `${statusDisplay.color}15`,
+                          color: statusDisplay.color,
+                          fontWeight: '600'
+                        }}>
+                          {statusDisplay.label}
+                        </span>
+                      )}
+
+                      {/* Currency */}
+                      {entity.referenceCurrency && (
+                        <span style={{
+                          fontSize: '0.6rem',
+                          padding: '0.1rem 0.35rem',
+                          borderRadius: '3px',
+                          background: 'rgba(107, 114, 128, 0.1)',
+                          color: 'var(--text-muted)',
+                          fontWeight: '600'
+                        }}>
+                          {entity.referenceCurrency}
+                        </span>
+                      )}
+
+                      {/* Favorite star */}
+                      <button
+                        onClick={(e) => toggleFavorite(e, result)}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          cursor: 'pointer',
+                          fontSize: '1rem',
+                          padding: '0.25rem',
+                          color: isFavorite(entity._id) ? '#f59e0b' : 'var(--text-muted)',
+                          transition: 'color 0.15s'
+                        }}
+                        title={isFavorite(entity._id) ? 'Remove from favorites' : 'Add to favorites'}
+                      >
+                        {isFavorite(entity._id) ? '\u2605' : '\u2606'}
+                      </button>
+                    </div>
+
+                    {/* Bank accounts - clickable to select a specific account */}
+                    {accounts.length > 0 && (
+                      <div style={{ paddingLeft: '1.5rem', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                        {accounts.map(acc => (
+                          <span key={acc._id}
+                            onClick={(e) => handleSelectAccount(e, acc, entity)}
+                            style={{
+                              fontSize: '0.7rem',
+                              padding: '1px 6px',
+                              borderRadius: '4px',
+                              background: 'rgba(14, 165, 233, 0.08)',
+                              color: '#0ea5e9',
+                              border: '1px solid rgba(14, 165, 233, 0.15)',
+                              cursor: 'pointer',
+                              transition: 'all 0.15s'
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(14, 165, 233, 0.2)'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(14, 165, 233, 0.08)'; }}
+                            title={`Select account ${acc.accountNumber} only`}
+                          >
+                            {acc.bankName ? `${acc.bankName} ` : ''}{acc.accountNumber}{acc.ownerName ? ` — ${acc.ownerName}` : ''}{acc.referenceCurrency ? ` (${acc.referenceCurrency})` : ''}
+                          </span>
+                        ))}
+                      </div>
                     )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -414,7 +451,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                 alignItems: 'center',
                 gap: '0.5rem'
               }}>
-                <span style={{ color: '#f59e0b', fontSize: '0.875rem' }}>★</span>
+                <span style={{ color: '#f59e0b', fontSize: '0.875rem' }}>{'\u2605'}</span>
                 <span style={{
                   fontSize: '0.75rem',
                   fontWeight: '600',
@@ -427,7 +464,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
               </div>
 
               {/* Favorite items */}
-              {clientFavorites.map((favorite, index) => (
+              {allFavorites.map((favorite, index) => (
                 <div
                   key={`fav-${favorite.id}`}
                   onClick={() => handleSelectFavorite(favorite)}
@@ -435,7 +472,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                     padding: '0.75rem 1rem',
                     cursor: 'pointer',
                     background: 'transparent',
-                    borderBottom: index < clientFavorites.length - 1 ? '1px solid var(--border-color)' : 'none',
+                    borderBottom: index < allFavorites.length - 1 ? '1px solid var(--border-color)' : 'none',
                     transition: 'background 0.15s'
                   }}
                   onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(59, 130, 246, 0.1)'}
@@ -447,7 +484,9 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                     gap: '0.5rem'
                   }}>
                     {/* Icon */}
-                    <span style={{ fontSize: '1rem' }}>👤</span>
+                    <span style={{ fontSize: '1rem' }}>
+                      {favorite.data?.type === ENTITY_TYPES.COMPANY ? '\ud83c\udfe2' : '\ud83d\udc64'}
+                    </span>
 
                     {/* Label */}
                     <span style={{
@@ -464,12 +503,12 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                       fontSize: '0.65rem',
                       padding: '0.15rem 0.4rem',
                       borderRadius: '4px',
-                      background: '#dbeafe',
-                      color: '#1e40af',
+                      background: '#dcfce7',
+                      color: '#166534',
                       fontWeight: '600',
                       textTransform: 'uppercase'
                     }}>
-                      Client
+                      {favorite.data?.type ? ClientEntityHelpers.getEntityTypeLabel(favorite.data.type) : 'Entity'}
                     </span>
 
                     {/* Remove from favorites */}
@@ -489,7 +528,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                       }}
                       title="Remove from favorites"
                     >
-                      ★
+                      {'\u2605'}
                     </button>
                   </div>
                 </div>
@@ -535,7 +574,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
               fontSize: '0.875rem',
               zIndex: 1000
             }}>
-              No clients found
+              No entities found
             </div>
           )}
         </div>

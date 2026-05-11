@@ -316,6 +316,7 @@ const TermSheetUploader = ({ onProductExtracted, sessionId }) => {
             </p>
             {!isProcessing && (
               <button
+                type="button"
                 onClick={() => setSelectedFile(null)}
                 style={{
                   marginTop: '0.75rem',
@@ -441,6 +442,7 @@ const TermSheetUploader = ({ onProductExtracted, sessionId }) => {
 
       {/* Upload Button */}
       <button
+        type="button"
         onClick={handleUpload}
         disabled={!selectedFile || isProcessing}
         style={{

@@ -57,7 +57,7 @@ export const ViewAsProvider = ({ children }) => {
 
       // Force all active subscriptions to stop and restart
       // This ensures MiniMongo cache is properly cleared and repopulated
-      const subscriptions = ['products', 'allAllocations', 'productAllocations', 'schedule.observations', 'equityHoldings'];
+      const subscriptions = ['products', 'allAllocations', 'productAllocations', 'schedule.observations', 'equityHoldings', 'pmsHoldings', 'clientEntities'];
 
       // Find and stop these subscriptions
       Object.keys(Meteor.connection._subscriptions || {}).forEach(subId => {

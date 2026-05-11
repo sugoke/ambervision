@@ -11,6 +11,10 @@ export const PMSHoldingsCollection = new Mongo.Collection('pmsHoldings');
  *
  * Stores standardized position/holdings data from various bank position files.
  * All bank-specific formats are converted to this unified schema.
+ *
+ * Key fields:
+ * - entityId: String (reference to ClientEntitiesCollection - the account owner)
+ * - userId: String (DEPRECATED - kept for backward compat during entity migration)
  */
 
 // Helper functions for PMS Holdings management
@@ -23,10 +27,16 @@ export const PMSHoldingsHelpers = {
    */
   generateUniqueKey({ bankId, portfolioCode, isin, currency, securityType, endDate, reference }) {
     // For cash positions without ISIN, use currency + 'CASH' as identifier
-    // Also treat positions with null isin + currency as cash (handles older records without securityType)
+    // Term deposits get their own prefix so they don't collide with cash
     let identifier;
     if (isin) {
       identifier = isin;
+    } else if (securityType === 'TERM_DEPOSIT') {
+      // Term deposits without ISIN: use reference + endDate to differentiate
+      // Multiple term deposits can share the same reference (e.g., EUR_MM) but have different maturity dates
+      const depositLabel = reference || securityType;
+      const endDateStr = endDate instanceof Date ? endDate.toISOString().split('T')[0] : endDate ? String(endDate).split('T')[0] : '';
+      identifier = `TERM_DEPOSIT_${currency}_${depositLabel}${endDateStr ? `|${endDateStr}` : ''}`;
     } else if (securityType === 'CASH' || securityType === 'FX_FORWARD') {
       identifier = `CASH_${currency}`;
     } else if (!isin && currency) {
@@ -111,8 +121,8 @@ export const PMSHoldingsHelpers = {
       isin: holdingData.isin,
       currency: holdingData.currency,
       securityType: holdingData.securityType,
-      // For FX forwards, include differentiating factor:
-      // - Julius Baer: uses endDate (value/settlement date)
+      // For FX forwards and term deposits, include differentiating factor:
+      // - Julius Baer: uses endDate (maturity/settlement date)
       // - CFM: uses reference (FX reference number)
       endDate: holdingData.bankSpecificData?.instrumentDates?.endDate,
       reference: holdingData.bankSpecificData?.instrumentDates?.reference || holdingData.bankSpecificData?.reference

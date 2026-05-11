@@ -31,8 +31,20 @@ async function validateSessionAndGetUser(sessionId) {
 async function getClientIdsForUser(user) {
   const rmIds = UserHelpers.getEffectiveRmIds(user);
   if (rmIds.length === 0) return [];
+  // User-based clients
   const clients = await UsersCollection.find({ relationshipManagerId: { $in: rmIds } }).fetchAsync();
-  return clients.map(c => c._id);
+  const ids = clients.map(c => c._id);
+  // Entity-based clients (orders may store entityId or migratedFromUserId as clientId)
+  const { ClientEntitiesCollection } = require('../../imports/api/clientEntities.js');
+  const entities = await ClientEntitiesCollection.find(
+    { relationshipManagerId: { $in: rmIds }, isActive: true },
+    { fields: { _id: 1, migratedFromUserId: 1 } }
+  ).fetchAsync();
+  for (const ent of entities) {
+    ids.push(ent._id);
+    if (ent.migratedFromUserId) ids.push(ent.migratedFromUserId);
+  }
+  return [...new Set(ids)];
 }
 
 /**

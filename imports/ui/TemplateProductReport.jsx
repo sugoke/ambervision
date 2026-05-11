@@ -1426,8 +1426,8 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
         );
       })()}
 
-      {/* Client Allocations Summary */}
-      {allocationsSummary && user && (user.role === USER_ROLES.ADMIN || user.role === USER_ROLES.SUPERADMIN || (user.role === USER_ROLES.CLIENT && allocationsSummary.totalNominalInvested > 0)) && (
+      {/* Client Allocations Summary — only shown when no PMS holdings (avoids duplicate section) */}
+      {allocationsSummary && !(linkedHoldings && linkedHoldings.length > 0) && user && (user.role === USER_ROLES.ADMIN || user.role === USER_ROLES.SUPERADMIN || (user.role === USER_ROLES.CLIENT && allocationsSummary.totalNominalInvested > 0)) && (
         <div style={{
           background: 'var(--bg-secondary)',
           border: '1px solid var(--border-color)',

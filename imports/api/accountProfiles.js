@@ -141,6 +141,21 @@ export const PROFILE_TEMPLATES = {
 };
 
 /**
+ * Derive profile name: use stored name first, then match against known templates
+ */
+export const getProfileName = (profile) => {
+  if (!profile) return null;
+  if (profile.profileName) return profile.profileName;
+  const match = Object.entries(PROFILE_TEMPLATES).find(([, tpl]) =>
+    tpl.maxCash === profile.maxCash &&
+    tpl.maxBonds === profile.maxBonds &&
+    tpl.maxEquities === profile.maxEquities &&
+    tpl.maxAlternative === profile.maxAlternative
+  );
+  return match ? match[1].name : 'Custom';
+};
+
+/**
  * Aggregate granular asset class breakdown into 4 main categories
  * @param {Object} breakdown - The assetClassBreakdown from portfolioSnapshot
  * @param {Number} totalValue - Total portfolio value
