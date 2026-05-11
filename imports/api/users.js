@@ -3,6 +3,9 @@ import { Mongo } from 'meteor/mongo';
 import { check } from 'meteor/check';
 
 // Custom Users collection for our simple auth system
+// NOTE: This collection now represents LOGIN ACCOUNTS only.
+// Client identity (profile, birthday, bank accounts, etc.) is stored in ClientEntitiesCollection.
+// Users are linked to entities via UserEntityAccessCollection for data visibility.
 export const UsersCollection = new Mongo.Collection('customUsers');
 
 // User profile schema structure:
@@ -10,20 +13,15 @@ export const UsersCollection = new Mongo.Collection('customUsers');
 //   username: String,
 //   password: String (hashed),
 //   role: String (superadmin/admin/compliance/rm/assistant/client),
-//   relationshipManagerId: String (userId of the RM assigned to this client, only for CLIENT role),
+//   relationshipManagerId: String (DEPRECATED - moved to ClientEntitiesCollection),
 //   assignedRmIds: [String] (array of RM userIds, only for ASSISTANT role),
 //   profile: {
 //     firstName: String,
 //     lastName: String,
-//     birthday: Date,
+//     birthday: Date (DEPRECATED for clients - moved to entity profile),
 //     preferredLanguage: String (en, fr, de, es, it, etc.),
-//     referenceCurrency: String (USD, EUR, GBP, CHF, ILS - client's preferred reporting currency),
-//     familyMembers: Array of {
-//       name: String,
-//       relationship: String (spouse, child, parent, sibling, etc.),
-//       birthday: Date,
-//       _id: String (auto-generated)
-//     },
+//     referenceCurrency: String (DEPRECATED for clients - moved to entity),
+//     familyMembers: Array (DEPRECATED for clients - moved to entity profile),
 //     createdAt: Date,
 //     updatedAt: Date
 //   }
@@ -37,7 +35,7 @@ export const USER_ROLES = {
   RELATIONSHIP_MANAGER: 'rm',
   ASSISTANT: 'assistant',
   CLIENT: 'client',
-  PROSPECT: 'prospect',
+  PROSPECT: 'prospect', // DEPRECATED: prospects are now an entity status in ClientEntitiesCollection
   STAFF: 'staff',
   INTRODUCER: 'introducer',
   LIFE_INSURANCE: 'life_insurance'
@@ -46,7 +44,6 @@ export const USER_ROLES = {
 // User type categories for filtering in the Clients section
 export const USER_TYPE_CATEGORIES = {
   CLIENTS: 'clients',
-  PROSPECTS: 'prospects',
   STAFF: 'staff',
   INTRODUCERS: 'introducers',
   LIFE_INSURANCE: 'life_insurance'
@@ -58,7 +55,8 @@ export const getRoleCategory = (role) => {
     case USER_ROLES.CLIENT:
       return USER_TYPE_CATEGORIES.CLIENTS;
     case USER_ROLES.PROSPECT:
-      return USER_TYPE_CATEGORIES.PROSPECTS;
+      // DEPRECATED: prospects are now entity status, fall through to staff for legacy users
+      return USER_TYPE_CATEGORIES.STAFF;
     case USER_ROLES.SUPERADMIN:
     case USER_ROLES.ADMIN:
     case USER_ROLES.COMPLIANCE:

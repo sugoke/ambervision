@@ -11,7 +11,7 @@ import { BanksCollection } from '/imports/api/banks';
  * Shows a compact table of PENDING_VALIDATION orders with approve/reject actions.
  * Auto-hides when no orders need validation or user lacks canValidateOrders.
  */
-const ValidationBlotter = ({ user }) => {
+const ValidationBlotter = ({ user, onOrderUpdate }) => {
   const [rejectModalOrder, setRejectModalOrder] = useState(null);
   const [rejectionReason, setRejectionReason] = useState('');
   const [revisionModalOrder, setRevisionModalOrder] = useState(null);
@@ -149,13 +149,21 @@ const ValidationBlotter = ({ user }) => {
     }
   }, [reviewOrder?._id, reviewOrder?.emailTraces?.length, reviewOrder?.pendingModification?.instructionFile?.fileName]);
 
-  // Build a .eml file (RFC 2822 MIME) with the PDF attached
-  const buildEmlFile = (emailData, pdfBase64, pdfFilename) => {
+  // Build a .eml file (RFC 2822 MIME) with the PDF (and optional termsheet) attached
+  const buildEmlFile = (emailData, pdfBase64, pdfFilename, termsheet) => {
     const boundary = '----=_NextPart_' + Date.now().toString(36);
     const to = emailData.to;
     const cc = emailData.cc || '';
     const subject = emailData.subject || '';
     const body = emailData.body || '';
+    const extraAttachments = [];
+    if (termsheet?.content && termsheet?.name) {
+      extraAttachments.push({
+        name: termsheet.name,
+        content: termsheet.content,
+        contentType: termsheet.contentType || 'application/octet-stream'
+      });
+    }
 
     const lines = [
       `To: ${to}`,
@@ -178,11 +186,22 @@ const ValidationBlotter = ({ user }) => {
       '',
       // Split base64 into 76-char lines per MIME spec
       ...pdfBase64.match(/.{1,76}/g),
-      '',
-      `--${boundary}--`
-    ].filter(l => l !== null);
+      ''
+    ];
+    extraAttachments.forEach(att => {
+      lines.push(
+        `--${boundary}`,
+        `Content-Type: ${att.contentType}; name="${att.name}"`,
+        'Content-Transfer-Encoding: base64',
+        `Content-Disposition: attachment; filename="${att.name}"`,
+        '',
+        ...att.content.match(/.{1,76}/g),
+        ''
+      );
+    });
+    lines.push(`--${boundary}--`);
 
-    return lines.join('\r\n');
+    return lines.filter(l => l !== null).join('\r\n');
   };
 
   const handleValidate = async (order) => {
@@ -191,8 +210,22 @@ const ValidationBlotter = ({ user }) => {
       const sessionId = getSessionId();
       const result = await Meteor.callAsync('orders.validate', { orderId: order._id, sessionId });
 
-      // Validation done — order moves to PENDING status
-      // Email generation and transmission to bank happens separately from the OrderBook
+      // After validation: download .eml with PDF attached
+      // The .eml opens as a prefilled Outlook draft with To/CC/Subject/Body + PDF attachment
+      // Tip: right-click the download in Chrome → "Always open files of this type" for auto-open
+      if (result.pdfData && result.emailData) {
+        const pdfFilename = `${result.orderReference || order.orderReference || 'order'}.pdf`;
+        const emlContent = buildEmlFile(result.emailData, result.pdfData, pdfFilename, result.termsheet);
+        const blob = new Blob([emlContent], { type: 'message/rfc822' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `${result.orderReference || order.orderReference || 'order'}.eml`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(link.href);
+      }
+      onOrderUpdate?.();
     } catch (err) {
       alert(err.reason || err.message || 'Validation failed');
     } finally {
@@ -253,6 +286,7 @@ const ValidationBlotter = ({ user }) => {
       });
       setRejectModalOrder(null);
       setRejectionReason('');
+      onOrderUpdate?.();
     } catch (err) {
       alert(err.reason || err.message || 'Rejection failed');
     } finally {
@@ -266,6 +300,7 @@ const ValidationBlotter = ({ user }) => {
       const sessionId = getSessionId();
       await Meteor.callAsync('orders.validateModification', { orderId: order._id, sessionId });
       setReviewOrder(null);
+      onOrderUpdate?.();
     } catch (err) {
       alert(err.reason || err.message || 'Validation failed');
     } finally {
@@ -285,6 +320,7 @@ const ValidationBlotter = ({ user }) => {
       });
       setRejectModalOrder(null);
       setRejectionReason('');
+      onOrderUpdate?.();
     } catch (err) {
       alert(err.reason || err.message || 'Rejection failed');
     } finally {
@@ -358,7 +394,7 @@ const ValidationBlotter = ({ user }) => {
                   <th style={styles.th}>Date</th>
                   <th style={styles.th}>Created By</th>
                   <th style={styles.th}>WA</th>
-                  <th style={styles.th}>Client</th>
+                  <th style={styles.th}>Account</th>
                   <th style={styles.th}>Bank</th>
                   <th style={styles.th}>Type</th>
                   <th style={styles.th}>Security</th>
@@ -455,7 +491,7 @@ const ValidationBlotter = ({ user }) => {
       {/* Review & Validate Modal */}
       {reviewOrder && (
         <div style={{ ...styles.modalOverlay, alignItems: 'flex-start', overflowY: 'auto', padding: '40px 0' }} onClick={() => setReviewOrder(null)}>
-          <div style={{ ...styles.modalContent, maxWidth: '1100px', margin: 'auto' }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ ...styles.modalContent, maxWidth: '1100px', margin: 'auto', background: 'var(--bg-secondary)' }} onClick={(e) => e.stopPropagation()}>
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
               <div>
@@ -589,7 +625,7 @@ const ValidationBlotter = ({ user }) => {
               {reviewOrder.settlementCurrency && (
                 <div><span style={styles.reviewLabel}>Settlement Ccy</span><div style={styles.reviewValue}>{reviewOrder.settlementCurrency}</div></div>
               )}
-              <div><span style={styles.reviewLabel}>Client</span><div style={{ ...styles.reviewValue, fontWeight: '600' }}>{reviewOrder.clientName}</div></div>
+              <div><span style={styles.reviewLabel}>Account Name</span><div style={{ ...styles.reviewValue, fontWeight: '600' }}>{reviewOrder.clientName}</div></div>
               <div><span style={styles.reviewLabel}>Bank / Account</span><div style={styles.reviewValue}>{reviewOrder.bankName || ''}{reviewOrder.portfolioCode ? ` - ${reviewOrder.portfolioCode}` : ''}</div></div>
               {reviewOrder.wealthAmbassador && (
                 <div><span style={styles.reviewLabel}>Wealth Ambassador</span><div style={styles.reviewValue}>{reviewOrder.wealthAmbassador}</div></div>
@@ -664,8 +700,11 @@ const ValidationBlotter = ({ user }) => {
 
               const traceSlots = [
                 { type: EMAIL_TRACE_TYPES.CLIENT_ORDER, label: 'Client Order', icon: '📋', color: '#f97316', statusHint: null },
-                { type: EMAIL_TRACE_TYPES.ORDER_TO_BANK, label: 'Order to Bank', icon: '📤', color: '#0ea5e9', statusHint: 'Transmitted' },
-                { type: EMAIL_TRACE_TYPES.BANK_CONFIRMATION, label: 'Bank Confirmation', icon: '✅', color: '#10b981', statusHint: 'Executed' },
+                // Only show Order to Bank and Bank Confirmation for orders past validation
+                ...(reviewOrder.status !== ORDER_STATUSES.PENDING_VALIDATION && reviewOrder.status !== 'pending_modification' ? [
+                  { type: EMAIL_TRACE_TYPES.ORDER_TO_BANK, label: 'Order to Bank', icon: '📤', color: '#0ea5e9', statusHint: 'Transmitted' },
+                  { type: EMAIL_TRACE_TYPES.BANK_CONFIRMATION, label: 'Bank Confirmation', icon: '✅', color: '#10b981', statusHint: 'Executed' },
+                ] : [])
               ];
 
               const triggerUpload = (traceType) => {
@@ -680,7 +719,7 @@ const ValidationBlotter = ({ user }) => {
               return (
                 <div style={{ marginBottom: '14px' }}>
                   <div style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: '8px' }}>
-                    Email Traces
+                    Traces
                   </div>
 
                   {/* Phone order indicator */}
@@ -730,9 +769,15 @@ const ValidationBlotter = ({ user }) => {
                                 {statusHint && <span style={{ fontWeight: '400', color: 'var(--text-muted)', textTransform: 'none', marginLeft: '6px' }}>→ {statusHint}</span>}
                               </div>
                               {trace ? (
-                                <div style={{ fontSize: '12px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                  {trace.fileName}
-                                </div>
+                                trace.traceMode === 'phone' ? (
+                                  <div style={{ fontSize: '12px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    &#9742; {trace.phoneCaller} &rarr; {trace.phoneCallee} ({new Date(trace.phoneCallTime).toLocaleString()})
+                                  </div>
+                                ) : (
+                                  <div style={{ fontSize: '12px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {trace.fileName}
+                                  </div>
+                                )
                               ) : (
                                 <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Not attached</div>
                               )}

@@ -20,6 +20,7 @@ import { ReverseConvertibleChartBuilder } from '/imports/api/chartBuilders/rever
 import { ReverseConvertibleBondChartBuilder } from '/imports/api/chartBuilders/reverseConvertibleBondChartBuilder';
 import { ProcessingIssueCollector } from '/imports/api/processingIssueCollector';
 import { MarketDataHelpers } from '/imports/api/marketDataCache';
+import { extractExportFields } from '/imports/api/helpers/reportExportFieldExtractor';
 
 /**
  * Template-based Reports Collection
@@ -514,11 +515,55 @@ if (Meteor.isServer) {
      */
     async 'templateReports.getLatest'(productId) {
       check(productId, String);
-      
+
       return await TemplateReportsCollection.findOneAsync(
         { productId },
         { sort: { createdAt: -1 } }
       );
+    },
+
+    async 'templateReports.getExportFieldsForProducts'(productIds, sessionId) {
+      check(productIds, [String]);
+      check(sessionId, String);
+      this.unblock();
+
+      await validateSessionAndGetUser(sessionId);
+
+      if (productIds.length === 0) return {};
+
+      const reports = await TemplateReportsCollection.find(
+        { productId: { $in: productIds } },
+        {
+          sort: { createdAt: -1 },
+          fields: {
+            productId: 1,
+            templateId: 1,
+            createdAt: 1,
+            'templateResults.currentStatus.productStatus': 1,
+            'templateResults.indicativeMaturityValue.totalValue': 1,
+            'templateResults.indicativeMaturityValue.capitalReturn': 1,
+            'templateResults.indicativeMaturityValue.capitalGuaranteed': 1,
+            'templateResults.observationAnalysis.totalCouponsEarned': 1,
+            'templateResults.orionStructure.capitalGuaranteed': 1,
+            'templateResults.himalayaStructure.floor': 1,
+            'templateResults.totalPayout': 1,
+            'templateResults.sharkStructure.floorLevel': 1,
+            'templateResults.sharkStructure.rebateValue': 1,
+            'templateResults.redemption.value': 1,
+            'templateResults.redemption.totalValue': 1,
+            'templateResults.redemption.capitalComponent': 1,
+            'templateResults.redemption.protectionLevel': 1,
+            'templateResults.redemption.coupon': 1
+          }
+        }
+      ).fetchAsync();
+
+      const result = {};
+      for (const report of reports) {
+        if (result[report.productId]) continue;
+        result[report.productId] = extractExportFields(report);
+      }
+      return result;
     },
 
     /**

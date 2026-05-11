@@ -217,56 +217,110 @@ Meteor.methods({
         endDate: end
       });
     } else {
-      // Determine target userId and portfolioCode based on viewAsFilter
-      let targetUserId = user._id;
-      let targetPortfolioCode = portfolioCode;
+      // Account-centric approach: resolve portfolio codes from accounts
+      const { BankAccountsCollection } = await import('../../imports/api/bankAccounts.js');
+      const { ClientEntitiesCollection } = await import('../../imports/api/clientEntities.js');
+      const { PortfolioSnapshotsCollection } = await import('../../imports/api/portfolioSnapshots.js');
 
-      if (viewAsFilter && (user.role === 'admin' || user.role === 'superadmin')) {
-        const { BankAccountsCollection } = await import('../../imports/api/bankAccounts.js');
+      let targetPortfolioCodes = portfolioCode ? [portfolioCode] : null;
 
-        if (viewAsFilter.type === 'client') {
-          // View portfolios for this client
-          targetUserId = viewAsFilter.id;
-          // Only reset portfolioCode if not explicitly provided
-          // (allows selecting specific account within a client view)
+      if (viewAsFilter && (user.role === 'admin' || user.role === 'superadmin' || user.role === 'rm' || user.role === 'assistant')) {
+        if (viewAsFilter.type === 'entity') {
           if (!portfolioCode) {
-            targetPortfolioCode = null; // Aggregate all portfolios
+            const entityAccounts = await BankAccountsCollection.find(
+              { $or: [{ entityId: viewAsFilter.id }, { beneficialOwnerIds: viewAsFilter.id }, { beneficialOwnerId: viewAsFilter.id }], isActive: true },
+              { fields: { accountNumber: 1 } }
+            ).fetchAsync();
+            targetPortfolioCodes = entityAccounts.map(a => a.accountNumber);
+          }
+        } else if (viewAsFilter.type === 'client') {
+          if (!portfolioCode) {
+            const clientAccounts = await BankAccountsCollection.find(
+              { $or: [{ userId: viewAsFilter.id }, { entityId: viewAsFilter.id }], isActive: true },
+              { fields: { accountNumber: 1 } }
+            ).fetchAsync();
+            targetPortfolioCodes = clientAccounts.map(a => a.accountNumber);
           }
         } else if (viewAsFilter.type === 'account') {
-          // View specific account
           const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
           if (bankAccount) {
-            targetUserId = bankAccount.userId;
-            targetPortfolioCode = bankAccount.accountNumber;
+            targetPortfolioCodes = [bankAccount.accountNumber];
           } else {
-            console.log('[PERFORMANCE] Account not found:', viewAsFilter.id);
-            return {
-              hasData: false,
-              labels: [],
-              datasets: []
-            };
+            return { hasData: false, labels: [], datasets: [] };
           }
         }
+      } else if (!portfolioCode) {
+        // Current user's own accounts
+        const entity = await ClientEntitiesCollection.findOneAsync({ migratedFromUserId: user._id, isActive: true });
+        const accountQuery = entity
+          ? { $or: [{ entityId: entity._id }, { userId: user._id }], isActive: true }
+          : { userId: user._id, isActive: true };
+        const ownAccounts = await BankAccountsCollection.find(accountQuery, { fields: { accountNumber: 1 } }).fetchAsync();
+        targetPortfolioCodes = ownAccounts.map(a => a.accountNumber);
       }
 
-      console.log(`[PERFORMANCE] Target userId: ${targetUserId}, portfolioCode: ${targetPortfolioCode}`);
+      console.log(`[PERFORMANCE] Target portfolioCodes: ${targetPortfolioCodes?.join(',') || 'none'}`);
 
-      // Get snapshots - aggregate by date if no specific portfolio selected
-      if (targetPortfolioCode) {
-        // Specific portfolio - no aggregation needed
-        snapshots = await PortfolioSnapshotHelpers.getSnapshots({
-          userId: targetUserId,
-          portfolioCode: targetPortfolioCode,
-          startDate: start,
-          endDate: end
-        });
+      // Query snapshots directly by portfolioCode
+      if (targetPortfolioCodes && targetPortfolioCodes.length > 0) {
+        const snapshotQuery = {
+          portfolioCode: targetPortfolioCodes.length === 1 ? targetPortfolioCodes[0] : { $in: targetPortfolioCodes }
+        };
+        if (start) snapshotQuery.snapshotDate = { ...(snapshotQuery.snapshotDate || {}), $gte: start };
+        if (end) snapshotQuery.snapshotDate = { ...(snapshotQuery.snapshotDate || {}), $lte: end };
+
+        const rawSnapshots = await PortfolioSnapshotsCollection.find(snapshotQuery, { sort: { snapshotDate: 1 } }).fetchAsync();
+
+        if (targetPortfolioCodes.length > 1 && rawSnapshots.length > 0) {
+          const byDate = {};
+          for (const snap of rawSnapshots) {
+            const dateKey = snap.snapshotDate.toISOString().split('T')[0];
+            if (!byDate[dateKey]) {
+              byDate[dateKey] = { ...snap };
+            } else {
+              byDate[dateKey].totalAccountValue = (byDate[dateKey].totalAccountValue || 0) + (snap.totalAccountValue || 0);
+              byDate[dateKey].cashBalance = (byDate[dateKey].cashBalance || 0) + (snap.cashBalance || 0);
+              byDate[dateKey].totalMarketValue = (byDate[dateKey].totalMarketValue || 0) + (snap.totalMarketValue || 0);
+            }
+          }
+          snapshots = Object.values(byDate);
+        } else if (rawSnapshots.length > 0) {
+          // Single portfolioCode can still produce multiple snapshots per day when the
+          // same account exists under different userIds/entities (e.g. bank migrations
+          // or regenerated snapshots). Dedupe by date, preferring the userId whose
+          // series is the longest — this preserves continuity with the dominant
+          // daily-import series instead of zig-zagging between parallel writers.
+          const userCounts = new Map();
+          for (const snap of rawSnapshots) {
+            userCounts.set(snap.userId, (userCounts.get(snap.userId) || 0) + 1);
+          }
+          const primaryUserId = [...userCounts.entries()]
+            .sort((a, b) => b[1] - a[1])[0]?.[0];
+
+          const byDate = new Map();
+          for (const snap of rawSnapshots) {
+            const dateKey = snap.snapshotDate.toISOString().split('T')[0];
+            const existing = byDate.get(dateKey);
+            if (!existing) {
+              byDate.set(dateKey, snap);
+              continue;
+            }
+            const existingIsPrimary = existing.userId === primaryUserId;
+            const snapIsPrimary = snap.userId === primaryUserId;
+            if (snapIsPrimary && !existingIsPrimary) {
+              byDate.set(dateKey, snap);
+            } else if (snapIsPrimary === existingIsPrimary) {
+              const existingCreated = existing.createdAt ? existing.createdAt.getTime() : 0;
+              const snapCreated = snap.createdAt ? snap.createdAt.getTime() : 0;
+              if (snapCreated > existingCreated) byDate.set(dateKey, snap);
+            }
+          }
+          snapshots = [...byDate.values()].sort((a, b) => a.snapshotDate - b.snapshotDate);
+        } else {
+          snapshots = rawSnapshots;
+        }
       } else {
-        // All portfolios - aggregate by date to prevent zigzag pattern
-        snapshots = await PortfolioSnapshotHelpers.getAggregatedSnapshotsForUser({
-          userId: targetUserId,
-          startDate: start,
-          endDate: end
-        });
+        snapshots = [];
       }
     }
 
@@ -456,47 +510,93 @@ Meteor.methods({
     const now = new Date();
     const isAdminAllClients = (user.role === 'admin' || user.role === 'superadmin') && !viewAsFilter;
 
-    // Determine target userId and portfolioCode (same pattern as getPeriods)
-    let targetUserId = user._id;
-    let targetPortfolioCode = portfolioCode;
+    // Resolve target portfolio codes — account-centric approach (no userId dependency)
+    const { BankAccountsCollection } = await import('../../imports/api/bankAccounts.js');
+    const { ClientEntitiesCollection } = await import('../../imports/api/clientEntities.js');
+    const { PortfolioSnapshotsCollection } = await import('../../imports/api/portfolioSnapshots.js');
 
-    if (viewAsFilter && (user.role === 'admin' || user.role === 'superadmin')) {
-      const { BankAccountsCollection } = await import('../../imports/api/bankAccounts.js');
+    let targetPortfolioCodes = portfolioCode ? [portfolioCode] : null;
 
-      if (viewAsFilter.type === 'client') {
-        targetUserId = viewAsFilter.id;
-        if (!portfolioCode) targetPortfolioCode = null;
+    if (viewAsFilter && (user.role === 'admin' || user.role === 'superadmin' || user.role === 'rm' || user.role === 'assistant')) {
+      if (viewAsFilter.type === 'entity') {
+        // Get all account numbers where entity is owner OR beneficial owner
+        const entityAccounts = await BankAccountsCollection.find(
+          { $or: [{ entityId: viewAsFilter.id }, { beneficialOwnerIds: viewAsFilter.id }, { beneficialOwnerId: viewAsFilter.id }], isActive: true },
+          { fields: { accountNumber: 1 } }
+        ).fetchAsync();
+        if (!portfolioCode) {
+          targetPortfolioCodes = entityAccounts.map(a => a.accountNumber);
+        }
+      } else if (viewAsFilter.type === 'client') {
+        // Get all account numbers for this user
+        if (!portfolioCode) {
+          const clientAccounts = await BankAccountsCollection.find(
+            { $or: [{ userId: viewAsFilter.id }, { entityId: viewAsFilter.id }], isActive: true },
+            { fields: { accountNumber: 1 } }
+          ).fetchAsync();
+          targetPortfolioCodes = clientAccounts.map(a => a.accountNumber);
+        }
       } else if (viewAsFilter.type === 'account') {
         const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
         if (bankAccount) {
-          targetUserId = bankAccount.userId;
-          targetPortfolioCode = bankAccount.accountNumber;
+          targetPortfolioCodes = [bankAccount.accountNumber];
         }
       }
+    } else if (!isAdminAllClients && !portfolioCode) {
+      // Current user's own accounts (client or RM viewing own)
+      const entity = await ClientEntitiesCollection.findOneAsync({ migratedFromUserId: user._id, isActive: true });
+      const accountQuery = entity
+        ? { $or: [{ entityId: entity._id }, { userId: user._id }], isActive: true }
+        : { userId: user._id, isActive: true };
+      const ownAccounts = await BankAccountsCollection.find(accountQuery, { fields: { accountNumber: 1 } }).fetchAsync();
+      targetPortfolioCodes = ownAccounts.map(a => a.accountNumber);
     }
 
-    console.log(`[TWR] Calculating for user: ${user.username}, target: ${targetUserId}, portfolio: ${targetPortfolioCode || 'ALL'}, adminAll: ${isAdminAllClients}`);
+    console.log(`[TWR] Calculating for user: ${user.username}, portfolioCodes: ${targetPortfolioCodes?.join(',') || 'ALL'}, adminAll: ${isAdminAllClients}`);
 
-    // 1. Fetch all snapshots
+    // 1. Fetch snapshots by portfolio codes (account-centric)
     let snapshots;
     if (isAdminAllClients) {
       snapshots = await PortfolioSnapshotHelpers.getAggregatedSnapshots({
         startDate: null,
         endDate: now
       });
-    } else if (targetPortfolioCode) {
-      snapshots = await PortfolioSnapshotHelpers.getSnapshots({
-        userId: targetUserId,
-        portfolioCode: targetPortfolioCode,
-        startDate: null,
-        endDate: now
-      });
+    } else if (targetPortfolioCodes && targetPortfolioCodes.length > 0) {
+      const snapshotQuery = {};
+      if (targetPortfolioCodes.length === 1) {
+        snapshotQuery.portfolioCode = targetPortfolioCodes[0];
+      } else {
+        snapshotQuery.portfolioCode = { $in: targetPortfolioCodes };
+      }
+      if (now) snapshotQuery.snapshotDate = { $lte: now };
+
+      console.log(`[TWR] Snapshot query: ${JSON.stringify(snapshotQuery)}`);
+
+      const rawSnapshots = await PortfolioSnapshotsCollection.find(snapshotQuery, {
+        sort: { snapshotDate: 1 }
+      }).fetchAsync();
+
+      console.log(`[TWR] Found ${rawSnapshots.length} raw snapshots`);
+
+      // Aggregate by date if multiple accounts
+      if (targetPortfolioCodes.length > 1 && rawSnapshots.length > 0) {
+        const byDate = {};
+        for (const snap of rawSnapshots) {
+          const dateKey = snap.snapshotDate.toISOString().split('T')[0];
+          if (!byDate[dateKey]) {
+            byDate[dateKey] = { ...snap, _aggregated: true };
+          } else {
+            byDate[dateKey].totalAccountValue = (byDate[dateKey].totalAccountValue || 0) + (snap.totalAccountValue || 0);
+            byDate[dateKey].cashBalance = (byDate[dateKey].cashBalance || 0) + (snap.cashBalance || 0);
+            byDate[dateKey].totalMarketValue = (byDate[dateKey].totalMarketValue || 0) + (snap.totalMarketValue || 0);
+          }
+        }
+        snapshots = Object.values(byDate);
+      } else {
+        snapshots = rawSnapshots;
+      }
     } else {
-      snapshots = await PortfolioSnapshotHelpers.getAggregatedSnapshotsForUser({
-        userId: targetUserId,
-        startDate: null,
-        endDate: now
-      });
+      snapshots = [];
     }
 
     const emptyResponse = {
@@ -526,11 +626,10 @@ Meteor.methods({
       operationType: { $in: externalFlowTypes }
     };
 
-    if (!isAdminAllClients) {
-      opsQuery.userId = targetUserId;
-      if (targetPortfolioCode) {
-        opsQuery.portfolioCode = targetPortfolioCode;
-      }
+    if (!isAdminAllClients && targetPortfolioCodes && targetPortfolioCodes.length > 0) {
+      opsQuery.portfolioCode = targetPortfolioCodes.length === 1
+        ? targetPortfolioCodes[0]
+        : { $in: targetPortfolioCodes };
     }
 
     const operations = await PMSOperationsCollection.find(opsQuery, {
@@ -549,9 +648,10 @@ Meteor.methods({
     // Get bank FX rates from recent holdings
     const { PMSHoldingsCollection } = await import('../../imports/api/pmsHoldings.js');
     const holdingsQuery = {};
-    if (!isAdminAllClients) {
-      holdingsQuery.userId = targetUserId;
-      if (targetPortfolioCode) holdingsQuery.portfolioCode = targetPortfolioCode;
+    if (!isAdminAllClients && targetPortfolioCodes && targetPortfolioCodes.length > 0) {
+      holdingsQuery.portfolioCode = targetPortfolioCodes.length === 1
+        ? targetPortfolioCodes[0]
+        : { $in: targetPortfolioCodes };
     }
     const recentHoldings = await PMSHoldingsCollection.find(holdingsQuery, {
       limit: 100,

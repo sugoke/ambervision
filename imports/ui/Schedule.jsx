@@ -100,10 +100,10 @@ const Schedule = ({ user }) => {
 
   // Get observation type display text
   const getObservationTypeDisplay = (obs) => {
-    if (obs.isFinal) return 'Final Observation';
-    if (obs.observationType === 'coupon') return 'Coupon Observation';
-    if (obs.isCallable) return 'Autocall Observation';
-    return obs.observationType || 'Observation';
+    if (obs.isFinal) return 'Final';
+    if (obs.observationType === 'coupon') return 'Coupon';
+    if (obs.isCallable) return 'Autocall';
+    return obs.observationType || '—';
   };
 
   // Get observation type badge color
@@ -283,16 +283,19 @@ const Schedule = ({ user }) => {
               }}>
               {/* Table with minimum width to ensure proper display */}
               <div style={{
-                minWidth: '900px'
+                minWidth: '1300px'
               }}>
-                {/* Table Header - Sleek Dark Header */}
+                {/* Table Header - Sleek Dark Header (sticky so column names stay visible while scrolling) */}
                 <div style={{
                   display: 'grid',
-                  gridTemplateColumns: '1.2fr 1fr 1.2fr 1.5fr 1fr 1fr 1.3fr',
+                  gridTemplateColumns: '1.6fr 1.2fr 2fr 0.9fr 1fr 0.9fr 1.3fr 1.2fr',
                   gap: '0.75rem',
                   padding: '1.25rem 1.5rem',
                   background: 'linear-gradient(135deg, #1e293b 0%, #334155 100%)',
-                  borderBottom: '2px solid rgba(148, 163, 184, 0.2)'
+                  borderBottom: '2px solid rgba(148, 163, 184, 0.2)',
+                  position: 'sticky',
+                  top: 0,
+                  zIndex: 2
                 }}>
                   <div style={{
                     fontSize: '0.7rem',
@@ -302,16 +305,6 @@ const Schedule = ({ user }) => {
                     letterSpacing: '1px'
                   }}>
                     📅 Observation
-                  </div>
-                  <div style={{
-                    fontSize: '0.7rem',
-                    fontWeight: '700',
-                    color: '#e2e8f0',
-                    textTransform: 'uppercase',
-                    letterSpacing: '1px',
-                    textAlign: 'center'
-                  }}>
-                    ⏰ Days Left
                   </div>
                   <div style={{
                     fontSize: '0.7rem',
@@ -346,9 +339,29 @@ const Schedule = ({ user }) => {
                     color: '#e2e8f0',
                     textTransform: 'uppercase',
                     letterSpacing: '1px',
+                    textAlign: 'right'
+                  }}>
+                    💼 Nominal
+                  </div>
+                  <div style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px',
                     textAlign: 'center'
                   }}>
-                    💰 Details
+                    📊 Status
+                  </div>
+                  <div style={{
+                    fontSize: '0.7rem',
+                    fontWeight: '700',
+                    color: '#e2e8f0',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px',
+                    textAlign: 'center'
+                  }}>
+                    💰 Coupons
                   </div>
                   <div style={{
                     fontSize: '0.7rem',
@@ -390,10 +403,10 @@ const Schedule = ({ user }) => {
                     ref={isNextObservation ? nextObservationRef : null}
                     style={{
                       display: 'grid',
-                      gridTemplateColumns: '1.2fr 1fr 1.2fr 1.5fr 1fr 1fr 1.3fr',
+                      gridTemplateColumns: '1.6fr 1.2fr 2fr 0.9fr 1fr 0.9fr 1.3fr 1.2fr',
                       alignItems: 'center',
                       gap: '0.75rem',
-                      padding: '1rem 1.5rem',
+                      padding: '0.55rem 1.5rem',
                       borderBottom: index < observations.length - 1 ?
                         '1px solid rgba(148, 163, 184, 0.15)' : 'none',
                       background: isNextObservation
@@ -410,7 +423,7 @@ const Schedule = ({ user }) => {
                       position: 'relative'
                     }}
                   >
-                    {/* Observation Date */}
+                    {/* Observation Date (with days-left counter inline) */}
                     <div style={{
                       fontSize: '0.875rem',
                       color: isFutureRow ? '#94a3b8' : 'var(--text-primary)',
@@ -441,28 +454,24 @@ const Schedule = ({ user }) => {
                           ⏰
                         </span>
                       )}
-                      {obs.observationDateFormatted}
-                    </div>
-
-                    {/* Days Left */}
-                    <div style={{
-                      fontSize: '0.875rem',
-                      color: getDaysLeftColor(obs.daysLeftColor),
-                      fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
-                      fontWeight: '700',
-                      textAlign: 'center',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center'
-                    }}>
-                      {obs.daysLeftText}
+                      <span>{obs.observationDateFormatted}</span>
+                      {obs.daysLeftText && (
+                        <span style={{
+                          fontSize: '0.75rem',
+                          fontWeight: '600',
+                          color: getDaysLeftColor(obs.daysLeftColor)
+                        }}>
+                          ({obs.daysLeftText})
+                        </span>
+                      )}
                     </div>
 
                     {/* Observation Type - Badge Style */}
                     <div style={{
                       fontSize: '0.75rem',
                       display: 'flex',
-                      alignItems: 'center'
+                      alignItems: 'center',
+                      justifyContent: 'flex-start'
                     }}>
                       <span style={{
                         background: obs.isFinal
@@ -489,15 +498,29 @@ const Schedule = ({ user }) => {
                     </div>
 
                     {/* Product Name */}
-                    <div style={{
-                      fontSize: '0.875rem',
-                      color: isFutureRow ? '#94a3b8' : 'var(--text-primary)',
-                      fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
-                      fontWeight: '600',
-                      display: 'flex',
-                      alignItems: 'center'
-                    }}>
-                      {obs.productTitle}
+                    <div
+                      title={obs.productTitle}
+                      style={{
+                        fontSize: '0.875rem',
+                        color: isFutureRow ? '#94a3b8' : 'var(--text-primary)',
+                        fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
+                        fontWeight: '600',
+                        display: 'flex',
+                        alignItems: 'center',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        minWidth: 0
+                      }}
+                    >
+                      <span style={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        width: '100%'
+                      }}>
+                        {obs.productTitle}
+                      </span>
                     </div>
 
                     {/* ISIN - Clickable */}
@@ -532,38 +555,71 @@ const Schedule = ({ user }) => {
                       {obs.productIsin}
                     </div>
 
-                    {/* Details - Observation Outcomes */}
+                    {/* Nominal held by the currently-viewed client/entity */}
+                    <div style={{
+                      fontSize: '0.875rem',
+                      color: isFutureRow ? '#94a3b8' : 'var(--text-primary)',
+                      fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
+                      fontWeight: '600',
+                      textAlign: 'right'
+                    }}>
+                      {obs.clientNominal != null
+                        ? new Intl.NumberFormat('en-US', {
+                            style: 'currency',
+                            currency: obs.productCurrency || 'EUR',
+                            maximumFractionDigits: 0
+                          }).format(obs.clientNominal)
+                        : '—'}
+                    </div>
+
+                    {/* Status - REDEEMED badge or em-dash */}
                     <div style={{
                       fontSize: '0.8rem',
                       fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
                       textAlign: 'center',
                       fontWeight: '600',
                       display: 'flex',
-                      flexDirection: 'column',
-                      gap: '0.25rem',
                       justifyContent: 'center',
                       alignItems: 'center'
                     }}>
-                      {/* Show outcome for past observations */}
+                      {obs.outcome && obs.outcome.hasOccurred && obs.outcome.productCalled ? (
+                        <span style={{
+                          background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
+                          color: '#ffffff',
+                          padding: '0.35rem 0.7rem',
+                          borderRadius: '8px',
+                          display: 'inline-block',
+                          fontSize: '0.7rem',
+                          fontWeight: '700',
+                          boxShadow: '0 2px 8px rgba(5, 150, 105, 0.3)',
+                          letterSpacing: '0.3px'
+                        }}>
+                          REDEEMED
+                        </span>
+                      ) : (
+                        <span style={{
+                          color: '#94a3b8',
+                          fontWeight: '400'
+                        }}>
+                          —
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Coupons - coupon and memory pills inline */}
+                    <div style={{
+                      fontSize: '0.8rem',
+                      fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
+                      fontWeight: '600',
+                      display: 'flex',
+                      flexDirection: 'row',
+                      flexWrap: 'wrap',
+                      gap: '0.35rem',
+                      justifyContent: 'center',
+                      alignItems: 'center'
+                    }}>
                       {obs.outcome && obs.outcome.hasOccurred ? (
                         <>
-                          {/* Product was called/redeemed */}
-                          {obs.outcome.productCalled && (
-                            <span style={{
-                              background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
-                              color: '#ffffff',
-                              padding: '0.35rem 0.7rem',
-                              borderRadius: '8px',
-                              display: 'inline-block',
-                              fontSize: '0.7rem',
-                              fontWeight: '700',
-                              boxShadow: '0 2px 8px rgba(5, 150, 105, 0.3)',
-                              letterSpacing: '0.3px'
-                            }}>
-                              🎊 REDEEMED
-                            </span>
-                          )}
-                          {/* Coupon was paid */}
                           {obs.outcome.couponPaid > 0 && (
                             <span style={{
                               color: '#059669',
@@ -574,10 +630,9 @@ const Schedule = ({ user }) => {
                               fontSize: '0.75rem',
                               boxShadow: '0 1px 3px rgba(5, 150, 105, 0.1)'
                             }}>
-                              💵 Coupon: {obs.outcome.couponPaidFormatted}
+                              💵 {obs.outcome.couponPaidFormatted}
                             </span>
                           )}
-                          {/* Memory coupon accumulated */}
                           {obs.outcome.couponInMemory > 0 && (
                             <span style={{
                               color: '#c2410c',
@@ -591,7 +646,6 @@ const Schedule = ({ user }) => {
                               🧠 Memory: {obs.outcome.couponInMemoryFormatted}
                             </span>
                           )}
-                          {/* No outcome */}
                           {obs.outcome.couponPaid === 0 && obs.outcome.couponInMemory === 0 && !obs.outcome.productCalled && (
                             <span style={{
                               color: '#94a3b8',
@@ -604,7 +658,6 @@ const Schedule = ({ user }) => {
                           )}
                         </>
                       ) : (
-                        /* Show triggers for future observations */
                         <>
                           {obs.couponRate && (
                             <span style={{
@@ -634,7 +687,7 @@ const Schedule = ({ user }) => {
                           )}
                           {!obs.couponRate && !obs.autocallLevel && (
                             <span style={{
-                              color: '#e2e8f0',
+                              color: '#94a3b8',
                               fontWeight: '400'
                             }}>
                               —

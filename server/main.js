@@ -17,6 +17,7 @@ if (process.env.METEOR_SETTINGS) {
 
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
+import { Random } from 'meteor/random';
 import { WebApp } from 'meteor/webapp';
 import { MongoInternals } from 'meteor/mongo';
 
@@ -43,6 +44,8 @@ import '/imports/api/tickerCache';
 import '/imports/api/currencyCache';
 import { CurrencyCache } from '/imports/api/currencyCache';
 import '/imports/api/dashboardMetrics';  // Pre-computed AUM metrics cache
+import '/imports/api/clientEntities';    // Client entities (physical persons, companies, life insurance)
+import '/imports/api/userEntityAccess';  // User-to-entity access grants
 import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
 import { PasswordResetTokensCollection, PasswordResetHelpers } from '/imports/api/passwordResetTokens';
 import { EmailService } from '/imports/api/emailService';
@@ -80,6 +83,8 @@ import './migrations/activateCFMConnection';
 import './migrations/activateSGConnection';
 import './migrations/initializeSeenLocalFiles';
 import './migrations/syncProductsToSecuritiesMetadata';
+import './migrations/migrateToEntities';
+import { resetTermsheetWithoutEvidence } from './migrations/resetTermsheetWithoutEvidence';
 // import './migrations/fixNullAssetClass';  // One-time migration - already run
 import './methods/securitiesMethods';
 import './methods/performanceMethods';
@@ -93,12 +98,20 @@ import './methods/landingMethods';
 import './methods/clientDocumentMethods';
 import './methods/orderMethods';
 import './methods/manualPriceTrackerMethods';
+import './methods/clientEntityMethods';
+import './methods/mcpTokenMethods';
+import './methods/oauthMethods';
+import '/imports/api/meetingReports'; // Client meeting reports — collection + methods
+import './publications/meetingReports';
+import './mcp/mcpHttpHandler'; // MCP Streamable HTTP endpoint at /mcp (also mounts OAuth endpoints)
 import './pdfAuth'; // PDF authentication middleware
 import './publications/underlyingsAnalysis';
 import './publications/bankConnections';
 import './publications/securitiesMetadata';
 import './publications/accountProfiles';
 import './publications/manualPriceTrackers';
+import './publications/clientEntities';
+import './publications/userEntityAccess';
 import './publications'; // Import all publications from index.js
 
 // Complex product templates are now part of BUILT_IN_TEMPLATES in /imports/api/templates.js
@@ -262,6 +275,13 @@ Meteor.startup(async () => {
     console.error('❌ Error migrating termsheet URLs:', error);
   }
 
+  // Reset orders whose termsheet status was set before evidence-attachment requirement existed
+  try {
+    await resetTermsheetWithoutEvidence();
+  } catch (error) {
+    console.error('❌ Error resetting termsheet statuses without evidence:', error);
+  }
+
   // Ensure admin user exists
   console.log('👤 Checking for admin user...');
   try {
@@ -333,298 +353,6 @@ Meteor.startup(async () => {
     return LinksCollection.find();
   });
 
-  // Role-based products publication with access control  
-  Meteor.publish("products", async function (sessionId = null) {
-    // Use provided sessionId parameter or fallback to connection ID
-    const effectiveSessionId = sessionId || this.connection.headers?.sessionid || this.connection.id;
-    let currentUser = null;
-    
-    // Try to get user from session (if available)
-    if (effectiveSessionId) {
-      try {
-        const session = await SessionHelpers.validateSession(effectiveSessionId);
-        
-        if (session && session.userId) {
-          currentUser = await UsersCollection.findOneAsync(session.userId);
-        }
-      } catch (error) {
-        // Session validation failed - continue with no user
-      }
-    }
-    
-    // If no authenticated user, return empty (security)
-    if (!currentUser) {
-      return this.ready();
-    }
-    
-    // SuperAdmin sees everything
-    if (currentUser.role === USER_ROLES.SUPERADMIN) {
-      console.log(`[PRODUCTS] SuperAdmin ${currentUser.email} accessing products`);
-      return ProductsCollection.find();
-    }
-    
-    // Admin sees everything (same as superadmin for now)
-    if (currentUser.role === USER_ROLES.ADMIN) {
-      console.log(`[PRODUCTS] Admin ${currentUser.email} accessing products`);
-      return ProductsCollection.find();
-    }
-
-    // Compliance sees everything (for compliance review purposes)
-    if (currentUser.role === USER_ROLES.COMPLIANCE) {
-      console.log(`[PRODUCTS] Compliance ${currentUser.email} accessing products`);
-      return ProductsCollection.find();
-    }
-
-    // AllocationsCollection is already imported at the top
-
-    // Relationship Manager / Assistant sees products of their assigned clients
-    if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT) {
-      // Get all clients assigned to this RM (or assistant's RMs)
-      const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
-      const assignedClients = await UsersCollection.find({
-        role: USER_ROLES.CLIENT,
-        relationshipManagerId: { $in: rmIds }
-      }).fetchAsync();
-      
-      const clientIds = assignedClients.map(client => client._id);
-      
-      if (clientIds.length === 0) {
-        return this.ready();
-      }
-      
-      // Find all allocations for these clients
-      const clientAllocations = await AllocationsCollection.find({
-        clientId: { $in: clientIds }
-      }).fetchAsync();
-      
-      const productIds = [...new Set(clientAllocations.map(alloc => alloc.productId))];
-      
-      return ProductsCollection.find({ _id: { $in: productIds } });
-    }
-    
-    // Client sees only products they have allocations in
-    if (currentUser.role === USER_ROLES.CLIENT) {
-      // Find all allocations for this client (active, matured, or cancelled)
-      const userAllocations = await AllocationsCollection.find({
-        clientId: currentUser._id
-      }).fetchAsync();
-      
-      const productIds = [...new Set(userAllocations.map(alloc => alloc.productId))];
-      
-      if (productIds.length === 0) {
-        return this.ready();
-      }
-      
-      return ProductsCollection.find({ _id: { $in: productIds } });
-    }
-    
-    // Unknown role - return empty
-    return this.ready();
-  });
-
-  // Publish single product by ID
-  Meteor.publish("products.single", async function (productId, sessionId = null) {
-    check(productId, String);
-    
-    const effectiveSessionId = sessionId || this.connection.headers?.sessionid || this.connection.id;
-    let currentUser = null;
-    
-    if (effectiveSessionId) {
-      try {
-        const session = await SessionHelpers.validateSession(effectiveSessionId);
-        if (session && session.userId) {
-          currentUser = await UsersCollection.findOneAsync(session.userId);
-        }
-      } catch (error) {
-        // Session validation failed
-      }
-    }
-    
-    // If no authenticated user, return empty
-    if (!currentUser) {
-      return this.ready();
-    }
-    
-    // Find the specific product
-    const product = await ProductsCollection.findOneAsync(productId);
-    if (!product) {
-      return this.ready();
-    }
-    
-    // Apply same access control as products publication
-    if (currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.COMPLIANCE) {
-      return ProductsCollection.find({ _id: productId });
-    }
-
-    // For clients and RMs, check if they have access to this product through allocations
-    let hasAccess = false;
-    
-    if (currentUser.role === USER_ROLES.CLIENT) {
-      const allocation = await AllocationsCollection.findOneAsync({ 
-        productId: productId, 
-        clientId: currentUser._id 
-      });
-      hasAccess = !!allocation;
-    } else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT) {
-      const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
-      const assignedClients = await UsersCollection.find({
-        role: USER_ROLES.CLIENT,
-        relationshipManagerId: { $in: rmIds }
-      }).fetchAsync();
-      
-      const clientIds = assignedClients.map(client => client._id);
-      const allocation = await AllocationsCollection.findOneAsync({ 
-        productId: productId, 
-        clientId: { $in: clientIds } 
-      });
-      hasAccess = !!allocation;
-    }
-    
-    if (hasAccess) {
-      return ProductsCollection.find({ _id: productId });
-    }
-    
-    return this.ready();
-  });
-
-  // Publish product allocations with role-based access control
-  Meteor.publish("productAllocations", async function (productId, sessionId = null) {
-    check(productId, String);
-    
-    // Get the current user making the subscription request
-    const effectiveSessionId = sessionId || this.connection.headers?.sessionid || this.connection.id;
-    let currentUser = null;
-    
-    // Try to get user from session
-    if (effectiveSessionId) {
-      try {
-        // SessionHelpers is already imported at the top
-        const session = await SessionHelpers.validateSession(effectiveSessionId);
-        if (session && session.userId) {
-          currentUser = await UsersCollection.findOneAsync(session.userId);
-        }
-      } catch (error) {
-        // console.log('productAllocations publication: No valid session found');
-      }
-    }
-    
-    // If no authenticated user, return empty
-    if (!currentUser) {
-      // console.log('productAllocations publication: No authenticated user, returning empty');
-      return this.ready();
-    }
-    
-    // console.log('productAllocations publication: User role:', currentUser.role, 'productId:', productId);
-
-    try {
-      // AllocationsCollection is already imported at the top
-      
-      // SuperAdmin and Admin see all allocations for the product
-      if (currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.ADMIN) {
-        // console.log('productAllocations publication: Admin/SuperAdmin access - returning all allocations');
-        return AllocationsCollection.find({ productId: productId });
-      }
-      
-      // Relationship Manager sees allocations for their assigned clients only
-      if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
-        // console.log('productAllocations publication: RM access - finding client allocations');
-        
-        // Get all clients assigned to this RM
-        const assignedClients = await UsersCollection.find({
-          role: USER_ROLES.CLIENT,
-          relationshipManagerId: currentUser._id
-        }).fetchAsync();
-        
-        const clientIds = assignedClients.map(client => client._id);
-        // console.log('productAllocations publication: RM has', clientIds.length, 'assigned clients');
-        
-        if (clientIds.length === 0) {
-          return this.ready();
-        }
-        
-        return AllocationsCollection.find({ 
-          productId: productId,
-          clientId: { $in: clientIds }
-        });
-      }
-      
-      // Client sees only their own allocations
-      if (currentUser.role === USER_ROLES.CLIENT) {
-        // console.log('productAllocations publication: Client access - returning own allocations');
-        return AllocationsCollection.find({ 
-          productId: productId,
-          clientId: currentUser._id
-        });
-      }
-      
-      // Unknown role - return empty
-      // console.log('productAllocations publication: Unknown role:', currentUser.role);
-      return this.ready();
-    } catch (error) {
-      console.log('productAllocations publication error:', error.message);
-      return this.ready();
-    }
-  });
-
-  // Publish all allocations with role-based access control
-  Meteor.publish("allAllocations", async function (sessionId = null) {
-    // Get the current user making the subscription request
-    const effectiveSessionId = sessionId || this.connection.headers?.sessionid || this.connection.id;
-    let currentUser = null;
-    
-    // Try to get user from session
-    if (effectiveSessionId) {
-      try {
-        // SessionHelpers is already imported at the top
-        const session = await SessionHelpers.validateSession(effectiveSessionId);
-        if (session && session.userId) {
-          currentUser = await UsersCollection.findOneAsync(session.userId);
-        }
-      } catch (error) {
-        // console.log('allAllocations publication: Session validation error:', error.message);
-      }
-    }
-    
-    // If no authenticated user, return empty
-    if (!currentUser) {
-      // console.log('allAllocations publication: No authenticated user, returning empty');
-      return this.ready();
-    }
-
-    try {
-      // AllocationsCollection is already imported at the top
-      
-      // SuperAdmin and Admin see all allocations
-      if (currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.ADMIN) {
-        return AllocationsCollection.find();
-      }
-      
-      // Relationship Manager sees allocations for their assigned clients only
-      if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
-        const assignedClients = await UsersCollection.find({
-          role: USER_ROLES.CLIENT,
-          relationshipManagerId: currentUser._id
-        }).fetchAsync();
-        
-        const clientIds = assignedClients.map(client => client._id);
-        if (clientIds.length === 0) {
-          return this.ready();
-        }
-        
-        return AllocationsCollection.find({ clientId: { $in: clientIds } });
-      }
-      
-      // Client sees only their own allocations
-      if (currentUser.role === USER_ROLES.CLIENT) {
-        return AllocationsCollection.find({ clientId: currentUser._id });
-      }
-      
-      return this.ready();
-    } catch (error) {
-      console.log('allAllocations publication error:', error.message);
-      return this.ready();
-    }
-  });
 
   // Publish users for admin management
   Meteor.publish("customUsers", function () {
@@ -2405,9 +2133,9 @@ Meteor.methods({
       throw new Meteor.Error('not-found', 'Account not found');
     }
 
-    // Allow admin/superadmin to update any account, users can only update their own
-    const isAdmin = user.role === USER_ROLES.ADMIN || user.role === USER_ROLES.SUPERADMIN;
-    if (!isAdmin && account.userId !== user._id) {
+    // Allow admin/superadmin/compliance to update any account, users can only update their own
+    const canEdit = [USER_ROLES.ADMIN, USER_ROLES.SUPERADMIN, USER_ROLES.COMPLIANCE].includes(user.role);
+    if (!canEdit && account.userId !== user._id) {
       throw new Meteor.Error('not-authorized', 'Access denied');
     }
 
@@ -2538,7 +2266,7 @@ Meteor.methods({
   },
 
   // Issuer management methods
-  async 'issuers.create'({ name, code, sessionId }) {
+  async 'issuers.create'({ name, code, contactName, contactEmail, contactPhone, sessionId }) {
     // Only admins and superadmins can create issuers
     const currentUser = await validateSessionAndGetUser(sessionId);
     if (!currentUser || (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN)) {
@@ -2555,6 +2283,10 @@ Meteor.methods({
 
     const trimmedName = name.trim();
     const trimmedCode = code.trim().toUpperCase();
+    const trimmedContactEmail = (contactEmail || '').trim();
+    if (trimmedContactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedContactEmail)) {
+      throw new Meteor.Error('invalid-email', 'Contact email is not valid');
+    }
 
     // Check for duplicates
     if (await IssuerHelpers.nameExists(trimmedName)) {
@@ -2568,6 +2300,9 @@ Meteor.methods({
     const issuerId = await IssuersCollection.insertAsync({
       name: trimmedName,
       code: trimmedCode,
+      contactName: (contactName || '').trim() || null,
+      contactEmail: trimmedContactEmail || null,
+      contactPhone: (contactPhone || '').trim() || null,
       active: true,
       createdAt: new Date(),
       createdBy: currentUser._id
@@ -2576,7 +2311,7 @@ Meteor.methods({
     return issuerId;
   },
 
-  async 'issuers.update'(issuerId, { name, code, sessionId }) {
+  async 'issuers.update'(issuerId, { name, code, contactName, contactEmail, contactPhone, sessionId }) {
     // Only admins and superadmins can update issuers
     const currentUser = await validateSessionAndGetUser(sessionId);
     if (!currentUser || (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN)) {
@@ -2599,6 +2334,10 @@ Meteor.methods({
 
     const trimmedName = name.trim();
     const trimmedCode = code.trim().toUpperCase();
+    const trimmedContactEmail = (contactEmail || '').trim();
+    if (trimmedContactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedContactEmail)) {
+      throw new Meteor.Error('invalid-email', 'Contact email is not valid');
+    }
 
     // Check for duplicates (excluding current issuer)
     if (await IssuerHelpers.nameExists(trimmedName, issuerId)) {
@@ -2613,6 +2352,9 @@ Meteor.methods({
       $set: {
         name: trimmedName,
         code: trimmedCode,
+        contactName: (contactName || '').trim() || null,
+        contactEmail: trimmedContactEmail || null,
+        contactPhone: (contactPhone || '').trim() || null,
         updatedAt: new Date(),
         updatedBy: currentUser._id
       }
@@ -6692,8 +6434,8 @@ Meteor.methods({
       throw new Meteor.Error('not-authorized', 'User not found');
     }
 
-    // Admins, superadmins, and RMs can use ViewAs filter
-    const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
+    // Admins, superadmins, compliance, and RMs can use ViewAs filter
+    const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE;
     const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
 
     if (!isAdmin && !isRM) {
@@ -6702,162 +6444,145 @@ Meteor.methods({
 
     // If search term is empty, return empty results (don't load everything)
     if (!searchTerm || searchTerm.trim().length < 2) {
-      return { clients: [], bankAccounts: [] };
+      return { entities: [], bankAccounts: [] };
     }
 
-    const searchLower = searchTerm.trim().toLowerCase();
-    const searchRegex = new RegExp(searchTerm.trim(), 'i');
+    const escapedTerm = searchTerm.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const searchRegex = new RegExp(escapedTerm, 'i');
+    // Stricter match for account numbers: anchor at start so typing "5040241" never shows "5040217"
+    const accountNumberRegex = new RegExp('^' + escapedTerm + '$', 'i');
 
-    // Build base query for clients
-    const clientQuery = {
-      role: USER_ROLES.CLIENT,
-      $or: [
-        { email: searchRegex },
-        { 'profile.firstName': searchRegex },
-        { 'profile.lastName': searchRegex }
-      ]
-    };
-
-    // RMs/Assistants can only see their assigned clients
-    if (isRM) {
-      const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
-      clientQuery.relationshipManagerId = { $in: rmIds };
-    }
-
-    // Search clients (limit to 5 results for performance)
-    const clients = await UsersCollection.find(
-      clientQuery,
-      {
-        limit: 5,
-        fields: {
-          email: 1,
-          username: 1,
-          role: 1,
-          profile: 1,
-          relationshipManagerId: 1,
-          reportingCurrency: 1
-        },
-        sort: { 'profile.lastName': 1, 'profile.firstName': 1 }
-      }
-    ).fetchAsync();
-
-    // For RMs, get their assigned client IDs first to filter bank accounts
-    let assignedClientIds = null;
-    if (isRM) {
-      const assignedClients = await UsersCollection.find(
-        { role: USER_ROLES.CLIENT, relationshipManagerId: currentUser._id },
-        { fields: { _id: 1 } }
-      ).fetchAsync();
-      assignedClientIds = assignedClients.map(c => c._id);
-    }
-
-    // Build bank accounts query
-    const bankAccountQuery = {
+    // Search client entities (primary - entity-based architecture)
+    const { ClientEntitiesCollection: EntitiesCol, ClientEntityHelpers } = require('../imports/api/clientEntities.js');
+    const entityQuery = {
       isActive: true,
-      $or: [
-        { accountNumber: searchRegex },
-        { comment: searchRegex }
-      ]
-    };
-
-    // RMs can only see accounts belonging to their assigned clients
-    if (isRM && assignedClientIds) {
-      bankAccountQuery.userId = { $in: assignedClientIds };
-    }
-
-    // Search bank accounts (limit to 5 results for performance)
-    const bankAccounts = await BankAccountsCollection.find(
-      bankAccountQuery,
-      {
-        limit: 5,
-        sort: { accountNumber: 1 }
-      }
-    ).fetchAsync();
-
-    // Enhance bank accounts with user and bank info
-    const enhancedAccounts = await Promise.all(
-      bankAccounts.map(async (account) => {
-        const user = await UsersCollection.findOneAsync(account.userId);
-        const bank = await BanksCollection.findOneAsync(account.bankId);
-
-        const userName = user ? `${user.profile?.firstName || ''} ${user.profile?.lastName || ''}`.trim() : 'Unknown';
-        const userEmail = user?.email || '';
-
-        // Also check if user name or email matches search
-        const userMatches = userName.toLowerCase().includes(searchLower) ||
-                           userEmail.toLowerCase().includes(searchLower);
-
-        return {
-          ...account,
-          userName,
-          userEmail,
-          bankName: bank?.name || 'Unknown Bank',
-          _matchedByUser: userMatches
-        };
-      })
-    );
-
-    // Build user search query for accounts by user name/email
-    const userSearchQuery = {
-      role: USER_ROLES.CLIENT,
       $or: [
         { 'profile.firstName': searchRegex },
         { 'profile.lastName': searchRegex },
-        { email: searchRegex }
+        { 'profile.companyName': searchRegex }
       ]
     };
 
-    // RMs can only search their assigned clients
+    // RMs can see entities they manage or have backup access to via bank accounts
     if (isRM) {
-      userSearchQuery.relationshipManagerId = currentUser._id;
+      const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
+      // Find entities where RM is backup via bank accounts
+      const backupAccounts = await BankAccountsCollection.find(
+        { backupRmIds: { $in: rmIds }, isActive: true, entityId: { $exists: true } },
+        { fields: { entityId: 1 } }
+      ).fetchAsync();
+      const backupEntityIds = [...new Set(backupAccounts.map(a => a.entityId).filter(Boolean))];
+
+      entityQuery.$and = [{
+        $or: [
+          { relationshipManagerId: { $in: rmIds } },
+          ...(backupEntityIds.length > 0 ? [{ _id: { $in: backupEntityIds } }] : [])
+        ]
+      }];
     }
 
-    // Also search for accounts by user name/email
-    const userMatches = await UsersCollection.find(
-      userSearchQuery,
+    const entities = await EntitiesCol.find(
+      entityQuery,
       {
         limit: 10,
-        fields: { _id: 1 }
+        fields: { type: 1, status: 1, isInsurance: 1, profile: 1, relationshipManagerId: 1, referenceCurrency: 1, migratedFromUserId: 1 },
+        sort: { 'profile.lastName': 1, 'profile.firstName': 1, 'profile.companyName': 1 }
       }
     ).fetchAsync();
 
-    if (userMatches.length > 0) {
-      const userIds = userMatches.map(u => u._id);
-      const accountsByUser = await BankAccountsCollection.find(
-        {
-          isActive: true,
-          userId: { $in: userIds },
-          _id: { $nin: bankAccounts.map(a => a._id) } // Exclude already found accounts
-        },
-        {
-          limit: 5
-        }
+    // Enrich entities with their bank accounts (owned or beneficial owner)
+    const enrichedEntities = await Promise.all(entities.map(async (entity) => {
+      const accounts = await BankAccountsCollection.find(
+        { $or: [{ entityId: entity._id }, { beneficialOwnerIds: entity._id }, { beneficialOwnerId: entity._id }], isActive: true },
+        { limit: 10, fields: { accountNumber: 1, bankId: 1, referenceCurrency: 1, name: 1, entityId: 1 } }
       ).fetchAsync();
 
-      const enhancedUserAccounts = await Promise.all(
-        accountsByUser.map(async (account) => {
-          const user = await UsersCollection.findOneAsync(account.userId);
-          const bank = await BanksCollection.findOneAsync(account.bankId);
+      // Enrich accounts with bank name and owner entity name (for BO accounts)
+      const enrichedAccounts = await Promise.all(accounts.map(async (acc) => {
+        const bank = await BanksCollection.findOneAsync(acc.bankId);
+        let ownerName = null;
+        // If this account belongs to a different entity (i.e. current entity is BO, not owner)
+        if (acc.entityId && acc.entityId !== entity._id) {
+          const ownerEntity = await EntitiesCol.findOneAsync(acc.entityId);
+          if (ownerEntity) {
+            ownerName = ClientEntityHelpers.getEntityDisplayName(ownerEntity);
+          }
+        }
+        return { ...acc, bankName: bank?.name || '', ownerName };
+      }));
 
-          return {
-            ...account,
-            userName: user ? `${user.profile?.firstName || ''} ${user.profile?.lastName || ''}`.trim() : 'Unknown',
-            userEmail: user?.email || '',
-            bankName: bank?.name || 'Unknown Bank',
-            _matchedByUser: true
-          };
-        })
-      );
+      return { ...entity, accounts: enrichedAccounts };
+    }));
 
-      enhancedAccounts.push(...enhancedUserAccounts);
+    // Also search by account number — exact match only to avoid picking the wrong account
+    const accountQuery = {
+      isActive: true,
+      accountNumber: accountNumberRegex
+    };
+
+    // RMs: restrict to accounts they manage (primary RM or backup)
+    if (isRM) {
+      const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
+      const rmEntities = await EntitiesCol.find(
+        { relationshipManagerId: { $in: rmIds }, isActive: true },
+        { fields: { _id: 1 } }
+      ).fetchAsync();
+      const rmEntityIds = rmEntities.map(e => e._id);
+      accountQuery.$or = [
+        ...(rmEntityIds.length > 0 ? [{ entityId: { $in: rmEntityIds } }] : []),
+        { backupRmIds: { $in: rmIds } },
+        { relationshipManagerId: { $in: rmIds } }
+      ];
     }
 
-    // Limit total accounts to 5
-    const finalAccounts = enhancedAccounts.slice(0, 5);
+    const matchedAccounts = await BankAccountsCollection.find(accountQuery, { limit: 5 }).fetchAsync();
+
+    // Find entities for matched accounts (owner + beneficial owners, skip already shown)
+    const existingEntityIds = new Set(enrichedEntities.map(e => e._id));
+    const accountEntityIdSet = new Set();
+    for (const a of matchedAccounts) {
+      if (a.entityId && !existingEntityIds.has(a.entityId)) accountEntityIdSet.add(a.entityId);
+      for (const boId of (a.beneficialOwnerIds || [])) {
+        if (!existingEntityIds.has(boId)) accountEntityIdSet.add(boId);
+      }
+    }
+    const accountEntityIds = [...accountEntityIdSet];
+
+    if (accountEntityIds.length > 0) {
+      const accountEntities = await EntitiesCol.find(
+        { _id: { $in: accountEntityIds }, isActive: true },
+        { fields: { type: 1, status: 1, isInsurance: 1, profile: 1, relationshipManagerId: 1, referenceCurrency: 1, migratedFromUserId: 1 } }
+      ).fetchAsync();
+
+      for (const entity of accountEntities) {
+        // Entity was matched via account number — only show accounts that actually match the search,
+        // not every account the entity owns/is-BO-of (prevents showing 5040217 when user typed 5040241).
+        const accounts = await BankAccountsCollection.find(
+          { $or: [{ entityId: entity._id }, { beneficialOwnerIds: entity._id }, { beneficialOwnerId: entity._id }], isActive: true, accountNumber: accountNumberRegex },
+          { limit: 10, fields: { accountNumber: 1, bankId: 1, referenceCurrency: 1, name: 1, entityId: 1 } }
+        ).fetchAsync();
+
+        if (accounts.length === 0) continue;
+
+        const enrichedAccounts = await Promise.all(accounts.map(async (acc) => {
+          const bank = await BanksCollection.findOneAsync(acc.bankId);
+          let ownerName = null;
+          if (acc.entityId && acc.entityId !== entity._id) {
+            const ownerEntity = await EntitiesCol.findOneAsync(acc.entityId);
+            if (ownerEntity) {
+              ownerName = ClientEntityHelpers.getEntityDisplayName(ownerEntity);
+            }
+          }
+          return { ...acc, bankName: bank?.name || '', ownerName };
+        }));
+
+        enrichedEntities.push({ ...entity, accounts: enrichedAccounts, matchedByAccount: true });
+      }
+    }
 
     return {
-      clients,
-      bankAccounts: finalAccounts
+      entities: enrichedEntities,
+      bankAccounts: [] // Kept for backward compat but no longer used
     };
   }
 });
@@ -6953,6 +6678,58 @@ WebApp.connectHandlers.use('/termsheets', async (req, res, next) => {
 
   } catch (error) {
     console.error('Error serving termsheet:', error);
+    res.writeHead(500, { 'Content-Type': 'text/plain' });
+    res.end('Internal server error');
+  }
+});
+
+// Server-side routing for meeting-report PDFs (generated at runtime, so they
+// can't be served via Meteor's build-time public/ static handler).
+WebApp.connectHandlers.use('/meetingReports', async (req, res, next) => {
+  // URL format: /meetingReports/{filename}
+  const urlParts = req.url.split('?')[0].split('/').filter(p => p);
+  if (urlParts.length !== 1) return next();
+
+  const filename = decodeURIComponent(urlParts[0]);
+  if (!/^[A-Za-z0-9_-]+\.pdf$/.test(filename)) return next();
+
+  let baseDir = process.env.MEETING_REPORTS_PATH;
+  if (!baseDir) {
+    let projectRoot = process.cwd();
+    if (projectRoot.includes('.meteor')) {
+      projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
+    }
+    baseDir = path.join(projectRoot, 'public', 'meetingReports');
+  }
+
+  try {
+    const filePath = path.join(baseDir, filename);
+    const normalizedPath = path.normalize(filePath);
+    const normalizedDir = path.normalize(baseDir);
+    if (!normalizedPath.startsWith(normalizedDir)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Forbidden');
+      return;
+    }
+
+    if (!fs.existsSync(filePath)) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Meeting report not found');
+      return;
+    }
+
+    const fileBuffer = fs.readFileSync(filePath);
+    const stat = fs.statSync(filePath);
+
+    res.writeHead(200, {
+      'Content-Type': 'application/pdf',
+      'Content-Length': stat.size,
+      'Content-Disposition': `inline; filename="${filename}"`,
+      'Cache-Control': 'private, max-age=300'
+    });
+    res.end(fileBuffer);
+  } catch (error) {
+    console.error('Error serving meeting report:', error);
     res.writeHead(500, { 'Content-Type': 'text/plain' });
     res.end('Internal server error');
   }
@@ -7104,5 +6881,52 @@ WebApp.connectHandlers.use('/order_traces', async (req, res, next) => {
     res.end('Internal server error');
   }
 });
+
+// Temporary in-memory store for .eml files (auto-expires after 60s)
+const emlStore = new Map();
+
+// Clean up expired entries every 30s
+Meteor.setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of emlStore) {
+    if (now - entry.createdAt > 60000) emlStore.delete(key);
+  }
+}, 30000);
+
+// Server method to store .eml content and return a token
+Meteor.methods({
+  'eml.store'(emlContent, filename) {
+    check(emlContent, String);
+    check(filename, String);
+    const token = Random.id(20);
+    emlStore.set(token, { content: emlContent, filename, createdAt: Date.now() });
+    return token;
+  }
+});
+
+// Route to serve .eml files — Chrome auto-opens with Outlook if configured
+// URL format: /eml/{token}/{filename.eml}
+WebApp.connectHandlers.use('/eml', (req, res, next) => {
+  const parts = req.url.split('/').filter(p => p);
+  if (parts.length < 1) { return next(); }
+  const token = parts[0];
+  const entry = emlStore.get(token);
+  if (!entry) {
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not found or expired');
+    return;
+  }
+  // Delete after first access (one-time use)
+  emlStore.delete(token);
+
+  const buffer = Buffer.from(entry.content, 'utf-8');
+  res.writeHead(200, {
+    'Content-Type': 'message/rfc822',
+    'Content-Length': buffer.length,
+    'Content-Disposition': `attachment; filename="${entry.filename}"`
+  });
+  res.end(buffer);
+});
+
 
 // Trigger restart

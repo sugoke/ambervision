@@ -22,6 +22,7 @@ import { isValidSecurityType } from '../../imports/api/constants/instrumentTypes
 import { findNewSGZipFiles, extractSGZipFile } from '../../imports/utils/zipUtils.js';
 import { decryptAllGpgFiles, isGpgAvailable } from '../../imports/utils/gpgUtils.js';
 import { yieldToEventLoop } from '../../imports/utils/asyncHelpers.js';
+import { buildPortfolioEntityMap, getEntityIdFromMap } from '../../imports/utils/entityResolver.js';
 import path from 'path';
 import fs from 'fs';
 
@@ -166,6 +167,8 @@ async function findUserIdForPortfolioCode(portfolioCode, bankId) {
  * @param {string} bankId - Bank ID
  * @returns {Map<string, string>} - Map of portfolioCode → userId
  */
+// DEPRECATED: Use buildPortfolioEntityMap from entityResolver.js instead.
+// Kept for backward compatibility — returns userId-only map for accounts that have userId.
 async function buildPortfolioUserMap(bankId) {
   const bankAccounts = await BankAccountsCollection.find({
     bankId: bankId,
@@ -182,10 +185,7 @@ async function buildPortfolioUserMap(bankId) {
 }
 
 /**
- * Get userId from pre-built portfolio map (with portfolio code normalization)
- * @param {string} portfolioCode - Portfolio code from bank file
- * @param {Map} portfolioUserMap - Pre-built map from buildPortfolioUserMap()
- * @returns {string|null} - userId if found, null otherwise
+ * DEPRECATED: Use getEntityIdFromMap from entityResolver.js instead.
  */
 function getUserIdFromMap(portfolioCode, portfolioUserMap) {
   if (!portfolioCode) return null;
@@ -555,9 +555,9 @@ Meteor.methods({
       const allPosPortfolioCodes = [...new Set(positions.map(pos => pos.portfolioCode))];
       console.log(`[BANK_POSITIONS] Found ${allPosPortfolioCodes.length} unique portfolio codes in positions file: ${allPosPortfolioCodes.join(', ')}`);
 
-      // Build portfolio → userId map once (avoids N+1 queries)
-      const portfolioUserMap = await buildPortfolioUserMap(connection.bankId);
-      console.log(`[BANK_POSITIONS] Built portfolio map with ${portfolioUserMap.size} accounts for bankId=${connection.bankId}`);
+      // Build portfolio → entity/user map (single DB query, returns entityId + userId for each account)
+      const portfolioEntityMap = await buildPortfolioEntityMap(connection.bankId);
+      console.log(`[BANK_POSITIONS] Built portfolio map with ${portfolioEntityMap.size} accounts for bankId=${connection.bankId}`);
 
       // NOTE: Pre-processing cleanup was REMOVED to prevent isLatest flag corruption.
       // The upsertHolding() function in pmsHoldings.js handles per-uniqueKey versioning correctly:
@@ -573,19 +573,24 @@ Meteor.methods({
         await yieldToEventLoop(i, 25);
         const position = positions[i];
         try {
-          // Match portfolio code to bank account to find userId (in-memory lookup)
-          const userId = getUserIdFromMap(position.portfolioCode, portfolioUserMap);
+          // Match portfolio code to bank account (entity-primary, userId fallback)
+          const accountMapping = getEntityIdFromMap(position.portfolioCode, portfolioEntityMap);
 
-          if (!userId) {
-            // Skip positions without matching account
+          if (!accountMapping.entityId && !accountMapping.userId) {
+            // Skip positions without matching bank account
             unmappedPortfolioCodes.add(position.portfolioCode);
             unmappedPositions++;
             skippedRecords++;
             continue;
           }
 
-          // Set the matched userId
-          position.userId = userId;
+          // Set entityId (primary) and userId (optional, for backward compat)
+          if (accountMapping.entityId) {
+            position.entityId = accountMapping.entityId;
+          }
+          if (accountMapping.userId) {
+            position.userId = accountMapping.userId;
+          }
 
           // Add connection ID and source file path
           position.connectionId = connectionId;
@@ -679,7 +684,8 @@ Meteor.methods({
                         autoAllocatedFromFile: filename,
                         lastSeenInBankFile: fileDate,
                         confirmedByAdmin: false,
-                        notes: `Auto-allocated from bank file: ${filename}`
+                        notes: `Auto-allocated from bank file: ${filename}`,
+                        isin: position.isin
                       };
 
                       const allocationId = await AllocationsCollection.insertAsync(allocationData);
@@ -800,8 +806,8 @@ Meteor.methods({
             isin: position.isin,
             currency: position.currency,
             securityType: position.securityType,
-            endDate: position.bankSpecificData?.endDate,
-            reference: position.bankSpecificData?.reference
+            endDate: position.bankSpecificData?.instrumentDates?.endDate || position.bankSpecificData?.endDate,
+            reference: position.bankSpecificData?.instrumentDates?.reference || position.bankSpecificData?.reference
           });
           if (trackingUniqueKey) {
             processedUniqueKeys.add(trackingUniqueKey);
@@ -891,46 +897,73 @@ Meteor.methods({
         // Don't fail the import
       }
 
-      // REDEMPTION DETECTION: Check for allocations that disappeared from bank file
+      // REDEMPTION DETECTION: Check for allocations whose products disappeared from bank file
       console.log(`[BANK_POSITIONS] Checking for redeemed products...`);
       try {
         const { AllocationsCollection, AllocationHelpers } = await import('../../imports/api/allocations.js');
+        const { ProductsCollection } = await import('../../imports/api/products.js');
 
-        // Get all active allocations for this bank connection
-        const activeAllocations = await AllocationsCollection.find({
-          bankAccountId: { $in: positions.map(p => p.userId).filter(Boolean) },
-          status: 'active',
-          source: 'bank_auto' // Only check auto-allocated products
+        // Step 1: Get all bank account IDs for this bank connection
+        const bankAccountsForThisBank = await BankAccountsCollection.find({
+          bankId: connection.bankId,
+          isActive: true
         }).fetchAsync();
+        const bankAccountIds = bankAccountsForThisBank.map(ba => ba._id);
 
-        // Get ISINs present in current bank file
-        const currentFileIsins = new Set(positions.map(p => p.isin).filter(Boolean));
+        if (bankAccountIds.length === 0) {
+          console.log(`[REDEMPTION] No bank accounts found for bankId=${connection.bankId}, skipping`);
+        } else {
+          // Step 2: Get all active allocations linked to accounts at this bank
+          const activeAllocations = await AllocationsCollection.find({
+            bankAccountId: { $in: bankAccountIds },
+            status: 'active'
+          }).fetchAsync();
 
-        for (const allocation of activeAllocations) {
-          // Get product ISIN
-          const { ProductsCollection } = await import('../../imports/api/products.js');
-          const product = await ProductsCollection.findOneAsync(allocation.productId);
+          console.log(`[REDEMPTION] Found ${activeAllocations.length} active allocations for bank ${connection.bankId}`);
 
-          if (product && product.isin) {
-            // Check if this ISIN is missing from current file
-            if (!currentFileIsins.has(product.isin)) {
-              // Product disappeared - likely redeemed
-              // Check if it was seen recently (within last 30 days)
-              const daysSinceLastSeen = allocation.lastSeenInBankFile
-                ? Math.floor((fileDate - allocation.lastSeenInBankFile) / (1000 * 60 * 60 * 24))
-                : 999;
+          // Step 3: Get ISINs present in current bank file
+          const currentFileIsins = new Set(positions.map(p => p.isin).filter(Boolean));
 
-              if (daysSinceLastSeen <= 30) {
-                // Mark as redeemed
-                await AllocationHelpers.markAsRedeemed(allocation._id, {
-                  redeemedAt: fileDate,
-                  redemptionPrice: null, // We don't have final price
-                  redemptionValue: allocation.nominalInvested // Use nominal as estimate
-                });
-
-                console.log(`[REDEMPTION] Marked allocation as redeemed: ${product.isin} for user ${allocation.clientId}`);
-              }
+          for (const allocation of activeAllocations) {
+            // Resolve ISIN: prefer cached isin on allocation, fall back to product lookup
+            let allocationIsin = allocation.isin;
+            if (!allocationIsin) {
+              const product = await ProductsCollection.findOneAsync(allocation.productId);
+              allocationIsin = product?.isin;
             }
+
+            if (!allocationIsin) continue;
+
+            // Check if this ISIN is still present in the current bank file
+            if (currentFileIsins.has(allocationIsin)) continue;
+
+            // ISIN missing from file — verify no active holdings remain at this bank
+            const remainingHoldings = await PMSHoldingsCollection.find({
+              bankId: connection.bankId,
+              isin: allocationIsin,
+              isLatest: true,
+              isActive: true
+            }).countAsync();
+
+            if (remainingHoldings > 0) {
+              console.log(`[REDEMPTION] ISIN ${allocationIsin} missing from file but ${remainingHoldings} active holdings remain — skipping`);
+              continue;
+            }
+
+            // Safety: skip manual allocations never seen in a bank file
+            if (allocation.source === 'manual' && !allocation.lastSeenInBankFile) {
+              console.log(`[REDEMPTION] Skipping manual allocation ${allocation._id} for ${allocationIsin} — never seen in bank file`);
+              continue;
+            }
+
+            // Mark as redeemed
+            await AllocationHelpers.markAsRedeemed(allocation._id, {
+              redeemedAt: fileDate,
+              redemptionPrice: null,
+              redemptionValue: allocation.nominalInvested
+            });
+
+            console.log(`[REDEMPTION] Marked allocation ${allocation._id} as redeemed: ${allocationIsin} for client ${allocation.clientId}`);
           }
         }
       } catch (redemptionError) {
@@ -1412,24 +1445,28 @@ Meteor.methods({
           const allOpPortfolioCodes = [...new Set(operations.map(op => op.portfolioCode))];
           console.log(`[BANK_OPERATIONS] Found ${allOpPortfolioCodes.length} unique portfolio codes in operations file: ${allOpPortfolioCodes.join(', ')}`);
 
-          // Reuse portfolioUserMap from positions processing (or build if not available)
-          const opPortfolioUserMap = portfolioUserMap || await buildPortfolioUserMap(connection.bankId);
+          // Reuse portfolioEntityMap from positions processing (or build if not available)
+          const opPortfolioEntityMap = portfolioEntityMap || await buildPortfolioEntityMap(connection.bankId);
 
           for (const operation of operations) {
             try {
-              // Match portfolio code to bank account to find userId (in-memory lookup)
-              const userId = getUserIdFromMap(operation.portfolioCode, opPortfolioUserMap);
+              // Match portfolio code to bank account (entity-primary, userId fallback)
+              const opAccountMapping = getEntityIdFromMap(operation.portfolioCode, opPortfolioEntityMap);
 
-              if (!userId) {
-                // Skip operations without matching account
+              if (!opAccountMapping.entityId && !opAccountMapping.userId) {
+                // Skip operations without matching bank account
                 opUnmappedPortfolioCodes.add(operation.portfolioCode);
                 opUnmapped++;
                 opSkipped++;
                 continue;
               }
 
-              // Set the matched userId
-              operation.userId = userId;
+              if (opAccountMapping.entityId) {
+                operation.entityId = opAccountMapping.entityId;
+              }
+              if (opAccountMapping.userId) {
+                operation.userId = opAccountMapping.userId;
+              }
 
               operation.connectionId = connectionId;
               operation.sourceFilePath = path.join(bankFolderPath, operation.sourceFile || 'unknown');
@@ -1854,25 +1891,30 @@ Meteor.methods({
       // In-memory cache for enrichment during this file's processing
       const enrichmentCache = new Map();
 
-      // Build portfolio → userId map once (avoids N+1 queries)
-      const portfolioUserMap = await buildPortfolioUserMap(connection.bankId);
-      console.log(`[BANK_POSITIONS] Built portfolio map with ${portfolioUserMap.size} accounts for historical processing`);
+      // Build portfolio → entity/user map (single DB query)
+      const portfolioEntityMap = await buildPortfolioEntityMap(connection.bankId);
+      console.log(`[BANK_POSITIONS] Built portfolio map with ${portfolioEntityMap.size} accounts for historical processing`);
 
       for (let i = 0; i < positions.length; i++) {
         await yieldToEventLoop(i, 25);
         const position = positions[i];
         try {
-          // Match portfolio code to bank account to find userId (using pre-built map)
-          const userId = getUserIdFromMap(position.portfolioCode, portfolioUserMap);
+          // Match portfolio code to bank account (entity-primary, userId fallback)
+          const histAccountMapping = getEntityIdFromMap(position.portfolioCode, portfolioEntityMap);
 
-          if (!userId) {
+          if (!histAccountMapping.entityId && !histAccountMapping.userId) {
             unmappedPortfolioCodes.add(position.portfolioCode);
             unmappedPositions++;
             skippedRecords++;
             continue;
           }
 
-          position.userId = userId;
+          if (histAccountMapping.entityId) {
+            position.entityId = histAccountMapping.entityId;
+          }
+          if (histAccountMapping.userId) {
+            position.userId = histAccountMapping.userId;
+          }
           position.connectionId = connectionId;
           position.sourceFilePath = path.join(bankFolderPath, filename);
 
@@ -1967,8 +2009,8 @@ Meteor.methods({
             isin: position.isin,
             currency: position.currency,
             securityType: position.securityType,
-            endDate: position.bankSpecificData?.endDate,
-            reference: position.bankSpecificData?.reference
+            endDate: position.bankSpecificData?.instrumentDates?.endDate || position.bankSpecificData?.endDate,
+            reference: position.bankSpecificData?.instrumentDates?.reference || position.bankSpecificData?.reference
           });
           if (trackingUniqueKey) {
             processedUniqueKeys.add(trackingUniqueKey);
@@ -2807,17 +2849,28 @@ Meteor.methods({
         const endOfDay = new Date(snapshotDate);
         endOfDay.setUTCHours(23, 59, 59, 999);
 
-        const holdings = await PMSHoldingsCollection.find({
+        const allHoldings = await PMSHoldingsCollection.find({
           bankId: connection.bankId,
           userId: missing.userId,
           portfolioCode: missing.portfolioCode,
           snapshotDate: { $gte: startOfDay, $lte: endOfDay }
         }).fetchAsync();
 
-        if (holdings.length === 0) {
+        if (allHoldings.length === 0) {
           console.log(`[REGENERATE_SNAPSHOTS] No holdings found for ${missing.portfolioCode} on ${missing.snapshotDate}, skipping`);
           continue;
         }
+
+        // Deduplicate by uniqueKey — keep only the latest version per uniqueKey for this date
+        // This prevents inflated totals from duplicate holdings (e.g., after uniqueKey migrations)
+        const byKey = new Map();
+        for (const h of allHoldings) {
+          const existing = byKey.get(h.uniqueKey);
+          if (!existing || (h.version || 0) > (existing.version || 0)) {
+            byKey.set(h.uniqueKey, h);
+          }
+        }
+        const holdings = Array.from(byKey.values());
 
         // Get account info
         const accountNumber = holdings[0]?.accountNumber || null;
@@ -3108,7 +3161,73 @@ Meteor.methods({
       console.log(`[PMS_PRICE_HISTORY] EOD search failed for ${isin}:`, e.message);
     }
 
+    // --- Strategy 3: PMSHoldings daily snapshots ---
+    // Used for funds / alternative instruments that aren't in ProductsCollection and
+    // don't resolve via EOD. We already store `marketPrice` per daily snapshot.
+    const pmsHoldingsFallback = async () => {
+      const holdings = await PMSHoldingsCollection.find(
+        {
+          isin: isin.toUpperCase(),
+          portfolioCode: { $not: /CONSOLIDATED/i },
+          marketPrice: { $exists: true, $ne: null }
+        },
+        {
+          sort: { priceDate: 1 },
+          fields: {
+            marketPrice: 1,
+            priceDate: 1,
+            snapshotDate: 1,
+            dataDate: 1,
+            priceType: 1,
+            priceCurrency: 1,
+            currency: 1
+          }
+        }
+      ).fetchAsync();
+
+      if (holdings.length === 0) return null;
+
+      // Deduplicate by date (YYYY-MM-DD) — first record per day wins.
+      const byDate = new Map();
+      for (const h of holdings) {
+        const rawDate = h.priceDate || h.snapshotDate || h.dataDate;
+        if (!rawDate || h.marketPrice == null) continue;
+        const dateKey = new Date(rawDate).toISOString().split('T')[0];
+        if (!byDate.has(dateKey)) {
+          byDate.set(dateKey, { date: dateKey, price: h.marketPrice, ref: h });
+        }
+      }
+
+      if (byDate.size < 2) return null;
+
+      const entries = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+      const prices = entries.map(e => ({ date: e.date, price: e.price }));
+      const priceValues = prices.map(p => p.price);
+      const firstPrice = priceValues[0];
+      const lastPrice = priceValues[priceValues.length - 1];
+      const firstHolding = entries[0].ref;
+
+      return {
+        hasData: true,
+        source: 'pmsHoldings',
+        fullTicker: isin,
+        currency: firstHolding.priceCurrency || firstHolding.currency || 'USD',
+        prices,
+        minPrice: Math.min(...priceValues),
+        maxPrice: Math.max(...priceValues),
+        startDate: prices[0].date,
+        endDate: prices[prices.length - 1].date,
+        dataPoints: prices.length,
+        isPositive: lastPrice >= firstPrice,
+        firstPrice,
+        lastPrice,
+        isPercentagePrice: firstHolding.priceType === 'percentage'
+      };
+    };
+
     if (!fullTicker) {
+      const fallback = await pmsHoldingsFallback();
+      if (fallback) return fallback;
       return { hasData: false, error: 'No price history available for this instrument' };
     }
 
@@ -3142,6 +3261,8 @@ Meteor.methods({
     }
 
     if (!cacheDoc || !cacheDoc.history || cacheDoc.history.length === 0) {
+      const fallback = await pmsHoldingsFallback();
+      if (fallback) return fallback;
       return { hasData: false, error: 'No price history available' };
     }
 
@@ -3157,6 +3278,8 @@ Meteor.methods({
     });
 
     if (filtered.length === 0) {
+      const fallback = await pmsHoldingsFallback();
+      if (fallback) return fallback;
       return { hasData: false, error: 'No recent price history' };
     }
 

@@ -80,30 +80,25 @@ export const DataFreshnessBadge = ({
 
   return (
     <div
+      title={lastError && status === 'error' ? lastError : undefined}
       style={{
-        display: 'flex',
-        flexDirection: 'column',
-        padding: isMobileView ? '8px 12px' : '12px 16px',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '6px 12px',
         borderRadius: '8px',
         background: styles.background,
         color: styles.textColor,
-        minWidth: isMobileView ? '100px' : '140px',
-        boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-        flex: isMobileView ? '0 0 auto' : 'none'
+        boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
+        flex: isMobileView ? '0 0 auto' : 'none',
+        whiteSpace: 'nowrap'
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
-        <span style={{ fontSize: isMobileView ? '12px' : '16px' }}>{statusIcon}</span>
-        <span style={{ fontWeight: '600', fontSize: isMobileView ? '12px' : '14px' }}>{bankName}</span>
-      </div>
-      <div style={{ fontSize: isMobileView ? '11px' : '13px', opacity: 0.9 }}>
+      <span style={{ fontSize: '13px', lineHeight: 1 }}>{statusIcon}</span>
+      <span style={{ fontWeight: '600', fontSize: '12px' }}>{bankName}</span>
+      <span style={{ fontSize: '12px', opacity: 0.9 }}>
         {status === 'error' ? 'Sync Failed' : dataDateFormatted}
-      </div>
-      {lastError && status === 'error' && (
-        <div style={{ fontSize: '10px', opacity: 0.8, marginTop: '2px' }}>
-          {lastError.substring(0, 30)}...
-        </div>
-      )}
+      </span>
     </div>
   );
 };

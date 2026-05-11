@@ -126,6 +126,9 @@ export const buildDailyFlowsFromOperations = (operations, ratesMap) => {
  * - Missing days (weekends/holidays): TWR calculates over multi-day gaps naturally
  * - First day: loop starts at index 1, index 0 is the reference point
  * - Zero/negative denominator: skip day (new account with first deposit)
+ * - Extreme daily returns clamped: a single-day move beyond ±50% is almost
+ *   certainly a missing cash flow (deposit/withdrawal not in operations),
+ *   so the day is neutralized (return = 0) to avoid chart spikes.
  *
  * @param {Array} dailyValues - Sorted array of { date, totalValueEUR }
  * @param {Object} dailyFlows - Map of date -> net EUR flow
@@ -133,6 +136,8 @@ export const buildDailyFlowsFromOperations = (operations, ratesMap) => {
  */
 export const calculateDailyTWR = (dailyValues, dailyFlows) => {
   if (!dailyValues || dailyValues.length < 2) return [];
+
+  const MAX_DAILY_RETURN = 0.15; // ±15% — beyond this, treat as missing cash flow
 
   const results = [];
   let cumulativeProduct = 1;
@@ -157,7 +162,14 @@ export const calculateDailyTWR = (dailyValues, dailyFlows) => {
       continue;
     }
 
-    const dailyReturn = (vEnd - vStart - cf) / denominator;
+    let dailyReturn = (vEnd - vStart - cf) / denominator;
+
+    // Clamp extreme daily returns — likely a missing/unmatched cash flow
+    if (Math.abs(dailyReturn) > MAX_DAILY_RETURN) {
+      console.warn(`[TWR] Clamping extreme daily return on ${dailyValues[i].date}: ${(dailyReturn * 100).toFixed(1)}% (vStart=${vStart.toFixed(0)}, vEnd=${vEnd.toFixed(0)}, cf=${cf.toFixed(0)}) — likely missing cash flow`);
+      dailyReturn = 0;
+    }
+
     cumulativeProduct *= (1 + dailyReturn);
 
     results.push({

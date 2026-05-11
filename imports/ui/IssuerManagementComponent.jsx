@@ -8,10 +8,16 @@ import { useDialog } from './useDialog.js';
 const IssuerManagementComponent = ({ user: currentUser }) => {
   const [newIssuerName, setNewIssuerName] = useState('');
   const [newIssuerCode, setNewIssuerCode] = useState('');
+  const [newIssuerContactName, setNewIssuerContactName] = useState('');
+  const [newIssuerContactEmail, setNewIssuerContactEmail] = useState('');
+  const [newIssuerContactPhone, setNewIssuerContactPhone] = useState('');
   const [editingIssuer, setEditingIssuer] = useState(null);
   const { dialogState, showConfirm, hideDialog } = useDialog();
   const [editName, setEditName] = useState('');
   const [editCode, setEditCode] = useState('');
+  const [editContactName, setEditContactName] = useState('');
+  const [editContactEmail, setEditContactEmail] = useState('');
+  const [editContactPhone, setEditContactPhone] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -124,6 +130,9 @@ const IssuerManagementComponent = ({ user: currentUser }) => {
     Meteor.call('issuers.create', {
       name: newIssuerName.trim(),
       code: newIssuerCode.trim(),
+      contactName: newIssuerContactName.trim(),
+      contactEmail: newIssuerContactEmail.trim(),
+      contactPhone: newIssuerContactPhone.trim(),
       sessionId
     }, (err) => {
       setIsSubmitting(false);
@@ -133,6 +142,9 @@ const IssuerManagementComponent = ({ user: currentUser }) => {
         setSuccess('Issuer created successfully!');
         setNewIssuerName('');
         setNewIssuerCode('');
+        setNewIssuerContactName('');
+        setNewIssuerContactEmail('');
+        setNewIssuerContactPhone('');
       }
     });
   };
@@ -141,6 +153,9 @@ const IssuerManagementComponent = ({ user: currentUser }) => {
     setEditingIssuer(issuer._id);
     setEditName(issuer.name);
     setEditCode(issuer.code);
+    setEditContactName(issuer.contactName || '');
+    setEditContactEmail(issuer.contactEmail || '');
+    setEditContactPhone(issuer.contactPhone || '');
     clearMessages();
   };
 
@@ -156,6 +171,9 @@ const IssuerManagementComponent = ({ user: currentUser }) => {
     Meteor.call('issuers.update', editingIssuer, {
       name: editName.trim(),
       code: editCode.trim(),
+      contactName: editContactName.trim(),
+      contactEmail: editContactEmail.trim(),
+      contactPhone: editContactPhone.trim(),
       sessionId
     }, (err) => {
       if (err) {
@@ -165,6 +183,9 @@ const IssuerManagementComponent = ({ user: currentUser }) => {
         setEditingIssuer(null);
         setEditName('');
         setEditCode('');
+        setEditContactName('');
+        setEditContactEmail('');
+        setEditContactPhone('');
       }
     });
   };
@@ -173,6 +194,9 @@ const IssuerManagementComponent = ({ user: currentUser }) => {
     setEditingIssuer(null);
     setEditName('');
     setEditCode('');
+    setEditContactName('');
+    setEditContactEmail('');
+    setEditContactPhone('');
     clearMessages();
   };
 
@@ -289,10 +313,10 @@ const IssuerManagementComponent = ({ user: currentUser }) => {
                 required
                 placeholder="e.g., GS"
                 maxLength="10"
-                style={{ 
-                  width: '100%', 
-                  padding: '12px 16px', 
-                  border: '2px solid var(--border-color)', 
+                style={{
+                  width: '100%',
+                  padding: '12px 16px',
+                  border: '2px solid var(--border-color)',
                   borderRadius: '8px',
                   fontSize: '1rem',
                   boxSizing: 'border-box',
@@ -301,9 +325,48 @@ const IssuerManagementComponent = ({ user: currentUser }) => {
                 }}
               />
             </div>
+
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '0.875rem', fontWeight: '600', color: 'var(--text-primary)' }}>
+                Contact Name:
+              </label>
+              <input
+                type="text"
+                value={newIssuerContactName}
+                onChange={(e) => setNewIssuerContactName(e.target.value)}
+                placeholder="e.g., John Doe"
+                style={{ width: '100%', padding: '12px 16px', border: '2px solid var(--border-color)', borderRadius: '8px', fontSize: '1rem', boxSizing: 'border-box', background: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+              />
+            </div>
+
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '0.875rem', fontWeight: '600', color: 'var(--text-primary)' }}>
+                Contact Email:
+              </label>
+              <input
+                type="email"
+                value={newIssuerContactEmail}
+                onChange={(e) => setNewIssuerContactEmail(e.target.value)}
+                placeholder="e.g., trader@bank.com"
+                style={{ width: '100%', padding: '12px 16px', border: '2px solid var(--border-color)', borderRadius: '8px', fontSize: '1rem', boxSizing: 'border-box', background: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+              />
+            </div>
+
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '0.875rem', fontWeight: '600', color: 'var(--text-primary)' }}>
+                Contact Phone:
+              </label>
+              <input
+                type="tel"
+                value={newIssuerContactPhone}
+                onChange={(e) => setNewIssuerContactPhone(e.target.value)}
+                placeholder="e.g., +44 20 7000 0000"
+                style={{ width: '100%', padding: '12px 16px', border: '2px solid var(--border-color)', borderRadius: '8px', fontSize: '1rem', boxSizing: 'border-box', background: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+              />
+            </div>
           </div>
 
-          <button type="submit" disabled={isSubmitting} style={{ 
+          <button type="submit" disabled={isSubmitting} style={{
             padding: '12px 24px', 
             background: isSubmitting 
               ? 'var(--text-muted)' 
@@ -435,6 +498,7 @@ const IssuerManagementComponent = ({ user: currentUser }) => {
                 <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'center', width: '80px' }}>Logo</th>
                 <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'left' }}>Name</th>
                 <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'left' }}>Code</th>
+                <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'left' }}>Primary Contact</th>
                 <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'center' }}>Status</th>
                 <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'left' }}>Created</th>
                 <th style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'center' }}>Actions</th>
@@ -548,17 +612,17 @@ const IssuerManagementComponent = ({ user: currentUser }) => {
                         value={editCode}
                         onChange={(e) => setEditCode(e.target.value.toUpperCase())}
                         maxLength="10"
-                        style={{ 
-                          width: '100%', 
-                          padding: '4px', 
-                          border: '1px solid var(--border-color)', 
+                        style={{
+                          width: '100%',
+                          padding: '4px',
+                          border: '1px solid var(--border-color)',
                           borderRadius: '3px',
                           backgroundColor: 'var(--bg-primary)',
                           color: 'var(--text-primary)'
                         }}
                       />
                     ) : (
-                      <code style={{ 
+                      <code style={{
                         backgroundColor: 'var(--bg-tertiary)',
                         padding: '2px 6px',
                         borderRadius: '3px',
@@ -568,7 +632,24 @@ const IssuerManagementComponent = ({ user: currentUser }) => {
                       </code>
                     )}
                   </td>
-                  
+
+                  <td style={{ padding: '12px', border: '1px solid var(--border-color)' }}>
+                    {editingIssuer === issuer._id ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <input type="text" placeholder="Contact name" value={editContactName} onChange={(e) => setEditContactName(e.target.value)} style={{ padding: '4px', border: '1px solid var(--border-color)', borderRadius: '3px', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85em' }} />
+                        <input type="email" placeholder="Email" value={editContactEmail} onChange={(e) => setEditContactEmail(e.target.value)} style={{ padding: '4px', border: '1px solid var(--border-color)', borderRadius: '3px', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85em' }} />
+                        <input type="tel" placeholder="Phone" value={editContactPhone} onChange={(e) => setEditContactPhone(e.target.value)} style={{ padding: '4px', border: '1px solid var(--border-color)', borderRadius: '3px', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85em' }} />
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: '0.85em', color: 'var(--text-secondary)' }}>
+                        {issuer.contactName ? <div style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{issuer.contactName}</div> : null}
+                        {issuer.contactEmail ? <div>{issuer.contactEmail}</div> : null}
+                        {issuer.contactPhone ? <div>{issuer.contactPhone}</div> : null}
+                        {!issuer.contactName && !issuer.contactEmail && !issuer.contactPhone && <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                      </div>
+                    )}
+                  </td>
+
                   <td style={{ padding: '12px', border: '1px solid var(--border-color)', textAlign: 'center' }}>
                     <span style={{
                       padding: '4px 8px',

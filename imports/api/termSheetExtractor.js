@@ -12,7 +12,7 @@ import { validateISIN, cleanISIN } from '/imports/utils/isinValidator';
 // Anthropic API configuration (same as riskAnalysis.js)
 const ANTHROPIC_API_KEY = Meteor.settings.private?.ANTHROPIC_API_KEY;
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const ANTHROPIC_MODEL = 'claude-sonnet-4-20250514';
+const ANTHROPIC_MODEL = 'claude-opus-4-7';
 
 if (Meteor.isServer) {
   // Node.js imports for file system operations
@@ -1585,22 +1585,20 @@ CRITICAL: Return ONLY the JSON object with no additional text, explanations, or 
 
         console.log(`[TermSheetExtractor] ISIN syntax valid: ${extractedData.isin}`);
 
-        // Check if ISIN already exists in database (excluding draft products)
-        // This allows users to extract the same term sheet multiple times for experimentation
-        const existingProduct = await ProductsCollection.findOneAsync({
-          isin: extractedData.isin,
-          productStatus: { $ne: 'draft' } // Only check finalized products
-        });
+        // Check if ISIN already exists in database (any status, including draft).
+        // Previously we excluded drafts, which let users create real duplicates by
+        // re-extracting the same term sheet before finalising the first product.
+        const existingProduct = await ProductsCollection.findOneAsync({ isin: extractedData.isin });
 
         if (existingProduct) {
-          console.log(`[TermSheetExtractor] ISIN already exists in finalized product: ${extractedData.isin} (Product ID: ${existingProduct._id})`);
+          console.log(`[TermSheetExtractor] ISIN already exists: ${extractedData.isin} (Product ID: ${existingProduct._id}, status: ${existingProduct.productStatus || 'unknown'})`);
           throw new Meteor.Error(
             'duplicate-isin',
-            `A finalized product with ISIN "${extractedData.isin}" already exists in the database. Product title: "${existingProduct.title || existingProduct.productName || 'Untitled'}". Please verify the term sheet or update the existing product instead.`
+            `A product with ISIN "${extractedData.isin}" already exists in the database. Product title: "${existingProduct.title || existingProduct.productName || 'Untitled'}" (status: ${existingProduct.productStatus || 'unknown'}). Open the existing product instead of re-extracting the term sheet.`
           );
         }
 
-        console.log(`[TermSheetExtractor] ISIN is unique among finalized products`);
+        console.log(`[TermSheetExtractor] ISIN is unique`);
       } else {
         console.warn('[TermSheetExtractor] No ISIN found in extracted data');
       }
@@ -1634,6 +1632,24 @@ CRITICAL: Return ONLY the JSON object with no additional text, explanations, or 
       if (termSheetMetadata) {
         writeTermSheetFile(fileData, termSheetMetadata);
         console.log(`[TermSheetExtractor] Term sheet attached to product: ${termSheetMetadata.url}`);
+      }
+
+      // Auto-create allocations from existing PMS holdings for this ISIN.
+      // Mirrors the hook on manual product creation at server/main.js:2575.
+      // Without this, products extracted from a term sheet stay disconnected from
+      // the bank holdings already imported, so the dashboard shows no Position.
+      if (productDocument.isin) {
+        Meteor.defer(async () => {
+          try {
+            const { AllocationHelpers } = await import('./allocations.js');
+            const createdAllocations = await AllocationHelpers.autoCreateFromPMSHoldings(productId, productDocument.isin);
+            if (createdAllocations.length > 0) {
+              console.log(`[TermSheetExtractor] Auto-created ${createdAllocations.length} allocations from PMS holdings for ${productDocument.isin}`);
+            }
+          } catch (allocError) {
+            console.error('[TermSheetExtractor] Error auto-creating allocations:', allocError);
+          }
+        });
       }
 
       // Auto-sync to securitiesMetadata if product has ISIN

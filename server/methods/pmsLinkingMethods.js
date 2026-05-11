@@ -268,6 +268,133 @@ Meteor.methods({
   },
 
   /**
+   * Re-link every currently-unlinked holding (not just a single import).
+   * Useful when products are created AFTER bank holdings are imported, since the
+   * import-time auto-linker only sees the holdings it just inserted.
+   * Same matching rules as `pmsHoldings.autoLinkOnImport` — ISIN → product,
+   * user → allocation; auto-creates allocations from the holding when missing.
+   */
+  async 'pmsHoldings.autoLinkAllUnlinked'() {
+    if (this.userId) {
+      const user = await UsersCollection.findOneAsync(this.userId);
+      if (!user || (user.role !== USER_ROLES.ADMIN && user.role !== USER_ROLES.SUPERADMIN)) {
+        throw new Meteor.Error('not-authorized', 'Only administrators can run this');
+      }
+    }
+
+    const unlinkedHoldings = await PMSHoldingsCollection.find({
+      isLatest: true,
+      isActive: true,
+      linkingStatus: 'unlinked',
+      isin: { $exists: true, $ne: null, $ne: '' }
+    }).fetchAsync();
+
+    console.log(`[PMS AUTO-LINK ALL] Found ${unlinkedHoldings.length} unlinked latest-active holdings with ISIN`);
+
+    const linkResults = { total: unlinkedHoldings.length, linked: 0, failed: 0, noMatch: 0, details: [] };
+
+    const uniqueIsins = [...new Set(unlinkedHoldings.map(h => h.isin).filter(Boolean))];
+    const matchingProducts = await ProductsCollection.find(
+      { isin: { $in: uniqueIsins } },
+      { sort: { createdAt: -1 } }
+    ).fetchAsync();
+    const productsByIsin = new Map();
+    for (const product of matchingProducts) {
+      if (!productsByIsin.has(product.isin)) productsByIsin.set(product.isin, product);
+    }
+    console.log(`[PMS AUTO-LINK ALL] Built product map: ${productsByIsin.size} products for ${uniqueIsins.length} unique ISINs`);
+
+    for (const holding of unlinkedHoldings) {
+      try {
+        const product = productsByIsin.get(holding.isin);
+        if (!product) {
+          linkResults.noMatch++;
+          linkResults.details.push({ holdingId: holding._id, isin: holding.isin, status: 'no_product_match' });
+          continue;
+        }
+
+        const allocation = await AllocationsCollection.findOneAsync({
+          productId: product._id,
+          clientId: holding.userId,
+          status: 'active'
+        });
+
+        if (!allocation) {
+          let bankAccount = await BankAccountsCollection.findOneAsync({
+            userId: holding.userId,
+            accountNumber: holding.portfolioCode,
+            isActive: true
+          });
+          if (!bankAccount) {
+            bankAccount = await BankAccountsCollection.findOneAsync({
+              userId: holding.userId,
+              isActive: true
+            });
+          }
+          if (!bankAccount) {
+            linkResults.noMatch++;
+            linkResults.details.push({ holdingId: holding._id, isin: holding.isin, productId: product._id, status: 'no_bank_account' });
+            continue;
+          }
+
+          const allocationId = await AllocationsCollection.insertAsync({
+            productId: product._id,
+            clientId: holding.userId,
+            bankAccountId: bankAccount._id,
+            nominalInvested: holding.quantity || 0,
+            purchasePrice: 100,
+            status: 'active',
+            source: 'bank_auto',
+            autoAllocatedAt: new Date(),
+            autoAllocatedFromFile: holding.sourceFile || null,
+            quantity: holding.quantity || 0,
+            linkedHoldingIds: [holding._id],
+            allocatedAt: new Date(),
+            isin: holding.isin?.toUpperCase()
+          });
+
+          await PMSHoldingsCollection.updateAsync(holding._id, {
+            $set: {
+              linkedProductId: product._id,
+              linkedAllocationId: allocationId,
+              linkingStatus: 'auto_linked',
+              linkedAt: new Date(),
+              linkedBy: this.userId || null
+            }
+          });
+
+          linkResults.linked++;
+          linkResults.details.push({ holdingId: holding._id, isin: holding.isin, productId: product._id, allocationId, status: 'auto_created' });
+          continue;
+        }
+
+        await PMSHoldingsCollection.updateAsync(holding._id, {
+          $set: {
+            linkedProductId: product._id,
+            linkedAllocationId: allocation._id,
+            linkingStatus: 'auto_linked',
+            linkedAt: new Date(),
+            linkedBy: this.userId || null
+          }
+        });
+        await AllocationsCollection.updateAsync(allocation._id, {
+          $addToSet: { linkedHoldingIds: holding._id },
+          $set: { holdingsSyncedAt: new Date() }
+        });
+        linkResults.linked++;
+        linkResults.details.push({ holdingId: holding._id, isin: holding.isin, productId: product._id, allocationId: allocation._id, status: 'linked' });
+      } catch (err) {
+        linkResults.failed++;
+        linkResults.details.push({ holdingId: holding._id, isin: holding.isin, status: 'error', message: err.message });
+        console.error(`[PMS AUTO-LINK ALL] Error linking holding ${holding._id}:`, err);
+      }
+    }
+
+    console.log(`[PMS AUTO-LINK ALL] Complete: ${linkResults.linked} linked, ${linkResults.noMatch} no match, ${linkResults.failed} failed`);
+    return { success: true, ...linkResults };
+  },
+
+  /**
    * Manually link a holding to a product/allocation
    * Used when admin wants to link from PMS UI
    */

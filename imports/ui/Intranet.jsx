@@ -3,6 +3,7 @@ import { Meteor } from 'meteor/meteor';
 import { useTheme } from './ThemeContext.jsx';
 import BirthdayCalendar from './BirthdayCalendar.jsx';
 import BondPriceQuery from './components/BondPriceQuery.jsx';
+import MeetingReports from './MeetingReports.jsx';
 
 // Mini-app: Email Tester
 const EmailTester = ({ isDark }) => {
@@ -576,10 +577,16 @@ Thanks,
 
 const Intranet = ({ user }) => {
   const { theme, isDark } = useTheme();
-  const [activeApp, setActiveApp] = useState('pitch-manager');
+  const [activeApp, setActiveApp] = useState('meeting-reports');
 
   // Define available mini-apps
   const miniApps = [
+    {
+      id: 'meeting-reports',
+      label: 'Meeting Reports',
+      icon: '🗒️',
+      description: 'Rapport de Visite Client — AI-assisted'
+    },
     {
       id: 'pitch-manager',
       label: 'Pitch Manager',
@@ -615,6 +622,8 @@ const Intranet = ({ user }) => {
 
   const renderActiveApp = () => {
     switch (activeApp) {
+      case 'meeting-reports':
+        return <MeetingReports user={user} />;
       case 'pitch-manager':
         return <PitchManager isDark={isDark} />;
       case 'birthday-calendar':

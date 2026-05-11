@@ -4,7 +4,8 @@ console.log('🔍 Loading viewAsData.js publication file...');
 
 import { Meteor } from 'meteor/meteor';
 import { check } from 'meteor/check';
-import { UsersCollection, USER_ROLES } from '/imports/api/users';
+import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
+import { ClientEntitiesCollection } from '/imports/api/clientEntities';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { BanksCollection } from '/imports/api/banks';
 import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
@@ -107,6 +108,53 @@ Meteor.publish('banks.all', async function(sessionId = null) {
 
   // Return all banks
   return BanksCollection.find({});
+});
+
+// Publish client entities for ViewAs dropdown (entity-based architecture)
+Meteor.publish('entities.forViewAs', async function(sessionId = null) {
+  const effectiveSessionId = sessionId || this.connection.headers?.sessionid || this.connection.id;
+  let currentUser = null;
+
+  if (effectiveSessionId) {
+    try {
+      const session = await SessionHelpers.validateSession(effectiveSessionId);
+      if (session && session.userId) {
+        currentUser = await UsersCollection.findOneAsync(session.userId);
+      }
+    } catch (error) {
+      console.log('[VIEW AS] Session validation error:', error.message);
+    }
+  }
+
+  if (!currentUser) return this.ready();
+
+  const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE;
+  const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER;
+  const isAssistant = currentUser.role === USER_ROLES.ASSISTANT;
+
+  if (isAdmin) {
+    return ClientEntitiesCollection.find({ isActive: true }, {
+      fields: { type: 1, profile: 1, relationshipManagerId: 1, referenceCurrency: 1 },
+      sort: { 'profile.lastName': 1, 'profile.firstName': 1, 'profile.companyName': 1 }
+    });
+  }
+
+  if (isRM) {
+    return ClientEntitiesCollection.find({ relationshipManagerId: currentUser._id, isActive: true }, {
+      fields: { type: 1, profile: 1, relationshipManagerId: 1, referenceCurrency: 1 },
+      sort: { 'profile.lastName': 1, 'profile.firstName': 1, 'profile.companyName': 1 }
+    });
+  }
+
+  if (isAssistant) {
+    const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
+    return ClientEntitiesCollection.find({ relationshipManagerId: { $in: rmIds }, isActive: true }, {
+      fields: { type: 1, profile: 1, relationshipManagerId: 1, referenceCurrency: 1 },
+      sort: { 'profile.lastName': 1, 'profile.firstName': 1, 'profile.companyName': 1 }
+    });
+  }
+
+  return this.ready();
 });
 
 console.log('[VIEW AS] Publications registered successfully');

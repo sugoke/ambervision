@@ -140,40 +140,42 @@ export function matchScheduledPayment(product, observation, pmsOperations = null
   let bestMatchScore = 0;
 
   for (const operation of operations) {
-    let score = 0;
-    let matchDetails = {
-      dateMatch: false,
-      amountMatch: false
-    };
-
     // Debug logging for each operation
     const opValueDate = operation.valueDate ? new Date(operation.valueDate).toISOString().split('T')[0] : 'null';
     console.log(`[PaymentMatcher]   Checking op: type=${operation.operationType}, valueDate=${opValueDate}, grossAmt=${operation.grossAmount}, netAmt=${operation.netAmount}`);
 
-    // Check date match (operation.valueDate should match observation.paymentDate)
-    // observation.paymentDate is the scheduled value/settlement date from the product
-    // Banks may process payments late, so we check within 7-day window
-    if (operation.valueDate && datesMatch(paymentDate, operation.valueDate, 7)) {
-      matchDetails.dateMatch = true;
-
-      // Calculate days difference for scoring
-      const scheduled = new Date(paymentDate);
-      const actual = new Date(operation.valueDate);
-      const daysDiff = Math.floor((actual - scheduled) / (1000 * 60 * 60 * 24));
-
-      // Score based on proximity: closer = higher score
-      if (daysDiff === 0) {
-        score += 50; // Same day - perfect match
-      } else if (daysDiff <= 3) {
-        score += 40; // 1-3 days late - very good
-      } else {
-        score += 30; // 4-7 days late - acceptable
-      }
+    // Date proximity is REQUIRED. A coupon is expected to settle within ~1 week of the scheduled
+    // value date — without that proximity we cannot claim this payment belongs to this observation.
+    // Accept either valueDate or operationDate falling inside the window.
+    const valueDateMatches = operation.valueDate && datesMatch(paymentDate, operation.valueDate, 7);
+    const operationDateMatches = operation.operationDate && datesMatch(paymentDate, operation.operationDate, 7);
+    if (!valueDateMatches && !operationDateMatches) {
+      continue;
     }
 
-    // Check amount match
-    // Check both grossAmount and netAmount - different banks use different fields
-    // Also check operationType as strong indicator for coupon payments
+    let score = 0;
+    let matchDetails = {
+      dateMatch: true,
+      amountMatch: false
+    };
+
+    // Score based on value-date proximity (preferred) or operation-date proximity
+    const referenceDate = operation.valueDate || operation.operationDate;
+    const daysDiff = Math.floor((new Date(referenceDate) - new Date(paymentDate)) / (1000 * 60 * 60 * 24));
+    if (daysDiff <= 0) {
+      score += 50; // Same day or slightly early
+    } else if (daysDiff <= 3) {
+      score += 40;
+    } else {
+      score += 30;
+    }
+
+    // Bonus when both value date AND operation date fall in window (extra confidence)
+    if (valueDateMatches && operationDateMatches) {
+      score += 10;
+    }
+
+    // Amount sanity check — must be a positive incoming payment
     const hasPositiveGrossAmount = operation.grossAmount && operation.grossAmount > 0;
     const hasPositiveNetAmount = operation.netAmount && operation.netAmount > 0;
     const isCouponType = ['COUPON', 'DIVIDEND', 'INTEREST'].includes(operation.operationType);
@@ -183,16 +185,10 @@ export function matchScheduledPayment(product, observation, pmsOperations = null
       matchDetails.amountMatch = true;
     }
 
-    // Bonus score for operationType match
+    // Bonus for explicit coupon-style operationType
     if (isCouponType) {
       score += 20;
       matchDetails.typeMatch = true;
-    }
-
-    // Also check operation date (transaction date) for additional confidence
-    // Operation date may differ from value date
-    if (operation.operationDate && datesMatch(paymentDate, operation.operationDate, 7)) {
-      score += 10;
     }
 
     if (score > bestMatchScore) {
@@ -333,33 +329,37 @@ export function matchRedemptionTransaction(product, observation, redemptionOpera
   let bestMatchScore = 0;
 
   for (const operation of operations) {
+    // Debug logging for each redemption operation
+    const opValueDate = operation.valueDate ? new Date(operation.valueDate).toISOString().split('T')[0] : 'null';
+    console.log(`[PaymentMatcher]   Checking redemption op: type=${operation.operationType}, valueDate=${opValueDate}, qty=${operation.quantity}, netAmt=${operation.netAmount}`);
+
+    // Date proximity is REQUIRED — same 7-day tolerance as coupon payments.
+    const valueDateMatches = operation.valueDate && datesMatch(paymentDate, operation.valueDate, 7);
+    const operationDateMatches = operation.operationDate && datesMatch(paymentDate, operation.operationDate, 7);
+    if (!valueDateMatches && !operationDateMatches) {
+      continue;
+    }
+
     let score = 0;
     let matchDetails = {
-      dateMatch: false,
+      dateMatch: true,
       typeMatch: false,
       quantityMatch: false,
       detailsMatch: false
     };
 
-    // Debug logging for each redemption operation
-    const opValueDate = operation.valueDate ? new Date(operation.valueDate).toISOString().split('T')[0] : 'null';
-    console.log(`[PaymentMatcher]   Checking redemption op: type=${operation.operationType}, valueDate=${opValueDate}, qty=${operation.quantity}, netAmt=${operation.netAmount}`);
+    const referenceDate = operation.valueDate || operation.operationDate;
+    const daysDiff = Math.floor((new Date(referenceDate) - new Date(paymentDate)) / (1000 * 60 * 60 * 24));
+    if (daysDiff <= 0) {
+      score += 50;
+    } else if (daysDiff <= 3) {
+      score += 40;
+    } else {
+      score += 30;
+    }
 
-    // Check date match (same 7-day tolerance as coupon payments)
-    if (operation.valueDate && datesMatch(paymentDate, operation.valueDate, 7)) {
-      matchDetails.dateMatch = true;
-
-      const scheduled = new Date(paymentDate);
-      const actual = new Date(operation.valueDate);
-      const daysDiff = Math.floor((actual - scheduled) / (1000 * 60 * 60 * 24));
-
-      if (daysDiff === 0) {
-        score += 50; // Same day - perfect match
-      } else if (daysDiff <= 3) {
-        score += 40; // 1-3 days late - very good
-      } else {
-        score += 30; // 4-7 days late - acceptable
-      }
+    if (valueDateMatches && operationDateMatches) {
+      score += 10;
     }
 
     // Check operation type
@@ -393,11 +393,6 @@ export function matchRedemptionTransaction(product, observation, redemptionOpera
 
     // Check price around 1.00 (100% of nominal) - typical for redemptions
     if (operation.price && operation.price >= 0.95 && operation.price <= 1.05) {
-      score += 10;
-    }
-
-    // Also check operation date for additional confidence
-    if (operation.operationDate && datesMatch(paymentDate, operation.operationDate, 7)) {
       score += 10;
     }
 
@@ -536,32 +531,48 @@ export async function matchAllScheduledPayments(product, observations) {
 
   console.log(`[PaymentMatcher] Filtered: ${couponOperations.length} coupon ops, ${redemptionOperations.length} redemption ops`);
 
-  // Match each observation
-  const enhancedObservations = observations.map(obs => {
+  // Process observations in chronological order so the earliest payment claims
+  // its matching operation first. An operation is consumed once matched and
+  // cannot be reused — this prevents a single real payment from being attributed
+  // to multiple scheduled coupons (which used to happen when coupon amounts were equal).
+  const orderedIndexes = observations
+    .map((obs, idx) => ({ idx, ts: new Date(obs.paymentDate).getTime() }))
+    .sort((a, b) => a.ts - b.ts)
+    .map(entry => entry.idx);
+
+  const availableCouponOps = [...couponOperations];
+  const availableRedemptionOps = [...redemptionOperations];
+  const today = new Date();
+  const enhancedObservations = new Array(observations.length);
+
+  for (const idx of orderedIndexes) {
+    const obs = observations[idx];
     const paymentDate = new Date(obs.paymentDate);
 
     // Skip payments before PMS history cutoff (no data available before Dec 2025)
     if (paymentDate < PMS_HISTORY_CUTOFF) {
-      return {
+      enhancedObservations[idx] = {
         ...obs,
         paymentConfirmed: false,
         matchConfidence: 'skipped-before-cutoff',
         matchMessage: 'Payment date before PMS history availability (Dec 2025)',
-        // Redemption fields
         redemptionConfirmed: false,
         redemptionMatchConfidence: 'skipped-before-cutoff'
       };
+      continue;
     }
 
-    // Match coupon payment (existing logic)
-    const couponMatchResult = matchScheduledPayment(product, obs, couponOperations);
+    // Match coupon payment against the remaining (unconsumed) operations
+    const couponMatchResult = matchScheduledPayment(product, obs, availableCouponOps);
+    if (couponMatchResult.confirmed && couponMatchResult.operation) {
+      const matchedId = couponMatchResult.operation._id;
+      const removeIdx = availableCouponOps.findIndex(op => op._id === matchedId);
+      if (removeIdx >= 0) availableCouponOps.splice(removeIdx, 1);
+    }
 
-    // Determine if coupon payment is past due
-    const today = new Date();
     const isPastDue = paymentDate < today && !couponMatchResult.confirmed && obs.couponPaid > 0;
 
-    // Match redemption transaction (NEW logic)
-    // Only check if this is an autocall or final maturity observation
+    // Match redemption transaction — only on autocall or final maturity
     let redemptionResult = {
       confirmed: false,
       matchConfidence: 'not-applicable',
@@ -569,24 +580,26 @@ export async function matchAllScheduledPayments(product, observations) {
     };
 
     if (obs.autocalled || (obs.isFinal && obs.hasOccurred)) {
-      redemptionResult = matchRedemptionTransaction(product, obs, redemptionOperations);
+      redemptionResult = matchRedemptionTransaction(product, obs, availableRedemptionOps);
+      if (redemptionResult.confirmed && redemptionResult.operation) {
+        const matchedId = redemptionResult.operation._id;
+        const removeIdx = availableRedemptionOps.findIndex(op => op._id === matchedId);
+        if (removeIdx >= 0) availableRedemptionOps.splice(removeIdx, 1);
+      }
     }
 
-    // Determine if redemption is past due
     const redemptionIsPastDue = paymentDate < today &&
       !redemptionResult.confirmed &&
       (obs.autocalled || (obs.isFinal && obs.hasOccurred));
 
-    return {
+    enhancedObservations[idx] = {
       ...obs,
-      // Coupon payment fields (existing)
       paymentConfirmed: couponMatchResult.confirmed,
       confirmedPayment: couponMatchResult.confirmedPayment,
       matchConfidence: couponMatchResult.matchConfidence,
       matchScore: couponMatchResult.matchScore,
       isPastDue,
       matchMessage: couponMatchResult.message || couponMatchResult.error || null,
-      // Redemption fields (NEW)
       redemptionConfirmed: redemptionResult.confirmed,
       confirmedRedemption: redemptionResult.confirmedRedemption,
       redemptionMatchConfidence: redemptionResult.matchConfidence,
@@ -594,7 +607,7 @@ export async function matchAllScheduledPayments(product, observations) {
       redemptionIsPastDue,
       redemptionMatchMessage: redemptionResult.message || redemptionResult.error || null
     };
-  });
+  }
 
   return enhancedObservations;
 }

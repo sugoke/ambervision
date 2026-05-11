@@ -240,49 +240,47 @@ export const ParticipationNoteEvaluationHelpers = {
     const issuerCallDate = structureParams.issuerCallDate || structure.issuerCallDate;
     const isCalled = issuerCallDate && new Date(issuerCallDate) <= new Date();
 
-    // Capital guarantee only applies if product was called by issuer
-    let protectionLevel = null;
+    // Resolve capital protection. For a Participation Note, the guarantee applies
+    // at maturity (and on issuer call) — not only on issuer call. A capital-guaranteed
+    // PN with a -3.70% basket and 100% protection redeems at 100%, not 96.30%.
+    let protectionLevel = structureParams.capitalGuarantee ||
+                         structureParams.protectionBarrier ||
+                         structureParams.capitalProtection ||
+                         structure.capitalGuarantee ||
+                         structure.protectionBarrier ||
+                         structure.capitalProtection ||
+                         null;
+
+    // Also check in components (for drag-and-drop products)
+    if (!protectionLevel && product.components && Array.isArray(product.components)) {
+      const protectionComponent = product.components.find(c =>
+        c.type === 'BARRIER' &&
+        (c.barrier_type === 'protection' || c.barrier_type === 'capital_protection')
+      );
+      if (protectionComponent) {
+        protectionLevel = protectionComponent.barrier_level || protectionComponent.value;
+      }
+    }
+
     let hasProtection = false;
     let protectionApplied = false;
     let finalRedemption = rawRedemption;
 
-    if (isCalled) {
-      // Product was called - apply capital guarantee
-      protectionLevel = structureParams.capitalGuarantee ||
-                       structureParams.protectionBarrier ||
-                       structureParams.capitalProtection ||
-                       structure.capitalGuarantee ||
-                       structure.protectionBarrier ||
-                       structure.capitalProtection ||
-                       null;
-
-      // Also check in components (for drag-and-drop products)
-      if (!protectionLevel && product.components && Array.isArray(product.components)) {
-        const protectionComponent = product.components.find(c =>
-          c.type === 'BARRIER' &&
-          (c.barrier_type === 'protection' || c.barrier_type === 'capital_protection')
-        );
-        if (protectionComponent) {
-          protectionLevel = protectionComponent.barrier_level || protectionComponent.value;
-        }
-      }
-
-      // Apply protection floor if it exists
-      if (protectionLevel !== null && protectionLevel !== undefined) {
-        hasProtection = true;
-        finalRedemption = Math.max(rawRedemption, protectionLevel);
-        protectionApplied = rawRedemption < protectionLevel;
-      }
+    if (protectionLevel !== null && protectionLevel !== undefined) {
+      hasProtection = true;
+      finalRedemption = Math.max(rawRedemption, protectionLevel);
+      protectionApplied = rawRedemption < protectionLevel;
     }
 
     // Build formula
     let formula;
-    if (isCalled && protectionApplied) {
-      formula = `Called by Issuer: Max(100% + (${basketPerformance.toFixed(2)}% × ${participationRate.toFixed(0)}%), ${protectionLevel.toFixed(0)}%) = ${finalRedemption.toFixed(2)}%`;
-    } else if (isCalled && hasProtection) {
-      formula = `Called by Issuer: 100% + (${basketPerformance.toFixed(2)}% × ${participationRate.toFixed(0)}%) = ${finalRedemption.toFixed(2)}% (guarantee at ${protectionLevel.toFixed(0)}%)`;
+    const calledPrefix = isCalled ? 'Called by Issuer: ' : '';
+    if (protectionApplied) {
+      formula = `${calledPrefix}Max(100% + (${basketPerformance.toFixed(2)}% × ${participationRate.toFixed(0)}%), ${protectionLevel.toFixed(0)}%) = ${finalRedemption.toFixed(2)}%`;
+    } else if (hasProtection) {
+      formula = `${calledPrefix}100% + (${basketPerformance.toFixed(2)}% × ${participationRate.toFixed(0)}%) = ${finalRedemption.toFixed(2)}% (guarantee at ${protectionLevel.toFixed(0)}%)`;
     } else {
-      formula = `100% + (${basketPerformance.toFixed(2)}% × ${participationRate.toFixed(0)}%) = ${finalRedemption.toFixed(2)}%`;
+      formula = `${calledPrefix}100% + (${basketPerformance.toFixed(2)}% × ${participationRate.toFixed(0)}%) = ${finalRedemption.toFixed(2)}%`;
     }
 
     return {
@@ -415,6 +413,50 @@ export const ParticipationNoteEvaluationHelpers = {
         const initialPrice = (underlying.securityData?.tradeDatePrice?.price) ||
                            (underlying.securityData?.tradeDatePrice?.close) ||
                            splitResult.adjustedStrike || 0;
+
+        // Refresh the current price from market data cache when stale.
+        // Without this step the table reads `securityData.price` frozen at product
+        // creation time (or the last time the product was edited), which drifts
+        // away from the chart's live sparkline and produces inconsistent perf %.
+        if (!underlying.securityData) {
+          underlying.securityData = {};
+        }
+        const existingPrice = underlying.securityData.price;
+        const today = new Date();
+        const todayStr = today.toISOString().split('T')[0];
+        const existingPriceDate = existingPrice?.date
+          ? new Date(existingPrice.date).toISOString().split('T')[0]
+          : null;
+        const needsFreshPrice = !existingPrice || !existingPriceDate || existingPriceDate !== todayStr;
+
+        if (needsFreshPrice) {
+          const tickerVariants = [];
+          if (underlying.securityData.ticker) tickerVariants.push(underlying.securityData.ticker);
+          const baseTicker = (underlying.ticker || '').split('.')[0];
+          if (baseTicker) {
+            tickerVariants.push(`${baseTicker}.US`);
+            tickerVariants.push(`${baseTicker}.NASDAQ`);
+            tickerVariants.push(`${baseTicker}.NYSE`);
+          }
+          for (const tickerVariant of [...new Set(tickerVariants)]) {
+            try {
+              const cachedPrice = await MarketDataHelpers.getCurrentPrice(tickerVariant);
+              if (cachedPrice && cachedPrice.price) {
+                underlying.securityData.price = {
+                  price: cachedPrice.price,
+                  close: cachedPrice.price,
+                  date: cachedPrice.date || new Date(),
+                  source: 'market_data_cache',
+                  ticker: tickerVariant
+                };
+                console.log(`✅ Participation Note: Fetched price for ${tickerVariant}: ${cachedPrice.price}`);
+                break;
+              }
+            } catch (error) {
+              // Try next variant silently
+            }
+          }
+        }
 
         const evaluationPriceInfo = this.getEvaluationPrice(underlying, product);
         const currentPrice = evaluationPriceInfo.price;

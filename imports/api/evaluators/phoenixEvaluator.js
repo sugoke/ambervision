@@ -571,9 +571,12 @@ export const PhoenixEvaluator = {
       }
 
       // Convert barrier levels to performance thresholds
-      // autocallBarrier of 100 means 0% performance (100-100=0)
-      // protectionBarrier of 70 means -30% performance (70-100=-30)
-      const autocallThreshold = (phoenixParams.autocallBarrier || 100) - 100;
+      // Use per-observation autocall level (supports step-down schedules),
+      // falling back to the global autocallBarrier. autocallLevel of 80 means -20% performance.
+      const effectiveAutocallLevel = obs.autocallLevel != null
+        ? obs.autocallLevel
+        : (phoenixParams.autocallBarrier || 100);
+      const autocallThreshold = effectiveAutocallLevel - 100;
       // Use per-observation couponBarrier, fall back to global couponBarrier, then protectionBarrier
       const effectiveCouponBarrier = obs.couponBarrier || phoenixParams.couponBarrier || phoenixParams.protectionBarrier || 70;
       const couponThreshold = effectiveCouponBarrier - 100;
@@ -860,7 +863,11 @@ export const PhoenixEvaluator = {
       // Use couponBarrier if defined, otherwise fall back to protectionBarrier
       const effectiveCouponBarrier = phoenixParams.couponBarrier || protectionBarrier;
       const couponThreshold = effectiveCouponBarrier - 100; // e.g., -30 for 70% barrier
-      const autocallThreshold = autocallBarrier - 100; // e.g., 0 for 100% barrier
+      // Use per-observation autocall level (step-down aware), fall back to global barrier
+      const effectiveAutocallLevel = targetObservation.autocallLevel != null
+        ? targetObservation.autocallLevel
+        : autocallBarrier;
+      const autocallThreshold = effectiveAutocallLevel - 100;
 
       // Check if guaranteed coupon feature is enabled
       const isGuaranteedCoupon = phoenixParams.guaranteedCoupon === true;
@@ -926,10 +933,10 @@ export const PhoenixEvaluator = {
         if (totalMemoryCoupons > 0) {
           prediction.memoryWouldBeReleased = true;
           prediction.displayText = `${prediction.dateFormatted}; autocall; ${prediction.autocallPriceFormatted} (incl. ${prediction.totalMemoryCouponsFormatted} memory)`;
-          prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Above autocall barrier (${autocallBarrier}%), product would autocall at ${prediction.autocallPriceFormatted} including ${prediction.totalMemoryCouponsFormatted} memory coupons.`;
+          prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Above autocall barrier (${effectiveAutocallLevel}%), product would autocall at ${prediction.autocallPriceFormatted} including ${prediction.totalMemoryCouponsFormatted} memory coupons.`;
         } else {
           prediction.displayText = `${prediction.dateFormatted}; autocall; ${prediction.autocallPriceFormatted}`;
-          prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Above autocall barrier (${autocallBarrier}%), product would autocall at ${prediction.autocallPriceFormatted}.`;
+          prediction.explanation = `Basket at ${currentBasketLevelFormatted}. Above autocall barrier (${effectiveAutocallLevel}%), product would autocall at ${prediction.autocallPriceFormatted}.`;
         }
       }
       // Check for memory autocall (all underlyings flagged)

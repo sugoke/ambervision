@@ -2,13 +2,21 @@ import React, { useState, useEffect } from 'react';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Meteor } from 'meteor/meteor';
 import { UsersCollection, USER_ROLES } from '../api/users.js';
+import { ClientEntitiesCollection, ClientEntityHelpers, ENTITY_TYPES, ENTITY_STATUSES } from '../api/clientEntities.js';
+import { UserEntityAccessCollection, ACCESS_LEVELS } from '../api/userEntityAccess.js';
 import { BankAccountsCollection } from '../api/bankAccounts.js';
 import { BanksCollection } from '../api/banks.js';
 import { AccountProfilesCollection, PROFILE_TEMPLATES, aggregateToFourCategories } from '../api/accountProfiles.js';
 import { PortfolioSnapshotsCollection } from '../api/portfolioSnapshots.js';
 import LiquidGlassCard from './components/LiquidGlassCard.jsx';
 import ClientDocumentManager from './components/ClientDocumentManager.jsx';
+import Dialog from './Dialog.jsx';
+import { useDialog } from './useDialog.js';
 import { useTheme } from './ThemeContext.jsx';
+
+// Validators for authorized contact fields on bank accounts
+const AUTHORIZED_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const E164_PHONE_REGEX = /^\+[1-9]\d{1,14}$/;
 
 // Map bank names to their logo files in public/images/logos_banks/
 const getBankLogoPath = (bankName) => {
@@ -37,9 +45,11 @@ const getBankLogoPath = (bankName) => {
   return null; // No logo available - will use fallback emoji
 };
 
-export default function UserDetailsScreen({ userId, onBack, embedded = false }) {
-  const { isDark: isDarkMode } = useTheme();
+export default function UserDetailsScreen({ userId, entityId = null, onBack, embedded = false }) {
+  const { isDark: isDarkMode } = useTheme(); // v2
   const sessionId = localStorage.getItem('sessionId');
+
+  const { dialogState, showConfirm, hideDialog } = useDialog();
 
   // State for editing sections
   const [editingBasicInfo, setEditingBasicInfo] = useState(false);
@@ -68,9 +78,9 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
   const [stakeholders, setStakeholders] = useState([]);
   const [showAddStakeholder, setShowAddStakeholder] = useState(false);
   const [newStakeholder, setNewStakeholder] = useState({
+    entityId: '',
     name: '',
     role: 'ubo',
-    nationality: '',
     ownership: '',
     notes: ''
   });
@@ -78,21 +88,38 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
   // Bank account creation state
   const [showAddAccount, setShowAddAccount] = useState(false);
   const [newAccount, setNewAccount] = useState({
+    name: '',
     bankId: '',
     accountNumber: '',
     referenceCurrency: 'USD',
     accountType: 'personal',
     accountStructure: 'direct',
     lifeInsuranceCompany: '',
-    comment: ''
+    relationshipManagerId: '',
+    backupRmIds: [],
+    beneficialOwnerIds: [],
+    comment: '',
+    authorizedEmail: '',
+    authorizedCcEmails: [],
+    authorizedPhone: ''
   });
+  const [newAccountCcInput, setNewAccountCcInput] = useState('');
+  const [editAccountCcInput, setEditAccountCcInput] = useState('');
 
   // Bank account edit state
   const [editingBankAccount, setEditingBankAccount] = useState(null);
+  const [expandedAccountId, setExpandedAccountId] = useState(null);
   const [editBankAccountData, setEditBankAccountData] = useState({});
 
   // Current user state (fetched via auth method since sessions are in separate collection)
   const [currentUser, setCurrentUser] = useState(null);
+
+  // Archive client modal state (closure date + closure-letter PDF)
+  const [showArchiveModal, setShowArchiveModal] = useState(false);
+  const [archiveClosureDate, setArchiveClosureDate] = useState('');
+  const [archiveClosureFile, setArchiveClosureFile] = useState(null);
+  const [archiveError, setArchiveError] = useState('');
+  const [archiveBusy, setArchiveBusy] = useState(false);
 
   // Fetch current user on mount
   useEffect(() => {
@@ -131,6 +158,7 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
   // KYC Risk Score state
   const [editingRiskScore, setEditingRiskScore] = useState(false);
   const [savingRiskScore, setSavingRiskScore] = useState(false);
+  const [riskScoreModalOpen, setRiskScoreModalOpen] = useState(false);
 
   // RM's clients state (for viewing RM profiles)
   const [rmClients, setRmClients] = useState([]);
@@ -141,21 +169,28 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
   const [introducerAccountsLoading, setIntroducerAccountsLoading] = useState(false);
 
   // Subscribe to data
-  const { user, bankAccounts, relationshipManagers, introducers, banks, accountProfiles, portfolioSnapshots, isLoading } = useTracker(() => {
+  const { user, entity, allEntities, linkedEntities, linkedUsers, bankAccounts, relationshipManagers, introducers, banks, accountProfiles, portfolioSnapshots, isLoading } = useTracker(() => {
     const userHandle = Meteor.subscribe('customUsers');
     const banksHandle = Meteor.subscribe('banks');
     const bankAccountsHandle = Meteor.subscribe('allBankAccounts');
-    const accountProfilesHandle = Meteor.subscribe('accountProfiles', sessionId, userId);
-    const portfolioSnapshotsHandle = Meteor.subscribe('portfolioSnapshots', sessionId, {}, { type: 'client', id: userId });
+    const entityHandle = Meteor.subscribe('clientEntities', sessionId);
+    if (userId || entityId) {
+      Meteor.subscribe('accountProfiles', sessionId, userId, entityId);
+      if (userId) {
+        Meteor.subscribe('portfolioSnapshots', sessionId, {}, { type: 'client', id: userId });
+      }
+    }
 
-    const userData = UsersCollection.findOne(userId);
+    const userData = userId ? UsersCollection.findOne(userId) : null;
     const rms = UsersCollection.find({ role: { $in: [USER_ROLES.RELATIONSHIP_MANAGER, USER_ROLES.SUPERADMIN] } }).fetch();
     const introducersData = UsersCollection.find({ role: USER_ROLES.INTRODUCER }).fetch();
     const banksData = BanksCollection.find().fetch();
-    const accountsData = BankAccountsCollection.find({
-      userId: userId,
-      isActive: true
-    }).fetch();
+
+    // Bank accounts: prefer entityId query, fall back to userId
+    const accountQuery = entityId
+      ? { entityId, isActive: true }
+      : userId ? { userId, isActive: true } : { _id: null };
+    const accountsData = BankAccountsCollection.find(accountQuery).fetch();
 
     // Get account profiles for this user's accounts
     const accountIds = accountsData.map(a => a._id);
@@ -163,15 +198,44 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
       bankAccountId: { $in: accountIds }
     }).fetch();
 
-    // Get portfolio snapshots for this user (already sorted by date desc from publication)
-    // Exclude CONSOLIDATED to avoid double-counting when aggregating by date
-    const snapshotsData = PortfolioSnapshotsCollection.find({
-      userId: userId,
-      portfolioCode: { $ne: 'CONSOLIDATED' }
-    }).fetch();
+    // Get portfolio snapshots
+    const snapshotsQuery = entityId
+      ? { entityId, portfolioCode: { $ne: 'CONSOLIDATED' } }
+      : userId ? { userId, portfolioCode: { $ne: 'CONSOLIDATED' } } : { _id: null };
+    const snapshotsData = PortfolioSnapshotsCollection.find(snapshotsQuery).fetch();
+
+    // Get entity data if entityId prop is provided
+    const entityData = entityId ? ClientEntitiesCollection.findOne(entityId) : null;
+
+    // All entities (for beneficial owner picker)
+    const allEntitiesData = ClientEntitiesCollection.find({ isActive: true }).fetch();
+
+    // Get linked entities for this user account (via access grants)
+    const userAccessRecords = userId ? UserEntityAccessCollection.find({ userId, isActive: true }).fetch() : [];
+    const linkedEntityIds = userAccessRecords.map(a => a.entityId);
+    const linkedEntitiesData = linkedEntityIds.length > 0
+      ? ClientEntitiesCollection.find({ _id: { $in: linkedEntityIds } }).fetch().map(e => ({
+          ...e,
+          accessLevel: userAccessRecords.find(a => a.entityId === e._id)?.accessLevel || 'full'
+        }))
+      : [];
+
+    // Get linked users for this entity (if viewing entity)
+    const entityAccessRecords = entityId ? UserEntityAccessCollection.find({ entityId, isActive: true }).fetch() : [];
+    const linkedUserIds = entityAccessRecords.map(a => a.userId);
+    const linkedUsersData = linkedUserIds.length > 0
+      ? UsersCollection.find({ _id: { $in: linkedUserIds } }).fetch().map(u => ({
+          ...u,
+          accessLevel: entityAccessRecords.find(a => a.userId === u._id)?.accessLevel || 'full'
+        }))
+      : [];
 
     return {
       user: userData,
+      entity: entityData,
+      allEntities: allEntitiesData,
+      linkedEntities: linkedEntitiesData,
+      linkedUsers: linkedUsersData,
       bankAccounts: accountsData,
       relationshipManagers: rms,
       introducers: introducersData,
@@ -180,11 +244,28 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
       portfolioSnapshots: snapshotsData,
       isLoading: !userHandle.ready() || !banksHandle.ready() || !bankAccountsHandle.ready()
     };
-  }, [userId, sessionId]);
+  }, [userId, entityId, sessionId]);
 
-  // Update form data when user data loads
+  // Update form data when user or entity data loads
   useEffect(() => {
-    if (user) {
+    if (entity && !user) {
+      // Entity-only mode: populate from entity profile
+      setFormData({
+        email: '',
+        firstName: entity.profile?.firstName || '',
+        lastName: entity.profile?.lastName || '',
+        birthday: entity.profile?.birthday ? new Date(entity.profile.birthday).toISOString().split('T')[0] : '',
+        preferredLanguage: entity.profile?.preferredLanguage || 'en',
+        referenceCurrency: entity.referenceCurrency || 'EUR',
+        relationshipManagerId: entity.relationshipManagerId || '',
+        assignedUserIds: entity.assignedUserIds || (entity.relationshipManagerId ? [entity.relationshipManagerId] : []),
+        isInsurance: entity.isInsurance || false,
+        newPassword: '',
+        clientType: entity.type === ENTITY_TYPES.COMPANY ? 'company' : 'natural',
+        companyName: entity.profile?.companyName || ''
+      });
+      setStakeholders(entity.stakeholders || []);
+    } else if (user) {
       setFormData({
         email: user.email || user.username || '',
         firstName: user.profile?.firstName || '',
@@ -199,7 +280,7 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
       });
       setStakeholders(user.profile?.stakeholders || []);
     }
-  }, [user]);
+  }, [user, entity]);
 
   // Fetch RM's clients when viewing an RM profile
   useEffect(() => {
@@ -266,56 +347,34 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
 
       setEditingBasicInfo(false);
 
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'success',
-        message: 'User information updated successfully',
-        sessionId
-      });
     } catch (error) {
       console.error('Error updating user:', error);
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'error',
-        message: `Failed to update user: ${error.message}`,
-        sessionId
-      });
     }
   };
 
   const handleSaveRM = async () => {
     try {
-      await Meteor.callAsync('users.updateProfile', userId, {
-        relationshipManagerId: formData.relationshipManagerId || null
-      }, sessionId);
+      if (entityId && !userId) {
+        // Entity mode: update entity RM
+        await Meteor.callAsync('clientEntities.update', entityId, {
+          assignedUserIds: formData.assignedUserIds || [],
+          relationshipManagerId: (formData.assignedUserIds || [])[0] || null
+        }, sessionId);
+      } else {
+        await Meteor.callAsync('users.updateProfile', userId, {
+          relationshipManagerId: formData.relationshipManagerId || null
+        }, sessionId);
+      }
 
       setEditingRM(false);
 
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'success',
-        message: 'Relationship manager updated successfully',
-        sessionId
-      });
     } catch (error) {
       console.error('Error updating RM:', error);
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'error',
-        message: `Failed to update RM: ${error.message}`,
-        sessionId
-      });
     }
   };
 
   const handleResetPassword = async () => {
     if (!formData.newPassword || formData.newPassword.length < 6) {
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'error',
-        message: 'Password must be at least 6 characters',
-        sessionId
-      });
       return;
     }
 
@@ -329,20 +388,8 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
       // Auto-hide success message after 5 seconds
       setTimeout(() => setPasswordResetSuccess(false), 5000);
 
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'success',
-        message: 'Password reset successfully',
-        sessionId
-      });
     } catch (error) {
       console.error('Error resetting password:', error);
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'error',
-        message: `Failed to reset password: ${error.message}`,
-        sessionId
-      });
     }
   };
 
@@ -358,32 +405,66 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
       setSelectedRole(null);
     } catch (error) {
       console.error('Error updating role:', error);
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'error',
-        message: `Failed to update role: ${error.message}`,
-        sessionId
-      });
     }
   };
 
   const handleAddBankAccount = async () => {
     if (!newAccount.bankId || !newAccount.accountNumber) {
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'error',
-        message: 'Bank and account number are required',
-        sessionId
-      });
       return;
     }
 
+    const trimmedEmail = (newAccount.authorizedEmail || '').trim();
+    if (trimmedEmail && !AUTHORIZED_EMAIL_REGEX.test(trimmedEmail)) {
+      alert('Authorized email is not a valid email address.');
+      return;
+    }
+    const trimmedPhone = (newAccount.authorizedPhone || '').trim();
+    if (trimmedPhone && !E164_PHONE_REGEX.test(trimmedPhone)) {
+      alert('Authorized phone must be in E.164 format (e.g. +33612345678).');
+      return;
+    }
+    const cleanedCcEmails = (newAccount.authorizedCcEmails || [])
+      .map(e => (typeof e === 'string' ? e.trim() : ''))
+      .filter(e => e.length > 0);
+    for (const cc of cleanedCcEmails) {
+      if (!AUTHORIZED_EMAIL_REGEX.test(cc)) {
+        alert(`CC email is not valid: ${cc}`);
+        return;
+      }
+    }
+
     try {
-      await Meteor.callAsync('bankAccounts.create', {
-        userId,
-        ...newAccount,
-        sessionId
-      });
+      if (entityId) {
+        // Entity mode: use entity-specific method
+        // Auto-set accountType based on entity type
+        const effectiveAccountType = entity?.type === ENTITY_TYPES.COMPANY ? 'company' : 'personal';
+        await Meteor.callAsync('bankAccounts.addForEntity', entityId, {
+          name: newAccount.name || fullName,
+          bankId: newAccount.bankId,
+          accountNumber: newAccount.accountNumber,
+          referenceCurrency: newAccount.referenceCurrency,
+          accountType: effectiveAccountType,
+          accountStructure: newAccount.accountStructure || 'direct',
+          lifeInsuranceCompany: newAccount.lifeInsuranceCompany || null,
+          relationshipManagerId: newAccount.relationshipManagerId || null,
+          backupRmIds: (newAccount.backupRmIds || []).filter(id => id),
+          beneficialOwnerIds: (newAccount.beneficialOwnerIds || []).filter(id => id),
+          comment: newAccount.comment || null,
+          authorizedEmail: trimmedEmail || null,
+          authorizedCcEmails: cleanedCcEmails,
+          authorizedPhone: trimmedPhone || null
+        }, sessionId);
+      } else {
+        // Legacy user mode
+        await Meteor.callAsync('bankAccounts.create', {
+          userId,
+          ...newAccount,
+          authorizedEmail: trimmedEmail || null,
+          authorizedCcEmails: cleanedCcEmails,
+          authorizedPhone: trimmedPhone || null,
+          sessionId
+        });
+      }
 
       setNewAccount({
         bankId: '',
@@ -392,49 +473,32 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
         accountType: 'personal',
         accountStructure: 'direct',
         lifeInsuranceCompany: '',
-        comment: ''
+        relationshipManagerId: '',
+        backupRmIds: [],
+        beneficialOwnerIds: [],
+        comment: '',
+        authorizedEmail: '',
+        authorizedCcEmails: [],
+        authorizedPhone: ''
       });
+      setNewAccountCcInput('');
       setShowAddAccount(false);
 
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'success',
-        message: 'Bank account added successfully',
-        sessionId
-      });
+      console.log('Bank account added successfully');
     } catch (error) {
       console.error('Error adding bank account:', error);
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'error',
-        message: `Failed to add bank account: ${error.message}`,
-        sessionId
-      });
+      alert(`Failed to add bank account: ${error.reason || error.message}`);
     }
   };
 
   const handleDeleteBankAccount = async (accountId) => {
-    if (!confirm('Are you sure you want to delete this bank account?')) {
-      return;
-    }
+    const confirmed = await showConfirm('Are you sure you want to delete this bank account? This action cannot be undone.');
+    if (!confirmed) return;
 
     try {
       await Meteor.callAsync('bankAccounts.remove', { accountId, sessionId });
-
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'success',
-        message: 'Bank account deleted successfully',
-        sessionId
-      });
     } catch (error) {
       console.error('Error deleting bank account:', error);
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'error',
-        message: `Failed to delete bank account: ${error.message}`,
-        sessionId
-      });
     }
   };
 
@@ -446,11 +510,40 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
       authorizedOverdraft: account.authorizedOverdraft || '',
       comment: account.comment || '',
       introducerId: account.introducerId || '',
-      lifeInsuranceCompany: account.lifeInsuranceCompany || ''
+      lifeInsuranceCompany: account.lifeInsuranceCompany || '',
+      beneficialOwnerIds: account.beneficialOwnerIds || (account.beneficialOwnerId ? [account.beneficialOwnerId] : []),
+      relationshipManagerId: account.relationshipManagerId || '',
+      backupRmIds: account.backupRmIds || [],
+      name: account.name || '',
+      accountNumber: account.accountNumber || '',
+      authorizedEmail: account.authorizedEmail || '',
+      authorizedCcEmails: account.authorizedCcEmails || [],
+      authorizedPhone: account.authorizedPhone || ''
     });
+    setEditAccountCcInput('');
   };
 
   const handleSaveEditBankAccount = async (accountId) => {
+    const trimmedEmail = (editBankAccountData.authorizedEmail || '').trim();
+    if (trimmedEmail && !AUTHORIZED_EMAIL_REGEX.test(trimmedEmail)) {
+      alert('Authorized email is not a valid email address.');
+      return;
+    }
+    const trimmedPhone = (editBankAccountData.authorizedPhone || '').trim();
+    if (trimmedPhone && !E164_PHONE_REGEX.test(trimmedPhone)) {
+      alert('Authorized phone must be in E.164 format (e.g. +33612345678).');
+      return;
+    }
+    const cleanedCcEmails = (editBankAccountData.authorizedCcEmails || [])
+      .map(e => (typeof e === 'string' ? e.trim() : ''))
+      .filter(e => e.length > 0);
+    for (const cc of cleanedCcEmails) {
+      if (!AUTHORIZED_EMAIL_REGEX.test(cc)) {
+        alert(`CC email is not valid: ${cc}`);
+        return;
+      }
+    }
+
     try {
       const overdraftValue = editBankAccountData.authorizedOverdraft
         ? parseFloat(editBankAccountData.authorizedOverdraft)
@@ -459,39 +552,33 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
       await Meteor.callAsync('bankAccounts.update', {
         accountId,
         updates: {
+          name: editBankAccountData.name || null,
+          accountNumber: editBankAccountData.accountNumber || null,
           referenceCurrency: editBankAccountData.referenceCurrency,
           accountType: editBankAccountData.accountType,
           authorizedOverdraft: overdraftValue,
           comment: editBankAccountData.comment || '',
           introducerId: editBankAccountData.introducerId || null,
+          beneficialOwnerIds: (editBankAccountData.beneficialOwnerIds || []).filter(id => id),
+          relationshipManagerId: editBankAccountData.relationshipManagerId || null,
+          backupRmIds: (editBankAccountData.backupRmIds || []).filter(id => id),
           lifeInsuranceCompany: editBankAccountData.accountType === 'life_insurance'
             ? (editBankAccountData.lifeInsuranceCompany || null)
-            : null
+            : null,
+          authorizedEmail: trimmedEmail,
+          authorizedCcEmails: cleanedCcEmails,
+          authorizedPhone: trimmedPhone
         },
         sessionId
       });
 
-      if (currentUser?._id) {
-        Meteor.call('notifications.create', {
-          userId: currentUser?._id,
-          type: 'success',
-          message: 'Bank account updated successfully',
-          sessionId
-        });
-      }
 
       setEditingBankAccount(null);
       setEditBankAccountData({});
+      setEditAccountCcInput('');
     } catch (error) {
       console.error('Error updating bank account:', error);
-      if (currentUser?._id) {
-        Meteor.call('notifications.create', {
-          userId: currentUser?._id,
-          type: 'error',
-          message: `Failed to update bank account: ${error.message}`,
-          sessionId
-        });
-      }
+      alert(`Failed to update bank account: ${error.reason || error.message}`);
     }
   };
 
@@ -502,12 +589,6 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
 
   const handleAddFamilyMember = async () => {
     if (!newFamilyMember.name) {
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'error',
-        message: 'Family member name is required',
-        sessionId
-      });
       return;
     }
 
@@ -534,27 +615,14 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
       });
       setShowAddFamilyMember(false);
 
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'success',
-        message: 'Family member added successfully',
-        sessionId
-      });
     } catch (error) {
       console.error('Error adding family member:', error);
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'error',
-        message: `Failed to add family member: ${error.message}`,
-        sessionId
-      });
     }
   };
 
   const handleDeleteFamilyMember = async (familyMemberId) => {
-    if (!confirm('Are you sure you want to delete this family member?')) {
-      return;
-    }
+    const confirmed = await showConfirm('Are you sure you want to delete this family member?');
+    if (!confirmed) return;
 
     try {
       const familyMembers = (user.profile?.familyMembers || []).filter(fm => fm._id !== familyMemberId);
@@ -567,20 +635,8 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
         }
       }, sessionId);
 
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'success',
-        message: 'Family member deleted successfully',
-        sessionId
-      });
     } catch (error) {
       console.error('Error deleting family member:', error);
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'error',
-        message: `Failed to delete family member: ${error.message}`,
-        sessionId
-      });
     }
   };
 
@@ -604,20 +660,8 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
 
       setEditingAccountProfile(null);
 
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'success',
-        message: 'Account profile updated successfully',
-        sessionId
-      });
     } catch (error) {
       console.error('Error updating account profile:', error);
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'error',
-        message: `Failed to update account profile: ${error.message}`,
-        sessionId
-      });
     }
   };
 
@@ -1044,26 +1088,18 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
       await Meteor.callAsync('users.updateRiskScore', userId, riskScoreData, sessionId);
 
       setEditingRiskScore(false);
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'success',
-        message: 'KYC Risk Score updated successfully',
-        sessionId
-      });
     } catch (error) {
       console.error('Error saving risk score:', error);
-      Meteor.call('notifications.create', {
-        userId: currentUser?._id,
-        type: 'error',
-        message: `Failed to save risk score: ${error.message}`,
-        sessionId
-      });
     } finally {
       setSavingRiskScore(false);
     }
   };
 
-  if (isLoading || !user) {
+  // Entity-first mode: when entityId is provided, we may not have a userId/user
+  const isEntityMode = !!entityId;
+  const hasUser = !!user;
+
+  if (isLoading || (!user && !entity)) {
     return (
       <div style={{
         display: 'flex',
@@ -1081,14 +1117,36 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
           borderRadius: '50%',
           animation: 'spin 1s linear infinite'
         }} />
-        <p style={{ color: 'var(--text-secondary)', fontSize: '1rem' }}>Loading user details...</p>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '1rem' }}>Loading details...</p>
       </div>
     );
   }
 
-  const fullName = `${user.profile?.firstName || ''} ${user.profile?.lastName || ''}`.trim() || user.email || user.username;
-  const initials = getInitials(user.profile?.firstName, user.profile?.lastName, user.email);
-  const assignedRM = relationshipManagers.find(rm => rm._id === user.relationshipManagerId);
+  // Derive display info from entity (preferred) or user (fallback)
+  const fullName = isEntityMode && entity
+    ? ClientEntityHelpers.getEntityDisplayName(entity)
+    : `${user?.profile?.firstName || ''} ${user?.profile?.lastName || ''}`.trim() || user?.email || user?.username || '';
+  const accountDefaultName = (() => {
+    if (isEntityMode && entity?.type === ENTITY_TYPES.PHYSICAL_PERSON) {
+      const last = (entity.profile?.lastName || '').toUpperCase();
+      const first = entity.profile?.firstName || '';
+      return last && first ? `${last} ${first}` : fullName;
+    }
+    if (!isEntityMode && user?.profile?.lastName) {
+      const last = (user.profile.lastName || '').toUpperCase();
+      const first = user.profile.firstName || '';
+      return last && first ? `${last} ${first}` : fullName;
+    }
+    return fullName;
+  })();
+  const initials = isEntityMode && entity
+    ? fullName.split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase() || '?'
+    : getInitials(user?.profile?.firstName, user?.profile?.lastName, user?.email);
+  const assignedRM = relationshipManagers.find(rm => rm._id === (isEntityMode && entity ? entity.relationshipManagerId : user?.relationshipManagerId));
+  const assignedUsers = isEntityMode && entity
+    ? (entity.assignedUserIds || (entity.relationshipManagerId ? [entity.relationshipManagerId] : []))
+        .map(id => relationshipManagers.find(rm => rm._id === id)).filter(Boolean)
+    : assignedRM ? [assignedRM] : [];
 
   const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
 
@@ -1172,8 +1230,35 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                 {fullName}
               </h1>
 
-              {/* Role Badge - Editable by Superadmin */}
-              {editingRole && currentUser?.role === USER_ROLES.SUPERADMIN ? (
+              {/* Entity Type Badge (entity mode) or Role Badge (user mode) */}
+              {isEntityMode && entity && !hasUser ? (
+                <span style={{
+                  padding: '6px 14px',
+                  borderRadius: '20px',
+                  background: entity?.isInsurance ? 'rgba(20, 184, 166, 0.15)' : entity.type === ENTITY_TYPES.COMPANY ? 'rgba(99, 102, 241, 0.15)' : 'rgba(5, 150, 105, 0.15)',
+                  color: entity?.isInsurance ? '#14b8a6' : entity.type === ENTITY_TYPES.COMPANY ? '#6366f1' : '#059669',
+                  fontSize: '12px',
+                  fontWeight: '600',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px'
+                }}>
+                  {ClientEntityHelpers.getEntityTypeLabel(entity.type)}
+                </span>
+              ) : null}
+              {isEntityMode && entity && bankAccounts.length > 0 && (
+                <span style={{
+                  padding: '4px 10px',
+                  borderRadius: '16px',
+                  background: 'rgba(37, 99, 235, 0.12)',
+                  color: '#2563eb',
+                  fontSize: '11px',
+                  fontWeight: '600',
+                  letterSpacing: '0.3px'
+                }}>
+                  Client
+                </span>
+              )}
+              {hasUser && editingRole && currentUser?.role === USER_ROLES.SUPERADMIN ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <select
                     value={selectedRole || user.role}
@@ -1227,7 +1312,7 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                     Cancel
                   </button>
                 </div>
-              ) : (
+              ) : hasUser ? (
                 <span
                   onClick={() => {
                     if (currentUser?.role === USER_ROLES.SUPERADMIN && user._id !== currentUser._id) {
@@ -1260,33 +1345,79 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                 >
                   {user.role}
                 </span>
+              ) : null}}
+
+              {/* Active Status — only for user-only views (no entity) */}
+              {!entity && (
+                <span style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '6px 14px',
+                  borderRadius: '20px',
+                  background: 'rgba(16, 185, 129, 0.15)',
+                  border: '1px solid rgba(16, 185, 129, 0.3)',
+                  color: '#10b981',
+                  fontSize: '0.75rem',
+                  fontWeight: '600'
+                }}>
+                  <span style={{
+                    width: '8px',
+                    height: '8px',
+                    borderRadius: '50%',
+                    background: '#10b981',
+                    animation: 'pulse 2s infinite'
+                  }} />
+                  Active
+                </span>
               )}
 
-              {/* Active Status */}
-              <span style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '6px 14px',
-                borderRadius: '20px',
-                background: 'rgba(16, 185, 129, 0.15)',
-                border: '1px solid rgba(16, 185, 129, 0.3)',
-                color: '#10b981',
-                fontSize: '0.75rem',
-                fontWeight: '600'
-              }}>
-                <span style={{
-                  width: '8px',
-                  height: '8px',
-                  borderRadius: '50%',
-                  background: '#10b981',
-                  animation: 'pulse 2s infinite'
-                }} />
-                Active
-              </span>
+              {/* Entity Status Badge */}
+              {entity && (() => {
+                const statusDisplay = ClientEntityHelpers.getEntityStatusDisplay(entity.status);
+                const canManageStatus = [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.COMPLIANCE].includes(currentUser?.role);
+                return (
+                  <span
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '6px 14px',
+                      borderRadius: '20px',
+                      background: `${statusDisplay.color}20`,
+                      border: `1px solid ${statusDisplay.color}50`,
+                      color: statusDisplay.color,
+                      fontSize: '0.75rem',
+                      fontWeight: '600',
+                      cursor: canManageStatus ? 'pointer' : 'default'
+                    }}
+                    onClick={async () => {
+                      if (!canManageStatus) return;
+                      const statuses = Object.values(ENTITY_STATUSES);
+                      const currentIdx = statuses.indexOf(entity.status || ENTITY_STATUSES.ACTIVE);
+                      const nextStatus = statuses[(currentIdx + 1) % statuses.length];
+                      if (nextStatus === ENTITY_STATUSES.ARCHIVED) {
+                        setArchiveError('');
+                        setArchiveClosureFile(null);
+                        setArchiveClosureDate(new Date().toISOString().split('T')[0]);
+                        setShowArchiveModal(true);
+                        return;
+                      }
+                      try {
+                        await Meteor.callAsync('clientEntities.updateStatus', entityId, nextStatus, sessionId);
+                      } catch (err) {
+                        console.error('Failed to update entity status:', err);
+                      }
+                    }}
+                    title={canManageStatus ? 'Click to cycle status' : ''}
+                  >
+                    {statusDisplay.label}
+                  </span>
+                );
+              })()}
 
               {/* Can Validate Orders Badge - staff roles only, togglable by SuperAdmin */}
-              {[USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.RELATIONSHIP_MANAGER, USER_ROLES.COMPLIANCE, USER_ROLES.STAFF].includes(user.role) && (() => {
+              {hasUser && [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.RELATIONSHIP_MANAGER, USER_ROLES.COMPLIANCE, USER_ROLES.STAFF].includes(user.role) && (() => {
                 const canToggle = currentUser?.role === USER_ROLES.SUPERADMIN;
                 const isEnabled = user.canValidateOrders === true;
                 return (
@@ -1325,121 +1456,94 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                   </button>
                 );
               })()}
+
+              {/* Archive / Reactivate buttons (admin, superadmin, compliance) */}
+              {isEntityMode && entity && [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.COMPLIANCE].includes(currentUser?.role) && (
+                <>
+                  {entity.status !== ENTITY_STATUSES.ARCHIVED && (
+                    <button
+                      onClick={() => {
+                        setArchiveError('');
+                        setArchiveClosureFile(null);
+                        setArchiveClosureDate(new Date().toISOString().split('T')[0]);
+                        setShowArchiveModal(true);
+                      }}
+                      style={{ padding: '6px 14px', borderRadius: '20px', background: 'rgba(251, 191, 36, 0.12)', border: '1px solid rgba(251, 191, 36, 0.3)', color: '#f59e0b', fontSize: '0.75rem', fontWeight: '600', cursor: 'pointer', transition: 'all 0.2s ease' }}
+                      onMouseEnter={e => { e.currentTarget.style.background = 'rgba(251, 191, 36, 0.25)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'rgba(251, 191, 36, 0.12)'; }}
+                    >
+                      Archive
+                    </button>
+                  )}
+                  {entity.status === ENTITY_STATUSES.ARCHIVED && (
+                    <button
+                      onClick={async () => {
+                        const label = ClientEntityHelpers.getEntityDisplayName(entity);
+                        const confirmed = await showConfirm(`Reactivate "${label}"?`);
+                        if (!confirmed) return;
+                        try {
+                          await Meteor.callAsync('clientEntities.updateStatus', entityId, ENTITY_STATUSES.ACTIVE, sessionId);
+                        } catch (err) {
+                          console.error('Failed to reactivate entity:', err);
+                        }
+                      }}
+                      style={{ padding: '6px 14px', borderRadius: '20px', background: 'rgba(16, 185, 129, 0.12)', border: '1px solid rgba(16, 185, 129, 0.3)', color: '#10b981', fontSize: '0.75rem', fontWeight: '600', cursor: 'pointer', transition: 'all 0.2s ease' }}
+                      onMouseEnter={e => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.25)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.12)'; }}
+                    >
+                      Reactivate
+                    </button>
+                  )}
+                </>
+              )}
+
+              {/* Permanent delete (superadmin only) */}
+              {isEntityMode && entity && currentUser?.role === USER_ROLES.SUPERADMIN && (
+                <button
+                  onClick={async () => {
+                    const label = ClientEntityHelpers.getEntityDisplayName(entity);
+                    const confirmed = await showConfirm(`Are you sure you want to permanently delete "${label}"? This action cannot be undone.`);
+                    if (!confirmed) return;
+                    try {
+                      if (isEntityMode && entityId) {
+                        await Meteor.callAsync('clientEntities.deactivate', entityId, sessionId);
+                      }
+                      if (hasUser && userId) {
+                        await Meteor.callAsync('users.remove', userId);
+                      }
+                      if (onBack) onBack();
+                    } catch (err) {
+                      console.error('Error deleting:', err);
+                    }
+                  }}
+                  style={{ padding: '6px 14px', borderRadius: '20px', background: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.3)', color: '#ef4444', fontSize: '0.75rem', fontWeight: '600', cursor: 'pointer', transition: 'all 0.2s ease' }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.25)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.12)'; }}
+                >
+                  Delete
+                </button>
+              )}
+
             </div>
 
             <div style={{ display: 'flex', gap: '16px', marginBottom: '8px', flexWrap: 'wrap' }}>
-              {user.profile?.createdAt && (
+              {(user?.profile?.createdAt || entity?.createdAt) && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
                   <span>📅</span>
-                  <span>Joined {new Date(user.profile.createdAt).toLocaleDateString()}</span>
+                  <span>Created {new Date(user?.profile?.createdAt || entity?.createdAt).toLocaleDateString()}</span>
+                </div>
+              )}
+              {isEntityMode && entity && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                  <span>💰</span>
+                  <span>{entity.referenceCurrency || 'EUR'}</span>
                 </div>
               )}
             </div>
 
-            {/* Relationship Manager Row (for clients only) */}
-            {user.role === USER_ROLES.CLIENT && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                  <span>👔</span>
-                  {editingRM ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                      <select
-                        value={formData.relationshipManagerId}
-                        onChange={(e) => setFormData({ ...formData, relationshipManagerId: e.target.value })}
-                        style={{
-                          padding: '6px 10px',
-                          background: 'var(--bg-secondary)',
-                          border: '1px solid var(--border-color)',
-                          borderRadius: '6px',
-                          color: 'var(--text-primary)',
-                          fontSize: '0.85rem',
-                          cursor: 'pointer',
-                          outline: 'none',
-                          minWidth: '150px'
-                        }}
-                      >
-                        <option value="">No RM assigned</option>
-                        {relationshipManagers.map(rm => (
-                          <option key={rm._id} value={rm._id}>
-                            {rm.profile?.firstName} {rm.profile?.lastName}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        onClick={handleSaveRM}
-                        style={{
-                          padding: '5px 12px',
-                          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                          border: 'none',
-                          borderRadius: '5px',
-                          color: '#fff',
-                          cursor: 'pointer',
-                          fontSize: '0.8rem',
-                          fontWeight: '500'
-                        }}
-                      >
-                        Save
-                      </button>
-                      <button
-                        onClick={() => {
-                          setEditingRM(false);
-                          setFormData({ ...formData, relationshipManagerId: user.relationshipManagerId || '' });
-                        }}
-                        style={{
-                          padding: '5px 12px',
-                          background: 'var(--bg-secondary)',
-                          border: '1px solid var(--border-color)',
-                          borderRadius: '5px',
-                          color: 'var(--text-primary)',
-                          cursor: 'pointer',
-                          fontSize: '0.8rem',
-                          fontWeight: '500'
-                        }}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <span style={{ color: assignedRM ? 'var(--text-primary)' : 'var(--text-muted)' }}>
-                        {assignedRM
-                          ? `${assignedRM.profile?.firstName || ''} ${assignedRM.profile?.lastName || ''}`.trim()
-                          : 'No RM assigned'}
-                      </span>
-                      <button
-                        onClick={() => setEditingRM(true)}
-                        style={{
-                          padding: '3px 8px',
-                          background: 'transparent',
-                          border: '1px solid var(--border-color)',
-                          borderRadius: '4px',
-                          color: 'var(--text-secondary)',
-                          cursor: 'pointer',
-                          fontSize: '0.75rem',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          transition: 'all 0.2s ease'
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.background = 'var(--bg-tertiary)';
-                          e.currentTarget.style.color = 'var(--text-primary)';
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.background = 'transparent';
-                          e.currentTarget.style.color = 'var(--text-secondary)';
-                        }}
-                      >
-                        ✏️
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
 
             {/* Risk Score Row (for clients only) */}
-            {user.role === USER_ROLES.CLIENT && (
+            {hasUser && user.role === USER_ROLES.CLIENT && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
                   <span>📊</span>
@@ -1521,7 +1625,7 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
               )}
             </div>
 
-            {user.profile?.familyMembers && user.profile?.clientType !== 'company' && (
+            {hasUser && user.profile?.familyMembers && user.profile?.clientType !== 'company' && (
               <div style={{
                 padding: isMobile ? '1rem' : '1rem',
                 background: 'rgba(139, 92, 246, 0.1)',
@@ -1545,35 +1649,42 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
       {(() => {
         const tabs = [
           { id: 'info', label: 'Information', icon: '👤' },
-          { id: 'rmClients', label: 'Clients', icon: '👥', rmOnly: true },
-          { id: 'introducerAccounts', label: 'Accounts Introduced', icon: '🤝', introducerOnly: true },
-          { id: 'accounts', label: 'Accounts', icon: '🏦', clientOnly: true },
-          { id: 'stakeholders', label: 'Stakeholders', icon: '🏛️', companyOnly: true },
-          { id: 'documents', label: 'Documents', icon: '📋', clientOnly: true },
+          { id: 'rmClients', label: 'Clients', icon: '👥', rmOnly: true, userOnly: true },
+          { id: 'introducerAccounts', label: 'Accounts Introduced', icon: '🤝', introducerOnly: true, userOnly: true },
+          { id: 'accounts', label: 'Accounts', icon: '🏦', entityOrClient: true },
+          { id: 'stakeholders', label: 'Stakeholders', icon: '🏛️', entityCompanyOnly: true },
+          { id: 'documents', label: 'Documents', icon: '📋', entityOrClient: true, notLifeInsurance: true },
           { id: 'kyc', label: 'KYC', icon: '✅', clientOnly: true },
           { id: 'riskScore', label: 'Risk Score', icon: '📊', clientOnly: true },
-          { id: 'family', label: 'Linked People', icon: '👨‍👩‍👧‍👦', clientOnly: true, personOnly: true },
-          { id: 'password', label: 'Password', icon: '🔒', adminOnly: true }
+          { id: 'family', label: 'Linked People', icon: '\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67\u200d\ud83d\udc66', clientOnly: true, personOnly: true },
+          { id: 'access', label: 'User Access', icon: '\ud83d\udd11', entityOnly: true, notLifeInsurance: true },
+          { id: 'password', label: 'Password', icon: '\ud83d\udd12', adminOnly: true, userOnly: true }
         ];
 
         const isAdmin = currentUser?.role === USER_ROLES.ADMIN || currentUser?.role === USER_ROLES.SUPERADMIN;
-        const isViewingClient = user.role === USER_ROLES.CLIENT;
-        const isViewingRM = user.role === USER_ROLES.RELATIONSHIP_MANAGER;
-        const isViewingIntroducer = user.role === USER_ROLES.INTRODUCER;
-
-        const isCompanyClient = isViewingClient && user.profile?.clientType === 'company';
+        const isViewingClient = hasUser && user.role === USER_ROLES.CLIENT;
+        const isViewingRM = hasUser && user.role === USER_ROLES.RELATIONSHIP_MANAGER;
+        const isViewingIntroducer = hasUser && user.role === USER_ROLES.INTRODUCER;
+        const isCompanyClient = isViewingClient && user?.profile?.clientType === 'company';
+        const isEntityCompany = isEntityMode && entity?.type === ENTITY_TYPES.COMPANY;
 
         const visibleTabs = tabs.filter(tab => {
+          // User-only tabs hidden in entity mode without a user
+          if (tab.userOnly && isEntityMode && !hasUser) return false;
+          // Entity-or-client: show for entity mode OR client user
+          if (tab.entityOrClient && !isEntityMode && !isViewingClient) return false;
+          // Entity-company-only: show for entity companies OR user company clients
+          if (tab.entityCompanyOnly && !isEntityCompany && !isCompanyClient) return false;
           // RM-only tabs shown only when viewing an RM
           if (tab.rmOnly && !isViewingRM) return false;
           // Introducer-only tabs shown only when viewing an Introducer
           if (tab.introducerOnly && !isViewingIntroducer) return false;
-          // Company-only tabs shown only for company clients
-          if (tab.companyOnly && !isCompanyClient) return false;
           // Person-only tabs hidden for company clients
           if (tab.personOnly && isCompanyClient) return false;
           // Client-only tabs shown when viewing a client (admins included)
           if (tab.clientOnly && !isViewingClient) return false;
+          // Entity-only tabs shown only when entityId prop is provided
+          if (tab.entityOnly && !entityId) return false;
           // Admin-only tabs shown only for admins
           if (tab.adminOnly && !isAdmin) return false;
           return true;
@@ -1622,8 +1733,185 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
         {/* Left Column - Main Content */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? '1rem' : '1.5rem' }}>
 
-          {/* Basic Information (info tab) */}
-          {activeTab === 'info' && (
+          {/* Entity Profile Info (entity-only mode without user) */}
+          {activeTab === 'info' && isEntityMode && !hasUser && entity && (
+            <LiquidGlassCard borderRadius="12px" style={{ padding: isMobile ? '1.5rem' : '1.5rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', borderBottom: '2px solid var(--border-color)', paddingBottom: '1rem' }}>
+                <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: '700', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '1.5rem' }}>
+                    {entity?.isInsurance ? '\ud83d\udee1\ufe0f' : entity.type === ENTITY_TYPES.COMPANY ? '\ud83c\udfe2' : '\ud83d\udc64'}
+                  </span>
+                  Entity Profile
+                </h2>
+                {!editingBasicInfo ? (
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <button onClick={() => setEditingBasicInfo(true)} style={{ padding: '8px 16px', background: 'var(--accent-color)', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Edit</button>
+                    {currentUser?.role === USER_ROLES.SUPERADMIN && (
+                      <button
+                        onClick={async () => {
+                          const label = isEntityMode && entity
+                            ? ClientEntityHelpers.getEntityDisplayName(entity)
+                            : fullName;
+                          const confirmed = await showConfirm(`Are you sure you want to delete "${label}"? This action cannot be undone.`);
+                          if (!confirmed) return;
+                          try {
+                            if (isEntityMode && entityId) {
+                              await Meteor.callAsync('clientEntities.deactivate', entityId, sessionId);
+                            }
+                            if (hasUser && userId) {
+                              await Meteor.callAsync('users.remove', userId);
+                            }
+                            if (onBack) onBack();
+                          } catch (err) {
+                            console.error('Error deleting:', err);
+                            alert(err.reason || 'Failed to delete');
+                          }
+                        }}
+                        style={{
+                          padding: '8px 16px',
+                          background: 'rgba(239, 68, 68, 0.1)',
+                          border: '1px solid rgba(239, 68, 68, 0.3)',
+                          borderRadius: '8px',
+                          color: '#ef4444',
+                          cursor: 'pointer',
+                          fontSize: '0.85rem',
+                          fontWeight: '600',
+                          transition: 'all 0.2s ease'
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)'; }}
+                      >
+                        🗑️ Delete
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button onClick={async () => {
+                      try {
+                        const updates = { profile: {} };
+                        if (entity.type === ENTITY_TYPES.PHYSICAL_PERSON) {
+                          updates.profile.firstName = formData.firstName;
+                          updates.profile.lastName = formData.lastName;
+                          if (formData.birthday) updates.profile.birthday = new Date(formData.birthday);
+                        } else {
+                          updates.profile.companyName = formData.companyName;
+                        }
+                        updates.profile.preferredLanguage = formData.preferredLanguage;
+                        updates.referenceCurrency = formData.referenceCurrency;
+                        updates.isInsurance = formData.isInsurance || false;
+                        await Meteor.callAsync('clientEntities.update', entityId, updates, sessionId);
+                        setEditingBasicInfo(false);
+                      } catch (err) {
+                        console.error('Error updating entity:', err);
+                      }
+                    }} style={{ padding: '8px 16px', background: '#10b981', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Save</button>
+                    <button onClick={() => setEditingBasicInfo(false)} style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}>Cancel</button>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '16px' }}>
+                {entity.type === ENTITY_TYPES.PHYSICAL_PERSON ? (
+                  <>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' }}>First Name</label>
+                      {editingBasicInfo ? (
+                        <input value={formData.firstName} onChange={e => setFormData({...formData, firstName: e.target.value})} style={{ width: '100%', padding: '10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '0.9rem', boxSizing: 'border-box' }} />
+                      ) : (
+                        <div style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>{entity.profile?.firstName || '-'}</div>
+                      )}
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' }}>Last Name</label>
+                      {editingBasicInfo ? (
+                        <input value={formData.lastName} onChange={e => setFormData({...formData, lastName: e.target.value})} style={{ width: '100%', padding: '10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '0.9rem', boxSizing: 'border-box' }} />
+                      ) : (
+                        <div style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>{entity.profile?.lastName || '-'}</div>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ gridColumn: isMobile ? '1' : '1 / -1' }}>
+                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' }}>Company Name</label>
+                    {editingBasicInfo ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        <input value={formData.companyName} onChange={e => setFormData({...formData, companyName: e.target.value})} style={{ width: '100%', padding: '10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '0.9rem', boxSizing: 'border-box' }} />
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                          <input type="checkbox" checked={formData.isInsurance || false} onChange={e => setFormData({...formData, isInsurance: e.target.checked})} style={{ width: '16px', height: '16px', cursor: 'pointer' }} />
+                          Life Insurance Company
+                        </label>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>{entity.profile?.companyName || '-'}</span>
+                        {entity.isInsurance && <span style={{ padding: '2px 8px', borderRadius: '5px', fontSize: '0.7rem', fontWeight: '600', background: 'rgba(20, 184, 166, 0.12)', color: '#14b8a6' }}>Insurance</span>}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {<><div>
+                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' }}>Reference Currency</label>
+                  {editingBasicInfo ? (
+                    <select value={formData.referenceCurrency} onChange={e => setFormData({...formData, referenceCurrency: e.target.value})} style={{ width: '100%', padding: '10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '0.9rem', boxSizing: 'border-box', cursor: 'pointer' }}>
+                      {['EUR', 'USD', 'GBP', 'CHF', 'JPY', 'CAD', 'AUD'].map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  ) : (
+                    <div style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>{entity.referenceCurrency || 'EUR'}</div>
+                  )}
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' }}>Language</label>
+                  {editingBasicInfo ? (
+                    <select value={formData.preferredLanguage} onChange={e => setFormData({...formData, preferredLanguage: e.target.value})} style={{ width: '100%', padding: '10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '0.9rem', boxSizing: 'border-box', cursor: 'pointer' }}>
+                      <option value="en">English</option>
+                      <option value="fr">French</option>
+                      <option value="de">German</option>
+                      <option value="it">Italian</option>
+                      <option value="es">Spanish</option>
+                    </select>
+                  ) : (
+                    <div style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>{{'en':'English','fr':'French','de':'German','it':'Italian','es':'Spanish'}[entity.profile?.preferredLanguage] || entity.profile?.preferredLanguage || '-'}</div>
+                  )}
+                </div>
+                </>}
+              </div>
+
+              {/* Roles in other entities */}
+              {(() => {
+                const roleLabels = { ubo: 'UBO', director: 'Director', signatory: 'Signatory', shareholder: 'Shareholder' };
+                const roles = [];
+                allEntities.forEach(company => {
+                  if (!company.stakeholders?.length) return;
+                  company.stakeholders.forEach(sh => {
+                    if (sh.entityId === entityId) {
+                      roles.push({ role: roleLabels[sh.role] || sh.role, companyName: ClientEntityHelpers.getEntityDisplayName(company), ownership: sh.ownership });
+                    }
+                  });
+                });
+                if (roles.length === 0) return null;
+                return (
+                  <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-color)' }}>
+                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '8px' }}>Roles in Companies</label>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                      {roles.map((r, i) => (
+                        <span key={i} style={{
+                          padding: '4px 10px', borderRadius: '6px',
+                          background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6',
+                          fontSize: '0.82rem', fontWeight: '600'
+                        }}>
+                          {r.role}{r.ownership ? ` ${r.ownership}%` : ''} @ {r.companyName}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+            </LiquidGlassCard>
+          )}
+
+          {/* Basic Information (info tab) — user mode */}
+          {activeTab === 'info' && hasUser && (
             <LiquidGlassCard borderRadius="12px" style={{ padding: isMobile ? '1.5rem' : '1.5rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isMobile ? '1rem' : '1.5rem', borderBottom: '2px solid var(--border-color)', paddingBottom: '1rem' }}>
               <h2 style={{
@@ -2212,7 +2500,7 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
           )}
 
           {/* RM's Clients - rmClients tab (when viewing an RM profile) */}
-          {activeTab === 'rmClients' && user.role === USER_ROLES.RELATIONSHIP_MANAGER && (
+          {activeTab === 'rmClients' && hasUser && user.role === USER_ROLES.RELATIONSHIP_MANAGER && (
             <LiquidGlassCard style={{ padding: '24px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
                 <h2 style={{
@@ -2335,7 +2623,7 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
           )}
 
           {/* Introducer's Accounts - introducerAccounts tab (when viewing an Introducer profile) */}
-          {activeTab === 'introducerAccounts' && user.role === USER_ROLES.INTRODUCER && (
+          {activeTab === 'introducerAccounts' && hasUser && user.role === USER_ROLES.INTRODUCER && (
             <LiquidGlassCard style={{ padding: '24px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
                 <h2 style={{
@@ -2464,1165 +2752,56 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
             </LiquidGlassCard>
           )}
 
-          {/* Bank Accounts - accounts tab (when viewing a client profile) */}
-          {activeTab === 'accounts' && user.role === USER_ROLES.CLIENT && (
+          {/* Linked Client Entities (shown in info tab for non-entity views) */}
+          {activeTab === 'info' && !entityId && linkedEntities.length > 0 && (
             <LiquidGlassCard style={{ padding: '24px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-                <h2 style={{
-                  margin: 0,
-                  fontSize: '20px',
-                  fontWeight: '600',
-                  color: '#fff',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '10px'
-                }}>
-                  <span style={{ fontSize: '24px' }}>🏦</span>
-                  Bank Accounts
-                  <span style={{
-                    padding: '4px 10px',
-                    borderRadius: '12px',
-                    background: isDarkMode ? 'rgba(79, 166, 255, 0.15)' : 'rgba(59, 130, 246, 0.15)',
-                    color: '#4da6ff',
-                    fontSize: '14px',
-                    fontWeight: '600'
-                  }}>
-                    {bankAccounts.length}
-                  </span>
-                </h2>
-                <button
-                  onClick={() => setShowAddAccount(true)}
-                  style={{
-                    padding: '8px 16px',
-                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                    border: 'none',
-                    borderRadius: '8px',
-                    color: '#fff',
-                    cursor: 'pointer',
-                    fontSize: '14px',
-                    fontWeight: '500',
-                    transition: 'all 0.3s ease',
-                    boxShadow: '0 4px 8px rgba(16, 185, 129, 0.3)'
-                  }}
-                  onMouseEnter={(e) => e.currentTarget.style.transform = 'translateY(-2px)'}
-                  onMouseLeave={(e) => e.currentTarget.style.transform = 'translateY(0)'}
-                >
-                  + Add Account
-                </button>
-              </div>
-
-              {showAddAccount && (
-                <div style={{
-                  marginBottom: '24px',
-                  padding: '20px',
-                  background: isDarkMode ? 'rgba(16, 185, 129, 0.05)' : 'rgba(16, 185, 129, 0.03)',
-                  borderRadius: '12px',
-                  border: `2px solid ${isDarkMode ? 'rgba(16, 185, 129, 0.2)' : 'rgba(16, 185, 129, 0.15)'}`,
-                  animation: 'slideUp 0.3s ease-out'
-                }}>
-                  <h3 style={{
-                    margin: '0 0 16px',
-                    color: 'var(--text-primary)',
-                    fontSize: '16px',
-                    fontWeight: '600',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px'
-                  }}>
-                    <span style={{ fontSize: '20px' }}>➕</span>
-                    New Bank Account
-                  </h3>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
-                    <div>
-                      <label style={{
-                        display: 'block',
-                        marginBottom: '8px',
-                        color: isDarkMode ? '#e5e7eb' : '#374151',
-                        fontSize: '13px',
-                        fontWeight: '600',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.5px'
-                      }}>
-                        Bank *
-                      </label>
-                      <select
-                        value={newAccount.bankId}
-                        onChange={(e) => setNewAccount({ ...newAccount, bankId: e.target.value })}
-                        style={{
-                          width: '100%',
-                          padding: '12px',
-                          background: 'var(--bg-secondary)',
-                          border: '2px solid var(--border-color)',
-                          borderRadius: '8px',
-                          color: 'var(--text-primary)',
-                          fontSize: '15px',
-                          outline: 'none',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        <option value="">Select bank...</option>
-                        {banks.map(bank => (
-                          <option key={bank._id} value={bank._id}>{bank.name}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label style={{
-                        display: 'block',
-                        marginBottom: '8px',
-                        color: isDarkMode ? '#e5e7eb' : '#374151',
-                        fontSize: '13px',
-                        fontWeight: '600',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.5px'
-                      }}>
-                        Account Number *
-                      </label>
-                      <input
-                        type="text"
-                        value={newAccount.accountNumber}
-                        onChange={(e) => setNewAccount({ ...newAccount, accountNumber: e.target.value })}
-                        style={{
-                          width: '100%',
-                          padding: '12px',
-                          background: 'var(--bg-secondary)',
-                          border: '2px solid var(--border-color)',
-                          borderRadius: '8px',
-                          color: 'var(--text-primary)',
-                          fontSize: '15px',
-                          outline: 'none'
-                        }}
-                      />
-                    </div>
-
-                    <div>
-                      <label style={{
-                        display: 'block',
-                        marginBottom: '8px',
-                        color: isDarkMode ? '#e5e7eb' : '#374151',
-                        fontSize: '13px',
-                        fontWeight: '600',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.5px'
-                      }}>
-                        Currency
-                      </label>
-                      <select
-                        value={newAccount.referenceCurrency}
-                        onChange={(e) => setNewAccount({ ...newAccount, referenceCurrency: e.target.value })}
-                        style={{
-                          width: '100%',
-                          padding: '12px',
-                          background: 'var(--bg-secondary)',
-                          border: '2px solid var(--border-color)',
-                          borderRadius: '8px',
-                          color: 'var(--text-primary)',
-                          fontSize: '15px',
-                          outline: 'none',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        <option value="USD">USD</option>
-                        <option value="EUR">EUR</option>
-                        <option value="GBP">GBP</option>
-                        <option value="CHF">CHF</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label style={{
-                        display: 'block',
-                        marginBottom: '8px',
-                        color: isDarkMode ? '#e5e7eb' : '#374151',
-                        fontSize: '13px',
-                        fontWeight: '600',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.5px'
-                      }}>
-                        Account Type
-                      </label>
-                      <select
-                        value={newAccount.accountType}
-                        onChange={(e) => setNewAccount({ ...newAccount, accountType: e.target.value })}
-                        style={{
-                          width: '100%',
-                          padding: '12px',
-                          background: 'var(--bg-secondary)',
-                          border: '2px solid var(--border-color)',
-                          borderRadius: '8px',
-                          color: 'var(--text-primary)',
-                          fontSize: '15px',
-                          outline: 'none',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        <option value="personal">Personal</option>
-                        <option value="company">Company</option>
-                        <option value="life_insurance">Life Insurance</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Comment / Description field */}
-                  <div style={{ marginBottom: '16px' }}>
-                    <label style={{
-                      display: 'block',
-                      marginBottom: '8px',
-                      color: isDarkMode ? '#e5e7eb' : '#374151',
-                      fontSize: '13px',
-                      fontWeight: '600',
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.5px'
-                    }}>
-                      Description
-                    </label>
-                    <select
-                      value={newAccount.comment}
-                      onChange={(e) => setNewAccount({ ...newAccount, comment: e.target.value })}
-                      style={{
-                        width: '100%',
-                        padding: '12px',
-                        background: 'var(--bg-secondary)',
-                        border: '2px solid var(--border-color)',
-                        borderRadius: '8px',
-                        color: 'var(--text-primary)',
-                        fontSize: '15px',
-                        outline: 'none',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      <option value="">Select description...</option>
-                      <option value="Investments">Investments</option>
-                      <option value="Credit line">Credit line</option>
-                      <option value="Credit card">Credit card</option>
-                      <option value="Spending">Spending</option>
-                    </select>
-                  </div>
-
-                  <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '16px' }}>
-                    <button
-                      onClick={() => {
-                        setShowAddAccount(false);
-                        setNewAccount({
-                          bankId: '',
-                          accountNumber: '',
-                          referenceCurrency: 'USD',
-                          accountType: 'personal',
-                          accountStructure: 'direct',
-                          lifeInsuranceCompany: '',
-                          comment: ''
-                        });
-                      }}
-                      style={{
-                        padding: '10px 20px',
-                        background: 'var(--bg-secondary)',
-                        border: '1px solid var(--border-color)',
-                        borderRadius: '8px',
-                        color: 'var(--text-primary)',
-                        cursor: 'pointer',
-                        fontSize: '14px',
-                        fontWeight: '500'
-                      }}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleAddBankAccount}
-                      style={{
-                        padding: '10px 20px',
-                        background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                        border: 'none',
-                        borderRadius: '8px',
-                        color: '#fff',
-                        cursor: 'pointer',
-                        fontSize: '14px',
-                        fontWeight: '500',
-                        boxShadow: '0 4px 8px rgba(16, 185, 129, 0.3)'
-                      }}
-                    >
-                      ✓ Add Account
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {bankAccounts.length === 0 && !showAddAccount ? (
-                <div style={{
-                  padding: '48px 24px',
-                  textAlign: 'center',
-                  background: 'var(--bg-tertiary)',
-                  borderRadius: '12px',
-                  border: '2px dashed var(--border-color)'
-                }}>
-                  <div style={{ fontSize: '64px', marginBottom: '16px', opacity: 0.5 }}>🏦</div>
-                  <p style={{ margin: '0 0 8px', color: 'var(--text-secondary)', fontSize: '16px', fontWeight: '500' }}>
-                    No bank accounts yet
-                  </p>
-                  <p style={{ margin: '0 0 20px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                    Add a bank account to get started
-                  </p>
-                  <button
-                    onClick={() => setShowAddAccount(true)}
-                    style={{
-                      padding: '10px 24px',
-                      background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                      border: 'none',
-                      borderRadius: '8px',
-                      color: '#fff',
-                      cursor: 'pointer',
-                      fontSize: '14px',
-                      fontWeight: '500'
-                    }}
-                  >
-                    + Add Your First Account
-                  </button>
-                </div>
-              ) : (
-                <div style={{ display: 'grid', gap: '12px' }}>
-                  {bankAccounts.map(account => {
-                    const bank = banks.find(b => b._id === account.bankId);
-                    const isEditing = editingBankAccount === account._id;
-
-                    return (
-                      <div
-                        key={account._id}
-                        style={{
-                          padding: '16px',
-                          background: isDarkMode
-                            ? 'linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.02) 100%)'
-                            : 'linear-gradient(135deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.01) 100%)',
-                          borderRadius: '12px',
-                          border: `1px solid ${isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'}`,
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '12px',
-                          transition: 'all 0.3s ease'
-                        }}
-                        onMouseEnter={(e) => {
-                          if (!isEditing) {
-                            e.currentTarget.style.transform = 'translateY(-2px)';
-                            e.currentTarget.style.boxShadow = `0 8px 16px ${isDarkMode ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.1)'}`;
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.transform = 'translateY(0)';
-                          e.currentTarget.style.boxShadow = 'none';
-                        }}
-                      >
-                        <div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px', flexWrap: 'wrap' }}>
-                            <div style={{
-                              width: '48px',
-                              height: '48px',
-                              borderRadius: '12px',
-                              background: getBankLogoPath(bank?.name) ? 'var(--bg-secondary)' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              fontSize: '24px',
-                              overflow: 'hidden',
-                              border: getBankLogoPath(bank?.name) ? '1px solid var(--border-color)' : 'none'
-                            }}>
-                              {getBankLogoPath(bank?.name) ? (
-                                <img
-                                  src={getBankLogoPath(bank?.name)}
-                                  alt={bank?.name || 'Bank'}
-                                  style={{
-                                    width: '40px',
-                                    height: '40px',
-                                    objectFit: 'contain'
-                                  }}
-                                  onError={(e) => {
-                                    e.target.style.display = 'none';
-                                    e.target.nextSibling.style.display = 'inline';
-                                  }}
-                                />
-                              ) : null}
-                              <span style={{ display: getBankLogoPath(bank?.name) ? 'none' : 'inline' }}>🏦</span>
-                            </div>
-                            <div>
-                              <p style={{
-                                margin: '0 0 4px',
-                                color: 'var(--text-primary)',
-                                fontSize: '17px',
-                                fontWeight: '600'
-                              }}>
-                                {bank?.name || 'Unknown Bank'}
-                              </p>
-                              {isEditing ? (
-                                <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
-                                  <span style={{
-                                    color: 'var(--text-secondary)',
-                                    fontSize: '13px'
-                                  }}>
-                                    <strong>Account:</strong> {account.accountNumber}
-                                  </span>
-                                  <select
-                                    value={editBankAccountData.referenceCurrency || 'EUR'}
-                                    onChange={(e) => setEditBankAccountData(prev => ({ ...prev, referenceCurrency: e.target.value }))}
-                                    style={{
-                                      padding: '4px 8px',
-                                      borderRadius: '6px',
-                                      border: '1px solid var(--border-color)',
-                                      background: 'var(--bg-secondary)',
-                                      color: 'var(--text-primary)',
-                                      fontSize: '12px',
-                                      fontWeight: '600'
-                                    }}
-                                  >
-                                    {['EUR', 'USD', 'GBP', 'CHF', 'JPY', 'CAD', 'AUD', 'SEK', 'NOK', 'DKK', 'PLN', 'CZK', 'HUF', 'ILS'].map(curr => (
-                                      <option key={curr} value={curr}>{curr}</option>
-                                    ))}
-                                  </select>
-                                  <select
-                                    value={editBankAccountData.accountType || 'personal'}
-                                    onChange={(e) => setEditBankAccountData(prev => ({ ...prev, accountType: e.target.value }))}
-                                    style={{
-                                      padding: '4px 8px',
-                                      borderRadius: '6px',
-                                      border: '1px solid var(--border-color)',
-                                      background: 'var(--bg-secondary)',
-                                      color: 'var(--text-primary)',
-                                      fontSize: '12px',
-                                      fontWeight: '600',
-                                      textTransform: 'capitalize'
-                                    }}
-                                  >
-                                    <option value="personal">Personal</option>
-                                    <option value="company">Company</option>
-                                    <option value="life_insurance">Life Insurance</option>
-                                  </select>
-                                  {editBankAccountData.accountType === 'life_insurance' && (
-                                    <input
-                                      type="text"
-                                      placeholder="Insurance Company"
-                                      value={editBankAccountData.lifeInsuranceCompany || ''}
-                                      onChange={(e) => setEditBankAccountData(prev => ({
-                                        ...prev,
-                                        lifeInsuranceCompany: e.target.value
-                                      }))}
-                                      style={{
-                                        padding: '4px 8px',
-                                        borderRadius: '6px',
-                                        border: '1px solid var(--border-color)',
-                                        background: 'var(--bg-secondary)',
-                                        color: 'var(--text-primary)',
-                                        fontSize: '12px',
-                                        fontWeight: '600',
-                                        width: '140px'
-                                      }}
-                                    />
-                                  )}
-                                  <input
-                                    type="number"
-                                    placeholder="Credit Line"
-                                    value={editBankAccountData.authorizedOverdraft || ''}
-                                    onChange={(e) => setEditBankAccountData(prev => ({
-                                      ...prev,
-                                      authorizedOverdraft: e.target.value
-                                    }))}
-                                    style={{
-                                      padding: '4px 8px',
-                                      borderRadius: '6px',
-                                      border: '1px solid var(--border-color)',
-                                      background: 'var(--bg-secondary)',
-                                      color: 'var(--text-primary)',
-                                      fontSize: '12px',
-                                      fontWeight: '600',
-                                      width: '100px'
-                                    }}
-                                  />
-                                  <select
-                                    value={editBankAccountData.comment || ''}
-                                    onChange={(e) => setEditBankAccountData(prev => ({ ...prev, comment: e.target.value }))}
-                                    style={{
-                                      padding: '4px 8px',
-                                      borderRadius: '6px',
-                                      border: '1px solid var(--border-color)',
-                                      background: 'var(--bg-secondary)',
-                                      color: 'var(--text-primary)',
-                                      fontSize: '12px',
-                                      fontWeight: '600'
-                                    }}
-                                  >
-                                    <option value="">Description...</option>
-                                    <option value="Investments">Investments</option>
-                                    <option value="Credit line">Credit line</option>
-                                    <option value="Credit card">Credit card</option>
-                                    <option value="Spending">Spending</option>
-                                  </select>
-                                  <select
-                                    value={editBankAccountData.introducerId || ''}
-                                    onChange={(e) => setEditBankAccountData(prev => ({ ...prev, introducerId: e.target.value }))}
-                                    style={{
-                                      padding: '4px 8px',
-                                      borderRadius: '6px',
-                                      border: '1px solid var(--border-color)',
-                                      background: 'var(--bg-secondary)',
-                                      color: 'var(--text-primary)',
-                                      fontSize: '12px',
-                                      fontWeight: '600'
-                                    }}
-                                  >
-                                    <option value="">No Introducer</option>
-                                    {introducers.map(introducer => (
-                                      <option key={introducer._id} value={introducer._id}>
-                                        {`${introducer.profile?.firstName || ''} ${introducer.profile?.lastName || ''}`.trim() || introducer.username}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </div>
-                              ) : (
-                                <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                                  <span style={{
-                                    color: 'var(--text-secondary)',
-                                    fontSize: '13px'
-                                  }}>
-                                    <strong>Account:</strong> {account.accountNumber}
-                                  </span>
-                                  <span style={{
-                                    padding: '2px 8px',
-                                    borderRadius: '6px',
-                                    background: isDarkMode ? 'rgba(79, 166, 255, 0.15)' : 'rgba(59, 130, 246, 0.15)',
-                                    color: '#4da6ff',
-                                    fontSize: '12px',
-                                    fontWeight: '600'
-                                  }}>
-                                    {account.referenceCurrency}
-                                  </span>
-                                  <span style={{
-                                    padding: '2px 8px',
-                                    borderRadius: '6px',
-                                    background: isDarkMode ? 'rgba(139, 92, 246, 0.15)' : 'rgba(139, 92, 246, 0.15)',
-                                    color: '#8b5cf6',
-                                    fontSize: '12px',
-                                    fontWeight: '600'
-                                  }}>
-                                    {account.accountType === 'life_insurance'
-                                      ? `Life Insurance${account.lifeInsuranceCompany ? ` (${account.lifeInsuranceCompany})` : ''}`
-                                      : account.accountType?.charAt(0).toUpperCase() + account.accountType?.slice(1)}
-                                  </span>
-                                  {account.authorizedOverdraft > 0 && (
-                                    <span style={{
-                                      padding: '2px 8px',
-                                      borderRadius: '6px',
-                                      background: isDarkMode ? 'rgba(16, 185, 129, 0.15)' : 'rgba(16, 185, 129, 0.15)',
-                                      color: '#10b981',
-                                      fontSize: '12px',
-                                      fontWeight: '600'
-                                    }}>
-                                      Credit: {account.referenceCurrency} {account.authorizedOverdraft.toLocaleString()}
-                                    </span>
-                                  )}
-                                  {account.comment && (
-                                    <span style={{
-                                      padding: '2px 8px',
-                                      borderRadius: '6px',
-                                      background: isDarkMode ? 'rgba(251, 191, 36, 0.15)' : 'rgba(251, 191, 36, 0.15)',
-                                      color: '#f59e0b',
-                                      fontSize: '12px',
-                                      fontWeight: '500',
-                                      fontStyle: 'italic'
-                                    }}>
-                                      {account.comment}
-                                    </span>
-                                  )}
-                                  {account.introducerId && (() => {
-                                    const introducer = introducers.find(i => i._id === account.introducerId);
-                                    return introducer ? (
-                                      <span style={{
-                                        padding: '2px 8px',
-                                        borderRadius: '6px',
-                                        background: isDarkMode ? 'rgba(236, 72, 153, 0.15)' : 'rgba(236, 72, 153, 0.15)',
-                                        color: '#ec4899',
-                                        fontSize: '12px',
-                                        fontWeight: '600'
-                                      }}>
-                                        🤝 {`${introducer.profile?.firstName || ''} ${introducer.profile?.lastName || ''}`.trim()}
-                                      </span>
-                                    ) : null;
-                                  })()}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                          {isEditing ? (
-                            <>
-                              <button
-                                onClick={() => handleSaveEditBankAccount(account._id)}
-                                style={{
-                                  padding: '10px 18px',
-                                  background: 'rgba(16, 185, 129, 0.1)',
-                                  border: '1px solid rgba(16, 185, 129, 0.3)',
-                                  borderRadius: '8px',
-                                  color: '#10b981',
-                                  cursor: 'pointer',
-                                  fontSize: '13px',
-                                  fontWeight: '600',
-                                  transition: 'all 0.3s ease',
-                                  whiteSpace: 'nowrap'
-                                }}
-                                onMouseEnter={(e) => {
-                                  e.currentTarget.style.background = 'rgba(16, 185, 129, 0.2)';
-                                  e.currentTarget.style.transform = 'scale(1.05)';
-                                }}
-                                onMouseLeave={(e) => {
-                                  e.currentTarget.style.background = 'rgba(16, 185, 129, 0.1)';
-                                  e.currentTarget.style.transform = 'scale(1)';
-                                }}
-                              >
-                                Save
-                              </button>
-                              <button
-                                onClick={handleCancelEditBankAccount}
-                                style={{
-                                  padding: '10px 18px',
-                                  background: 'rgba(107, 114, 128, 0.1)',
-                                  border: '1px solid rgba(107, 114, 128, 0.3)',
-                                  borderRadius: '8px',
-                                  color: '#6b7280',
-                                  cursor: 'pointer',
-                                  fontSize: '13px',
-                                  fontWeight: '600',
-                                  transition: 'all 0.3s ease',
-                                  whiteSpace: 'nowrap'
-                                }}
-                                onMouseEnter={(e) => {
-                                  e.currentTarget.style.background = 'rgba(107, 114, 128, 0.2)';
-                                  e.currentTarget.style.transform = 'scale(1.05)';
-                                }}
-                                onMouseLeave={(e) => {
-                                  e.currentTarget.style.background = 'rgba(107, 114, 128, 0.1)';
-                                  e.currentTarget.style.transform = 'scale(1)';
-                                }}
-                              >
-                                Cancel
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button
-                                onClick={() => handleEditBankAccount(account)}
-                                style={{
-                                  padding: '10px 18px',
-                                  background: 'rgba(59, 130, 246, 0.1)',
-                                  border: '1px solid rgba(59, 130, 246, 0.3)',
-                                  borderRadius: '8px',
-                                  color: '#3b82f6',
-                                  cursor: 'pointer',
-                                  fontSize: '13px',
-                                  fontWeight: '600',
-                                  transition: 'all 0.3s ease',
-                                  whiteSpace: 'nowrap'
-                                }}
-                                onMouseEnter={(e) => {
-                                  e.currentTarget.style.background = 'rgba(59, 130, 246, 0.2)';
-                                  e.currentTarget.style.transform = 'scale(1.05)';
-                                }}
-                                onMouseLeave={(e) => {
-                                  e.currentTarget.style.background = 'rgba(59, 130, 246, 0.1)';
-                                  e.currentTarget.style.transform = 'scale(1)';
-                                }}
-                              >
-                                ✏️ Edit
-                              </button>
-                              <button
-                                onClick={() => handleDeleteBankAccount(account._id)}
-                                style={{
-                                  padding: '10px 18px',
-                                  background: 'rgba(239, 68, 68, 0.1)',
-                                  border: '1px solid rgba(239, 68, 68, 0.3)',
-                                  borderRadius: '8px',
-                                  color: '#ef4444',
-                                  cursor: 'pointer',
-                                  fontSize: '13px',
-                                  fontWeight: '600',
-                                  transition: 'all 0.3s ease',
-                                  whiteSpace: 'nowrap'
-                                }}
-                                onMouseEnter={(e) => {
-                                  e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)';
-                                  e.currentTarget.style.transform = 'scale(1.05)';
-                                }}
-                                onMouseLeave={(e) => {
-                                  e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)';
-                                  e.currentTarget.style.transform = 'scale(1)';
-                                }}
-                              >
-                                🗑️ Delete
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </LiquidGlassCard>
-          )}
-
-          {/* Per-Account Investment Profiles & Allocations - accounts tab (when viewing a client profile) */}
-          {activeTab === 'accounts' && user.role === USER_ROLES.CLIENT && bankAccounts.length > 0 && (
-            <LiquidGlassCard style={{ padding: '24px' }}>
-              <h2 style={{
-                margin: '0 0 24px',
-                fontSize: '20px',
+              <h3 style={{
+                margin: '0 0 16px 0',
+                fontSize: '1.1rem',
                 fontWeight: '600',
-                color: '#fff',
+                color: 'var(--text-primary)',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '10px'
+                gap: '8px'
               }}>
-                <span style={{ fontSize: '24px' }}>📊</span>
-                Account Investment Profiles
-              </h2>
-
-              {/* Loop through each bank account */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-                {bankAccounts.map(account => {
-                  const bank = banks.find(b => b._id === account.bankId);
-                  const profile = getProfileForAccount(account._id);
-                  const allocation = getAllocationForAccount(account);
-                  const isEditing = editingAccountProfile === account._id;
-
-                  const categories = [
-                    {
-                      key: 'cash', label: 'Cash', labelFr: 'Monétaire', color: '#3b82f6', icon: '💵', maxKey: 'maxCash',
-                      tooltip: 'Cash • Term Deposits • Monetary Products • Money Market Funds'
-                    },
-                    {
-                      key: 'bonds', label: 'Bonds', labelFr: 'Obligations', color: '#10b981', icon: '📄', maxKey: 'maxBonds',
-                      tooltip: 'Fixed-Income Bonds • Convertible Bonds • Bond Funds • Capital-Guaranteed Structured Products'
-                    },
-                    {
-                      key: 'equities', label: 'Equities', labelFr: 'Actions', color: '#f59e0b', icon: '📈', maxKey: 'maxEquities',
-                      tooltip: 'Equities & Stocks • Equity Funds • Equity-Linked Structured Products • Barrier-Protected Products'
-                    },
-                    {
-                      key: 'alternative', label: 'Alternative', labelFr: 'Alternatif', color: '#8b5cf6', icon: '🎯', maxKey: 'maxAlternative',
-                      tooltip: 'Private Equity • Private Debt • Commodities • Real Estate • Hedge Funds • Derivatives • Other'
-                    }
-                  ];
-
+                <span>🏢</span> Linked Client Entities
+              </h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {linkedEntities.map(ent => {
+                  const statusDisplay = ClientEntityHelpers.getEntityStatusDisplay(ent.status);
                   return (
-                    <div key={account._id} style={{
-                      padding: '20px',
-                      background: isDarkMode ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.02)',
-                      borderRadius: '12px',
+                    <div key={ent._id} style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '10px 14px',
+                      background: 'var(--bg-secondary)',
+                      borderRadius: '8px',
                       border: '1px solid var(--border-color)'
                     }}>
-                      {/* Account Header */}
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                          <div style={{
-                            width: '36px',
-                            height: '36px',
-                            borderRadius: '8px',
-                            background: getBankLogoPath(bank?.name) ? 'var(--bg-secondary)' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            overflow: 'hidden',
-                            border: getBankLogoPath(bank?.name) ? '1px solid var(--border-color)' : 'none',
-                            flexShrink: 0
-                          }}>
-                            {getBankLogoPath(bank?.name) ? (
-                              <img
-                                src={getBankLogoPath(bank?.name)}
-                                alt={bank?.name || 'Bank'}
-                                style={{
-                                  width: '28px',
-                                  height: '28px',
-                                  objectFit: 'contain'
-                                }}
-                                onError={(e) => {
-                                  e.target.style.display = 'none';
-                                  e.target.nextSibling.style.display = 'inline';
-                                }}
-                              />
-                            ) : null}
-                            <span style={{ display: getBankLogoPath(bank?.name) ? 'none' : 'inline', fontSize: '18px' }}>🏦</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span style={{ fontSize: '1.1rem' }}>
+                          {ent.type === ENTITY_TYPES.PHYSICAL_PERSON ? '\ud83d\udc64' : ent.type === ENTITY_TYPES.COMPANY ? '\ud83c\udfe2' : '\ud83d\udee1\ufe0f'}
+                        </span>
+                        <div>
+                          <div style={{ fontWeight: '600', fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                            {ClientEntityHelpers.getEntityDisplayName(ent)}
                           </div>
-                          <div>
-                            <h3 style={{ margin: 0, color: 'var(--text-primary)', fontSize: '16px', fontWeight: '600' }}>
-                              {bank?.name || 'Unknown Bank'} - {account.accountNumber}
-                            </h3>
-                            <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
-                              {account.referenceCurrency} • {account.accountType === 'life_insurance' ? 'Life Insurance' : account.accountType?.charAt(0).toUpperCase() + account.accountType?.slice(1)}
-                              {profile?.profileName && (
-                                <span style={{
-                                  marginLeft: '8px',
-                                  padding: '1px 8px',
-                                  background: 'linear-gradient(135deg, #667eea20, #764ba220)',
-                                  border: '1px solid #667eea40',
-                                  borderRadius: '4px',
-                                  color: '#667eea',
-                                  fontSize: '11px',
-                                  fontWeight: '600'
-                                }}>
-                                  {profile.profileName}
-                                </span>
-                              )}
-                              {profile?.isProfessionalInvestor && (
-                                <span style={{
-                                  marginLeft: '8px',
-                                  padding: '1px 8px',
-                                  background: 'rgba(16, 185, 129, 0.1)',
-                                  border: '1px solid rgba(16, 185, 129, 0.3)',
-                                  borderRadius: '4px',
-                                  color: '#10b981',
-                                  fontSize: '11px',
-                                  fontWeight: '600'
-                                }}>
-                                  Professional Investor
-                                </span>
-                              )}
-                            </span>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                            {ClientEntityHelpers.getEntityTypeLabel(ent.type)} · {ent.accessLevel} access
                           </div>
                         </div>
-                        {!isEditing && (
-                          <button
-                            onClick={() => handleStartEditAccountProfile(account._id)}
-                            style={{
-                              padding: '6px 12px',
-                              background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                              border: 'none',
-                              borderRadius: '6px',
-                              color: '#fff',
-                              cursor: 'pointer',
-                              fontSize: '12px',
-                              fontWeight: '500'
-                            }}
-                          >
-                            {profile ? 'Edit Profile' : 'Set Profile'}
-                          </button>
-                        )}
                       </div>
-
-                      {/* Side-by-side: Profile Editor + Allocation Chart */}
-                      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '20px' }}>
-                        {/* Left: Profile Editor / Display */}
-                        <div style={{
-                          padding: '16px',
-                          background: isDarkMode ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)',
-                          borderRadius: '10px'
-                        }}>
-                          <h4 style={{ margin: '0 0 16px', color: 'var(--text-primary)', fontSize: '14px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                            Maximum Allocation Limits
-                            {!isEditing && getProfileName(profile) && (
-                              <span style={{
-                                padding: '2px 10px',
-                                background: 'linear-gradient(135deg, #667eea20, #764ba220)',
-                                border: '1px solid #667eea40',
-                                borderRadius: '4px',
-                                color: '#667eea',
-                                fontSize: '12px',
-                                fontWeight: '600'
-                              }}>
-                                {getProfileName(profile)}
-                              </span>
-                            )}
-                          </h4>
-
-                          {isEditing ? (
-                            <>
-                              {/* Template Dropdown */}
-                              <div style={{ marginBottom: '16px' }}>
-                                <label style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '12px', marginBottom: '6px' }}>
-                                  Apply Template
-                                </label>
-                                <select
-                                  onChange={(e) => e.target.value && applyTemplate(e.target.value)}
-                                  style={{
-                                    width: '100%',
-                                    padding: '8px 12px',
-                                    background: 'var(--bg-secondary)',
-                                    border: '1px solid var(--border-color)',
-                                    borderRadius: '6px',
-                                    color: 'var(--text-primary)',
-                                    fontSize: '13px'
-                                  }}
-                                >
-                                  <option value="">Select a template...</option>
-                                  {Object.entries(PROFILE_TEMPLATES).map(([key, template]) => (
-                                    <option key={key} value={key}>{template.name}</option>
-                                  ))}
-                                </select>
-                              </div>
-
-                              {/* Profile Name */}
-                              <div style={{ marginBottom: '16px' }}>
-                                <label style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '12px', marginBottom: '6px' }}>
-                                  Profile Name
-                                </label>
-                                <input
-                                  type="text"
-                                  value={accountProfileDraft.profileName}
-                                  onChange={(e) => setAccountProfileDraft(prev => ({ ...prev, profileName: e.target.value }))}
-                                  placeholder="e.g. Flexible Balanced"
-                                  style={{
-                                    width: '100%',
-                                    padding: '8px 12px',
-                                    background: 'var(--bg-secondary)',
-                                    border: '1px solid var(--border-color)',
-                                    borderRadius: '6px',
-                                    color: 'var(--text-primary)',
-                                    fontSize: '13px',
-                                    boxSizing: 'border-box'
-                                  }}
-                                />
-                              </div>
-
-                              {/* Allocation Inputs */}
-                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
-                                {categories.map(cat => (
-                                  <div key={cat.key} style={{
-                                    padding: '10px',
-                                    background: `${cat.color}10`,
-                                    borderRadius: '8px',
-                                    border: `1px solid ${cat.color}30`
-                                  }}>
-                                    <div
-                                      style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px', cursor: 'help' }}
-                                      title={cat.tooltip}
-                                    >
-                                      <span style={{ fontSize: '16px' }}>{cat.icon}</span>
-                                      <span style={{ color: 'var(--text-primary)', fontSize: '12px', fontWeight: '600' }}>{cat.label}</span>
-                                    </div>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                      <input
-                                        type="number"
-                                        min="0"
-                                        max="100"
-                                        value={accountProfileDraft[cat.maxKey]}
-                                        onChange={(e) => handleAccountAllocationChange(cat.maxKey, e.target.value)}
-                                        style={{
-                                          width: '60px',
-                                          padding: '6px',
-                                          background: 'var(--bg-secondary)',
-                                          border: '1px solid var(--border-color)',
-                                          borderRadius: '4px',
-                                          color: 'var(--text-primary)',
-                                          fontSize: '14px',
-                                          fontWeight: '600',
-                                          textAlign: 'center'
-                                        }}
-                                      />
-                                      <span style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>%</span>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-
-                              {/* Professional Investor Checkbox */}
-                              <label style={{
-                                display: 'flex', alignItems: 'center', gap: '8px',
-                                marginBottom: '16px', cursor: 'pointer',
-                                padding: '10px 12px', borderRadius: '8px',
-                                background: accountProfileDraft.isProfessionalInvestor ? 'rgba(16, 185, 129, 0.08)' : 'var(--bg-secondary)',
-                                border: `1px solid ${accountProfileDraft.isProfessionalInvestor ? 'rgba(16, 185, 129, 0.3)' : 'var(--border-color)'}`,
-                                transition: 'all 0.15s'
-                              }}>
-                                <input
-                                  type="checkbox"
-                                  checked={accountProfileDraft.isProfessionalInvestor}
-                                  onChange={(e) => setAccountProfileDraft(prev => ({ ...prev, isProfessionalInvestor: e.target.checked }))}
-                                  style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: '#10b981' }}
-                                />
-                                <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>
-                                  Professional Investor
-                                </span>
-                              </label>
-
-                              {/* Save/Cancel */}
-                              <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                                <button
-                                  onClick={() => setEditingAccountProfile(null)}
-                                  style={{
-                                    padding: '8px 16px',
-                                    background: 'var(--bg-secondary)',
-                                    border: '1px solid var(--border-color)',
-                                    borderRadius: '6px',
-                                    color: 'var(--text-primary)',
-                                    cursor: 'pointer',
-                                    fontSize: '13px'
-                                  }}
-                                >
-                                  Cancel
-                                </button>
-                                <button
-                                  onClick={() => handleSaveAccountProfile(account._id)}
-                                  style={{
-                                    padding: '8px 16px',
-                                    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                                    border: 'none',
-                                    borderRadius: '6px',
-                                    color: '#fff',
-                                    cursor: 'pointer',
-                                    fontSize: '13px',
-                                    fontWeight: '500'
-                                  }}
-                                >
-                                  Save
-                                </button>
-                              </div>
-                            </>
-                          ) : profile ? (
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                              {categories.map(cat => (
-                                <div
-                                  key={cat.key}
-                                  style={{
-                                    padding: '10px',
-                                    background: `${cat.color}10`,
-                                    borderRadius: '8px',
-                                    textAlign: 'center',
-                                    cursor: 'help'
-                                  }}
-                                  title={cat.tooltip}
-                                >
-                                  <span style={{ fontSize: '20px' }}>{cat.icon}</span>
-                                  <p style={{ margin: '4px 0 0', color: 'var(--text-secondary)', fontSize: '11px' }}>{cat.label}</p>
-                                  <p style={{ margin: '2px 0 0', color: 'var(--text-primary)', fontSize: '18px', fontWeight: '700' }}>
-                                    {profile[cat.maxKey]}%
-                                  </p>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-secondary)' }}>
-                              <div style={{ fontSize: '32px', marginBottom: '8px', opacity: 0.5 }}>📋</div>
-                              <p style={{ margin: 0, fontSize: '13px' }}>No profile set for this account</p>
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Right: Allocation Chart */}
-                        <div style={{
-                          padding: '16px',
-                          background: isDarkMode ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)',
-                          borderRadius: '10px'
-                        }}>
-                          <h4 style={{ margin: '0 0 16px', color: 'var(--text-primary)', fontSize: '14px', fontWeight: '600' }}>
-                            Current vs Maximum Allocation
-                          </h4>
-
-                          {allocation && profile ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                              {categories.map(cat => {
-                                const current = allocation[cat.key] || 0;
-                                const max = profile[cat.maxKey] || 0;
-                                const isOverLimit = current > max;
-
-                                return (
-                                  <div key={cat.key}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                                      <span
-                                        style={{ color: 'var(--text-secondary)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', cursor: 'help' }}
-                                        title={cat.tooltip}
-                                      >
-                                        <span>{cat.icon}</span> {cat.label}
-                                      </span>
-                                      <span style={{
-                                        color: isOverLimit ? '#ef4444' : 'var(--text-primary)',
-                                        fontSize: '12px',
-                                        fontWeight: '600'
-                                      }}>
-                                        {current.toFixed(1)}% / {max}%
-                                        {isOverLimit && <span style={{ marginLeft: '4px' }}>⚠️</span>}
-                                      </span>
-                                    </div>
-                                    <div style={{
-                                      position: 'relative',
-                                      height: '20px',
-                                      background: isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)',
-                                      borderRadius: '10px',
-                                      overflow: 'hidden'
-                                    }}>
-                                      {/* Max limit indicator */}
-                                      <div style={{
-                                        position: 'absolute',
-                                        left: `${max}%`,
-                                        top: 0,
-                                        bottom: 0,
-                                        width: '2px',
-                                        background: isDarkMode ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.3)',
-                                        zIndex: 2
-                                      }} />
-                                      {/* Current allocation bar */}
-                                      <div style={{
-                                        position: 'absolute',
-                                        left: 0,
-                                        top: 0,
-                                        bottom: 0,
-                                        width: `${Math.min(current, 100)}%`,
-                                        background: isOverLimit
-                                          ? 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)'
-                                          : `linear-gradient(90deg, ${cat.color} 0%, ${cat.color}dd 100%)`,
-                                        borderRadius: '10px',
-                                        transition: 'width 0.3s ease'
-                                      }} />
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          ) : allocation && !profile ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                              {categories.map(cat => {
-                                const current = allocation[cat.key] || 0;
-
-                                return (
-                                  <div key={cat.key}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                                      <span
-                                        style={{ color: 'var(--text-secondary)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', cursor: 'help' }}
-                                        title={cat.tooltip}
-                                      >
-                                        <span>{cat.icon}</span> {cat.label}
-                                      </span>
-                                      <span style={{ color: 'var(--text-primary)', fontSize: '12px', fontWeight: '600' }}>
-                                        {current.toFixed(1)}%
-                                      </span>
-                                    </div>
-                                    <div style={{
-                                      position: 'relative',
-                                      height: '20px',
-                                      background: isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)',
-                                      borderRadius: '10px',
-                                      overflow: 'hidden'
-                                    }}>
-                                      <div style={{
-                                        position: 'absolute',
-                                        left: 0,
-                                        top: 0,
-                                        bottom: 0,
-                                        width: `${Math.min(current, 100)}%`,
-                                        background: `linear-gradient(90deg, ${cat.color} 0%, ${cat.color}dd 100%)`,
-                                        borderRadius: '10px',
-                                        transition: 'width 0.3s ease'
-                                      }} />
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                              <p style={{ margin: '8px 0 0', color: 'var(--text-secondary)', fontSize: '11px', textAlign: 'center' }}>
-                                Set a profile to see limit comparisons
-                              </p>
-                            </div>
-                          ) : (
-                            <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-secondary)' }}>
-                              <div style={{ fontSize: '32px', marginBottom: '8px', opacity: 0.5 }}>📉</div>
-                              <p style={{ margin: 0, fontSize: '13px' }}>No portfolio data available</p>
-                            </div>
-                          )}
-                        </div>
-                      </div>
+                      <span style={{
+                        fontSize: '0.65rem',
+                        fontWeight: '600',
+                        padding: '2px 8px',
+                        borderRadius: '10px',
+                        background: `${statusDisplay.color}15`,
+                        color: statusDisplay.color
+                      }}>
+                        {statusDisplay.label}
+                      </span>
                     </div>
                   );
                 })}
@@ -3630,172 +2809,736 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
             </LiquidGlassCard>
           )}
 
-          {/* Stakeholders - stakeholders tab (company clients only) */}
-          {activeTab === 'stakeholders' && user.role === USER_ROLES.CLIENT && user.profile?.clientType === 'company' && (
+          {/* Linked User Accounts (shown in info tab for entity views) */}
+          {activeTab === 'info' && entityId && linkedUsers.length > 0 && (
             <LiquidGlassCard style={{ padding: '24px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-                <h2 style={{ margin: 0, fontSize: '20px', fontWeight: '600', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <span style={{ fontSize: '1.3rem' }}>🏛️</span>
-                  Stakeholders
-                </h2>
-                <button
-                  onClick={() => setShowAddStakeholder(true)}
-                  style={{
-                    padding: '8px 16px',
-                    background: 'var(--accent-color)',
-                    color: 'white',
-                    border: 'none',
+              <h3 style={{
+                margin: '0 0 16px 0',
+                fontSize: '1.1rem',
+                fontWeight: '600',
+                color: 'var(--text-primary)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <span>🔑</span> Linked User Accounts
+              </h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {linkedUsers.map(u => (
+                  <div key={u._id} style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '10px 14px',
+                    background: 'var(--bg-secondary)',
                     borderRadius: '8px',
-                    cursor: 'pointer',
-                    fontWeight: '500',
-                    fontSize: '0.85rem'
-                  }}
-                >
-                  + Add Stakeholder
-                </button>
+                    border: '1px solid var(--border-color)'
+                  }}>
+                    <div>
+                      <div style={{ fontWeight: '600', fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                        {u.profile?.firstName || ''} {u.profile?.lastName || ''} {!u.profile?.firstName && !u.profile?.lastName && (u.email || 'Unnamed')}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                        {u.email} · {u.role} · {u.accessLevel} access
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </LiquidGlassCard>
+          )}
+
+          {/* Bank Accounts - accounts tab — unified table with expandable rows */}
+          {activeTab === 'accounts' && (isEntityMode || (hasUser && user.role === USER_ROLES.CLIENT)) && (
+            <LiquidGlassCard style={{ padding: '24px' }}>
+              {/* Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <h2 style={{ margin: 0, fontSize: '1.15rem', fontWeight: '700', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '1.3rem' }}>🏦</span> Bank Accounts
+                  <span style={{ fontSize: '0.8rem', fontWeight: '600', padding: '2px 8px', borderRadius: '10px', background: 'var(--accent-color)', color: 'white' }}>{bankAccounts.length}</span>
+                </h2>
+                <button onClick={() => { if (!showAddAccount) { setNewAccount(prev => ({...prev, name: accountDefaultName})); } setShowAddAccount(!showAddAccount); }} style={{
+                  background: showAddAccount ? 'var(--danger-color)' : '#10b981', color: 'white', border: 'none',
+                  padding: '8px 16px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600'
+                }}>{showAddAccount ? 'Cancel' : '+ Add Account'}</button>
               </div>
 
-              {/* Add stakeholder form */}
+              {/* Add Account Form (compact) */}
+              {showAddAccount && (
+                <div style={{ padding: '16px', background: 'rgba(16, 185, 129, 0.06)', border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '10px', marginBottom: '16px' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px', marginBottom: '10px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Name</label>
+                      <input type="text" placeholder={fullName} value={newAccount.name} onChange={e => { const val = e.target.value; setNewAccount(prev => ({...prev, name: val})); }}
+                        style={{ width: '100%', padding: '9px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', boxSizing: 'border-box' }} />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Bank *</label>
+                      <select value={newAccount.bankId} onChange={e => { const val = e.target.value; setNewAccount(prev => ({...prev, bankId: val})); }}
+                        style={{ width: '100%', padding: '9px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', cursor: 'pointer' }}>
+                        <option value="">Select bank...</option>
+                        {banks.map(b => <option key={b._id} value={b._id}>{b.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Account # *</label>
+                      <input type="text" value={newAccount.accountNumber} onChange={e => { const val = e.target.value; setNewAccount(prev => ({...prev, accountNumber: val})); }}
+                        style={{ width: '100%', padding: '9px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', boxSizing: 'border-box' }} />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Currency</label>
+                      <select value={newAccount.referenceCurrency} onChange={e => { const val = e.target.value; setNewAccount(prev => ({...prev, referenceCurrency: val})); }}
+                        style={{ width: '100%', padding: '9px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', cursor: 'pointer' }}>
+                        {['EUR','USD','GBP','CHF','JPY','CAD','AUD','ILS'].map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
+                    {(entity?.isInsurance || newAccount.accountStructure === 'life_insurance') && (
+                      <div style={{ gridColumn: '1 / -1' }}>
+                        <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Beneficial Owners (UBOs)</label>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '4px' }}>
+                          {(newAccount.beneficialOwnerIds || []).map(uboId => {
+                            const uboEntity = allEntities.find(e => e._id === uboId);
+                            return uboEntity ? (
+                              <span key={uboId} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '5px', fontSize: '0.75rem', fontWeight: '600', background: 'rgba(14, 165, 233, 0.1)', color: '#0ea5e9' }}>
+                                {ClientEntityHelpers.getEntityDisplayName(uboEntity)}
+                                <span onClick={() => setNewAccount(prev => ({...prev, beneficialOwnerIds: (prev.beneficialOwnerIds || []).filter(id => id !== uboId)}))} style={{ cursor: 'pointer', marginLeft: '2px', fontWeight: '700' }}>&times;</span>
+                              </span>
+                            ) : null;
+                          })}
+                        </div>
+                        <select value="_placeholder" onChange={e => { const val = e.target.value; if (val && val !== '_placeholder') { setNewAccount(prev => ({...prev, beneficialOwnerIds: [...(prev.beneficialOwnerIds || []), val]})); } }}
+                          style={{ width: '100%', padding: '9px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', cursor: 'pointer' }}>
+                          <option value="_placeholder">Add UBO...</option>
+                          {allEntities.filter(e => e._id !== entityId && (e.type === ENTITY_TYPES.PHYSICAL_PERSON || e.type === ENTITY_TYPES.COMPANY) && !(newAccount.beneficialOwnerIds || []).includes(e._id)).map(e => (
+                            <option key={e._id} value={e._id}>{ClientEntityHelpers.getEntityDisplayName(e)} ({ClientEntityHelpers.getEntityTypeLabel(e.type)})</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    {(
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Description</label>
+                        <select value={newAccount.comment} onChange={e => { const val = e.target.value; setNewAccount(prev => ({...prev, comment: val})); }}
+                          style={{ width: '100%', padding: '9px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', cursor: 'pointer' }}>
+                          <option value="">Select...</option>
+                          <option value="Investments">Investments</option>
+                          <option value="Credit line">Credit line</option>
+                          <option value="Credit card">Credit card</option>
+                          <option value="Spending">Spending</option>
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Authorized contacts for order communication */}
+                  {(() => {
+                    const addEmailValid = !newAccount.authorizedEmail || AUTHORIZED_EMAIL_REGEX.test(newAccount.authorizedEmail.trim());
+                    const addPhoneValid = !newAccount.authorizedPhone || E164_PHONE_REGEX.test(newAccount.authorizedPhone.trim());
+                    const addCcInputValid = !newAccountCcInput.trim() || AUTHORIZED_EMAIL_REGEX.test(newAccountCcInput.trim());
+                    const handleAddCc = () => {
+                      const val = newAccountCcInput.trim();
+                      if (!val || !AUTHORIZED_EMAIL_REGEX.test(val)) return;
+                      if ((newAccount.authorizedCcEmails || []).includes(val)) { setNewAccountCcInput(''); return; }
+                      setNewAccount(prev => ({ ...prev, authorizedCcEmails: [...(prev.authorizedCcEmails || []), val] }));
+                      setNewAccountCcInput('');
+                    };
+                    return (
+                      <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px dashed var(--border-color)' }}>
+                        <div style={{ fontSize: '0.7rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Authorized contacts</div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
+                          <div>
+                            <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Authorized email</label>
+                            <input type="email" placeholder="orders@example.com" value={newAccount.authorizedEmail}
+                              onChange={e => { const val = e.target.value; setNewAccount(prev => ({ ...prev, authorizedEmail: val })); }}
+                              style={{ width: '100%', padding: '9px', border: `1px solid ${addEmailValid ? 'var(--border-color)' : '#ef4444'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', boxSizing: 'border-box' }} />
+                            {!addEmailValid && <div style={{ color: '#ef4444', fontSize: '0.7rem', marginTop: '3px' }}>Invalid email format</div>}
+                          </div>
+                          <div>
+                            <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Authorized phone (E.164)</label>
+                            <input type="tel" placeholder="+33612345678" value={newAccount.authorizedPhone}
+                              onChange={e => { const val = e.target.value; setNewAccount(prev => ({ ...prev, authorizedPhone: val })); }}
+                              style={{ width: '100%', padding: '9px', border: `1px solid ${addPhoneValid ? 'var(--border-color)' : '#ef4444'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', boxSizing: 'border-box' }} />
+                            {!addPhoneValid && <div style={{ color: '#ef4444', fontSize: '0.7rem', marginTop: '3px' }}>Must be E.164, e.g. +33612345678</div>}
+                          </div>
+                          <div style={{ gridColumn: '1 / -1' }}>
+                            <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>CC emails</label>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '6px' }}>
+                              {(newAccount.authorizedCcEmails || []).map(cc => (
+                                <span key={cc} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '5px', fontSize: '0.75rem', fontWeight: '600', background: 'rgba(14, 165, 233, 0.1)', color: '#0ea5e9' }}>
+                                  {cc}
+                                  <span onClick={() => setNewAccount(prev => ({ ...prev, authorizedCcEmails: (prev.authorizedCcEmails || []).filter(e => e !== cc) }))} style={{ cursor: 'pointer', marginLeft: '2px', fontWeight: '700' }}>&times;</span>
+                                </span>
+                              ))}
+                            </div>
+                            <div style={{ display: 'flex', gap: '6px' }}>
+                              <input type="email" placeholder="cc@example.com" value={newAccountCcInput}
+                                onChange={e => setNewAccountCcInput(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddCc(); } }}
+                                style={{ flex: 1, padding: '9px', border: `1px solid ${addCcInputValid ? 'var(--border-color)' : '#ef4444'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', boxSizing: 'border-box' }} />
+                              <button type="button" onClick={handleAddCc}
+                                disabled={!newAccountCcInput.trim() || !addCcInputValid}
+                                style={{ padding: '8px 14px', background: (!newAccountCcInput.trim() || !addCcInputValid) ? 'var(--bg-secondary)' : 'var(--accent-color)', color: (!newAccountCcInput.trim() || !addCcInputValid) ? 'var(--text-muted)' : 'white', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: (!newAccountCcInput.trim() || !addCcInputValid) ? 'not-allowed' : 'pointer', fontSize: '0.8rem', fontWeight: '600' }}>Add</button>
+                            </div>
+                            {!addCcInputValid && <div style={{ color: '#ef4444', fontSize: '0.7rem', marginTop: '3px' }}>Invalid email format</div>}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '12px' }}>
+                    <button onClick={() => { setShowAddAccount(false); setNewAccount({ name: '', bankId: '', accountNumber: '', referenceCurrency: 'USD', accountType: 'personal', accountStructure: 'direct', lifeInsuranceCompany: '', relationshipManagerId: '', backupRmIds: [], beneficialOwnerIds: [], comment: '', authorizedEmail: '', authorizedCcEmails: [], authorizedPhone: '' }); setNewAccountCcInput(''); }}
+                      style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}>Cancel</button>
+                    {(() => {
+                      const addEmailOk = !newAccount.authorizedEmail || AUTHORIZED_EMAIL_REGEX.test(newAccount.authorizedEmail.trim());
+                      const addPhoneOk = !newAccount.authorizedPhone || E164_PHONE_REGEX.test(newAccount.authorizedPhone.trim());
+                      const canAdd = newAccount.bankId && newAccount.accountNumber && addEmailOk && addPhoneOk;
+                      return (
+                        <button onClick={handleAddBankAccount}
+                          disabled={!canAdd}
+                          style={{ padding: '8px 16px', background: !canAdd ? 'rgba(16, 185, 129, 0.4)' : '#10b981', color: 'white', border: 'none', borderRadius: '8px', cursor: !canAdd ? 'not-allowed' : 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Add Account</button>
+                      );
+                    })()}
+                  </div>
+                </div>
+              )}
+
+              {/* Accounts Table */}
+              {bankAccounts.length === 0 ? (
+                <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                  <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem', opacity: 0.3 }}>🏦</div>
+                  <p style={{ margin: 0 }}>No bank accounts yet</p>
+                </div>
+              ) : (
+                <div style={{ borderRadius: '10px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                    <thead>
+                      <tr style={{ background: 'var(--bg-secondary)' }}>
+                        <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: '600', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1.5px solid var(--border-color)' }}>Bank</th>
+                        <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: '600', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1.5px solid var(--border-color)' }}>Name</th>
+                        <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: '600', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1.5px solid var(--border-color)' }}>Account</th>
+                        <th style={{ padding: '10px 14px', textAlign: 'center', color: 'var(--text-muted)', fontWeight: '600', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1.5px solid var(--border-color)' }}>CCY</th>
+                        <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: '600', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1.5px solid var(--border-color)' }}>Type</th>
+                        {entity?.isInsurance && <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: '600', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1.5px solid var(--border-color)' }}>UBO</th>}
+                        <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: '600', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1.5px solid var(--border-color)' }}>Profile</th>
+                        <th style={{ padding: '10px 14px', textAlign: 'center', color: 'var(--text-muted)', fontWeight: '600', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1.5px solid var(--border-color)', width: '40px' }}></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bankAccounts.map((account, idx) => {
+                        const bank = banks.find(b => b._id === account.bankId);
+                        const isExpanded = expandedAccountId === account._id;
+                        const profile = accountProfiles?.find(p => p.bankAccountId === account._id);
+                        const uboIds = account.beneficialOwnerIds || (account.beneficialOwnerId ? [account.beneficialOwnerId] : []);
+                        const ubos = uboIds.map(id => allEntities.find(e => e._id === id)).filter(Boolean);
+                        const isEditing = editingBankAccount === account._id;
+
+                        return (
+                          <React.Fragment key={account._id}>
+                            {/* Compact row */}
+                            <tr
+                              onClick={() => setExpandedAccountId(isExpanded ? null : account._id)}
+                              style={{ cursor: 'pointer', background: idx % 2 === 0 ? 'transparent' : 'var(--bg-secondary)', borderTop: idx > 0 ? '1px solid var(--border-color)' : 'none', transition: 'background 0.12s' }}
+                              onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-tertiary)'}
+                              onMouseLeave={e => e.currentTarget.style.background = idx % 2 === 0 ? 'transparent' : 'var(--bg-secondary)'}
+                            >
+                              <td style={{ padding: '10px 14px', fontWeight: '600', color: 'var(--text-primary)' }}>{bank?.name || '-'}</td>
+                              <td style={{ padding: '10px 14px', color: 'var(--text-primary)', fontSize: '0.85rem' }}>{account.name || fullName}</td>
+                              <td style={{ padding: '10px 14px', fontFamily: "'Roboto Mono', monospace", fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{account.accountNumber}</td>
+                              <td style={{ padding: '10px 14px', textAlign: 'center' }}>
+                                <span style={{ padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: '600', background: 'rgba(79, 166, 255, 0.1)', color: '#4da6ff' }}>{account.referenceCurrency}</span>
+                              </td>
+                              <td style={{ padding: '10px 14px', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{account.comment || account.accountType}</td>
+                              {entity?.isInsurance && <td style={{ padding: '10px 14px', fontSize: '0.82rem', color: ubos.length > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{ubos.length > 0 ? ubos.map(u => ClientEntityHelpers.getEntityDisplayName(u)).join(', ') : '-'}</td>}
+                              <td style={{ padding: '10px 14px' }}>
+                                {profile ? (
+                                  <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: '600', background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>{profile.profileName || 'Set'}</span>
+                                ) : (
+                                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>-</span>
+                                )}
+                              </td>
+                              <td style={{ padding: '10px 14px', textAlign: 'center', fontSize: '0.8rem' }}>{isExpanded ? '▲' : '▼'}</td>
+                            </tr>
+
+                            {/* Expanded detail row */}
+                            {isExpanded && (
+                              <tr style={{ background: 'var(--bg-tertiary)' }}>
+                                <td colSpan={entity?.isInsurance ? 8 : 7} style={{ padding: '16px 20px', borderTop: '1px solid var(--border-color)' }}>
+                                  <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '12px' }}>
+                                    {/* Left: Account Details & Edit */}
+                                    <div style={{ padding: '16px', background: 'var(--bg-secondary)', borderRadius: '10px', border: '1px solid var(--border-color)', gridColumn: isEditing && !isMobile ? '1 / -1' : 'auto' }}>
+                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                                        <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: '600', color: 'var(--text-primary)' }}>Account Details</h4>
+                                        {!isEditing && (
+                                          <button onClick={(e) => { e.stopPropagation(); handleEditBankAccount(account); setEditingBankAccount(account._id); }}
+                                            style={{ padding: '4px 10px', background: 'var(--accent-color)', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}>Edit</button>
+                                        )}
+                                      </div>
+                                      {isEditing ? (
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                          <div>
+                                            <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Name</label>
+                                            <input type="text" value={editBankAccountData.name || ''} onChange={e => setEditBankAccountData(prev => ({...prev, name: e.target.value}))}
+                                              placeholder={fullName}
+                                              style={{ width: '100%', padding: '7px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', boxSizing: 'border-box' }} />
+                                          </div>
+                                          <div>
+                                            <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Account Number</label>
+                                            <input type="text" value={editBankAccountData.accountNumber || ''} onChange={e => setEditBankAccountData(prev => ({...prev, accountNumber: e.target.value}))}
+                                              style={{ width: '100%', padding: '7px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', boxSizing: 'border-box' }} />
+                                          </div>
+                                          <div>
+                                            <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Currency</label>
+                                            <select value={editBankAccountData.referenceCurrency || 'EUR'} onChange={e => setEditBankAccountData(prev => ({...prev, referenceCurrency: e.target.value}))}
+                                              style={{ width: '100%', padding: '7px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', cursor: 'pointer' }}>
+                                              {['EUR','USD','GBP','CHF','JPY','CAD','AUD','ILS'].map(c => <option key={c} value={c}>{c}</option>)}
+                                            </select>
+                                          </div>
+                                          {(<>
+                                          <div>
+                                            <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Description</label>
+                                            <select value={editBankAccountData.comment || ''} onChange={e => setEditBankAccountData(prev => ({...prev, comment: e.target.value}))}
+                                              style={{ width: '100%', padding: '7px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', cursor: 'pointer' }}>
+                                              <option value="">-</option><option value="Investments">Investments</option><option value="Credit line">Credit line</option><option value="Spending">Spending</option>
+                                            </select>
+                                          </div>
+                                          <div>
+                                            <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Credit Line</label>
+                                            <input type="number" value={editBankAccountData.authorizedOverdraft || ''} onChange={e => setEditBankAccountData(prev => ({...prev, authorizedOverdraft: e.target.value}))}
+                                              style={{ width: '100%', padding: '7px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', boxSizing: 'border-box' }} />
+                                          </div>
+                                          <div>
+                                            <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Introducer</label>
+                                            <select value={editBankAccountData.introducerId || ''} onChange={e => setEditBankAccountData(prev => ({...prev, introducerId: e.target.value}))}
+                                              style={{ width: '100%', padding: '7px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', cursor: 'pointer' }}>
+                                              <option value="">No Introducer</option>
+                                              {introducers.map(i => <option key={i._id} value={i._id}>{`${i.profile?.firstName || ''} ${i.profile?.lastName || ''}`.trim()}</option>)}
+                                            </select>
+                                          </div>
+                                          </>)}
+                                          {(isEntityMode && entity?.isInsurance) && (
+                                            <div style={{ gridColumn: '1 / -1' }}>
+                                              <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Beneficial Owners (UBOs)</label>
+                                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '4px' }}>
+                                                {(editBankAccountData.beneficialOwnerIds || []).map(uboId => {
+                                                  const uboEntity = allEntities.find(e => e._id === uboId);
+                                                  return uboEntity ? (
+                                                    <span key={uboId} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '5px', fontSize: '0.72rem', fontWeight: '600', background: 'rgba(14, 165, 233, 0.1)', color: '#0ea5e9' }}>
+                                                      {ClientEntityHelpers.getEntityDisplayName(uboEntity)}
+                                                      <span onClick={() => setEditBankAccountData(prev => ({...prev, beneficialOwnerIds: (prev.beneficialOwnerIds || []).filter(id => id !== uboId)}))} style={{ cursor: 'pointer', marginLeft: '2px', fontWeight: '700' }}>&times;</span>
+                                                    </span>
+                                                  ) : null;
+                                                })}
+                                              </div>
+                                              <select value="_placeholder" onChange={e => { const val = e.target.value; if (val && val !== '_placeholder') { setEditBankAccountData(prev => ({...prev, beneficialOwnerIds: [...(prev.beneficialOwnerIds || []), val]})); } }}
+                                                style={{ width: '100%', padding: '7px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', cursor: 'pointer' }}>
+                                                <option value="_placeholder">Add UBO...</option>
+                                                {allEntities.filter(e => e._id !== entityId && (e.type === ENTITY_TYPES.PHYSICAL_PERSON || e.type === ENTITY_TYPES.COMPANY) && !(editBankAccountData.beneficialOwnerIds || []).includes(e._id)).map(e => (
+                                                  <option key={e._id} value={e._id}>{ClientEntityHelpers.getEntityDisplayName(e)}</option>
+                                                ))}
+                                              </select>
+                                            </div>
+                                          )}
+                                          <div>
+                                            <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Relationship Manager</label>
+                                            <select value={editBankAccountData.relationshipManagerId || ''} onChange={e => setEditBankAccountData(prev => ({...prev, relationshipManagerId: e.target.value}))}
+                                              style={{ width: '100%', padding: '7px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', cursor: 'pointer' }}>
+                                              <option value="">No RM</option>
+                                              {relationshipManagers.map(rm => <option key={rm._id} value={rm._id}>{rm.profile?.firstName} {rm.profile?.lastName}</option>)}
+                                            </select>
+                                          </div>
+                                          <div>
+                                            <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Backup RMs</label>
+                                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '4px' }}>
+                                              {(editBankAccountData.backupRmIds || []).map(rmId => {
+                                                const rm = relationshipManagers.find(r => r._id === rmId);
+                                                return rm ? (
+                                                  <span key={rmId} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '5px', fontSize: '0.72rem', fontWeight: '600', background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6' }}>
+                                                    {rm.profile?.firstName} {rm.profile?.lastName}
+                                                    <span onClick={() => setEditBankAccountData(prev => ({...prev, backupRmIds: (prev.backupRmIds || []).filter(id => id !== rmId)}))} style={{ cursor: 'pointer', marginLeft: '2px', fontWeight: '700' }}>&times;</span>
+                                                  </span>
+                                                ) : null;
+                                              })}
+                                            </div>
+                                            <select value={'_placeholder'} onChange={e => { const val = e.target.value; if (val && val !== '_placeholder') { setEditBankAccountData(prev => ({...prev, backupRmIds: [...(prev.backupRmIds || []), val]})); } }}
+                                              style={{ width: '100%', padding: '7px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', cursor: 'pointer' }}>
+                                              <option value="_placeholder">Add backup...</option>
+                                              {relationshipManagers.filter(rm => rm._id !== editBankAccountData.relationshipManagerId && !(editBankAccountData.backupRmIds || []).includes(rm._id)).map(rm => <option key={rm._id} value={rm._id}>{rm.profile?.firstName} {rm.profile?.lastName}</option>)}
+                                            </select>
+                                          </div>
+                                          {(() => {
+                                            const editEmailValid = !editBankAccountData.authorizedEmail || AUTHORIZED_EMAIL_REGEX.test((editBankAccountData.authorizedEmail || '').trim());
+                                            const editPhoneValid = !editBankAccountData.authorizedPhone || E164_PHONE_REGEX.test((editBankAccountData.authorizedPhone || '').trim());
+                                            const editCcInputValid = !editAccountCcInput.trim() || AUTHORIZED_EMAIL_REGEX.test(editAccountCcInput.trim());
+                                            const handleAddEditCc = () => {
+                                              const val = editAccountCcInput.trim();
+                                              if (!val || !AUTHORIZED_EMAIL_REGEX.test(val)) return;
+                                              if ((editBankAccountData.authorizedCcEmails || []).includes(val)) { setEditAccountCcInput(''); return; }
+                                              setEditBankAccountData(prev => ({ ...prev, authorizedCcEmails: [...(prev.authorizedCcEmails || []), val] }));
+                                              setEditAccountCcInput('');
+                                            };
+                                            return (
+                                              <div style={{ gridColumn: '1 / -1', marginTop: '8px', paddingTop: '10px', borderTop: '1px dashed var(--border-color)' }}>
+                                                <div style={{ fontSize: '0.68rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>Authorized contacts</div>
+                                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
+                                                  <div>
+                                                    <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Authorized email</label>
+                                                    <input type="email" placeholder="orders@example.com" value={editBankAccountData.authorizedEmail || ''}
+                                                      onChange={e => setEditBankAccountData(prev => ({ ...prev, authorizedEmail: e.target.value }))}
+                                                      style={{ width: '100%', padding: '7px', border: `1px solid ${editEmailValid ? 'var(--border-color)' : '#ef4444'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', boxSizing: 'border-box' }} />
+                                                    {!editEmailValid && <div style={{ color: '#ef4444', fontSize: '0.68rem', marginTop: '3px' }}>Invalid email format</div>}
+                                                  </div>
+                                                  <div>
+                                                    <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Authorized phone (E.164)</label>
+                                                    <input type="tel" placeholder="+33612345678" value={editBankAccountData.authorizedPhone || ''}
+                                                      onChange={e => setEditBankAccountData(prev => ({ ...prev, authorizedPhone: e.target.value }))}
+                                                      style={{ width: '100%', padding: '7px', border: `1px solid ${editPhoneValid ? 'var(--border-color)' : '#ef4444'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', boxSizing: 'border-box' }} />
+                                                    {!editPhoneValid && <div style={{ color: '#ef4444', fontSize: '0.68rem', marginTop: '3px' }}>Must be E.164, e.g. +33612345678</div>}
+                                                  </div>
+                                                  <div style={{ gridColumn: '1 / -1' }}>
+                                                    <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>CC emails</label>
+                                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '6px' }}>
+                                                      {(editBankAccountData.authorizedCcEmails || []).map(cc => (
+                                                        <span key={cc} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '5px', fontSize: '0.72rem', fontWeight: '600', background: 'rgba(14, 165, 233, 0.1)', color: '#0ea5e9' }}>
+                                                          {cc}
+                                                          <span onClick={() => setEditBankAccountData(prev => ({ ...prev, authorizedCcEmails: (prev.authorizedCcEmails || []).filter(e => e !== cc) }))} style={{ cursor: 'pointer', marginLeft: '2px', fontWeight: '700' }}>&times;</span>
+                                                        </span>
+                                                      ))}
+                                                    </div>
+                                                    <div style={{ display: 'flex', gap: '6px' }}>
+                                                      <input type="email" placeholder="cc@example.com" value={editAccountCcInput}
+                                                        onChange={e => setEditAccountCcInput(e.target.value)}
+                                                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddEditCc(); } }}
+                                                        style={{ flex: 1, padding: '7px', border: `1px solid ${editCcInputValid ? 'var(--border-color)' : '#ef4444'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', boxSizing: 'border-box' }} />
+                                                      <button type="button" onClick={handleAddEditCc}
+                                                        disabled={!editAccountCcInput.trim() || !editCcInputValid}
+                                                        style={{ padding: '6px 12px', background: (!editAccountCcInput.trim() || !editCcInputValid) ? 'var(--bg-secondary)' : 'var(--accent-color)', color: (!editAccountCcInput.trim() || !editCcInputValid) ? 'var(--text-muted)' : 'white', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: (!editAccountCcInput.trim() || !editCcInputValid) ? 'not-allowed' : 'pointer', fontSize: '0.78rem', fontWeight: '600' }}>Add</button>
+                                                    </div>
+                                                    {!editCcInputValid && <div style={{ color: '#ef4444', fontSize: '0.68rem', marginTop: '3px' }}>Invalid email format</div>}
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            );
+                                          })()}
+                                          <div style={{ gridColumn: '1 / -1', display: 'flex', gap: '8px', marginTop: '6px' }}>
+                                            <button onClick={() => handleSaveEditBankAccount(account._id)} style={{ padding: '7px 14px', background: '#10b981', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.82rem', fontWeight: '600' }}>Save</button>
+                                            <button onClick={() => { setEditingBankAccount(null); setEditBankAccountData({}); setEditAccountCcInput(''); }} style={{ padding: '7px 14px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.82rem' }}>Cancel</button>
+                                            <button onClick={() => handleDeleteBankAccount(account._id)} style={{ padding: '7px 14px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '6px', color: '#ef4444', cursor: 'pointer', fontSize: '0.82rem', marginLeft: 'auto' }}>Delete</button>
+                                          </div>
+                                        </div>
+                                      ) : (() => {
+                                        const rm = account.relationshipManagerId ? relationshipManagers.find(r => r._id === account.relationshipManagerId) : null;
+                                        const intro = account.introducerId ? introducers.find(i => i._id === account.introducerId) : null;
+                                        return (
+                                        <div>
+                                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px 24px' }}>
+                                            <div>
+                                              <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Currency</div>
+                                              <div style={{ fontSize: '0.85rem', fontWeight: '600', color: '#4da6ff' }}>{account.referenceCurrency}</div>
+                                            </div>
+                                            <div>
+                                              <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Description</div>
+                                              <div style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }}>{account.comment || account.accountType || '-'}</div>
+                                            </div>
+                                            {account.authorizedOverdraft > 0 && (
+                                              <div>
+                                                <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Credit Line</div>
+                                                <div style={{ fontSize: '0.85rem', fontWeight: '600', color: '#10b981' }}>{account.referenceCurrency} {account.authorizedOverdraft?.toLocaleString()}</div>
+                                              </div>
+                                            )}
+                                            <div>
+                                              <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Relationship Manager</div>
+                                              <div style={{ fontSize: '0.85rem', color: rm ? '#2563eb' : 'var(--text-muted)' }}>{rm ? `${rm.profile?.firstName} ${rm.profile?.lastName}` : '-'}</div>
+                                            </div>
+                                            {(account.backupRmIds || []).length > 0 && (
+                                              <div>
+                                                <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Backup RMs</div>
+                                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                                                  {(account.backupRmIds || []).map(rmId => { const brm = relationshipManagers.find(r => r._id === rmId); return brm ? <span key={rmId} style={{ fontSize: '0.8rem', color: '#8b5cf6' }}>{brm.profile?.firstName} {brm.profile?.lastName}</span> : null; })}
+                                                </div>
+                                              </div>
+                                            )}
+                                            <div>
+                                              <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Introducer</div>
+                                              <div style={{ fontSize: '0.85rem', color: intro ? '#f59e0b' : 'var(--text-muted)' }}>{intro ? `${intro.profile?.firstName || ''} ${intro.profile?.lastName || ''}`.trim() : 'None'}</div>
+                                            </div>
+                                            {ubos.length > 0 && (
+                                              <div>
+                                                <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>UBOs</div>
+                                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                                                  {ubos.map(u => <span key={u._id} style={{ fontSize: '0.8rem', color: '#0ea5e9' }}>{ClientEntityHelpers.getEntityDisplayName(u)}</span>)}
+                                                </div>
+                                              </div>
+                                            )}
+                                            {account.accountType === 'life_insurance' && account.lifeInsuranceCompany && (
+                                              <div>
+                                                <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Insurance Company</div>
+                                                <div style={{ fontSize: '0.85rem', color: '#8b5cf6' }}>{account.lifeInsuranceCompany}</div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                        );
+                                      })()}
+                                    </div>
+
+                                    {/* Right: Investment Profile */}
+                                    <div style={{ padding: '16px', background: 'var(--bg-secondary)', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                                        <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: '600', color: 'var(--text-primary)' }}>Investment Profile</h4>
+                                        <button onClick={(e) => { e.stopPropagation(); if (editingAccountProfile === account._id) { handleSaveAccountProfile(account._id); } else { handleStartEditAccountProfile(account._id); } }}
+                                          style={{ padding: '4px 10px', background: editingAccountProfile === account._id ? '#10b981' : 'var(--accent-color)', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}>
+                                          {editingAccountProfile === account._id ? 'Save' : (profile ? 'Edit' : 'Set Profile')}
+                                        </button>
+                                      </div>
+                                      {editingAccountProfile === account._id ? (
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                          <div style={{ gridColumn: '1 / -1' }}>
+                                            <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Template</label>
+                                            <select onChange={e => { if (e.target.value) applyTemplate(e.target.value); }} style={{ width: '100%', padding: '7px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', cursor: 'pointer' }}>
+                                              <option value="">Apply template...</option>
+                                              {Object.entries(PROFILE_TEMPLATES).map(([k, t]) => <option key={k} value={k}>{t.name}</option>)}
+                                            </select>
+                                          </div>
+                                          {['maxCash', 'maxBonds', 'maxEquities', 'maxAlternative'].map(field => (
+                                            <div key={field}>
+                                              <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>{field.replace('max', '')}</label>
+                                              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                <input type="number" min="0" max="100" value={accountProfileDraft[field]} onChange={e => handleAccountAllocationChange(field, e.target.value)}
+                                                  style={{ width: '60px', padding: '7px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', textAlign: 'center' }} />
+                                                <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>%</span>
+                                              </div>
+                                            </div>
+                                          ))}
+                                          <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                            <input type="checkbox" checked={accountProfileDraft.isProfessionalInvestor || false} onChange={e => setAccountProfileDraft(prev => ({...prev, isProfessionalInvestor: e.target.checked}))} />
+                                            <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>Professional Investor</span>
+                                          </div>
+                                          <div style={{ gridColumn: '1 / -1' }}>
+                                            <button onClick={() => setEditingAccountProfile(null)} style={{ padding: '6px 12px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.8rem' }}>Cancel</button>
+                                          </div>
+                                        </div>
+                                      ) : profile ? (
+                                        <div>
+                                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
+                                            {profile.profileName && <span style={{ padding: '3px 8px', borderRadius: '5px', fontSize: '0.75rem', fontWeight: '600', background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>{profile.profileName}</span>}
+                                            {profile.isProfessionalInvestor && <span style={{ padding: '3px 8px', borderRadius: '5px', fontSize: '0.75rem', fontWeight: '600', background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6' }}>Professional</span>}
+                                          </div>
+                                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px' }}>
+                                            {[{label:'Cash', val: profile.maxCash}, {label:'Bonds', val: profile.maxBonds}, {label:'Equities', val: profile.maxEquities}, {label:'Alt.', val: profile.maxAlternative}].map(c => (
+                                              <div key={c.label} style={{ padding: '8px', background: 'var(--bg-secondary)', borderRadius: '6px', textAlign: 'center' }}>
+                                                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: '2px' }}>{c.label}</div>
+                                                <div style={{ fontSize: '1rem', fontWeight: '700', color: 'var(--text-primary)' }}>{c.val}%</div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>No profile set</div>
+                                      )}
+                                    </div>
+
+                                    {/* Right: Risk Matrix */}
+                                    {hasUser && user.role === USER_ROLES.CLIENT && (() => {
+                                      const riskScore = user.profile?.kycRiskScore;
+                                      const getHighestRisk = (rs) => {
+                                        if (!rs) return null;
+                                        const levels = [rs.clientProspect?.riskLevel, rs.beneficialOwner?.riskLevel, rs.businessRelationship?.riskLevel].filter(Boolean);
+                                        return levels.includes('high') ? 'high' : levels.includes('medium') ? 'medium' : levels.length > 0 ? 'low' : null;
+                                      };
+                                      const highestRisk = getHighestRisk(riskScore);
+                                      const display = highestRisk ? getRiskLevelDisplay(highestRisk) : null;
+                                      const isOverdue = riskScore?.nextReviewDate && new Date(riskScore.nextReviewDate) < new Date();
+
+                                      return (
+                                        <div style={{ padding: '16px', background: 'var(--bg-secondary)', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+                                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                                            <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: '600', color: 'var(--text-primary)' }}>Risk Matrix</h4>
+                                            <button onClick={(e) => { e.stopPropagation(); setRiskScoreModalOpen(true); setEditingRiskScore(true); }}
+                                              style={{ padding: '4px 10px', background: 'var(--accent-color)', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}>
+                                              {riskScore ? 'Edit' : 'Assess'}
+                                            </button>
+                                          </div>
+                                          {riskScore ? (
+                                            <div>
+                                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                                                <span style={{
+                                                  padding: '3px 10px', borderRadius: '12px', fontSize: '0.78rem', fontWeight: '600',
+                                                  background: `${display.color}15`, border: `1px solid ${display.color}40`, color: display.color
+                                                }}>
+                                                  {display.emoji} {display.labelEn}
+                                                </span>
+                                              </div>
+                                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '6px', marginBottom: '10px' }}>
+                                                {[
+                                                  { label: 'Client', data: riskScore.clientProspect },
+                                                  { label: 'Benef.', data: riskScore.beneficialOwner },
+                                                  { label: 'Bus. Rel.', data: riskScore.businessRelationship }
+                                                ].map(col => {
+                                                  const colDisplay = col.data?.riskLevel ? getRiskLevelDisplay(col.data.riskLevel) : null;
+                                                  return (
+                                                    <div key={col.label} style={{ padding: '6px', background: 'var(--bg-primary)', borderRadius: '6px', textAlign: 'center' }}>
+                                                      <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '2px' }}>{col.label}</div>
+                                                      <div style={{ fontSize: '0.9rem', fontWeight: '700', color: colDisplay?.color || 'var(--text-muted)' }}>
+                                                        {col.data?.totalScore ?? '-'}
+                                                      </div>
+                                                      {colDisplay && <div style={{ fontSize: '0.6rem', color: colDisplay.color }}>{colDisplay.labelEn}</div>}
+                                                    </div>
+                                                  );
+                                                })}
+                                              </div>
+                                              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                                {riskScore.assessmentDate && (
+                                                  <span>Assessed: {new Date(riskScore.assessmentDate).toLocaleDateString()}</span>
+                                                )}
+                                                {riskScore.nextReviewDate && (
+                                                  <span style={{ color: isOverdue ? '#ef4444' : 'var(--text-muted)', fontWeight: isOverdue ? '600' : '400' }}>
+                                                    Review: {new Date(riskScore.nextReviewDate).toLocaleDateString()} {isOverdue ? '(overdue)' : ''}
+                                                  </span>
+                                                )}
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>Not assessed</div>
+                                          )}
+                                        </div>
+                                      );
+                                    })()}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </LiquidGlassCard>
+          )}
+
+          {/* Stakeholders - stakeholders tab (company entities) */}
+          {activeTab === 'stakeholders' && ((isEntityMode && entity?.type === ENTITY_TYPES.COMPANY) || (hasUser && user?.role === USER_ROLES.CLIENT && user?.profile?.clientType === 'company')) && (
+            <LiquidGlassCard style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <h2 style={{ margin: 0, fontSize: '1.15rem', fontWeight: '700', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '1.3rem' }}>🏛️</span> Stakeholders
+                </h2>
+                <button onClick={() => setShowAddStakeholder(!showAddStakeholder)} style={{
+                  background: showAddStakeholder ? 'var(--danger-color)' : '#10b981', color: 'white', border: 'none',
+                  padding: '8px 16px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600'
+                }}>{showAddStakeholder ? 'Cancel' : '+ Add Stakeholder'}</button>
+              </div>
+
+              {/* Add Stakeholder Form */}
               {showAddStakeholder && (
-                <div style={{
-                  padding: '16px',
-                  background: 'var(--bg-tertiary)',
-                  borderRadius: '10px',
-                  border: '1px solid var(--border-color)',
-                  marginBottom: '20px'
-                }}>
+                <div style={{ padding: '16px', background: 'var(--bg-tertiary)', borderRadius: '10px', border: '1px solid var(--border-color)', marginBottom: '20px' }}>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', marginBottom: '12px' }}>
                     <div>
-                      <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase' }}>Full Name *</label>
-                      <input
-                        type="text"
-                        value={newStakeholder.name}
-                        onChange={(e) => setNewStakeholder({ ...newStakeholder, name: e.target.value })}
-                        placeholder="Full name"
-                        style={{ width: '100%', padding: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', fontSize: '0.9rem' }}
-                      />
+                      <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase' }}>Person / Company *</label>
+                      <select
+                        value={newStakeholder.entityId || ''}
+                        onChange={(e) => {
+                          const selected = allEntities.find(ent => ent._id === e.target.value);
+                          setNewStakeholder({
+                            ...newStakeholder,
+                            entityId: e.target.value,
+                            name: selected ? ClientEntityHelpers.getEntityDisplayName(selected) : ''
+                          });
+                        }}
+                        style={{ width: '100%', padding: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', fontSize: '0.9rem', cursor: 'pointer' }}
+                      >
+                        <option value="">Select person or company...</option>
+                        {allEntities
+                          .filter(e => e._id !== entityId && (e.type === ENTITY_TYPES.PHYSICAL_PERSON || e.type === ENTITY_TYPES.COMPANY))
+                          .map(e => (
+                            <option key={e._id} value={e._id}>
+                              {ClientEntityHelpers.getEntityDisplayName(e)} ({ClientEntityHelpers.getEntityTypeLabel(e.type)})
+                            </option>
+                          ))
+                        }
+                      </select>
                     </div>
                     <div>
                       <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase' }}>Role *</label>
-                      <select
-                        value={newStakeholder.role}
-                        onChange={(e) => setNewStakeholder({ ...newStakeholder, role: e.target.value })}
-                        style={{ width: '100%', padding: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', fontSize: '0.9rem', cursor: 'pointer' }}
-                      >
+                      <select value={newStakeholder.role} onChange={(e) => setNewStakeholder({ ...newStakeholder, role: e.target.value })}
+                        style={{ width: '100%', padding: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', fontSize: '0.9rem', cursor: 'pointer' }}>
                         <option value="ubo">Ultimate Beneficial Owner (UBO)</option>
                         <option value="director">Director</option>
                         <option value="signatory">Authorized Signatory</option>
                         <option value="shareholder">Shareholder</option>
                       </select>
                     </div>
-                    <div>
-                      <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase' }}>Nationality</label>
-                      <input
-                        type="text"
-                        value={newStakeholder.nationality}
-                        onChange={(e) => setNewStakeholder({ ...newStakeholder, nationality: e.target.value })}
-                        placeholder="e.g. French"
-                        style={{ width: '100%', padding: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', fontSize: '0.9rem' }}
-                      />
-                    </div>
                     {(newStakeholder.role === 'ubo' || newStakeholder.role === 'shareholder') && (
                       <div>
                         <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase' }}>Ownership %</label>
-                        <input
-                          type="number"
-                          value={newStakeholder.ownership}
-                          onChange={(e) => setNewStakeholder({ ...newStakeholder, ownership: e.target.value })}
-                          placeholder="e.g. 25"
-                          min="0"
-                          max="100"
-                          style={{ width: '100%', padding: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', fontSize: '0.9rem' }}
-                        />
+                        <input type="number" value={newStakeholder.ownership} onChange={(e) => setNewStakeholder({ ...newStakeholder, ownership: e.target.value })}
+                          placeholder="e.g. 25" min="0" max="100"
+                          style={{ width: '100%', padding: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', fontSize: '0.9rem' }} />
                       </div>
                     )}
                     <div style={{ gridColumn: '1 / -1' }}>
                       <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase' }}>Notes</label>
-                      <input
-                        type="text"
-                        value={newStakeholder.notes}
-                        onChange={(e) => setNewStakeholder({ ...newStakeholder, notes: e.target.value })}
-                        placeholder="Additional notes"
-                        style={{ width: '100%', padding: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', fontSize: '0.9rem' }}
-                      />
+                      <input type="text" value={newStakeholder.notes} onChange={(e) => setNewStakeholder({ ...newStakeholder, notes: e.target.value })}
+                        placeholder="Optional notes"
+                        style={{ width: '100%', padding: '10px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', fontSize: '0.9rem', boxSizing: 'border-box' }} />
                     </div>
                   </div>
-                  <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                    <button
-                      onClick={() => { setShowAddStakeholder(false); setNewStakeholder({ name: '', role: 'ubo', nationality: '', ownership: '', notes: '' }); }}
-                      style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}
-                    >
-                      Cancel
-                    </button>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button onClick={() => { setShowAddStakeholder(false); setNewStakeholder({ entityId: '', name: '', role: 'ubo', ownership: '', notes: '' }); }}
+                      style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}>Cancel</button>
                     <button
                       onClick={async () => {
-                        if (!newStakeholder.name.trim()) return;
-                        const updated = [...stakeholders, { ...newStakeholder, _id: Date.now().toString(), createdAt: new Date() }];
+                        if (!newStakeholder.entityId) return;
+                        const { _editIdx, ...shData } = newStakeholder;
+                        let updated;
+                        if (_editIdx !== undefined && _editIdx !== null) {
+                          updated = stakeholders.map((s, i) => i === _editIdx ? { ...s, ...shData } : s);
+                        } else {
+                          updated = [...stakeholders, { ...shData, _id: Date.now().toString(), createdAt: new Date() }];
+                        }
                         setStakeholders(updated);
                         try {
-                          await Meteor.callAsync('users.updateProfile', userId, {
-                            profile: { ...user.profile, stakeholders: updated, updatedAt: new Date() }
-                          }, sessionId);
-                        } catch (err) {
-                          console.error('Error saving stakeholder:', err);
-                        }
-                        setNewStakeholder({ name: '', role: 'ubo', nationality: '', ownership: '', notes: '' });
+                          if (isEntityMode && entityId) {
+                            await Meteor.callAsync('clientEntities.update', entityId, { stakeholders: updated }, sessionId);
+                          } else {
+                            await Meteor.callAsync('users.updateProfile', userId, { profile: { ...user.profile, stakeholders: updated, updatedAt: new Date() } }, sessionId);
+                          }
+                        } catch (err) { console.error('Error saving stakeholder:', err); }
+                        setNewStakeholder({ entityId: '', name: '', role: 'ubo', ownership: '', notes: '' });
                         setShowAddStakeholder(false);
                       }}
-                      disabled={!newStakeholder.name.trim()}
-                      style={{ padding: '8px 16px', background: 'var(--accent-color)', border: 'none', borderRadius: '6px', color: 'white', cursor: 'pointer', fontWeight: '500', fontSize: '0.85rem', opacity: !newStakeholder.name.trim() ? 0.5 : 1 }}
-                    >
-                      Add
-                    </button>
+                      disabled={!newStakeholder.entityId}
+                      style={{ padding: '8px 16px', background: 'var(--accent-color)', border: 'none', borderRadius: '6px', color: 'white', cursor: 'pointer', fontWeight: '500', fontSize: '0.85rem', opacity: !newStakeholder.entityId ? 0.5 : 1 }}
+                    >{newStakeholder._editIdx !== undefined && newStakeholder._editIdx !== null ? 'Save' : 'Add'}</button>
                   </div>
                 </div>
               )}
 
-              {/* Stakeholders list */}
-              {stakeholders.length === 0 && !showAddStakeholder ? (
-                <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-secondary)' }}>
-                  <p style={{ fontSize: '2rem', marginBottom: '8px' }}>🏛️</p>
-                  <p style={{ margin: 0, fontSize: '0.95rem' }}>No stakeholders added yet</p>
+              {/* Stakeholder List */}
+              {stakeholders.length === 0 ? (
+                <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
                   <p style={{ margin: '4px 0 0', fontSize: '0.85rem' }}>Add UBOs, directors, and other key persons</p>
                 </div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {stakeholders.map((sh, idx) => {
                     const roleLabels = { ubo: 'UBO', director: 'Director', signatory: 'Signatory', shareholder: 'Shareholder' };
                     const roleColors = { ubo: '#dc2626', director: '#2563eb', signatory: '#059669', shareholder: '#7c3aed' };
                     return (
-                      <div key={sh._id || idx} style={{
-                        padding: '14px 16px',
-                        background: 'var(--bg-tertiary)',
-                        borderRadius: '10px',
-                        border: '1px solid var(--border-color)',
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center'
-                      }}>
+                      <div key={sh._id || idx} style={{ padding: '14px 16px', background: 'var(--bg-tertiary)', borderRadius: '10px', border: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
                             <span style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.95rem' }}>{sh.name}</span>
-                            <span style={{
-                              padding: '2px 8px',
-                              borderRadius: '4px',
-                              fontSize: '0.7rem',
-                              fontWeight: '600',
-                              color: roleColors[sh.role] || '#6b7280',
-                              background: `${roleColors[sh.role] || '#6b7280'}15`
-                            }}>
+                            <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: '600', color: roleColors[sh.role] || '#6b7280', background: `${roleColors[sh.role] || '#6b7280'}15` }}>
                               {roleLabels[sh.role] || sh.role}
                             </span>
-                            {sh.ownership && (
-                              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{sh.ownership}%</span>
-                            )}
+                            {sh.ownership && <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{sh.ownership}%</span>}
                           </div>
                           <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                            {sh.nationality && <span>{sh.nationality}</span>}
-                            {sh.nationality && sh.notes && <span> · </span>}
+                            {sh.entityId && (() => { const ent = allEntities.find(e => e._id === sh.entityId); return ent ? <span>{ClientEntityHelpers.getEntityTypeLabel(ent.type)}</span> : null; })()}
+                            {sh.entityId && sh.notes && <span> · </span>}
                             {sh.notes && <span>{sh.notes}</span>}
                           </div>
                         </div>
@@ -3804,25 +3547,24 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
                             const updated = stakeholders.filter((_, i) => i !== idx);
                             setStakeholders(updated);
                             try {
-                              await Meteor.callAsync('users.updateProfile', userId, {
-                                profile: { ...user.profile, stakeholders: updated, updatedAt: new Date() }
-                              }, sessionId);
-                            } catch (err) {
-                              console.error('Error removing stakeholder:', err);
-                            }
+                              if (isEntityMode && entityId) {
+                                await Meteor.callAsync('clientEntities.update', entityId, { stakeholders: updated }, sessionId);
+                              } else {
+                                await Meteor.callAsync('users.updateProfile', userId, { profile: { ...user.profile, stakeholders: updated, updatedAt: new Date() } }, sessionId);
+                              }
+                            } catch (err) { console.error('Error removing stakeholder:', err); }
                           }}
-                          style={{
-                            background: 'none',
-                            border: 'none',
-                            color: 'var(--text-secondary)',
-                            cursor: 'pointer',
-                            fontSize: '1.2rem',
-                            padding: '4px'
-                          }}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.1rem', color: 'var(--text-muted)', padding: '4px' }}
                           title="Remove stakeholder"
-                        >
-                          ×
-                        </button>
+                        >×</button>
+                        <button
+                          onClick={() => {
+                            setNewStakeholder({ entityId: sh.entityId || '', name: sh.name, role: sh.role, ownership: sh.ownership || '', notes: sh.notes || '', _editIdx: idx });
+                            setShowAddStakeholder(true);
+                          }}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.75rem', color: 'var(--accent-color)', padding: '4px' }}
+                          title="Edit stakeholder"
+                        >Edit</button>
                       </div>
                     );
                   })}
@@ -3832,15 +3574,15 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
           )}
 
           {/* Documents - documents tab (when viewing a client profile) */}
-          {activeTab === 'documents' && user.role === USER_ROLES.CLIENT && (
+          {activeTab === 'documents' && (isEntityMode || (hasUser && user.role === USER_ROLES.CLIENT)) && (
             <ClientDocumentManager
-              userId={userId}
-              familyMembers={user.profile?.familyMembers || []}
+              userId={userId || entityId}
+              familyMembers={user?.profile?.familyMembers || entity?.profile?.familyMembers || []}
             />
           )}
 
           {/* KYC - kyc tab (when viewing a client profile) */}
-          {activeTab === 'kyc' && user.role === USER_ROLES.CLIENT && (
+          {activeTab === 'kyc' && hasUser && user.role === USER_ROLES.CLIENT && (
             <LiquidGlassCard style={{ padding: '24px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
                 <h2 style={{
@@ -4029,7 +3771,7 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
           )}
 
           {/* KYC Risk Score - riskScore tab (when viewing a client profile) */}
-          {activeTab === 'riskScore' && user.role === USER_ROLES.CLIENT && (
+          {activeTab === 'riskScore' && hasUser && user.role === USER_ROLES.CLIENT && (
             <LiquidGlassCard style={{ padding: '24px' }}>
               {/* Header */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
@@ -4445,7 +4187,7 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
           )}
 
           {/* Family Members - family tab (when viewing a client profile) */}
-          {activeTab === 'family' && user.role === USER_ROLES.CLIENT && (
+          {activeTab === 'family' && hasUser && user.role === USER_ROLES.CLIENT && (
             <LiquidGlassCard style={{ padding: '24px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
                 <h2 style={{
@@ -5045,8 +4787,448 @@ export default function UserDetailsScreen({ userId, onBack, embedded = false }) 
               )}
             </LiquidGlassCard>
           )}
+
+          {/* User Access Management - only shown for entity views */}
+          {activeTab === 'access' && entityId && (() => {
+            // Inline access management component
+            const AccessManager = () => {
+              const [accessUsers, setAccessUsers] = React.useState([]);
+              const [allUsers, setAllUsers] = React.useState([]);
+              const [loadingAccess, setLoadingAccess] = React.useState(true);
+              const [addingUserId, setAddingUserId] = React.useState('');
+              const [addingLevel, setAddingLevel] = React.useState('full');
+
+              React.useEffect(() => {
+                // Fetch access records and all users for this entity
+                const loadAccess = async () => {
+                  try {
+                    const accessRecords = UserEntityAccessCollection.find({ entityId, isActive: true }).fetch();
+                    setAccessUsers(accessRecords);
+
+                    // Get all staff users for the add dropdown
+                    const users = UsersCollection.find({
+                      isActive: { $ne: false }
+                    }).fetch();
+                    setAllUsers(users);
+                  } catch (e) {
+                    console.error('Error loading access:', e);
+                  }
+                  setLoadingAccess(false);
+                };
+                loadAccess();
+              }, []);
+
+              const handleGrant = () => {
+                if (!addingUserId) return;
+                Meteor.call('userEntityAccess.grant', addingUserId, entityId, addingLevel, sessionId, (err) => {
+                  if (err) {
+                    alert('Error granting access: ' + (err.reason || err.message));
+                  } else {
+                    setAccessUsers(UserEntityAccessCollection.find({ entityId, isActive: true }).fetch());
+                    setAddingUserId('');
+                  }
+                });
+              };
+
+              const handleRevoke = async (targetUserId) => {
+                const confirmed = await showConfirm('Revoke this user\'s access?');
+                if (!confirmed) return;
+                Meteor.call('userEntityAccess.revoke', targetUserId, entityId, sessionId, (err) => {
+                  if (err) {
+                    alert('Error revoking access: ' + (err.reason || err.message));
+                  } else {
+                    setAccessUsers(UserEntityAccessCollection.find({ entityId, isActive: true }).fetch());
+                  }
+                });
+              };
+
+              const entity = ClientEntitiesCollection.findOne(entityId);
+              const entityName = entity ? ClientEntityHelpers.getEntityDisplayName(entity) : 'Entity';
+
+              // Users who already have access
+              const accessUserIds = accessUsers.map(a => a.userId);
+              // Available users to add (not already having access)
+              const availableUsers = allUsers.filter(u => !accessUserIds.includes(u._id));
+
+              return (
+                <LiquidGlassCard style={{ padding: '24px' }}>
+                  <h2 style={{
+                    margin: '0 0 16px 0',
+                    fontSize: '20px',
+                    fontWeight: '600',
+                    color: isDarkMode ? '#fff' : '#000',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px'
+                  }}>
+                    <span style={{ fontSize: '24px' }}>{'\ud83d\udd11'}</span>
+                    User Access — {entityName}
+                  </h2>
+                  <p style={{ margin: '0 0 20px 0', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                    Manage which user accounts can view this client entity's data (holdings, orders, documents).
+                  </p>
+
+                  {/* Current access list */}
+                  {loadingAccess ? (
+                    <p style={{ color: 'var(--text-secondary)' }}>Loading access records...</p>
+                  ) : accessUsers.length === 0 ? (
+                    <div style={{
+                      padding: '20px',
+                      textAlign: 'center',
+                      background: 'var(--bg-tertiary)',
+                      borderRadius: '8px',
+                      marginBottom: '16px'
+                    }}>
+                      <p style={{ margin: 0, color: 'var(--text-secondary)' }}>No user accounts have access to this entity yet.</p>
+                    </div>
+                  ) : (
+                    <div style={{ marginBottom: '20px' }}>
+                      {accessUsers.map(access => {
+                        const accessUser = allUsers.find(u => u._id === access.userId);
+                        const name = accessUser
+                          ? `${accessUser.profile?.firstName || accessUser.firstName || ''} ${accessUser.profile?.lastName || accessUser.lastName || ''}`.trim() || accessUser.email
+                          : access.userId;
+
+                        return (
+                          <div key={access._id} style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '12px 16px',
+                            background: 'var(--bg-secondary)',
+                            borderRadius: '8px',
+                            marginBottom: '8px',
+                            border: '1px solid var(--border-color)'
+                          }}>
+                            <div>
+                              <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.95rem' }}>{name}</div>
+                              <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                {accessUser?.email} — {access.accessLevel} access
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => handleRevoke(access.userId)}
+                              style={{
+                                padding: '6px 12px',
+                                background: 'rgba(239, 68, 68, 0.1)',
+                                color: '#ef4444',
+                                border: '1px solid rgba(239, 68, 68, 0.3)',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontSize: '0.8rem',
+                                fontWeight: '500'
+                              }}
+                            >
+                              Revoke
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Add access form */}
+                  {(currentUser?.role === USER_ROLES.SUPERADMIN || currentUser?.role === USER_ROLES.ADMIN) && (
+                    <div style={{
+                      padding: '16px',
+                      background: 'var(--bg-tertiary)',
+                      borderRadius: '8px',
+                      border: '1px solid var(--border-color)'
+                    }}>
+                      <h4 style={{ margin: '0 0 12px 0', color: 'var(--text-primary)', fontSize: '0.95rem' }}>
+                        Grant Access
+                      </h4>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <select
+                          value={addingUserId}
+                          onChange={(e) => setAddingUserId(e.target.value)}
+                          style={{
+                            flex: 1,
+                            minWidth: '200px',
+                            padding: '8px 12px',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '6px',
+                            background: 'var(--bg-primary)',
+                            color: 'var(--text-primary)',
+                            fontSize: '0.9rem'
+                          }}
+                        >
+                          <option value="">Select user...</option>
+                          {availableUsers.map(u => (
+                            <option key={u._id} value={u._id}>
+                              {`${u.profile?.firstName || u.firstName || ''} ${u.profile?.lastName || u.lastName || ''}`.trim() || u.email} ({u.role})
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={addingLevel}
+                          onChange={(e) => setAddingLevel(e.target.value)}
+                          style={{
+                            padding: '8px 12px',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '6px',
+                            background: 'var(--bg-primary)',
+                            color: 'var(--text-primary)',
+                            fontSize: '0.9rem'
+                          }}
+                        >
+                          <option value="full">Full Access</option>
+                          <option value="readonly">Read Only</option>
+                        </select>
+                        <button
+                          onClick={handleGrant}
+                          disabled={!addingUserId}
+                          style={{
+                            padding: '8px 16px',
+                            background: addingUserId ? 'var(--accent-color)' : 'var(--text-muted)',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '6px',
+                            cursor: addingUserId ? 'pointer' : 'not-allowed',
+                            fontSize: '0.9rem',
+                            fontWeight: '600'
+                          }}
+                        >
+                          Grant
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </LiquidGlassCard>
+              );
+            };
+
+            return <AccessManager />;
+          })()}
         </div>
       </div>
+
+      {/* Risk Score Assessment Modal */}
+      {riskScoreModalOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', zIndex: 10000, overflowY: 'auto', padding: '40px 0' }}
+          onClick={() => { setRiskScoreModalOpen(false); setEditingRiskScore(false); }}>
+          <div style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', maxWidth: '900px', width: '95%', margin: 'auto', boxShadow: '0 20px 40px rgba(0,0,0,0.3)' }}
+            onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: '700', color: 'var(--text-primary)' }}>KYC Risk Assessment</h3>
+              <button onClick={() => { setRiskScoreModalOpen(false); setEditingRiskScore(false); }}
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '20px', cursor: 'pointer', padding: '4px' }}>✕</button>
+            </div>
+
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
+                <thead>
+                  <tr style={{ borderBottom: '2px solid var(--border-color)' }}>
+                    <th style={{ padding: '8px 10px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: '600', width: '40%' }}>Criteria</th>
+                    <th style={{ padding: '8px 10px', textAlign: 'center', color: '#3b82f6', fontWeight: '600' }}>Client</th>
+                    <th style={{ padding: '8px 10px', textAlign: 'center', color: '#8b5cf6', fontWeight: '600' }}>Benef. Owner</th>
+                    <th style={{ padding: '8px 10px', textAlign: 'center', color: '#f59e0b', fontWeight: '600' }}>Business Rel.</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {RISK_CRITERIA.map((criterion, idx) => (
+                    <tr key={criterion.id} style={{ borderBottom: '1px solid var(--border-color)', background: idx % 2 === 0 ? 'transparent' : 'var(--bg-secondary)' }}>
+                      <td style={{ padding: '6px 10px', color: 'var(--text-primary)', fontSize: '0.76rem' }}>
+                        <span style={{ color: 'var(--text-muted)', marginRight: '4px' }}>{idx + 1}.</span>
+                        {criterion.labelEn}
+                      </td>
+                      {['clientProspect', 'beneficialOwner', 'businessRelationship'].map(column => (
+                        <td key={column} style={{ padding: '6px 8px', textAlign: 'center' }}>
+                          <select
+                            value={riskScoreForm[column]?.[criterion.id] ?? ''}
+                            onChange={(e) => handleRiskScoreChange(column, criterion.id, e.target.value ? parseInt(e.target.value) : '')}
+                            style={{
+                              width: '100%', padding: '4px', border: '1px solid var(--border-color)', borderRadius: '4px',
+                              background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.72rem', cursor: 'pointer'
+                            }}>
+                            <option value="">-</option>
+                            {criterion.options.map(opt => (
+                              <option key={opt.value} value={opt.value}>{opt.labelEn} ({opt.value} pts)</option>
+                            ))}
+                          </select>
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                  <tr style={{ borderTop: '2px solid var(--border-color)', fontWeight: '700' }}>
+                    <td style={{ padding: '10px', color: 'var(--text-primary)' }}>TOTAL SCORE</td>
+                    {['clientProspect', 'beneficialOwner', 'businessRelationship'].map(column => {
+                      const result = calculateRiskScore(riskScoreForm[column] || {});
+                      const colDisplay = getRiskLevelDisplay(result.riskLevel);
+                      return (
+                        <td key={column} style={{ padding: '10px', textAlign: 'center' }}>
+                          <div style={{ fontSize: '1rem', fontWeight: '700', color: colDisplay.color }}>{result.totalScore}</div>
+                          <span style={{ padding: '2px 8px', borderRadius: '8px', fontSize: '0.68rem', fontWeight: '600', background: `${colDisplay.color}15`, color: colDisplay.color }}>
+                            {colDisplay.emoji} {colDisplay.labelEn}
+                          </span>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{ marginTop: '12px', padding: '10px', background: 'var(--bg-secondary)', borderRadius: '8px', fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', gap: '16px' }}>
+              <span>{'< 15 pts = Low Risk'}</span>
+              <span>{'15-29 pts = Medium Risk'}</span>
+              <span>{'\u2265 30 pts = High Risk'}</span>
+            </div>
+
+            <div style={{ marginTop: '12px' }}>
+              <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-muted)', marginBottom: '4px' }}>Comments</label>
+              <textarea
+                value={riskScoreForm.comments || ''}
+                onChange={(e) => setRiskScoreForm(prev => ({ ...prev, comments: e.target.value }))}
+                rows={2}
+                style={{ width: '100%', padding: '8px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '0.82rem', resize: 'vertical', fontFamily: 'inherit', boxSizing: 'border-box' }}
+                placeholder="Additional notes..."
+              />
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
+              <button onClick={() => { setRiskScoreModalOpen(false); setEditingRiskScore(false); }}
+                style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}>
+                Cancel
+              </button>
+              <button
+                onClick={async () => { await handleSaveRiskScore(); setRiskScoreModalOpen(false); setEditingRiskScore(false); }}
+                disabled={savingRiskScore}
+                style={{ padding: '8px 16px', background: '#10b981', color: 'white', border: 'none', borderRadius: '8px', cursor: savingRiskScore ? 'not-allowed' : 'pointer', fontSize: '0.85rem', fontWeight: '600', opacity: savingRiskScore ? 0.7 : 1 }}>
+                {savingRiskScore ? 'Saving...' : 'Save Assessment'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Archive Client Modal — closure date + PDF closure letter */}
+      {showArchiveModal && (
+        <div
+          onClick={() => { if (!archiveBusy) setShowArchiveModal(false); }}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 9000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ background: 'var(--bg-primary)', borderRadius: '12px', border: '1px solid var(--border-color)', maxWidth: '480px', width: '100%', padding: '24px', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}
+          >
+            <h3 style={{ margin: '0 0 8px 0', fontSize: '1.15rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+              Archive Client
+            </h3>
+            <p style={{ margin: '0 0 18px 0', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+              Provide the closure date and attach the signed closure letter (PDF).
+            </p>
+
+            <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' }}>
+              Closure Date
+            </label>
+            <input
+              type="date"
+              value={archiveClosureDate}
+              onChange={e => setArchiveClosureDate(e.target.value)}
+              disabled={archiveBusy}
+              style={{ width: '100%', padding: '10px 12px', border: '1.5px solid var(--border-color)', borderRadius: '8px', fontSize: '0.9rem', background: 'var(--bg-secondary)', color: 'var(--text-primary)', boxSizing: 'border-box', marginBottom: '16px' }}
+            />
+
+            <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' }}>
+              Closure Letter (PDF)
+            </label>
+            <input
+              type="file"
+              accept="application/pdf"
+              onChange={e => {
+                const f = e.target.files?.[0];
+                if (f && f.type !== 'application/pdf') {
+                  setArchiveError('File must be a PDF.');
+                  setArchiveClosureFile(null);
+                  return;
+                }
+                if (f && f.size > 10 * 1024 * 1024) {
+                  setArchiveError('File must be smaller than 10MB.');
+                  setArchiveClosureFile(null);
+                  return;
+                }
+                setArchiveError('');
+                setArchiveClosureFile(f || null);
+              }}
+              disabled={archiveBusy}
+              style={{ width: '100%', padding: '10px 12px', border: '1.5px solid var(--border-color)', borderRadius: '8px', fontSize: '0.85rem', background: 'var(--bg-secondary)', color: 'var(--text-primary)', boxSizing: 'border-box', marginBottom: '4px' }}
+            />
+            {archiveClosureFile && (
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '12px' }}>
+                {archiveClosureFile.name} — {(archiveClosureFile.size / 1024).toFixed(0)} KB
+              </div>
+            )}
+
+            {archiveError && (
+              <div style={{ marginTop: '8px', padding: '10px 12px', borderRadius: '8px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444', fontSize: '0.8rem' }}>
+                {archiveError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '20px' }}>
+              <button
+                onClick={() => setShowArchiveModal(false)}
+                disabled={archiveBusy}
+                style={{ padding: '9px 18px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: archiveBusy ? 'not-allowed' : 'pointer', fontSize: '0.85rem', fontWeight: '500' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  if (!archiveClosureDate) {
+                    setArchiveError('Closure date is required.');
+                    return;
+                  }
+                  if (!archiveClosureFile) {
+                    setArchiveError('Closure letter PDF is required.');
+                    return;
+                  }
+                  setArchiveBusy(true);
+                  setArchiveError('');
+                  try {
+                    const base64Data = await new Promise((resolve, reject) => {
+                      const reader = new FileReader();
+                      reader.onload = () => resolve(reader.result.split(',')[1]);
+                      reader.onerror = reject;
+                      reader.readAsDataURL(archiveClosureFile);
+                    });
+                    await Meteor.callAsync('clientEntities.updateStatus', entityId, ENTITY_STATUSES.ARCHIVED, sessionId, {
+                      closureDate: archiveClosureDate,
+                      fileName: archiveClosureFile.name,
+                      base64Data,
+                      mimeType: archiveClosureFile.type
+                    });
+                    setShowArchiveModal(false);
+                  } catch (err) {
+                    console.error('Failed to archive entity:', err);
+                    setArchiveError(err.reason || 'Failed to archive client.');
+                  } finally {
+                    setArchiveBusy(false);
+                  }
+                }}
+                disabled={archiveBusy}
+                style={{ padding: '9px 18px', background: '#f59e0b', border: 'none', borderRadius: '8px', color: 'white', cursor: archiveBusy ? 'not-allowed' : 'pointer', fontSize: '0.85rem', fontWeight: '600', opacity: archiveBusy ? 0.7 : 1 }}
+              >
+                {archiveBusy ? 'Archiving…' : 'Archive Client'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <Dialog
+        isOpen={dialogState.isOpen}
+        onClose={hideDialog}
+        title={dialogState.title}
+        message={dialogState.message}
+        type={dialogState.type}
+        onConfirm={dialogState.onConfirm}
+        onCancel={dialogState.onCancel}
+        confirmText={dialogState.confirmText}
+        cancelText={dialogState.cancelText}
+        showCancel={dialogState.showCancel}
+      />
     </div>
   );
 }

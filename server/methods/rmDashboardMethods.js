@@ -18,6 +18,9 @@ import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetada
 import { CurrencyRateCacheCollection, CurrencyCache } from '../../imports/api/currencyCache.js';
 import { calculateCashForHoldings } from '../../imports/api/helpers/cashCalculator.js';
 import { DashboardMetricsHelpers } from '../../imports/api/dashboardMetrics.js';
+import { ClientEntitiesCollection } from '../../imports/api/clientEntities.js';
+import { UserEntityAccessHelpers } from '../../imports/api/userEntityAccess.js';
+import { getFilteredEntityIds, buildEntityOrUserFilter } from '../../imports/utils/entityResolver.js';
 import { INVESTMENT_QUOTES } from '../quotesData.js';
 
 // Database collections for quotes system
