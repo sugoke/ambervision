@@ -1442,7 +1442,11 @@ ${userDisplayName}
           reviewingAt: ''
         }
       },
-      { returnDocument: 'after' }
+      // includeResultMetadata: true keeps the legacy { value, ok } shape.
+      // MongoDB Node driver v6 otherwise returns the document directly, so
+      // updateResult.value would be undefined even on success — which made
+      // every claim/validate/modify wrongly report "locked-by-other".
+      { returnDocument: 'after', includeResultMetadata: true }
     );
 
     if (!updateResult.value) {
@@ -2513,7 +2517,11 @@ ${userDisplayName}
           reviewingAt: new Date()
         }
       },
-      { returnDocument: 'after' }
+      // includeResultMetadata: true keeps the legacy { value, ok } shape.
+      // MongoDB Node driver v6 otherwise returns the document directly, so
+      // updateResult.value would be undefined even on success — which made
+      // every claim/validate/modify wrongly report "locked-by-other".
+      { returnDocument: 'after', includeResultMetadata: true }
     );
 
     if (!updateResult.value) {
@@ -2645,7 +2653,11 @@ ${userDisplayName}
           reviewingAt: ''
         }
       },
-      { returnDocument: 'after' }
+      // includeResultMetadata: true keeps the legacy { value, ok } shape.
+      // MongoDB Node driver v6 otherwise returns the document directly, so
+      // updateResult.value would be undefined even on success — which made
+      // every claim/validate/modify wrongly report "locked-by-other".
+      { returnDocument: 'after', includeResultMetadata: true }
     );
 
     if (!updateResult.value) {
