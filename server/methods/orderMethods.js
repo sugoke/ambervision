@@ -3874,6 +3874,35 @@ Meteor.methods({
 
     const isStructuredProduct = order.assetType === 'structured_product';
 
+    // FX direction is quoted as a pair (BASE/QUOTE). Buying the pair = buying
+    // the base and selling the quote; clients describe the economic intent
+    // ("convert ILS to EUR", "sell ILS") rather than the pair direction, so we
+    // give the model the convention for THIS pair to translate before judging.
+    const isFx = order.assetType === 'fx';
+    let fxGuidance = '';
+    if (isFx) {
+      const [fxBase, fxQuote] = String(order.fxPair || '').split('/').map(s => s.trim());
+      const dir = order.orderType?.toUpperCase() || '';
+      if (fxBase && fxQuote) {
+        fxGuidance = `
+
+FX DIRECTION SEMANTICS (this order is an FX trade — READ CAREFULLY):
+- This order trades the pair ${fxBase}/${fxQuote} (base currency ${fxBase}, quote currency ${fxQuote}). The entered direction is ${dir}.
+- Convention: BUY ${fxBase}/${fxQuote} = BUY the base (${fxBase}) and SELL the quote (${fxQuote}). SELL ${fxBase}/${fxQuote} = SELL the base (${fxBase}) and BUY the quote (${fxQuote}).
+- Clients rarely say "buy ${fxBase}/${fxQuote}". They state the economic intent — e.g. "convert ${fxQuote} to ${fxBase}", "sell ${fxQuote}", "buy ${fxBase}", "switch our ${fxQuote} into ${fxBase}". Translate that to the pair direction BEFORE judging:
+    • "convert ${fxQuote} to ${fxBase}" / "sell ${fxQuote}" / "buy ${fxBase}"  ≡  BUY ${fxBase}/${fxQuote}.
+    • "convert ${fxBase} to ${fxQuote}" / "sell ${fxBase}" / "buy ${fxQuote}"  ≡  SELL ${fxBase}/${fxQuote}.
+- A client selling the quote currency to obtain the base currency is CONSISTENT with a BUY of the pair. Only flag a Direction mismatch if the client's intended conversion is the OPPOSITE of the entered direction.
+- The order Quantity (${order.quantity} ${order.currency}) is the amount in the order currency; confirm it matches the amount the client asked to convert where the email states one.`;
+      } else {
+        fxGuidance = `
+
+FX DIRECTION SEMANTICS (this order is an FX trade — READ CAREFULLY):
+- FX is quoted as a pair BASE/QUOTE. BUY the pair = buy the base currency and sell the quote currency; SELL the pair = sell the base and buy the quote.
+- Clients describe the economic intent ("convert X to Y", "sell X", "buy Y") rather than the pair direction. Selling the quote currency to obtain the base currency is CONSISTENT with a BUY of the pair. Only flag a Direction mismatch if the client's intent is the OPPOSITE of the entered direction.`;
+      }
+    }
+
     const prompt = `You are a compliance officer at Amber Lake Partners, a wealth-management advisory firm. Amber Lake proposes investments to clients by email; clients then reply with their approval, often briefly ("ok", "ok pour moi", "yes", "accepted", "go", "perfect"). You must compare the client's instruction against the order that was entered into the system and identify real discrepancies.
 
 KEY CONTEXT — READ CAREFULLY:
@@ -3900,7 +3929,7 @@ TERM SHEET ISIN CHECK (structured product order):
     - status "ok" if the PDF's ISIN matches the order's ISIN.
     - status "mismatch" if the PDF's ISIN differs from the order's ISIN — this is a serious red flag.
     - status "warning" if no term sheet PDF is attached, or if the PDF text doesn't contain an extractable ISIN.
-- Quote the ISIN you found in the detail field.` : ''}
+- Quote the ISIN you found in the detail field.` : ''}${fxGuidance}
 
 ORDER ENTERED IN SYSTEM:
 ${orderSummary}
