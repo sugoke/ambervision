@@ -102,6 +102,10 @@ function validateOrderPermission(user) {
   }
 }
 
+// How long a review lock stays "fresh". After this, another reviewer may
+// take it over — protects against a closed-tab claim permablocking an order.
+const REVIEW_LOCK_TTL_MS = 5 * 60 * 1000;
+
 /**
  * Validate that user can access a specific order
  * @param {Object} order - Order object
@@ -432,6 +436,7 @@ Meteor.methods({
       bankAccountId: String,
       portfolioCode: Match.Maybe(String),
       sourceHoldingId: Match.Maybe(String),
+      forceWithoutSourceHolding: Match.Maybe(Boolean),
       notes: Match.Maybe(String),
       bankComment: Match.Maybe(String),
       bulkOrderGroupId: Match.Maybe(String),
@@ -466,12 +471,16 @@ Meteor.methods({
       // Allocation check
       capitalProtected: Match.Maybe(Boolean),
       allocationJustification: Match.Maybe(String),
+      // Fund quantity mode (units vs nominal cash amount)
+      fundQuantityMode: Match.Maybe(Match.Where(x => ['units', 'nominal'].includes(x))),
       // Order source (email or phone)
       orderSource: Match.Maybe(String),
       phoneCallTime: Match.Maybe(String),
       phoneCallLine: Match.Maybe(String),
       // Execution type
-      executionType: Match.Maybe(String)
+      executionType: Match.Maybe(String),
+      // Creator attests they will attach the client order trace later
+      clientOrderDeferred: Match.Maybe(Boolean)
     });
 
     const { user, userId, userDisplayName } = await validateSession(sessionId);
@@ -517,16 +526,20 @@ Meteor.methods({
     // For SELL orders, validate position (skip for term deposit decreases)
     if (orderData.orderType === 'sell' && orderData.assetType !== ASSET_TYPES.TERM_DEPOSIT) {
       if (!orderData.sourceHoldingId) {
-        throw new Meteor.Error('invalid-order', 'Source holding required for sell orders');
-      }
+        if (!orderData.forceWithoutSourceHolding) {
+          throw new Meteor.Error('invalid-order', 'Source holding required for sell orders');
+        }
+        // Operator has explicitly forced this sell — bank-side accounting discrepancy.
+        // Skip the position validation entirely.
+      } else {
+        const validation = await OrderHelpers.validateSellOrder(
+          orderData.sourceHoldingId,
+          orderData.quantity
+        );
 
-      const validation = await OrderHelpers.validateSellOrder(
-        orderData.sourceHoldingId,
-        orderData.quantity
-      );
-
-      if (!validation.valid) {
-        throw new Meteor.Error('invalid-quantity', validation.error);
+        if (!validation.valid) {
+          throw new Meteor.Error('invalid-quantity', validation.error);
+        }
       }
     }
 
@@ -561,7 +574,8 @@ Meteor.methods({
       bankAccountId: orderData.bankAccountId,
       bankId: bankAccount.bankId,
       portfolioCode: orderData.portfolioCode || bankAccount.accountNumber,
-      sourceHoldingId: orderData.orderType === 'sell' ? orderData.sourceHoldingId : null,
+      sourceHoldingId: orderData.orderType === 'sell' ? (orderData.sourceHoldingId || null) : null,
+      forceWithoutSourceHolding: orderData.orderType === 'sell' && !orderData.sourceHoldingId && orderData.forceWithoutSourceHolding ? true : false,
       status: ORDER_STATUSES.PENDING_VALIDATION,
       executedQuantity: 0,
       notes: orderData.notes || null,
@@ -594,12 +608,20 @@ Meteor.methods({
       // Validity
       validityType: orderData.validityType || null,
       validityDate: orderData.validityDate ? new Date(orderData.validityDate) : null,
+      // Fund quantity mode (units vs nominal cash amount; only set for fund orders)
+      ...(orderData.assetType === 'fund' && orderData.fundQuantityMode
+        ? { fundQuantityMode: orderData.fundQuantityMode }
+        : {}),
       // Order source (email or phone)
       orderSource: orderData.orderSource || 'email',
       ...(orderData.phoneCallTime ? { phoneCallTime: orderData.phoneCallTime } : {}),
       ...(orderData.phoneCallLine ? { phoneCallLine: orderData.phoneCallLine } : {}),
       // Execution type
       executionType: orderData.executionType || 'to_execute',
+      // Creator promised to attach the client order later (mobile/technical bypass)
+      ...(orderData.clientOrderDeferred
+        ? { clientOrderDeferred: { by: userId, byName: userDisplayName, at: new Date() } }
+        : {}),
       // Linked order group (set when TP/SL legs are attached)
       linkedOrderGroup: null,
       linkedOrderType: null,
@@ -897,6 +919,8 @@ ${userDisplayName}
       // Validity
       validityType: Match.Maybe(String),
       validityDate: Match.Maybe(String),
+      // Fund quantity mode (units vs nominal cash amount)
+      fundQuantityMode: Match.Maybe(Match.Where(x => ['units', 'nominal'].includes(x))),
       orders: [{
         clientId: String,
         bankAccountId: String,
@@ -963,6 +987,7 @@ ${userDisplayName}
         if (bulkOrderData.executionType) sharedFields.executionType = bulkOrderData.executionType;
         if (bulkOrderData.validityType) sharedFields.validityType = bulkOrderData.validityType;
         if (bulkOrderData.validityDate) sharedFields.validityDate = bulkOrderData.validityDate;
+        if (bulkOrderData.fundQuantityMode) sharedFields.fundQuantityMode = bulkOrderData.fundQuantityMode;
 
         const result = await Meteor.callAsync('orders.create', {
           orderData: {
@@ -1385,20 +1410,53 @@ ${userDisplayName}
       } : null
     };
 
-    // Apply the modification
-    await OrdersCollection.updateAsync(orderId, {
-      $set: {
-        status: mod.statusBeforeModification,
-        priceType: mod.newValues.priceType,
-        limitPrice: mod.newValues.limitPrice,
-        stopLossPrice: mod.newValues.stopLossPrice,
-        takeProfitPrice: mod.newValues.takeProfitPrice,
-        pendingModification: null,
-        updatedAt: new Date(),
-        updatedBy: userId
+    // Apply the modification — atomic compare-and-set against the
+    // PENDING_MODIFICATION status + review-lock claim, so two simultaneous
+    // validators cannot both apply the same change.
+    const lockStaleBefore = new Date(Date.now() - REVIEW_LOCK_TTL_MS);
+    const updateResult = await OrdersCollection.rawCollection().findOneAndUpdate(
+      {
+        _id: orderId,
+        status: ORDER_STATUSES.PENDING_MODIFICATION,
+        $or: [
+          { reviewingBy: { $in: [null, userId] } },
+          { reviewingBy: { $exists: false } },
+          { reviewingAt: { $lt: lockStaleBefore } }
+        ]
       },
-      $push: { limitHistory: historyEntry }
-    });
+      {
+        $set: {
+          status: mod.statusBeforeModification,
+          priceType: mod.newValues.priceType,
+          limitPrice: mod.newValues.limitPrice,
+          stopLossPrice: mod.newValues.stopLossPrice,
+          takeProfitPrice: mod.newValues.takeProfitPrice,
+          pendingModification: null,
+          updatedAt: new Date(),
+          updatedBy: userId
+        },
+        $push: { limitHistory: historyEntry },
+        $unset: {
+          reviewingBy: '',
+          reviewingByName: '',
+          reviewingAt: ''
+        }
+      },
+      { returnDocument: 'after' }
+    );
+
+    if (!updateResult.value) {
+      const current = await OrdersCollection.findOneAsync(orderId);
+      if (!current) throw new Meteor.Error('not-found', 'Order not found');
+      if (current.status !== ORDER_STATUSES.PENDING_MODIFICATION) {
+        throw new Meteor.Error('already-validated', 'This modification was already processed.');
+      }
+      if (current.reviewingBy && current.reviewingBy !== userId) {
+        const whoLabel = current.reviewingByName || 'another user';
+        throw new Meteor.Error('locked-by-other', `This order is currently being reviewed by ${whoLabel}.`);
+      }
+      throw new Meteor.Error('validation-failed', 'Could not validate this modification — please refresh and try again.');
+    }
 
     console.log(`[ORDERS] Modification validated on order ${order.orderReference} by ${userDisplayName} (${userId})`);
 
@@ -1534,6 +1592,55 @@ ${userDisplayName}
   /**
    * Mark order as executed
    */
+  /**
+   * Inline update of executedPrice from the order blotter.
+   * Allowed on executed / partially_executed orders only. Pushes the previous
+   * value to executedPriceHistory for audit. Optionally accepts a reason.
+   */
+  async 'orders.setExecutedPrice'({ orderId, executedPrice, reason, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+    check(executedPrice, Number);
+    check(reason, Match.Maybe(String));
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+    validateOrderPermission(user);
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    await validateOrderAccess(order, user);
+
+    if (order.status !== ORDER_STATUSES.EXECUTED && order.status !== ORDER_STATUSES.PARTIALLY_EXECUTED) {
+      throw new Meteor.Error('invalid-operation', 'Execution price can only be set on executed or partially executed orders');
+    }
+
+    const previousPrice = order.executedPrice ?? null;
+    if (previousPrice !== null && previousPrice === executedPrice) {
+      return { success: true, orderId, unchanged: true };
+    }
+
+    const historyEntry = {
+      previousPrice,
+      newPrice: executedPrice,
+      changedBy: userId,
+      changedByName: userDisplayName,
+      changedAt: new Date(),
+      reason: reason || null
+    };
+
+    await OrdersCollection.updateAsync(orderId, {
+      $set: {
+        executedPrice,
+        updatedAt: new Date(),
+        updatedBy: userId
+      },
+      $push: { executedPriceHistory: historyEntry }
+    });
+
+    console.log(`[ORDERS] Exec price updated for ${order.orderReference}: ${previousPrice} → ${executedPrice} by ${userDisplayName}`);
+
+    return { success: true, orderId, previousPrice, newPrice: executedPrice };
+  },
+
   async 'orders.markExecuted'({ orderId, executionData, sessionId }) {
     check(orderId, String);
     check(sessionId, String);
@@ -1788,7 +1895,8 @@ ${userDisplayName}
       dateFrom: Match.Maybe(Date),
       dateTo: Match.Maybe(Date),
       search: Match.Maybe(String),
-      bulkOrderGroupId: Match.Maybe(String)
+      bulkOrderGroupId: Match.Maybe(String),
+      validatedByName: Match.Maybe(String)
     });
     check(pagination, {
       limit: Match.Maybe(Number),
@@ -1803,28 +1911,27 @@ ${userDisplayName}
     const query = {};
 
     // Role-based filtering
-    if (user.role === 'rm' || user.role === 'assistant') {
-      // RMs/Assistants see orders for their user-based AND entity-based clients
-      const rmIds = UserHelpers.getEffectiveRmIds(user);
-      const rmClients = await UsersCollection.find({ relationshipManagerId: { $in: rmIds } }).fetchAsync();
-      const clientIds = rmClients.map(c => c._id);
-      // Also include entity-based clients
-      const { ClientEntitiesCollection: EntColFilter } = require('../../imports/api/clientEntities.js');
-      const rmEntities = await EntColFilter.find({ relationshipManagerId: { $in: rmIds }, isActive: true }, { fields: { _id: 1, migratedFromUserId: 1 } }).fetchAsync();
-      for (const ent of rmEntities) {
-        clientIds.push(ent._id);
-        if (ent.migratedFromUserId) clientIds.push(ent.migratedFromUserId);
-      }
-      query.clientId = { $in: [...new Set(clientIds)] };
-    } else if (user.role === 'client') {
+    if (user.role === 'client') {
       // Clients only see their own orders
       query.clientId = user._id;
     }
-    // Admins and superadmins see all orders
+    // All staff (admin, superadmin, compliance, rm, assistant) see every order
 
     // Apply filters
     if (filters.status) {
       query.status = Array.isArray(filters.status) ? { $in: filters.status } : filters.status;
+    } else {
+      // Default: hide orders that are still in the validation workflow — those
+      // appear in the separate "Orders Pending Validation" banner above the
+      // order book table. The user can still surface them explicitly via the
+      // status dropdown.
+      query.status = {
+        $nin: [
+          ORDER_STATUSES.PENDING_VALIDATION,
+          ORDER_STATUSES.PENDING_MODIFICATION,
+          ORDER_STATUSES.REVISION_REQUESTED
+        ]
+      };
     }
 
     if (filters.clientId) {
@@ -1837,6 +1944,10 @@ ${userDisplayName}
 
     if (filters.bulkOrderGroupId) {
       query.bulkOrderGroupId = filters.bulkOrderGroupId;
+    }
+
+    if (filters.validatedByName) {
+      query.validatedByName = filters.validatedByName;
     }
 
     if (filters.dateFrom || filters.dateTo) {
@@ -2355,12 +2466,111 @@ ${userDisplayName}
   },
 
   /**
-   * Validate an order (four-eyes principle: move from PENDING_VALIDATION → PENDING)
-   * Enforces: validator !== creator, validator has canValidateOrders permission
+   * Claim a pending-validation order for review. Sets a soft lock with a
+   * 5-minute TTL so other reviewers see "Being reviewed by …" and their
+   * Validate button is disabled. Returns the resulting reviewer info.
+   *
+   * Idempotent: re-claiming your own lock refreshes it.
+   * Stale-takeover: if the existing claim is older than the TTL, anyone can
+   * take it over.
    */
-  async 'orders.validate'({ orderId, sessionId }) {
+  async 'orders.claimForReview'({ orderId, sessionId }) {
     check(orderId, String);
     check(sessionId, String);
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+
+    if (!user.canValidateOrders && user.role !== 'compliance') {
+      throw new Meteor.Error('not-authorized', 'You do not have order validation permission');
+    }
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    if (!order) throw new Meteor.Error('not-found', 'Order not found');
+    await validateOrderAccess(order, user);
+
+    // Four-eyes: the order's own creator must never hold the review lock. They
+    // cannot validate it anyway, and claiming it would soft-block every other
+    // validator for the full TTL window — exactly the situation that leaves an
+    // order un-validatable by anyone.
+    if (order.createdBy === userId) {
+      throw new Meteor.Error('four-eyes-violation', 'You cannot review your own order (four-eyes principle)');
+    }
+
+    const lockStaleBefore = new Date(Date.now() - REVIEW_LOCK_TTL_MS);
+    const updateResult = await OrdersCollection.rawCollection().findOneAndUpdate(
+      {
+        _id: orderId,
+        $or: [
+          { reviewingBy: { $in: [null, userId] } },
+          { reviewingBy: { $exists: false } },
+          { reviewingAt: { $lt: lockStaleBefore } }
+        ]
+      },
+      {
+        $set: {
+          reviewingBy: userId,
+          reviewingByName: userDisplayName,
+          reviewingAt: new Date()
+        }
+      },
+      { returnDocument: 'after' }
+    );
+
+    if (!updateResult.value) {
+      const current = await OrdersCollection.findOneAsync(orderId);
+      const whoLabel = current?.reviewingByName || 'another user';
+      const since = current?.reviewingAt ? new Date(current.reviewingAt).toLocaleTimeString() : '';
+      throw new Meteor.Error(
+        'locked-by-other',
+        `This order is currently being reviewed by ${whoLabel}${since ? ` since ${since}` : ''}.`
+      );
+    }
+
+    return {
+      reviewingBy: userId,
+      reviewingByName: userDisplayName,
+      reviewingAt: updateResult.value.reviewingAt
+    };
+  },
+
+  /**
+   * Release a review lock you hold. No-op if you don't hold it.
+   */
+  async 'orders.releaseReview'({ orderId, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+
+    const { userId } = await validateSession(sessionId);
+
+    await OrdersCollection.rawCollection().updateOne(
+      { _id: orderId, reviewingBy: userId },
+      {
+        $unset: {
+          reviewingBy: '',
+          reviewingByName: '',
+          reviewingAt: ''
+        }
+      }
+    );
+
+    return { released: true };
+  },
+
+  /**
+   * Validate an order (four-eyes principle: move from PENDING_VALIDATION → PENDING)
+   * Enforces: validator !== creator, validator has canValidateOrders permission,
+   * and the review-lock claim mechanism — only the user holding the lock (or
+   * one with a stale-takeover-eligible empty/expired lock) can validate.
+   *
+   * The status transition itself is an atomic compare-and-set so two
+   * simultaneous clicks cannot both succeed; the second click gets a clear
+   * "already validated by [name]" error rather than triggering a duplicate
+   * send to the bank.
+   */
+  async 'orders.validate'({ orderId, sessionId, emailComparedAttestation }) {
+    check(orderId, String);
+    check(sessionId, String);
+    check(emailComparedAttestation, Match.Maybe(Boolean));
 
     const { user, userId, userDisplayName } = await validateSession(sessionId);
 
@@ -2386,16 +2596,74 @@ ${userDisplayName}
       throw new Meteor.Error('four-eyes-violation', 'You cannot validate your own order (four-eyes principle)');
     }
 
-    await OrdersCollection.updateAsync(orderId, {
-      $set: {
-        status: ORDER_STATUSES.PENDING,
-        validatedBy: userId,
-        validatedByName: userDisplayName,
-        validatedAt: new Date(),
-        updatedAt: new Date(),
-        updatedBy: userId
+    // When no client-order trace is attached, the validator must explicitly
+    // attest that they have compared the order to the original client instruction.
+    const hasClientOrderTrace = (order.emailTraces || []).some(t => t.traceType === EMAIL_TRACE_TYPES.CLIENT_ORDER);
+    if (!hasClientOrderTrace && !emailComparedAttestation) {
+      throw new Meteor.Error(
+        'attestation-required',
+        'You must confirm you compared this order to the original client instruction'
+      );
+    }
+
+    // Atomic transition: only one caller can flip the order out of
+    // PENDING_VALIDATION. The match condition also requires the review lock
+    // to be either ours, absent, or stale (>5 min old) — preventing another
+    // reviewer who currently holds a fresh lock from racing us.
+    const lockStaleBefore = new Date(Date.now() - REVIEW_LOCK_TTL_MS);
+    const validateSet = {
+      status: ORDER_STATUSES.PENDING,
+      validatedBy: userId,
+      validatedByName: userDisplayName,
+      validatedAt: new Date(),
+      updatedAt: new Date(),
+      updatedBy: userId
+    };
+    if (!hasClientOrderTrace) {
+      validateSet.validationAttestation = {
+        emailCompared: true,
+        by: userId,
+        byName: userDisplayName,
+        at: new Date()
+      };
+    }
+    const updateResult = await OrdersCollection.rawCollection().findOneAndUpdate(
+      {
+        _id: orderId,
+        status: ORDER_STATUSES.PENDING_VALIDATION,
+        $or: [
+          { reviewingBy: { $in: [null, userId] } },
+          { reviewingBy: { $exists: false } },
+          { reviewingAt: { $lt: lockStaleBefore } }
+        ]
+      },
+      {
+        $set: validateSet,
+        $unset: {
+          reviewingBy: '',
+          reviewingByName: '',
+          reviewingAt: ''
+        }
+      },
+      { returnDocument: 'after' }
+    );
+
+    if (!updateResult.value) {
+      // Re-read to see why the atomic update failed and craft a precise error
+      const current = await OrdersCollection.findOneAsync(orderId);
+      if (!current) {
+        throw new Meteor.Error('not-found', 'Order not found');
       }
-    });
+      if (current.status !== ORDER_STATUSES.PENDING_VALIDATION) {
+        const whoLabel = current.validatedByName || 'another user';
+        throw new Meteor.Error('already-validated', `This order was already validated by ${whoLabel}.`);
+      }
+      if (current.reviewingBy && current.reviewingBy !== userId) {
+        const whoLabel = current.reviewingByName || 'another user';
+        throw new Meteor.Error('locked-by-other', `This order is currently being reviewed by ${whoLabel}.`);
+      }
+      throw new Meteor.Error('validation-failed', 'Could not validate this order — please refresh and try again.');
+    }
 
     console.log(`[ORDERS] Validated order ${order.orderReference} by ${userDisplayName} (${userId})`);
 
@@ -2734,6 +3002,25 @@ ${userDisplayName}
   },
 
   /**
+   * Distinct validators of orders the current user is allowed to see (for the order book filter)
+   */
+  async 'orders.distinctValidators'({ sessionId }) {
+    check(sessionId, String);
+
+    const { user } = await validateSession(sessionId);
+
+    // Reuse the same role-based scoping as orders.list
+    const query = { validatedByName: { $exists: true, $ne: null } };
+    if (user.role === 'client') {
+      query.clientId = user._id;
+    }
+    // All staff see every validator name
+
+    const names = await OrdersCollection.rawCollection().distinct('validatedByName', query);
+    return names.filter(Boolean).sort((a, b) => a.localeCompare(b));
+  },
+
+  /**
    * List orders pending validation (for the validation blotter)
    */
   async 'orders.listPendingValidation'({ sessionId }) {
@@ -2749,19 +3036,8 @@ ${userDisplayName}
 
     const query = { status: { $in: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING_MODIFICATION, ORDER_STATUSES.REVISION_REQUESTED] } };
 
-    // RMs/Assistants only see pending orders for their own clients (user + entity based)
-    if (user.role === 'rm' || user.role === 'assistant') {
-      const rmIds = UserHelpers.getEffectiveRmIds(user);
-      const rmClients = await UsersCollection.find({ relationshipManagerId: { $in: rmIds } }).fetchAsync();
-      const clientIds = rmClients.map(c => c._id);
-      const { ClientEntitiesCollection: EntColPending } = require('../../imports/api/clientEntities.js');
-      const rmEntities = await EntColPending.find({ relationshipManagerId: { $in: rmIds }, isActive: true }, { fields: { _id: 1, migratedFromUserId: 1 } }).fetchAsync();
-      for (const ent of rmEntities) {
-        clientIds.push(ent._id);
-        if (ent.migratedFromUserId) clientIds.push(ent.migratedFromUserId);
-      }
-      query.clientId = { $in: [...new Set(clientIds)] };
-    }
+    // All staff see the full pending-validation blotter; the validate/reject
+    // buttons remain gated by canValidateOrders client-side.
 
     const orders = await OrdersCollection.find(
       query,
@@ -2792,15 +3068,84 @@ ${userDisplayName}
 /**
  * Match an order against PMSOperations to detect if it was booked
  */
+/**
+ * Fallback when no pmsOperations row matches: look for a freshly-appeared
+ * pmsHoldings row covering the same ISIN/portfolio. Only confirms if the
+ * holding is NEW (no earlier snapshot with this uniqueKey) — otherwise the
+ * costPrice is a blend that doesn't represent this specific order's execution.
+ *
+ * Returns the same shape as matchOrderToOperations or null when no fit.
+ */
+async function tryHoldingsFallback(order, escapedCode, orderDate) {
+  const windowStart = new Date(orderDate);
+  windowStart.setDate(windowStart.getDate() - 2);
+  const windowEnd = new Date(orderDate);
+  windowEnd.setDate(windowEnd.getDate() + 30);
+
+  // Find the earliest holding for this ISIN+portfolio in the window.
+  const candidateHoldings = await PMSHoldingsCollection.find({
+    isin: order.isin,
+    portfolioCode: { $regex: `^${escapedCode}` },
+    snapshotDate: { $gte: windowStart, $lte: windowEnd },
+    quantity: { $ne: 0 }
+  }, {
+    sort: { snapshotDate: 1 },
+    limit: 5
+  }).fetchAsync();
+
+  if (candidateHoldings.length === 0) return null;
+  const earliest = candidateHoldings[0];
+  if (!earliest.costPrice || earliest.costPrice === 0) return null;
+
+  // Confirm this is truly a new position (no prior snapshot for the same
+  // uniqueKey before our window) — otherwise costPrice is a blend.
+  if (earliest.uniqueKey) {
+    const priorCount = await PMSHoldingsCollection.find({
+      uniqueKey: earliest.uniqueKey,
+      snapshotDate: { $lt: windowStart }
+    }, { limit: 1 }).countAsync();
+    if (priorCount > 0) return null;
+  }
+
+  // Quantity sanity: order qty should be in the same ballpark as the holding
+  // (within 5%). Avoids matching against an unrelated lot that happened to
+  // appear at the same time.
+  const holdingQty = Math.abs(earliest.quantity);
+  const orderQty = Math.abs(order.quantity || 0);
+  const qtyRatio = orderQty > 0 && holdingQty > 0
+    ? Math.min(orderQty, holdingQty) / Math.max(orderQty, holdingQty)
+    : 0;
+  if (qtyRatio < 0.95) return null;
+
+  return {
+    bookingStatus: 'confirmed',
+    matchedOperation: {
+      operationDate: earliest.snapshotDate,
+      quantity: earliest.quantity,
+      price: earliest.costPrice,
+      grossAmount: -Math.abs(holdingQty * earliest.costPrice) * (order.orderType === 'buy' ? 1 : -1),
+      operationCode: null,
+      instrumentName: earliest.securityName || null,
+      remark: 'Synthesised from pmsHoldings (no operation row delivered)',
+      operationType: 'HOLDINGS_FALLBACK'
+    },
+    confidence: 'holdings_fallback',
+    reason: `Position appeared on ${earliest.snapshotDate.toISOString().split('T')[0]} at cost ${earliest.costPrice} ${earliest.currency || ''} — no transaction row in PMS but holding is fresh.`
+  };
+}
+
 export async function matchOrderToOperations(order) {
   if (!order.isin || !order.portfolioCode) {
     return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'Missing ISIN or portfolio code' };
   }
 
-  // Build operation type filter based on order type
+  // Build operation type filter based on order type. We include 'OTHER'
+  // because some bank parsers fall back to OTHER for executions they
+  // couldn't categorise (e.g. CMB Monaco equity buys booked as OTHER). The
+  // grossAmount sign is used downstream to confirm direction.
   const opTypes = order.orderType === 'buy'
-    ? ['BUY', 'SUBSCRIPTION']
-    : ['SELL', 'REDEMPTION'];
+    ? ['BUY', 'SUBSCRIPTION', 'OTHER']
+    : ['SELL', 'REDEMPTION', 'OTHER'];
 
   // Date window: 5 days before order to 30 days after
   const orderDate = order.createdAt || new Date();
@@ -2823,7 +3168,33 @@ export async function matchOrderToOperations(order) {
     limit: 10
   }).fetchAsync();
 
+  // Holdings-based fallback. Some bank parsers (notably CMB) reliably deliver
+  // the position file but drop the corresponding event/transaction rows, so
+  // the executed buy/sell never lands in pmsOperations even though the
+  // position is sitting right there with a fresh cost price. When that
+  // happens, treat a newly-appearing PMSHoldings row near the order date as
+  // an execution source.
   if (operations.length === 0) {
+    const holdingsFallback = await tryHoldingsFallback(order, escapedCode, orderDate);
+    if (holdingsFallback) return holdingsFallback;
+    return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'No matching operations found' };
+  }
+
+  // For OTHER-typed candidates, require the gross-amount sign to match the
+  // order direction (buy → debit/negative, sell → credit/positive). Without
+  // this, an unrelated dividend or fee tagged OTHER for the same ISIN could
+  // hijack the match.
+  const expectedSign = order.orderType === 'buy' ? -1 : 1;
+  const filteredOps = operations.filter(op => {
+    if (op.operationType !== 'OTHER') return true;
+    const gross = op.grossAmount != null ? op.grossAmount : op.netAmount;
+    if (gross == null || gross === 0) return false;
+    return Math.sign(gross) === expectedSign;
+  });
+
+  if (filteredOps.length === 0) {
+    const holdingsFallback = await tryHoldingsFallback(order, escapedCode, orderDate);
+    if (holdingsFallback) return holdingsFallback;
     return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'No matching operations found' };
   }
 
@@ -2831,7 +3202,7 @@ export async function matchOrderToOperations(order) {
   let bestMatch = null;
   let bestScore = 0;
 
-  for (const op of operations) {
+  for (const op of filteredOps) {
     let score = 0;
 
     // Magnitude similarity. For structured-product orders `order.quantity`
@@ -2912,12 +3283,48 @@ export async function matchOrderToOperations(order) {
     ? new Date(bestMatch.operationDate).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })
     : 'N/A';
 
+  // Derive per-unit price from grossAmount when the parser didn't populate
+  // op.price (common for OTHER-typed ops and some bank statements that only
+  // carry the cash leg).
+  let resolvedPrice = bestMatch.price || bestMatch.quote;
+  let resolvedQuantity = bestMatch.quantity;
+  if (resolvedPrice == null && bestMatch.quantity && bestMatch.grossAmount) {
+    const qty = Math.abs(bestMatch.quantity);
+    const gross = Math.abs(bestMatch.grossAmount);
+    if (qty > 0) resolvedPrice = gross / qty;
+  }
+
+  // Structured-product unit-vs-notional reconciliation.
+  // For SPs the order stores `quantity` as nominal currency (e.g. 750 000
+  // EUR notional) while some bank parsers store the op as
+  // `quantity = units, price = absolute EUR per unit` (e.g. 750 units at
+  // 1276.7 EUR each = 127.67 % of a 1000 EUR-nominal note). Without
+  // translation the executedPrice ends up displayed as "1276.70 %" — wrong.
+  // Detect the unit-pricing case via the order/op quantity ratio and convert
+  // price to % of par and quantity to the order's notional units.
+  if (order.assetType === 'structured_product' && order.quantity && bestMatch.quantity) {
+    const opQtyAbs = Math.abs(bestMatch.quantity);
+    if (opQtyAbs > 0) {
+      const unitNominal = order.quantity / opQtyAbs;
+      // Unit nominal must be a clean round multiple (typical SP notes are
+      // 1, 100, 1 000, 10 000) and large enough to indicate unit pricing.
+      if (unitNominal >= 100 && Math.abs(unitNominal - Math.round(unitNominal)) < 0.001) {
+        if (resolvedPrice != null) {
+          resolvedPrice = (resolvedPrice * 100) / Math.round(unitNominal);
+        }
+        // Express quantity in the order's notional terms so executedQuantity
+        // stays consistent with the user-entered `quantity` field.
+        resolvedQuantity = order.quantity * Math.sign(bestMatch.quantity);
+      }
+    }
+  }
+
   return {
     bookingStatus,
     matchedOperation: {
       operationDate: bestMatch.operationDate,
-      quantity: bestMatch.quantity,
-      price: bestMatch.price || bestMatch.quote,
+      quantity: resolvedQuantity,
+      price: resolvedPrice,
       grossAmount: bestMatch.grossAmount,
       operationCode: bestMatch.operationCode,
       instrumentName: bestMatch.instrumentName,
@@ -3090,10 +3497,15 @@ Meteor.methods({
       console.log(`[ORDERS] Auto-advancing order ${order.orderReference} to EXECUTED (bank confirmation uploaded)`);
     }
 
-    await OrdersCollection.updateAsync(orderId, {
+    // Clear deferred-attach flag once the creator's promised client-order trace lands
+    const updateOp = {
       $push: { emailTraces: trace },
       $set: updateFields
-    });
+    };
+    if (traceType === EMAIL_TRACE_TYPES.CLIENT_ORDER && order.clientOrderDeferred) {
+      updateOp.$unset = { clientOrderDeferred: '' };
+    }
+    await OrdersCollection.updateAsync(orderId, updateOp);
 
     console.log(`[ORDERS] Email trace uploaded: ${traceType} for order ${order.orderReference} (${traceId}) by ${userDisplayName} (${userId})`);
 
@@ -3428,6 +3840,7 @@ Meteor.methods({
       `ISIN: ${order.isin}`,
       `Asset Type: ${order.assetType}`,
       `Quantity: ${order.quantity}`,
+      order.assetType === 'fund' && order.fundQuantityMode ? `Fund Quantity Mode: ${order.fundQuantityMode}` : null,
       `Currency: ${order.currency}`,
       `Price Type: ${order.priceType}`,
       order.limitPrice ? `Limit Price: ${order.limitPrice}` : null,
@@ -3447,6 +3860,8 @@ Meteor.methods({
       order.validityType ? `Validity: ${order.validityType === 'gtc' ? 'Good Till Canceled' : order.validityType === 'gtd' ? `Good Till ${order.validityDate ? OrderFormatters.formatDate(order.validityDate) : 'Date'}` : 'Day Order'}` : null,
     ].filter(Boolean).join('\n');
 
+    const isStructuredProduct = order.assetType === 'structured_product';
+
     const prompt = `You are a compliance officer at Amber Lake Partners, a wealth-management advisory firm. Amber Lake proposes investments to clients by email; clients then reply with their approval, often briefly ("ok", "ok pour moi", "yes", "accepted", "go", "perfect"). You must compare the client's instruction against the order that was entered into the system and identify real discrepancies.
 
 KEY CONTEXT — READ CAREFULLY:
@@ -3455,15 +3870,30 @@ KEY CONTEXT — READ CAREFULLY:
 - Authorized signatories for the account are configured separately on the bank account (authorizedEmail / authorizedCcEmails / authorizedPhone). A separate deterministic check already verifies the sender against those fields — do NOT re-flag the authorized-email match in your output (it will be added automatically).
 - Price for structured products is in % of par (e.g., 100 means 100% of nominal), not in currency units.
 
+MULTI-ORDER EMAILS — IMPORTANT:
+- A single client email frequently covers SEVERAL distinct orders sent together (the client groups multiple transactions in one approval). The same email file is then attached to each of those orders for traceability.
+- You are checking ONE order at a time. The email may legitimately reference other securities, ISINs, quantities, or directions that belong to sibling orders, NOT this one.
+- Your job is to confirm that THIS order's details (direction, security/ISIN, quantity, price, currency) are present and consistent somewhere in the email/thread. Do NOT flag a mismatch just because the email also discusses other transactions that don't match this order. Only flag a mismatch if THIS specific order's instruction is absent or contradicted.
+
 PRICE/QUANTITY GUIDELINES:
 - For structured products: "Price" in the order = % of par. The notional/face value is the "Quantity" field (e.g., 750,000 EUR notional at 100% = 750,000 EUR).
 - For equities/ETFs: Quantity = number of shares; Price = per-share currency price.
-- An exact quantity in the email is required. A range (e.g., "500k–750k") is a proposal, not an instruction; treat as a warning if the order's quantity falls within the range and was confirmed; treat as mismatch if outside.
+- For funds: the "Quantity" field can represent either a number of UNITS or a NOMINAL cash amount, depending on the order's "Fund Quantity Mode". If the email says e.g. "subscribe 100,000 EUR" and the order is in nominal mode with quantity 100000, that's a match — do NOT flag the absence of a unit count.
+- An exact quantity in the email is required. A range (e.g., "500k–750k") is a proposal, not an instruction; treat as a warning if the order's quantity falls within the range and was confirmed; treat as mismatch if outside.${isStructuredProduct ? `
+
+TERM SHEET ISIN CHECK (structured product order):
+- This order is a STRUCTURED PRODUCT. A term sheet PDF should be attached among the email traces (look for "--- PDF: ..." sections in the content below).
+- If a term sheet PDF is present, find the ISIN printed in it (commonly labelled "ISIN", "Valor", "Security identifier", or shown near the product name) and verify it equals the order ISIN (${order.isin}).
+- Add a check with field "Term sheet ISIN":
+    - status "ok" if the PDF's ISIN matches the order's ISIN.
+    - status "mismatch" if the PDF's ISIN differs from the order's ISIN — this is a serious red flag.
+    - status "warning" if no term sheet PDF is attached, or if the PDF text doesn't contain an extractable ISIN.
+- Quote the ISIN you found in the detail field.` : ''}
 
 ORDER ENTERED IN SYSTEM:
 ${orderSummary}
 
-CLIENT EMAIL/INSTRUCTION (full thread, may include quoted text below the reply):
+CLIENT EMAIL/INSTRUCTION (full thread, may include quoted text below the reply${isStructuredProduct ? '; PDF attachments such as the term sheet are also included as "--- PDF: ..." sections' : ''}):
 ${emailContent.substring(0, 12000)}
 
 Analyze and respond with a JSON object (no markdown, just raw JSON):
@@ -3473,7 +3903,7 @@ Analyze and respond with a JSON object (no markdown, just raw JSON):
   "summary": "One sentence overall assessment",
   "checks": [
     {
-      "field": "field name (e.g. Direction, Security, Quantity, Price, Currency, Settlement Date)",
+      "field": "field name (e.g. Direction, Security, Quantity, Price, Currency, Settlement Date${isStructuredProduct ? ', Term sheet ISIN' : ''})",
       "status": "ok" | "warning" | "mismatch",
       "detail": "Brief explanation grounded in the email thread"
     }
@@ -3485,6 +3915,7 @@ Important:
 - Read the FULL thread before judging. Look in quoted/forwarded portions for the proposal details that the client is approving.
 - Do NOT include an "Authorized email" check — that is added separately.
 - Do NOT question whether Amber Lake Partners is an authorized intermediary — Amber Lake IS the firm.
+- Do NOT flag a mismatch because the email references additional securities/orders other than this one — multi-order emails are normal.
 - Compare direction (buy/sell), security/ISIN, quantity, price, currency. Missing fields → warning, not mismatch.
 - Be concise. Focus on real discrepancies between the order and what the client (or the proposal they approved) specified.`;
 
@@ -3962,7 +4393,6 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
 
   <div class="footer">
     <div class="footer-line">Order Confirmation generated by Ambervision Platform</div>
-    <div class="footer-line">This document is for informational purposes only and does not constitute a trade confirmation.</div>
   </div>
 </body>
 </html>
@@ -4634,7 +5064,7 @@ Meteor.methods({
     }
     // Admins and superadmins see all clients
 
-    const clients = await UsersCollection.find(query, {
+    const users = await UsersCollection.find(query, {
       fields: {
         _id: 1,
         username: 1,
@@ -4644,7 +5074,39 @@ Meteor.methods({
       sort: { 'profile.lastName': 1, 'profile.firstName': 1 }
     }).fetchAsync();
 
-    return clients;
+    // Also return client entities (new entity-based architecture). Some clients
+    // exist only as ClientEntities with no legacy user account — those need to
+    // appear here so the Order Modal's post-selection lookups (availableClients.find)
+    // resolve to a real display name instead of "N/A".
+    const { ClientEntitiesCollection: EntCol, ClientEntityHelpers } = require('../../imports/api/clientEntities.js');
+    let entityCursor;
+    if (user.role === 'rm' || user.role === 'assistant') {
+      const rmIds = UserHelpers.getEffectiveRmIds(user);
+      entityCursor = ClientEntityHelpers.getEntitiesByRMs(rmIds);
+    } else {
+      entityCursor = ClientEntityHelpers.getAllEntities();
+    }
+    const entities = await entityCursor.fetchAsync();
+
+    const mappedEntities = entities.map(e => ({
+      _id: e._id,
+      username: ClientEntityHelpers.getEntityDisplayName(e),
+      profile: {
+        ...(e.profile || {}),
+        clientType: e.type === 'company' ? 'company' : 'individual'
+      },
+      role: 'client',
+      entityId: e._id,
+      migratedFromUserId: e.migratedFromUserId || null
+    }));
+
+    // Dedupe: prefer the entity record over a legacy user with the same id.
+    const migratedUserIds = new Set(
+      mappedEntities.map(m => m.migratedFromUserId).filter(Boolean)
+    );
+    const filteredUsers = users.filter(u => !migratedUserIds.has(u._id));
+
+    return [...filteredUsers, ...mappedEntities];
   },
 
   /**
@@ -4809,22 +5271,46 @@ Meteor.methods({
     };
     // Try with userId first
     let cashHoldings = await PMSHoldingsCollection.find({ ...cashQuery, userId: resolved.holdingsUserId }).fetchAsync();
+    let scope = { userId: resolved.holdingsUserId };
     // If no results, try with bankId + portfolioCode only (entity-based accounts)
     if (cashHoldings.length === 0) {
       cashHoldings = await PMSHoldingsCollection.find({ ...cashQuery, bankId: bankAccount.bankId }).fetchAsync();
+      scope = { bankId: bankAccount.bankId };
     }
 
     const totalCash = cashHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
     const currency = bankAccount.referenceCurrency || cashHoldings[0]?.currency || 'EUR';
 
+    const cashPositions = cashHoldings.map(h => ({
+      currency: h.currency,
+      amount: h.marketValue || 0,
+      name: h.securityName
+    }));
+
+    // Show a zero row for every currency in which the portfolio has any holding
+    // but no cash position — makes the absence of cash explicit rather than hiding it.
+    const portfolioHoldings = await PMSHoldingsCollection.find({
+      isActive: true,
+      isLatest: true,
+      portfolioCode: { $regex: portfolioRegex },
+      ...scope
+    }, { fields: { currency: 1 } }).fetchAsync();
+    const portfolioCurrencies = new Set(portfolioHoldings.map(h => h.currency).filter(Boolean));
+    const cashCurrencies = new Set(cashPositions.map(p => p.currency));
+    for (const ccy of portfolioCurrencies) {
+      if (!cashCurrencies.has(ccy)) {
+        cashPositions.push({ currency: ccy, amount: 0, name: null });
+      }
+    }
+    cashPositions.sort((a, b) => {
+      if ((a.amount > 0) !== (b.amount > 0)) return a.amount > 0 ? -1 : 1;
+      return (a.currency || '').localeCompare(b.currency || '');
+    });
+
     return {
       cashBalance: totalCash,
       currency,
-      cashPositions: cashHoldings.map(h => ({
-        currency: h.currency,
-        amount: h.marketValue || 0,
-        name: h.securityName
-      }))
+      cashPositions
     };
   },
 

@@ -18,11 +18,23 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
   const [revisionReason, setRevisionReason] = useState('');
   const [isActioning, setIsActioning] = useState(null);
   const [reviewOrder, setReviewOrder] = useState(null);
+  // Validator attestation: required when no CLIENT_ORDER trace is attached at review time
+  const [emailCompared, setEmailCompared] = useState(false);
   const [uploadingTrace, setUploadingTrace] = useState(false);
   const [parsedEmails, setParsedEmails] = useState({});
   const [selectedTraceType, setSelectedTraceType] = useState(null);
   const [aiCheckResult, setAiCheckResult] = useState(null); // { loading, result, error }
   const [aiCheckOrderId, setAiCheckOrderId] = useState(null);
+  // Ticks every 30s purely to re-render so review locks past their 5-minute TTL
+  // visually expire. The lock's staleness is time-based (Date.now() vs
+  // reviewingAt) and reviewingAt never changes once set, so without this tick a
+  // stale lock would stay frozen on screen — rows un-clickable and Validate
+  // disabled — even though the server already permits a takeover.
+  const [, setLockTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setLockTick(t => t + 1), 30 * 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const getSessionId = () => localStorage.getItem('sessionId');
 
@@ -103,6 +115,58 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
       setAiCheckResult({ loading: false, error: err.reason || err.message || 'AI check failed' });
     }
   };
+
+  // ---- Review-lock helpers ---------------------------------------------------
+  // Tells us if a given order is locked by someone OTHER than the current user
+  // (with a still-fresh 5-minute claim). Used to gate the row click + the
+  // Validate button so two reviewers can't race against each other.
+  const REVIEW_LOCK_TTL_MS = 5 * 60 * 1000;
+  const isLockedByOther = (order) => {
+    if (!order?.reviewingBy || order.reviewingBy === user?._id) return false;
+    if (!order.reviewingAt) return false;
+    return (Date.now() - new Date(order.reviewingAt).getTime()) < REVIEW_LOCK_TTL_MS;
+  };
+  const lockHolderLabel = (order) => order?.reviewingByName || 'another user';
+
+  const openReview = async (order) => {
+    // Four-eyes: the creator must never claim the review lock — they can still
+    // open the panel to view / revise, just without locking peers out. The
+    // server enforces this too (orders.claimForReview rejects the creator).
+    if (order.createdBy !== user?._id) {
+      // Claim the lock first so peers see "Being reviewed by …" immediately.
+      try {
+        const sessionId = getSessionId();
+        await Meteor.callAsync('orders.claimForReview', { orderId: order._id, sessionId });
+      } catch (err) {
+        alert(err.reason || err.message || 'Could not open this order for review.');
+        return;
+      }
+    }
+    setReviewOrder(order);
+  };
+
+  const closeReview = async () => {
+    const current = reviewOrder;
+    setReviewOrder(null);
+    if (current?._id) {
+      try {
+        const sessionId = getSessionId();
+        await Meteor.callAsync('orders.releaseReview', { orderId: current._id, sessionId });
+      } catch (err) {
+        // Releasing is best-effort — the 5-minute TTL will free it anyway.
+        console.warn('[ValidationBlotter] releaseReview failed:', err);
+      }
+    }
+  };
+
+  // Closed-tab / navigation case is handled by the 5-min server-side TTL —
+  // no explicit unmount-cleanup needed (and a useEffect-on-unmount captures
+  // the wrong reviewOrder via stale closure anyway).
+
+  // Reset the four-eyes attestation when switching between (or closing) review orders
+  useEffect(() => {
+    setEmailCompared(false);
+  }, [reviewOrder?._id]);
 
   // Auto-parse .eml traces when review order is opened
   useEffect(() => {
@@ -208,7 +272,11 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
     setIsActioning(order._id);
     try {
       const sessionId = getSessionId();
-      const result = await Meteor.callAsync('orders.validate', { orderId: order._id, sessionId });
+      const result = await Meteor.callAsync('orders.validate', {
+        orderId: order._id,
+        sessionId,
+        emailComparedAttestation: emailCompared
+      });
 
       // After validation: download .eml with PDF attached
       // The .eml opens as a prefilled Outlook draft with To/CC/Subject/Body + PDF attachment
@@ -299,7 +367,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
     try {
       const sessionId = getSessionId();
       await Meteor.callAsync('orders.validateModification', { orderId: order._id, sessionId });
-      setReviewOrder(null);
+      closeReview();
       onOrderUpdate?.();
     } catch (err) {
       alert(err.reason || err.message || 'Validation failed');
@@ -406,16 +474,35 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                 </tr>
               </thead>
               <tbody>
-                {displayOrders.map(order => (
-                  <tr key={order._id} style={{ ...styles.row, cursor: 'pointer' }}
-                    onClick={() => setReviewOrder(order)}
-                    onMouseEnter={(e) => Array.from(e.currentTarget.children).forEach(td => td.style.background = 'var(--bg-secondary)')}
+                {displayOrders.map(order => {
+                  const locked = isLockedByOther(order);
+                  // The creator can never validate their own order, so a peer's
+                  // review lock must not block them from opening it to view or
+                  // revise. openReview() skips claiming the lock for own orders.
+                  const blocked = locked && !isOwnOrder(order);
+                  return (
+                  <tr key={order._id} style={{ ...styles.row, cursor: blocked ? 'not-allowed' : 'pointer', opacity: blocked ? 0.55 : 1 }}
+                    title={locked ? `Being reviewed by ${lockHolderLabel(order)}` : undefined}
+                    onClick={() => {
+                      if (blocked) {
+                        alert(`This order is currently being reviewed by ${lockHolderLabel(order)}. Please wait until they finish or the 5-minute lock expires.`);
+                        return;
+                      }
+                      openReview(order);
+                    }}
+                    onMouseEnter={(e) => { if (!blocked) Array.from(e.currentTarget.children).forEach(td => td.style.background = 'var(--bg-secondary)'); }}
                     onMouseLeave={(e) => Array.from(e.currentTarget.children).forEach(td => td.style.background = 'var(--bg-primary)')}
                   >
                     <td style={styles.td}>
                       <span style={{ fontFamily: 'monospace', fontWeight: '500' }}>
                         {order.orderReference}
                       </span>
+                      {locked && (
+                        <span style={{ marginLeft: '6px', fontSize: '9px', fontWeight: '700', color: '#f59e0b', background: 'rgba(245,158,11,0.12)', padding: '1px 5px', borderRadius: '3px', textTransform: 'uppercase' }}
+                          title={`Being reviewed by ${lockHolderLabel(order)}`}>
+                          🔒 In review
+                        </span>
+                      )}
                       {order.status === 'pending_modification' && (
                         <span style={{ marginLeft: '6px', fontSize: '9px', fontWeight: '700', color: '#a855f7', background: 'rgba(168,85,247,0.1)', padding: '1px 5px', borderRadius: '3px', textTransform: 'uppercase' }}>
                           Modif.
@@ -481,7 +568,8 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                       <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{order.broker || ''}</span>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -490,7 +578,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
 
       {/* Review & Validate Modal */}
       {reviewOrder && (
-        <div style={{ ...styles.modalOverlay, alignItems: 'flex-start', overflowY: 'auto', padding: '40px 0' }} onClick={() => setReviewOrder(null)}>
+        <div style={{ ...styles.modalOverlay, alignItems: 'flex-start', overflowY: 'auto', padding: '40px 0' }} onClick={() => closeReview()}>
           <div style={{ ...styles.modalContent, maxWidth: '1100px', margin: 'auto', background: 'var(--bg-secondary)' }} onClick={(e) => e.stopPropagation()}>
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
@@ -516,7 +604,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
               </div>
               <button
                 style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '20px', cursor: 'pointer', padding: '4px' }}
-                onClick={() => setReviewOrder(null)}
+                onClick={() => closeReview()}
               >
                 ✕
               </button>
@@ -897,6 +985,42 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                 </div>
               );
             })()}
+
+            {/* Validator attestation: only when no CLIENT_ORDER trace is attached.
+                Mirrors the OrderModal "Force sell" checkbox pattern visually. */}
+            {(() => {
+              const hasClientOrderTrace = (reviewOrder.emailTraces || []).some(t => t.traceType === EMAIL_TRACE_TYPES.CLIENT_ORDER);
+              if (hasClientOrderTrace) return null;
+              const deferred = reviewOrder.clientOrderDeferred;
+              return (
+                <div style={{
+                  marginTop: '12px',
+                  padding: '10px 12px',
+                  background: emailCompared ? 'rgba(249, 115, 22, 0.08)' : 'var(--bg-secondary)',
+                  border: `1px solid ${emailCompared ? '#f97316' : 'rgba(249, 115, 22, 0.35)'}`,
+                  borderRadius: '8px'
+                }}>
+                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={emailCompared}
+                      onChange={(e) => setEmailCompared(e.target.checked)}
+                      style={{ marginTop: '2px', cursor: 'pointer' }}
+                    />
+                    <div>
+                      <div style={{ fontSize: '12px', fontWeight: '600', color: emailCompared ? '#f97316' : 'var(--text-primary)' }}>
+                        I have compared this order to the original client instruction
+                      </div>
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        {deferred
+                          ? `Creator ${deferred.byName || 'unknown'} indicated they would attach the client order later. Verify the instruction (email, chat, paper) before approving.`
+                          : 'No client-order trace is attached. Confirm you have independently reviewed the source (email, chat, paper) before validating.'}
+                      </div>
+                    </div>
+                  </label>
+                </div>
+              );
+            })()}
             </div>{/* END RIGHT COLUMN */}
 
             </div>{/* END TWO-COLUMN GRID */}
@@ -1101,7 +1225,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
 
             {/* Actions */}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', borderTop: '1px solid var(--border-color)', paddingTop: '14px' }}>
-              <button style={styles.modalCancelBtn} onClick={() => setReviewOrder(null)}>
+              <button style={styles.modalCancelBtn} onClick={() => closeReview()}>
                 Cancel
               </button>
 
@@ -1109,7 +1233,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                 <>
                   <button
                     style={{ ...styles.rejectBtn, padding: '8px 20px', fontSize: '13px', opacity: isActioning ? 0.5 : 1 }}
-                    onClick={() => { setRejectModalOrder(reviewOrder); setRejectionReason(''); setReviewOrder(null); }}
+                    onClick={() => { setRejectModalOrder(reviewOrder); setRejectionReason(''); closeReview(); }}
                     disabled={!!isActioning}
                   >
                     Reject Modification
@@ -1117,12 +1241,16 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                   <button
                     style={{
                       ...styles.validateBtn, padding: '8px 20px', fontSize: '13px',
-                      opacity: (reviewOrder.pendingModification?.requestedBy === user._id) || isActioning ? 0.5 : 1,
-                      cursor: (reviewOrder.pendingModification?.requestedBy === user._id) || isActioning ? 'not-allowed' : 'pointer'
+                      opacity: ((reviewOrder.pendingModification?.requestedBy === user._id) || isActioning || isLockedByOther(reviewOrder)) ? 0.5 : 1,
+                      cursor: ((reviewOrder.pendingModification?.requestedBy === user._id) || isActioning || isLockedByOther(reviewOrder)) ? 'not-allowed' : 'pointer'
                     }}
                     onClick={async () => { await handleValidateModification(reviewOrder); }}
-                    disabled={(reviewOrder.pendingModification?.requestedBy === user._id) || !!isActioning}
-                    title={(reviewOrder.pendingModification?.requestedBy === user._id) ? 'Cannot validate your own modification (four-eyes)' : 'Validate modification'}
+                    disabled={(reviewOrder.pendingModification?.requestedBy === user._id) || !!isActioning || isLockedByOther(reviewOrder)}
+                    title={
+                      (reviewOrder.pendingModification?.requestedBy === user._id) ? 'Cannot validate your own modification (four-eyes)'
+                      : isLockedByOther(reviewOrder) ? `Being reviewed by ${lockHolderLabel(reviewOrder)}`
+                      : 'Validate modification'
+                    }
                   >
                     {isActioning === reviewOrder._id ? 'Validating...' : 'Validate Modification'}
                   </button>
@@ -1137,7 +1265,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                   {reviewOrder.createdBy === user._id ? (
                     <button
                       style={{ ...styles.validateBtn, padding: '8px 20px', fontSize: '13px', opacity: isActioning ? 0.5 : 1 }}
-                      onClick={async () => { await handleResubmit(reviewOrder); setReviewOrder(null); }}
+                      onClick={async () => { await handleResubmit(reviewOrder); closeReview(); }}
                       disabled={!!isActioning}
                     >
                       {isActioning === reviewOrder._id ? 'Resubmitting...' : 'Resubmit for Validation'}
@@ -1152,7 +1280,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                 <>
                   <button
                     style={{ ...styles.rejectBtn, padding: '8px 20px', fontSize: '13px', opacity: isActioning ? 0.5 : 1 }}
-                    onClick={() => { setRejectModalOrder(reviewOrder); setRejectionReason(''); setReviewOrder(null); }}
+                    onClick={() => { setRejectModalOrder(reviewOrder); setRejectionReason(''); closeReview(); }}
                     disabled={!!isActioning}
                   >
                     Reject
@@ -1164,24 +1292,36 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                       transition: 'opacity 0.15s',
                       opacity: isActioning ? 0.5 : 1
                     }}
-                    onClick={() => { setRevisionModalOrder(reviewOrder); setRevisionReason(''); setReviewOrder(null); }}
+                    onClick={() => { setRevisionModalOrder(reviewOrder); setRevisionReason(''); closeReview(); }}
                     disabled={!!isActioning}
                     title="Send back to creator for modifications"
                   >
                     Request Modification
                   </button>
+                  {(() => {
+                    const hasClientOrderTrace = (reviewOrder.emailTraces || []).some(t => t.traceType === EMAIL_TRACE_TYPES.CLIENT_ORDER);
+                    const attestationMissing = !hasClientOrderTrace && !emailCompared;
+                    const validateDisabled = isOwnOrder(reviewOrder) || !!isActioning || isLockedByOther(reviewOrder) || attestationMissing;
+                    return (
                   <button
                     style={{
                       ...styles.validateBtn, padding: '8px 20px', fontSize: '13px',
-                      opacity: isOwnOrder(reviewOrder) || isActioning ? 0.5 : 1,
-                      cursor: isOwnOrder(reviewOrder) || isActioning ? 'not-allowed' : 'pointer'
+                      opacity: validateDisabled ? 0.5 : 1,
+                      cursor: validateDisabled ? 'not-allowed' : 'pointer'
                     }}
-                    onClick={async () => { await handleValidate(reviewOrder); setReviewOrder(null); }}
-                    disabled={isOwnOrder(reviewOrder) || !!isActioning}
-                    title={isOwnOrder(reviewOrder) ? 'Cannot validate your own order (four-eyes)' : 'Validate this order'}
+                    onClick={async () => { await handleValidate(reviewOrder); closeReview(); }}
+                    disabled={validateDisabled}
+                    title={
+                      isOwnOrder(reviewOrder) ? 'Cannot validate your own order (four-eyes)'
+                      : isLockedByOther(reviewOrder) ? `Being reviewed by ${lockHolderLabel(reviewOrder)}`
+                      : attestationMissing ? 'Tick "I have compared this order to the original client instruction" first'
+                      : 'Validate this order'
+                    }
                   >
                     {isActioning === reviewOrder._id ? 'Validating...' : 'Validate Order'}
                   </button>
+                    );
+                  })()}
                 </>
               )}
             </div>
