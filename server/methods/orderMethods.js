@@ -4267,13 +4267,17 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
         <span class="info-value">${order.fxPair}</span>
       </div>
       <div class="info-row">
+        <span class="info-label">Direction</span>
+        <span class="info-value">${OrderFormatters.fxDirectionLabel(order)}</span>
+      </div>
+      <div class="info-row">
         <span class="info-label">FX Type</span>
         <span class="info-value">${order.fxSubtype === 'forward' ? 'Forward' : 'Spot'}</span>
       </div>
       ${order.fxAmountCurrency ? `
       <div class="info-row">
-        <span class="info-label">Amount Currency</span>
-        <span class="info-value">${order.fxAmountCurrency}</span>
+        <span class="info-label">Amount</span>
+        <span class="info-value">${OrderFormatters.formatFxAmount(order.quantity, order.fxAmountCurrency)} ${order.fxAmountCurrency}</span>
       </div>
       ` : ''}
       ${order.fxRate ? `
@@ -4349,11 +4353,11 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
     <div class="highlight">
       <div class="highlight-row">
         <span class="highlight-label">Order Type</span>
-        <span class="highlight-value">${order.orderType.toUpperCase()}</span>
+        <span class="highlight-value">${order.assetType === 'fx' ? OrderFormatters.fxDirectionLabel(order) : order.orderType.toUpperCase()}</span>
       </div>
       <div class="highlight-row">
-        <span class="highlight-label">${order.assetType === 'structured_product' ? 'Nominal' : (order.assetType === 'term_deposit' ? 'Amount' : 'Quantity')}</span>
-        <span class="highlight-value">${OrderFormatters.formatQuantity(order.quantity)}</span>
+        <span class="highlight-label">${order.assetType === 'structured_product' ? 'Nominal' : (order.assetType === 'term_deposit' || order.assetType === 'fx' ? 'Amount' : 'Quantity')}</span>
+        <span class="highlight-value">${order.assetType === 'fx' ? `${OrderFormatters.formatFxAmount(order.quantity, order.fxAmountCurrency)} ${order.fxAmountCurrency || ''}`.trim() : OrderFormatters.formatQuantity(order.quantity)}</span>
       </div>
       ${order.assetType === 'structured_product' ? `
         ${order.limitPrice ? `
@@ -4891,11 +4895,11 @@ function generateAuditTrailPDFHTML(order, client, bankAccount, bank, createdByUs
     <div class="highlight">
       <div class="highlight-row">
         <span class="highlight-label">Order Type</span>
-        <span class="highlight-value">${(order.orderType || '').toUpperCase()}</span>
+        <span class="highlight-value">${order.assetType === 'fx' ? OrderFormatters.fxDirectionLabel(order) : (order.orderType || '').toUpperCase()}</span>
       </div>
       <div class="highlight-row">
-        <span class="highlight-label">${order.assetType === 'structured_product' ? 'Nominal' : (order.assetType === 'term_deposit' ? 'Amount' : 'Quantity')}</span>
-        <span class="highlight-value">${OrderFormatters.formatQuantity(order.quantity)}</span>
+        <span class="highlight-label">${order.assetType === 'structured_product' ? 'Nominal' : (order.assetType === 'term_deposit' || order.assetType === 'fx' ? 'Amount' : 'Quantity')}</span>
+        <span class="highlight-value">${order.assetType === 'fx' ? `${OrderFormatters.formatFxAmount(order.quantity, order.fxAmountCurrency)} ${order.fxAmountCurrency || ''}`.trim() : OrderFormatters.formatQuantity(order.quantity)}</span>
       </div>
       ${order.assetType === 'structured_product' ? `
         ${order.limitPrice ? `

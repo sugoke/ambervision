@@ -18,6 +18,7 @@ export const OrdersCollection = new Mongo.Collection('orders');
 //
 //   // Order Details
 //   quantity: Number,
+//   fundQuantityMode: 'units' | 'nominal' (optional, fund orders only — interpretation of quantity),
 //   priceType: 'market' | 'limit' | 'stop_loss' | 'take_profit',
 //   limitPrice: Number (optional),
 //   estimatedValue: Number (optional),
@@ -43,6 +44,14 @@ export const OrdersCollection = new Mongo.Collection('orders');
 //   rejectedBy: String,
 //   rejectedByName: String,
 //   rejectionReason: String,
+//
+//   // Creator attested they will attach the client-order trace later.
+//   // Cleared when a CLIENT_ORDER emailTrace is uploaded.
+//   clientOrderDeferred: { by: String, byName: String, at: Date } (optional),
+//
+//   // Validator attested they compared the order to the original client
+//   // instruction even though no CLIENT_ORDER trace was attached at review time.
+//   validationAttestation: { emailCompared: Boolean, by: String, byName: String, at: Date } (optional),
 //
 //   // Execution
 //   executedQuantity: Number,
@@ -129,6 +138,7 @@ export const EMAIL_TRACE_TYPES = {
   BANK_CONFIRMATION: 'bank_confirmation',
   ORDER_TO_ISSUER: 'order_to_issuer',
   INITIAL_TERMSHEET: 'initial_termsheet',
+  TERMSHEET: 'termsheet',
   TERMSHEET_SENT: 'termsheet_sent',
   TERMSHEET_SIGNED: 'termsheet_signed'
 };
@@ -140,6 +150,7 @@ export const EMAIL_TRACE_LABELS = {
   [EMAIL_TRACE_TYPES.BANK_CONFIRMATION]: 'Bank Confirmation',
   [EMAIL_TRACE_TYPES.ORDER_TO_ISSUER]: 'Order to Issuer',
   [EMAIL_TRACE_TYPES.INITIAL_TERMSHEET]: 'Initial Termsheet',
+  [EMAIL_TRACE_TYPES.TERMSHEET]: 'Termsheet',
   [EMAIL_TRACE_TYPES.TERMSHEET_SENT]: 'Termsheet Sent',
   [EMAIL_TRACE_TYPES.TERMSHEET_SIGNED]: 'Termsheet Signed'
 };
@@ -147,6 +158,7 @@ export const EMAIL_TRACE_LABELS = {
 // Trace types that document the termsheet workflow (separate from order trace count)
 export const TERMSHEET_TRACE_TYPES = new Set([
   EMAIL_TRACE_TYPES.INITIAL_TERMSHEET,
+  EMAIL_TRACE_TYPES.TERMSHEET,
   EMAIL_TRACE_TYPES.TERMSHEET_SENT,
   EMAIL_TRACE_TYPES.TERMSHEET_SIGNED
 ]);
@@ -219,6 +231,14 @@ export const FX_SUBTYPES = {
   FORWARD: 'forward'
 };
 
+// ISO 4217 currencies with zero minor units — amounts are shown without
+// decimals (e.g. JPY 25,000,000, not 25,000,000.00). All other currencies
+// default to 2 decimals for FX amounts.
+export const ZERO_DECIMAL_CURRENCIES = new Set([
+  'BIF', 'CLP', 'DJF', 'GNF', 'ISK', 'JPY', 'KMF', 'KRW', 'PYG',
+  'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF'
+]);
+
 // Term Deposit tenor options
 export const TERM_DEPOSIT_TENORS = [
   { value: '2D', label: '2 Days' },
@@ -269,6 +289,15 @@ export const TERMSHEET_STATUSES = {
   SIGNED: 'signed'
 };
 
+// Fund quantity modes — funds can be placed as a number of units OR as a
+// nominal cash amount (subscription/redemption value). The quantity field
+// holds the raw value the user typed; fundQuantityMode tells consumers how
+// to interpret it.
+export const FUND_QUANTITY_MODES = {
+  UNITS: 'units',
+  NOMINAL: 'nominal'
+};
+
 // Number formatting utilities
 export const OrderFormatters = {
   // Format currency with 2 decimal places
@@ -296,6 +325,36 @@ export const OrderFormatters = {
       minimumFractionDigits: 0,
       maximumFractionDigits: 0
     });
+  },
+
+  // Format an FX amount with currency-aware decimals: 2 by default, 0 for
+  // zero-minor-unit currencies (JPY, KRW, …). FX amounts must NOT be rounded
+  // to integers — 181,422.62 ILS stays 181,422.62, not 181,423.
+  formatFxAmount(value, currency) {
+    if (typeof value !== 'number' || isNaN(value)) return '0';
+    const decimals = ZERO_DECIMAL_CURRENCIES.has(String(currency || '').toUpperCase()) ? 0 : 2;
+    return value.toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    });
+  },
+
+  // Derive the two legs of an FX order from its pair, which is stored as
+  // BUY/SELL (e.g. "EUR/ILS" = buy EUR, sell ILS). Returns null when the order
+  // isn't FX or the pair can't be parsed, so callers fall back to plain B/S.
+  fxLegs(order) {
+    if (!order || order.assetType !== ASSET_TYPES.FX || !order.fxPair) return null;
+    const [buy, sell] = String(order.fxPair).split('/').map(s => s.trim());
+    if (!buy || !sell) return null;
+    return { buy, sell };
+  },
+
+  // Human-readable FX direction showing both legs, e.g. "Buy EUR / Sell ILS".
+  // Falls back to the plain BUY/SELL label for non-FX or unparseable pairs.
+  fxDirectionLabel(order) {
+    const legs = this.fxLegs(order);
+    if (!legs) return (order?.orderType || '').toUpperCase();
+    return `Buy ${legs.buy} / Sell ${legs.sell}`;
   },
 
   // Format order reference
@@ -585,11 +644,21 @@ export const OrderHelpers = {
     if (!order) return null;
 
     const isStructuredProduct = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT;
+    const isBond = order.assetType === ASSET_TYPES.BOND;
+    // Structured products and bonds quote prices as a percentage of par; everything else uses absolute currency.
+    const quotesAsPercent = isStructuredProduct || isBond;
+    // Price formatter for price-only fields (limit, executed, stop). The
+    // table/detail views always show the currency in a separate column, so
+    // we deliberately drop the currency code here to avoid duplicating it
+    // (e.g. "USD 18.72" → "18.72"). Structured products and bonds still get
+    // the % suffix because that's the unit of quotation, not a currency.
     const formatPriceForOrder = (price) => {
       if (price === null || price === undefined) return null;
-      return isStructuredProduct
-        ? `${Number(price).toFixed(2)}%`
-        : OrderFormatters.formatWithCurrency(price, order.currency);
+      if (quotesAsPercent) return `${Number(price).toFixed(2)}%`;
+      return Number(price).toLocaleString('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 4
+      });
     };
 
     return {
@@ -661,6 +730,14 @@ export const OrderHelpers = {
         priceTypeLabel: OrderFormatters.getPriceTypeLabel(entry.priceType),
         newPriceTypeLabel: entry.newPriceType ? OrderFormatters.getPriceTypeLabel(entry.newPriceType) : null
       })),
+      // Executed-price modification history (inline edits from the blotter)
+      executedPriceHistoryFormatted: (order.executedPriceHistory || []).map(entry => ({
+        ...entry,
+        changedAtFormatted: OrderFormatters.formatDateTime(entry.changedAt),
+        previousPriceFormatted: entry.previousPrice != null ? formatPriceForOrder(entry.previousPrice) : null,
+        newPriceFormatted: entry.newPrice != null ? formatPriceForOrder(entry.newPrice) : null
+      })),
+      quotesAsPercent,
       // Validity fields
       validityType: order.validityType || null,
       validityLabel: order.validityType === 'gtc' ? 'Good Till Canceled' : order.validityType === 'gtd' ? `Good Till ${order.validityDate ? OrderFormatters.formatDate(order.validityDate) : 'Date'}` : order.validityType === 'day' ? 'Day Order' : null,
@@ -669,7 +746,7 @@ export const OrderHelpers = {
       parentOrderRef: order.parentOrderRef || null,
       linkedOrderType: order.linkedOrderType || null,
       linkedOrderGroup: order.linkedOrderGroup || null,
-      stopPriceFormatted: order.stopPrice ? OrderFormatters.formatWithCurrency(order.stopPrice, order.currency) : null,
+      stopPriceFormatted: order.stopPrice ? formatPriceForOrder(order.stopPrice) : null,
       // Validation fields (four-eyes principle)
       validatedByName: order.validatedByName || null,
       validatedAtFormatted: order.validatedAt ? OrderFormatters.formatDateTime(order.validatedAt) : null,
@@ -712,6 +789,7 @@ export const OrderHelpers = {
 
   // Generate email subject
   generateEmailSubject(order) {
-    return `Order: ${order.orderReference} - ${order.orderType.toUpperCase()} ${order.securityName}`;
+    const isinPart = order.isin ? ` (${order.isin})` : '';
+    return `Order: ${order.orderReference} - ${order.orderType.toUpperCase()} ${order.securityName}${isinPart}`;
   }
 };
