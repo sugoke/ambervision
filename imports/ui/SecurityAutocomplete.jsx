@@ -57,7 +57,9 @@ const SecurityAutocomplete = ({
     setError('');
 
     try {
-      const results = await Meteor.callAsync('eod.searchSecurities', query, 15);
+      // Multi-provider search: EOD first, secondary providers (Twelve Data)
+      // fill in when EOD has few/no results. Same result shape as eod.searchSecurities.
+      const results = await Meteor.callAsync('marketData.searchSecurities', query, 15);
       
       if (results && results.length > 0) {
         setSuggestions(results);

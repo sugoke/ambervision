@@ -24,7 +24,10 @@ const RMDashboard = ({ user, onNavigate }) => {
   // every compliance/RM user that logs in afterwards into USD).
   const currencyStorageKey = user?._id ? `dashboardCurrency_${user._id}` : 'dashboardCurrency';
   const [dashboardCurrency, setDashboardCurrency] = useState(() => {
-    return localStorage.getItem(currencyStorageKey) || user?.referenceCurrency || 'EUR';
+    // The user's profile preferred currency is the authoritative default. The on-card
+    // dropdown is a quick override that syncs back to the profile (see handleCurrencyChange),
+    // so localStorage only matters as a fast fallback before/while the profile resolves.
+    return user?.profile?.preferredCurrency || localStorage.getItem(currencyStorageKey) || 'EUR';
   });
   const [data, setData] = useState({
     alerts: [],
@@ -97,6 +100,21 @@ const RMDashboard = ({ user, onNavigate }) => {
   const handleCurrencyChange = async (newCurrency) => {
     setDashboardCurrency(newCurrency);
     localStorage.setItem(currencyStorageKey, newCurrency);
+
+    // Sync the choice to the user's profile so it becomes the persistent preferred
+    // currency (drives both this dashboard and the consolidated PMS total on next load).
+    if (user?._id && newCurrency !== user?.profile?.preferredCurrency) {
+      try {
+        await Meteor.callAsync('users.updateProfile', user._id, {
+          profile: { ...(user.profile || {}), preferredCurrency: newCurrency }
+        });
+        // Keep the in-memory user object consistent for the rest of this session.
+        if (user.profile) user.profile.preferredCurrency = newCurrency;
+        else user.profile = { preferredCurrency: newCurrency };
+      } catch (err) {
+        console.error('[RMDashboard] Error saving preferred currency to profile:', err);
+      }
+    }
 
     const sessionId = localStorage.getItem('sessionId');
     if (!sessionId) return;
@@ -306,7 +324,7 @@ const RMDashboard = ({ user, onNavigate }) => {
         <PortfolioSummaryCard
           summary={data.summary}
           selectedCurrency={dashboardCurrency}
-          userCurrency={user?.referenceCurrency}
+          userCurrency={user?.profile?.preferredCurrency || user?.referenceCurrency}
           onCurrencyChange={handleCurrencyChange}
           hideClientsCount={isClient}
         />

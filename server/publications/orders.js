@@ -37,7 +37,13 @@ async function getClientIdsForUser(user) {
   // Entity-based clients (orders may store entityId or migratedFromUserId as clientId)
   const { ClientEntitiesCollection } = require('../../imports/api/clientEntities.js');
   const entities = await ClientEntitiesCollection.find(
-    { relationshipManagerId: { $in: rmIds }, isActive: true },
+    {
+      $or: [
+        { assignedUserIds: { $in: rmIds } },
+        { relationshipManagerId: { $in: rmIds } }
+      ],
+      isActive: true
+    },
     { fields: { _id: 1, migratedFromUserId: 1 } }
   ).fetchAsync();
   for (const ent of entities) {
@@ -74,12 +80,8 @@ Meteor.publish('orders', async function(sessionId, filters = {}) {
   if (user.role === USER_ROLES.CLIENT) {
     // Clients only see their own orders
     query.clientId = user._id;
-  } else if (user.role === 'rm' || user.role === 'assistant') {
-    // RMs/Assistants see orders for their clients
-    const clientIds = await getClientIdsForUser(user);
-    query.clientId = { $in: clientIds };
   }
-  // Admins and superadmins see all orders (no clientId filter)
+  // All staff (admin, superadmin, compliance, rm, assistant) see every order
 
   // Apply additional filters
   if (filters.status) {
@@ -144,15 +146,8 @@ Meteor.publish('orders.single', async function(sessionId, orderId) {
     if (order.clientId !== user._id) {
       return this.ready();
     }
-  } else if (user.role === 'rm' || user.role === 'assistant') {
-    // RMs/Assistants can see orders for their clients
-    const client = await UsersCollection.findOneAsync(order.clientId);
-    const rmIds = UserHelpers.getEffectiveRmIds(user);
-    if (!client || !rmIds.includes(client.relationshipManagerId)) {
-      return this.ready();
-    }
   }
-  // Admins and superadmins can see all orders
+  // All staff (admin, superadmin, compliance, rm, assistant) can view any order
 
   const pub = this;
   const cursor = OrdersCollection.find({ _id: orderId });
@@ -185,12 +180,7 @@ Meteor.publish('orders.pendingCount', async function(sessionId) {
   const query = {
     status: { $in: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING, ORDER_STATUSES.TRANSMITTED, ORDER_STATUSES.SENT] }
   };
-
-  // RMs/Assistants only see count for their clients
-  if (user.role === 'rm' || user.role === 'assistant') {
-    const clientIds = await getClientIdsForUser(user);
-    query.clientId = { $in: clientIds };
-  }
+  // All staff see the full pending count (no per-RM scoping)
 
   // Use a count-only cursor for efficiency
   const self = this;
@@ -239,12 +229,7 @@ Meteor.publish('orders.bulkGroup', async function(sessionId, bulkOrderGroupId) {
   }
 
   const query = { bulkOrderGroupId };
-
-  // RMs/Assistants only see their clients' orders
-  if (user.role === 'rm' || user.role === 'assistant') {
-    const clientIds = await getClientIdsForUser(user);
-    query.clientId = { $in: clientIds };
-  }
+  // All staff see the full bulk-order group
 
   return OrdersCollection.find(query, { sort: { createdAt: 1 } });
 });

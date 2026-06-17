@@ -2,6 +2,7 @@ import { Mongo } from 'meteor/mongo';
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { EODApiHelpers } from './eodApi';
+import { MarketDataRouter } from './marketData/marketDataRouter';
 import { ProductsCollection } from './products';
 import { UsersCollection } from './users';
 
@@ -173,40 +174,61 @@ export const MarketDataHelpers = {
     check(toDate, Match.OneOf(Date, null));
 
     const actualToDate = toDate || new Date();
-    
+
     try {
       const [symbol, exchange] = fullTicker.split('.');
       if (!symbol || !exchange) {
         throw new Error(`Invalid fullTicker format: ${fullTicker}`);
       }
 
+      // Get existing document first — its dataSource tells the router which
+      // provider served this ticker last, so we go straight there.
+      let stockDoc = await MarketDataCacheCollection.findOneAsync({ fullTicker });
+      const preferredProvider = stockDoc?.preferredProvider || stockDoc?.dataSource || null;
 
-      // Convert exchange for EOD API
-      let apiExchange = exchange;
-      if (exchange === 'NASDAQ' || exchange === 'NYSE' || exchange === 'AMEX') {
-        apiExchange = 'US';
-      }
-
-      // Fetch data from EOD API
-      const historicalData = await EODApiHelpers.getHistoricalData(
-        symbol, apiExchange, fromDate, actualToDate
+      // Fetch via the provider router (EOD first by default, falls through to
+      // other enabled providers when EOD has no data for this ticker)
+      let result = await MarketDataRouter.getHistoricalBars(
+        fullTicker, fromDate, actualToDate, { preferredProvider }
       );
 
-      if (!historicalData || historicalData.length === 0) {
+      if (!result.bars || result.bars.length === 0) {
         return { cached: 0, skipped: 0, errors: 0 };
       }
 
-      // Get existing document or create new one
-      let stockDoc = await MarketDataCacheCollection.findOneAsync({ fullTicker });
-      
+      // Provider-consistency rule: a ticker's history always comes from exactly
+      // ONE provider (adjusted-close methodologies differ between vendors).
+      if (stockDoc && stockDoc.dataSource && stockDoc.dataSource !== result.providerId) {
+        if (!result.providerSwitchAllowed) {
+          // The previous provider failed only transiently (outage / rate limit):
+          // don't switch, don't merge foreign bars — retry on the next run.
+          console.log(`[MarketDataCache] ${fullTicker}: ${stockDoc.dataSource} transiently unavailable, keeping existing history (no provider switch)`);
+          return { cached: 0, skipped: 1, errors: 0, totalPoints: stockDoc.dataPoints };
+        }
+
+        // Permanent switch (old provider has no data): re-fetch the FULL history
+        // from the new provider and replace, never mix bars from two vendors.
+        const fullFromDate = stockDoc.firstDate && stockDoc.firstDate < fromDate
+          ? stockDoc.firstDate
+          : fromDate;
+        console.log(`[MarketDataCache] ${fullTicker}: switching provider ${stockDoc.dataSource} -> ${result.providerId}, re-fetching full history from ${fullFromDate.toISOString().split('T')[0]}`);
+        result = await MarketDataRouter.getHistoricalBars(
+          fullTicker, fullFromDate, actualToDate, { preferredProvider: result.providerId }
+        );
+        if (result.currency && stockDoc.currency && result.currency !== stockDoc.currency) {
+          console.warn(`[MarketDataCache] ${fullTicker}: currency changed ${stockDoc.currency} -> ${result.currency} after provider switch`);
+        }
+        stockDoc.history = [];
+        stockDoc.currency = result.currency || stockDoc.currency || 'USD';
+      }
+
       if (!stockDoc) {
         // Create new document
         stockDoc = {
           symbol,
           exchange,
           fullTicker,
-          currency: historicalData[0].currency || 'USD',
-          dataSource: 'EOD',
+          currency: result.currency || 'USD',
           firstDate: null,
           lastDate: null,
           dataPoints: 0,
@@ -216,16 +238,10 @@ export const MarketDataHelpers = {
         };
       }
 
-      // Convert historical data to our format
-      const newDataPoints = historicalData.map(day => ({
-        date: new Date(day.date),
-        open: parseFloat(day.open),
-        high: parseFloat(day.high),
-        low: parseFloat(day.low),
-        close: parseFloat(day.close),
-        volume: parseInt(day.volume),
-        adjustedClose: parseFloat(day.adjusted_close || day.close)
-      }));
+      stockDoc.dataSource = result.providerId;
+      stockDoc.preferredProvider = result.providerId;
+
+      const newDataPoints = result.bars;
 
       // Merge with existing history (avoid duplicates)
       const existingDates = new Set(stockDoc.history.map(h => h.date.getTime()));
@@ -271,7 +287,9 @@ export const MarketDataHelpers = {
       };
 
     } catch (error) {
-      throw new Meteor.Error('historical-update-failed', error.message);
+      const wrapped = new Meteor.Error('historical-update-failed', error.message);
+      if (error.providersTried) wrapped.providersTried = error.providersTried;
+      throw wrapped;
     }
   },
 
@@ -311,7 +329,7 @@ export const MarketDataHelpers = {
     try {
       const stock = await MarketDataCacheCollection.findOneAsync(
         { fullTicker },
-        { fields: { cache: 1, currency: 1 } }
+        { fields: { cache: 1, currency: 1, preferredProvider: 1, dataSource: 1 } }
       );
 
       if (stock && stock.cache && stock.cache.latestPrice) {
@@ -330,22 +348,19 @@ export const MarketDataHelpers = {
         }
       }
 
-      // Fetch fresh price from API
-      const [symbol, exchange] = fullTicker.split('.');
-      let apiExchange = exchange;
-      if (exchange === 'NASDAQ' || exchange === 'NYSE' || exchange === 'AMEX') {
-        apiExchange = 'US';
-      }
-      
-      const currentData = await EODApiHelpers.getRealTimePrice(symbol, apiExchange);
-      
-      if (currentData && (currentData.close || currentData.price)) {
-        const price = parseFloat(currentData.close || currentData.price);
-        const priceDate = new Date();
-        
+      // Fetch fresh price via the provider router (goes straight to the
+      // provider that serves this ticker's historical data)
+      const currentData = await MarketDataRouter.getRealTimePrice(fullTicker, {
+        preferredProvider: stock?.preferredProvider || stock?.dataSource || null
+      }).catch(() => null);
+
+      if (currentData && currentData.price) {
+        const price = currentData.price;
+        const priceDate = currentData.timestamp || new Date();
+
         // Update cache with new price
         await this.updateLatestPrice(fullTicker, price, priceDate);
-        
+
         return {
           price: price,
           date: priceDate,
@@ -782,7 +797,7 @@ if (Meteor.isServer) {
               );
               results.push({ fullTicker, ...result });
             } catch (error) {
-              results.push({ fullTicker, error: error.message, errorDetails: error.reason || error.error || 'Unknown error' });
+              results.push({ fullTicker, error: error.message, errorDetails: error.reason || error.error || 'Unknown error', providersTried: error.providersTried || [] });
             }
           }
         } else {
@@ -817,7 +832,7 @@ if (Meteor.isServer) {
               );
               results.push({ fullTicker, ...result });
             } catch (error) {
-              results.push({ fullTicker, error: error.message });
+              results.push({ fullTicker, error: error.message, providersTried: error.providersTried || [] });
             }
           }
         }

@@ -1,1 +1,40 @@
+# Tell Meteor which paths to skip during build/scan.
+# (This is separate from .gitignore — Meteor does not honour .gitignore.)
+
+# Deploy tooling - not part of the running app
 deploy
+
+# Build/runtime artifacts at the repo root
+*.log
+nul
+set
+temp_*.txt
+phoenix_render_*.txt
+test-price-data.csv
+
+# One-off / admin scripts kept locally
+_parse_excel.js
+create-admin-now.js
+insert-admin.js
+debug-*.js
+fix-*.js
+database-investigation-report.md
+
+# Backup files
+**/*.before_all_sub
+publictermsheets
+
+# Local-only configs and helpers
+*.bat
+claude_desktop_config.json
+mcp-server-config.json
+.claude
+.crush
+
+# Sensitive directories that should never be in the bundle
+bankfiles
+.termsheets
+.fichier_central
+public/termsheets
+public/fichier_central
+public/meetingReports

@@ -18,7 +18,7 @@ import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetada
 import { CurrencyRateCacheCollection, CurrencyCache } from '../../imports/api/currencyCache.js';
 import { calculateCashForHoldings } from '../../imports/api/helpers/cashCalculator.js';
 import { DashboardMetricsHelpers } from '../../imports/api/dashboardMetrics.js';
-import { ClientEntitiesCollection } from '../../imports/api/clientEntities.js';
+import { ClientEntitiesCollection, ClientEntityHelpers } from '../../imports/api/clientEntities.js';
 import { UserEntityAccessHelpers } from '../../imports/api/userEntityAccess.js';
 import { getFilteredEntityIds, buildEntityOrUserFilter } from '../../imports/utils/entityResolver.js';
 import { INVESTMENT_QUOTES } from '../quotesData.js';
@@ -537,6 +537,14 @@ Meteor.methods({
       const currencyRates = await CurrencyRateCacheCollection.find({}).fetchAsync();
       const ratesMap = buildRatesMap(currencyRates);
 
+      // Exclude assets of archived (closed-relationship) clients from AUM.
+      const archivedOwners = await ClientEntityHelpers.getArchivedOwnerIds();
+      const archivedHoldingFilter = {
+        entityId: { $nin: archivedOwners.entityIds },
+        userId: { $nin: archivedOwners.userIds }
+      };
+      const archivedSnapshotFilter = { userId: { $nin: archivedOwners.userIds } };
+
       // For admin/superadmin, get ALL holdings; for RM get only their clients' holdings
       let totalAUMInEUR = 0;
 
@@ -548,14 +556,16 @@ Meteor.methods({
       }, { fields: { accountNumber: 1, bankId: 1 } }).fetchAsync();
       const excludedPortfolioCodes = nonInvestmentAccounts.map(a => a.accountNumber);
 
-      // Asset classes to include in AUM (cash and securities only)
-      // Excludes: fx_forward (hedging, large notionals), derivatives (mark-to-market)
+      // Asset classes to include in AUM. Matches the PMS Total Portfolio Value:
+      // instruments + cash + deposits + 'other'. fx_forward is added separately below
+      // (net MTM), and derivatives (none in data) remain excluded.
       const aumAssetClasses = [
         'cash', 'equity', 'fixed_income', 'structured_product',
         'time_deposit', 'monetary_products', 'commodities',
         'private_equity', 'private_debt',
         'etf',   // ETF positions
-        'fund'   // Fund positions
+        'fund',  // Fund positions
+        'other'  // Unclassified instruments (included so AUM matches PMS total)
       ];
 
       // Helper to sum holdings in EUR
@@ -582,6 +592,7 @@ Meteor.methods({
           isLatest: true,
           marketValue: { $exists: true, $gt: 0 },
           portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
+          ...archivedHoldingFilter,
           $or: [
             { assetClass: { $in: aumAssetClasses } },
             { assetClass: null },
@@ -615,7 +626,8 @@ Meteor.methods({
         // Must match PMS publication filter: isActive: true, isLatest: true
         // Exclude CONSOLIDATED and non-investment accounts
         const clientHoldings = await PMSHoldingsCollection.find({
-          userId: { $in: clientIds },
+          userId: { $in: clientIds, $nin: archivedOwners.userIds },
+          entityId: { $nin: archivedOwners.entityIds },
           isActive: true,
           isLatest: true,
           marketValue: { $exists: true, $gt: 0 },
@@ -634,6 +646,22 @@ Meteor.methods({
           const key = `${h.portfolioCode || 'unknown'}|${h.bankId || 'unknown'}`;
           currentPortfolioKeys.add(key);
         });
+      }
+
+      // FX forwards: include at NET mark-to-market (matches PMS Total Portfolio Value).
+      // Summed separately because negative legs must NOT be excluded by marketValue > 0.
+      if (isAdmin || clientIds.length > 0) {
+        const fxForwardScope = isAdmin
+          ? { ...archivedHoldingFilter }
+          : { userId: { $in: clientIds, $nin: archivedOwners.userIds }, entityId: { $nin: archivedOwners.entityIds } };
+        const fxForwardHoldings = await PMSHoldingsCollection.find({
+          isActive: true,
+          isLatest: true,
+          assetClass: 'fx_forward',
+          portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
+          ...fxForwardScope
+        }).fetchAsync();
+        totalAUMInEUR += fxForwardHoldings.reduce((sum, h) => sum + (h.marketValueNoAccruedInterest || h.marketValue || 0), 0);
       }
 
       // Convert EUR total to target currency
@@ -696,7 +724,10 @@ Meteor.methods({
 
         if (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN) {
           // RM sees only their clients' snapshots
-          snapshotQuery.userId = { $in: clientIds };
+          snapshotQuery.userId = { $in: clientIds, $nin: archivedOwners.userIds };
+        } else if (archivedOwners.userIds.length > 0) {
+          // Admin/Superadmin: exclude archived clients' snapshots from comparison
+          snapshotQuery.userId = { $nin: archivedOwners.userIds };
         }
 
         // Get yesterday's aggregated AUM from snapshots (EXACT date match only - no fallback to old dates)
@@ -740,6 +771,7 @@ Meteor.methods({
                 isLatest: true,
                 marketValue: { $exists: true, $gt: 0 },
                 portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
+                ...archivedHoldingFilter,
                 $or: [
                   { assetClass: { $in: ['cash', 'equity', 'fixed_income', 'structured_product', 'time_deposit', 'monetary_products', 'commodities', 'private_equity', 'private_debt', 'etf', 'fund'] } },
                   { assetClass: null },
@@ -748,7 +780,8 @@ Meteor.methods({
               }).fetchAsync();
             } else {
               matchedCurrentHoldings = await PMSHoldingsCollection.find({
-                userId: { $in: clientIds },
+                userId: { $in: clientIds, $nin: archivedOwners.userIds },
+                entityId: { $nin: archivedOwners.entityIds },
                 isActive: true,
                 isLatest: true,
                 marketValue: { $exists: true, $gt: 0 },
@@ -1259,10 +1292,15 @@ Meteor.methods({
     }
 
     try {
+      // Exclude allocations of archived (closed-relationship) clients so their products'
+      // observation events don't surface on the dashboard.
+      const archivedAllocExclusion = await ClientEntityHelpers.archivedAllocationsSelector();
+
       // Get all allocations for clients
       const allocations = await AllocationsCollection.find({
         clientId: { $in: clientIds },
-        status: 'active'
+        status: 'active',
+        ...archivedAllocExclusion
       }).fetchAsync();
 
       const productIds = [...new Set(allocations.map(a => a.productId))];
@@ -1335,10 +1373,15 @@ Meteor.methods({
     const clientIds = await getFilteredClientIds(currentUser, viewAsFilter);
 
     try {
+      // Exclude allocations of archived (closed-relationship) clients so their products'
+      // notifications don't surface in recent activity.
+      const archivedAllocExclusion = await ClientEntityHelpers.archivedAllocationsSelector();
+
       // Get allocations to find relevant products for these clients
       const allocations = await AllocationsCollection.find({
         clientId: { $in: clientIds },
-        status: 'active'
+        status: 'active',
+        ...archivedAllocExclusion
       }).fetchAsync();
       const productIds = [...new Set(allocations.map(a => a.productId))];
 
@@ -1611,6 +1654,42 @@ Meteor.methods({
         }).fetchAsync();
       }
 
+      // De-duplicate migration leftovers: the same physical account (bankId + accountNumber)
+      // can exist as BOTH a legacy userId record and a current entity record. The credit line
+      // (authorizedOverdraft) is edited on the entity record post-migration, so reading the
+      // legacy record gives a stale limit. Pull all sibling records sharing each key, then keep
+      // one canonical record per account (entity preferred, then most recently updated), with the
+      // effective overdraft = canonical's if set, otherwise any sibling's non-null value.
+      {
+        const keys = bankAccounts
+          .filter(a => a.bankId && a.accountNumber)
+          .map(a => ({ bankId: a.bankId, accountNumber: a.accountNumber }));
+        if (keys.length > 0) {
+          const siblings = await BankAccountsCollection.find({
+            isActive: true,
+            $or: keys.map(k => ({ bankId: k.bankId, accountNumber: k.accountNumber }))
+          }).fetchAsync();
+          const groups = new Map();
+          for (const a of [...bankAccounts, ...siblings]) {
+            const key = `${a.bankId}::${a.accountNumber}`;
+            if (!groups.has(key)) groups.set(key, []);
+            const g = groups.get(key);
+            if (!g.some(x => x._id === a._id)) g.push(a);
+          }
+          bankAccounts = [...groups.values()].map(group => {
+            const canonical = group.slice().sort((x, y) => {
+              const ex = x.entityId ? 1 : 0, ey = y.entityId ? 1 : 0;
+              if (ex !== ey) return ey - ex;
+              return (y.updatedAt?.getTime?.() || 0) - (x.updatedAt?.getTime?.() || 0);
+            })[0];
+            const effectiveOverdraft = canonical.authorizedOverdraft
+              || group.map(g => g.authorizedOverdraft).find(v => v)
+              || canonical.authorizedOverdraft;
+            return { ...canonical, authorizedOverdraft: effectiveOverdraft };
+          });
+        }
+      }
+
       // Get all banks for name lookup
       const allBanks = await BanksCollection.find({}).fetchAsync();
       const bankMap = {};
@@ -1663,11 +1742,17 @@ Meteor.methods({
         const pureCashBreakdown = cashResult.pureCashBreakdown;
         const allCashBreakdown = cashResult.allCashBreakdown;
 
-        // Get client info
-        const accountUser = await UsersCollection.findOneAsync(account.userId);
-        const clientName = accountUser
-          ? `${accountUser.profile?.firstName || ''} ${accountUser.profile?.lastName || ''}`.trim() || accountUser.email
-          : 'Unknown';
+        // Get client info — entity-aware (canonical records may carry entityId, not userId)
+        let clientName = 'Unknown';
+        if (account.entityId) {
+          const entity = await ClientEntitiesCollection.findOneAsync(account.entityId);
+          clientName = entity ? ClientEntityHelpers.getEntityDisplayName(entity) : 'Unknown';
+        } else if (account.userId) {
+          const accountUser = await UsersCollection.findOneAsync(account.userId);
+          clientName = accountUser
+            ? `${accountUser.profile?.firstName || ''} ${accountUser.profile?.lastName || ''}`.trim() || accountUser.email
+            : 'Unknown';
+        }
 
         const bankName = bankMap[account.bankId]?.name || 'Unknown Bank';
 
@@ -1686,7 +1771,7 @@ Meteor.methods({
           negativeCashAccounts.push({
             accountId: account._id,
             accountNumber: account.accountNumber,
-            clientId: account.userId,
+            clientId: account.userId || account.entityId,
             clientName,
             bankId: account.bankId,
             bankName,
@@ -1703,7 +1788,7 @@ Meteor.methods({
           highCashAccounts.push({
             accountId: account._id,
             accountNumber: account.accountNumber,
-            clientId: account.userId,
+            clientId: account.userId || account.entityId,
             clientName,
             bankId: account.bankId,
             bankName,

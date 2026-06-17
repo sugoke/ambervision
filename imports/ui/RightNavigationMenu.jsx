@@ -21,6 +21,14 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
       role: 'client'
     },
     {
+      id: 'order-book',
+      label: 'Order Book',
+      icon: '📋',
+      description: 'Manage buy/sell orders',
+      role: 'rm',
+      nonClientOnly: true
+    },
+    {
       id: 'products',
       label: 'Products',
       icon: '📋',
@@ -74,14 +82,6 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
       label: 'Contacts',
       icon: '👥',
       description: 'Client management',
-      role: 'rm',
-      nonClientOnly: true
-    },
-    {
-      id: 'order-book',
-      label: 'Order Book',
-      icon: '📋',
-      description: 'Manage buy/sell orders',
       role: 'rm',
       nonClientOnly: true
     },

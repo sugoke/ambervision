@@ -4,6 +4,7 @@ import { check } from 'meteor/check';
 import { ProductsCollection } from './products';
 import { MarketDataCacheCollection } from './marketDataCache';
 import { AllocationsCollection } from './allocations';
+import { ClientEntityHelpers } from './clientEntities';
 
 /**
  * UnderlyingsAnalysis Collection
@@ -120,12 +121,16 @@ export async function buildUnderlyingsAnalysis(asOfDate = null) {
 
   console.log(`[UnderlyingsAnalysis] Loaded ${marketDataCache.length} market data entries`);
 
+  // Exclude allocations of archived (closed-relationship) clients from exposure analysis
+  const archivedAllocExclusion = await ClientEntityHelpers.archivedAllocationsSelector();
+  const excludeArchived = (sel) => archivedAllocExclusion.$nor ? { $and: [sel, archivedAllocExclusion] } : sel;
+
   let allocations;
   if (isHistorical) {
-    const allAllocs = await AllocationsCollection.find({}).fetchAsync();
+    const allAllocs = await AllocationsCollection.find(excludeArchived({})).fetchAsync();
     allocations = allAllocs.filter(a => isAllocationOpenAsOf(a, asOfDate));
   } else {
-    allocations = await AllocationsCollection.find({ status: 'active' }).fetchAsync();
+    allocations = await AllocationsCollection.find(excludeArchived({ status: 'active' })).fetchAsync();
   }
 
   const nominalByProduct = {};

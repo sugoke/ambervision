@@ -12,6 +12,7 @@ import { PortfolioSnapshotHelpers, PortfolioSnapshotsCollection } from '../../im
 import { BankPositionParser } from '../../imports/api/bankPositionParser.js';
 import { BankOperationParser } from '../../imports/api/bankOperationParser.js';
 import { BankFileStructureHelpers } from '../../imports/api/bankFileStructures.js';
+import { CFMParser } from '../../imports/api/parsers/cfmParser.js';
 import { NotificationHelpers } from '../../imports/api/notifications.js';
 import { AccountProfilesCollection, aggregateToFourCategories } from '../../imports/api/accountProfiles.js';
 import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetadata.js';
@@ -195,6 +196,24 @@ function getUserIdFromMap(portfolioCode, portfolioUserMap) {
 }
 
 Meteor.methods({
+  /**
+   * Backfill CFM FX-forward holdings with their forward value date by joining
+   * to FX_TRADE pmsOperations on portfolioCode + |amount|. Idempotent; safe to
+   * re-run after each CFM import. Optionally scope by bankId/portfolioCode.
+   */
+  async 'pmsHoldings.backfillCfmFxForwardDates'({ sessionId, bankId = null, portfolioCode = null } = {}) {
+    check(sessionId, String);
+    check(bankId, Match.Maybe(String));
+    check(portfolioCode, Match.Maybe(String));
+    await validateAdminSession(sessionId);
+    return await CFMParser.enrichFxForwardValueDates({
+      PMSHoldingsCollection,
+      PMSOperationsCollection,
+      bankId: bankId || undefined,
+      portfolioCode: portfolioCode || undefined
+    });
+  },
+
   /**
    * Process latest position file for a bank connection
    */
@@ -856,16 +875,37 @@ Meteor.methods({
             for (let i = 0; i < stalePositions.length; i++) {
               await yieldToEventLoop(i, 20);
               const stale = stalePositions[i];
-              // Mark the latest record as sold
-              await PMSHoldingsCollection.updateAsync(stale._id, {
-                $set: {
-                  isActive: false,        // No longer active
-                  // isLatest: true,      // KEEP as true - this IS the latest known state
-                  soldAt: fileDate,
-                  soldReason: 'position_not_in_bank_file',
-                  updatedAt: new Date()
-                }
-              });
+
+              // Detect rollover: another uniqueKey covers the same logical security in
+              // the same portfolio (e.g. CFM FX forward closed under reference X and
+              // reopened under reference Y). Identity key intentionally excludes the
+              // rollover-varying part (reference / endDate) so the new leg matches.
+              const rolloverMatch = await PMSHoldingsCollection.findOneAsync({
+                bankId: connection.bankId,
+                portfolioCode: stale.portfolioCode,
+                isin: stale.isin || null,
+                ticker: stale.ticker || null,
+                currency: stale.currency,
+                securityType: stale.securityType,
+                isLatest: true,
+                isActive: true,
+                uniqueKey: { $ne: stale.uniqueKey }
+              }, { fields: { _id: 1 } });
+
+              // Mark the latest record as sold. If a rollover replacement exists,
+              // also clear isLatest so the orphan can't pollute future "latest"
+              // queries (incl. snapshot regeneration) with stale inflated values.
+              const update = {
+                isActive: false,
+                soldAt: fileDate,
+                soldReason: rolloverMatch ? 'replaced_by_rollover' : 'position_not_in_bank_file',
+                updatedAt: new Date()
+              };
+              if (rolloverMatch) {
+                update.isLatest = false;
+                update.replacedAt = new Date();
+              }
+              await PMSHoldingsCollection.updateAsync(stale._id, { $set: update });
 
               // CRITICAL: Also mark ALL historical records with same uniqueKey as inactive
               // This prevents closed positions from appearing in historical snapshot queries
@@ -895,6 +935,22 @@ Meteor.methods({
       } catch (cleanupError) {
         console.error(`[BANK_POSITIONS] Error during stale position cleanup: ${cleanupError.message}`);
         // Don't fail the import
+      }
+
+      // CFM FX-FORWARD VALUE DATES: join fx_forward holdings to FX_TRADE operations
+      // by portfolioCode + |amount| so the Value Date column populates. No-op for
+      // banks that don't produce fx_forward holdings.
+      try {
+        const fxEnrich = await CFMParser.enrichFxForwardValueDates({
+          PMSHoldingsCollection,
+          PMSOperationsCollection,
+          bankId: connection.bankId
+        });
+        if (fxEnrich.matched > 0) {
+          console.log(`[BANK_POSITIONS] FX forward dates enriched: ${fxEnrich.matched}/${fxEnrich.total} legs`);
+        }
+      } catch (fxEnrichError) {
+        console.error(`[BANK_POSITIONS] FX forward date enrichment failed: ${fxEnrichError.message}`);
       }
 
       // REDEMPTION DETECTION: Check for allocations whose products disappeared from bank file
@@ -2077,6 +2133,20 @@ Meteor.methods({
         } catch (snapshotError) {
           console.error(`[BANK_POSITIONS] Error creating snapshot for ${portfolioCode}: ${snapshotError.message}`);
         }
+      }
+
+      // CFM FX-FORWARD VALUE DATES: same enrichment as processLatest (no-op for non-CFM banks)
+      try {
+        const fxEnrich = await CFMParser.enrichFxForwardValueDates({
+          PMSHoldingsCollection,
+          PMSOperationsCollection,
+          bankId: connection.bankId
+        });
+        if (fxEnrich.matched > 0) {
+          console.log(`[BANK_POSITIONS] FX forward dates enriched (processDate): ${fxEnrich.matched}/${fxEnrich.total} legs`);
+        }
+      } catch (fxEnrichError) {
+        console.error(`[BANK_POSITIONS] FX forward date enrichment failed: ${fxEnrichError.message}`);
       }
 
       // Log success

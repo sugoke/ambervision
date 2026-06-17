@@ -3,12 +3,12 @@ import { Meteor } from 'meteor/meteor';
 import { useTracker, useSubscribe } from 'meteor/react-meteor-data';
 import { UnderlyingsAnalysisCollection } from '/imports/api/underlyingsAnalysis';
 import { RiskAnalysisReportsCollection } from '/imports/api/riskAnalysis';
-import { ProductsCollection } from '/imports/api/products';
 import { AllocationsCollection } from '/imports/api/allocations';
 import { useTheme } from './ThemeContext.jsx';
 import { useViewAs } from './ViewAsContext.jsx';
 import { Bubble } from 'react-chartjs-2';
 import RiskReportModal from './components/RiskReportModal.jsx';
+import CustomDateInput from './components/CustomDateInput.jsx';
 import {
   Chart as ChartJS,
   LinearScale,
@@ -50,20 +50,18 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
   // Subscribe to the pre-computed analysis
   const isLoading = useSubscribe('phoenixUnderlyingsAnalysis');
 
-  // Subscribe to products/allocations for ViewAs filtering
+  // Subscribe to allocations for ViewAs filtering and compute accessible product IDs.
+  // Subscribe + read live inside the same autorun so that if ViewAsContext or anything
+  // else stops the sub externally, the reactive find().fetch() re-fires the autorun
+  // and re-creates the subscription with the current viewAsFilter.
   const sessionId = useMemo(() => localStorage.getItem('sessionId'), []);
-  const { accessibleProductIds } = useTracker(() => {
-    // Subscribe with viewAsFilter
-    Meteor.subscribe('products', sessionId, viewAsFilter);
-    Meteor.subscribe('allAllocations', sessionId, viewAsFilter);
-
-    // Get allocations and extract product IDs
+  const { accessibleProductIds, allocationsReady } = useTracker(() => {
+    const handle = Meteor.subscribe('allAllocations', sessionId, viewAsFilter);
+    const ready = handle.ready();
+    if (!viewAsFilter) return { accessibleProductIds: null, allocationsReady: ready };
     const allocs = AllocationsCollection.find().fetch();
-    const productIds = viewAsFilter
-      ? [...new Set(allocs.map(a => a.productId))]
-      : null; // null = show all products (no filter)
-
-    return { accessibleProductIds: productIds };
+    const productIds = [...new Set(allocs.map(a => a.productId))];
+    return { accessibleProductIds: productIds, allocationsReady: ready };
   }, [sessionId, viewAsFilter]);
 
   // Get the live analysis from database (NO client-side calculations)
@@ -107,15 +105,10 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
   // Filter by accessible products if ViewAs is active
   const allUnderlyingsData = analysisData?.underlyings || [];
   const underlyingsData = useMemo(() => {
-    if (!viewAsFilter || !accessibleProductIds) {
-      return allUnderlyingsData; // Show all if no filter
-    }
-
-    // Filter to only show underlyings for accessible products
-    const filtered = allUnderlyingsData.filter(u => accessibleProductIds.includes(u.productId));
-    console.log('[UnderlyingsView] ViewAs active - filtering', allUnderlyingsData.length, 'underlyings to', filtered.length, 'for', accessibleProductIds.length, 'accessible products');
-    return filtered;
-  }, [allUnderlyingsData, accessibleProductIds, viewAsFilter]);
+    if (!viewAsFilter) return allUnderlyingsData; // No filter: show all
+    if (!allocationsReady) return []; // Allocations still loading: show none rather than misleading "all"
+    return allUnderlyingsData.filter(u => accessibleProductIds.includes(u.productId));
+  }, [allUnderlyingsData, accessibleProductIds, allocationsReady, viewAsFilter]);
 
   // Calculate summary stats from filtered data (respects ViewAs filter)
   const summary = useMemo(() => {
@@ -566,20 +559,17 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
             >
               As of
             </label>
-            <input
+            <CustomDateInput
               id="underlyings-asof-date"
-              type="date"
               value={asOfDateStr}
-              max={new Date().toISOString().slice(0, 10)}
-              onChange={(e) => setAsOfDateStr(e.target.value)}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: 'var(--text-primary)',
-                fontSize: '0.9rem',
-                outline: 'none',
-                colorScheme: isDarkMode ? 'dark' : 'light'
+              onChange={(e) => {
+                const v = e.target.value;
+                const today = new Date().toISOString().slice(0, 10);
+                setAsOfDateStr(v && v > today ? today : v);
               }}
+              placeholder="DD/MM/YYYY"
+              style={{ width: '160px' }}
+              className="underlyings-asof-input"
             />
             {asOfDateStr && (
               <button

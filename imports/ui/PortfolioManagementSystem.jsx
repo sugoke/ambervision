@@ -442,6 +442,7 @@ const PortfolioManagementSystem = ({ user }) => {
     totalStructuredValue: 0
   });
   const [currencyAllocation, setCurrencyAllocation] = useState(null);
+  const [issuerAllocation, setIssuerAllocation] = useState(null);
   const [selectedTimeRange, setSelectedTimeRange] = useState('1Y');
 
   // Refresh key for forcing re-subscription after file processing (Meteor 3 async publication workaround)
@@ -455,6 +456,13 @@ const PortfolioManagementSystem = ({ user }) => {
   const [orderModalOpen, setOrderModalOpen] = useState(false);
   const [orderModalMode, setOrderModalMode] = useState('buy'); // 'buy' or 'sell'
   const [orderPrefillData, setOrderPrefillData] = useState(null);
+  // Bumped each time the modal closes so the next open gets a fresh OrderModal
+  // instance — prevents the previous order's termsheet / client email file from
+  // sticking around when placing several structured-product orders in a row.
+  const [orderModalKey, setOrderModalKey] = React.useState(0);
+  React.useEffect(() => {
+    if (!orderModalOpen) setOrderModalKey(k => k + 1);
+  }, [orderModalOpen]);
 
   // Reclassify modal state
   const [showClassifyModal, setShowClassifyModal] = useState(false);
@@ -472,6 +480,18 @@ const PortfolioManagementSystem = ({ user }) => {
   const [reviewError, setReviewError] = useState(null);
   const [reviewsListKey, setReviewsListKey] = useState(0); // force re-fetch of reviews list
   const [reviewLangPickerOpen, setReviewLangPickerOpen] = useState(false); // language picker dropdown
+
+  // FX deal lifecycle state
+  const [fxSpotRates, setFxSpotRates] = useState({}); // { 'ILSEUR': 0.265, ... }
+  const [showClosedLifecycles, setShowClosedLifecycles] = useState(false);
+  const [expandedLifecycleIds, setExpandedLifecycleIds] = useState(new Set());
+  const toggleLifecycleExpansion = (id) => {
+    setExpandedLifecycleIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   // Listen for refresh events from file processing
   useEffect(() => {
@@ -741,12 +761,31 @@ const PortfolioManagementSystem = ({ user }) => {
         isin: holding.isin,
         securityType: holding.securityType || null,
         maturityDate: holding.bankSpecificData?.instrumentDates?.endDate || null,
+        tradeDate: holding.bankSpecificData?.instrumentDates?.beginDate || null,
+        valueDate: holding.bankSpecificData?.instrumentDates?.endDate || null,
+        fxNotional: holding.bankSpecificData?.notional || null,
+        fxLeg: holding.bankSpecificData?.fxLeg || null,
+        // POES CAT_DETAIL = signed foreign-currency notional. This is the
+        // authoritative deal size from the bank's positions file. Repeats on
+        // both legs of a deal in the raw CSV — we only trust it on the foreign
+        // leg (the one with non-zero BALANCE_POSITION). Used to recover the
+        // correct sign+amount when the legacy MFRX enrichment mis-labeled
+        // foreign vs base for USD-paired deals.
+        catDetail: holding.bankSpecificData?.catDetail || null,
+        balanceOriginal: holding.bankSpecificData?.balanceOriginal || null,
         bankId: holding.bankId,
         bankName: holding.bankName,
         portfolioCode: holding.portfolioCode,
         dataDate: holding.dataDate,
         linkedProduct: linkedProduct,
         productTags: productTags,
+        // Issuer of the structured product (from SecuritiesMetadata, with
+        // fallback to the linked product's issuer when classification hasn't
+        // been done yet). Used to compute the issuer-concentration chart.
+        issuer: metadata?.issuer
+          || linkedProduct?.issuer
+          || linkedProduct?.issuerName
+          || null,
         // Linking information
         isLinked: isLinked,
         linkingStatus: linkingStatus,
@@ -806,7 +845,15 @@ const PortfolioManagementSystem = ({ user }) => {
       market: op.market,
       remark: op.remark,
       bankName: op.bankId,
-      sourceFile: op.sourceFile
+      sourceFile: op.sourceFile,
+      // FX-specific fields (used by fxDealLifecycles derivation)
+      operationNumber: op.operationNumber,
+      amount: op.amount,
+      fxRate: op.fxRate,
+      operationCurrency: op.operationCurrency,
+      settlementCurrency: op.settlementCurrency,
+      baseCurrency: op.baseCurrency,
+      direction: op.direction
     }));
 
     return { operations: transformedOperations, isLoadingOperations: false };
@@ -903,17 +950,16 @@ const PortfolioManagementSystem = ({ user }) => {
   const dummyTransactions = operations;
 
   // Filter holdings by active account tab
-  // 'consolidated' shows pre-aggregated holdings with portfolioCode='CONSOLIDATED'
+  // 'consolidated' aggregates the per-account holdings (source of truth)
   // Specific accounts filter by account number and bank
   const filteredHoldings = useMemo(() => {
     if (activeAccountTab === 'consolidated') {
-      // Try consolidated holdings first (pre-computed by CRON job)
-      const consolidatedHoldings = dummyPositions.filter(pos => pos.portfolioCode === 'CONSOLIDATED');
-      // Fallback: if no consolidated holdings exist yet, show all non-consolidated
-      if (consolidatedHoldings.length === 0) {
-        return dummyPositions.filter(pos => pos.portfolioCode !== 'CONSOLIDATED');
-      }
-      return consolidatedHoldings;
+      // Aggregate per-account holdings and EXCLUDE the pre-aggregated CONSOLIDATED
+      // roll-up rows. The CRON-built CONSOLIDATED copy double-counts duplicate bank
+      // records (e.g. "Andbank" vs "Andbank Monaco") and can drift from the per-account
+      // data (e.g. CMB Monaco), so the per-account rows are the single source of truth —
+      // this matches the home dashboard's Total AUM methodology.
+      return dummyPositions.filter(pos => pos.portfolioCode !== 'CONSOLIDATED');
     }
 
     // Find the selected account tab details
@@ -1179,6 +1225,80 @@ const PortfolioManagementSystem = ({ user }) => {
     });
   }, [filteredHoldings, selectedDate]);
 
+  // Issuer allocation across STRUCTURED PRODUCTS only — proportion of each
+  // issuer in the structured-product sub-portfolio by marketValue.
+  React.useEffect(() => {
+    if (!filteredHoldings || filteredHoldings.length === 0) {
+      setIssuerAllocation({ hasData: false });
+      return;
+    }
+
+    // Normalize issuer names so legal-entity variants collapse:
+    //   "BNP Paribas Issuance B.V." → "BNP Paribas"
+    //   "Société Générale (undefined)" / "SG Issuer SA" → "Société Générale"
+    //   "Banque Internationale à Luxembourg SA" / "BIL (undefined)" → "BIL"
+    // Canonical aliases come first; everything else gets generic cleanup.
+    const normalizeIssuer = (raw) => {
+      if (!raw) return 'Unclassified';
+      let s = String(raw).trim();
+      if (!s) return 'Unclassified';
+      // Drop "(undefined)" markers from incomplete classifications.
+      s = s.replace(/\s*\(undefined\)\s*$/i, '').trim();
+      if (!s) return 'Unclassified';
+
+      const canonical = [
+        { match: /\b(bnp\s*paribas|bnpp)\b/i, name: 'BNP Paribas' },
+        { match: /(soci[ée]t[ée]\s*g[ée]n[ée]rale|sg\s+issuer|sg\s+paris|\bsgss\b|^sg\s|^sg$)/i, name: 'Société Générale' },
+        { match: /(banque\s+internationale\s+(à|a)\s+luxembourg|\bbil\b)/i, name: 'BIL' },
+        { match: /\b(julius\s*baer|baer\s+capital)\b/i, name: 'Julius Baer' },
+        { match: /\bbarclays\b/i, name: 'Barclays' },
+        { match: /\bvontobel\b/i, name: 'Vontobel' },
+        { match: /\bmarex\b/i, name: 'Marex' },
+        { match: /\bcredit\s+suisse\b/i, name: 'Credit Suisse' },
+        { match: /\bgoldman\s+sachs\b/i, name: 'Goldman Sachs' },
+        { match: /\bmorgan\s+stanley\b/i, name: 'Morgan Stanley' },
+        { match: /\bj\.?p\.?\s*morgan\b/i, name: 'JP Morgan' },
+        { match: /\b(ubs)\b/i, name: 'UBS' },
+        { match: /\b(citi(group)?|citibank)\b/i, name: 'Citi' },
+        { match: /\bhsbc\b/i, name: 'HSBC' },
+        { match: /\bdeutsche\s+bank\b/i, name: 'Deutsche Bank' },
+        { match: /\bnatixis\b/i, name: 'Natixis' },
+        { match: /\b(unicredit)\b/i, name: 'UniCredit' },
+        { match: /\bleonteq\b/i, name: 'Leonteq' }
+      ];
+      for (const c of canonical) if (c.match.test(s)) return c.name;
+
+      // Generic cleanup of legal-entity suffixes / issuance vehicles.
+      s = s.replace(/\s+Issuance(\s+B\.?V\.?)?\b/gi, '').trim();
+      s = s.replace(/\s+Issuer\b.*$/i, '').trim();
+      s = s.replace(/\s+(S\.?A\.?|N\.?V\.?|B\.?V\.?|A\.?G\.?|GmbH|Ltd|LLC|LLP|Inc|PLC|Corp(oration)?|Holdings?)\b\.?/gi, '').trim();
+      return s || 'Unclassified';
+    };
+
+    const spHoldings = filteredHoldings.filter(h => h.assetClass === 'structured_product');
+    const issuerTotals = {};
+    let totalValue = 0;
+    for (const h of spHoldings) {
+      const name = normalizeIssuer(h.issuer);
+      const mv = h.marketValue || 0;
+      if (mv === 0) continue;
+      issuerTotals[name] = (issuerTotals[name] || 0) + mv;
+      totalValue += mv;
+    }
+    const issuers = Object.entries(issuerTotals).map(([name, value]) => ({
+      name,
+      value,
+      percentage: totalValue > 0 ? (value / totalValue) * 100 : 0
+    }));
+    issuers.sort((a, b) => b.value - a.value);
+    setIssuerAllocation({
+      hasData: issuers.length > 0 && totalValue > 0,
+      issuers,
+      totalValue,
+      snapshotDate: selectedDate || new Date()
+    });
+  }, [filteredHoldings, selectedDate]);
+
   // Separate cash, FX forwards, and other positions
   // For consolidated view, exclude credit lines and credit cards from cash calculations
   const cashPositions = displayPositions.filter(pos => {
@@ -1196,6 +1316,384 @@ const PortfolioManagementSystem = ({ user }) => {
   });
   const fxForwardPositions = displayPositions.filter(pos => pos.assetClass === 'fx_forward');
   const nonCashPositions = displayPositions.filter(pos => pos.assetClass !== 'cash' && pos.assetClass !== 'fx_forward');
+
+  // Group FX forward legs by deal (ticker = e.g. "FX0335795") so each forward
+  // shows as a single row with both currency legs side-by-side.
+  const fxForwardDeals = (() => {
+    const groups = new Map();
+    for (const leg of fxForwardPositions) {
+      const dealId = leg.ticker || leg.id;
+      if (!groups.has(dealId)) groups.set(dealId, []);
+      groups.get(dealId).push(leg);
+    }
+    return Array.from(groups, ([dealId, legs]) => {
+      const totalPortfolioValue = legs.reduce((s, l) => s + (l.marketValue || 0), 0);
+      const dealSign = totalPortfolioValue >= 0 ? 1 : -1;
+      // Identify foreign vs base leg explicitly via fxLeg (set by the CFM POES
+      // parser fix). Fall back to "any leg with a notional" for older imports.
+      const foreignLeg = legs.find(l => l.fxLeg === 'foreign') || null;
+      const baseLeg = legs.find(l => l.fxLeg === 'base') || null;
+      const legWithNotional = foreignLeg || legs.find(l => l.fxNotional?.foreignAmount) || legs[0] || {};
+      const legWithDates = legs.find(l => l.tradeDate || l.valueDate) || legs[0] || {};
+      const fNotional = foreignLeg?.fxNotional || legWithNotional.fxNotional || null;
+
+      // Identify the TRUE foreign vs base leg from POES, independently of
+      // whatever the operation columns (or legacy enrichment) labelled. CFM
+      // POES convention: the foreign leg carries the deal's mark-to-market
+      // (non-zero BALANCE_POSITION / BALANCE_PERF), the base leg's BALANCE_*
+      // is zero. After the new POES parser fix, the base leg has zero
+      // marketValue. Under the LEGACY (buggy) parser, the base leg's
+      // marketValue was stamped to CAT_DETAIL (orders of magnitude larger
+      // than the true MTM). In both cases the LEGITIMATE foreign leg has the
+      // SMALLER non-zero |marketValueOriginalCurrency|.
+      const mtmCandidates = legs.filter(l => Math.abs(l.marketValueOriginalCurrency || 0) > 0);
+      const trueForeignLeg = foreignLeg
+        || (mtmCandidates.length > 0
+            ? mtmCandidates.reduce((min, l) =>
+                Math.abs(l.marketValueOriginalCurrency) < Math.abs(min.marketValueOriginalCurrency) ? l : min)
+            : legs[0]);
+      const trueBaseLeg = baseLeg
+        || legs.find(l => l !== trueForeignLeg)
+        || null;
+
+      // Direction sign comes from the TRUE foreign leg's MTM sign — POES
+      // stores it consistently with CAT_DETAIL (positive = bought foreign).
+      const directionSign = trueForeignLeg
+        ? ((trueForeignLeg.marketValueOriginalCurrency
+            || trueForeignLeg.quantity
+            || trueForeignLeg.marketValue
+            || 0) >= 0 ? 1 : -1)
+        : 1;
+
+      // Override foreignCurrency/baseCurrency from the actual leg currencies
+      // (POES truth), overriding any mislabel from the operation columns.
+      const trueForeignCurrency = trueForeignLeg?.currency || fNotional?.foreignCurrency || null;
+      const trueBaseCurrency = trueBaseLeg?.currency
+        || (fNotional?.baseCurrency && fNotional.baseCurrency !== trueForeignCurrency
+            ? fNotional.baseCurrency : null);
+
+      // Foreign notional: PRIMARILY from POES CAT_DETAIL on the true foreign
+      // leg (signed, authoritative — this is what CFM reports as the deal
+      // size on the bank statement). Falls back to the legacy MFRX-derived
+      // foreignAmount only if CAT_DETAIL isn't available.
+      const poesCatDetail = trueForeignLeg?.catDetail != null
+        ? trueForeignLeg.catDetail
+        : null;
+      const rawForeignAmt = poesCatDetail != null ? poesCatDetail : fNotional?.foreignAmount;
+      const signedForeignAmount = rawForeignAmt != null
+        ? directionSign * Math.abs(rawForeignAmt)
+        : null;
+
+      // Base notional: prefer fNotional.baseAmount when its labelling matches
+      // ours; otherwise leave null and let the renderer derive it from the
+      // entry rate (foreignAmount / fxRate) or today's spot.
+      const enrichmentBaseMatchesUs = fNotional?.baseCurrency === trueBaseCurrency;
+      const rawBaseAmt = enrichmentBaseMatchesUs ? fNotional?.baseAmount : null;
+      const signedBaseAmount = rawBaseAmt != null
+        ? -directionSign * Math.abs(rawBaseAmt)
+        : null;
+
+      const notional = fNotional ? {
+        foreignAmount: signedForeignAmount,
+        foreignCurrency: trueForeignCurrency,
+        baseAmount: signedBaseAmount,
+        baseCurrency: trueBaseCurrency,
+        fxRate: fNotional.fxRate ?? null
+      } : null;
+      // P&L (unrealized) for the deal = the foreign leg's marketValue, which
+      // is BALANCE_PERF from POES — the EUR-equivalent of the deal's current
+      // MTM. For an FX forward (zero-value at trade), this is effectively the
+      // unrealized P&L. Avoids the rate-convention pitfalls (CFM always quotes
+      // fxRate as "ILS per other", but operation columns mis-label foreign vs
+      // base for USD-paired deals).
+      //
+      // Leg-selection rules (in priority order):
+      //   1) Holding with `fxLeg === 'foreign'` (set by the new POES parser
+      //      fix — always authoritative when present).
+      //   2) Fallback: smallest-absolute non-zero marketValue among legs.
+      //      The MTM (BALANCE_PERF) is many orders of magnitude smaller than
+      //      the notional, so this picks the legitimate foreign leg even
+      //      when the legacy-corrupted base leg also has a non-zero
+      //      marketValue stamped to CAT_DETAIL.
+      let mtmLeg = foreignLeg;
+      if (!mtmLeg) {
+        const candidates = legs.filter(l => (l.marketValue || 0) !== 0);
+        mtmLeg = candidates.length > 0
+          ? candidates.reduce((min, l) => Math.abs(l.marketValue) < Math.abs(min.marketValue) ? l : min)
+          : (legs[0] || null);
+      }
+      const mtmPortfolio = mtmLeg ? (mtmLeg.marketValue || 0) : 0;
+      return {
+        dealId,
+        sign: dealSign,
+        tradeDate: legWithDates.tradeDate || null,
+        valueDate: legWithDates.valueDate || null,
+        portfolioCode: legWithNotional.portfolioCode || legs[0]?.portfolioCode || null,
+        accountNumber: legWithNotional.accountNumber || legs[0]?.accountNumber || null,
+        totalPortfolioValue,
+        mtmPortfolio,
+        notional,
+        foreignLeg,
+        baseLeg,
+        legs
+      };
+    });
+  })();
+
+  // Derive FX deal lifecycles from PMS operations
+  //
+  // CFM emits one FX_TRADE operation per currency *leg*; the operationNumber is
+  // "FX0335795.001" / "FX0335795.002" — same base deal id, different leg suffix.
+  // For lifecycle pairing we want one canonical record per *deal* (open or close
+  // or roll), so we collapse leg-suffix duplicates and pick the foreign-currency
+  // leg (the one that carries notional+fxRate; `operationCurrency` differs from
+  // `settlementCurrency`).
+  //
+  // After collapsing, we pair an opening deal D1 with a closing deal D2 when:
+  //   - same portfolioCode + currency pair
+  //   - foreignAmount signs cancel (opposite directions)
+  //   - magnitudes within tolerance (absorb swap-point accruals)
+  // A swap roll = on the same trade date, a close+open pair on the same pair
+  // and magnitude → that 3rd-trade pattern the user described.
+  const fxDealLifecyclesRaw = (() => {
+    const fxOps = (operations || []).filter(op =>
+      op.type === 'FX_TRADE' && op.operationNumber
+    );
+    if (fxOps.length === 0) return [];
+
+    // Collapse by base deal id, pick the foreign-leg row (has fxRate + currency mismatch)
+    const baseDealId = (opNumber) => (opNumber || '').split('.')[0];
+    const dealMap = new Map(); // baseId -> chosen op row
+    for (const op of fxOps) {
+      const id = baseDealId(op.operationNumber);
+      if (!id) continue;
+      const prev = dealMap.get(id);
+      const isForeignLeg =
+        op.operationCurrency && op.settlementCurrency
+        && op.operationCurrency !== op.settlementCurrency
+        && op.fxRate;
+      if (!prev || (isForeignLeg && !(
+        prev.operationCurrency && prev.settlementCurrency
+        && prev.operationCurrency !== prev.settlementCurrency
+        && prev.fxRate
+      ))) {
+        dealMap.set(id, op);
+      }
+    }
+
+    // Canonicalize: one deal record per group, with signed foreign amount.
+    // direction: ACHAT (buy foreign) → positive foreign; VENTE (sell) → negative.
+    const deals = [];
+    for (const [id, op] of dealMap.entries()) {
+      const dir = (op.direction || '').toUpperCase();
+      const sign = dir.includes('VENTE') || dir.includes('SELL') ? -1 : 1;
+      const foreignAmount = Math.abs(op.amount || 0) * sign;
+      const foreignCurrency = op.operationCurrency || null;
+      const baseCurrency = op.settlementCurrency || op.baseCurrency || null;
+      const fxRate = op.fxRate || null;
+      const baseAmount = fxRate ? -foreignAmount / fxRate : null; // base side is opposite
+      const tradeTime = op.date ? new Date(op.date).getTime() : 0;
+      deals.push({
+        dealId: id,
+        tradeDate: op.date || null,
+        tradeTime,
+        valueDate: op.valueDate || null,
+        portfolioCode: op.portfolioCode || null,
+        foreignCurrency,
+        foreignAmount,
+        baseCurrency,
+        baseAmount,
+        fxRate,
+        rawOp: op
+      });
+    }
+    deals.sort((a, b) => a.tradeTime - b.tradeTime);
+
+    // Pair opens with closes within (portfolioCode, currency pair).
+    // currency pair is order-insensitive: ILS/EUR == EUR/ILS.
+    const pairKey = (d) => {
+      const ccys = [d.foreignCurrency || '?', d.baseCurrency || '?'].sort().join('|');
+      return `${d.portfolioCode || '?'}|${ccys}`;
+    };
+    const byPair = new Map();
+    for (const d of deals) {
+      const k = pairKey(d);
+      if (!byPair.has(k)) byPair.set(k, []);
+      byPair.get(k).push(d);
+    }
+
+    // Greedy pair matcher: for each list (already chronological), walk forward
+    // and pair each unmatched deal D with the earliest later deal D' whose
+    // foreignAmount magnitude matches and sign is opposite.
+    const isOffsetting = (d1, d2) => {
+      if (Math.sign(d1.foreignAmount) === Math.sign(d2.foreignAmount)) return false;
+      const a = Math.abs(d1.foreignAmount);
+      const b = Math.abs(d2.foreignAmount);
+      const tol = Math.max(1, 0.0001 * Math.max(a, b)); // 1 unit or 1bp of notional
+      return Math.abs(a - b) <= tol;
+    };
+
+    // closeOf[dealId] = dealId of the close trade (if any)
+    const closeOf = new Map();
+    const closeOfBy = new Map(); // reverse: closeId -> openId
+    for (const list of byPair.values()) {
+      const available = list.map((d, i) => ({ d, i, used: false }));
+      for (let i = 0; i < available.length; i++) {
+        if (available[i].used) continue;
+        const d1 = available[i].d;
+        for (let j = i + 1; j < available.length; j++) {
+          if (available[j].used) continue;
+          const d2 = available[j].d;
+          if (isOffsetting(d1, d2)) {
+            closeOf.set(d1.dealId, d2.dealId);
+            closeOfBy.set(d2.dealId, d1.dealId);
+            available[i].used = true;
+            available[j].used = true;
+            break;
+          }
+        }
+      }
+    }
+
+    // Detect swap rolls: a closing deal C and an opening deal O on the SAME
+    // trade date, same pair, same magnitude but C is offsetting (already paired
+    // to a prior open) — O extends the position with a later maturity. We mark
+    // (C, O) as a roll pair.
+    const dealById = new Map(deals.map(d => [d.dealId, d]));
+    const rollPartner = new Map(); // closeId -> openId (same-date roll)
+    for (const [closeId, openId] of closeOfBy.entries()) {
+      const closeD = dealById.get(closeId);
+      const originalOpen = dealById.get(openId);
+      if (!closeD || !originalOpen) continue;
+      // Look for an opening deal O on the same date as closeD, in the same pair,
+      // with magnitude ≈ |closeD.foreignAmount|, that is NOT itself paired as a
+      // close (it stays open or is closed in the future).
+      const sameDate = (a, b) => {
+        if (!a || !b) return false;
+        const da = new Date(a); const db = new Date(b);
+        return da.getFullYear() === db.getFullYear()
+          && da.getMonth() === db.getMonth()
+          && da.getDate() === db.getDate();
+      };
+      const k = pairKey(closeD);
+      for (const candidate of (byPair.get(k) || [])) {
+        if (candidate.dealId === closeId) continue;
+        if (!sameDate(candidate.tradeDate, closeD.tradeDate)) continue;
+        if (closeOfBy.has(candidate.dealId)) continue; // candidate is itself a close
+        if (Math.sign(candidate.foreignAmount) !== Math.sign(originalOpen.foreignAmount)) continue;
+        const mag = Math.abs(candidate.foreignAmount);
+        const ref = Math.abs(closeD.foreignAmount);
+        const tol = Math.max(1, 0.0005 * Math.max(mag, ref)); // a bit looser: 5bp for swap pts
+        if (Math.abs(mag - ref) <= tol) {
+          rollPartner.set(closeId, candidate.dealId);
+          break;
+        }
+      }
+    }
+
+    // Build lifecycles: starting from each "open" deal (one that is NOT a close
+    // of another deal), walk forward through rolls until we reach a final close
+    // (or the chain ends at an unclosed open).
+    const lifecycles = [];
+    const consumed = new Set();
+    for (const d of deals) {
+      if (consumed.has(d.dealId)) continue;
+      if (closeOfBy.has(d.dealId)) continue; // skip closes — they're attached to opens
+      // Skip openings reached via roll (they'll be picked up walking from the parent)
+      // We detect those as: there exists some close C where rollPartner(C) === d.dealId
+      const reachedByRoll = [...rollPartner.values()].includes(d.dealId);
+      if (reachedByRoll) continue;
+
+      const legs = [];
+      let current = d;
+      let realizedBase = 0;
+      while (current) {
+        legs.push({ ...current, role: legs.length === 0 ? 'open' : 'roll-open' });
+        consumed.add(current.dealId);
+        const closeId = closeOf.get(current.dealId);
+        if (!closeId) break;
+        const closeD = dealById.get(closeId);
+        if (!closeD) break;
+        const rollOpenId = rollPartner.get(closeId);
+        if (rollOpenId) {
+          // Roll: close + new open on the same date, contributes realized P&L
+          legs.push({ ...closeD, role: 'roll-close' });
+          consumed.add(closeD.dealId);
+          // realized P&L (base currency) on this roll segment:
+          // (closeRate - openRate) × openForeignAmount, sign-aware.
+          if (current.fxRate && closeD.fxRate && current.foreignAmount) {
+            const openBase = current.foreignAmount / current.fxRate;
+            const closeBase = -current.foreignAmount / closeD.fxRate;
+            realizedBase += openBase + closeBase;
+          }
+          const nextOpen = dealById.get(rollOpenId);
+          if (!nextOpen) break;
+          current = nextOpen;
+        } else {
+          // Final close
+          legs.push({ ...closeD, role: 'close' });
+          consumed.add(closeD.dealId);
+          if (current.fxRate && closeD.fxRate && current.foreignAmount) {
+            const openBase = current.foreignAmount / current.fxRate;
+            const closeBase = -current.foreignAmount / closeD.fxRate;
+            realizedBase += openBase + closeBase;
+          }
+          current = null;
+          break;
+        }
+      }
+
+      // Determine status: closed = chain ended with 'close' leg; rolled = ≥1
+      // roll segment; open = no close at all.
+      const hasClose = legs.some(l => l.role === 'close');
+      const hasRoll = legs.some(l => l.role === 'roll-open' || l.role === 'roll-close');
+      const status = hasClose ? 'closed' : (hasRoll ? 'rolled' : 'open');
+      const currentLeg = legs.filter(l => l.role === 'open' || l.role === 'roll-open').pop() || legs[0];
+
+      // Unrealized P&L for open/rolled lifecycles: mark the current open leg to
+      // today's spot rate.
+      //   - CFM operation fxRate convention: foreign-per-base (e.g. 3.7050 ILS/EUR)
+      //   - EOD spot ticker `${foreign}${base}.FOREX` convention: base-per-foreign
+      //     (e.g. ILSEUR.FOREX = 0.2949 EUR per ILS)
+      //   So entry value (in base) = foreignAmount / fxRate
+      //      mark  value (in base) = foreignAmount * spot
+      //   P&L (gain when mark > entry) = mark - entry
+      let unrealizedBase = null;
+      if (status !== 'closed' && currentLeg && currentLeg.fxRate
+          && currentLeg.foreignCurrency && currentLeg.baseCurrency) {
+        const spotKey = `${currentLeg.foreignCurrency}${currentLeg.baseCurrency}`;
+        const spot = fxSpotRates[spotKey];
+        if (spot && spot > 0) {
+          const entryBase = currentLeg.foreignAmount / currentLeg.fxRate;
+          const markBase  = currentLeg.foreignAmount * spot;
+          unrealizedBase  = markBase - entryBase;
+        }
+      }
+
+      // Per-lifecycle P&L is computed here in baseCurrency only. Conversion to
+      // the displayed portfolioCurrency happens after `portfolioCurrency` is
+      // resolved further down in the component body — see fxDealLifecycles
+      // (augmented) just below the portfolioCurrency declaration.
+      const baseCcy = currentLeg?.baseCurrency || legs[0]?.baseCurrency || null;
+      const realizedBaseValue = hasClose || hasRoll ? realizedBase : null;
+
+      lifecycles.push({
+        lifecycleId: legs[0].dealId,
+        status,
+        legs,
+        currentLeg,
+        firstLeg: legs[0],
+        realizedPnLBase: realizedBaseValue,
+        unrealizedPnLBase: unrealizedBase,
+        baseCurrency: baseCcy,
+        portfolioCode: legs[0].portfolioCode
+      });
+    }
+    return lifecycles;
+  })();
+
+  // Spot-rate fetch + portfolio-currency augmentation of fxDealLifecyclesRaw
+  // both live after `portfolioCurrency` is declared (search for "Spot rates for FX deal lifecycles" below).
 
   // Group FX forwards by currency
   const fxForwardsByCurrency = fxForwardPositions.reduce((acc, pos) => {
@@ -1276,8 +1774,10 @@ const PortfolioManagementSystem = ({ user }) => {
     return sum + Math.max(0, value); // Cap negative cash at 0 (credit lines don't reduce totals)
   }, 0);
 
-  // Total portfolio value includes both cash and non-cash positions (all in portfolio currency)
-  const totalPortfolioValue = totalNonCashPortfolioValue + totalCashValue;
+  // Total portfolio value = instruments + deposits (non-cash) + positive cash (credit lines
+  // capped at 0 above) + the mark-to-market value of FX forwards. All figures are in portfolio
+  // currency (PTF_MKT_VAL). FX forwards were previously omitted from the headline total.
+  const totalPortfolioValue = totalNonCashPortfolioValue + totalCashValue + totalFxForwardPortfolioValue;
   const totalGainLoss = totalNonCashGainLoss; // Gain/loss only applies to non-cash positions
 
   // Determine portfolio reference currency
@@ -1338,6 +1838,89 @@ const PortfolioManagementSystem = ({ user }) => {
       refCurrencyCounts[a] > refCurrencyCounts[b] ? a : b, 'EUR'
     );
   }
+
+  // No view-as filter and no specific account tab → this is the user's own consolidated
+  // view, which should match the home dashboard's Total AUM. Use the logged-in user's
+  // preferred display currency (set in My Profile). With a filter active, the priority
+  // logic above already resolved the correct portfolio currency, so leave it untouched.
+  if (!viewAsFilter && activeAccountTab === 'consolidated' && user?.profile?.preferredCurrency) {
+    portfolioCurrency = user.profile.preferredCurrency;
+  }
+
+  // Spot rates for FX deal lifecycles: fetch (a) foreign→base for mark-to-market
+  // on every open leg and (b) base→portfolioCurrency to express per-row P&L in
+  // the displayed currency. Both depend on `portfolioCurrency`, so this effect
+  // is declared after the portfolio currency is resolved.
+  useEffect(() => {
+    const pairs = new Set();
+    for (const lc of fxDealLifecyclesRaw) {
+      if (lc.status !== 'closed') {
+        const f = lc.currentLeg?.foreignCurrency;
+        const b = lc.currentLeg?.baseCurrency;
+        if (f && b && f !== b) pairs.add(`${f}${b}`);
+      }
+      const base = lc.baseCurrency;
+      if (base && portfolioCurrency && base !== portfolioCurrency) {
+        pairs.add(`${base}${portfolioCurrency}`);
+      }
+    }
+    // Also fetch the POES-derived (foreign,base) pairs for each FX-forward
+    // holding. POES is authoritative for the deal's actual currency pair —
+    // operation columns can mis-label USD-paired deals, so the lifecycle pairs
+    // alone aren't enough.
+    for (const deal of fxForwardDeals) {
+      const f = deal?.notional?.foreignCurrency;
+      const b = deal?.notional?.baseCurrency;
+      if (f && b && f !== b) pairs.add(`${f}${b}`);
+      if (b && portfolioCurrency && b !== portfolioCurrency) {
+        pairs.add(`${b}${portfolioCurrency}`);
+      }
+    }
+    const missing = [...pairs].filter(p => !(p in fxSpotRates));
+    if (missing.length === 0) return;
+    const forexKeys = missing.map(p => `${p}.FOREX`);
+    Meteor.callAsync('currencyCache.getRates', forexKeys)
+      .then(result => {
+        if (!result?.success || !result.rates) return;
+        const next = { ...fxSpotRates };
+        for (const fk of forexKeys) {
+          const raw = result.rates[fk];
+          const numeric = raw != null && typeof raw === 'object'
+            ? Number(raw.rate ?? raw.value ?? raw.price)
+            : Number(raw);
+          if (Number.isFinite(numeric)) {
+            next[fk.replace('.FOREX', '')] = numeric;
+          }
+        }
+        setFxSpotRates(next);
+      })
+      .catch(err => console.warn('[PMS] Failed to fetch FX spot rates:', err));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    fxDealLifecyclesRaw.map(l => `${l.currentLeg?.foreignCurrency}${l.currentLeg?.baseCurrency}|${l.baseCurrency}`).join(','),
+    fxForwardDeals.map(d => `${d?.notional?.foreignCurrency}${d?.notional?.baseCurrency}`).join(','),
+    portfolioCurrency
+  ]);
+
+  // Augment each lifecycle with realized/unrealized P&L already converted to the
+  // displayed portfolioCurrency, so per-row cells and totals are coherent across
+  // EUR-, ILS-, and USD-base deals.
+  const fxDealLifecycles = fxDealLifecyclesRaw.map(lc => {
+    const baseCcy = lc.baseCurrency;
+    const toPortfolio = (amountBase) => {
+      if (amountBase == null || !baseCcy || !portfolioCurrency) return null;
+      if (baseCcy === portfolioCurrency) return amountBase;
+      // EOD ticker `${baseCcy}${portfolioCurrency}.FOREX` is portfolio-per-base.
+      const conv = fxSpotRates[`${baseCcy}${portfolioCurrency}`];
+      return conv && conv > 0 ? amountBase * conv : null;
+    };
+    const realizedPortfolio = toPortfolio(lc.realizedPnLBase);
+    const unrealizedPortfolio = toPortfolio(lc.unrealizedPnLBase);
+    const pnLPortfolio = realizedPortfolio == null && unrealizedPortfolio == null
+      ? null
+      : (realizedPortfolio || 0) + (unrealizedPortfolio || 0);
+    return { ...lc, realizedPnLPortfolio: realizedPortfolio, unrealizedPnLPortfolio: unrealizedPortfolio, pnLPortfolio };
+  });
 
   // Check if portfolio has mixed instrument currencies
   const instrumentCurrencyCounts = dummyPositions.reduce((counts, p) => {
@@ -1598,6 +2181,16 @@ const PortfolioManagementSystem = ({ user }) => {
 
     const titleCase = (s) => s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
+    // Build a portfolio-name lookup keyed by `${accountNumber}|${bankId}` so each
+    // holding can be labelled with the human-readable account name (or a sensible
+    // fallback) on its export row.
+    const portfolioNameByKey = bankAccounts.reduce((acc, ba) => {
+      const key = `${ba.accountNumber || ''}|${ba.bankId || ''}`;
+      const fallback = `${ba.bankShortName || ''}${ba.bankShortName && ba.accountNumber ? ' - ' : ''}${ba.accountNumber || ''}`.trim();
+      acc[key] = ba.name || ba.comment || fallback;
+      return acc;
+    }, {});
+
     const data = allHoldings.map(h => {
       const enrichment = h.linkedProductId ? enrichmentByProductId[h.linkedProductId] : null;
       const minPct = enrichment?.minGuaranteedPercent ?? null;
@@ -1645,6 +2238,7 @@ const PortfolioManagementSystem = ({ user }) => {
         'Currency': h.currency || '',
         'Portfolio Currency': h.portfolioCurrency || portfolioCurrency || '',
         'Bank': h.bankName || '',
+        'Portfolio': portfolioNameByKey[`${h.portfolioCode || ''}|${h.bankId || ''}`] || '',
         'Portfolio Code': h.portfolioCode || '',
         'Weight in Portfolio %': weightInPortfolio,
         'Price Date': h.priceDate ? new Date(h.priceDate).toLocaleDateString() : '',
@@ -2320,6 +2914,76 @@ const PortfolioManagementSystem = ({ user }) => {
               FX Forwards
             </h3>
 
+            {/* Aggregate realized pair P&L: only matched buy-sell pairs in
+                each group contribute. Single open trades and same-direction
+                groups have no P&L. */}
+            {(() => {
+              // Group deals by (currency pair, value date, portfolio).
+              const groupKey = (d) => {
+                const f = d?.notional?.foreignCurrency || d?.foreignLeg?.currency || '?';
+                const b = d?.notional?.baseCurrency    || d?.baseLeg?.currency    || '?';
+                const pair = [f, b].sort().join('/');
+                const vd = d.valueDate ? new Date(d.valueDate).toISOString().slice(0, 10) : 'no-value-date';
+                const pc = d.portfolioCode || d.accountNumber || '?';
+                return `${pair}|${vd}|${pc}`;
+              };
+              const agg = new Map(); // key → { buyAmt, buyW, sellAmt, sellW, baseCcy }
+              for (const d of fxForwardDeals) {
+                const k = groupKey(d);
+                const f = d?.notional?.foreignAmount;
+                const rate = d?.notional?.fxRate;
+                if (f == null || !rate || rate <= 0) continue;
+                if (!agg.has(k)) agg.set(k, { buyAmt: 0, buyW: 0, sellAmt: 0, sellW: 0, baseCcy: d?.notional?.baseCurrency });
+                const e = agg.get(k);
+                const abs = Math.abs(f);
+                if (f > 0) { e.buyAmt += abs; e.buyW += rate * abs; }
+                else { e.sellAmt += abs; e.sellW += rate * abs; }
+              }
+              let totalMtm = 0; // (kept variable name to minimise churn — semantics: total realized pair P&L in portfolioCurrency)
+              for (const [, e] of agg) {
+                const matched = Math.min(e.buyAmt, e.sellAmt);
+                if (matched <= 0) continue;
+                const avgBuy = e.buyW / e.buyAmt;
+                const avgSell = e.sellW / e.sellAmt;
+                if (!avgBuy || !avgSell) continue;
+                const pnlBase = matched * (1 / avgSell - 1 / avgBuy);
+                if (e.baseCcy === portfolioCurrency) {
+                  totalMtm += pnlBase;
+                } else {
+                  const conv = fxSpotRates[`${e.baseCcy}${portfolioCurrency}`];
+                  if (conv && conv > 0) totalMtm += pnlBase * conv;
+                }
+              }
+              // Realized P&L from MFRX-tracked closed lifecycles (legacy path).
+              const totalRealized = fxDealLifecycles.reduce((s, l) => s + (l.realizedPnLPortfolio || 0), 0);
+              const closedCount = fxDealLifecycles.filter(l => l.status === 'closed').length;
+              return (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', gap: '1rem', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: '1rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                    <span title="Sum of P&L across all paired trades (groups of ≥2 trades sharing currency pair + value date). Singles don't have a P&L.">
+                      Pair P&L: <strong style={{ color: totalMtm >= 0 ? '#10b981' : '#ef4444' }}>{formatCurrency(totalMtm, portfolioCurrency)}</strong>
+                    </span>
+                    {closedCount > 0 && (
+                      <span title="Realized P&L from round-trip pairs (open trade offset by a closing trade).">
+                        Realized P&L: <strong style={{ color: totalRealized >= 0 ? '#10b981' : '#ef4444' }}>{formatCurrency(totalRealized, portfolioCurrency)}</strong>
+                      </span>
+                    )}
+                  </div>
+                  {closedCount > 0 && (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                      <input
+                        type="checkbox"
+                        checked={showClosedLifecycles}
+                        onChange={(e) => setShowClosedLifecycles(e.target.checked)}
+                        style={{ cursor: 'pointer' }}
+                      />
+                      Show closed ({closedCount})
+                    </label>
+                  )}
+                </div>
+              );
+            })()}
+
             <div style={{ overflowX: 'auto' }}>
               <table style={{
                 width: '100%',
@@ -2332,96 +2996,636 @@ const PortfolioManagementSystem = ({ user }) => {
                     background: 'var(--bg-tertiary)'
                   }}>
                     <th style={{ padding: '1rem', textAlign: 'left', fontWeight: '600', color: 'var(--text-secondary)' }}>Reference</th>
-                    <th style={{ padding: '1rem', textAlign: 'left', fontWeight: '600', color: 'var(--text-secondary)' }}>Currency</th>
+                    <th style={{ padding: '1rem', textAlign: 'right', fontWeight: '600', color: 'var(--text-secondary)' }}>Bought</th>
+                    <th style={{ padding: '1rem', textAlign: 'right', fontWeight: '600', color: 'var(--text-secondary)' }}>Sold</th>
+                    <th style={{ padding: '1rem', textAlign: 'left', fontWeight: '600', color: 'var(--text-secondary)' }}>Trade Date</th>
                     <th style={{ padding: '1rem', textAlign: 'left', fontWeight: '600', color: 'var(--text-secondary)' }}>Value Date</th>
-                    <th style={{ padding: '1rem', textAlign: 'right', fontWeight: '600', color: 'var(--text-secondary)' }}>Amount</th>
-                    <th style={{ padding: '1rem', textAlign: 'right', fontWeight: '600', color: 'var(--text-secondary)' }}>Portfolio Value ({portfolioCurrency})</th>
+                    <th style={{ padding: '1rem', textAlign: 'right', fontWeight: '600', color: 'var(--text-secondary)' }}>Entry Rate</th>
+                    <th style={{ padding: '1rem', textAlign: 'right', fontWeight: '600', color: 'var(--text-secondary)' }}>Current Rate</th>
+                    <th
+                      title="P&L expressed in the bought currency (the leg you're long)."
+                      style={{ padding: '1rem', textAlign: 'right', fontWeight: '600', color: 'var(--text-secondary)' }}
+                    >P&L (bought)</th>
+                    <th
+                      title="P&L (mark-to-market) in the portfolio currency."
+                      style={{ padding: '1rem', textAlign: 'right', fontWeight: '600', color: 'var(--text-secondary)' }}
+                    >P&L ({portfolioCurrency})</th>
                     <th style={{ padding: '1rem', textAlign: 'left', fontWeight: '600', color: 'var(--text-secondary)' }}>Account</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {fxForwardPositions.map((fx, index) => (
-                    <tr
-                      key={fx.id || index}
-                      style={{
-                        borderBottom: index < fxForwardPositions.length - 1 ? '1px solid var(--border-color)' : 'none',
-                        transition: 'background 0.2s ease'
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.background = 'var(--bg-hover)';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.background = 'transparent';
-                      }}
-                    >
-                      <td style={{ padding: '1rem', fontWeight: '500', color: 'var(--text-primary)' }}>
-                        {fx.ticker || fx.name || 'FX Forward'}
-                      </td>
-                      <td style={{ padding: '1rem', color: 'var(--text-primary)' }}>
-                        {fx.currency}
-                      </td>
-                      <td style={{ padding: '1rem', color: 'var(--text-secondary)', fontFamily: "'JetBrains Mono', monospace" }}>
-                        {fx.bankSpecificData?.instrumentDates?.endDate
-                          ? new Date(fx.bankSpecificData.instrumentDates.endDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
-                          : 'N/A'}
-                      </td>
-                      <td style={{
-                        padding: '1rem',
-                        textAlign: 'right',
-                        fontWeight: '600',
-                        fontFamily: "'JetBrains Mono', monospace",
-                        color: (fx.marketValueOriginalCurrency || fx.marketValue || 0) >= 0 ? '#10b981' : '#ef4444'
-                      }}>
-                        {formatCurrency(fx.marketValueOriginalCurrency || fx.marketValue || 0, fx.currency)}
-                      </td>
-                      <td style={{
-                        padding: '1rem',
-                        textAlign: 'right',
-                        fontWeight: '600',
-                        fontFamily: "'JetBrains Mono', monospace",
-                        color: '#3b82f6'
-                      }}>
-                        {formatCurrency(fx.marketValue || 0, portfolioCurrency)}
-                      </td>
-                      <td style={{
-                        padding: '1rem',
-                        color: 'var(--text-secondary)',
-                        fontSize: '0.85rem'
-                      }}>
-                        {fx.portfolioCode || fx.accountNumber || 'N/A'}
-                      </td>
-                    </tr>
-                  ))}
-                  {/* Total Row */}
-                  <tr style={{
-                    borderTop: '2px solid var(--border-color)',
-                    background: 'var(--bg-tertiary)'
-                  }}>
-                    <td style={{
-                      padding: '1rem',
-                      fontWeight: '700',
-                      color: 'var(--text-primary)',
-                      fontSize: '0.95rem'
-                    }}>
-                      Total FX Forwards ({fxForwardPositions.length})
-                    </td>
-                    <td style={{ padding: '1rem' }}></td>
-                    <td style={{ padding: '1rem' }}></td>
-                    <td style={{ padding: '1rem' }}></td>
-                    <td style={{
+                  {(() => {
+                    // Build a lookup of lifecycles by every dealId they touch, so a
+                    // holding row can be matched to a lifecycle regardless of which
+                    // leg's dealId the bank stamped on the position.
+                    const lifecycleByDealId = new Map();
+                    for (const lc of fxDealLifecycles) {
+                      for (const leg of lc.legs) lifecycleByDealId.set(leg.dealId, lc);
+                    }
+                    // Rows = holdings-deals enriched with lifecycle, then optionally
+                    // append historical closed lifecycles (no holding row) when toggled.
+                    const merged = fxForwardDeals.map(deal => ({
+                      kind: 'holding',
+                      deal,
+                      lifecycle: lifecycleByDealId.get(deal.dealId) || null
+                    }));
+                    if (showClosedLifecycles) {
+                      const seenLifecycleIds = new Set(
+                        merged.map(r => r.lifecycle?.lifecycleId).filter(Boolean)
+                      );
+                      for (const lc of fxDealLifecycles) {
+                        if (lc.status === 'closed' && !seenLifecycleIds.has(lc.lifecycleId)) {
+                          merged.push({ kind: 'history', deal: null, lifecycle: lc });
+                        }
+                      }
+                    }
+                    // Compute trade-pair grouping (same currency pair + same
+                    // value date + same portfolio). Group ≥2 trades together
+                    // so they render adjacent in the table and the user sees
+                    // their combined MTM inline.
+                    const groupKeyOf = (row) => {
+                      const d = row.deal;
+                      if (!d) return `__history_${row.lifecycle?.lifecycleId}`;
+                      const f = d?.notional?.foreignCurrency || d?.foreignLeg?.currency || '?';
+                      const b = d?.notional?.baseCurrency    || d?.baseLeg?.currency    || '?';
+                      const pair = [f, b].sort().join('/');
+                      const vd = d.valueDate ? new Date(d.valueDate).toISOString().slice(0, 10) : 'no-value-date';
+                      const pc = d.portfolioCode || d.accountNumber || '?';
+                      return `${pair}|${vd}|${pc}`;
+                    };
+                    const groupCounts = new Map();
+                    const groupMtm = new Map();
+                    // Per-group buy/sell aggregates for realized-pair P&L:
+                    //   - buyAmt / sellAmt: total foreign notional bought/sold
+                    //   - buyW / sellW: notional-weighted sum of entry rates
+                    //   → average buy/sell rate = weighted / amt
+                    //   → realized P&L (base ccy) = matched × (1/avgSell − 1/avgBuy)
+                    const groupAgg = new Map();
+                    for (const r of merged) {
+                      const k = groupKeyOf(r);
+                      groupCounts.set(k, (groupCounts.get(k) || 0) + 1);
+                      groupMtm.set(k, (groupMtm.get(k) || 0) + (r.deal?.mtmPortfolio || 0));
+                      const d = r.deal;
+                      const f = d?.notional?.foreignAmount;
+                      const rate = d?.notional?.fxRate;
+                      const baseCcy = d?.notional?.baseCurrency;
+                      if (f == null || !rate || rate <= 0) continue;
+                      if (!groupAgg.has(k)) {
+                        groupAgg.set(k, { buyAmt: 0, buyW: 0, sellAmt: 0, sellW: 0, baseCurrency: baseCcy });
+                      }
+                      const e = groupAgg.get(k);
+                      const abs = Math.abs(f);
+                      if (f > 0) { e.buyAmt += abs; e.buyW += rate * abs; }
+                      else { e.sellAmt += abs; e.sellW += rate * abs; }
+                    }
+                    const groupRealized = new Map();
+                    for (const [k, e] of groupAgg) {
+                      const matched = Math.min(e.buyAmt, e.sellAmt);
+                      if (matched <= 0) { groupRealized.set(k, null); continue; }
+                      const avgBuy = e.buyW / e.buyAmt;
+                      const avgSell = e.sellW / e.sellAmt;
+                      if (!avgBuy || !avgSell) { groupRealized.set(k, null); continue; }
+                      // P&L in BASE currency. Convention: rate is foreign-per-base
+                      // (ILS per EUR / ILS per USD). For 1 unit of foreign:
+                      //   cost basis (when bought): 1/avgBuy base
+                      //   proceeds (when sold):    1/avgSell base
+                      //   profit per foreign unit: (1/avgSell − 1/avgBuy)
+                      // Sold at a smaller rate than bought (fewer foreign per base
+                      // = foreign got more expensive) ⇒ positive P&L.
+                      const pnlBase = matched * (1 / avgSell - 1 / avgBuy);
+                      groupRealized.set(k, { amount: pnlBase, baseCurrency: e.baseCurrency, matched });
+                    }
+                    // Assign each group a distinct accent colour for the left
+                    // band. Only groups with ≥2 members get colour; singletons
+                    // get no band.
+                    const groupColors = ['#0ea5e9', '#a855f7', '#f59e0b', '#10b981', '#ef4444', '#22d3ee'];
+                    const colorByGroup = new Map();
+                    let colorIdx = 0;
+                    for (const [k, count] of groupCounts) {
+                      if (count >= 2) {
+                        colorByGroup.set(k, groupColors[colorIdx % groupColors.length]);
+                        colorIdx += 1;
+                      }
+                    }
+                    // Sort merged rows by (currency pair, trade date, dealId).
+                    // Pair groups (same currency-pair + value-date) stay
+                    // adjacent because all rows in a group share the pair
+                    // and typically the value date too.
+                    const pairOf = (r) => {
+                      const d = r.deal;
+                      if (!d) return '~__history__';
+                      const f = d?.notional?.foreignCurrency || d?.foreignLeg?.currency || '?';
+                      const b = d?.notional?.baseCurrency    || d?.baseLeg?.currency    || '?';
+                      return [f, b].sort().join('/');
+                    };
+                    const tradeTimeOf = (r) => {
+                      const td = r.deal?.tradeDate || r.lifecycle?.firstLeg?.tradeDate;
+                      return td ? new Date(td).getTime() : Number.MAX_SAFE_INTEGER;
+                    };
+                    merged.sort((a, b) => {
+                      const pa = pairOf(a);
+                      const pb = pairOf(b);
+                      if (pa !== pb) return pa.localeCompare(pb);
+                      const ta = tradeTimeOf(a);
+                      const tb = tradeTimeOf(b);
+                      if (ta !== tb) return ta - tb;
+                      return (a.deal?.dealId || '').localeCompare(b.deal?.dealId || '');
+                    });
+                    // Annotate each row with its group info so the renderer
+                    // doesn't recompute. Also flag the LAST row of each group
+                    // so we can render the combined P&L exactly once per group
+                    // (an individual open trade has no realized P&L; only the
+                    // group as a whole — once paired/closed — does).
+                    for (let i = 0; i < merged.length; i++) {
+                      const r = merged[i];
+                      const k = groupKeyOf(r);
+                      const next = merged[i + 1];
+                      r._groupKey = k;
+                      r._groupCount = groupCounts.get(k) || 1;
+                      r._groupMtm = groupMtm.get(k) || 0;
+                      r._groupRealized = groupRealized.get(k) || null;
+                      r._groupColor = colorByGroup.get(k) || null;
+                      r._isGroupLast = !next || groupKeyOf(next) !== k;
+                    }
+                    return merged;
+                  })().map((row, index, arr) => {
+                    const deal = row.deal;
+                    const lifecycle = row.lifecycle;
+                    const boughtCellStyle = {
                       padding: '1rem',
                       textAlign: 'right',
-                      fontWeight: '700',
-                      color: '#3b82f6',
-                      fontSize: '1.1rem'
-                    }}>
-                      {formatCurrency(totalFxForwardPortfolioValue, portfolioCurrency)}
-                    </td>
-                    <td style={{ padding: '1rem' }}></td>
-                  </tr>
+                      fontWeight: '600',
+                      fontFamily: "'JetBrains Mono', monospace",
+                      color: '#10b981'
+                    };
+                    const soldCellStyle = {
+                      padding: '1rem',
+                      textAlign: 'right',
+                      fontWeight: '600',
+                      fontFamily: "'JetBrains Mono', monospace",
+                      color: '#ef4444'
+                    };
+
+                    // Source for leg display:
+                    // - holding rows: prefer holding notional, fall back to per-leg MTM
+                    // - history rows: use the lifecycle's first leg amounts
+                    let leg1 = null, leg2 = null;
+                    let tradeDate = null, valueDate = null;
+                    let portfolioValue = null;
+                    let accountLabel = null;
+                    let dealIdLabel = '';
+                    let unenriched = false;
+
+                    if (row.kind === 'holding') {
+                      // POES is the AUTHORITATIVE source for the deal's foreign
+                      // and base currencies AND the direction sign of
+                      // foreignAmount. The lifecycle (built from MFRX columns)
+                      // can mis-label USD-paired deals (CFM stores
+                      // operationCurrency inconsistently across deals), so we
+                      // ONLY borrow the entry rate from the lifecycle — never
+                      // its currency labels or signed amounts.
+                      const lcLeg = lifecycle?.currentLeg;
+                      const n = deal.notional;
+                      const foreignSigned = n && n.foreignAmount != null
+                        ? n.foreignAmount
+                        : (lcLeg?.foreignAmount ?? null);
+                      const foreignCurrency = (n && n.foreignCurrency)
+                        || lcLeg?.foreignCurrency
+                        || null;
+                      const baseCurrency = (n && n.baseCurrency)
+                        || lcLeg?.baseCurrency
+                        || null;
+                      // Base amount: prefer the operation-derived entry rate
+                      // (foreignAmount / entryRate, CFM convention "foreign per
+                      // base"). When no entry rate is available (deal missing
+                      // from MFRX), fall back to today's spot rate so the user
+                      // still sees an approximate base amount instead of "—".
+                      let baseSigned = null;
+                      const lcEntryRate = lcLeg?.fxRate || null;
+                      if (foreignSigned != null && lcEntryRate) {
+                        baseSigned = -foreignSigned / lcEntryRate;
+                      } else if (foreignSigned != null && foreignCurrency && baseCurrency) {
+                        // EOD `${foreign}${base}.FOREX` returns base-per-foreign.
+                        const spotBasePerForeign = fxSpotRates[`${foreignCurrency}${baseCurrency}`];
+                        if (spotBasePerForeign && spotBasePerForeign > 0) {
+                          baseSigned = -foreignSigned * spotBasePerForeign;
+                        }
+                      }
+                      // Route the two legs to Bought (positive amount) and Sold
+                      // (negative amount) columns. An FX forward has exactly one
+                      // bought + one sold side. Display absolute values — the
+                      // "Sold" column header already implies direction.
+                      const foreignLegOut = foreignSigned != null
+                        ? { currency: foreignCurrency, amount: foreignSigned }
+                        : (foreignCurrency ? { currency: foreignCurrency, amount: null } : null);
+                      const baseLegOut = baseCurrency
+                        ? { currency: baseCurrency, amount: baseSigned }
+                        : null;
+                      // Pick the bought leg: the one whose amount is positive.
+                      // When one of the two amounts is unknown (null), default
+                      // foreign → Bought to keep ordering stable.
+                      if (foreignLegOut?.amount != null && baseLegOut?.amount != null) {
+                        if (foreignLegOut.amount >= 0) {
+                          leg1 = foreignLegOut;
+                          leg2 = baseLegOut;
+                        } else {
+                          leg1 = baseLegOut;
+                          leg2 = foreignLegOut;
+                        }
+                      } else {
+                        leg1 = foreignLegOut;
+                        leg2 = baseLegOut;
+                      }
+                      tradeDate = deal.tradeDate;
+                      valueDate = deal.valueDate;
+                      portfolioValue = deal.totalPortfolioValue;
+                      accountLabel = deal.portfolioCode || deal.accountNumber || 'N/A';
+                      dealIdLabel = deal.dealId;
+                      // "Unenriched": foreign notional missing entirely (legacy
+                      // holding parsed before the POES fix; re-import to clear).
+                      unenriched = !(n && n.foreignAmount != null);
+                    } else {
+                      // history row: render the closed lifecycle from operation data
+                      const firstLeg = lifecycle.firstLeg;
+                      leg1 = firstLeg ? { currency: firstLeg.foreignCurrency, amount: firstLeg.foreignAmount } : null;
+                      leg2 = firstLeg ? { currency: firstLeg.baseCurrency, amount: firstLeg.baseAmount } : null;
+                      tradeDate = firstLeg?.tradeDate || null;
+                      valueDate = firstLeg?.valueDate || null;
+                      portfolioValue = null; // no current holding
+                      accountLabel = lifecycle.portfolioCode || 'N/A';
+                      dealIdLabel = lifecycle.lifecycleId;
+                    }
+
+                    // Status badge + rate columns from lifecycle
+                    const status = lifecycle?.status || (unenriched ? 'unenriched' : 'open');
+                    const rollCount = lifecycle ? lifecycle.legs.filter(l => l.role === 'roll-open').length : 0;
+                    const statusBadge = (() => {
+                      if (status === 'closed') return { label: 'Closed', color: '#6b7280', bg: 'rgba(107, 114, 128, 0.15)' };
+                      if (status === 'rolled') return { label: `Rolled (${rollCount})`, color: '#0ea5e9', bg: 'rgba(14, 165, 233, 0.15)' };
+                      if (status === 'unenriched') return { label: 'Unenriched', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.15)' };
+                      return { label: 'Open', color: '#10b981', bg: 'rgba(16, 185, 129, 0.15)' };
+                    })();
+
+                    // Entry rate priority:
+                    //   1) lifecycle firstLeg.fxRate (from MFRX operation)
+                    //   2) deal.notional.fxRate (set by parser-side enrichment
+                    //      or by manualEnrichment for deals without MFRX)
+                    const entryRate = (lifecycle?.firstLeg?.fxRate)
+                      || (deal?.notional?.fxRate)
+                      || null;
+                    const poesForeignCcy = deal?.notional?.foreignCurrency || lifecycle?.currentLeg?.foreignCurrency || null;
+                    const poesBaseCcy    = deal?.notional?.baseCurrency    || lifecycle?.currentLeg?.baseCurrency    || null;
+                    let currentRate = null;
+                    let currentRateLabel = null;
+                    if (lifecycle?.status === 'closed') {
+                      const closeLeg = lifecycle.legs.filter(l => l.role === 'close').pop();
+                      currentRate = closeLeg?.fxRate || null;
+                      currentRateLabel = closeLeg?.tradeDate ? `Closed ${new Date(closeLeg.tradeDate).toLocaleDateString('en-GB')}` : 'Closed';
+                    } else if (poesForeignCcy && poesBaseCcy) {
+                      // EOD's `${foreign}${base}.FOREX` returns base-per-foreign
+                      // (e.g. ILSEUR.FOREX = 0.2949 EUR per ILS). CFM always
+                      // quotes entry rate as "ILS per other currency" (3.6,
+                      // 3.7050, 3.0950, ...). To keep the column internally
+                      // consistent we want to show the spot in the same
+                      // direction:
+                      //   - If entry rate is known: match its direction.
+                      //   - Otherwise: invert when rawSpot < 1 (typical
+                      //     signature of an inverse-quoted rate, e.g. 0.2949
+                      //     → 1/0.2949 = 3.391).
+                      const rawSpot = fxSpotRates[`${poesForeignCcy}${poesBaseCcy}`] || null;
+                      if (rawSpot && entryRate) {
+                        const sameDirection = (entryRate >= 1 && rawSpot >= 1) || (entryRate < 1 && rawSpot < 1);
+                        currentRate = sameDirection ? rawSpot : (1 / rawSpot);
+                      } else if (rawSpot && rawSpot > 0 && rawSpot < 1) {
+                        currentRate = 1 / rawSpot;
+                      } else {
+                        currentRate = rawSpot;
+                      }
+                      currentRateLabel = currentRate ? 'Today\'s spot' : 'Loading…';
+                    }
+
+                    // P&L = foreign leg's marketValue from POES (BALANCE_PERF,
+                    // the EUR-equivalent of the deal's current MTM). For an FX
+                    // forward this IS the unrealized P&L. Robust across EUR/ILS
+                    // and USD/ILS deals because POES reports the MTM directly,
+                    // no rate-convention math required.
+                    const pnLBase = (deal && deal.mtmPortfolio != null) ? deal.mtmPortfolio : null;
+                    const hasPnL = pnLBase != null;
+
+                    // MTM in the bought currency: use POES BALANCE_POSITION on
+                    // the foreign leg when the bought side IS the foreign leg
+                    // (its marketValueOriginalCurrency is the MTM in its own
+                    // currency). Otherwise convert mtmPortfolio (EUR) → bought
+                    // currency via today's spot rate.
+                    const boughtCcy = leg1?.currency || null;
+                    let mtmInBoughtCcy = null;
+                    if (boughtCcy && deal) {
+                      if (boughtCcy === portfolioCurrency) {
+                        mtmInBoughtCcy = pnLBase;
+                      } else if (deal.foreignLeg
+                          && deal.foreignLeg.currency === boughtCcy
+                          && deal.foreignLeg.marketValueOriginalCurrency != null
+                          && deal.foreignLeg.marketValueOriginalCurrency !== 0) {
+                        mtmInBoughtCcy = deal.foreignLeg.marketValueOriginalCurrency;
+                      } else if (pnLBase != null) {
+                        // Convert EUR MTM into bought currency:
+                        //   spot[`${boughtCcy}${portfolioCurrency}`] = portfolio per bought
+                        //   MTM_bought = MTM_eur / (portfolio per bought)
+                        // The display layer already inverts spot < 1 to "ILS
+                        // per EUR" form, but here we want the EOD raw direction
+                        // (base-per-foreign), so read fxSpotRates directly.
+                        const portfolioPerBought = fxSpotRates[`${boughtCcy}${portfolioCurrency}`];
+                        if (portfolioPerBought && portfolioPerBought > 0) {
+                          mtmInBoughtCcy = pnLBase / portfolioPerBought;
+                        }
+                      }
+                    }
+
+                    const renderLeg = (leg) => {
+                      if (!leg) return '—';
+                      // Bought/Sold columns: the column header already encodes
+                      // direction, so display absolute values without sign.
+                      if (leg.amount == null) return `${leg.currency || ''} —`.trim();
+                      const absAmount = Math.abs(leg.amount);
+                      return `${leg.currency} ${formatCurrency(absAmount, leg.currency).replace(/^[^\d-]+/, '').trim()}`;
+                    };
+                    const fmtDate = (d) => d
+                      ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+                      : 'N/A';
+
+                    const expandable = lifecycle && lifecycle.legs.length > 1;
+                    const expanded = lifecycle && expandedLifecycleIds.has(lifecycle.lifecycleId);
+                    const rowKey = `${row.kind}-${dealIdLabel}-${index}`;
+
+                    // Trade-pair grouping visuals: rows in a ≥2-trade group get
+                    // a colored left band so the eye can track which trades
+                    // belong together. The first row of a group also gets a
+                    // tighter top divider to visually separate groups.
+                    const groupColor = row._groupColor;
+                    const isGrouped = (row._groupCount || 1) >= 2;
+                    const prevRow = index > 0 ? arr[index - 1] : null;
+                    const isGroupStart = isGrouped && (!prevRow || prevRow._groupKey !== row._groupKey);
+                    const rowBg = isGroupStart ? 'var(--bg-secondary)' : 'transparent';
+                    return (
+                      <React.Fragment key={rowKey}>
+                        <tr
+                          style={{
+                            borderBottom: index < arr.length - 1 ? '1px solid var(--border-color)' : 'none',
+                            borderTop: isGroupStart ? '2px solid var(--border-color)' : undefined,
+                            borderLeft: groupColor ? `4px solid ${groupColor}` : '4px solid transparent',
+                            background: rowBg,
+                            transition: 'background 0.2s ease',
+                            cursor: expandable ? 'pointer' : 'default'
+                          }}
+                          onClick={() => expandable && toggleLifecycleExpansion(lifecycle.lifecycleId)}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-hover)'; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = rowBg; }}
+                        >
+                          <td style={{ padding: '1rem', fontWeight: '500', color: 'var(--text-primary)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                              {expandable && (
+                                <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', display: 'inline-block', transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>▸</span>
+                              )}
+                              <span>{dealIdLabel}</span>
+                              <span style={{
+                                fontSize: '0.7rem', fontWeight: '600',
+                                padding: '2px 6px', borderRadius: '4px',
+                                color: statusBadge.color, background: statusBadge.bg
+                              }}>
+                                {statusBadge.label}
+                              </span>
+                              {isGrouped && (
+                                <span
+                                  title={`Tied with ${row._groupCount - 1} other trade(s) on the same currency pair + value date`}
+                                  style={{
+                                    fontSize: '0.7rem', fontWeight: '600',
+                                    padding: '2px 6px', borderRadius: '4px',
+                                    color: groupColor, background: `${groupColor}22`
+                                  }}
+                                >
+                                  🔗 Pair ({row._groupCount})
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td style={boughtCellStyle}>
+                            {renderLeg(leg1)}
+                          </td>
+                          <td style={soldCellStyle}>
+                            {renderLeg(leg2)}
+                          </td>
+                          <td style={{ padding: '1rem', color: 'var(--text-secondary)', fontFamily: "'JetBrains Mono', monospace" }}>
+                            {fmtDate(tradeDate)}
+                          </td>
+                          <td style={{ padding: '1rem', color: 'var(--text-secondary)', fontFamily: "'JetBrains Mono', monospace" }}>
+                            {fmtDate(valueDate)}
+                          </td>
+                          <td style={{ padding: '1rem', textAlign: 'right', color: 'var(--text-secondary)', fontFamily: "'JetBrains Mono', monospace" }}>
+                            {entryRate ? entryRate.toFixed(4) : '—'}
+                          </td>
+                          <td
+                            title={currentRateLabel || ''}
+                            style={{ padding: '1rem', textAlign: 'right', color: 'var(--text-secondary)', fontFamily: "'JetBrains Mono', monospace" }}
+                          >
+                            {currentRate ? currentRate.toFixed(4) : '—'}
+                          </td>
+                          {/* P&L = realized P&L of matched buy-sell pairs in
+                              the group. A single open trade alone has no P&L.
+                              A group of same-direction trades (all buys or all
+                              sells) also has no realized P&L. Only when the
+                              group has BOTH buys and sells does the matched
+                              portion (min total) generate a realized P&L. */}
+                          {(() => {
+                            const realized = row._groupRealized;
+                            const showGroupPnL = isGrouped && row._isGroupLast && realized && realized.amount != null;
+                            // Realized P&L in base currency.
+                            const pnlBase = realized?.amount ?? null;
+                            const baseCcy = realized?.baseCurrency;
+                            // Convert base → portfolio currency for the EUR column.
+                            let pnlPortfolio = null;
+                            if (showGroupPnL && pnlBase != null && baseCcy) {
+                              if (baseCcy === portfolioCurrency) {
+                                pnlPortfolio = pnlBase;
+                              } else {
+                                const portfolioPerBase = fxSpotRates[`${baseCcy}${portfolioCurrency}`];
+                                if (portfolioPerBase && portfolioPerBase > 0) {
+                                  pnlPortfolio = pnlBase * portfolioPerBase;
+                                }
+                              }
+                            }
+                            // P&L in the bought-currency column: convert base→bought.
+                            let pnlBought = null;
+                            if (showGroupPnL && pnlBase != null && baseCcy && boughtCcy) {
+                              if (boughtCcy === baseCcy) {
+                                pnlBought = pnlBase;
+                              } else if (pnlPortfolio != null) {
+                                const portfolioPerBought = boughtCcy === portfolioCurrency
+                                  ? 1
+                                  : fxSpotRates[`${boughtCcy}${portfolioCurrency}`];
+                                if (portfolioPerBought && portfolioPerBought > 0) {
+                                  pnlBought = pnlPortfolio / portfolioPerBought;
+                                }
+                              }
+                            }
+                            const pnlColor = (pnlBase || 0) >= 0 ? '#10b981' : '#ef4444';
+                            return (
+                              <>
+                                <td style={{
+                                  padding: '1rem',
+                                  textAlign: 'right',
+                                  fontWeight: '600',
+                                  fontFamily: "'JetBrains Mono', monospace",
+                                  color: showGroupPnL && pnlBought != null ? pnlColor : 'var(--text-muted)'
+                                }}>
+                                  {showGroupPnL && pnlBought != null && boughtCcy
+                                    ? `${boughtCcy} ${formatCurrency(pnlBought, boughtCcy).replace(/^[^\d-]+/, '').trim()}`
+                                    : '—'}
+                                </td>
+                                <td style={{
+                                  padding: '1rem',
+                                  textAlign: 'right',
+                                  fontWeight: '600',
+                                  fontFamily: "'JetBrains Mono', monospace",
+                                  color: showGroupPnL && pnlPortfolio != null ? pnlColor : 'var(--text-muted)'
+                                }}>
+                                  {showGroupPnL && pnlPortfolio != null
+                                    ? formatCurrency(pnlPortfolio, portfolioCurrency)
+                                    : '—'}
+                                </td>
+                              </>
+                            );
+                          })()}
+                          <td style={{ padding: '1rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                            {accountLabel}
+                          </td>
+                        </tr>
+                        {expanded && lifecycle && (
+                          <tr style={{ background: 'var(--bg-tertiary)' }}>
+                            <td colSpan={10} style={{ padding: '0.75rem 1rem 1rem 2.5rem' }}>
+                              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                Lifecycle ({lifecycle.legs.length} legs)
+                              </div>
+                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                                <thead>
+                                  <tr style={{ color: 'var(--text-muted)' }}>
+                                    <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: '500' }}>Deal</th>
+                                    <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: '500' }}>Role</th>
+                                    <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: '500' }}>Trade Date</th>
+                                    <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: '500' }}>Value Date</th>
+                                    <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: '500' }}>Notional</th>
+                                    <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: '500' }}>Rate</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {lifecycle.legs.map(leg => {
+                                    const roleLabel = {
+                                      'open': 'Open',
+                                      'roll-close': 'Roll-close',
+                                      'roll-open': 'Roll-open',
+                                      'close': 'Close'
+                                    }[leg.role] || leg.role;
+                                    return (
+                                      <tr key={leg.dealId + '-' + leg.role} style={{ color: 'var(--text-primary)' }}>
+                                        <td style={{ padding: '4px 8px', fontFamily: "'JetBrains Mono', monospace" }}>{leg.dealId}</td>
+                                        <td style={{ padding: '4px 8px' }}>{roleLabel}</td>
+                                        <td style={{ padding: '4px 8px', fontFamily: "'JetBrains Mono', monospace" }}>{fmtDate(leg.tradeDate)}</td>
+                                        <td style={{ padding: '4px 8px', fontFamily: "'JetBrains Mono', monospace" }}>{fmtDate(leg.valueDate)}</td>
+                                        <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace" }}>
+                                          {leg.foreignCurrency} {formatCurrency(leg.foreignAmount, leg.foreignCurrency).replace(/^[^\d-]+/, '').trim()}
+                                        </td>
+                                        <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace" }}>
+                                          {leg.fxRate ? leg.fxRate.toFixed(4) : '—'}
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                  {/* Total Row */}
+                  {(() => {
+                    // Mirror the header strip: sum realized pair P&L across
+                    // (pair, value-date, portfolio) groups where matched
+                    // buy-sell volume > 0.
+                    const groupKey = (d) => {
+                      const f = d?.notional?.foreignCurrency || d?.foreignLeg?.currency || '?';
+                      const b = d?.notional?.baseCurrency    || d?.baseLeg?.currency    || '?';
+                      const pair = [f, b].sort().join('/');
+                      const vd = d.valueDate ? new Date(d.valueDate).toISOString().slice(0, 10) : 'no-value-date';
+                      const pc = d.portfolioCode || d.accountNumber || '?';
+                      return `${pair}|${vd}|${pc}`;
+                    };
+                    const agg = new Map();
+                    for (const d of fxForwardDeals) {
+                      const k = groupKey(d);
+                      const f = d?.notional?.foreignAmount;
+                      const rate = d?.notional?.fxRate;
+                      if (f == null || !rate || rate <= 0) continue;
+                      if (!agg.has(k)) agg.set(k, { buyAmt: 0, buyW: 0, sellAmt: 0, sellW: 0, baseCcy: d?.notional?.baseCurrency });
+                      const e = agg.get(k);
+                      const abs = Math.abs(f);
+                      if (f > 0) { e.buyAmt += abs; e.buyW += rate * abs; }
+                      else { e.sellAmt += abs; e.sellW += rate * abs; }
+                    }
+                    let totalMtm = 0;
+                    for (const [, e] of agg) {
+                      const matched = Math.min(e.buyAmt, e.sellAmt);
+                      if (matched <= 0) continue;
+                      const avgBuy = e.buyW / e.buyAmt;
+                      const avgSell = e.sellW / e.sellAmt;
+                      if (!avgBuy || !avgSell) continue;
+                      const pnlBase = matched * (1 / avgSell - 1 / avgBuy);
+                      if (e.baseCcy === portfolioCurrency) {
+                        totalMtm += pnlBase;
+                      } else {
+                        const conv = fxSpotRates[`${e.baseCcy}${portfolioCurrency}`];
+                        if (conv && conv > 0) totalMtm += pnlBase * conv;
+                      }
+                    }
+                    const totalRealized = fxDealLifecycles.reduce((s, l) => s + (l.realizedPnLPortfolio || 0), 0);
+                    const netPnL = totalRealized + totalMtm;
+                    return (
+                      <tr style={{
+                        borderTop: '2px solid var(--border-color)',
+                        background: 'var(--bg-tertiary)'
+                      }}>
+                        <td style={{
+                          padding: '1rem',
+                          fontWeight: '700',
+                          color: 'var(--text-primary)',
+                          fontSize: '0.95rem'
+                        }}>
+                          Total FX Forwards ({fxForwardDeals.length})
+                        </td>
+                        <td style={{ padding: '1rem' }}></td>
+                        <td style={{ padding: '1rem' }}></td>
+                        <td style={{ padding: '1rem' }}></td>
+                        <td style={{ padding: '1rem' }}></td>
+                        <td style={{ padding: '1rem' }}></td>
+                        <td style={{ padding: '1rem' }}></td>
+                        <td style={{ padding: '1rem' }}></td>
+                        <td style={{
+                          padding: '1rem',
+                          textAlign: 'right',
+                          fontWeight: '700',
+                          color: netPnL >= 0 ? '#10b981' : '#ef4444',
+                          fontSize: '1.1rem'
+                        }}>
+                          {formatCurrency(netPnL, portfolioCurrency)}
+                        </td>
+                        <td style={{ padding: '1rem' }}></td>
+                      </tr>
+                    );
+                  })()}
                 </tbody>
               </table>
             </div>
+
           </div>
         </LiquidGlassCard>
       )}
@@ -4074,6 +5278,141 @@ const PortfolioManagementSystem = ({ user }) => {
         </div>
       </LiquidGlassCard>
 
+      {/* Issuer Allocation (Structured Products) */}
+      {issuerAllocation && issuerAllocation.hasData && (
+        <LiquidGlassCard style={{
+          marginTop: '1rem',
+          background: theme === 'light' ? '#6b7280' : '#0f172a',
+          backdropFilter: 'none'
+        }}>
+          <div style={{ padding: '1rem' }}>
+            <h3 style={{
+              margin: '0 0 1rem 0',
+              fontSize: '1.1rem',
+              fontWeight: '400',
+              color: 'var(--text-primary)'
+            }}>
+              Issuer Allocation <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: '400' }}>(Structured Products)</span>
+            </h3>
+            <div style={{ marginBottom: '1.5rem', fontSize: '0.875rem', color: 'var(--text-muted)' }}>
+              {issuerAllocation.issuers.length} issuer{issuerAllocation.issuers.length > 1 ? 's' : ''} · Total {formatCurrency(issuerAllocation.totalValue, portfolioCurrency)}
+            </div>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(min(280px, 100%), 1fr))',
+              gap: '1.5rem',
+              alignItems: 'start'
+            }}>
+              {/* Doughnut Chart */}
+              <div style={{ maxWidth: '350px', margin: '0 auto', width: '100%' }}>
+                {(() => {
+                  // Consistent palette + stable color per issuer based on a
+                  // simple hash so the same issuer keeps the same colour
+                  // across renders even when ordering changes.
+                  const palette = [
+                    '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444',
+                    '#06b6d4', '#ec4899', '#14b8a6', '#f97316', '#a855f7',
+                    '#0891b2', '#dc2626', '#7c3aed', '#db2777', '#64748b'
+                  ];
+                  const colorFor = (name) => {
+                    let h = 0;
+                    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+                    return palette[h % palette.length];
+                  };
+                  return (
+                    <Doughnut
+                      data={{
+                        labels: issuerAllocation.issuers.map(i => i.name),
+                        datasets: [{
+                          data: issuerAllocation.issuers.map(i => i.value),
+                          backgroundColor: issuerAllocation.issuers.map(i => colorFor(i.name)),
+                          borderColor: theme === 'light' ? '#ffffff' : '#111827',
+                          borderWidth: 2
+                        }]
+                      }}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                          legend: { display: false },
+                          tooltip: {
+                            callbacks: {
+                              label: (ctx) => {
+                                const value = ctx.parsed;
+                                const pct = ((value / issuerAllocation.totalValue) * 100).toFixed(1);
+                                return `${ctx.label}: ${formatCurrency(value, portfolioCurrency)} (${pct}%)`;
+                              }
+                            }
+                          }
+                        }
+                      }}
+                    />
+                  );
+                })()}
+              </div>
+
+              {/* Legend / breakdown list */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {(() => {
+                  const palette = [
+                    '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444',
+                    '#06b6d4', '#ec4899', '#14b8a6', '#f97316', '#a855f7',
+                    '#0891b2', '#dc2626', '#7c3aed', '#db2777', '#64748b'
+                  ];
+                  const colorFor = (name) => {
+                    let h = 0;
+                    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+                    return palette[h % palette.length];
+                  };
+                  return issuerAllocation.issuers.map(issuer => {
+                    const color = colorFor(issuer.name);
+                    return (
+                      <div
+                        key={issuer.name}
+                        style={{
+                          display: 'flex', alignItems: 'center',
+                          padding: '0.5rem 0.75rem',
+                          background: theme === 'light' ? 'rgba(0, 0, 0, 0.03)' : 'rgba(255, 255, 255, 0.04)',
+                          borderRadius: '6px',
+                          borderLeft: `4px solid ${color}`,
+                          gap: '0.75rem'
+                        }}
+                      >
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{
+                            fontWeight: '600',
+                            color: 'var(--text-primary)',
+                            fontSize: '0.9rem',
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+                          }}>
+                            {issuer.name}
+                          </div>
+                          <div style={{
+                            fontFamily: "'JetBrains Mono', monospace",
+                            color: 'var(--text-muted)',
+                            fontSize: '0.78rem'
+                          }}>
+                            {formatCurrency(issuer.value, portfolioCurrency)}
+                          </div>
+                        </div>
+                        <div style={{
+                          fontSize: '0.9rem',
+                          fontWeight: '700',
+                          color: color,
+                          flexShrink: 0
+                        }}>
+                          {issuer.percentage.toFixed(1)}%
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+          </div>
+        </LiquidGlassCard>
+      )}
+
       {/* TWR Performance Summary Table */}
       <LiquidGlassCard style={{
         marginTop: '1rem',
@@ -5358,6 +6697,7 @@ const PortfolioManagementSystem = ({ user }) => {
 
       {/* Order Modal */}
       <OrderModal
+        key={orderModalKey}
         isOpen={orderModalOpen}
         onClose={() => {
           setOrderModalOpen(false);

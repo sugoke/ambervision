@@ -40,6 +40,8 @@ import '/imports/api/cbondsApi';
 import '/imports/api/underlyingPrices';
 // Removed: product evaluation module
 import '/imports/api/marketDataCache';
+import '/imports/api/marketData/dataProviderMethods';
+import { DataProvidersCollection, seedDataProviders } from '/imports/api/marketData/dataProvidersCollection';
 import '/imports/api/tickerCache';
 import '/imports/api/currencyCache';
 import { CurrencyCache } from '/imports/api/currencyCache';
@@ -150,6 +152,13 @@ Meteor.startup(async () => {
     console.log('✅ SFTP_PRIVATE_KEY loaded from settings file');
   } else {
     console.log('⚠️  SFTP_PRIVATE_KEY not found in Meteor.settings.private');
+  }
+
+  // Seed market data provider configuration (EOD, Twelve Data, ...)
+  try {
+    await seedDataProviders();
+  } catch (error) {
+    console.error('[DataProviders] Seeding failed:', error.message);
   }
 
   // Log collection counts at startup
@@ -871,7 +880,10 @@ Meteor.startup(async () => {
     await EquityHoldingsCollection.createIndexAsync({ symbol: 1 });
     await EquityHoldingsCollection.createIndexAsync({ fullTicker: 1 });
     await EquityHoldingsCollection.createIndexAsync({ accountNumber: 1 });
-    
+
+    // Index for market data provider configuration
+    await DataProvidersCollection.createIndexAsync({ providerId: 1 }, { unique: true });
+
     // Skip MarketDataCache indexes temporarily to avoid conflicts
     console.log('MarketDataCache: Skipping index creation to avoid conflicts');
     
@@ -6453,9 +6465,11 @@ Meteor.methods({
     const accountNumberRegex = new RegExp('^' + escapedTerm + '$', 'i');
 
     // Search client entities (primary - entity-based architecture)
-    const { ClientEntitiesCollection: EntitiesCol, ClientEntityHelpers } = require('../imports/api/clientEntities.js');
+    const { ClientEntitiesCollection: EntitiesCol, ClientEntityHelpers, ENTITY_STATUSES } = require('../imports/api/clientEntities.js');
     const entityQuery = {
       isActive: true,
+      // Archived (closed) relationships must not be selectable in the View As picker
+      status: { $ne: ENTITY_STATUSES.ARCHIVED },
       $or: [
         { 'profile.firstName': searchRegex },
         { 'profile.lastName': searchRegex },
@@ -6475,6 +6489,9 @@ Meteor.methods({
 
       entityQuery.$and = [{
         $or: [
+          // Canonical: entities the RM (or any of their effective ids) is assigned to.
+          { assignedUserIds: { $in: rmIds } },
+          // Legacy fallback: pre-migration single-RM field still in some docs.
           { relationshipManagerId: { $in: rmIds } },
           ...(backupEntityIds.length > 0 ? [{ _id: { $in: backupEntityIds } }] : [])
         ]
@@ -6550,7 +6567,7 @@ Meteor.methods({
 
     if (accountEntityIds.length > 0) {
       const accountEntities = await EntitiesCol.find(
-        { _id: { $in: accountEntityIds }, isActive: true },
+        { _id: { $in: accountEntityIds }, isActive: true, status: { $ne: ENTITY_STATUSES.ARCHIVED } },
         { fields: { type: 1, status: 1, isInsurance: 1, profile: 1, relationshipManagerId: 1, referenceCurrency: 1, migratedFromUserId: 1 } }
       ).fetchAsync();
 
@@ -6628,16 +6645,28 @@ WebApp.connectHandlers.use('/termsheets', async (req, res, next) => {
 
   const filename = decodeURIComponent(urlParts[0]);
 
-  // Resolve termsheets directory: TERMSHEETS_PATH (production) or public/termsheets (dev)
+  // Resolve termsheets directory: TERMSHEETS_PATH (production) or hidden
+  // `.termsheets/` (dev). The hidden directory is OUTSIDE `public/` so that
+  // writing a freshly-extracted PDF doesn't trigger Meteor's dev file
+  // watcher (which would hot-reload the client and wipe the create-product
+  // form mid-extraction).
   let termsheetsDir = process.env.TERMSHEETS_PATH;
   if (!termsheetsDir) {
-    // Development: serve directly from public/termsheets/ to avoid Meteor static file
-    // serving issues (hot-reload race conditions when files are added dynamically)
     let projectRoot = process.cwd();
     if (projectRoot.includes('.meteor')) {
       projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
     }
-    termsheetsDir = path.join(projectRoot, 'public', 'termsheets');
+    termsheetsDir = path.join(projectRoot, '.termsheets');
+
+    // Backwards-compat: older installs wrote into public/termsheets/. If the
+    // new dir doesn't have the requested file but the old one does, fall
+    // through to the legacy location so existing products still resolve.
+    if (!fs.existsSync(path.join(termsheetsDir, filename))) {
+      const legacyDir = path.join(projectRoot, 'public', 'termsheets');
+      if (fs.existsSync(path.join(legacyDir, filename))) {
+        termsheetsDir = legacyDir;
+      }
+    }
   }
 
   try {

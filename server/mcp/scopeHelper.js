@@ -23,7 +23,7 @@
  */
 
 import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
-import { ClientEntitiesCollection } from '/imports/api/clientEntities';
+import { ClientEntitiesCollection, ClientEntityHelpers } from '/imports/api/clientEntities';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { UserEntityAccessHelpers } from '/imports/api/userEntityAccess';
 import { PMSHoldingsCollection } from '/imports/api/pmsHoldings';
@@ -187,12 +187,26 @@ function escapeRegex(s) {
 
 /** Scope filter for PMSHoldings */
 export async function buildHoldingScopeFilter(scope) {
-  return buildEntityOrAccountMatchFilter(scope, PMSHoldingsCollection);
+  const base = await buildEntityOrAccountMatchFilter(scope, PMSHoldingsCollection);
+  // Archived (closed-relationship) clients' holdings are hidden everywhere, including
+  // admin "see all" and explicit drill-down. Snapshots intentionally keep history, so
+  // this exclusion lives only here, not in buildSnapshotScopeFilter.
+  const exclusion = await ClientEntityHelpers.archivedHoldingsSelector();
+  return exclusion.$nor ? { $and: [base, exclusion] } : base;
 }
 
 /** Scope filter for PortfolioSnapshots */
 export async function buildSnapshotScopeFilter(scope) {
   return buildEntityOrAccountMatchFilter(scope, PortfolioSnapshotsCollection);
+}
+
+/**
+ * AND an archived-client exclusion onto an allocations query so closed relationships
+ * never contribute to product visibility, exposure, or risk aggregations.
+ */
+export async function applyArchivedAllocationExclusion(query) {
+  const exclusion = await ClientEntityHelpers.archivedAllocationsSelector();
+  return exclusion.$nor ? { $and: [query, exclusion] } : query;
 }
 
 /**

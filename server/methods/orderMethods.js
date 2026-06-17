@@ -1116,6 +1116,10 @@ ${userDisplayName}
     check(orderId, String);
     check(sessionId, String);
     check(updateData, {
+      isin: Match.Maybe(String),
+      securityName: Match.Maybe(String),
+      assetType: Match.Maybe(Match.Where(x => Object.values(ASSET_TYPES).includes(x))),
+      currency: Match.Maybe(String),
       quantity: Match.Maybe(Number),
       priceType: Match.Maybe(Match.Where(x => Object.values(PRICE_TYPES).includes(x))),
       limitPrice: Match.Maybe(Number),
@@ -1139,9 +1143,18 @@ ${userDisplayName}
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
 
-    // Only pending or pending_validation orders can be updated
-    if (order.status !== ORDER_STATUSES.PENDING && order.status !== ORDER_STATUSES.PENDING_VALIDATION) {
-      throw new Meteor.Error('invalid-operation', 'Only pending orders can be updated');
+    // Only pending, pending_validation, or revision_requested orders can be updated
+    if (order.status !== ORDER_STATUSES.PENDING &&
+        order.status !== ORDER_STATUSES.PENDING_VALIDATION &&
+        order.status !== ORDER_STATUSES.REVISION_REQUESTED) {
+      throw new Meteor.Error('invalid-operation', 'Only pending or revision-requested orders can be updated');
+    }
+
+    // Four-eyes integrity: a sent-back order may only be revised by its original
+    // creator (mirrors orders.resubmitForValidation), so a validator can't both
+    // request changes and make them.
+    if (order.status === ORDER_STATUSES.REVISION_REQUESTED && order.createdBy !== userId) {
+      throw new Meteor.Error('not-authorized', 'Only the original creator can revise this order');
     }
 
     const updateFields = {
@@ -1149,6 +1162,18 @@ ${userDisplayName}
       updatedBy: userId
     };
 
+    if (updateData.isin !== undefined) {
+      updateFields.isin = updateData.isin.toUpperCase();
+    }
+    if (updateData.securityName !== undefined) {
+      updateFields.securityName = updateData.securityName;
+    }
+    if (updateData.assetType !== undefined) {
+      updateFields.assetType = updateData.assetType;
+    }
+    if (updateData.currency !== undefined) {
+      updateFields.currency = updateData.currency.toUpperCase();
+    }
     if (updateData.quantity !== undefined) {
       updateFields.quantity = updateData.quantity;
     }
@@ -1216,9 +1241,16 @@ ${userDisplayName}
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
 
-    // Only pending or pending_validation orders can be deleted
-    if (order.status !== ORDER_STATUSES.PENDING && order.status !== ORDER_STATUSES.PENDING_VALIDATION) {
-      throw new Meteor.Error('invalid-operation', 'Only pending orders can be deleted');
+    // Only pending, pending_validation, or revision_requested orders can be deleted
+    if (order.status !== ORDER_STATUSES.PENDING &&
+        order.status !== ORDER_STATUSES.PENDING_VALIDATION &&
+        order.status !== ORDER_STATUSES.REVISION_REQUESTED) {
+      throw new Meteor.Error('invalid-operation', 'Only pending or revision-requested orders can be deleted');
+    }
+
+    // Four-eyes integrity: a sent-back order may only be discarded by its original creator
+    if (order.status === ORDER_STATUSES.REVISION_REQUESTED && order.createdBy !== userId) {
+      throw new Meteor.Error('not-authorized', 'Only the original creator can delete this order');
     }
 
     await OrdersCollection.removeAsync(orderId);
@@ -3146,9 +3178,201 @@ async function tryHoldingsFallback(order, escapedCode, orderDate) {
   };
 }
 
+/**
+ * Settlement matcher for FX orders. FX trades have no ISIN, so we match against
+ * the bank's FX_TRADE operations on: same portfolio, the order's currency pair
+ * (buy/sell ccy must both appear among the operation's currencies), notional
+ * amount (compared in either leg via the operation's fxRate), and proximity to
+ * the value/forward date. Returns the same shape as matchOrderToOperations.
+ */
+async function matchFxOrderToOperations(order) {
+  const escapedCode = order.portfolioCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const orderDate = order.createdAt || new Date();
+  const valueDate = order.fxForwardDate || order.fxValueDate || null;
+
+  const windowStart = new Date(orderDate);
+  windowStart.setDate(windowStart.getDate() - 5);
+  let windowEnd = new Date(orderDate);
+  windowEnd.setDate(windowEnd.getDate() + 30);
+  // Forwards settle on a value date that can be well beyond the +30d window.
+  if (valueDate) {
+    const vd = new Date(valueDate);
+    vd.setDate(vd.getDate() + 5);
+    if (vd > windowEnd) windowEnd = vd;
+  }
+
+  const ops = await PMSOperationsCollection.find({
+    portfolioCode: { $regex: `^${escapedCode}` },
+    operationType: 'FX_TRADE',
+    operationDate: { $gte: windowStart, $lte: windowEnd },
+    isActive: true
+  }, { sort: { operationDate: -1 }, limit: 25 }).fetchAsync();
+
+  if (ops.length === 0) {
+    return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'No matching FX_TRADE operations found' };
+  }
+
+  const orderCcys = [order.fxBuyCurrency, order.fxSellCurrency]
+    .filter(Boolean).map(c => c.toUpperCase());
+  const orderAmount = Math.abs(order.quantity || 0);
+  const refDate = valueDate ? new Date(valueDate) : new Date(orderDate);
+
+  let bestMatch = null, bestScore = 0, bestRatio = 0;
+  for (const op of ops) {
+    const opCcys = [op.operationCurrency, op.settlementCurrency, op.baseCurrency]
+      .filter(Boolean).map(c => c.toUpperCase());
+
+    // The order's currency pair must align with the operation's currencies.
+    if (orderCcys.length === 2 && !orderCcys.every(c => opCcys.includes(c))) continue;
+
+    // Credit the pair only when we actually verified it (both currencies known
+    // and matched above); otherwise amount + date must carry the match.
+    let score = orderCcys.length === 2 ? 30 : 0;
+
+    // Amount: the op notional may be expressed in either leg, so also test it
+    // scaled by the fx rate before picking the best ratio.
+    const opAmount = Math.abs(op.amount || op.grossAmount || op.netAmount || op.quantity || 0);
+    const rate = op.fxRate || order.fxRate || null;
+    const candidates = [opAmount];
+    if (rate) candidates.push(opAmount * rate, opAmount / rate);
+    let ratio = 0;
+    if (orderAmount > 0) {
+      for (const c of candidates) {
+        if (c > 0) ratio = Math.max(ratio, Math.min(orderAmount, c) / Math.max(orderAmount, c));
+      }
+    }
+    if (ratio >= 0.99) score += 50;
+    else if (ratio >= 0.95) score += 35;
+    else if (ratio >= 0.90) score += 20;
+
+    const daysDiff = Math.abs((new Date(op.valueDate || op.operationDate) - refDate) / (1000 * 60 * 60 * 24));
+    if (daysDiff <= 2) score += 25;
+    else if (daysDiff <= 7) score += 15;
+    else if (daysDiff <= 21) score += 5;
+
+    if (score > bestScore) { bestScore = score; bestMatch = op; bestRatio = ratio; }
+  }
+
+  if (!bestMatch) {
+    return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'No FX operation with a matching currency pair found' };
+  }
+
+  // Require both an aligned pair and a tight amount match to auto-confirm.
+  if (!(bestScore >= 70 && bestRatio >= 0.95)) {
+    return {
+      bookingStatus: bestScore >= 45 ? 'likely' : 'none',
+      matchedOperation: null,
+      confidence: bestScore >= 45 ? 'close_match' : null,
+      reason: 'No confident FX match found'
+    };
+  }
+
+  const opDate = bestMatch.valueDate || bestMatch.operationDate;
+  return {
+    bookingStatus: 'confirmed',
+    matchedOperation: {
+      operationDate: opDate,
+      quantity: order.quantity,                       // FX "quantity" is the notional
+      price: bestMatch.fxRate || order.fxRate || null, // executed rate
+      grossAmount: bestMatch.grossAmount || bestMatch.amount || null,
+      operationCode: bestMatch.operationNumber || null,
+      instrumentName: order.fxPair || null,
+      remark: `Matched FX_TRADE ${bestMatch.operationNumber || ''}`.trim(),
+      operationType: 'FX_TRADE'
+    },
+    confidence: 'fx_operation_match',
+    reason: `Matching FX_TRADE operation found${order.fxPair ? ` (${order.fxPair})` : ''}${opDate ? ` on ${new Date(opDate).toISOString().split('T')[0]}` : ''}.`
+  };
+}
+
+/**
+ * Settlement matcher for term-deposit orders. Term deposits carry no ISIN and
+ * banks emit no dedicated TD operation type, so settlement is confirmed when a
+ * matching TERM_DEPOSIT holding appears in PMSHoldings (the bank's own
+ * statement): same portfolio, same currency, matching amount, and — when both
+ * are present — a maturity date close to the order's. Placements/increases show
+ * up this way; decreases/withdrawals (which don't add a position) fall back to
+ * manual force-settle. Returns the same shape as matchOrderToOperations.
+ */
+async function matchTermDepositToHoldings(order) {
+  const escapedCode = order.portfolioCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const orderDate = order.createdAt || new Date();
+  const windowStart = new Date(orderDate);
+  windowStart.setDate(windowStart.getDate() - 2);
+  const windowEnd = new Date(orderDate);
+  windowEnd.setDate(windowEnd.getDate() + 30);
+
+  const depositCcy = (order.depositCurrency || order.currency || '').toUpperCase();
+
+  const holdings = await PMSHoldingsCollection.find({
+    portfolioCode: { $regex: `^${escapedCode}` },
+    securityType: 'TERM_DEPOSIT',
+    snapshotDate: { $gte: windowStart, $lte: windowEnd },
+    quantity: { $ne: 0 }
+  }, { sort: { snapshotDate: 1 }, limit: 25 }).fetchAsync();
+
+  if (holdings.length === 0) {
+    return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'No matching term-deposit holding found' };
+  }
+
+  const orderAmount = Math.abs(order.quantity || 0);
+  let best = null, bestRatio = 0;
+  for (const h of holdings) {
+    if (depositCcy && (h.currency || '').toUpperCase() !== depositCcy) continue;
+
+    // The principal may live on quantity, marketValue, or nominalValue depending
+    // on the bank parser — compare against all and take the best ratio.
+    const amts = [Math.abs(h.quantity || 0), Math.abs(h.marketValue || 0), Math.abs(h.nominalValue || 0)].filter(a => a > 0);
+    let ratio = 0;
+    if (orderAmount > 0) for (const a of amts) ratio = Math.max(ratio, Math.min(orderAmount, a) / Math.max(orderAmount, a));
+
+    // Maturity corroboration when both dates exist (soft — only rejects a clear mismatch).
+    let maturityOk = true;
+    if (order.depositMaturityDate && h.endDate) {
+      const dd = Math.abs((new Date(h.endDate) - new Date(order.depositMaturityDate)) / (1000 * 60 * 60 * 24));
+      maturityOk = dd <= 5;
+    }
+
+    if (maturityOk && ratio > bestRatio) { bestRatio = ratio; best = h; }
+  }
+
+  if (!best || bestRatio < 0.95) {
+    return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'No confident term-deposit holding match found' };
+  }
+
+  return {
+    bookingStatus: 'confirmed',
+    matchedOperation: {
+      operationDate: best.snapshotDate,
+      quantity: order.quantity,
+      price: null,                       // term deposits have no execution price
+      grossAmount: null,
+      operationCode: null,
+      instrumentName: best.securityName || best.reference || 'Term Deposit',
+      remark: 'Confirmed from term-deposit holding appearance in PMS',
+      operationType: 'TERM_DEPOSIT_HOLDING'
+    },
+    confidence: 'td_holding_match',
+    reason: `Term deposit appeared in holdings on ${new Date(best.snapshotDate).toISOString().split('T')[0]}${best.currency ? ` (${best.currency} ${Math.abs(best.quantity || 0)})` : ''}.`
+  };
+}
+
 export async function matchOrderToOperations(order) {
-  if (!order.isin || !order.portfolioCode) {
-    return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'Missing ISIN or portfolio code' };
+  if (!order.portfolioCode) {
+    return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'Missing portfolio code' };
+  }
+
+  // FX trades and term deposits carry no matchable ISIN, so they route to their
+  // own settlement matchers (FX → FX_TRADE operations; TD → holding appearance).
+  if (order.assetType === ASSET_TYPES.FX) {
+    return matchFxOrderToOperations(order);
+  }
+  if (order.assetType === ASSET_TYPES.TERM_DEPOSIT) {
+    return matchTermDepositToHoldings(order);
+  }
+
+  if (!order.isin) {
+    return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'Missing ISIN' };
   }
 
   // Build operation type filter based on order type. We include 'OTHER'

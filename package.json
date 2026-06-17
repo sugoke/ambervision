@@ -14,7 +14,6 @@
     "@babel/runtime": "^7.20.7",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "adm-zip": "^0.5.16",
-    "bcrypt": "^6.0.0",
     "chart.js": "^4.5.0",
     "chartjs-adapter-date-fns": "^3.0.0",
     "chartjs-plugin-annotation": "^3.1.0",

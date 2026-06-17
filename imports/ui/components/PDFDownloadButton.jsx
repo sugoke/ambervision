@@ -20,7 +20,8 @@ const PDFDownloadButton = ({
   options = {},
   contentSelector = '.report-content', // Selector for the content to convert to PDF
   iconOnly = false, // When true, only show icon (title becomes tooltip)
-  showLanguageSelector = true // Whether to show language selection modal
+  showLanguageSelector = true, // Whether to show language selection modal
+  onDownloaded = null // Optional callback fired after a successful PDF download
 }) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState(null);
@@ -111,6 +112,15 @@ const PDFDownloadButton = ({
       URL.revokeObjectURL(url);
 
       console.log('[PDF] Download triggered successfully');
+
+      // Notify parent so it can trigger companion exports (e.g. Excel)
+      if (onDownloaded) {
+        try {
+          onDownloaded(lang);
+        } catch (callbackErr) {
+          console.error('[PDF] onDownloaded callback failed:', callbackErr);
+        }
+      }
 
     } catch (err) {
       console.error('[PDF] Error generating PDF:', err);

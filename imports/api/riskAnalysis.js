@@ -410,6 +410,11 @@ Write the summary now:`;
               productId: u.productId,
               productTitle: u.productTitle,
               productIsin: u.productIsin,
+              productCurrency: u.productCurrency,
+              currentPrice: u.currentPrice,
+              currentPriceFormatted: u.currentPriceFormatted,
+              performance: u.performance,
+              performanceFormatted: u.performanceFormatted,
               distanceToBarrier: u.distanceToBarrier,
               daysRemaining: u.daysToFinalObservation
             }));

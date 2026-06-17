@@ -647,31 +647,9 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
                               Strike (Editable)
                             </div>
                           </div>
-
-                          {/* Show Last Price for Reference (Read-only) - ONLY if different from strike */}
-                          {underlying.securityData?.price?.price &&
-                           underlying.securityData.price.price !== underlying.strike &&
-                           underlying.securityData.price.price > 0 && (
-                            <div style={{
-                              padding: '6px 8px',
-                              border: '1px dashed var(--border-color)',
-                              borderRadius: '4px',
-                              backgroundColor: 'var(--bg-tertiary)',
-                              color: 'var(--text-secondary)',
-                              fontSize: '0.85rem',
-                              width: '100px',
-                              textAlign: 'right'
-                            }}>
-                              <div>{underlying.securityData.price.price.toFixed(2)}</div>
-                              <div style={{
-                                fontSize: '0.65rem',
-                                color: 'var(--text-muted)',
-                                marginTop: '2px'
-                              }}>
-                                Last Price
-                              </div>
-                            </div>
-                          )}
+                          {/* The live last price is already shown in the
+                              security cell ("Last: $X.XX") — don't repeat it
+                              here as a second read-only field. */}
                         </div>
                       ) : (
                         // Editable field for create mode - ALWAYS allow manual entry

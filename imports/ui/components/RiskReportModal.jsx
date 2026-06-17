@@ -1,4 +1,5 @@
 import React from 'react';
+import * as XLSX from 'xlsx';
 import RiskAnalysisReport from './RiskAnalysisReport.jsx';
 import PDFDownloadButton from './PDFDownloadButton.jsx';
 import { useTheme } from '../ThemeContext.jsx';
@@ -12,6 +13,88 @@ const RiskReportModal = ({ report, onClose, isGenerating = false, progress = nul
 
   const handlePrint = () => {
     window.print();
+  };
+
+  // Export an Excel workbook of the products that have a stock below the barrier
+  const handleExportExcel = () => {
+    if (!report || !report.analyses || report.analyses.length === 0) {
+      console.log('[RiskReport] No products below barrier - skipping Excel export');
+      return;
+    }
+
+    // Sheet 1: one row per impacted product
+    const productRows = (report.impactedProducts || []).map(product => ({
+      'Product': product.productTitle || '',
+      'ISIN': product.productIsin || '',
+      'Stocks Below Barrier': (product.atRiskUnderlyings || [])
+        .map(u => u.symbol)
+        .join(', '),
+      'Worst Distance to Barrier (%)': product.worstDistance != null
+        ? Number(product.worstDistance.toFixed(1))
+        : '',
+      'Days Remaining': product.daysRemaining != null ? product.daysRemaining : '',
+      'Breaching Stocks Count': (product.atRiskUnderlyings || []).length
+    }));
+
+    // Sheet 2: one row per product / breaching underlying pair
+    const detailRows = [];
+    report.analyses.forEach(analysis => {
+      (analysis.products || []).forEach(product => {
+        detailRows.push({
+          'Product': product.productTitle || '',
+          'ISIN': product.productIsin || '',
+          'Currency': product.productCurrency || '',
+          'Product Price': product.currentPriceFormatted || '',
+          'Product Performance': product.performanceFormatted || '',
+          'Underlying': analysis.symbol || '',
+          'Company': analysis.companyName || '',
+          'Risk Level': analysis.riskLevel ? analysis.riskLevel.toUpperCase() : '',
+          'Stock Price': analysis.currentPrice != null
+            ? Number(analysis.currentPrice.toFixed(2))
+            : '',
+          'Strike Price': analysis.strikePrice != null
+            ? Number(analysis.strikePrice.toFixed(2))
+            : '',
+          'Barrier Level (%)': analysis.barrierLevel != null ? analysis.barrierLevel : '',
+          'Barrier Price': analysis.barrierPrice != null
+            ? Number(analysis.barrierPrice.toFixed(2))
+            : '',
+          'Stock Performance (%)': analysis.performance != null
+            ? Number(analysis.performance.toFixed(2))
+            : '',
+          'Distance to Barrier (%)': product.distanceToBarrier != null
+            ? Number(product.distanceToBarrier.toFixed(1))
+            : '',
+          'Days Remaining': product.daysRemaining != null ? product.daysRemaining : ''
+        });
+      });
+    });
+
+    const wb = XLSX.utils.book_new();
+
+    const autoSizeColumns = (rows) => Object.keys(rows[0]).map(key => ({
+      wch: Math.min(40, Math.max(key.length + 2, ...rows.map(row => String(row[key] ?? '').length + 2)))
+    }));
+
+    if (productRows.length > 0) {
+      const wsProducts = XLSX.utils.json_to_sheet(productRows);
+      wsProducts['!cols'] = autoSizeColumns(productRows);
+      XLSX.utils.book_append_sheet(wb, wsProducts, 'Products Below Barrier');
+    }
+
+    if (detailRows.length > 0) {
+      const wsDetails = XLSX.utils.json_to_sheet(detailRows);
+      wsDetails['!cols'] = autoSizeColumns(detailRows);
+      XLSX.utils.book_append_sheet(wb, wsDetails, 'Breach Details');
+    }
+
+    if (wb.SheetNames.length === 0) {
+      console.log('[RiskReport] No breach rows to export');
+      return;
+    }
+
+    const dateStr = new Date().toISOString().split('T')[0];
+    XLSX.writeFile(wb, `Barrier_Breaches_${dateStr}.xlsx`);
   };
 
   const handleExport = () => {
@@ -57,7 +140,14 @@ const RiskReportModal = ({ report, onClose, isGenerating = false, progress = nul
         exportText += `Affected Products (${analysis.products.length}):\n`;
         analysis.products.forEach(product => {
           exportText += `  - ${product.productTitle} (${product.productIsin})\n`;
-          exportText += `    Distance: ${product.distanceToBarrier >= 0 ? '+' : ''}${product.distanceToBarrier.toFixed(1)}%, Days: ${product.daysRemaining}\n`;
+          const priceText = product.currentPriceFormatted
+            ? `${product.currentPriceFormatted}${product.productCurrency ? ' ' + product.productCurrency : ''}`
+            : 'N/A';
+          const perfText = product.performanceFormatted || 'N/A';
+          const timeText = product.daysRemaining < 0
+            ? `${product.daysRemaining} days (expired)`
+            : `${product.daysRemaining} days`;
+          exportText += `    Price: ${priceText}, Performance: ${perfText}, Time left: ${timeText}\n`;
         });
         exportText += `\n`;
       }
@@ -161,6 +251,7 @@ const RiskReportModal = ({ report, onClose, isGenerating = false, progress = nul
                   reportType="risk-analysis"
                   filename={`Risk_Analysis_${new Date().toISOString().split('T')[0]}`}
                   title="Download PDF"
+                  onDownloaded={handleExportExcel}
                   style={{
                     padding: '0.625rem 1.25rem',
                     background: 'linear-gradient(135deg, #1e3a5f 0%, #2d4a6f 100%)',
@@ -176,6 +267,34 @@ const RiskReportModal = ({ report, onClose, isGenerating = false, progress = nul
                     gap: '0.5rem'
                   }}
                 />
+                <button
+                  onClick={handleExportExcel}
+                  style={{
+                    padding: '0.625rem 1.25rem',
+                    background: '#15803d',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontSize: '0.875rem',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = '#166534';
+                    e.currentTarget.style.transform = 'translateY(-1px)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = '#15803d';
+                    e.currentTarget.style.transform = 'translateY(0)';
+                  }}
+                >
+                  <span>📊</span> Export Excel
+                </button>
+
                 <button
                   onClick={handleExport}
                   style={{

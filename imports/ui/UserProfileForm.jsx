@@ -6,12 +6,21 @@ const UserProfileForm = ({ user, onProfileUpdate, compact = false }) => {
     firstName: '',
     lastName: '',
     birthday: '',
-    preferredLanguage: 'en'
+    preferredLanguage: 'en',
+    preferredCurrency: 'EUR'
   });
   const [isEditing, setIsEditing] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+
+  // Preferred display currency options (must match the dashboard's supported currencies)
+  const currencies = [
+    { code: 'EUR', name: 'Euro (€)' },
+    { code: 'USD', name: 'US Dollar ($)' },
+    { code: 'GBP', name: 'British Pound (£)' },
+    { code: 'CHF', name: 'Swiss Franc (CHF)' }
+  ];
 
   // Language options
   const languages = [
@@ -33,7 +42,8 @@ const UserProfileForm = ({ user, onProfileUpdate, compact = false }) => {
         firstName: user.profile.firstName || '',
         lastName: user.profile.lastName || '',
         birthday: user.profile.birthday ? user.profile.birthday.toISOString().split('T')[0] : '',
-        preferredLanguage: user.profile.preferredLanguage || 'en'
+        preferredLanguage: user.profile.preferredLanguage || 'en',
+        preferredCurrency: user.profile.preferredCurrency || 'EUR'
       });
     }
   }, [user]);
@@ -50,10 +60,13 @@ const UserProfileForm = ({ user, onProfileUpdate, compact = false }) => {
       firstName: profile.firstName.trim(),
       lastName: profile.lastName.trim(),
       birthday: profile.birthday ? new Date(profile.birthday) : null,
-      preferredLanguage: profile.preferredLanguage
+      preferredLanguage: profile.preferredLanguage,
+      preferredCurrency: profile.preferredCurrency
     };
 
-    Meteor.call('users.updateProfile', user._id, profileData, (err) => {
+    // Server merges under the `profile` key (users.updateProfile reads userData.profile),
+    // so the payload must be wrapped — sending flat fields was a silent no-op.
+    Meteor.call('users.updateProfile', user._id, { profile: profileData }, (err) => {
       setIsLoading(false);
       if (err) {
         setError(err.reason || 'Failed to update profile');
@@ -307,6 +320,45 @@ const UserProfileForm = ({ user, onProfileUpdate, compact = false }) => {
                 ))}
               </select>
             </div>
+
+            <div>
+              <label style={{
+                display: 'block',
+                marginBottom: '8px',
+                fontSize: '0.875rem',
+                fontWeight: '600',
+                color: 'var(--text-primary)'
+              }}>
+                Preferred Currency
+              </label>
+              <select
+                value={profile.preferredCurrency}
+                onChange={(e) => setProfile({ ...profile, preferredCurrency: e.target.value })}
+                style={{
+                  width: '100%',
+                  padding: '12px 16px',
+                  border: '2px solid var(--border-color)',
+                  borderRadius: '8px',
+                  fontSize: '1rem',
+                  boxSizing: 'border-box',
+                  background: 'var(--bg-primary)',
+                  color: 'var(--text-primary)'
+                }}
+              >
+                {currencies.map(curr => (
+                  <option key={curr.code} value={curr.code}>
+                    {curr.name}
+                  </option>
+                ))}
+              </select>
+              <div style={{
+                marginTop: '6px',
+                fontSize: '0.75rem',
+                color: 'var(--text-muted)'
+              }}>
+                Default display currency for your dashboard and consolidated portfolio totals.
+              </div>
+            </div>
           </div>
 
           {error && (
@@ -485,6 +537,26 @@ const UserProfileForm = ({ user, onProfileUpdate, compact = false }) => {
             fontWeight: '500'
           }}>
             {languages.find(lang => lang.code === profile.preferredLanguage)?.name || 'English'}
+          </div>
+        </div>
+
+        <div>
+          <div style={{
+            fontSize: '0.8rem',
+            fontWeight: '600',
+            color: 'var(--text-muted)',
+            textTransform: 'uppercase',
+            letterSpacing: '0.5px',
+            marginBottom: '4px'
+          }}>
+            Preferred Currency
+          </div>
+          <div style={{
+            fontSize: '1rem',
+            color: 'var(--text-primary)',
+            fontWeight: '500'
+          }}>
+            {currencies.find(curr => curr.code === profile.preferredCurrency)?.name || 'Euro (€)'}
           </div>
         </div>
       </div>

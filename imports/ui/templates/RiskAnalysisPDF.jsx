@@ -419,14 +419,35 @@ const RiskAnalysisPDF = () => {
                           <div style={styles.affectedProductName}>{product.productTitle}</div>
                           <div style={styles.affectedProductIsin}>{product.productIsin}</div>
                         </div>
-                        <div style={{ textAlign: 'right', fontSize: '0.8rem' }}>
-                          <div style={{
-                            color: product.distanceToBarrier >= 0 ? '#10b981' : '#ef4444',
-                            fontWeight: '600'
-                          }}>
-                            {product.distanceToBarrier >= 0 ? '+' : ''}{product.distanceToBarrier.toFixed(1)}%
+                        <div style={{ textAlign: 'right', fontSize: '0.8rem', display: 'flex', gap: '1.25rem', alignItems: 'center' }}>
+                          <div>
+                            <div style={{ fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: '#9ca3af', marginBottom: '0.1rem' }}>
+                              {lang === 'fr' ? 'Prix' : 'Price'}
+                            </div>
+                            <div style={{ fontWeight: '600', color: '#1f2937' }}>
+                              {product.currentPriceFormatted
+                                ? `${product.currentPriceFormatted}${product.productCurrency ? ' ' + product.productCurrency : ''}`
+                                : '—'}
+                            </div>
                           </div>
-                          <div style={{ color: '#6b7280' }}>{product.daysRemaining}d</div>
+                          <div>
+                            <div style={{ fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: '#9ca3af', marginBottom: '0.1rem' }}>
+                              {lang === 'fr' ? 'Performance' : 'Performance'}
+                            </div>
+                            <div style={{ fontWeight: '600', color: product.performance >= 0 ? '#10b981' : '#ef4444' }}>
+                              {product.performanceFormatted || '—'}
+                            </div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: '#9ca3af', marginBottom: '0.1rem' }}>
+                              {lang === 'fr' ? 'Temps restant' : 'Time left'}
+                            </div>
+                            <div style={{ fontWeight: '600', color: '#1f2937' }}>
+                              {product.daysRemaining < 0
+                                ? `${product.daysRemaining}j (${lang === 'fr' ? 'expiré' : 'expired'})`
+                                : `${product.daysRemaining} ${lang === 'fr' ? 'jours' : 'days'}`}
+                            </div>
+                          </div>
                         </div>
                       </div>
                     ))}

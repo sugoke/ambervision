@@ -59,7 +59,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
   const [showCreateEntityForm, setShowCreateEntityForm] = useState(false);
   const [entitySubTab, setEntitySubTab] = useState('clients');
   const [typeFilter, setTypeFilter] = useState(null); // null = all, 'physical_person', 'company'
-  const [entityStatusFilter, setEntityStatusFilter] = useState('all');
+  const [entityStatusFilter, setEntityStatusFilter] = useState('active');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
@@ -152,8 +152,32 @@ const ClientsSection = ({ user: currentUser, theme }) => {
     return ClientEntityHelpers.getEntityDisplayName(entity);
   };
 
+  // Surname-first name for lists: "ANDREEVA Tatjana" — eases alphabetical scanning
+  const getEntitySortName = (entity) => {
+    if (!entity) return '';
+    if (entity.type === ENTITY_TYPES.PHYSICAL_PERSON) {
+      return `${entity.profile?.lastName || ''} ${entity.profile?.firstName || ''}`.trim() || getEntityDisplayName(entity);
+    }
+    return getEntityDisplayName(entity);
+  };
+
+  // Surname-first account name: "Eric & Christine BOEHM" → "BOEHM Eric & Christine".
+  // Moves the trailing all-caps surname block to the front; leaves all-caps or
+  // non-person names (companies, policy numbers) untouched.
+  const formatAccountName = (name) => {
+    if (!name) return '';
+    const words = name.trim().split(/\s+/);
+    const isUpperWord = w => /[A-ZÀ-Þ]/.test(w) && w === w.toUpperCase();
+    let i = words.length;
+    while (i > 0 && isUpperWord(words[i - 1])) i--;
+    if (i === 0 || i === words.length) return name;
+    const hasGivenName = words.slice(0, i).some(w => /[a-zà-þ]/.test(w));
+    if (!hasGivenName) return name;
+    return [...words.slice(i), ...words.slice(0, i)].join(' ');
+  };
+
   const getEntityInitials = (entity) => {
-    const name = getEntityDisplayName(entity);
+    const name = getEntitySortName(entity);
     return name.split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase() || '?';
   };
   // Build map: entityId → [{ role, companyName }] from all company stakeholders
@@ -198,19 +222,11 @@ const ClientsSection = ({ user: currentUser, theme }) => {
       if (typeFilter && normalizedType !== typeFilter) return false;
       if (entityStatusFilter !== 'all' && getEntityComputedStatus(entity) !== entityStatusFilter) return false;
       if (!searchTerm) return true;
-      const name = getEntityDisplayName(entity).toLowerCase();
       const search = searchTerm.toLowerCase();
-      return name.includes(search);
+      return getEntityDisplayName(entity).toLowerCase().includes(search)
+        || getEntitySortName(entity).toLowerCase().includes(search);
     })
-    .sort((a, b) => {
-      const aSortKey = a.type === ENTITY_TYPES.PHYSICAL_PERSON
-        ? `${a.profile?.lastName || ''} ${a.profile?.firstName || ''}`.trim()
-        : getEntityDisplayName(a);
-      const bSortKey = b.type === ENTITY_TYPES.PHYSICAL_PERSON
-        ? `${b.profile?.lastName || ''} ${b.profile?.firstName || ''}`.trim()
-        : getEntityDisplayName(b);
-      return aSortKey.localeCompare(bSortKey);
-    });
+    .sort((a, b) => getEntitySortName(a).localeCompare(getEntitySortName(b)));
 
   // Role priority for sorting (lower number = higher priority)
   // Entity counts by type
@@ -638,7 +654,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
               </div>
             ) : (
               filteredEntities.map(entity => {
-                const displayName = getEntityDisplayName(entity);
+                const displayName = getEntitySortName(entity);
                 const initials = getEntityInitials(entity);
                 const typeDisplay = getEntityTypeDisplay(entity.type);
                 const statusDisplay = ClientEntityHelpers.getEntityStatusDisplay(entity.status);
@@ -799,7 +815,9 @@ const ClientsSection = ({ user: currentUser, theme }) => {
           <div style={{ padding: '1.5rem 2rem', overflowY: 'auto', height: '100%' }}>
             {/* Clients Table */}
             {(() => {
-              const clientEntities = entities.filter(e => entityIdsWithAccounts.has(e._id));
+              const clientEntities = entities
+                .filter(e => entityIdsWithAccounts.has(e._id))
+                .sort((a, b) => getEntitySortName(a).localeCompare(getEntitySortName(b)));
               return (
                 <div style={{ marginBottom: '2.5rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
@@ -878,7 +896,11 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                       </tr>
                     </thead>
                     <tbody>
-                      {allBankAccounts.map((acc, i) => {
+                      {[...allBankAccounts].sort((a, b) => {
+                        const keyA = getEntitySortName(entities.find(e => e._id === a.entityId)) || formatAccountName(a.name) || '';
+                        const keyB = getEntitySortName(entities.find(e => e._id === b.entityId)) || formatAccountName(b.name) || '';
+                        return keyA.localeCompare(keyB);
+                      }).map((acc, i) => {
                         const ent = entities.find(e => e._id === acc.entityId);
                         const bank = banks.find(b => b._id === acc.bankId);
                         const uboIds = acc.beneficialOwnerIds || (acc.beneficialOwnerId ? [acc.beneficialOwnerId] : []);
@@ -890,14 +912,14 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                             onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-tertiary)'}
                             onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? 'transparent' : 'var(--bg-secondary)'}
                           >
-                            <td style={{ ...S.td, fontWeight: '600', color: 'var(--text-primary)' }}>{acc.name || '-'}</td>
+                            <td style={{ ...S.td, fontWeight: '600', color: 'var(--text-primary)' }}>{formatAccountName(acc.name) || getEntitySortName(ent) || '-'}</td>
                             <td style={{ ...S.td, color: 'var(--text-primary)' }}>{bank?.name || '-'}</td>
                             <td style={{ ...S.td, color: 'var(--text-secondary)', fontFamily: "'Roboto Mono', monospace", fontSize: '0.82rem', letterSpacing: '0.03em' }}>{acc.accountNumber}</td>
                             <td style={{ ...S.td, textAlign: 'center' }}>
                               <span style={S.badge('#4da6ff', 'rgba(79, 166, 255, 0.1)')}>{acc.referenceCurrency}</span>
                             </td>
                             <td style={{ ...S.td, color: 'var(--text-secondary)', fontSize: '0.82rem' }}>{acc.comment || acc.accountType}</td>
-                            <td style={{ ...S.td, color: ubos.length > 0 ? 'var(--text-primary)' : 'var(--text-muted)', fontSize: '0.82rem' }}>{ubos.length > 0 ? ubos.map(u => ClientEntityHelpers.getEntityDisplayName(u)).join(', ') : '-'}</td>
+                            <td style={{ ...S.td, color: ubos.length > 0 ? 'var(--text-primary)' : 'var(--text-muted)', fontSize: '0.82rem' }}>{ubos.length > 0 ? ubos.map(u => getEntitySortName(u)).join(', ') : '-'}</td>
                           </tr>
                         );
                       })}

@@ -622,7 +622,8 @@ const AppContent = () => {
                     handleSectionChange('report', product._id);
                   }} />
 
-                  {/* View As Filter - For admins and RMs */}
+                  {/* View As Filter - For admins and RMs.
+                      Filter scope only — does not change the current page. */}
                   <ViewAsFilter currentUser={user} />
                 </div>
               )}
@@ -1080,7 +1081,7 @@ const AppContent = () => {
             >
               <ViewAsFilter
                 currentUser={user}
-                onSelect={() => setMobileViewAsOpen(false)}
+                onSelect={() => { setMobileViewAsOpen(false); }}
               />
 
               {/* Favorites Quick Access */}

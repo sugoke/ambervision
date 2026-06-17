@@ -23,6 +23,128 @@ import FormattedNumberInput from './components/FormattedNumberInput.jsx';
  * - New order creation
  * - Bulk order grouping display
  */
+
+/**
+ * Inline-editable Exec Price cell for the blotter.
+ * - Read-only for orders not in executed / partially_executed state.
+ * - Click to enter a value; Enter saves, Esc cancels, blur saves.
+ * - Format: % for structured products and bonds, currency for others.
+ * - On save, calls `orders.setExecutedPrice` which logs to the audit trail.
+ */
+const InlineExecPriceCell = ({ order, onSaved }) => {
+  // Term deposits have no execution price, so the cell is never editable for them.
+  const editable = (order.status === ORDER_STATUSES.EXECUTED || order.status === ORDER_STATUSES.PARTIALLY_EXECUTED)
+    && order.assetType !== ASSET_TYPES.TERM_DEPOSIT;
+  const quotesAsPercent = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT || order.assetType === ASSET_TYPES.BOND;
+  const [editing, setEditing] = React.useState(false);
+  const [value, setValue] = React.useState('');
+  const [saving, setSaving] = React.useState(false);
+  const inputRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (editing && inputRef.current) inputRef.current.focus();
+  }, [editing]);
+
+  const startEdit = () => {
+    if (!editable) return;
+    setValue(order.executedPrice != null ? String(order.executedPrice) : '');
+    setEditing(true);
+  };
+
+  const cancel = () => {
+    setEditing(false);
+    setValue('');
+  };
+
+  const save = async () => {
+    if (saving) return;
+    const cleaned = value.replace(',', '.').replace(/[^\d.\-]/g, '');
+    const parsed = parseFloat(cleaned);
+    if (isNaN(parsed) || parsed < 0) { cancel(); return; }
+    if (order.executedPrice != null && parsed === order.executedPrice) { cancel(); return; }
+    setSaving(true);
+    try {
+      const sessionId = localStorage.getItem('sessionId');
+      await Meteor.callAsync('orders.setExecutedPrice', {
+        orderId: order._id,
+        executedPrice: parsed,
+        sessionId
+      });
+      setEditing(false);
+      setValue('');
+      if (onSaved) onSaved();
+    } catch (err) {
+      alert('Failed to save exec price: ' + (err.reason || err.message));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+        <input
+          ref={inputRef}
+          type="text"
+          inputMode="decimal"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') save();
+            else if (e.key === 'Escape') cancel();
+          }}
+          onBlur={save}
+          disabled={saving}
+          style={{
+            width: '78px',
+            padding: '3px 6px',
+            fontSize: '12px',
+            background: 'var(--bg-primary)',
+            color: 'var(--text-primary)',
+            border: '1px solid var(--accent-color)',
+            borderRadius: '3px'
+          }}
+        />
+        {quotesAsPercent && <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>%</span>}
+      </div>
+    );
+  }
+
+  if (order.executedPriceFormatted) {
+    return (
+      <span
+        style={{
+          fontSize: '12px',
+          fontWeight: '500',
+          cursor: editable ? 'pointer' : 'default',
+          padding: '2px 4px',
+          borderRadius: '3px',
+          borderBottom: editable ? '1px dotted var(--text-muted)' : 'none'
+        }}
+        onClick={editable ? startEdit : undefined}
+        title={editable ? 'Click to edit' : undefined}
+      >
+        {order.executedPriceFormatted}
+      </span>
+    );
+  }
+
+  return (
+    <span
+      style={{
+        fontSize: '11px',
+        color: editable ? 'var(--accent-color)' : 'var(--text-muted)',
+        cursor: editable ? 'pointer' : 'default',
+        textDecoration: editable ? 'underline dotted' : 'none'
+      }}
+      onClick={editable ? startEdit : undefined}
+      title={editable ? 'Click to set execution price' : undefined}
+    >
+      {editable ? '+ Set price' : '-'}
+    </span>
+  );
+};
+
 const OrderBook = ({ user }) => {
   const { theme } = useTheme();
   const getSessionId = () => localStorage.getItem('sessionId');
@@ -38,6 +160,8 @@ const OrderBook = ({ user }) => {
   const [statusFilter, setStatusFilter] = useState('all');
   const [bankFilter, setBankFilter] = useState('all');
   const [clientFilter, setClientFilter] = useState('all');
+  const [validatorFilter, setValidatorFilter] = useState('all');
+  const [validators, setValidators] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -54,6 +178,13 @@ const OrderBook = ({ user }) => {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [executeModalOpen, setExecuteModalOpen] = useState(false);
   const [newOrderModalOpen, setNewOrderModalOpen] = useState(false);
+  // Bumped each time the modal closes so the next open gets a fresh OrderModal
+  // instance — prevents the previous order's termsheet / client email file from
+  // sticking around when placing several structured-product orders in a row.
+  const [newOrderModalKey, setNewOrderModalKey] = useState(0);
+  useEffect(() => {
+    if (!newOrderModalOpen) setNewOrderModalKey(k => k + 1);
+  }, [newOrderModalOpen]);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [cancellationReason, setCancellationReason] = useState('');
 
@@ -118,7 +249,7 @@ const OrderBook = ({ user }) => {
   // Load orders on filter changes
   useEffect(() => {
     loadOrders();
-  }, [statusFilter, bankFilter, clientFilter, searchQuery, dateFrom, dateTo, currentPage, sortField, sortOrder]);
+  }, [statusFilter, bankFilter, clientFilter, validatorFilter, searchQuery, dateFrom, dateTo, currentPage, sortField, sortOrder]);
 
   // Load clients for new order modal
   useEffect(() => {
@@ -132,6 +263,20 @@ const OrderBook = ({ user }) => {
       }
     };
     loadClients();
+  }, []);
+
+  // Load distinct validators for the validator filter dropdown
+  useEffect(() => {
+    const loadValidators = async () => {
+      try {
+        const sessionId = getSessionId();
+        const result = await Meteor.callAsync('orders.distinctValidators', { sessionId });
+        setValidators(result || []);
+      } catch (err) {
+        console.error('Error loading validators:', err);
+      }
+    };
+    loadValidators();
   }, []);
 
   const loadOrders = async () => {
@@ -148,6 +293,9 @@ const OrderBook = ({ user }) => {
       }
       if (clientFilter !== 'all') {
         filters.clientId = clientFilter;
+      }
+      if (validatorFilter !== 'all') {
+        filters.validatedByName = validatorFilter;
       }
       if (searchQuery) {
         filters.search = searchQuery;
@@ -1114,6 +1262,7 @@ const OrderBook = ({ user }) => {
               (statusFilter !== 'all' ? 1 : 0) +
               (bankFilter !== 'all' ? 1 : 0) +
               (clientFilter !== 'all' ? 1 : 0) +
+              (validatorFilter !== 'all' ? 1 : 0) +
               (dateFrom ? 1 : 0) +
               (dateTo ? 1 : 0);
             return (
@@ -1208,6 +1357,20 @@ const OrderBook = ({ user }) => {
             </div>
 
             <div style={styles.filterGroup}>
+              <span style={styles.filterLabel}>Validator</span>
+              <select
+                style={styles.select}
+                value={validatorFilter}
+                onChange={(e) => setValidatorFilter(e.target.value)}
+              >
+                <option value="all">All Validators</option>
+                {validators.map(name => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div style={styles.filterGroup}>
               <span style={styles.filterLabel}>From</span>
               <input
                 type="date"
@@ -1236,6 +1399,7 @@ const OrderBook = ({ user }) => {
                   setStatusFilter('all');
                   setBankFilter('all');
                   setClientFilter('all');
+                  setValidatorFilter('all');
                   setDateFrom('');
                   setDateTo('');
                 }}
@@ -1329,15 +1493,15 @@ const OrderBook = ({ user }) => {
             </div>
           ) : (
             <>
-              <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 280px)' }}>
+              <div style={{ overflowX: 'auto' }}>
                 <table style={styles.table}>
                   <thead>
                     <tr>
                       <SortableHeader field="orderReference" label="Reference" />
                       <SortableHeader field="createdAt" label="Date" />
                       <SortableHeader field="status" label="Status" />
-                      <SortableHeader field="bulkOrderGroupId" label="Ind/Bloc" />
                       <SortableHeader field="wealthAdvisor" label="WA" />
+                      <SortableHeader field="validatedByName" label="Validator" />
                       <SortableHeader field="accountNumber" label="Account #" />
                       <SortableHeader field="accountName" label="Account Name" />
                       <SortableHeader field="bankName" label="Bank" />
@@ -1350,6 +1514,7 @@ const OrderBook = ({ user }) => {
                       <SortableHeader field="broker" label="Broker" />
                       <SortableHeader field="settlementCurrency" label="Settl. Ccy" />
                       <th style={styles.th} title="Termsheet">TS</th>
+                      <SortableHeader field="bulkOrderGroupId" label="Ind/Bloc" />
                       <th style={styles.th}>Traces</th>
                     </tr>
                   </thead>
@@ -1412,17 +1577,16 @@ const OrderBook = ({ user }) => {
                           </span>
                         </td>
                         <td style={styles.td}>
-                          <span style={{
-                            fontSize: '11px',
-                            fontWeight: '500',
-                            color: order.tradeMode === 'block' ? '#8b5cf6' : 'var(--text-secondary)'
-                          }}>
-                            {order.tradeModeLabel || 'Ind.'}
+                          <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-secondary)' }}>
+                            {order.wealthAmbassadorFormatted || ''}
                           </span>
                         </td>
                         <td style={styles.td}>
-                          <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-secondary)' }}>
-                            {order.wealthAmbassadorFormatted || ''}
+                          <span
+                            title={order.validatedByName ? `Validated by ${order.validatedByName}${order.validatedAtFormatted ? ` on ${order.validatedAtFormatted}` : ''}` : ''}
+                            style={{ fontSize: '12px', fontWeight: '500', color: order.validatedByName ? 'var(--text-secondary)' : 'var(--text-muted)', whiteSpace: 'nowrap' }}
+                          >
+                            {order.validatedByName || '—'}
                           </span>
                         </td>
                         <td style={styles.td}>
@@ -1478,12 +1642,11 @@ const OrderBook = ({ user }) => {
                           <span style={{ fontSize: '12px' }}>{order.currency || ''}</span>
                         </td>
                         <td style={styles.td}>{order.quantityFormatted}</td>
-                        <td style={styles.td}>
-                          {order.executedPriceFormatted ? (
-                            <span style={{ fontSize: '12px', fontWeight: '500' }}>{order.executedPriceFormatted}</span>
-                          ) : (
-                            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>-</span>
-                          )}
+                        <td style={styles.td} onClick={(e) => e.stopPropagation()}>
+                          <InlineExecPriceCell
+                            order={order}
+                            onSaved={loadOrders}
+                          />
                         </td>
                         <td style={styles.td}>
                           <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
@@ -1518,21 +1681,48 @@ const OrderBook = ({ user }) => {
                           )}
                         </td>
                         <td style={styles.td}>
+                          <span style={{
+                            fontSize: '11px',
+                            fontWeight: '500',
+                            color: order.tradeMode === 'block' ? '#8b5cf6' : 'var(--text-secondary)'
+                          }}>
+                            {order.tradeModeLabel || 'Ind.'}
+                          </span>
+                        </td>
+                        <td style={styles.td}>
                           {(() => {
                             const validTypes = new Set(Object.values(EMAIL_TRACE_TYPES));
-                            const traceCount = (order.emailTraces || []).filter(t => validTypes.has(t.traceType) && !TERMSHEET_TRACE_TYPES.has(t.traceType)).length;
+                            const traces = order.emailTraces || [];
+                            const traceCount = traces.filter(t => validTypes.has(t.traceType) && !TERMSHEET_TRACE_TYPES.has(t.traceType)).length;
                             const maxTraces = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 4 : 3;
                             const color = traceCount === maxTraces ? '#10b981' : traceCount > 0 ? '#f59e0b' : 'var(--text-muted)';
+                            const hasClientOrderTrace = traces.some(t => t.traceType === EMAIL_TRACE_TYPES.CLIENT_ORDER);
+                            const showDeferred = order.clientOrderDeferred && !hasClientOrderTrace;
                             return (
-                              <span style={{
-                                fontSize: '11px',
-                                fontWeight: '600',
-                                color,
-                                padding: '2px 8px',
-                                borderRadius: '10px',
-                                background: `${color}15`
-                              }}>
-                                {traceCount}/{maxTraces}
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                <span style={{
+                                  fontSize: '11px',
+                                  fontWeight: '600',
+                                  color,
+                                  padding: '2px 8px',
+                                  borderRadius: '10px',
+                                  background: `${color}15`
+                                }}>
+                                  {traceCount}/{maxTraces}
+                                </span>
+                                {showDeferred && (
+                                  <span
+                                    title={`Client order will be attached later by ${order.clientOrderDeferred.byName || 'creator'}`}
+                                    style={{
+                                      fontSize: '11px',
+                                      color: '#f97316',
+                                      padding: '2px 6px',
+                                      borderRadius: '10px',
+                                      background: 'rgba(249, 115, 22, 0.12)',
+                                      border: '1px solid rgba(249, 115, 22, 0.35)'
+                                    }}
+                                  >⏳</span>
+                                )}
                               </span>
                             );
                           })()}
@@ -1963,7 +2153,7 @@ const OrderBook = ({ user }) => {
                 )}
               </div>
             )}
-            {(selectedOrder.order.status === 'executed' || selectedOrder.order.status === 'partially_executed') && selectedOrder.order.settlementStatus !== 'settled' && selectedOrder.order.settlementStatus !== 'forced' && (
+            {selectedOrder.order.canForceSettle && (
               <div style={{ marginBottom: '16px' }}>
                 <button
                   onClick={() => setForceSettleOrder({ _id: selectedOrder.order._id, orderReference: selectedOrder.order.orderReference, securityName: selectedOrder.order.securityName })}
@@ -1996,6 +2186,33 @@ const OrderBook = ({ user }) => {
                     <span style={styles.detailValue}>{selectedOrder.order.validatedAtFormatted}</span>
                   </div>
                 </>
+              )}
+              {selectedOrder.order.executedPriceHistoryFormatted && selectedOrder.order.executedPriceHistoryFormatted.length > 0 && (
+                <div style={{ marginTop: '12px' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '6px', fontWeight: '600', letterSpacing: '0.5px' }}>
+                    Execution Price Updates
+                  </div>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)', fontSize: '11px' }}>Date</th>
+                        <th style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)', fontSize: '11px' }}>Previous</th>
+                        <th style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)', fontSize: '11px' }}>New</th>
+                        <th style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)', fontSize: '11px' }}>By</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedOrder.order.executedPriceHistoryFormatted.map((entry, idx) => (
+                        <tr key={idx} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                          <td style={{ padding: '6px 8px', fontSize: '11px' }}>{entry.changedAtFormatted}</td>
+                          <td style={{ padding: '6px 8px', fontSize: '11px' }}>{entry.previousPriceFormatted || '—'}</td>
+                          <td style={{ padding: '6px 8px', fontSize: '11px', fontWeight: '600', color: 'var(--text-primary)' }}>{entry.newPriceFormatted || '—'}</td>
+                          <td style={{ padding: '6px 8px', fontSize: '11px' }}>{entry.changedByName || 'Unknown'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
 
@@ -2165,7 +2382,16 @@ const OrderBook = ({ user }) => {
               <div style={styles.detailTitle}>Traces</div>
               <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
                 {Object.values(EMAIL_TRACE_TYPES)
-                  .filter(traceType => traceType !== EMAIL_TRACE_TYPES.ORDER_TO_ISSUER || selectedOrder.order.assetType === 'structured_product')
+                  .filter(traceType => {
+                    const isStructuredProduct = selectedOrder.order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT;
+                    // Legacy split tiles — replaced by the unified TERMSHEET tile.
+                    if (traceType === EMAIL_TRACE_TYPES.TERMSHEET_SENT) return false;
+                    if (traceType === EMAIL_TRACE_TYPES.TERMSHEET_SIGNED) return false;
+                    // Order-to-issuer and all termsheet tiles only apply to structured products.
+                    if (TERMSHEET_TRACE_TYPES.has(traceType)) return isStructuredProduct;
+                    if (traceType === EMAIL_TRACE_TYPES.ORDER_TO_ISSUER) return isStructuredProduct;
+                    return true;
+                  })
                   .map(traceType => {
                   const traces = selectedOrder.order.emailTraces || [];
                   const trace = traces.find(t => t.traceType === traceType);
@@ -2475,6 +2701,7 @@ const OrderBook = ({ user }) => {
             maxDecimals={0}
           />
         </div>
+        {selectedOrder?.order?.assetType !== ASSET_TYPES.TERM_DEPOSIT && (
         <div style={{ marginBottom: '16px' }}>
           <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
             Executed Price (Optional)
@@ -2494,6 +2721,7 @@ const OrderBook = ({ user }) => {
             maxDecimals={2}
           />
         </div>
+        )}
         <div style={{ marginBottom: '16px' }}>
           <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
             Execution Date
@@ -3056,6 +3284,7 @@ const OrderBook = ({ user }) => {
 
       {/* New Order Modal */}
       <OrderModal
+        key={newOrderModalKey}
         isOpen={newOrderModalOpen}
         onClose={() => setNewOrderModalOpen(false)}
         mode="buy"

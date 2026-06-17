@@ -14,6 +14,7 @@ import { PMSHoldingsCollection } from '/imports/api/pmsHoldings.js';
 import { PortfolioSnapshotsCollection, PortfolioSnapshotHelpers } from '/imports/api/portfolioSnapshots.js';
 import { PMSOperationsCollection } from '/imports/api/pmsOperations.js';
 import { matchOrderToOperations } from '../methods/orderMethods.js';
+import { ClientEntityHelpers } from '/imports/api/clientEntities.js';
 import { BanksCollection } from '/imports/api/banks.js';
 import { UsersCollection, USER_ROLES } from '/imports/api/users.js';
 import { DashboardMetricsHelpers } from '/imports/api/dashboardMetrics.js';
@@ -286,7 +287,8 @@ async function marketDataRefreshJob() {
       dataPointsFetched,
       errors: result.details?.filter(d => d.error).map(d => ({
         ticker: d.fullTicker,
-        error: d.error
+        error: d.error,
+        providersTried: (d.providersTried || []).map(t => `${t.providerId} (${t.kind})`).join(', ')
       }))
     });
 
@@ -448,38 +450,76 @@ async function productRevaluationJob(options = {}) {
       if (!dailyDigestEnabled) {
         console.log('[CRON] Daily digest email is disabled in settings');
       } else {
-        // Send daily summary email
-        const recipientEmail = testEmail || 'noreply@example.com';
+        // Route each notification only to the people it concerns. Every
+        // notification already carries `sentToEmails` (admins/superadmins +
+        // the RMs of clients allocated to the product, resolved by
+        // NotificationService.getAffectedUsers). We group by recipient so each
+        // person receives a digest containing only their own alerts.
+        // A configured DAILY_DIGEST_TEST_EMAIL overrides routing and sends
+        // everything to that single inbox (used for local/testing).
+        const digestsByRecipient = new Map();
 
         if (testEmail) {
-          console.log(`[CRON] Sending daily digest to test email: ${testEmail}`);
+          console.log(`[CRON] Test email configured, routing all notifications to: ${testEmail}`);
+          digestsByRecipient.set(testEmail, notifications.slice());
         } else {
-          console.log('[CRON] No test email configured, sending to configured recipient');
+          for (const notification of notifications) {
+            const recipientEmails = notification.sentToEmails || [];
+            for (const email of recipientEmails) {
+              if (!email) continue;
+              if (!digestsByRecipient.has(email)) {
+                digestsByRecipient.set(email, []);
+              }
+              digestsByRecipient.get(email).push(notification);
+            }
+          }
         }
 
-        const emailResult = await EmailService.sendDailySummaryEmail(notifications, recipientEmail);
-
-        if (emailResult.success) {
-          console.log(`[CRON] Daily summary email sent successfully to ${recipientEmail}`);
-
-          // Mark all notifications as sent
-          const { NotificationsCollection } = await import('/imports/api/notifications.js');
-          const notificationIds = notifications.map(n => n._id);
-
-          await NotificationsCollection.updateAsync(
-            { _id: { $in: notificationIds } },
-            {
-              $set: {
-                emailSentAt: new Date(),
-                emailStatus: 'sent'
-              }
-            },
-            { multi: true }
-          );
-
-          console.log(`[CRON] Marked ${notificationIds.length} notifications as sent`);
+        if (digestsByRecipient.size === 0) {
+          console.log('[CRON] No recipients resolved for notifications - nothing sent');
         } else {
-          console.error(`[CRON] Failed to send daily summary email:`, emailResult.error);
+          console.log(`[CRON] Sending digests to ${digestsByRecipient.size} recipient(s)`);
+
+          const { NotificationsCollection } = await import('/imports/api/notifications.js');
+          const sentNotificationIds = new Set();
+          let recipientsSucceeded = 0;
+          let recipientsFailed = 0;
+
+          for (const [recipientEmail, recipientNotifications] of digestsByRecipient) {
+            try {
+              const emailResult = await EmailService.sendDailySummaryEmail(recipientNotifications, recipientEmail);
+
+              if (emailResult.success) {
+                recipientsSucceeded++;
+                console.log(`[CRON] Daily summary email sent to ${recipientEmail} (${recipientNotifications.length} alert(s))`);
+                recipientNotifications.forEach(n => sentNotificationIds.add(n._id));
+              } else {
+                recipientsFailed++;
+                console.error(`[CRON] Failed to send daily summary email to ${recipientEmail}:`, emailResult.error);
+              }
+            } catch (err) {
+              recipientsFailed++;
+              console.error(`[CRON] Error sending daily summary email to ${recipientEmail}:`, err.message);
+            }
+          }
+
+          // Mark notifications as sent once they reached at least one recipient
+          if (sentNotificationIds.size > 0) {
+            await NotificationsCollection.updateAsync(
+              { _id: { $in: Array.from(sentNotificationIds) } },
+              {
+                $set: {
+                  emailSentAt: new Date(),
+                  emailStatus: 'sent'
+                }
+              },
+              { multi: true }
+            );
+
+            console.log(`[CRON] Marked ${sentNotificationIds.size} notifications as sent`);
+          }
+
+          console.log(`[CRON] Digest delivery complete: ${recipientsSucceeded} recipient(s) succeeded, ${recipientsFailed} failed`);
         }
       }
     } else {
@@ -1289,11 +1329,13 @@ async function computeDashboardMetrics() {
   console.log('[CRON] Computing dashboard metrics...');
 
   try {
-    // Asset classes to include in AUM (matches rmDashboardMethods.getPortfolioSummary)
+    // Asset classes to include in AUM (matches rmDashboardMethods.getPortfolioSummary).
+    // 'other' (unclassified instruments) is included so the headline AUM matches the PMS
+    // Total Portfolio Value. fx_forward is handled separately below (net MTM, not > 0 only).
     const aumAssetClasses = [
       'cash', 'equity', 'fixed_income', 'structured_product',
       'time_deposit', 'monetary_products', 'commodities',
-      'private_equity', 'private_debt', 'etf', 'fund'
+      'private_equity', 'private_debt', 'etf', 'fund', 'other'
     ];
 
     // Exclude non-investment accounts (credit lines, credit cards, spending accounts)
@@ -1303,12 +1345,17 @@ async function computeDashboardMetrics() {
     }, { fields: { accountNumber: 1 } }).fetchAsync();
     const excludedPortfolioCodes = nonInvestmentAccounts.map(a => a.accountNumber);
 
+    // Exclude archived (closed-relationship) clients from AUM aggregation
+    const archivedOwners = await ClientEntityHelpers.getArchivedOwnerIds();
+
     // Step 1: Calculate current total AUM from latest holdings (exclude CONSOLIDATED and non-investment accounts)
     const allHoldings = await PMSHoldingsCollection.find({
       isActive: true,
       isLatest: true,
       marketValue: { $exists: true, $gt: 0 },
       portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
+      entityId: { $nin: archivedOwners.entityIds },
+      userId: { $nin: archivedOwners.userIds },
       $or: [
         { assetClass: { $in: aumAssetClasses } },
         { assetClass: null },
@@ -1316,7 +1363,21 @@ async function computeDashboardMetrics() {
       ]
     }).fetchAsync();
 
-    const totalAUMInEUR = allHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+    const baseAUMInEUR = allHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+
+    // FX forwards: include at NET mark-to-market (matches PMS Total Portfolio Value).
+    // Summed separately because negative legs must NOT be excluded by marketValue > 0.
+    const fxForwardHoldings = await PMSHoldingsCollection.find({
+      isActive: true,
+      isLatest: true,
+      assetClass: 'fx_forward',
+      portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
+      entityId: { $nin: archivedOwners.entityIds },
+      userId: { $nin: archivedOwners.userIds }
+    }).fetchAsync();
+    const fxForwardAUMInEUR = fxForwardHoldings.reduce((sum, h) => sum + (h.marketValueNoAccruedInterest || h.marketValue || 0), 0);
+
+    const totalAUMInEUR = baseAUMInEUR + fxForwardAUMInEUR;
 
     // Track current portfolios for comparison
     const currentPortfolioKeys = new Set();
@@ -1339,7 +1400,8 @@ async function computeDashboardMetrics() {
     const yesterdaySnapshots = await PortfolioSnapshotsCollection.find({
       snapshotDate: yesterday,
       totalAccountValue: { $gt: 0 },
-      portfolioCode: { $ne: 'CONSOLIDATED' }
+      portfolioCode: { $ne: 'CONSOLIDATED' },
+      userId: { $nin: archivedOwners.userIds }
     }).fetchAsync();
 
     if (yesterdaySnapshots.length > 0) {
@@ -1385,7 +1447,8 @@ async function computeDashboardMetrics() {
     // Exclude CONSOLIDATED snapshots to avoid double-counting with individual portfolio snapshots
     const wtdSnapshots = await PortfolioSnapshotsCollection.find({
       snapshotDate: { $gte: startDate, $lte: endDate },
-      portfolioCode: { $ne: 'CONSOLIDATED' }
+      portfolioCode: { $ne: 'CONSOLIDATED' },
+      userId: { $nin: archivedOwners.userIds }
     }, {
       sort: { snapshotDate: 1 }
     }).fetchAsync();
@@ -1429,8 +1492,11 @@ async function computeDashboardMetrics() {
       wtdHistory.push({ date: new Date(), value: totalAUMInEUR });
     }
 
-    // Step 4: Get client count for metadata
-    const clientCount = await UsersCollection.find({ role: USER_ROLES.CLIENT }).countAsync();
+    // Step 4: Get client count for metadata (exclude archived clients)
+    const clientCount = await UsersCollection.find({
+      role: USER_ROLES.CLIENT,
+      _id: { $nin: archivedOwners.userIds }
+    }).countAsync();
 
     // Step 5: Save to cache
     await DashboardMetricsHelpers.saveMetrics({
@@ -1501,15 +1567,37 @@ async function settlementCheckJob(triggerSource = 'cron') {
         checked++;
 
         if (bookingResult && bookingResult.bookingStatus === 'confirmed') {
-          await OrdersCollection.updateAsync(order._id, {
-            $set: {
-              settlementStatus: 'settled',
-              settlementConfirmedAt: new Date(),
-              settlementCheckedAt: new Date()
-            }
-          });
+          const matched = bookingResult.matchedOperation || {};
+          const settlementSet = {
+            settlementStatus: 'settled',
+            settlementConfirmedAt: new Date(),
+            settlementCheckedAt: new Date()
+          };
+
+          // Auto-populate execution fields from the matched PMS operation when
+          // they aren't already set on the order. The operation carries the
+          // real bank-side execution price/quantity/date, so there's no reason
+          // to make the user re-enter them. We never overwrite a manually-set
+          // value (preserves manual corrections); we only fill blanks.
+          if (order.executedPrice == null && typeof matched.price === 'number') {
+            settlementSet.executedPrice = matched.price;
+            settlementSet.executedPriceSource = 'pms_settlement_match';
+          }
+          if (order.executedQuantity == null && typeof matched.quantity === 'number') {
+            settlementSet.executedQuantity = Math.abs(matched.quantity);
+          }
+          if (!order.executionDate && matched.operationDate) {
+            settlementSet.executionDate = matched.operationDate;
+          }
+
+          await OrdersCollection.updateAsync(order._id, { $set: settlementSet });
           settled++;
-          console.log(`[SETTLEMENT] Order ${order.orderReference} confirmed settled`);
+          const populated = [
+            settlementSet.executedPrice != null ? `price=${settlementSet.executedPrice}` : null,
+            settlementSet.executedQuantity != null ? `qty=${settlementSet.executedQuantity}` : null,
+            settlementSet.executionDate ? `date=${new Date(settlementSet.executionDate).toISOString().split('T')[0]}` : null
+          ].filter(Boolean).join(', ');
+          console.log(`[SETTLEMENT] Order ${order.orderReference} confirmed settled${populated ? ` (auto-filled ${populated})` : ''}`);
         } else {
           await OrdersCollection.updateAsync(order._id, {
             $set: { settlementCheckedAt: new Date() }

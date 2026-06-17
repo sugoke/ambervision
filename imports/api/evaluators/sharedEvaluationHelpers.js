@@ -375,9 +375,14 @@ export const SharedEvaluationHelpers = {
           performance: performance,
           isPositive: performance >= 0,
 
-          // Pre-formatted displays for UI
-          initialPriceFormatted: this.formatCurrency(initialPrice, currency),
-          currentPriceFormatted: this.formatCurrency(currentPrice, currency),
+          // Pre-formatted displays for UI — use the underlying's OWN currency
+          // (not the product's settlement currency). For Quanto / foreign-listed
+          // underlyings (e.g. SK hynix in KRW under a EUR-settled product), the
+          // price label needs to match the actual quote currency.
+          initialPriceFormatted: this.formatCurrency(initialPrice, underlying.securityData?.currency || underlying.currency || currency),
+          currentPriceFormatted: this.formatCurrency(currentPrice, underlying.securityData?.currency || underlying.currency || currency),
+          currency: underlying.securityData?.currency || underlying.currency || currency,
+          exchange: underlying.securityData?.exchange || underlying.exchange || '',
           performanceFormatted: (performance >= 0 ? '+' : '') + performance.toFixed(2) + '%',
           priceDateFormatted: evaluationPriceInfo.date ?
             new Date(evaluationPriceInfo.date).toLocaleDateString('en-US', {

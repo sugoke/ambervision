@@ -5,7 +5,7 @@ import { check, Match } from 'meteor/check';
 import { PMSHoldingsCollection } from '/imports/api/pmsHoldings';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
-import { ClientEntitiesCollection } from '/imports/api/clientEntities';
+import { ClientEntitiesCollection, ClientEntityHelpers } from '/imports/api/clientEntities';
 import { SessionsCollection } from '/imports/api/sessions';
 import { resolveEntityId } from '/imports/utils/entityResolver';
 import { Meteor } from 'meteor/meteor';
@@ -167,6 +167,11 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
         const entity = await ClientEntitiesCollection.findOneAsync(viewAsFilter.id);
         if (!entity) {
           console.log('[PMS_HOLDINGS] Entity not found:', viewAsFilter.id);
+          return this.ready();
+        }
+        // Archived (closed) relationships are hidden everywhere, no exception
+        if (ClientEntityHelpers.isEntityArchived(entity)) {
+          console.log('[PMS_HOLDINGS] Entity is archived, returning empty:', viewAsFilter.id);
           return this.ready();
         }
         // For RMs, verify they manage this entity
@@ -350,6 +355,13 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
       }
     }
 
+    // Exclude holdings of archived (closed-relationship) clients from every path.
+    // Top-level keys are implicitly ANDed, so this composes with any existing $or.
+    const archivedExclusion = await ClientEntityHelpers.archivedHoldingsSelector();
+    if (archivedExclusion.$nor) {
+      queryFilter.$nor = archivedExclusion.$nor;
+    }
+
     console.log('[PMS_HOLDINGS] After role check - queryFilter:', JSON.stringify(queryFilter));
     console.log('[PMS_HOLDINGS] parsedAsOfDate value:', parsedAsOfDate?.toISOString?.() || 'null');
 
@@ -503,6 +515,12 @@ Meteor.publish('pmsHoldings.snapshotDates', async function (sessionId = null, vi
       queryFilter.userId = currentUser._id;
     }
 
+    // Exclude archived (closed-relationship) clients' holdings from the date selector too
+    const snapshotArchivedExclusion = await ClientEntityHelpers.archivedHoldingsSelector();
+    if (snapshotArchivedExclusion.$nor) {
+      queryFilter.$nor = snapshotArchivedExclusion.$nor;
+    }
+
     // Get distinct snapshot dates using aggregation
     const pipeline = [
       { $match: queryFilter },
@@ -567,13 +585,20 @@ Meteor.publish('pmsHoldings.byProduct', async function(isin, sessionId = null) {
     const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
     const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
 
-    if (!isAdmin && !isRM) return this.ready();
+    const baseQuery = { isin, isLatest: true, isActive: true };
 
-    return PMSHoldingsCollection.find({
-      isin,
-      isLatest: true,
-      isActive: true
-    });
+    // Archived (closed-relationship) clients' positions must not show on product reports
+    const byProductExclusion = await ClientEntityHelpers.archivedHoldingsSelector();
+    if (byProductExclusion.$nor) {
+      baseQuery.$nor = byProductExclusion.$nor;
+    }
+
+    if (isAdmin || isRM) {
+      return PMSHoldingsCollection.find(baseQuery);
+    }
+
+    // Clients see only their own active holdings — enough to gate UI like the Market Price card
+    return PMSHoldingsCollection.find({ ...baseQuery, userId: currentUser._id });
   } catch (error) {
     console.error('[pmsHoldings.byProduct] Error:', error);
     return this.ready();

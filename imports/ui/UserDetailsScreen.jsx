@@ -45,6 +45,115 @@ const getBankLogoPath = (bankName) => {
   return null; // No logo available - will use fallback emoji
 };
 
+// ── Entity profile field helpers ──
+const entityFieldLabelStyle = { display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' };
+const entityFieldInputStyle = { width: '100%', padding: '10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '0.9rem', boxSizing: 'border-box' };
+
+// Label + value in display mode, label + input in edit mode
+const EntityField = ({ label, editing, value, display, onChange, type = 'text', placeholder = '', span = false }) => (
+  <div style={span ? { gridColumn: '1 / -1' } : undefined}>
+    <label style={entityFieldLabelStyle}>{label}</label>
+    {editing ? (
+      <input type={type} value={value || ''} placeholder={placeholder} onChange={e => onChange(e.target.value)} style={entityFieldInputStyle} />
+    ) : (
+      <div style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>{display || '-'}</div>
+    )}
+  </div>
+);
+
+// Section separator spanning the whole profile grid
+const EntitySectionTitle = ({ children }) => (
+  <div style={{
+    gridColumn: '1 / -1', marginTop: '8px', paddingTop: '14px', borderTop: '1px solid var(--border-color)',
+    fontSize: '0.78rem', fontWeight: '700', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em'
+  }}>
+    {children}
+  </div>
+);
+
+// Yes / No / unanswered selector for KYC-style questions (value: true | false | null)
+const YesNoField = ({ label, sublabel, editing, value, onChange }) => (
+  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', padding: '12px 0', borderBottom: '1px solid var(--border-color)' }}>
+    <div>
+      <div style={{ fontSize: '0.92rem', fontWeight: '600', color: 'var(--text-primary)' }}>{label}</div>
+      {sublabel && <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>{sublabel}</div>}
+    </div>
+    {editing ? (
+      <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+        {[{ v: true, text: 'Yes' }, { v: false, text: 'No' }].map(opt => (
+          <button key={opt.text} onClick={() => onChange(value === opt.v ? null : opt.v)} style={{
+            padding: '6px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.82rem', fontWeight: '600',
+            border: value === opt.v ? 'none' : '1px solid var(--border-color)',
+            background: value === opt.v ? (opt.v ? '#ef4444' : '#10b981') : 'var(--bg-secondary)',
+            color: value === opt.v ? 'white' : 'var(--text-secondary)', transition: 'all 0.15s ease'
+          }}>{opt.text}</button>
+        ))}
+      </div>
+    ) : (
+      <span style={{
+        padding: '3px 12px', borderRadius: '6px', fontSize: '0.8rem', fontWeight: '700', flexShrink: 0,
+        background: value === true ? 'rgba(239, 68, 68, 0.12)' : value === false ? 'rgba(16, 185, 129, 0.12)' : 'var(--bg-secondary)',
+        color: value === true ? '#ef4444' : value === false ? '#10b981' : 'var(--text-muted)'
+      }}>
+        {value === true ? 'Yes' : value === false ? 'No' : '—'}
+      </span>
+    )}
+  </div>
+);
+
+// Single-choice band selector (e.g. wealth / income categories), with optional range sublabels
+const ChoiceField = ({ label, editing, value, onChange, options }) => (
+  <div style={{ padding: '12px 0', borderBottom: '1px solid var(--border-color)' }}>
+    <div style={{ fontSize: '0.92rem', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '8px' }}>{label}</div>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+      {editing ? options.map(opt => {
+        const selected = value === opt.value;
+        return (
+          <button key={opt.value} onClick={() => onChange(selected ? null : opt.value)} style={{
+            padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', textAlign: 'center',
+            border: selected ? '1.5px solid var(--accent-color)' : '1px solid var(--border-color)',
+            background: selected ? 'rgba(59, 130, 246, 0.1)' : 'var(--bg-secondary)',
+            color: selected ? 'var(--accent-color)' : 'var(--text-secondary)',
+            fontSize: '0.8rem', fontWeight: selected ? '700' : '500', transition: 'all 0.15s ease'
+          }}>
+            <div>{opt.label}</div>
+            {opt.sublabel && <div style={{ fontSize: '0.68rem', opacity: 0.75, marginTop: '2px' }}>{opt.sublabel}</div>}
+          </button>
+        );
+      }) : (() => {
+        const selected = options.find(o => o.value === value);
+        if (!selected) return <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>—</span>;
+        return (
+          <span style={{ padding: '6px 12px', borderRadius: '8px', background: 'rgba(59, 130, 246, 0.1)', color: 'var(--accent-color)', fontSize: '0.82rem', fontWeight: '700' }}>
+            {selected.label}{selected.sublabel ? ` (${selected.sublabel})` : ''}
+          </span>
+        );
+      })()}
+    </div>
+  </div>
+);
+
+// KYC band options (shared between display and edit)
+const PORTFOLIO_POTENTIAL_OPTIONS = [
+  { value: '500k_1m', label: '>€500K to €1,000K' },
+  { value: '1m_2m', label: '>€1,000K to €2,000K' },
+  { value: 'over_2m', label: '>€2,000K' }
+];
+const WEALTH_OPTIONS = [
+  { value: 'modest', label: 'Modest', sublabel: 'Net assets < €500K' },
+  { value: 'affluent', label: 'Affluent', sublabel: '€500K – €1M' },
+  { value: 'high', label: 'High', sublabel: '€1M – €5M' },
+  { value: 'hnwi', label: 'HNWI', sublabel: '€5M – €50M' },
+  { value: 'uhnwi', label: 'UHNWI', sublabel: '> €50M' }
+];
+const ANNUAL_INCOME_OPTIONS = [
+  { value: 'modest', label: 'Modest', sublabel: '< €50K' },
+  { value: 'average', label: 'Average', sublabel: '€50K – €100K' },
+  { value: 'comfortable', label: 'Comfortable', sublabel: '€100K – €250K' },
+  { value: 'high', label: 'High', sublabel: '€250K – €500K' },
+  { value: 'very_high', label: 'Very High', sublabel: '> €500K' }
+];
+
 export default function UserDetailsScreen({ userId, entityId = null, onBack, embedded = false }) {
   const { isDark: isDarkMode } = useTheme(); // v2
   const sessionId = localStorage.getItem('sessionId');
@@ -155,6 +264,12 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
   // Tab navigation state
   const [activeTab, setActiveTab] = useState('info');
 
+  // Entity KYC and US Person tab state
+  const [editingEntityKyc, setEditingEntityKyc] = useState(false);
+  const [entityKycDraft, setEntityKycDraft] = useState({});
+  const [editingUsPerson, setEditingUsPerson] = useState(false);
+  const [usPersonDraft, setUsPersonDraft] = useState({});
+
   // KYC Risk Score state
   const [editingRiskScore, setEditingRiskScore] = useState(false);
   const [savingRiskScore, setSavingRiskScore] = useState(false);
@@ -262,7 +377,32 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
         isInsurance: entity.isInsurance || false,
         newPassword: '',
         clientType: entity.type === ENTITY_TYPES.COMPANY ? 'company' : 'natural',
-        companyName: entity.profile?.companyName || ''
+        companyName: entity.profile?.companyName || '',
+        // Person identity
+        birthPlace: entity.profile?.birthPlace || '',
+        birthCountry: entity.profile?.birthCountry || '',
+        nationalities: (entity.profile?.nationalities || []).join(', '),
+        // Company identity
+        incorporationDate: entity.profile?.incorporationDate ? new Date(entity.profile.incorporationDate).toISOString().split('T')[0] : '',
+        incorporationCountry: entity.profile?.incorporationCountry || '',
+        // Addresses
+        taxAddress: {
+          street: entity.profile?.taxAddress?.street || '',
+          postalCode: entity.profile?.taxAddress?.postalCode || '',
+          city: entity.profile?.taxAddress?.city || '',
+          country: entity.profile?.taxAddress?.country || ''
+        },
+        secondaryAddress: {
+          street: entity.profile?.secondaryAddress?.street || '',
+          postalCode: entity.profile?.secondaryAddress?.postalCode || '',
+          city: entity.profile?.secondaryAddress?.city || '',
+          country: entity.profile?.secondaryAddress?.country || ''
+        },
+        // Contact
+        mobilePhone: entity.profile?.mobilePhone || '',
+        professionalPhone: entity.profile?.professionalPhone || '',
+        homePhone: entity.profile?.homePhone || '',
+        contactEmail: entity.profile?.email || ''
       });
       setStakeholders(entity.stakeholders || []);
     } else if (user) {
@@ -1008,9 +1148,9 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
     }
   };
 
-  // Initialize risk score form from user data
+  // Initialize risk score form from entity (preferred) or legacy user profile data
   const getInitialRiskScoreForm = () => {
-    const savedData = user?.profile?.kycRiskScore;
+    const savedData = entity?.kycRiskScore || user?.profile?.kycRiskScore;
     if (savedData) {
       return {
         clientProspect: savedData.clientProspect?.criteria || {},
@@ -1030,12 +1170,12 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
 
   const [riskScoreForm, setRiskScoreForm] = useState(getInitialRiskScoreForm);
 
-  // Update risk score form when user data changes
+  // Update risk score form when user or entity data changes
   useEffect(() => {
-    if (user?.profile?.kycRiskScore) {
+    if (entity?.kycRiskScore || user?.profile?.kycRiskScore) {
       setRiskScoreForm(getInitialRiskScoreForm());
     }
-  }, [user?.profile?.kycRiskScore]);
+  }, [entity?.kycRiskScore, user?.profile?.kycRiskScore]);
 
   // Handle risk score form changes
   const handleRiskScoreChange = (column, criterionId, value) => {
@@ -1085,13 +1225,171 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
         nextReviewDate: nextReviewDate
       };
 
-      await Meteor.callAsync('users.updateRiskScore', userId, riskScoreData, sessionId);
+      if (entityId) {
+        // Archive the previous assessment so the version trail survives changes
+        const updatePayload = { kycRiskScore: riskScoreData };
+        if (entity?.kycRiskScore?.assessmentDate) {
+          updatePayload.kycRiskScoreHistory = [...(entity.kycRiskScoreHistory || []), entity.kycRiskScore];
+        }
+        await Meteor.callAsync('clientEntities.update', entityId, updatePayload, sessionId);
+      } else {
+        await Meteor.callAsync('users.updateRiskScore', userId, riskScoreData, sessionId);
+      }
 
       setEditingRiskScore(false);
     } catch (error) {
       console.error('Error saving risk score:', error);
     } finally {
       setSavingRiskScore(false);
+    }
+  };
+
+  // Export the saved KYC risk assessment as a PDF (audit trail of versions)
+  const exportRiskScorePdf = async (savedScore) => {
+    if (!savedScore) return;
+    try {
+      const { default: html2pdf } = await import('html2pdf.js');
+
+      const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const clientName = entity ? ClientEntityHelpers.getEntityDisplayName(entity) : `${user?.profile?.firstName || ''} ${user?.profile?.lastName || ''}`.trim();
+      const assessor = savedScore.assessedBy ? UsersCollection.findOne(savedScore.assessedBy) : null;
+      const assessorName = assessor ? (`${assessor.profile?.firstName || ''} ${assessor.profile?.lastName || ''}`.trim() || assessor.email || assessor.username || '') : '';
+      const accountLines = (bankAccounts || []).map(a => {
+        const bank = banks.find(b => b._id === a.bankId);
+        return `${esc(a.accountNumber)}${bank ? ' — ' + esc(bank.name) : ''}`;
+      }).join('<br/>');
+
+      const COLUMNS = [
+        { key: 'clientProspect', label: 'Client Prospect' },
+        { key: 'beneficialOwner', label: 'Beneficial Owner' },
+        { key: 'businessRelationship', label: 'Business Relationship' }
+      ];
+      const cellFor = (criterion, columnKey) => {
+        const v = savedScore[columnKey]?.criteria?.[criterion.id];
+        const opt = criterion.options.find(o => o.value === v);
+        return opt ? `${esc(opt.labelEn)} <b>(${opt.score})</b>` : '&mdash;';
+      };
+      const riskLabel = (level) => level === 'high' ? 'High Risk' : level === 'medium' ? 'Medium Risk' : level === 'low' ? 'Low Risk' : 'Not Assessed';
+      const riskColor = (level) => level === 'high' ? '#b91c1c' : level === 'medium' ? '#b45309' : level === 'low' ? '#047857' : '#6b7280';
+
+      const rows = RISK_CRITERIA.map(c => `
+        <tr>
+          <td style="text-align:center;color:#6b7280;">${c.number}</td>
+          <td><b>${esc(c.labelEn)}</b></td>
+          ${COLUMNS.map(col => `<td style="text-align:center;">${cellFor(c, col.key)}</td>`).join('')}
+        </tr>`).join('');
+
+      const totals = `
+        <tr style="background:#f3f4f6;font-weight:bold;">
+          <td></td>
+          <td>TOTAL SCORE</td>
+          ${COLUMNS.map(col => {
+            const data = savedScore[col.key] || {};
+            return `<td style="text-align:center;">
+              <div style="font-size:14px;">${data.totalScore ?? 0} pts</div>
+              <div style="color:${riskColor(data.riskLevel)};">${riskLabel(data.riskLevel)}</div>
+            </td>`;
+          }).join('')}
+        </tr>`;
+
+      const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-GB') : '';
+      const stamp = new Date();
+      const versionTag = savedScore.assessmentDate ? new Date(savedScore.assessmentDate) : stamp;
+      const pad = (n) => String(n).padStart(2, '0');
+      const fileDate = `${versionTag.getFullYear()}-${pad(versionTag.getMonth() + 1)}-${pad(versionTag.getDate())}_${pad(versionTag.getHours())}${pad(versionTag.getMinutes())}`;
+      const safeName = (clientName || 'Client').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '_');
+
+      const html = `
+        <div style="font-family: Arial, Helvetica, sans-serif; color:#111827; font-size:10px; padding:4px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
+            <div>
+              <div style="font-size:16px; font-weight:bold;">KYC Risk Assessment — Client Risk Matrix</div>
+              <div style="color:#6b7280; margin-top:2px;">Based on "Matrice risque Client AP"</div>
+            </div>
+            <div style="text-align:right; color:#6b7280;">
+              <div>Assessment date: <b style="color:#111827;">${fmtDate(savedScore.assessmentDate) || '—'}</b></div>
+              <div>Next review due: <b style="color:#111827;">${fmtDate(savedScore.nextReviewDate) || '—'}</b></div>
+              ${assessorName ? `<div>Assessed by: <b style="color:#111827;">${esc(assessorName)}</b></div>` : ''}
+            </div>
+          </div>
+
+          <table style="width:100%; border-collapse:collapse; margin-bottom:12px;" border="0">
+            <tr>
+              <td style="border:1px solid #d1d5db; padding:6px 8px; width:50%;">
+                <span style="color:#6b7280;">Client:</span> <b>${esc(clientName)}</b>
+              </td>
+              <td style="border:1px solid #d1d5db; padding:6px 8px;">
+                <span style="color:#6b7280;">Account(s):</span><br/>${accountLines || '&mdash;'}
+              </td>
+            </tr>
+          </table>
+
+          <table style="width:100%; border-collapse:collapse;" border="0">
+            <thead>
+              <tr style="background:#1f2937; color:white;">
+                <th style="padding:5px; width:18px;">#</th>
+                <th style="padding:5px; text-align:left;">Risk Criteria</th>
+                ${COLUMNS.map(c => `<th style="padding:5px;">${c.label}</th>`).join('')}
+              </tr>
+            </thead>
+            <tbody>
+              ${rows}
+              ${totals}
+            </tbody>
+          </table>
+
+          <div style="margin-top:10px; color:#374151;">
+            <b>Risk classification:</b> &lt; 15 pts = low risk &nbsp;|&nbsp; 15&ndash;29 pts = medium risk &nbsp;|&nbsp; &ge; 30 pts = high risk.
+            Review periodicity: every year for high risk, every 2 years for medium and low risk.
+          </div>
+
+          <div style="margin-top:10px;">
+            <b>Comments:</b>
+            <div style="border:1px solid #d1d5db; min-height:40px; padding:6px 8px; margin-top:4px; white-space:pre-wrap;">${esc(savedScore.comments) || '&mdash;'}</div>
+          </div>
+
+          <table style="width:100%; margin-top:24px; border-collapse:collapse;">
+            <tr>
+              <td style="width:50%; padding-right:20px;">
+                <div style="border-top:1px solid #111827; padding-top:4px;">Signature Wealth Ambassador &nbsp;&mdash;&nbsp; Date:</div>
+              </td>
+              <td style="width:50%; padding-left:20px;">
+                <div style="border-top:1px solid #111827; padding-top:4px;">Signature Compliance Officer &nbsp;&mdash;&nbsp; Date:</div>
+              </td>
+            </tr>
+          </table>
+
+          <div style="margin-top:16px; color:#9ca3af; font-size:8px;">
+            Version of ${fmtDate(savedScore.assessmentDate) || fmtDate(stamp)} &mdash; PDF generated on ${stamp.toLocaleDateString('en-GB')} ${pad(stamp.getHours())}:${pad(stamp.getMinutes())} &mdash; keep this document as audit trail of the assessment before any modification.
+          </div>
+        </div>`;
+
+      // Off-screen styles live on the wrapper only: html2pdf clones the source
+      // element with its inline styles, so positioning the source itself
+      // off-screen produces a blank capture.
+      const wrapper = document.createElement('div');
+      wrapper.style.position = 'fixed';
+      wrapper.style.left = '-10000px';
+      wrapper.style.top = '0';
+      const container = document.createElement('div');
+      container.style.width = '794px';
+      container.style.background = 'white';
+      container.innerHTML = html;
+      wrapper.appendChild(container);
+      document.body.appendChild(wrapper);
+      try {
+        await html2pdf().set({
+          margin: [10, 10, 10, 10],
+          filename: `KYC_Risk_Assessment_${safeName}_${fileDate}.pdf`,
+          image: { type: 'jpeg', quality: 0.95 },
+          html2canvas: { scale: 2, backgroundColor: '#ffffff' },
+          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+        }).from(container).save();
+      } finally {
+        document.body.removeChild(wrapper);
+      }
+    } catch (err) {
+      console.error('Error exporting risk assessment PDF:', err);
     }
   };
 
@@ -1345,7 +1643,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                 >
                   {user.role}
                 </span>
-              ) : null}}
+              ) : null}
 
               {/* Active Status — only for user-only views (no entity) */}
               {!entity && (
@@ -1542,13 +1840,13 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
             </div>
 
 
-            {/* Risk Score Row (for clients only) */}
-            {hasUser && user.role === USER_ROLES.CLIENT && (
+            {/* Risk Score Row (clients and entities) */}
+            {(isEntityMode || (hasUser && user.role === USER_ROLES.CLIENT)) && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
                   <span>📊</span>
                   {(() => {
-                    const riskScore = user.profile?.kycRiskScore;
+                    const riskScore = entity?.kycRiskScore || user?.profile?.kycRiskScore;
                     if (!riskScore) {
                       return <span style={{ color: 'var(--text-muted)' }}>Risk not assessed</span>;
                     }
@@ -1654,8 +1952,9 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
           { id: 'accounts', label: 'Accounts', icon: '🏦', entityOrClient: true },
           { id: 'stakeholders', label: 'Stakeholders', icon: '🏛️', entityCompanyOnly: true },
           { id: 'documents', label: 'Documents', icon: '📋', entityOrClient: true, notLifeInsurance: true },
-          { id: 'kyc', label: 'KYC', icon: '✅', clientOnly: true },
-          { id: 'riskScore', label: 'Risk Score', icon: '📊', clientOnly: true },
+          { id: 'kyc', label: 'KYC', icon: '✅', entityOrClient: true },
+          { id: 'usPerson', label: 'US Person', icon: '🇺🇸', entityOnly: true },
+          { id: 'riskScore', label: 'Risk Score', icon: '📊', entityOrClient: true },
           { id: 'family', label: 'Linked People', icon: '\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67\u200d\ud83d\udc66', clientOnly: true, personOnly: true },
           { id: 'access', label: 'User Access', icon: '\ud83d\udd11', entityOnly: true, notLifeInsurance: true },
           { id: 'password', label: 'Password', icon: '\ud83d\udd12', adminOnly: true, userOnly: true }
@@ -1793,10 +2092,21 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                         if (entity.type === ENTITY_TYPES.PHYSICAL_PERSON) {
                           updates.profile.firstName = formData.firstName;
                           updates.profile.lastName = formData.lastName;
-                          if (formData.birthday) updates.profile.birthday = new Date(formData.birthday);
+                          updates.profile.birthday = formData.birthday ? new Date(formData.birthday) : null;
+                          updates.profile.birthPlace = formData.birthPlace || '';
+                          updates.profile.birthCountry = formData.birthCountry || '';
+                          updates.profile.nationalities = (formData.nationalities || '').split(',').map(s => s.trim()).filter(Boolean);
                         } else {
                           updates.profile.companyName = formData.companyName;
+                          updates.profile.incorporationDate = formData.incorporationDate ? new Date(formData.incorporationDate) : null;
+                          updates.profile.incorporationCountry = formData.incorporationCountry || '';
                         }
+                        updates.profile.taxAddress = formData.taxAddress || {};
+                        updates.profile.secondaryAddress = formData.secondaryAddress || {};
+                        updates.profile.mobilePhone = formData.mobilePhone || '';
+                        updates.profile.professionalPhone = formData.professionalPhone || '';
+                        updates.profile.homePhone = formData.homePhone || '';
+                        updates.profile.email = formData.contactEmail || '';
                         updates.profile.preferredLanguage = formData.preferredLanguage;
                         updates.referenceCurrency = formData.referenceCurrency;
                         updates.isInsurance = formData.isInsurance || false;
@@ -1814,41 +2124,42 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
               <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '16px' }}>
                 {entity.type === ENTITY_TYPES.PHYSICAL_PERSON ? (
                   <>
-                    <div>
-                      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' }}>First Name</label>
-                      {editingBasicInfo ? (
-                        <input value={formData.firstName} onChange={e => setFormData({...formData, firstName: e.target.value})} style={{ width: '100%', padding: '10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '0.9rem', boxSizing: 'border-box' }} />
-                      ) : (
-                        <div style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>{entity.profile?.firstName || '-'}</div>
-                      )}
-                    </div>
-                    <div>
-                      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' }}>Last Name</label>
-                      {editingBasicInfo ? (
-                        <input value={formData.lastName} onChange={e => setFormData({...formData, lastName: e.target.value})} style={{ width: '100%', padding: '10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '0.9rem', boxSizing: 'border-box' }} />
-                      ) : (
-                        <div style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>{entity.profile?.lastName || '-'}</div>
-                      )}
-                    </div>
+                    <EntityField label="First Name" editing={editingBasicInfo} value={formData.firstName} display={entity.profile?.firstName} onChange={v => setFormData({ ...formData, firstName: v })} />
+                    <EntityField label="Last Name" editing={editingBasicInfo} value={formData.lastName} display={entity.profile?.lastName} onChange={v => setFormData({ ...formData, lastName: v })} />
+                    <EntityField label="Birth Date" type="date" editing={editingBasicInfo} value={formData.birthday}
+                      display={entity.profile?.birthday ? new Date(entity.profile.birthday).toLocaleDateString('en-GB') : ''}
+                      onChange={v => setFormData({ ...formData, birthday: v })} />
+                    <EntityField label="Place of Birth" editing={editingBasicInfo} value={formData.birthPlace} display={entity.profile?.birthPlace} onChange={v => setFormData({ ...formData, birthPlace: v })} />
+                    <EntityField label="Country of Birth" editing={editingBasicInfo} value={formData.birthCountry} display={entity.profile?.birthCountry} onChange={v => setFormData({ ...formData, birthCountry: v })} />
+                    <EntityField label="Nationalities" editing={editingBasicInfo} value={formData.nationalities}
+                      placeholder="Primary first, comma-separated (e.g. French, Monegasque)"
+                      display={(entity.profile?.nationalities || []).join(', ')}
+                      onChange={v => setFormData({ ...formData, nationalities: v })} />
                   </>
                 ) : (
-                  <div style={{ gridColumn: isMobile ? '1' : '1 / -1' }}>
-                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' }}>Company Name</label>
-                    {editingBasicInfo ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        <input value={formData.companyName} onChange={e => setFormData({...formData, companyName: e.target.value})} style={{ width: '100%', padding: '10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '0.9rem', boxSizing: 'border-box' }} />
-                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                          <input type="checkbox" checked={formData.isInsurance || false} onChange={e => setFormData({...formData, isInsurance: e.target.checked})} style={{ width: '16px', height: '16px', cursor: 'pointer' }} />
-                          Life Insurance Company
-                        </label>
-                      </div>
-                    ) : (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>{entity.profile?.companyName || '-'}</span>
-                        {entity.isInsurance && <span style={{ padding: '2px 8px', borderRadius: '5px', fontSize: '0.7rem', fontWeight: '600', background: 'rgba(20, 184, 166, 0.12)', color: '#14b8a6' }}>Insurance</span>}
-                      </div>
-                    )}
-                  </div>
+                  <>
+                    <div style={{ gridColumn: isMobile ? '1' : '1 / -1' }}>
+                      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' }}>Company Name</label>
+                      {editingBasicInfo ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          <input value={formData.companyName} onChange={e => setFormData({...formData, companyName: e.target.value})} style={{ width: '100%', padding: '10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '0.9rem', boxSizing: 'border-box' }} />
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                            <input type="checkbox" checked={formData.isInsurance || false} onChange={e => setFormData({...formData, isInsurance: e.target.checked})} style={{ width: '16px', height: '16px', cursor: 'pointer' }} />
+                            Life Insurance Company
+                          </label>
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>{entity.profile?.companyName || '-'}</span>
+                          {entity.isInsurance && <span style={{ padding: '2px 8px', borderRadius: '5px', fontSize: '0.7rem', fontWeight: '600', background: 'rgba(20, 184, 166, 0.12)', color: '#14b8a6' }}>Insurance</span>}
+                        </div>
+                      )}
+                    </div>
+                    <EntityField label="Date of Creation" type="date" editing={editingBasicInfo} value={formData.incorporationDate}
+                      display={entity.profile?.incorporationDate ? new Date(entity.profile.incorporationDate).toLocaleDateString('en-GB') : ''}
+                      onChange={v => setFormData({ ...formData, incorporationDate: v })} />
+                    <EntityField label="Country of Incorporation" editing={editingBasicInfo} value={formData.incorporationCountry} display={entity.profile?.incorporationCountry} onChange={v => setFormData({ ...formData, incorporationCountry: v })} />
+                  </>
                 )}
                 {<><div>
                   <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' }}>Reference Currency</label>
@@ -1875,6 +2186,39 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   )}
                 </div>
                 </>}
+
+                {/* Tax address */}
+                <EntitySectionTitle>📍 Tax Address</EntitySectionTitle>
+                <EntityField label="Street" span editing={editingBasicInfo} value={formData.taxAddress?.street} display={entity.profile?.taxAddress?.street}
+                  onChange={v => setFormData({ ...formData, taxAddress: { ...formData.taxAddress, street: v } })} />
+                <EntityField label="Postal Code" editing={editingBasicInfo} value={formData.taxAddress?.postalCode} display={entity.profile?.taxAddress?.postalCode}
+                  onChange={v => setFormData({ ...formData, taxAddress: { ...formData.taxAddress, postalCode: v } })} />
+                <EntityField label="City" editing={editingBasicInfo} value={formData.taxAddress?.city} display={entity.profile?.taxAddress?.city}
+                  onChange={v => setFormData({ ...formData, taxAddress: { ...formData.taxAddress, city: v } })} />
+                <EntityField label="Country of Residence" editing={editingBasicInfo} value={formData.taxAddress?.country} display={entity.profile?.taxAddress?.country}
+                  onChange={v => setFormData({ ...formData, taxAddress: { ...formData.taxAddress, country: v } })} />
+
+                {/* Secondary address */}
+                <EntitySectionTitle>🏠 Other Address</EntitySectionTitle>
+                <EntityField label="Street" span editing={editingBasicInfo} value={formData.secondaryAddress?.street} display={entity.profile?.secondaryAddress?.street}
+                  onChange={v => setFormData({ ...formData, secondaryAddress: { ...formData.secondaryAddress, street: v } })} />
+                <EntityField label="Postal Code" editing={editingBasicInfo} value={formData.secondaryAddress?.postalCode} display={entity.profile?.secondaryAddress?.postalCode}
+                  onChange={v => setFormData({ ...formData, secondaryAddress: { ...formData.secondaryAddress, postalCode: v } })} />
+                <EntityField label="City" editing={editingBasicInfo} value={formData.secondaryAddress?.city} display={entity.profile?.secondaryAddress?.city}
+                  onChange={v => setFormData({ ...formData, secondaryAddress: { ...formData.secondaryAddress, city: v } })} />
+                <EntityField label="Country" editing={editingBasicInfo} value={formData.secondaryAddress?.country} display={entity.profile?.secondaryAddress?.country}
+                  onChange={v => setFormData({ ...formData, secondaryAddress: { ...formData.secondaryAddress, country: v } })} />
+
+                {/* Contact */}
+                <EntitySectionTitle>📞 Contact</EntitySectionTitle>
+                <EntityField label="Mobile Phone" editing={editingBasicInfo} value={formData.mobilePhone} display={entity.profile?.mobilePhone}
+                  onChange={v => setFormData({ ...formData, mobilePhone: v })} />
+                <EntityField label="Professional Phone" editing={editingBasicInfo} value={formData.professionalPhone} display={entity.profile?.professionalPhone}
+                  onChange={v => setFormData({ ...formData, professionalPhone: v })} />
+                <EntityField label="Home Phone" editing={editingBasicInfo} value={formData.homePhone} display={entity.profile?.homePhone}
+                  onChange={v => setFormData({ ...formData, homePhone: v })} />
+                <EntityField label="Email Address" type="email" editing={editingBasicInfo} value={formData.contactEmail} display={entity.profile?.email}
+                  onChange={v => setFormData({ ...formData, contactEmail: v })} />
               </div>
 
               {/* Roles in other entities */}
@@ -3339,8 +3683,8 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                     </div>
 
                                     {/* Right: Risk Matrix */}
-                                    {hasUser && user.role === USER_ROLES.CLIENT && (() => {
-                                      const riskScore = user.profile?.kycRiskScore;
+                                    {(isEntityMode || (hasUser && user.role === USER_ROLES.CLIENT)) && (() => {
+                                      const riskScore = entity?.kycRiskScore || user?.profile?.kycRiskScore;
                                       const getHighestRisk = (rs) => {
                                         if (!rs) return null;
                                         const levels = [rs.clientProspect?.riskLevel, rs.beneficialOwner?.riskLevel, rs.businessRelationship?.riskLevel].filter(Boolean);
@@ -3581,6 +3925,170 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
             />
           )}
 
+          {/* KYC — entity mode */}
+          {activeTab === 'kyc' && isEntityMode && entity && (() => {
+            const kyc = editingEntityKyc ? entityKycDraft : (entity.kyc || {});
+            const setKyc = (patch) => setEntityKycDraft({ ...entityKycDraft, ...patch });
+            return (
+              <LiquidGlassCard borderRadius="12px" style={{ padding: isMobile ? '1.5rem' : '1.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '2px solid var(--border-color)', paddingBottom: '1rem' }}>
+                  <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: '700', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ fontSize: '1.5rem' }}>✅</span> KYC
+                  </h2>
+                  {!editingEntityKyc ? (
+                    <button onClick={() => { setEntityKycDraft({ ...(entity.kyc || {}) }); setEditingEntityKyc(true); }} style={{ padding: '8px 16px', background: 'var(--accent-color)', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Edit</button>
+                  ) : (
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button onClick={async () => {
+                        try {
+                          await Meteor.callAsync('clientEntities.update', entityId, { kyc: entityKycDraft }, sessionId);
+                          setEditingEntityKyc(false);
+                        } catch (err) {
+                          console.error('Error updating KYC:', err);
+                        }
+                      }} style={{ padding: '8px 16px', background: '#10b981', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Save</button>
+                      <button onClick={() => setEditingEntityKyc(false)} style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}>Cancel</button>
+                    </div>
+                  )}
+                </div>
+
+                <YesNoField
+                  label="Politically Exposed Person (PEP)"
+                  editing={editingEntityKyc}
+                  value={kyc.isPep ?? null}
+                  onChange={v => setKyc({ isPep: v })}
+                />
+
+                <div style={{ marginTop: '20px', marginBottom: '4px', fontSize: '0.78rem', fontWeight: '700', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  💰 Financial Profile
+                </div>
+
+                <div style={{ padding: '12px 0', borderBottom: '1px solid var(--border-color)' }}>
+                  <EntityField
+                    label="Portfolio Amount / Initial Contribution"
+                    editing={editingEntityKyc}
+                    value={kyc.portfolioAmount}
+                    display={kyc.portfolioAmount}
+                    placeholder="e.g. €750,000"
+                    onChange={v => setKyc({ portfolioAmount: v })}
+                  />
+                </div>
+
+                <ChoiceField
+                  label="Portfolio Potential"
+                  editing={editingEntityKyc}
+                  value={kyc.portfolioPotential}
+                  onChange={v => setKyc({ portfolioPotential: v })}
+                  options={PORTFOLIO_POTENTIAL_OPTIONS}
+                />
+
+                <ChoiceField
+                  label="Wealth"
+                  editing={editingEntityKyc}
+                  value={kyc.wealthCategory}
+                  onChange={v => setKyc({ wealthCategory: v })}
+                  options={WEALTH_OPTIONS}
+                />
+
+                <div style={{ padding: '12px 0', borderBottom: '1px solid var(--border-color)', display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: '12px' }}>
+                  <EntityField label="Of which: Real Estate" editing={editingEntityKyc} value={kyc.wealthRealEstate} display={kyc.wealthRealEstate} onChange={v => setKyc({ wealthRealEstate: v })} />
+                  <EntityField label="Of which: Bank Assets" editing={editingEntityKyc} value={kyc.wealthBankAssets} display={kyc.wealthBankAssets} onChange={v => setKyc({ wealthBankAssets: v })} />
+                  <EntityField label="Other" editing={editingEntityKyc} value={kyc.wealthOther} display={kyc.wealthOther} onChange={v => setKyc({ wealthOther: v })} />
+                </div>
+
+                <ChoiceField
+                  label="Annual Income"
+                  editing={editingEntityKyc}
+                  value={kyc.annualIncomeCategory}
+                  onChange={v => setKyc({ annualIncomeCategory: v })}
+                  options={ANNUAL_INCOME_OPTIONS}
+                />
+
+                <div style={{ padding: '12px 0' }}>
+                  <EntityField
+                    label="Other Known Bank Accounts"
+                    editing={editingEntityKyc}
+                    value={kyc.otherBankAccounts}
+                    display={kyc.otherBankAccounts}
+                    onChange={v => setKyc({ otherBankAccounts: v })}
+                  />
+                </div>
+              </LiquidGlassCard>
+            );
+          })()}
+
+          {/* US Person — entity mode */}
+          {activeTab === 'usPerson' && isEntityMode && entity && (() => {
+            const us = editingUsPerson ? usPersonDraft : (entity.usPerson || {});
+            const setUs = (patch) => setUsPersonDraft({ ...usPersonDraft, ...patch });
+            return (
+              <LiquidGlassCard borderRadius="12px" style={{ padding: isMobile ? '1.5rem' : '1.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '2px solid var(--border-color)', paddingBottom: '1rem' }}>
+                  <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: '700', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ fontSize: '1.5rem' }}>🇺🇸</span> US Person
+                  </h2>
+                  {!editingUsPerson ? (
+                    <button onClick={() => { setUsPersonDraft({ ...(entity.usPerson || {}) }); setEditingUsPerson(true); }} style={{ padding: '8px 16px', background: 'var(--accent-color)', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Edit</button>
+                  ) : (
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button onClick={async () => {
+                        try {
+                          await Meteor.callAsync('clientEntities.update', entityId, { usPerson: usPersonDraft }, sessionId);
+                          setEditingUsPerson(false);
+                        } catch (err) {
+                          console.error('Error updating US Person status:', err);
+                        }
+                      }} style={{ padding: '8px 16px', background: '#10b981', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Save</button>
+                      <button onClick={() => setEditingUsPerson(false)} style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}>Cancel</button>
+                    </div>
+                  )}
+                </div>
+
+                <YesNoField
+                  label="US Person"
+                  editing={editingUsPerson}
+                  value={us.isUsPerson ?? null}
+                  onChange={v => setUs({ isUsPerson: v })}
+                />
+                <YesNoField
+                  label="American Citizenship"
+                  sublabel="Including dual or multiple nationalities"
+                  editing={editingUsPerson}
+                  value={us.usCitizenship ?? null}
+                  onChange={v => setUs({ usCitizenship: v })}
+                />
+                <YesNoField
+                  label="Permanent Residence in the USA"
+                  sublabel="Green Card, positive Substantial Presence Test"
+                  editing={editingUsPerson}
+                  value={us.usPermanentResidence ?? null}
+                  onChange={v => setUs({ usPermanentResidence: v })}
+                />
+                <YesNoField
+                  label="Place of Birth in the USA"
+                  sublabel="Unless Certificate of Loss of Nationality, …"
+                  editing={editingUsPerson}
+                  value={us.usBirthPlace ?? null}
+                  onChange={v => setUs({ usBirthPlace: v })}
+                />
+                <YesNoField
+                  label="Address in the USA"
+                  sublabel="Secondary residence, …"
+                  editing={editingUsPerson}
+                  value={us.usAddress ?? null}
+                  onChange={v => setUs({ usAddress: v })}
+                />
+                <YesNoField
+                  label="Taxable in the USA for Another Reason"
+                  sublabel="Dual residence, joint filing with a US Person spouse, long-term stay, …"
+                  editing={editingUsPerson}
+                  value={us.usOtherTaxReason ?? null}
+                  onChange={v => setUs({ usOtherTaxReason: v })}
+                />
+              </LiquidGlassCard>
+            );
+          })()}
+
           {/* KYC - kyc tab (when viewing a client profile) */}
           {activeTab === 'kyc' && hasUser && user.role === USER_ROLES.CLIENT && (
             <LiquidGlassCard style={{ padding: '24px' }}>
@@ -3771,7 +4279,9 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
           )}
 
           {/* KYC Risk Score - riskScore tab (when viewing a client profile) */}
-          {activeTab === 'riskScore' && hasUser && user.role === USER_ROLES.CLIENT && (
+          {activeTab === 'riskScore' && (isEntityMode || (hasUser && user.role === USER_ROLES.CLIENT)) && (() => {
+            const savedRiskScore = entity?.kycRiskScore || user?.profile?.kycRiskScore;
+            return (
             <LiquidGlassCard style={{ padding: '24px' }}>
               {/* Header */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
@@ -3786,31 +4296,57 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                 }}>
                   <span>📊</span> KYC Risk Assessment
                 </h2>
-                {!editingRiskScore && (currentUser?.role === USER_ROLES.SUPERADMIN || currentUser?.role === USER_ROLES.ADMIN || currentUser?.role === USER_ROLES.COMPLIANCE) && (
-                  <button
-                    onClick={() => setEditingRiskScore(true)}
-                    style={{
-                      padding: '8px 16px',
-                      background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color-dark, #0284c7) 100%)',
-                      border: 'none',
-                      borderRadius: '8px',
-                      color: '#fff',
-                      cursor: 'pointer',
-                      fontSize: '14px',
-                      fontWeight: '500',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      transition: 'all 0.3s ease'
-                    }}
-                  >
-                    ✏️ Edit
-                  </button>
+                {!editingRiskScore && (
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    {savedRiskScore && (
+                      <button
+                        onClick={() => exportRiskScorePdf(savedRiskScore)}
+                        title="Export this version as PDF for the audit trail"
+                        style={{
+                          padding: '8px 16px',
+                          background: 'var(--bg-secondary)',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '8px',
+                          color: 'var(--text-primary)',
+                          cursor: 'pointer',
+                          fontSize: '14px',
+                          fontWeight: '500',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          transition: 'all 0.3s ease'
+                        }}
+                      >
+                        📄 Export PDF
+                      </button>
+                    )}
+                    {(currentUser?.role === USER_ROLES.SUPERADMIN || currentUser?.role === USER_ROLES.ADMIN || currentUser?.role === USER_ROLES.COMPLIANCE) && (
+                      <button
+                        onClick={() => setEditingRiskScore(true)}
+                        style={{
+                          padding: '8px 16px',
+                          background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color-dark, #0284c7) 100%)',
+                          border: 'none',
+                          borderRadius: '8px',
+                          color: '#fff',
+                          cursor: 'pointer',
+                          fontSize: '14px',
+                          fontWeight: '500',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          transition: 'all 0.3s ease'
+                        }}
+                      >
+                        ✏️ Edit
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
 
               {/* Assessment Info Bar */}
-              {user.profile?.kycRiskScore?.assessmentDate && (
+              {savedRiskScore?.assessmentDate && (
                 <div style={{
                   display: 'flex',
                   flexWrap: 'wrap',
@@ -3824,21 +4360,43 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   <div>
                     <span style={{ color: 'var(--text-secondary)' }}>Last Assessment: </span>
                     <span style={{ color: 'var(--text-primary)', fontWeight: '500' }}>
-                      {new Date(user.profile.kycRiskScore.assessmentDate).toLocaleDateString()}
+                      {new Date(savedRiskScore.assessmentDate).toLocaleDateString()}
                     </span>
                   </div>
-                  {user.profile?.kycRiskScore?.nextReviewDate && (
+                  {savedRiskScore?.nextReviewDate && (
                     <div>
                       <span style={{ color: 'var(--text-secondary)' }}>Next Review Due: </span>
                       <span style={{
-                        color: new Date(user.profile.kycRiskScore.nextReviewDate) < new Date() ? '#ef4444' : 'var(--text-primary)',
+                        color: new Date(savedRiskScore.nextReviewDate) < new Date() ? '#ef4444' : 'var(--text-primary)',
                         fontWeight: '500'
                       }}>
-                        {new Date(user.profile.kycRiskScore.nextReviewDate).toLocaleDateString()}
-                        {new Date(user.profile.kycRiskScore.nextReviewDate) < new Date() && ' (Overdue)'}
+                        {new Date(savedRiskScore.nextReviewDate).toLocaleDateString()}
+                        {new Date(savedRiskScore.nextReviewDate) < new Date() && ' (Overdue)'}
                       </span>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* Previous versions (audit trail) */}
+              {entity?.kycRiskScoreHistory?.length > 0 && (
+                <div style={{
+                  display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px',
+                  marginBottom: '24px', padding: '10px 16px',
+                  background: 'var(--bg-secondary)', borderRadius: '8px', fontSize: '0.82rem'
+                }}>
+                  <span style={{ color: 'var(--text-secondary)', fontWeight: '600' }}>🗂️ Previous versions:</span>
+                  {[...entity.kycRiskScoreHistory].reverse().map((h, i) => (
+                    <button key={i}
+                      onClick={() => exportRiskScorePdf(h)}
+                      title="Export this archived version as PDF"
+                      style={{
+                        padding: '4px 10px', background: 'var(--bg-primary)', border: '1px solid var(--border-color)',
+                        borderRadius: '6px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.78rem'
+                      }}>
+                      📄 {h.assessmentDate ? new Date(h.assessmentDate).toLocaleDateString('en-GB') : `Version ${entity.kycRiskScoreHistory.length - i}`}
+                    </button>
+                  ))}
                 </div>
               )}
 
@@ -3936,7 +4494,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                               </select>
                             ) : (
                               (() => {
-                                const savedValue = user.profile?.kycRiskScore?.[column]?.criteria?.[criterion.id];
+                                const savedValue = savedRiskScore?.[column]?.criteria?.[criterion.id];
                                 const selectedOption = criterion.options.find(o => o.value === savedValue);
                                 if (selectedOption) {
                                   return (
@@ -3981,8 +4539,8 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                         const result = editingRiskScore
                           ? calculateRiskScore(riskScoreForm[column])
                           : {
-                              totalScore: user.profile?.kycRiskScore?.[column]?.totalScore || 0,
-                              riskLevel: user.profile?.kycRiskScore?.[column]?.riskLevel || null
+                              totalScore: savedRiskScore?.[column]?.totalScore || 0,
+                              riskLevel: savedRiskScore?.[column]?.riskLevel || null
                             };
                         const display = getRiskLevelDisplay(result.riskLevel);
                         return (
@@ -4078,12 +4636,12 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                     padding: '12px 16px',
                     background: 'var(--bg-secondary)',
                     borderRadius: '8px',
-                    color: user.profile?.kycRiskScore?.comments ? 'var(--text-primary)' : 'var(--text-muted)',
+                    color: savedRiskScore?.comments ? 'var(--text-primary)' : 'var(--text-muted)',
                     fontSize: '0.9rem',
                     whiteSpace: 'pre-wrap',
                     minHeight: '60px'
                   }}>
-                    {user.profile?.kycRiskScore?.comments || 'No comments recorded.'}
+                    {savedRiskScore?.comments || 'No comments recorded.'}
                   </div>
                 )}
               </div>
@@ -4151,7 +4709,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
               )}
 
               {/* No Assessment Yet */}
-              {!user.profile?.kycRiskScore && !editingRiskScore && (
+              {!savedRiskScore && !editingRiskScore && (
                 <div style={{
                   padding: '32px',
                   textAlign: 'center',
@@ -4184,7 +4742,8 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                 </div>
               )}
             </LiquidGlassCard>
-          )}
+            );
+          })()}
 
           {/* Family Members - family tab (when viewing a client profile) */}
           {activeTab === 'family' && hasUser && user.role === USER_ROLES.CLIENT && (

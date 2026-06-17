@@ -480,10 +480,30 @@ export const EODApiHelpers = {
 
   // Get real-time price for a specific security
   async getRealTimePrice(symbol, exchange = null) {
+    // Build the list of ticker variants to try. Bloomberg strips the
+    // share-class separator on Nordic stocks (CARLB DC / NOVOB DC) while EOD
+    // and the local exchange use a hyphen (CARL-B.CO / NOVO-B.CO). If the
+    // primary lookup 404s on a Nordic exchange ending in A or B, retry once
+    // with the hyphenated form before giving up.
+    const NORDIC_EXCHANGES = new Set(['CO', 'ST', 'HE', 'IC']); // Copenhagen, Stockholm, Helsinki, Iceland
+    const buildVariants = () => {
+      const variants = [exchange ? `${symbol}.${exchange}` : symbol];
+      const looksLikeShareClass = /^[A-Z0-9]{3,}[AB]$/.test(symbol || '');
+      if (exchange && NORDIC_EXCHANGES.has(String(exchange).toUpperCase()) && looksLikeShareClass) {
+        const hyphenated = `${symbol.slice(0, -1)}-${symbol.slice(-1)}`;
+        variants.push(`${hyphenated}.${exchange}`);
+      }
+      return variants;
+    };
+
+    const tickerVariants = buildVariants();
+    let lastError = null;
+
+    for (let i = 0; i < tickerVariants.length; i++) {
+      const ticker = tickerVariants[i];
     try {
-      const ticker = exchange ? `${symbol}.${exchange}` : symbol;
       const url = `${EOD_BASE_URL}/real-time/${ticker}`;
-      
+
       const response = await HTTP.get(url, {
         params: {
           api_token: EOD_API_TOKEN,
@@ -554,16 +574,31 @@ export const EODApiHelpers = {
       
       return response.data;
     } catch (error) {
-      
-      // Check if it's an API limit or auth error
+      lastError = error;
+
+      // API limit / auth errors don't get a retry — they're not ticker-related.
       if (error.response && error.response.statusCode === 403) {
         throw new Meteor.Error('eod-auth-failed', 'API authentication failed or limit reached');
-      } else if (error.response && error.response.statusCode === 404) {
-        throw new Meteor.Error('eod-symbol-not-found', `Symbol ${symbol} not found`);
       }
-      
+
+      // 404 → try the next ticker variant (if any). Common case: Bloomberg
+      // CARLB.CO needs to be retried as CARL-B.CO.
+      if (error.response && error.response.statusCode === 404 && i < tickerVariants.length - 1) {
+        console.log(`[EOD] ${ticker} not found, trying variant ${tickerVariants[i + 1]}`);
+        continue;
+      }
+      if (error.response && error.response.statusCode === 404) {
+        throw new Meteor.Error('eod-symbol-not-found', `Symbol ${symbol} not found (tried: ${tickerVariants.join(', ')})`);
+      }
+
+      // Non-404 transport/parse errors: stop retrying, propagate.
       throw new Meteor.Error('eod-price-failed', `Failed to get real-time price: ${error.message}`);
     }
+    }
+
+    // All variants exhausted (shouldn't normally reach here — the loop throws
+    // before this on the last iteration).
+    throw new Meteor.Error('eod-symbol-not-found', `Symbol ${symbol} not found (tried: ${tickerVariants.join(', ')})`);
   },
 
   // Historical data cache (in-memory, resets on server restart)

@@ -52,8 +52,14 @@ if (Meteor.isServer) {
 
   /**
    * Write the termsheet PDF file to disk.
-   * Called AFTER product insertion. In dev mode, writing to public/ triggers
-   * a Meteor hot-reload, but the product already has the termSheet field set.
+   *
+   * Called AFTER product insertion. The file is written to a hidden
+   * directory (`.termsheets/`) OUTSIDE of `public/` so Meteor's dev-mode
+   * file watcher doesn't pick it up — writing into `public/` triggers a
+   * hot code push that reloads the client and wipes all UI state (the
+   * "screen refresh after extraction" bug). The WebApp.connectHandlers
+   * route at server/main.js:/termsheets reads from the same directory so
+   * the URL contract is unchanged.
    */
   function writeTermSheetFile(base64Data, termSheetMetadata) {
     try {
@@ -68,8 +74,8 @@ if (Meteor.isServer) {
         if (projectRoot.includes('.meteor')) {
           projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
         }
-        const publicDir = path.join(projectRoot, 'public');
-        termsheetsDir = path.join(publicDir, 'termsheets');
+        // Hidden directory (dotfile) — Meteor's build watcher ignores it.
+        termsheetsDir = path.join(projectRoot, '.termsheets');
       }
 
       // Create directory if it doesn't exist
@@ -664,6 +670,57 @@ if (Meteor.isServer) {
           observationFrequency: "annual"
         },
         template: "himalaya"
+      },
+
+      bonus_certificate: {
+        title: "SK hynix Capped Bonus Certificate",
+        isin: "CH1534646109",
+        issuer: "Société Générale",
+        currency: "EUR",
+        tradeDate: "2026-05-05",
+        valueDate: "2026-05-12",
+        finalObservation: "2027-05-06",
+        maturity: "2027-05-13",
+        maturityDate: "2027-05-13",
+        notional: 100,
+        denomination: 1000,
+        basketMode: "single",
+        underlyings: [
+          {
+            ticker: "000660",
+            name: "SK hynix Inc",
+            isin: "KR7000660001",
+            strike: 0,
+            securityData: {
+              symbol: "000660",
+              name: "SK hynix Inc",
+              exchange: "KO",
+              currency: "KRW",
+              country: "KR",
+              ticker: "000660.KO"
+            }
+          }
+        ],
+        finalObservationDate: "2027-05-06",
+        scheduleConfig: {
+          frequency: "maturity",
+          coolOffPeriods: 0,
+          stepDownValue: 0,
+          initialAutocallLevel: 100,
+          initialCouponBarrier: 60
+        },
+        templateId: "bonus_certificate",
+        structureParams: {
+          strikeLevel: 100,
+          bonusLevel: 100,
+          barrierLevel: 60,
+          barrierType: "european",
+          participationRate: 120,
+          capEnabled: true,
+          cap: 66,
+          basketType: "single"
+        },
+        template: "bonus_certificate"
       }
     };
 
@@ -740,10 +797,15 @@ EXTRACTION RULES:
    - Value Date: May be labeled as "Value Date", "Settlement Date", or "Issue Settlement Date"
    - Final Observation: May be labeled as "Final Observation", "Final Fixing Date", or "Final Valuation Date"
    - Maturity Date: May be labeled as "Maturity Date", "Redemption Date", or "Final Settlement Date"
-3. For underlyings: extract ticker, name, ISIN, initial prices (strike prices)
-   - Set the "strike" field to the initial/strike price from the term sheet
+3. For underlyings: extract ticker, name, ISIN, and INITIAL REFERENCE PRICE
+   - The per-underlying "strike" field MUST hold the INITIAL REFERENCE / SPOT REFERENCE PRICE — i.e. the absolute price at 100% of the initial fixing. This is what performance is measured AGAINST.
+     * Look for labels: "Spot Reference Price", "Initial Reference Level", "Initial Fixing Level", "Initial Price", "Reference Price", "Reference Level at Initial Fixing", "Initial Level".
+     * EXAMPLE (Vontobel format):
+         "Spot Reference Price  DKK 831.20"        ← use 831.20 in the per-underlying "strike" field
+         "Strike Price          DKK 623.40 (75.00%*)" ← DO NOT put 623.40 here. The 75% goes in structureParams.strike (or protectionBarrierLevel).
+     * COMMON MISTAKE: the term sheet's "Strike Price" line is usually the strike of the short put / capital barrier (e.g. 75% × Spot). It is NOT the initial reference. Putting it in the per-underlying "strike" field corrupts all performance calculations because the system divides current price by this number to compute performance.
    - DO NOT populate securityData.price - leave it null (current market prices will be fetched separately)
-   - Only populate: ticker, name, isin, strike, and basic securityData (symbol, name, exchange, currency, country)
+   - Only populate: ticker, name, isin, strike (= initial reference price), and basic securityData (symbol, name, exchange, currency, country)
 4. For barriers: extract all levels as percentages (e.g., 70 for 70%)
    - Protection/Barrier Level: Extract into structureParams.protectionBarrierLevel (e.g., if term sheet shows "70%" or "70.00%", use 70)
    - Strike Level / Initial Level: Extract into structureParams.strike
@@ -751,9 +813,75 @@ EXTRACTION RULES:
      * Common patterns: "40% × S(0,k)", "Strike: 40%", "Strike Level: 40.00%", "X% of initial level"
      * Extract the percentage coefficient (e.g., if "40% × S(0,k)", use 40; if "70% of initial", use 70)
      * If strike shows "100%" or "100.00%", use 100
-     * Default to 100 only if no strike information is found
+     * PER-UNDERLYING TABLE FORMAT: Many term sheets list the strike inside each underlying's own block, e.g.:
+         "Strike Price DKK 623.40 (75.00%*)" — where "*" footnotes "in % of the Spot Reference Price"
+         "Strike Price USD 60.62 (75.00%*)"
+         "Strike Price EUR 267.83 (75.00%*)"
+       Here each underlying carries its own absolute strike (623.40, 60.62, 267.83) AND a common percentage (75.00%).
+       In this case: the absolute number goes in the per-underlying "strike" field, and the COMMON PERCENTAGE
+       goes in structureParams.strike. So if all three rows say "(75.00%*)", set structureParams.strike = 75.
+       Do NOT default to 100 just because there's no separate product-level "Strike Level = X%" line — the
+       per-underlying parenthetical IS the strike level when the percentages match across all underlyings.
+     * Default to 100 only if NO strike percentage information appears anywhere — including the per-underlying parentheticals.
    - Autocall Level: Extract into scheduleConfig.initialAutocallLevel (e.g., if term sheet shows "100%", use 100)
    - Coupon Barrier: Extract into scheduleConfig.initialCouponBarrier (e.g., if term sheet shows "70%", use 70)
+   - Knock-In Threshold (Bonus Certificate only): Extract into structureParams.barrierLevel (e.g., if term sheet shows "Knock-In Threshold = 60% × S(0)" or "Barrier Level: 60%", use 60)
+4b. For BONUS CERTIFICATE template (SSPA 1320 / 1330) — CRITICAL FIELD EXTRACTION:
+
+   **strikeLevel** (in structureParams): A PERCENTAGE, almost always 100.
+   - This is the strike as a % of the underlying's initial fixing level (NOT the absolute stock price).
+   - Look for: "Strike: 100% × S(0)", "Strike Level: 100%", "Strike at 100%".
+   - If you see "Strike: 100% × S(0)" → strikeLevel = 100. NOT the actual KRW/EUR/USD initial price.
+   - DEFAULT: 100. Only use a different value if the termsheet EXPLICITLY shows a percentage other than 100% for the strike.
+   - DO NOT extract the absolute initial fixing level (e.g. KRW 250,000 or USD 922) into this field — those go in the underlying's "strike" field instead.
+
+   **bonusLevel** (in structureParams): A PERCENTAGE, almost always 100.
+   - The redemption floor when no knock-in occurs (in % of denomination).
+   - Look for: the constant inside "100% + Max(0%; …)" — for a standard bonus certificate this is 100.
+   - DEFAULT: 100. Only deviate if the termsheet explicitly shows a different bonus floor.
+
+   **barrierLevel** (in structureParams): A PERCENTAGE.
+   - The Knock-In Threshold as % of initial fixing (e.g. 60 for "60% × S(0)").
+   - Common values: 50, 60, 65, 70, 75.
+
+   **barrierType** (in structureParams): 'european' | 'american'.
+   - 'european': KI checked only at Valuation Date / Final Fixing Date (typical SG "European Knock-In Event").
+   - 'american': KI checked on any business day during life (look for "on any Business Day from the Initial Fixing Date to the Final Fixing Date" or "continuous monitoring").
+
+   **participationRate** (in structureParams): A PERCENTAGE.
+   - The leverage applied to positive performance. Look for "120% × Performance" or "Participation: 100%".
+   - DEFAULT: 100 (vanilla). Use a different value only if the termsheet explicitly multiplies performance by something other than 1.
+
+   **capEnabled** (in structureParams): boolean.
+   - true when the formula caps the upside with "Min(X%; …)" (typical capped bonus / outperformance).
+   - false for plain bonus (uncapped).
+
+   **cap** (in structureParams): A PERCENTAGE.
+   - When capEnabled, the cap above par. Example: "Min(66%; 120% × Performance)" → cap = 66.
+   - When not capEnabled, leave as null.
+
+   **basketType** (in structureParams): 'worst_of' | 'best_of' | 'average' | 'single'.
+   - 'worst_of': multi underlying with "minimum performance" / "worst performing" language.
+   - 'best_of': "maximum performance" / "best performing".
+   - 'average': "weighted sum" / "average performance" / "Σ wᵢ × perfᵢ".
+   - 'single': exactly one underlying.
+
+   **basketMode** (top-level): set to 'single' for one underlying, 'worst-of' otherwise (mirrors basketType).
+
+   **Underlying "strike"** (in each item of the underlyings array): The ABSOLUTE initial fixing PRICE (in the underlying's reference currency, e.g. KRW 250000, USD 922.75).
+   - This is the actual market price of the underlying on Valuation Date(0), NOT a percentage.
+   - If the termsheet shows "KRW [TBD]" or "TBD", leave as null or 0.
+
+   **Coupons / observation schedule**: Bonus Certificates DO NOT have coupons or an observation schedule. Leave observationSchedule as []. Do not set couponRate.
+
+   COMMON MISTAKE TO AVOID:
+   - DO NOT put the absolute strike price (e.g. 118.50, 922.75) into structureParams.strikeLevel. That field is always a percentage like 100.
+   - DO NOT extract participation/cap from the underlying-level table — those belong to the structureParams.
+
+   EXAMPLE (matches SG Capped Bonus Outperformance on SK hynix):
+   - Formula: "100% + Max(0%; Min(66%; 120% × Performance(1)))" → strikeLevel=100, bonusLevel=100, participationRate=120, capEnabled=true, cap=66
+   - "Knock-In Threshold = 60% × S(0)" → barrierLevel=60
+   - "Valuation Date(1)" (single fixing) → barrierType='european'
 5. For observation schedule: generate all observation dates based on frequency and dates found in term sheet
 6. For structure and payoffStructure: create the appropriate components based on product type
 7. If a field is not found in the term sheet, use null or empty array
@@ -1317,11 +1445,10 @@ CRITICAL: Return ONLY the JSON object with no additional text, explanations, or 
               ]
             }
           ],
-          // Enable extended thinking for better analysis
-          thinking: {
-            type: 'enabled',
-            budget_tokens: 3000
-          }
+          // Opus 4.7 uses adaptive thinking; effort controls reasoning depth.
+          // "high" is appropriate for term sheet extraction (tables, formulas, dates).
+          thinking: { type: 'adaptive' },
+          output_config: { effort: 'high' }
         }
       });
 
@@ -1675,6 +1802,8 @@ CRITICAL: Return ONLY the JSON object with no additional text, explanations, or 
               structuredProductType = 'reverse_convertible';
             } else if (templateLower.includes('shark')) {
               structuredProductType = 'shark_note';
+            } else if (templateLower.includes('bonus_certificate') || templateLower.includes('bonus')) {
+              structuredProductType = 'bonus_certificate';
             }
 
             // Determine underlying type based on underlyings

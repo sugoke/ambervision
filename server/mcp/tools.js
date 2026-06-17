@@ -32,7 +32,7 @@ import {
   convertToEUR
 } from '/imports/api/helpers/cashCalculator';
 
-import { resolveMcpScope, buildHoldingScopeFilter, buildSnapshotScopeFilter } from './scopeHelper.js';
+import { resolveMcpScope, buildHoldingScopeFilter, buildSnapshotScopeFilter, applyArchivedAllocationExclusion } from './scopeHelper.js';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -696,7 +696,7 @@ export function registerTools(mcpServer, user) {
           ...(accountIds.length > 0 ? [{ bankAccountId: { $in: accountIds } }] : [])
         ];
       }
-      const allocations = await AllocationsCollection.find(allocQuery, { fields: { productId: 1 } }).fetchAsync();
+      const allocations = await AllocationsCollection.find(await applyArchivedAllocationExclusion(allocQuery), { fields: { productId: 1 } }).fetchAsync();
       const productIds = [...new Set(allocations.map(a => a.productId))];
       if (productIds.length === 0) return textResult({ items: [], total: 0 });
 
@@ -757,7 +757,7 @@ export function registerTools(mcpServer, user) {
           ...(accountIds.length > 0 ? [{ bankAccountId: { $in: accountIds } }] : [])
         ];
       }
-      const allocations = await AllocationsCollection.find(allocQuery).fetchAsync();
+      const allocations = await AllocationsCollection.find(await applyArchivedAllocationExclusion(allocQuery)).fetchAsync();
       if (!scope.isAdmin && allocations.length === 0) {
         return errorResult('Product not in your access scope');
       }
@@ -1051,7 +1051,7 @@ export function registerTools(mcpServer, user) {
           ...(accountIds.length > 0 ? [{ bankAccountId: { $in: accountIds } }] : [])
         ];
       }
-      const allocations = await AllocationsCollection.find(allocQuery, { fields: { productId: 1 } }).fetchAsync();
+      const allocations = await AllocationsCollection.find(await applyArchivedAllocationExclusion(allocQuery), { fields: { productId: 1 } }).fetchAsync();
       const productIds = [...new Set(allocations.map(a => a.productId))];
       if (productIds.length === 0) return textResult({ items: [], count: 0 });
 
@@ -1397,7 +1397,7 @@ export function registerTools(mcpServer, user) {
           ...(accountIds.length > 0 ? [{ bankAccountId: { $in: accountIds } }] : [])
         ];
       }
-      const allocations = await AllocationsCollection.find(allocQuery).fetchAsync();
+      const allocations = await AllocationsCollection.find(await applyArchivedAllocationExclusion(allocQuery)).fetchAsync();
       const productIds = [...new Set(allocations.map(a => a.productId))];
       let structured = [];
       if (productIds.length > 0) {

@@ -351,6 +351,16 @@ export function mapCMBOperationType(orderTypeId, metaTypeId, amount = 0) {
     return amount >= 0 ? OPERATION_TYPES.PAYMENT_IN : OPERATION_TYPES.PAYMENT_OUT;
   }
 
+  // CMB's newer stock-exchange codes use the 'stex_*' family (meta 'stex'), e.g.
+  // 'stex_buy', 'stex_sell', 'stex_sell_rdmpt', and stray variants like 'stex_buy-'.
+  // Match by prefix so format quirks don't fall through to OTHER.
+  if ((orderTypeId && orderTypeId.toLowerCase().startsWith('stex')) || metaTypeId === 'stex') {
+    const t = (orderTypeId || '').toLowerCase();
+    if (t.includes('rdmpt') || t.includes('redm')) return OPERATION_TYPES.REDEMPTION;
+    if (t.includes('sell')) return OPERATION_TYPES.SELL;
+    if (t.includes('buy')) return OPERATION_TYPES.BUY;
+  }
+
   // Fall back to Meta_Type_ID mapping
   if (metaTypeId && CMB_OPERATION_TYPE_MAPPING[metaTypeId]) {
     return CMB_OPERATION_TYPE_MAPPING[metaTypeId];

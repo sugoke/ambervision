@@ -1707,9 +1707,34 @@ const StructuredProductInterface = ({
     // Store the extracted productId so save operation updates instead of creates
     setExtractedProductId(productId);
 
+    // Mark this product as already loaded so the [editingProduct] effect's
+    // guard (line ~1208) skips re-running its full state reset when the
+    // parent's subscription later resolves editingProduct to this product.
+    // Without this, any field the user edits post-extraction gets clobbered
+    // when editingProduct flips from null/old → extracted product.
+    hasLoadedProductRef.current = true;
+    loadedProductIdRef.current = productId;
+
     try {
-      // Fetch the full product from database to get all fields
-      const product = await ProductsCollection.findOneAsync({ _id: productId });
+      // Prefer the product document returned directly by the server method.
+      // The create-product page does NOT subscribe to the products
+      // publication (only the Dashboard does), so client-side minimongo
+      // typically doesn't have the freshly-created product yet —
+      // ProductsCollection.findOneAsync would return null and abort the
+      // load, leaving the user with an empty form ("screen refreshed"
+      // after a successful extract).
+      //
+      // Note: the server's productDocument doesn't carry its _id (Meteor's
+      // insertAsync returns the id separately without mutating the input),
+      // so we identify "have data" by the presence of meaningful fields
+      // rather than _id. The id we splice in from the productId argument.
+      let product = null;
+      if (extractedData && (extractedData.title || extractedData.isin || extractedData.underlyings)) {
+        product = { ...extractedData, _id: extractedData._id || productId };
+      }
+      if (!product) {
+        product = await ProductsCollection.findOneAsync({ _id: productId });
+      }
 
       if (!product) {
         showError('Failed to load extracted product');
@@ -2253,7 +2278,12 @@ const StructuredProductInterface = ({
               // Hide schedule tab for templates that don't need custom observation schedules
               // Orion Memory: only has start and final date
               // Reverse Convertible Bond: uses fixed maturity date
-              if (tab.id === 'schedule' && (selectedTemplateId === 'reverse_convertible_bond' || selectedTemplateId === 'orion_memory')) {
+              // Bonus Certificate: no observations during life, single fixing at maturity
+              if (tab.id === 'schedule' && (
+                selectedTemplateId === 'reverse_convertible_bond' ||
+                selectedTemplateId === 'orion_memory' ||
+                selectedTemplateId === 'bonus_certificate'
+              )) {
                 return false;
               }
               return true;

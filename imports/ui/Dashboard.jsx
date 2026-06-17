@@ -1,9 +1,11 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Meteor } from 'meteor/meteor';
+import * as XLSX from 'xlsx';
 import { ProductsCollection } from '/imports/api/products';
 import { ProductPricesCollection } from '/imports/api/productPrices';
 import { AllocationsCollection } from '/imports/api/allocations';
+import { PMSHoldingsCollection } from '/imports/api/pmsHoldings';
 import { useTheme } from './ThemeContext.jsx';
 import { useViewAs } from './ViewAsContext.jsx';
 import LiquidGlassCard from './components/LiquidGlassCard.jsx';
@@ -189,6 +191,8 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
   const [filtersExpanded, setFiltersExpanded] = useState(true); // Always start expanded, then collapse on mobile
   const [expandedProducts, setExpandedProducts] = useState({}); // Track which products are expanded on mobile
   const [showAllProducts, setShowAllProducts] = useState(false); // Toggle for relationship managers to see all products
+  const [exportAsOfDate, setExportAsOfDate] = useState(''); // Optional as-of date for Excel export ('' = latest data)
+  const [isExporting, setIsExporting] = useState(false); // Excel export in progress (loads holdings snapshot)
 
   // Update currency when user or viewAsFilter changes
   useEffect(() => {
@@ -429,16 +433,55 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
     return totals;
   }, [allocations]);
 
+  // Calculate weighted-average purchase price per product (weighted by nominal invested)
+  // Purchase prices are stored in percentage format on allocations (100 = 100%)
+  const purchasePriceByProduct = useMemo(() => {
+    const sums = {};
+    allocations.forEach(allocation => {
+      if (allocation.status === 'active' && typeof allocation.purchasePrice === 'number' && allocation.nominalInvested) {
+        if (!sums[allocation.productId]) {
+          sums[allocation.productId] = { weighted: 0, nominal: 0 };
+        }
+        sums[allocation.productId].weighted += allocation.purchasePrice * allocation.nominalInvested;
+        sums[allocation.productId].nominal += allocation.nominalInvested;
+      }
+    });
+    const averages = {};
+    Object.keys(sums).forEach(productId => {
+      if (sums[productId].nominal > 0) {
+        averages[productId] = sums[productId].weighted / sums[productId].nominal;
+      }
+    });
+    return averages;
+  }, [allocations]);
+
   // Create price map for efficient lookup
   // Prices are stored as percentages (96.77 = 96.77%)
-  const priceMap = useMemo(() => {
-    const map = new Map();
+  // Also keep the full price history per ISIN (sorted newest first) for as-of-date lookups
+  const { priceMap, priceHistoryByIsin } = useMemo(() => {
+    const history = new Map();
     productPrices.forEach(priceRecord => {
-      // Prices are already in percentage format
-      map.set(priceRecord.isin, priceRecord.price);
+      if (!history.has(priceRecord.isin)) {
+        history.set(priceRecord.isin, []);
+      }
+      history.get(priceRecord.isin).push(priceRecord);
     });
-    return map;
+    const map = new Map();
+    history.forEach((records, isin) => {
+      records.sort((a, b) => new Date(b.priceDate) - new Date(a.priceDate));
+      // Prices are already in percentage format
+      map.set(isin, records[0].price);
+    });
+    return { priceMap: map, priceHistoryByIsin: history };
   }, [productPrices]);
+
+  // Find the latest price record for an ISIN on or before a given date (null = latest available)
+  const getPriceAsOf = useCallback((isin, asOfDate) => {
+    const records = priceHistoryByIsin.get(isin);
+    if (!records || records.length === 0) return null;
+    if (!asOfDate) return records[0];
+    return records.find(record => new Date(record.priceDate) <= asOfDate) || null;
+  }, [priceHistoryByIsin]);
 
   // Calculate total portfolio value (memoized for performance)
   const portfolioTotalValue = useMemo(() => {
@@ -519,7 +562,11 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
         aValue = getProductLifecycleStatus(a);
         bValue = getProductLifecycleStatus(b);
       }
-      
+      if (sortField === 'purchasePrice') {
+        aValue = purchasePriceByProduct[a._id];
+        bValue = purchasePriceByProduct[b._id];
+      }
+
       // Handle null/undefined values
       if (!aValue) aValue = '';
       if (!bValue) bValue = '';
@@ -538,7 +585,7 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
     });
     
     return sorted;
-  }, [products, searchTerm, sortField, sortDirection, showLiveOnly]);
+  }, [products, searchTerm, sortField, sortDirection, showLiveOnly, purchasePriceByProduct]);
 
   // Pagination logic
   const paginatedProducts = useMemo(() => {
@@ -557,6 +604,225 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
       setSortField(field);
       setSortDirection('asc');
     }
+  };
+
+  // Fetch the bank-file holdings picture as of a cutoff date (latest record per position
+  // with snapshotDate <= cutoff), aggregated per ISIN. Reuses the server's 'pmsHoldings'
+  // publication which handles role-based scoping, viewAs filters and historical dedup.
+  // Holdings prices are stored in decimal format (0.9677 = 96.77%) and converted here.
+  const fetchHoldingsSnapshot = async (cutoff, isins) => {
+    const effectiveFilter = (isRelationshipManager && showAllProducts) ? null : viewAsFilter;
+
+    const handle = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Holdings snapshot subscription timed out')), 30000);
+      const h = Meteor.subscribe('pmsHoldings', sessionId, effectiveFilter, false, cutoff.toISOString(), {
+        onReady: () => { clearTimeout(timeout); resolve(h); },
+        onStop: (error) => { if (error) { clearTimeout(timeout); reject(error); } }
+      });
+    });
+
+    try {
+      const docs = PMSHoldingsCollection.find({
+        isin: { $in: isins },
+        snapshotDate: { $lte: cutoff }
+      }).fetch();
+
+      // Keep only the latest record per position (uniqueKey) on or before the cutoff
+      const latestByKey = new Map();
+      docs.forEach(doc => {
+        const existing = latestByKey.get(doc.uniqueKey);
+        if (!existing || new Date(doc.snapshotDate) > new Date(existing.snapshotDate)) {
+          latestByKey.set(doc.uniqueKey, doc);
+        }
+      });
+
+      // Aggregate across accounts per ISIN
+      const byIsin = {};
+      latestByKey.forEach(doc => {
+        if (!doc.quantity) return; // position closed as of the cutoff
+        if (!byIsin[doc.isin]) {
+          byIsin[doc.isin] = { nominal: 0, costWeighted: 0, costNominal: 0, rawPrice: null, priceDate: null };
+        }
+        const agg = byIsin[doc.isin];
+        agg.nominal += doc.quantity;
+        if (typeof doc.costPrice === 'number' && doc.costPrice > 0) {
+          agg.costWeighted += doc.costPrice * doc.quantity;
+          agg.costNominal += doc.quantity;
+        }
+        if (typeof doc.marketPrice === 'number') {
+          const docDate = new Date(doc.snapshotDate);
+          if (!agg.priceDate || docDate > agg.priceDate) {
+            agg.rawPrice = doc.marketPrice;
+            agg.priceDate = docDate;
+          }
+        }
+      });
+
+      // Convert decimal prices to percentage format to match productPrices/allocations
+      const result = {};
+      Object.keys(byIsin).forEach(isin => {
+        const agg = byIsin[isin];
+        result[isin] = {
+          nominal: agg.nominal,
+          purchasePrice: agg.costNominal > 0 ? (agg.costWeighted / agg.costNominal) * 100 : null,
+          price: agg.rawPrice !== null ? agg.rawPrice * 100 : null,
+          priceDate: agg.priceDate
+        };
+      });
+      return result;
+    } finally {
+      handle.stop();
+    }
+  };
+
+  // Export filtered products to Excel, optionally as a snapshot of a specific past date
+  const handleExportToExcel = async () => {
+    if (filteredAndSortedProducts.length === 0 || isExporting) return;
+    setIsExporting(true);
+    try {
+      await doExportToExcel();
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const doExportToExcel = async () => {
+
+    // End-of-day cutoff for the selected as-of date (null = latest data)
+    let asOf = null;
+    if (exportAsOfDate) {
+      asOf = new Date(exportAsOfDate);
+      asOf.setHours(23, 59, 59, 999);
+    }
+
+    // Pull the bank-file holdings picture as of the cutoff (fallback data source for
+    // nominal, purchase price and price when allocations/uploaded prices are missing)
+    let holdingsByIsin = {};
+    try {
+      const cutoff = asOf || new Date();
+      const isins = [...new Set(filteredAndSortedProducts.map(p => p.isin).filter(Boolean))];
+      if (isins.length > 0) {
+        holdingsByIsin = await fetchHoldingsSnapshot(cutoff, isins);
+      }
+    } catch (error) {
+      console.error('Dashboard export: holdings snapshot unavailable, exporting without bank-file fallback:', error);
+    }
+
+    // Determine whether an allocation was active as of the cutoff date
+    const allocationActiveAsOf = (allocation, product) => {
+      if (!asOf) return allocation.status === 'active';
+      if (allocation.status === 'cancelled') return false;
+      const allocatedAt = allocation.allocatedAt ? new Date(allocation.allocatedAt) : null;
+      if (allocatedAt && allocatedAt > asOf) return false;
+      if (allocation.status === 'active') return true;
+      // Redeemed/matured allocations count only if redemption happened after the as-of date
+      const endDate = allocation.redeemedAt
+        ? new Date(allocation.redeemedAt)
+        : (product?.statusDate ? new Date(product.statusDate) : null);
+      return endDate ? endDate > asOf : false;
+    };
+
+    // Rebuild nominal and weighted purchase price per product for the as-of date
+    const productById = new Map(filteredAndSortedProducts.map(p => [p._id, p]));
+    const nominals = {};
+    const purchaseSums = {};
+    allocations.forEach(allocation => {
+      const product = productById.get(allocation.productId);
+      if (!allocationActiveAsOf(allocation, product)) return;
+      nominals[allocation.productId] = (nominals[allocation.productId] || 0) + allocation.nominalInvested;
+      if (typeof allocation.purchasePrice === 'number' && allocation.nominalInvested) {
+        if (!purchaseSums[allocation.productId]) {
+          purchaseSums[allocation.productId] = { weighted: 0, nominal: 0 };
+        }
+        purchaseSums[allocation.productId].weighted += allocation.purchasePrice * allocation.nominalInvested;
+        purchaseSums[allocation.productId].nominal += allocation.nominalInvested;
+      }
+    });
+
+    const data = filteredAndSortedProducts.map(product => {
+      const holdings = holdingsByIsin[product.isin];
+
+      // Nominal: allocations first, bank-file holdings as fallback
+      const allocNominal = nominals[product._id];
+      const nominal = allocNominal || holdings?.nominal || null;
+
+      // Purchase price: allocations first, bank-file cost price as fallback
+      const purchaseSum = purchaseSums[product._id];
+      const allocPurchase = purchaseSum && purchaseSum.nominal > 0
+        ? purchaseSum.weighted / purchaseSum.nominal
+        : null;
+      const purchasePrice = allocPurchase !== null
+        ? allocPurchase
+        : (typeof holdings?.purchasePrice === 'number' ? holdings.purchasePrice : null);
+
+      // Price as of the cutoff date: uploaded prices first, bank-file price as fallback;
+      // without a date fall back to 100 like the table does
+      const priceRecord = getPriceAsOf(product.isin, asOf);
+      let price = priceRecord ? priceRecord.price : null;
+      let priceDate = priceRecord?.priceDate ? new Date(priceRecord.priceDate) : null;
+      if (price === null && typeof holdings?.price === 'number') {
+        price = holdings.price;
+        priceDate = holdings.priceDate;
+      }
+      if (price === null && !asOf) {
+        price = 100.00;
+      }
+
+      const positionValue = (nominal && price !== null) ? (nominal * price / 100) : 0;
+      const convertedValue = positionValue > 0 ? convertCurrency(positionValue, product.currency || 'USD') : 0;
+
+      // Performance since start: price vs purchase price (issue price 100 when no purchase price)
+      const basePrice = typeof purchasePrice === 'number' ? purchasePrice : 100;
+      const performance = (price !== null && basePrice > 0)
+        ? ((price / basePrice) - 1) * 100
+        : null;
+
+      // Status: a product autocalled/matured after the as-of date was still live then
+      let status = getProductLifecycleStatus(product);
+      if (asOf && product.statusDate && new Date(product.statusDate) > asOf) {
+        status = 'Live';
+      }
+
+      // Format maturity as full date when parseable
+      let maturityStr = product.maturity || '';
+      if (product.maturity) {
+        const date = new Date(product.maturity);
+        if (!isNaN(date.getTime())) {
+          maturityStr = date.toISOString().split('T')[0];
+        }
+      }
+
+      return {
+        'Product Title': getProductDisplayTitle(product),
+        'ISIN': product.isin || '',
+        'Currency': product.currency || '',
+        'Issuer': product.issuer || '',
+        'Nominal': nominal || '',
+        'Purchase Price (%)': typeof purchasePrice === 'number' ? Number(purchasePrice.toFixed(2)) : '',
+        'Price (%)': price !== null ? Number(price.toFixed(2)) : '',
+        'Price Date': priceDate ? priceDate.toISOString().split('T')[0] : '',
+        'Performance Since Start (%)': performance !== null ? Number(performance.toFixed(2)) : '',
+        [`Position Value (${referenceCurrency})`]: convertedValue > 0 ? Number(convertedValue.toFixed(2)) : '',
+        'Status': status,
+        'Maturity': maturityStr
+      };
+    });
+
+    const ws = XLSX.utils.json_to_sheet(data);
+
+    // Auto-size columns
+    const colWidths = Object.keys(data[0]).map(key => ({
+      wch: Math.min(40, Math.max(key.length + 2, ...data.map(row => String(row[key] || '').length + 2)))
+    }));
+    ws['!cols'] = colWidths;
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Products');
+
+    const fileName = exportAsOfDate
+      ? `products-as-of-${exportAsOfDate}.xlsx`
+      : `products-${new Date().toISOString().split('T')[0]}.xlsx`;
+    XLSX.writeFile(wb, fileName);
   };
 
   // Helper function to format numbers with k/M suffixes
@@ -698,6 +964,90 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
         </div>
         {/* Hide New Product button on mobile */}
         {!isMobile && (
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{
+              color: 'var(--text-secondary)',
+              fontSize: '0.9rem',
+              fontWeight: '500',
+              whiteSpace: 'nowrap'
+            }}>
+              as of
+            </span>
+            <input
+              type="date"
+              value={exportAsOfDate}
+              max={new Date().toISOString().split('T')[0]}
+              onChange={(e) => setExportAsOfDate(e.target.value)}
+              title="Export snapshot as of this date (leave empty for latest data)"
+              style={{
+                padding: '6px 10px',
+                border: '2px solid var(--border-color)',
+                borderRadius: '6px',
+                background: 'var(--bg-secondary)',
+                color: 'var(--text-primary)',
+                fontSize: '0.9rem',
+                cursor: 'pointer',
+                height: '48px',
+                boxSizing: 'border-box'
+              }}
+            />
+            {exportAsOfDate && (
+              <button
+                onClick={() => setExportAsOfDate('')}
+                title="Clear date (export latest data)"
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--text-secondary)',
+                  fontSize: '1rem',
+                  cursor: 'pointer',
+                  padding: '4px'
+                }}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+          <button
+            onClick={handleExportToExcel}
+            disabled={filteredAndSortedProducts.length === 0 || isExporting}
+            style={{
+              background: 'var(--bg-secondary)',
+              color: 'var(--text-primary)',
+              border: '2px solid var(--border-color)',
+              padding: '0 24px',
+              borderRadius: '8px',
+              fontSize: '1rem',
+              fontWeight: '600',
+              cursor: (filteredAndSortedProducts.length === 0 || isExporting) ? 'not-allowed' : 'pointer',
+              opacity: (filteredAndSortedProducts.length === 0 || isExporting) ? 0.5 : 1,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px',
+              height: '48px',
+              transition: 'all 0.3s ease'
+            }}
+            onMouseEnter={(e) => {
+              if (filteredAndSortedProducts.length > 0) {
+                e.currentTarget.style.borderColor = 'var(--accent-color)';
+                e.currentTarget.style.transform = 'translateY(-2px)';
+              }
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.borderColor = 'var(--border-color)';
+              e.currentTarget.style.transform = 'translateY(0)';
+            }}
+            title={exportAsOfDate
+              ? `Export product snapshot as of ${exportAsOfDate} to Excel`
+              : 'Export the filtered product list to Excel (latest data)'}
+          >
+            <span style={{ fontSize: '1rem' }}>📥</span>
+            {isExporting
+              ? 'Exporting…'
+              : (exportAsOfDate ? `Export as of ${exportAsOfDate}` : 'Export Excel')}
+          </button>
           <button
             onClick={onCreateProduct}
             style={{
@@ -736,6 +1086,7 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
             <span style={{ fontSize: isMobile ? '1.2rem' : '1rem' }}>{isMobile ? '➕' : '➕'}</span>
             {isMobile ? 'New Product' : 'Create New Product'}
           </button>
+          </div>
         )}
       </div>
 
@@ -1239,6 +1590,7 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
             };
 
             const nominal = nominalByProduct[product._id];
+            const purchasePrice = purchasePriceByProduct[product._id];
             const currentPrice = priceMap.get(product.isin) || 100.00;
             const positionValue = nominal ? (nominal * currentPrice / 100) : 0;
             const convertedValue = positionValue > 0 ? convertCurrency(positionValue, product.currency || 'USD') : 0;
@@ -1404,6 +1756,26 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
                       fontWeight: '500'
                     }}>
                       {product.currency || '-'}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{
+                      fontSize: '0.8rem',
+                      color: 'var(--text-secondary)',
+                      textTransform: 'uppercase',
+                      fontWeight: '600',
+                      marginBottom: '0.375rem',
+                      letterSpacing: '0.5px'
+                    }}>
+                      Buy Price
+                    </div>
+                    <div style={{
+                      fontSize: '0.95rem',
+                      color: 'var(--text-primary)',
+                      fontWeight: '600'
+                    }}>
+                      {typeof purchasePrice === 'number' ? `${purchasePrice.toFixed(2)}%` : '-'}
                     </div>
                   </div>
 
@@ -1584,10 +1956,11 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
                 borderBottom: '2px solid var(--border-color)'
               }}>
                 {[
-                  { field: 'title', label: 'Product Title', width: '32%' },
+                  { field: 'title', label: 'Product Title', width: '26%' },
                   { field: 'isin', label: 'ISIN', width: '9%' },
                   { field: 'currency', label: 'Cur', width: '4%' },
                   { field: 'nominal', label: 'Nom', width: '8%' },
+                  { field: 'purchasePrice', label: 'Buy', width: '6%' },
                   { field: 'price', label: 'Price', width: '6%' },
                   { field: 'position', label: 'Position', width: '10%' },
                   { field: 'status', label: 'Status', width: '8%' },
@@ -1717,6 +2090,17 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
                     textAlign: 'right'
                   }}>
                     {formatNominal(nominalByProduct[product._id])}
+                  </td>
+                  <td style={{
+                    padding: '14px 16px',
+                    fontSize: '0.9rem',
+                    color: 'var(--text-secondary)',
+                    textAlign: 'right'
+                  }}>
+                    {(() => {
+                      const purchasePrice = purchasePriceByProduct[product._id];
+                      return typeof purchasePrice === 'number' ? `${purchasePrice.toFixed(2)}%` : '-';
+                    })()}
                   </td>
                   <td style={{
                     padding: '14px 16px',

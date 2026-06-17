@@ -5,7 +5,7 @@ import { check, Match } from 'meteor/check';
 import { EquityHoldingsCollection } from '/imports/api/equityHoldings';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { UsersCollection, USER_ROLES } from '/imports/api/users';
-import { ClientEntitiesCollection } from '/imports/api/clientEntities';
+import { ClientEntitiesCollection, ClientEntityHelpers } from '/imports/api/clientEntities';
 import { SessionsCollection } from '/imports/api/sessions';
 import { Meteor } from 'meteor/meteor';
 
@@ -62,6 +62,9 @@ Meteor.publish('equityHoldings', async function (sessionId = null, viewAsFilter 
     // Admins and superadmins with viewAsFilter
     if (viewAsFilter && (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN)) {
       if (viewAsFilter.type === 'entity') {
+        // Archived (closed) relationships are hidden everywhere, no exception
+        const viewEntity = await ClientEntitiesCollection.findOneAsync(viewAsFilter.id);
+        if (ClientEntityHelpers.isEntityArchived(viewEntity)) return this.ready();
         // Entity-based filter: find bank accounts owned by this entity
         const entityAccounts = await BankAccountsCollection.find({
           $or: [
@@ -148,9 +151,15 @@ Meteor.publish('equityHoldings', async function (sessionId = null, viewAsFilter 
       console.log(`[EQUITY PUB] Client viewing ${accountIds.length} own accounts`);
     }
 
-    const holdingsCount = await EquityHoldingsCollection.find(queryFilter).countAsync();
-    console.log(`[EQUITY PUB] Returning ${holdingsCount} holdings with filter:`, queryFilter);
-    return EquityHoldingsCollection.find(queryFilter);
+    // Exclude equity holdings held in archived (closed-relationship) clients' accounts
+    const { bankAccountIds: archivedBankAccountIds } = await ClientEntityHelpers.getArchivedExclusion();
+    const finalFilter = archivedBankAccountIds.length > 0
+      ? { $and: [queryFilter, { bankAccountId: { $nin: archivedBankAccountIds } }] }
+      : queryFilter;
+
+    const holdingsCount = await EquityHoldingsCollection.find(finalFilter).countAsync();
+    console.log(`[EQUITY PUB] Returning ${holdingsCount} holdings with filter:`, finalFilter);
+    return EquityHoldingsCollection.find(finalFilter);
 
   } catch (error) {
     console.error('Equity holdings publication error:', error);

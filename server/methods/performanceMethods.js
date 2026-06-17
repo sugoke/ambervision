@@ -2,7 +2,7 @@ import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { SessionsCollection } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
-import { PortfolioSnapshotHelpers } from '../../imports/api/portfolioSnapshots.js';
+import { PortfolioSnapshotHelpers, filterSnapshotsByBankStartDate } from '../../imports/api/portfolioSnapshots.js';
 import { getAssetClassLabel, getGranularCategoryLabel } from '../../imports/api/securitiesMetadata.js';
 
 /**
@@ -269,7 +269,9 @@ Meteor.methods({
         if (start) snapshotQuery.snapshotDate = { ...(snapshotQuery.snapshotDate || {}), $gte: start };
         if (end) snapshotQuery.snapshotDate = { ...(snapshotQuery.snapshotDate || {}), $lte: end };
 
-        const rawSnapshots = await PortfolioSnapshotsCollection.find(snapshotQuery, { sort: { snapshotDate: 1 } }).fetchAsync();
+        const fetchedSnapshots = await PortfolioSnapshotsCollection.find(snapshotQuery, { sort: { snapshotDate: 1 } }).fetchAsync();
+        // Exclude snapshots from banks with known bad historical pricing (e.g. CMB before 2026-01-09)
+        const rawSnapshots = filterSnapshotsByBankStartDate(fetchedSnapshots);
 
         if (targetPortfolioCodes.length > 1 && rawSnapshots.length > 0) {
           const byDate = {};
@@ -572,11 +574,14 @@ Meteor.methods({
 
       console.log(`[TWR] Snapshot query: ${JSON.stringify(snapshotQuery)}`);
 
-      const rawSnapshots = await PortfolioSnapshotsCollection.find(snapshotQuery, {
+      const fetchedSnapshots = await PortfolioSnapshotsCollection.find(snapshotQuery, {
         sort: { snapshotDate: 1 }
       }).fetchAsync();
 
-      console.log(`[TWR] Found ${rawSnapshots.length} raw snapshots`);
+      // Exclude snapshots from banks with known bad historical pricing (e.g. CMB before 2026-01-09)
+      const rawSnapshots = filterSnapshotsByBankStartDate(fetchedSnapshots);
+
+      console.log(`[TWR] Found ${rawSnapshots.length} raw snapshots (filtered from ${fetchedSnapshots.length})`);
 
       // Aggregate by date if multiple accounts
       if (targetPortfolioCodes.length > 1 && rawSnapshots.length > 0) {

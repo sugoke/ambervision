@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, OrderFormatters, OrderHelpers } from '/imports/api/orders';
@@ -16,8 +16,33 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
   const [rejectionReason, setRejectionReason] = useState('');
   const [revisionModalOrder, setRevisionModalOrder] = useState(null);
   const [revisionReason, setRevisionReason] = useState('');
+  const [deleteModalOrder, setDeleteModalOrder] = useState(null);
   const [isActioning, setIsActioning] = useState(null);
   const [reviewOrder, setReviewOrder] = useState(null);
+  // Inline-edit state for a sent-back order being revised by its creator
+  const [editIsin, setEditIsin] = useState('');
+  const [editSecurityName, setEditSecurityName] = useState('');
+  const [editCurrency, setEditCurrency] = useState('');
+  const [editAssetType, setEditAssetType] = useState('');
+  // Security search (mirrors the new-order modal's securities.search autocomplete)
+  const [secSearchQuery, setSecSearchQuery] = useState('');
+  const [secSearchResults, setSecSearchResults] = useState([]);
+  const [secSearching, setSecSearching] = useState(false);
+  const [manualSecurity, setManualSecurity] = useState(false); // manual security entry when not in autocomplete
+  const secSearchTimeout = useRef(null);
+  const [editQuantity, setEditQuantity] = useState('');
+  const [editPriceType, setEditPriceType] = useState('market');
+  const [editLimitPrice, setEditLimitPrice] = useState('');
+  const [editStopLoss, setEditStopLoss] = useState('');
+  const [editTakeProfit, setEditTakeProfit] = useState('');
+  const [editNotes, setEditNotes] = useState('');
+  const [editBroker, setEditBroker] = useState('');
+  const [editFxRate, setEditFxRate] = useState('');
+  const [editFxValueDate, setEditFxValueDate] = useState('');
+  const [editFxForwardDate, setEditFxForwardDate] = useState('');
+  const [editDepositTenor, setEditDepositTenor] = useState('');
+  const [editDepositMaturityDate, setEditDepositMaturityDate] = useState('');
+  const [editError, setEditError] = useState(null);
   // Validator attestation: required when no CLIENT_ORDER trace is attached at review time
   const [emailCompared, setEmailCompared] = useState(false);
   const [uploadingTrace, setUploadingTrace] = useState(false);
@@ -167,6 +192,86 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
   useEffect(() => {
     setEmailCompared(false);
   }, [reviewOrder?._id]);
+
+  // Format a stored Date (or date string) to the yyyy-mm-dd value an <input type="date"> expects
+  const toDateInputValue = (d) => {
+    if (!d) return '';
+    const date = d instanceof Date ? d : new Date(d);
+    if (isNaN(date.getTime())) return '';
+    return date.toISOString().slice(0, 10);
+  };
+
+  // Is the current viewer the creator of a sent-back order (i.e. allowed to revise it)?
+  const isRevising = reviewOrder?.status === ORDER_STATUSES.REVISION_REQUESTED
+    && reviewOrder?.createdBy === user?._id;
+
+  // Seed the inline-edit fields from the order whenever a sent-back order is opened by its creator
+  useEffect(() => {
+    setEditError(null);
+    setSecSearchQuery('');
+    setSecSearchResults([]);
+    setManualSecurity(false);
+    if (!isRevising) return;
+    setEditIsin(reviewOrder.isin || '');
+    setEditSecurityName(reviewOrder.securityName || '');
+    setEditCurrency(reviewOrder.currency || '');
+    setEditAssetType(reviewOrder.assetType || '');
+    setEditQuantity(reviewOrder.quantity?.toString() || '');
+    setEditPriceType(reviewOrder.priceType || 'market');
+    setEditLimitPrice(reviewOrder.limitPrice?.toString() || '');
+    setEditStopLoss(reviewOrder.stopLossPrice?.toString() || '');
+    setEditTakeProfit(reviewOrder.takeProfitPrice?.toString() || '');
+    setEditNotes(reviewOrder.notes || '');
+    setEditBroker(reviewOrder.broker || '');
+    setEditFxRate(reviewOrder.fxRate?.toString() || '');
+    setEditFxValueDate(toDateInputValue(reviewOrder.fxValueDate));
+    setEditFxForwardDate(toDateInputValue(reviewOrder.fxForwardDate));
+    setEditDepositTenor(reviewOrder.depositTenor || '');
+    setEditDepositMaturityDate(toDateInputValue(reviewOrder.depositMaturityDate));
+  }, [reviewOrder?._id, isRevising]);
+
+  // Debounced security search — same securities.search backend the new-order modal uses
+  useEffect(() => {
+    if (!isRevising || secSearchQuery.length < 2) {
+      setSecSearchResults([]);
+      return;
+    }
+    setSecSearching(true);
+    if (secSearchTimeout.current) clearTimeout(secSearchTimeout.current);
+    secSearchTimeout.current = setTimeout(async () => {
+      try {
+        const results = await Meteor.callAsync('securities.search', { query: secSearchQuery, limit: 15 }, getSessionId());
+        setSecSearchResults(results || []);
+      } catch (err) {
+        console.error('[ValidationBlotter] security search failed:', err);
+        setSecSearchResults([]);
+      } finally {
+        setSecSearching(false);
+      }
+    }, 300);
+    return () => { if (secSearchTimeout.current) clearTimeout(secSearchTimeout.current); };
+  }, [secSearchQuery, isRevising]);
+
+  // Map a securities.search result's assetClass to our ASSET_TYPES (mirrors OrderModal)
+  const assetClassToType = {
+    equity: ASSET_TYPES.EQUITY,
+    bond: ASSET_TYPES.BOND,
+    structured_product: ASSET_TYPES.STRUCTURED_PRODUCT,
+    fund: ASSET_TYPES.FUND,
+    etf: ASSET_TYPES.ETF,
+    fx: ASSET_TYPES.FX
+  };
+
+  const handleSelectNewSecurity = (result) => {
+    setEditIsin(result.isin || '');
+    setEditSecurityName(result.name || result.ticker || '');
+    if (result.currency) setEditCurrency(result.currency);
+    if (result.assetClass && assetClassToType[result.assetClass]) {
+      setEditAssetType(assetClassToType[result.assetClass]);
+    }
+    setSecSearchQuery('');
+    setSecSearchResults([]);
+  };
 
   // Auto-parse .eml traces when review order is opened
   useEffect(() => {
@@ -415,16 +520,79 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
     }
   };
 
-  const handleResubmit = async (order) => {
+  // Creator revises a sent-back order in place, then resubmits it for validation
+  const handleSaveAndResubmit = async (order) => {
+    setEditError(null);
+
+    // Basic validation before touching the server
+    const qty = parseFloat(editQuantity);
+    if (!(qty > 0)) {
+      setEditError('Quantity must be greater than zero.');
+      return;
+    }
+    const needsLimit = editPriceType !== 'market';
+    if (needsLimit && !(parseFloat(editLimitPrice) > 0)) {
+      setEditError('A price is required for non-market orders.');
+      return;
+    }
+
+    if (!editIsin || !editSecurityName) {
+      setEditError('A security (name and ISIN) is required.');
+      return;
+    }
+
+    // Build the update payload — only the fields relevant to this asset type
+    const updateData = {
+      isin: editIsin,
+      securityName: editSecurityName,
+      currency: editCurrency || undefined,
+      assetType: editAssetType || undefined,
+      quantity: qty,
+      priceType: editPriceType,
+      notes: editNotes || undefined,
+      broker: editBroker || undefined
+    };
+    if (needsLimit) {
+      updateData.limitPrice = parseFloat(editLimitPrice);
+    }
+    if (editStopLoss !== '') updateData.stopLossPrice = parseFloat(editStopLoss);
+    if (editTakeProfit !== '') updateData.takeProfitPrice = parseFloat(editTakeProfit);
+
+    if (editAssetType === ASSET_TYPES.FX) {
+      if (editFxRate !== '') updateData.fxRate = parseFloat(editFxRate);
+      if (editFxValueDate) updateData.fxValueDate = editFxValueDate;
+      if (editFxForwardDate) updateData.fxForwardDate = editFxForwardDate;
+    }
+    if (editAssetType === ASSET_TYPES.TERM_DEPOSIT) {
+      if (editDepositTenor) updateData.depositTenor = editDepositTenor;
+      if (editDepositMaturityDate) updateData.depositMaturityDate = editDepositMaturityDate;
+    }
+
     setIsActioning(order._id);
     try {
       const sessionId = getSessionId();
-      await Meteor.callAsync('orders.resubmitForValidation', {
-        orderId: order._id,
-        sessionId
-      });
+      await Meteor.callAsync('orders.update', { orderId: order._id, updateData, sessionId });
+      await Meteor.callAsync('orders.resubmitForValidation', { orderId: order._id, sessionId });
+      closeReview();
+      onOrderUpdate?.();
     } catch (err) {
-      alert(err.reason || err.message || 'Resubmit failed');
+      setEditError(err.reason || err.message || 'Could not save and resubmit the order.');
+    } finally {
+      setIsActioning(null);
+    }
+  };
+
+  // Creator discards a sent-back order entirely
+  const handleDelete = async () => {
+    if (!deleteModalOrder) return;
+    setIsActioning(deleteModalOrder._id);
+    try {
+      const sessionId = getSessionId();
+      await Meteor.callAsync('orders.delete', { orderId: deleteModalOrder._id, sessionId });
+      setDeleteModalOrder(null);
+      onOrderUpdate?.();
+    } catch (err) {
+      alert(err.reason || err.message || 'Delete failed');
     } finally {
       setIsActioning(null);
     }
@@ -768,6 +936,205 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                 </div>
                 <div style={{ fontSize: '13px', color: 'var(--text-primary)', lineHeight: '1.5', whiteSpace: 'pre-wrap' }}>
                   {reviewOrder.notes}
+                </div>
+              </div>
+            )}
+
+            {/* Revise panel — only the original creator of a sent-back order can edit & resubmit */}
+            {isRevising && (
+              <div style={{ padding: '14px', borderRadius: '8px', border: '2px solid #e879f9', background: 'rgba(232, 121, 249, 0.05)', marginBottom: '14px' }}>
+                <div style={{ fontSize: '11px', fontWeight: '700', color: '#e879f9', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: '10px' }}>
+                  Revise Order
+                </div>
+                {reviewOrder.revisionReason && (
+                  <div style={{ fontSize: '12px', color: 'var(--text-primary)', marginBottom: '12px', padding: '8px 10px', borderRadius: '6px', background: 'rgba(232, 121, 249, 0.08)', border: '1px solid rgba(232, 121, 249, 0.25)' }}>
+                    <span style={{ fontWeight: '700', color: '#e879f9' }}>
+                      {reviewOrder.revisionRequestedByName ? `${reviewOrder.revisionRequestedByName} asked:` : 'Revision requested:'}
+                    </span>{' '}
+                    {reviewOrder.revisionReason}
+                  </div>
+                )}
+
+                {/* Security — editable via the same securities.search autocomplete the new-order modal uses */}
+                <div style={{ marginBottom: '12px' }}>
+                  <label style={styles.editLabel}>Security</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', borderRadius: '6px', background: 'var(--bg-primary)', border: '1px solid var(--border-color)', marginBottom: '6px' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {editSecurityName || '—'}
+                      </div>
+                      <div style={{ fontSize: '11px', fontFamily: 'monospace', color: 'var(--text-muted)' }}>
+                        {editIsin || '—'}{editCurrency ? ` | ${editCurrency}` : ''}{editAssetType ? ` | ${editAssetType}` : ''}
+                      </div>
+                    </div>
+                  </div>
+                  {manualSecurity ? (
+                    /* Manual entry — for securities not in the autocomplete */
+                    <div style={{ padding: '12px', borderRadius: '6px', background: 'var(--bg-primary)', border: '1px solid var(--border-color)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                        <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-primary)' }}>Enter security details manually</span>
+                        <button type="button" style={styles.linkBtn} onClick={() => setManualSecurity(false)}>Back to search</button>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 16px' }}>
+                        <div style={{ gridColumn: 'span 2' }}>
+                          <label style={styles.editLabel}>Security Name</label>
+                          <input type="text" style={styles.editInput} value={editSecurityName}
+                            onChange={(e) => setEditSecurityName(e.target.value)} placeholder="e.g. Phoenix Autocallable on TSLA/AAPL" />
+                        </div>
+                        <div>
+                          <label style={styles.editLabel}>ISIN</label>
+                          <input type="text" style={styles.editInput} value={editIsin} maxLength={20}
+                            onChange={(e) => setEditIsin(e.target.value.toUpperCase())} placeholder="e.g. CH1234567890" />
+                        </div>
+                        <div>
+                          <label style={styles.editLabel}>Currency</label>
+                          <input type="text" style={styles.editInput} value={editCurrency} maxLength={3}
+                            onChange={(e) => setEditCurrency(e.target.value.toUpperCase().slice(0, 3))} placeholder="EUR" />
+                        </div>
+                        <div>
+                          <label style={styles.editLabel}>Asset Type</label>
+                          <select style={styles.editInput} value={editAssetType} onChange={(e) => setEditAssetType(e.target.value)}>
+                            <option value={ASSET_TYPES.EQUITY}>Equity</option>
+                            <option value={ASSET_TYPES.BOND}>Bond</option>
+                            <option value={ASSET_TYPES.STRUCTURED_PRODUCT}>Structured Product</option>
+                            <option value={ASSET_TYPES.FUND}>Fund</option>
+                            <option value={ASSET_TYPES.ETF}>ETF</option>
+                            <option value={ASSET_TYPES.FX}>FX</option>
+                            <option value={ASSET_TYPES.TERM_DEPOSIT}>Term Deposit</option>
+                            <option value={ASSET_TYPES.OTHER}>Other</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ position: 'relative' }}>
+                      <input
+                        type="text"
+                        style={styles.editInput}
+                        value={secSearchQuery}
+                        onChange={(e) => setSecSearchQuery(e.target.value)}
+                        placeholder="Search by name, ISIN, or ticker to change security..."
+                      />
+                      {secSearching && (
+                        <div style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)' }}>
+                          <div style={{ width: '14px', height: '14px', border: '2px solid var(--border-color)', borderTopColor: 'var(--accent-color)', borderRadius: '50%', animation: 'orderModalSpin 0.6s linear infinite' }} />
+                        </div>
+                      )}
+                      {secSearchResults.length > 0 && (
+                        <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 1000, marginTop: '4px', background: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', maxHeight: '260px', overflowY: 'auto' }}>
+                          {secSearchResults.map((result, idx) => (
+                            <div
+                              key={result._id || idx}
+                              onClick={() => handleSelectNewSecurity(result)}
+                              style={{ padding: '8px 10px', cursor: 'pointer', borderBottom: idx < secSearchResults.length - 1 ? '1px solid var(--border-color)' : 'none' }}
+                              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary)'}
+                              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                                <div style={{ fontWeight: '500', fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{result.name || result.ticker}</div>
+                                <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '3px', fontWeight: '500', flexShrink: 0,
+                                  background: result.source === 'product' ? 'rgba(99, 102, 241, 0.15)' : result.source === 'eod' ? 'rgba(245, 158, 11, 0.15)' : 'rgba(107, 114, 128, 0.15)',
+                                  color: result.source === 'product' ? '#6366f1' : result.source === 'eod' ? '#f59e0b' : '#6b7280' }}>
+                                  {result.source === 'product' ? 'Ambervision' : result.source === 'eod' ? 'EOD' : result.source === 'metadata' ? 'Local' : 'PMS'}
+                                </span>
+                              </div>
+                              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>
+                                {result.isin} {result.ticker && result.ticker !== result.isin ? `| ${result.ticker}` : ''} {result.currency ? `| ${result.currency}` : ''}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {!secSearching && secSearchQuery.length >= 2 && secSearchResults.length === 0 && (
+                        <div style={{ marginTop: '6px', fontSize: '12px', color: 'var(--text-muted)' }}>No securities found.</div>
+                      )}
+                      <div style={{ marginTop: '6px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                        Can't find it?{' '}
+                        <button type="button" style={styles.linkBtn} onClick={() => { setManualSecurity(true); setSecSearchQuery(''); setSecSearchResults([]); }}>
+                          Enter manually
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 16px' }}>
+                  <div>
+                    <label style={styles.editLabel}>Quantity</label>
+                    <input type="number" style={styles.editInput} value={editQuantity}
+                      onChange={(e) => setEditQuantity(e.target.value)} min="0" step="any" />
+                  </div>
+                  <div>
+                    <label style={styles.editLabel}>Order Type</label>
+                    <select style={styles.editInput} value={editPriceType}
+                      onChange={(e) => setEditPriceType(e.target.value)}>
+                      <option value="market">Market</option>
+                      <option value="limit">Limit</option>
+                      <option value="stop_limit">Stop Limit</option>
+                      <option value="stop_loss">Stop Loss</option>
+                      <option value="take_profit">Take Profit</option>
+                    </select>
+                  </div>
+                  {editPriceType !== 'market' && (
+                    <div>
+                      <label style={styles.editLabel}>Price</label>
+                      <input type="number" style={styles.editInput} value={editLimitPrice}
+                        onChange={(e) => setEditLimitPrice(e.target.value)} min="0" step="any" />
+                    </div>
+                  )}
+                  <div>
+                    <label style={styles.editLabel}>Stop Loss (optional)</label>
+                    <input type="number" style={styles.editInput} value={editStopLoss}
+                      onChange={(e) => setEditStopLoss(e.target.value)} min="0" step="any" />
+                  </div>
+                  <div>
+                    <label style={styles.editLabel}>Take Profit (optional)</label>
+                    <input type="number" style={styles.editInput} value={editTakeProfit}
+                      onChange={(e) => setEditTakeProfit(e.target.value)} min="0" step="any" />
+                  </div>
+                  <div>
+                    <label style={styles.editLabel}>Broker / Issuer</label>
+                    <input type="text" style={styles.editInput} value={editBroker}
+                      onChange={(e) => setEditBroker(e.target.value)} />
+                  </div>
+                  {editAssetType === ASSET_TYPES.FX && (
+                    <>
+                      <div>
+                        <label style={styles.editLabel}>Indicative Rate</label>
+                        <input type="number" style={styles.editInput} value={editFxRate}
+                          onChange={(e) => setEditFxRate(e.target.value)} min="0" step="any" />
+                      </div>
+                      <div>
+                        <label style={styles.editLabel}>Value Date</label>
+                        <input type="date" style={styles.editInput} value={editFxValueDate}
+                          onChange={(e) => setEditFxValueDate(e.target.value)} />
+                      </div>
+                      <div>
+                        <label style={styles.editLabel}>Forward Date</label>
+                        <input type="date" style={styles.editInput} value={editFxForwardDate}
+                          onChange={(e) => setEditFxForwardDate(e.target.value)} />
+                      </div>
+                    </>
+                  )}
+                  {editAssetType === ASSET_TYPES.TERM_DEPOSIT && (
+                    <>
+                      <div>
+                        <label style={styles.editLabel}>Tenor</label>
+                        <input type="text" style={styles.editInput} value={editDepositTenor}
+                          onChange={(e) => setEditDepositTenor(e.target.value)} />
+                      </div>
+                      <div>
+                        <label style={styles.editLabel}>Maturity Date</label>
+                        <input type="date" style={styles.editInput} value={editDepositMaturityDate}
+                          onChange={(e) => setEditDepositMaturityDate(e.target.value)} />
+                      </div>
+                    </>
+                  )}
+                  <div style={{ gridColumn: 'span 2' }}>
+                    <label style={styles.editLabel}>Notes</label>
+                    <textarea style={{ ...styles.editInput, minHeight: '60px', resize: 'vertical' }} value={editNotes}
+                      onChange={(e) => setEditNotes(e.target.value)} rows={2} />
+                  </div>
                 </div>
               </div>
             )}
@@ -1257,19 +1624,30 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                 </>
               ) : reviewOrder.status === ORDER_STATUSES.REVISION_REQUESTED ? (
                 <>
-                  {reviewOrder.revisionReason && (
-                    <div style={{ flex: 1, fontSize: '12px', color: '#e879f9', marginRight: '8px' }}>
-                      Revision note: {reviewOrder.revisionReason}
+                  {editError && (
+                    <div style={{ flex: 1, fontSize: '12px', color: '#ef4444', marginRight: '8px', alignSelf: 'center' }}>
+                      {editError}
                     </div>
                   )}
                   {reviewOrder.createdBy === user._id ? (
-                    <button
-                      style={{ ...styles.validateBtn, padding: '8px 20px', fontSize: '13px', opacity: isActioning ? 0.5 : 1 }}
-                      onClick={async () => { await handleResubmit(reviewOrder); closeReview(); }}
-                      disabled={!!isActioning}
-                    >
-                      {isActioning === reviewOrder._id ? 'Resubmitting...' : 'Resubmit for Validation'}
-                    </button>
+                    <>
+                      <button
+                        style={{ ...styles.rejectBtn, padding: '8px 20px', fontSize: '13px', opacity: isActioning ? 0.5 : 1 }}
+                        onClick={() => { const o = reviewOrder; closeReview(); setDeleteModalOrder(o); }}
+                        disabled={!!isActioning}
+                        title="Discard this order entirely"
+                      >
+                        Delete
+                      </button>
+                      <button
+                        style={{ ...styles.validateBtn, padding: '8px 20px', fontSize: '13px', opacity: isActioning ? 0.5 : 1 }}
+                        onClick={() => handleSaveAndResubmit(reviewOrder)}
+                        disabled={!!isActioning}
+                        title="Save your changes and send the order back to a validator"
+                      >
+                        {isActioning === reviewOrder._id ? 'Saving...' : 'Save & Resubmit'}
+                      </button>
+                    </>
                   ) : (
                     <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
                       Waiting for {reviewOrder.createdByName || 'creator'} to revise
@@ -1423,12 +1801,64 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
           </div>
         </div>
       )}
+      {/* Delete Confirmation Modal */}
+      {deleteModalOrder && (
+        <div style={styles.modalOverlay} onClick={() => setDeleteModalOrder(null)}>
+          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>Delete Order {deleteModalOrder.orderReference}</h3>
+            <p style={styles.modalDesc}>
+              This will permanently delete the order for <strong>{deleteModalOrder.securityName}</strong>. This cannot be undone.
+            </p>
+            <div style={styles.modalActions}>
+              <button style={styles.modalCancelBtn} onClick={() => setDeleteModalOrder(null)}>
+                Cancel
+              </button>
+              <button
+                style={{ ...styles.rejectBtn, padding: '8px 20px', fontSize: '13px', opacity: isActioning ? 0.5 : 1 }}
+                onClick={handleDelete}
+                disabled={!!isActioning}
+              >
+                {isActioning ? 'Deleting...' : 'Delete Order'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Confirm Transmitted Modal */}
     </>
   );
 };
 
 const styles = {
+  editLabel: {
+    display: 'block',
+    fontSize: '10px',
+    fontWeight: '700',
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.3px',
+    marginBottom: '4px'
+  },
+  editInput: {
+    width: '100%',
+    boxSizing: 'border-box',
+    padding: '7px 9px',
+    border: '1px solid var(--border-color)',
+    borderRadius: '6px',
+    fontSize: '13px',
+    background: 'var(--bg-primary)',
+    color: 'var(--text-primary)'
+  },
+  linkBtn: {
+    background: 'none',
+    border: 'none',
+    padding: 0,
+    color: 'var(--accent-color)',
+    fontSize: '12px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    textDecoration: 'underline'
+  },
   container: {
     borderLeft: '4px solid #f97316',
     borderRadius: '8px',

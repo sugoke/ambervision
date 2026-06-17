@@ -1,0 +1,60 @@
+# mup-docker-deploy upload exclusions.
+# Keeps the tarball uploaded to the server small.
+# Note: with prepareBundle: true, mup uploads the pre-built bundle —
+# but mup still reads app.path for some artefacts, so be defensive.
+
+# Dev dependencies and meteor build state
+node_modules
+.meteor/local
+
+# VCS
+.git
+
+# Sensitive runtime data directories
+bankfiles
+.termsheets
+.fichier_central
+public/termsheets
+public/fichier_central
+public/meetingReports
+
+# Worktrees and tooling caches
+.claude
+.crush
+tmpclaude-*
+deploy/tmpclaude-*
+
+# Logs
+*.log
+logs.txt
+
+# Local-only scripts, configs, BAT files
+*.bat
+_parse_excel.js
+create-admin-now.js
+insert-admin.js
+debug-*.js
+fix-*.js
+database-investigation-report.md
+claude_desktop_config.json
+mcp-server-config.json
+
+# Backup files
+**/*.before_all_sub
+
+# Stray artefacts
+nul
+set
+temp_*.txt
+phoenix_render_*.txt
+test-price-data.csv
+publictermsheets
+
+# Docs (not needed in the production tarball)
+*.md
+
+# Settings files - production settings come from mup env block
+settings-development.json
+settings-local.json
+settings.example.json
+settings.json

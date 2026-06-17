@@ -612,18 +612,51 @@ export const CFMParser = {
     let balancePortfolio = this.parseNumber(row[c.BALANCE_PERF]);
     const notional = this.parseNumber(row[c.CAT_DETAIL]);
     const currency = row[c.CURRENCY] || 'EUR';
-    const portfolioCurrency = row[c.CAT_CURRENCY] || 'EUR';
+    // Counter-currency of the deal as declared by the CFM POES file (column K).
+    // Previously defaulted to 'EUR', which silently corrupted USD-paired forwards
+    // when CAT_CURRENCY was empty or wasn't EUR. Leave it null so downstream code
+    // (and the enrichment step) can prefer the MFRX-operation-derived value.
+    const portfolioCurrency = row[c.CAT_CURRENCY] || null;
     const accountType = row[c.ACCOUNT_TYPE] || '';
     const isFxForward = accountType.toUpperCase().includes('CHANGE A TERME');
 
-    // For FX forwards with zero balance, use notional amount
-    if (isFxForward && (!balanceOriginal || balanceOriginal === 0) && notional) {
-      balanceOriginal = notional;
-      // Also try to convert notional to EUR if no portfolio balance
-      if (!balancePortfolio && currency !== 'EUR') {
-        balancePortfolio = this.convertToEur(notional, currency, fxRates);
-      }
-      console.log(`[CFM_FX_FORWARD] Using notional ${notional} ${currency} for FX forward (balance was 0)`);
+    // Diagnostic: dump raw + parsed columns for every FX forward row. Used to
+    // pinpoint mis-labelled USD/ILS legs (rows where the CFM file's currency
+    // columns don't match the deal's true sides). Remove once the parser is
+    // confirmed correct for all currency pairs.
+    if (isFxForward) {
+      console.log('[CFM_POES_FX_DEBUG]', {
+        raw: row,
+        reference: row[c.REFERENCE],
+        currency: row[c.CURRENCY],
+        balancePosition: row[c.BALANCE_POSITION],
+        balancePerf: row[c.BALANCE_PERF],
+        catDetail: row[c.CAT_DETAIL],
+        catCurrency: row[c.CAT_CURRENCY],
+        accountType: row[c.ACCOUNT_TYPE],
+        parsed: { currency, portfolioCurrency, balanceOriginal, balancePortfolio, notional }
+      });
+    }
+
+    // CFM POES FX-forward convention (verified from 20260515-...-poes.csv):
+    // every FX forward has TWO rows sharing a REFERENCE. One row is the FOREIGN
+    // leg (carries non-zero BALANCE_POSITION + BALANCE_PERF, i.e. the deal's
+    // MTM); the other is the BASE leg (both zero — it only declares the second
+    // currency of the deal). CAT_DETAIL is the FOREIGN-CURRENCY NOTIONAL,
+    // repeated identically on both rows — CAT_CURRENCY just echoes the leg's
+    // currency and is NOT the actual currency of CAT_DETAIL on the base-leg
+    // row. So the previous "if balance==0, use notional" fallback was stamping
+    // the foreign notional onto the base leg with a BASE-currency label,
+    // producing nonsense like "USD -7,731,250.00" (the 7.7M is the ILS
+    // notional, the USD label comes from the row's CURRENCY column).
+    const fxLeg = isFxForward
+      ? ((balanceOriginal != null && balanceOriginal !== 0) ? 'foreign' : 'base')
+      : null;
+    // Base-leg balances stay zero; foreign-leg balances stay as parsed from
+    // BALANCE_POSITION / BALANCE_PERF. No fallback to CAT_DETAIL.
+    if (isFxForward && fxLeg === 'base') {
+      balanceOriginal = 0;
+      balancePortfolio = 0;
     }
 
     // If no portfolio value from file, calculate using FX rates
@@ -732,7 +765,18 @@ export const CFMParser = {
         // For FX forwards, include reference in instrumentDates for uniqueKey differentiation
         instrumentDates: isFxForward ? {
           reference: row[c.REFERENCE]  // e.g., FX0329536
-        } : null
+        } : null,
+        // FX-forward leg classification + foreign-side notional from CAT_DETAIL.
+        // Base currency is filled in by parseCash's second pass (it needs to
+        // see the sibling row to know the deal's other currency).
+        fxLeg,
+        notional: isFxForward ? {
+          foreignAmount: fxLeg === 'foreign' ? notional : null,
+          foreignCurrency: fxLeg === 'foreign' ? currency : null,
+          baseAmount: null,      // populated by enrichFxForwardValueDates when MFRX has data
+          baseCurrency: null,    // populated in parseCash second pass below
+          fxRate: null
+        } : undefined
       },
 
       // Metadata
@@ -782,7 +826,35 @@ export const CFMParser = {
       })
       .map(row => this.mapCashToStandardSchema(row, bankId, bankName, sourceFile, fileDate, userId, fxRates));
 
-    console.log(`[CFM_PARSER] Mapped ${positions.length} cash/FX positions (${rows.length - positions.length} skipped)`);
+    // Second pass: link FX-forward foreign↔base legs by reference so each
+    // holding knows the deal's OTHER currency (and the base leg can mirror the
+    // foreign-leg notional for downstream consumers that read either side).
+    // Without this, the UI would have to inspect both holdings to assemble a
+    // deal — which is awkward when MFRX enrichment is absent.
+    const fxByRef = new Map();
+    for (const p of positions) {
+      const ref = p.bankSpecificData?.reference;
+      const leg = p.bankSpecificData?.fxLeg;
+      if (!ref || !leg) continue;
+      if (!fxByRef.has(ref)) fxByRef.set(ref, {});
+      fxByRef.get(ref)[leg] = p;
+    }
+    for (const [, pair] of fxByRef) {
+      const foreign = pair.foreign;
+      const base = pair.base;
+      if (!foreign || !base) continue;
+      // Foreign leg learns its base currency from the sibling row.
+      foreign.bankSpecificData.notional.baseCurrency = base.currency;
+      // Base leg mirrors the deal's foreign notional + currency so consumers
+      // reading either leg see consistent metadata. The base leg's own
+      // quantity/marketValue stay at 0 — we are not pretending we know the
+      // base-currency notional (it requires MFRX which can be empty today).
+      base.bankSpecificData.notional.foreignAmount = foreign.bankSpecificData.notional.foreignAmount;
+      base.bankSpecificData.notional.foreignCurrency = foreign.bankSpecificData.notional.foreignCurrency;
+      base.bankSpecificData.notional.baseCurrency = base.currency;
+    }
+
+    console.log(`[CFM_PARSER] Mapped ${positions.length} cash/FX positions (${rows.length - positions.length} skipped, ${fxByRef.size} FX forward deals linked)`);
 
     return positions;
   },
@@ -825,5 +897,210 @@ export const CFMParser = {
       valid: false,
       error: 'No valid account type found in file - may not be a POES cash file'
     };
+  },
+
+  /**
+   * Parse a DDMMYYYY string ("29052026" → Date 2026-05-29 UTC).
+   * Returns null on bad input.
+   */
+  _parseDdmmyyyy(s) {
+    if (!s || typeof s !== 'string' || !/^\d{8}$/.test(s)) return null;
+    const dd = parseInt(s.slice(0, 2), 10);
+    const mm = parseInt(s.slice(2, 4), 10);
+    const yyyy = parseInt(s.slice(4, 8), 10);
+    if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
+    return new Date(Date.UTC(yyyy, mm - 1, dd));
+  },
+
+  /**
+   * Enrich CFM fx_forward holdings with the forward value date that lives only
+   * in the FX operations file (CFM stores positions and FX trades in separate
+   * files; the position row carries the deal ref like "FX0335795" but no
+   * maturity date, whereas the FX operation carries that date encoded as
+   * DDMMYYYY in its `reference` field).
+   *
+   * Match strategy: same bank + portfolioCode, same |amount| (operation.amount
+   * vs holding.bankSpecificData.balanceOriginal). Sets
+   * bankSpecificData.instrumentDates.endDate on each matched holding.
+   *
+   * @param {Object} params
+   * @param {Object} params.PMSHoldingsCollection
+   * @param {Object} params.PMSOperationsCollection
+   * @param {String} [params.bankId] - optional, restrict to this bank
+   * @param {String} [params.portfolioCode] - optional, restrict to this portfolio
+   * @returns {Promise<{matched:Number, total:Number}>}
+   */
+  async enrichFxForwardValueDates({ PMSHoldingsCollection, PMSOperationsCollection, bankId, portfolioCode }) {
+    const holdingQuery = {
+      isActive: true,
+      isLatest: true,
+      assetClass: 'fx_forward'
+    };
+    if (bankId) holdingQuery.bankId = bankId;
+    if (portfolioCode) holdingQuery.portfolioCode = portfolioCode;
+
+    const holdings = await PMSHoldingsCollection.find(holdingQuery).fetchAsync();
+    if (holdings.length === 0) return { matched: 0, total: 0 };
+
+    // Group operations into two indices:
+    //   primaryIndex   keyed by `${portfolioCode}|${baseDealId}` — robust (deal ref
+    //                  is the same on both legs of one forward and on the matching
+    //                  POES holding's ticker)
+    //   amountIndex    keyed by `${portfolioCode}|${absAmount}` — kept as a
+    //                  fallback for files where operationNumber is missing
+    // For each deal we keep the *list* of operation rows (a forward typically has
+    // 2 legs: foreign-currency leg + settlement leg) so we can pick the foreign
+    // leg downstream.
+    const opQuery = { operationType: 'FX_TRADE' };
+    if (bankId) opQuery.bankId = bankId;
+    if (portfolioCode) opQuery.portfolioCode = portfolioCode;
+    const operations = await PMSOperationsCollection.find(opQuery, {
+      fields: {
+        portfolioCode: 1, amount: 1, reference: 1, operationDate: 1, valueDate: 1,
+        operationCurrency: 1, settlementCurrency: 1, baseCurrency: 1, fxRate: 1,
+        operationNumber: 1
+      }
+    }).fetchAsync();
+
+    const baseDealIdFromOpNumber = (opNumber) => {
+      if (!opNumber || typeof opNumber !== 'string') return null;
+      // CFM operationNumber looks like "FX0335795.001"; the deal id on the POES
+      // holding's ticker is the part before the first dot.
+      return opNumber.split('.')[0] || null;
+    };
+
+    const primaryIndex = new Map(); // dealKey -> [op, op, ...]
+    const amountIndex = new Map();  // amountKey -> first op
+    for (const op of operations) {
+      const baseDealId = baseDealIdFromOpNumber(op.operationNumber);
+      if (baseDealId) {
+        const key = `${op.portfolioCode}|${baseDealId}`;
+        if (!primaryIndex.has(key)) primaryIndex.set(key, []);
+        primaryIndex.get(key).push(op);
+      }
+      // Amount fallback also requires reference *or* valueDate to be useful
+      if (op.amount && (op.reference || op.valueDate)) {
+        const amountKey = `${op.portfolioCode}|${Math.abs(op.amount)}`;
+        if (!amountIndex.has(amountKey)) amountIndex.set(amountKey, op);
+      }
+    }
+
+    // Group holdings by deal ID (ticker = e.g. "FX0335795") — each FX forward has
+    // 2 legs (one per currency) and we want both legs to display the same value
+    // date even if only one leg's amount matches an operation. Also pulls in
+    // CONSOLIDATED pre-aggregated rows (same ticker, different portfolioCode)
+    // so the consolidated PMS view inherits the dates too.
+    const tickers = [...new Set(holdings.map(h => h.ticker).filter(Boolean))];
+    const consolidatedRows = tickers.length > 0
+      ? await PMSHoldingsCollection.find({
+          isActive: true,
+          isLatest: true,
+          assetClass: 'fx_forward',
+          portfolioCode: 'CONSOLIDATED',
+          ticker: { $in: tickers }
+        }).fetchAsync()
+      : [];
+
+    const dealGroups = new Map();
+    for (const h of [...holdings, ...consolidatedRows]) {
+      const dealId = h.ticker || h.bankSpecificData?.reference || h._id;
+      if (!dealGroups.has(dealId)) dealGroups.set(dealId, []);
+      dealGroups.get(dealId).push(h);
+    }
+
+    let matched = 0;
+    for (const [dealId, legs] of dealGroups.entries()) {
+      let endDate = null;
+      let beginDate = null;
+      let matchedOp = null;
+
+      // Primary: look up the deal by reference (same on every leg of one forward)
+      const dealPortfolios = [...new Set(legs.map(l => l.portfolioCode).filter(p => p && p !== 'CONSOLIDATED'))];
+      let dealOps = [];
+      for (const pc of dealPortfolios) {
+        const ops = primaryIndex.get(`${pc}|${dealId}`) || [];
+        if (ops.length > 0) {
+          dealOps = ops;
+          break;
+        }
+      }
+      if (dealOps.length > 0) {
+        // A forward usually has 2 op rows (foreign-leg row + settlement-leg row).
+        // The foreign-leg row is the one with operationCurrency !== settlementCurrency
+        // and a non-empty fxRate — that's where the notional + rate live.
+        const foreignLegOp = dealOps.find(op =>
+          op.operationCurrency && op.settlementCurrency
+          && op.operationCurrency !== op.settlementCurrency
+          && op.fxRate
+        ) || dealOps.find(op => op.fxRate) || dealOps[0];
+        matchedOp = foreignLegOp;
+        endDate = this._parseDdmmyyyy(matchedOp.reference) || matchedOp.valueDate || null;
+        beginDate = matchedOp.operationDate || null;
+      }
+
+      // Fallback: amount-based match per leg (kept for files where operationNumber
+      // is missing on some rows — this is the previous behaviour, preserved).
+      if (!matchedOp) {
+        for (const leg of legs) {
+          const amount = Math.abs(leg.bankSpecificData?.balanceOriginal ?? leg.marketValueOriginalCurrency ?? 0);
+          if (!amount) continue;
+          const op = amountIndex.get(`${leg.portfolioCode}|${amount}`);
+          if (op) {
+            endDate = this._parseDdmmyyyy(op.reference) || op.valueDate || null;
+            beginDate = op.operationDate || null;
+            matchedOp = op;
+            if (endDate) break;
+          }
+        }
+      }
+
+      if (!endDate) continue;
+
+      // Derive the deal's two notional values from the matched FX_TRADE op.
+      // The operation carries: amount (foreign-leg notional, e.g. ILS),
+      // operationCurrency (foreign), settlementCurrency (the base, e.g. EUR),
+      // fxRate (forward rate, units of foreign per unit of base).
+      let notionalForeign = null, notionalBase = null;
+      let foreignCurrency = null, baseCurrency = null;
+      if (matchedOp && matchedOp.amount && matchedOp.fxRate) {
+        notionalForeign = Math.abs(matchedOp.amount);
+        notionalBase = notionalForeign / matchedOp.fxRate;
+        foreignCurrency = matchedOp.operationCurrency || null;
+        baseCurrency = matchedOp.settlementCurrency || matchedOp.baseCurrency || null;
+        // If settlement and operation currency match, fall back to baseCurrency
+        if (baseCurrency === foreignCurrency) {
+          baseCurrency = matchedOp.baseCurrency && matchedOp.baseCurrency !== foreignCurrency
+            ? matchedOp.baseCurrency
+            : null;
+        }
+      }
+
+      for (const leg of legs) {
+        const $set = {};
+        const currentEnd = leg.bankSpecificData?.instrumentDates?.endDate;
+        if (!currentEnd || new Date(currentEnd).getTime() !== endDate.getTime()) {
+          $set['bankSpecificData.instrumentDates.endDate'] = endDate;
+        }
+        const currentBegin = leg.bankSpecificData?.instrumentDates?.beginDate;
+        if (beginDate && (!currentBegin || new Date(currentBegin).getTime() !== new Date(beginDate).getTime())) {
+          $set['bankSpecificData.instrumentDates.beginDate'] = beginDate;
+        }
+        if (notionalForeign != null) {
+          $set['bankSpecificData.notional.foreignAmount'] = notionalForeign;
+          $set['bankSpecificData.notional.foreignCurrency'] = foreignCurrency;
+        }
+        if (notionalBase != null) {
+          $set['bankSpecificData.notional.baseAmount'] = notionalBase;
+          $set['bankSpecificData.notional.baseCurrency'] = baseCurrency;
+        }
+        if (matchedOp?.fxRate) {
+          $set['bankSpecificData.notional.fxRate'] = matchedOp.fxRate;
+        }
+        if (Object.keys($set).length === 0) continue;
+        await PMSHoldingsCollection.updateAsync(leg._id, { $set });
+        matched++;
+      }
+    }
+    return { matched, total: holdings.length };
   }
 };

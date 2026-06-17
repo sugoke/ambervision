@@ -173,15 +173,24 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                 <div style={fieldContainerStyle}>
                   <label style={labelStyle}>Strike Level (%)</label>
                   <input
-                    type="number"
-                    value={structureParams?.strike || 100}
-                    min="80"
-                    max="120"
+                    type="text"
+                    inputMode="decimal"
+                    key={`phoenix-strike-${structureParams?.strike ?? 100}`}
+                    defaultValue={structureParams?.strike !== undefined ? structureParams.strike : 100}
+                    min="50"
+                    max="150"
                     step="1"
                     style={numberInputStyle}
                     onFocus={handleInputFocus}
-                    onBlur={handleInputBlur}
-                    onChange={(e) => onParamChange && onParamChange('strike', parseInt(e.target.value) || 0)}
+                    onBlur={(e) => {
+                      handleInputBlur(e);
+                      const numValue = parseFloat(e.target.value);
+                      if (!isNaN(numValue)) {
+                        onParamChange && onParamChange('strike', numValue);
+                      } else {
+                        e.target.value = structureParams?.strike !== undefined ? structureParams.strike : 100;
+                      }
+                    }}
                   />
                 </div>
               </div>
@@ -913,15 +922,24 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                 <div style={fieldContainerStyle}>
                   <label style={labelStyle}>Strike Level (%)</label>
                   <input
-                    type="number"
-                    value={structureParams?.strike || 100}
+                    type="text"
+                    inputMode="decimal"
+                    key={`phoenix2-strike-${structureParams?.strike ?? 100}`}
+                    defaultValue={structureParams?.strike !== undefined ? structureParams.strike : 100}
                     min="50"
                     max="150"
                     step="1"
                     style={numberInputStyle}
                     onFocus={handleInputFocus}
-                    onBlur={handleInputBlur}
-                    onChange={(e) => onParamChange && onParamChange('strike', parseInt(e.target.value) || 0)}
+                    onBlur={(e) => {
+                      handleInputBlur(e);
+                      const numValue = parseFloat(e.target.value);
+                      if (!isNaN(numValue)) {
+                        onParamChange && onParamChange('strike', numValue);
+                      } else {
+                        e.target.value = structureParams?.strike !== undefined ? structureParams.strike : 100;
+                      }
+                    }}
                   />
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
                     Initial reference level for performance calculation
@@ -1346,6 +1364,308 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
             </div>
           </div>
         );
+
+      case 'bonus_certificate': {
+        const sp = structureParams || {};
+        const strikeLevel = sp.strikeLevel !== undefined ? sp.strikeLevel : 100;
+        const bonusLevel = sp.bonusLevel !== undefined ? sp.bonusLevel : 100;
+        const barrierLevel = sp.barrierLevel !== undefined ? sp.barrierLevel : 60;
+        const barrierType = sp.barrierType || 'european';
+        const participationRate = sp.participationRate !== undefined ? sp.participationRate : 100;
+        const capEnabled = !!sp.capEnabled;
+        const capValue = sp.cap !== undefined && sp.cap !== null ? sp.cap : 66;
+        const basketType = sp.basketType || 'worst_of';
+        const maxRedemption = capEnabled ? (100 + capValue).toFixed(0) : '∞';
+
+        return (
+          <div>
+            <div style={commonStyle}>
+              <h4 style={{
+                margin: '0 0 20px 0',
+                color: 'var(--text-secondary)',
+                fontSize: '1.1rem',
+                fontWeight: '600',
+                borderBottom: '2px solid var(--accent-color)',
+                paddingBottom: '8px'
+              }}>🎁 Bonus Certificate Configuration</h4>
+
+              {/* Primary parameters */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr 1fr',
+                gap: '1.5rem',
+                marginBottom: '2rem'
+              }}>
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Strike Level (%)</label>
+                  <input
+                    type="number"
+                    value={strikeLevel}
+                    min="50"
+                    max="150"
+                    step="1"
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('strikeLevel', parseFloat(e.target.value) || 0)}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Reference for performance calculation
+                  </div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Knock-In Threshold</label>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <select
+                      value={barrierType}
+                      style={{ ...selectInputStyle, width: '110px' }}
+                      onFocus={handleInputFocus}
+                      onBlur={handleInputBlur}
+                      onChange={(e) => onParamChange && onParamChange('barrierType', e.target.value)}
+                    >
+                      <option value="european">European</option>
+                      <option value="american">American</option>
+                    </select>
+                    <input
+                      type="number"
+                      value={barrierLevel}
+                      min="0"
+                      max="100"
+                      step="1"
+                      style={{ ...numberInputStyle, width: '70px' }}
+                      onFocus={handleInputFocus}
+                      onBlur={handleInputBlur}
+                      onChange={(e) => onParamChange && onParamChange('barrierLevel', parseFloat(e.target.value) || 0)}
+                    />
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>%</span>
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    {barrierType === 'american'
+                      ? 'Monitored on every business day'
+                      : 'Checked only at final observation'}
+                  </div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Bonus Level (%)</label>
+                  <input
+                    type="number"
+                    value={bonusLevel}
+                    min="0"
+                    max="200"
+                    step="1"
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('bonusLevel', parseFloat(e.target.value) || 0)}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Floor redemption if no knock-in (typically = strike)
+                  </div>
+                </div>
+              </div>
+
+              {/* Participation + Cap */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr 1fr',
+                gap: '1.5rem',
+                marginBottom: '2rem'
+              }}>
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Participation Rate (%)</label>
+                  <input
+                    type="number"
+                    value={participationRate}
+                    min="0"
+                    max="500"
+                    step="5"
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('participationRate', parseFloat(e.target.value) || 0)}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    100% = vanilla, &gt;100% = outperformance
+                  </div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Cap on Upside</label>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <label style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      fontSize: '0.85rem',
+                      color: 'var(--text-primary)',
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap'
+                    }}>
+                      <input
+                        type="checkbox"
+                        checked={capEnabled}
+                        onChange={(e) => onParamChange && onParamChange('capEnabled', e.target.checked)}
+                      />
+                      Capped
+                    </label>
+                    <input
+                      type="number"
+                      value={capValue}
+                      min="0"
+                      max="500"
+                      step="1"
+                      disabled={!capEnabled}
+                      style={{
+                        ...numberInputStyle,
+                        width: '90px',
+                        opacity: capEnabled ? 1 : 0.5
+                      }}
+                      onFocus={handleInputFocus}
+                      onBlur={handleInputBlur}
+                      onChange={(e) => onParamChange && onParamChange('cap', parseFloat(e.target.value) || 0)}
+                    />
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>% above par</span>
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Max upside payoff (e.g. 66% → max redemption 166%)
+                  </div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Basket Aggregation</label>
+                  <select
+                    value={basketType}
+                    style={selectInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('basketType', e.target.value)}
+                  >
+                    <option value="worst_of">Worst-of</option>
+                    <option value="best_of">Best-of</option>
+                    <option value="average">Average</option>
+                    <option value="single">Single</option>
+                  </select>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Used only when N underlyings &gt; 1
+                  </div>
+                </div>
+              </div>
+
+              {/* Derived display */}
+              <div style={{
+                background: 'var(--bg-tertiary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '8px',
+                padding: '1.5rem',
+                marginBottom: '1rem'
+              }}>
+                <h5 style={{
+                  margin: '0 0 1rem 0',
+                  color: 'var(--text-primary)',
+                  fontSize: '1rem',
+                  fontWeight: '600'
+                }}>Computed Profile</h5>
+
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '1rem'
+                }}>
+                  <div style={{
+                    padding: '1rem',
+                    background: 'var(--bg-primary)',
+                    borderRadius: '6px'
+                  }}>
+                    <div style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--text-muted)',
+                      textTransform: 'uppercase',
+                      marginBottom: '0.5rem',
+                      fontWeight: '600'
+                    }}>Max Redemption</div>
+                    <div style={{
+                      fontSize: '1.5rem',
+                      fontWeight: '700',
+                      color: 'var(--accent-color)',
+                      fontFamily: 'monospace'
+                    }}>{maxRedemption}%</div>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      color: 'var(--text-muted)',
+                      marginTop: '0.5rem',
+                      lineHeight: '1.4'
+                    }}>
+                      {capEnabled
+                        ? `100% + Cap (${capValue}%)`
+                        : 'Unbounded — uncapped participation'}
+                    </div>
+                  </div>
+
+                  <div style={{
+                    padding: '1rem',
+                    background: 'var(--bg-primary)',
+                    borderRadius: '6px'
+                  }}>
+                    <div style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--text-muted)',
+                      textTransform: 'uppercase',
+                      marginBottom: '0.5rem',
+                      fontWeight: '600'
+                    }}>Example Scenario</div>
+                    <div style={{
+                      fontSize: '0.8rem',
+                      color: 'var(--text-secondary)',
+                      lineHeight: '1.6'
+                    }}>
+                      If underlying at +30%:<br />
+                      <span style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                        100% + {capEnabled
+                          ? `min(${capValue}%, ${participationRate}% × 30%)`
+                          : `max(0%, ${participationRate}% × 30%)`}
+                      </span>
+                      <br />
+                      = <strong>
+                        {(() => {
+                          const lever = (participationRate / 100) * 30;
+                          const raw = Math.max(0, lever);
+                          const final = capEnabled ? Math.min(capValue, raw) : raw;
+                          return (100 + final).toFixed(1);
+                        })()}%
+                      </strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Info box */}
+              <div style={{
+                marginTop: '1.5rem',
+                padding: '1rem',
+                background: 'var(--bg-tertiary)',
+                borderRadius: '8px',
+                fontSize: '0.85rem',
+                color: 'var(--text-secondary)',
+                lineHeight: '1.5'
+              }}>
+                <div style={{ fontWeight: '600', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+                  ℹ️ How a Bonus Certificate Works:
+                </div>
+                <ul style={{ margin: '0', paddingLeft: '1.5rem' }}>
+                  <li><strong>No knock-in:</strong> Investor receives 100% + max(0%, {participationRate}% × performance{capEnabled ? `, capped at ${capValue}%` : ''}) → bonus floor at par</li>
+                  <li><strong>Knock-in breached:</strong> Investor receives 100% + performance (1:1 with underlying, full downside)</li>
+                  <li><strong>{barrierType === 'american' ? 'American KI:' : 'European KI:'}</strong> {barrierType === 'american' ? 'Triggered if any underlying closes at or below threshold on any business day' : 'Triggered only if basket level is at or below threshold on final fixing'}</li>
+                  <li><strong>SSPA classification:</strong> {capEnabled
+                    ? (participationRate !== 100 ? '1330 – Capped Bonus Outperformance Certificate' : '1320 – Capped Bonus Certificate')
+                    : (participationRate !== 100 ? '1330 – Bonus Outperformance Certificate' : '1320 – Bonus Certificate')}</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        );
+      }
 
       case 'shark_note':
         return (

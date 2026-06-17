@@ -3,15 +3,15 @@ import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import Modal from './common/Modal.jsx';
 import ActionButton from './common/ActionButton.jsx';
-import { ASSET_TYPES, PRICE_TYPES, TRADE_MODES, FX_SUBTYPES, VALIDITY_TYPES, TERM_DEPOSIT_TENORS, EMAIL_TRACE_TYPES, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, ORDER_SOURCE_TYPES, EXECUTION_TYPES, EXECUTION_TYPE_LABELS, OrderFormatters } from '/imports/api/orders';
+import { ASSET_TYPES, PRICE_TYPES, TRADE_MODES, FX_SUBTYPES, VALIDITY_TYPES, TERM_DEPOSIT_TENORS, EMAIL_TRACE_TYPES, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, ORDER_SOURCE_TYPES, EXECUTION_TYPES, EXECUTION_TYPE_LABELS, FUND_QUANTITY_MODES, OrderFormatters } from '/imports/api/orders';
 import { IssuersCollection } from '/imports/api/issuers';
 import FormattedNumberInput from './FormattedNumberInput.jsx';
 import AccountAutocomplete from './AccountAutocomplete.jsx';
 
-const FX_CURRENCIES = [
-  'USD', 'EUR', 'CHF', 'GBP', 'JPY', 'ILS',
-  'CAD', 'AUD', 'NZD', 'SEK', 'NOK', 'DKK',
-  'SGD', 'HKD', 'CNH', 'ZAR', 'TRY', 'MXN', 'BRL'
+// Main tradable currencies, ordered by importance. Used for every currency
+// dropdown in the new-order flow (FX legs, deposit, settlement, manual entry).
+const MAIN_CURRENCIES = [
+  'USD', 'EUR', 'CHF', 'GBP', 'JPY', 'ILS', 'CAD', 'AUD', 'NZD', 'SEK'
 ];
 
 /**
@@ -71,6 +71,9 @@ const OrderModal = ({
   const [holdingSearchQuery, setHoldingSearchQuery] = useState('');
   const [selectedHolding, setSelectedHolding] = useState(null);
   const [sellManualSearch, setSellManualSearch] = useState(false);
+  // Force-override: allow sell orders without a source holding (used when the bank-side
+  // accounting is wrong and the holding does not appear in PMS).
+  const [forceWithoutSourceHolding, setForceWithoutSourceHolding] = useState(false);
 
   // Cash balance for buy mode
   const [cashBalance, setCashBalance] = useState(null);
@@ -94,6 +97,9 @@ const OrderModal = ({
 
   // Step 2: Order Details
   const [quantity, setQuantity] = useState('');
+  // For fund orders only: whether `quantity` is a number of units or a
+  // nominal cash amount (subscription/redemption value).
+  const [fundQuantityMode, setFundQuantityMode] = useState(FUND_QUANTITY_MODES.UNITS);
   const [priceType, setPriceType] = useState(PRICE_TYPES.MARKET);
   const [limitPrice, setLimitPrice] = useState('');
   const [estimatedValue, setEstimatedValue] = useState('');
@@ -180,6 +186,9 @@ const OrderModal = ({
   // Client order email attachments (single file for single mode, array for bulk)
   const [clientOrderFile, setClientOrderFile] = useState(null);
   const [clientOrderFiles, setClientOrderFiles] = useState([]);
+  // Creator attests they will attach the client order later (mobile / technical-issue bypass).
+  // Validator must then tick a paired attestation in the four-eyes review.
+  const [deferAttachment, setDeferAttachment] = useState(false);
 
   // Order source: email (default) or phone
   const [orderSource, setOrderSource] = useState(ORDER_SOURCE_TYPES.EMAIL);
@@ -341,6 +350,11 @@ const OrderModal = ({
       setAssetType(prefillData.assetType || ASSET_TYPES.STRUCTURED_PRODUCT);
       setSearchQuery(prefillData.securityName || '');
 
+      // Term deposit direction comes from depositAction, not the buy/sell mode
+      if (prefillData.assetType === ASSET_TYPES.TERM_DEPOSIT) {
+        setDepositAction(mode === 'sell' ? 'decrease' : 'increase');
+      }
+
       if (prefillData.clientId) {
         setSelectedClientId(prefillData.clientId);
       }
@@ -468,6 +482,7 @@ const OrderModal = ({
       // Reset client order attachments
       setClientOrderFile(null);
       setClientOrderFiles([]);
+      setDeferAttachment(false);
       // Reset price data
       setIndicativePrice(null);
       setIndicativePriceCurrency(null);
@@ -479,6 +494,7 @@ const OrderModal = ({
       setHoldingSearchQuery('');
       setSelectedHolding(null);
       setSellManualSearch(false);
+      setForceWithoutSourceHolding(false);
       setCashBalance(null);
       setIsLoadingCash(false);
     }
@@ -828,7 +844,11 @@ const OrderModal = ({
             return false;
           }
         }
-        if (assetType !== ASSET_TYPES.FX && priceType === PRICE_TYPES.LIMIT && (!limitPrice || parseFloat(limitPrice) <= 0)) {
+        // Structured products are quoted by the bank at indicative price; entering a
+        // limit "% of par" is optional. FX uses its own limit-price gating elsewhere.
+        if (assetType !== ASSET_TYPES.FX && assetType !== ASSET_TYPES.STRUCTURED_PRODUCT
+          && priceType === PRICE_TYPES.LIMIT
+          && (!limitPrice || parseFloat(limitPrice) <= 0)) {
           setError('Please enter a valid limit price');
           return false;
         }
@@ -854,8 +874,10 @@ const OrderModal = ({
           setError('Order exceeds available cash. Please add a note justifying this order.');
           return false;
         }
-        // Structured product orders require an issuer and a termsheet PDF at creation
-        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT) {
+        // Structured product BUY orders require an issuer and a termsheet PDF.
+        // Sell orders don't need it again — the termsheet was already attached at purchase
+        // and lives on the original buy order / product record.
+        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && mode !== 'sell') {
           if (!issuerId) {
             setError('Please select the issuer for this structured product.');
             return false;
@@ -865,10 +887,17 @@ const OrderModal = ({
             return false;
           }
         }
-        // Client instruction is mandatory (email attachment or phone confirmation)
+        // Client instruction is mandatory (email attachment or phone confirmation).
+        // Single-order mode allows a defer-attach attestation when a file can't be
+        // attached now (mobile/technical issue); bulk mode still requires real files.
         if (orderSource === ORDER_SOURCE_TYPES.EMAIL) {
-          if (isBulkMode ? clientOrderFiles.length === 0 && Object.keys(bulkOrderFiles).length === 0 : !clientOrderFile) {
-            setError('Please attach the client order email or switch to phone confirmation');
+          if (isBulkMode) {
+            if (clientOrderFiles.length === 0 && Object.keys(bulkOrderFiles).length === 0) {
+              setError('Please attach the client order email or switch to phone confirmation');
+              return false;
+            }
+          } else if (!clientOrderFile && !deferAttachment) {
+            setError('Please attach the client order email, switch to phone confirmation, or tick "I have the client order and will attach it later"');
             return false;
           }
         } else if (orderSource === ORDER_SOURCE_TYPES.PHONE) {
@@ -1000,6 +1029,9 @@ const OrderModal = ({
         }
         if (underlyings && underlyings.trim()) {
           bulkOrderData.underlyings = underlyings.trim();
+        }
+        if (assetType === ASSET_TYPES.FUND) {
+          bulkOrderData.fundQuantityMode = fundQuantityMode;
         }
 
         // Validity for non-market orders (FX limit orders too)
@@ -1165,6 +1197,9 @@ const OrderModal = ({
         if (mode === 'sell' && (prefillData?.holdingId || selectedHolding?._id)) {
           orderData.sourceHoldingId = String(prefillData?.holdingId || selectedHolding._id);
         }
+        if (mode === 'sell' && !orderData.sourceHoldingId && forceWithoutSourceHolding) {
+          orderData.forceWithoutSourceHolding = true;
+        }
         if (notes && notes.trim()) {
           orderData.notes = notes.trim();
         }
@@ -1217,6 +1252,10 @@ const OrderModal = ({
         if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && capitalProtected) {
           orderData.capitalProtected = true;
         }
+        // Fund quantity mode (units vs nominal cash amount)
+        if (assetType === ASSET_TYPES.FUND) {
+          orderData.fundQuantityMode = fundQuantityMode;
+        }
         orderData.tradeMode = TRADE_MODES.INDIVIDUAL;
 
         // Order source (email or phone)
@@ -1225,6 +1264,10 @@ const OrderModal = ({
         if (orderSource === ORDER_SOURCE_TYPES.PHONE) {
           if (phoneCallTime) orderData.phoneCallTime = phoneCallTime;
           if (phoneCallLine) orderData.phoneCallLine = phoneCallLine.trim();
+        }
+        // Creator opted to attach the client-order trace later (no file at submit time)
+        if (orderSource === ORDER_SOURCE_TYPES.EMAIL && deferAttachment && !clientOrderFile) {
+          orderData.clientOrderDeferred = true;
         }
 
         // Add validity for non-market orders (FX limit orders too — FX gates on limitPrice)
@@ -1614,14 +1657,15 @@ const OrderModal = ({
               <div style={{ flex: '0 0 120px' }}>
                 <div style={styles.formGroup}>
                   <label style={styles.label}>Currency *</label>
-                  <input
-                    type="text"
-                    style={styles.input}
+                  <select
+                    style={styles.select}
                     value={manualCurrency}
-                    onChange={(e) => setManualCurrency(e.target.value.toUpperCase().slice(0, 3))}
-                    placeholder="EUR"
-                    maxLength={3}
-                  />
+                    onChange={(e) => setManualCurrency(e.target.value)}
+                  >
+                    {MAIN_CURRENCIES.map(ccy => (
+                      <option key={ccy} value={ccy}>{ccy}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
             </div>
@@ -1760,7 +1804,7 @@ const OrderModal = ({
                   onChange={(e) => setFxBuyCurrency(e.target.value)}
                 >
                   <option value="">Select currency...</option>
-                  {FX_CURRENCIES.filter(ccy => ccy !== fxSellCurrency).map(ccy => (
+                  {MAIN_CURRENCIES.filter(ccy => ccy !== fxSellCurrency).map(ccy => (
                     <option key={ccy} value={ccy}>{ccy}</option>
                   ))}
                 </select>
@@ -1775,7 +1819,7 @@ const OrderModal = ({
                   onChange={(e) => setFxSellCurrency(e.target.value)}
                 >
                   <option value="">Select currency...</option>
-                  {FX_CURRENCIES.filter(ccy => ccy !== fxBuyCurrency).map(ccy => (
+                  {MAIN_CURRENCIES.filter(ccy => ccy !== fxBuyCurrency).map(ccy => (
                     <option key={ccy} value={ccy}>{ccy}</option>
                   ))}
                 </select>
@@ -1833,7 +1877,7 @@ const OrderModal = ({
                   value={depositCurrency}
                   onChange={(e) => setDepositCurrency(e.target.value)}
                 >
-                  {FX_CURRENCIES.map(ccy => (
+                  {MAIN_CURRENCIES.map(ccy => (
                     <option key={ccy} value={ccy}>{ccy}</option>
                   ))}
                 </select>
@@ -2033,7 +2077,36 @@ const OrderModal = ({
           {/* Quantity — single input or per-account grid for bulk */}
           {isBulkMode ? (
             <div style={styles.formGroup}>
-              <label style={styles.label}>{assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 'Nominal per Account' : 'Quantity per Account'}</label>
+              <label style={styles.label}>{assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 'Nominal per Account' : assetType === ASSET_TYPES.FUND ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 'Nominal Amount per Account' : 'Units per Account') : 'Quantity per Account'}</label>
+              {assetType === ASSET_TYPES.FUND && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '8px' }}>
+                  {[
+                    { value: FUND_QUANTITY_MODES.UNITS, label: 'Units' },
+                    { value: FUND_QUANTITY_MODES.NOMINAL, label: 'Nominal' }
+                  ].map(opt => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => {
+                        setFundQuantityMode(opt.value);
+                        setBulkOrders(prev => prev.map(o => ({ ...o, quantity: '' })));
+                      }}
+                      style={{
+                        padding: '8px 4px',
+                        borderRadius: '6px',
+                        border: `1px solid ${fundQuantityMode === opt.value ? 'var(--accent-color)' : 'var(--border-color)'}`,
+                        background: fundQuantityMode === opt.value ? 'var(--accent-color)' : 'transparent',
+                        color: fundQuantityMode === opt.value ? '#fff' : 'var(--text-secondary)',
+                        cursor: 'pointer',
+                        fontSize: '12px',
+                        fontWeight: '600'
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              )}
               {bulkOrders.filter(o => o.clientId && o.bankAccountId).map((order, idx) => {
                 const origIdx = bulkOrders.indexOf(order);
                 const client = availableClients.find(c => c._id === order.clientId);
@@ -2071,8 +2144,12 @@ const OrderModal = ({
                           style={{ ...styles.input, padding: '7px 10px' }}
                           value={order.quantity}
                           onChange={(e) => updateBulkOrder(origIdx, 'quantity', e.target.value)}
-                          placeholder="Qty"
-                          maxDecimals={assetType === ASSET_TYPES.TERM_DEPOSIT ? 2 : 0}
+                          placeholder={assetType === ASSET_TYPES.FUND ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 'Amount' : 'Units') : 'Qty'}
+                          maxDecimals={
+                            assetType === ASSET_TYPES.TERM_DEPOSIT ? 2
+                            : assetType === ASSET_TYPES.FUND ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 2 : 4)
+                            : 0
+                          }
                         />
                       </div>
                     </div>
@@ -2134,10 +2211,38 @@ const OrderModal = ({
                       ? 'Amount'
                       : assetType === ASSET_TYPES.STRUCTURED_PRODUCT
                         ? 'Nominal'
-                        : 'Quantity'}
+                        : assetType === ASSET_TYPES.FUND
+                          ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 'Nominal Amount' : 'Units')
+                          : 'Quantity'}
                     {mode === 'sell' && selectedHolding?.quantity && ` (Max: ${selectedHolding.quantity.toLocaleString()})`}
                     {mode === 'sell' && !selectedHolding && prefillData?.quantity && ` (Max: ${prefillData.quantity})`}
                   </label>
+                  {assetType === ASSET_TYPES.FUND && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '8px' }}>
+                      {[
+                        { value: FUND_QUANTITY_MODES.UNITS, label: 'Units' },
+                        { value: FUND_QUANTITY_MODES.NOMINAL, label: 'Nominal' }
+                      ].map(opt => (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => { setFundQuantityMode(opt.value); setQuantity(''); }}
+                          style={{
+                            padding: '8px 4px',
+                            borderRadius: '6px',
+                            border: `1px solid ${fundQuantityMode === opt.value ? 'var(--accent-color)' : 'var(--border-color)'}`,
+                            background: fundQuantityMode === opt.value ? 'var(--accent-color)' : 'transparent',
+                            color: fundQuantityMode === opt.value ? '#fff' : 'var(--text-secondary)',
+                            cursor: 'pointer',
+                            fontSize: '12px',
+                            fontWeight: '600'
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <FormattedNumberInput
                     style={styles.input}
                     value={quantity}
@@ -2147,9 +2252,15 @@ const OrderModal = ({
                         ? 'Enter amount'
                         : assetType === ASSET_TYPES.STRUCTURED_PRODUCT
                           ? 'Enter nominal'
-                          : 'Enter quantity'
+                          : assetType === ASSET_TYPES.FUND
+                            ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 'Enter amount' : 'Enter units')
+                            : 'Enter quantity'
                     }
-                    maxDecimals={assetType === ASSET_TYPES.TERM_DEPOSIT ? 2 : 0}
+                    maxDecimals={
+                      assetType === ASSET_TYPES.TERM_DEPOSIT ? 2
+                      : assetType === ASSET_TYPES.FUND ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 2 : 4)
+                      : 0
+                    }
                   />
                 </div>
               </div>
@@ -2245,7 +2356,7 @@ const OrderModal = ({
             <div style={styles.formGroup}>
               <label style={styles.label}>
                 {assetType === ASSET_TYPES.STRUCTURED_PRODUCT
-                  ? 'Price (% of par)'
+                  ? 'Price (% of par) — optional'
                   : `Limit Price (${getCurrencyForDisplay()})`}
               </label>
               <FormattedNumberInput
@@ -2517,28 +2628,30 @@ const OrderModal = ({
             <div style={styles.col}>
               <div style={styles.formGroup}>
                 <label style={styles.label}>Settlement Currency (Optional)</label>
-                <input
-                  type="text"
-                  style={styles.input}
+                <select
+                  style={styles.select}
                   value={settlementCurrency}
                   onChange={(e) => setSettlementCurrency(e.target.value)}
-                  placeholder="e.g. EUR, USD..."
-                  maxLength={3}
-                />
+                >
+                  <option value="">—</option>
+                  {/* Include a security-derived currency outside the main list so a prefilled value isn't silently lost */}
+                  {(settlementCurrency && !MAIN_CURRENCIES.includes(settlementCurrency)
+                    ? [settlementCurrency, ...MAIN_CURRENCIES]
+                    : MAIN_CURRENCIES).map(ccy => (
+                    <option key={ccy} value={ccy}>{ccy}</option>
+                  ))}
+                </select>
               </div>
             </div>
           </div>
 
-          {assetType === ASSET_TYPES.STRUCTURED_PRODUCT && (
+          {assetType === ASSET_TYPES.STRUCTURED_PRODUCT && mode !== 'sell' && (
             <div style={styles.formGroup}>
               <label style={styles.label}>Termsheet (PDF) *</label>
-              <input
-                type="file"
-                accept="application/pdf"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
+              {(() => {
+                const validateAndSetTermsheet = (f) => {
                   if (!f) { setTermsheetFile(null); return; }
-                  if (f.type !== 'application/pdf') {
+                  if (f.type !== 'application/pdf' && !f.name.toLowerCase().endsWith('.pdf')) {
                     setError('Termsheet must be a PDF.');
                     setTermsheetFile(null);
                     return;
@@ -2550,15 +2663,86 @@ const OrderModal = ({
                   }
                   setError(null);
                   setTermsheetFile(f);
-                }}
-                style={{ ...styles.input, padding: '8px' }}
-              />
-              {termsheetFile && (
-                <div style={{ marginTop: '6px', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                  {termsheetFile.name} — {(termsheetFile.size / 1024).toFixed(0)} KB
-                </div>
-              )}
-              <div style={{ marginTop: '4px', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                };
+                return termsheetFile ? (
+                  <div style={{
+                    border: '2px solid #10b981',
+                    background: 'rgba(16, 185, 129, 0.08)',
+                    borderRadius: '8px',
+                    padding: '10px 12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}>
+                    <span style={{ fontSize: '18px' }}>📄</span>
+                    <span style={{ fontSize: '13px', fontWeight: '600', color: '#10b981', flex: 1, wordBreak: 'break-all' }}>
+                      {termsheetFile.name}
+                    </span>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                      ({(termsheetFile.size / 1024).toFixed(0)} KB)
+                    </span>
+                    <button
+                      type="button"
+                      style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '14px', padding: '2px 6px' }}
+                      onClick={() => setTermsheetFile(null)}
+                      title="Remove file"
+                    >
+                      x
+                    </button>
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      border: '2px dashed var(--border-color)',
+                      borderRadius: '8px',
+                      padding: '16px',
+                      textAlign: 'center',
+                      cursor: 'pointer',
+                      background: 'var(--bg-secondary)',
+                      transition: 'border-color 0.15s, background 0.15s'
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      e.currentTarget.style.borderColor = '#0ea5e9';
+                      e.currentTarget.style.background = 'rgba(14, 165, 233, 0.08)';
+                    }}
+                    onDragLeave={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      e.currentTarget.style.borderColor = 'var(--border-color)';
+                      e.currentTarget.style.background = 'var(--bg-secondary)';
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      e.currentTarget.style.borderColor = 'var(--border-color)';
+                      e.currentTarget.style.background = 'var(--bg-secondary)';
+                      const f = e.dataTransfer.files?.[0];
+                      validateAndSetTermsheet(f);
+                    }}
+                    onClick={() => {
+                      const input = document.createElement('input');
+                      input.type = 'file';
+                      input.accept = 'application/pdf';
+                      input.onchange = (e) => {
+                        const f = e.target.files?.[0];
+                        validateAndSetTermsheet(f);
+                      };
+                      input.click();
+                    }}
+                  >
+                    <div style={{ fontSize: '24px', marginBottom: '4px' }}>📄</div>
+                    <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                      Drop termsheet PDF here, or click to browse
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                      PDF only — max 15MB
+                    </div>
+                  </div>
+                );
+              })()}
+              <div style={{ marginTop: '6px', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                 The termsheet will be attached to the order email sent to the bank.
               </div>
             </div>
@@ -2613,6 +2797,7 @@ const OrderModal = ({
                 if (value === ORDER_SOURCE_TYPES.PHONE) {
                   setClientOrderFile(null);
                   setClientOrderFiles([]);
+                  setDeferAttachment(false);
                 } else {
                   setPhoneCallTime('');
                 }
@@ -2723,11 +2908,39 @@ const OrderModal = ({
                   background: 'var(--bg-secondary)',
                   transition: 'border-color 0.15s, background 0.15s'
                 }}
-                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.currentTarget.style.borderColor = '#10b981';
+                  e.currentTarget.style.background = 'rgba(16, 185, 129, 0.05)';
+                }}
+                onDragLeave={(e) => {
+                  e.currentTarget.style.borderColor = 'var(--border-color)';
+                  e.currentTarget.style.background = 'var(--bg-secondary)';
+                }}
                 onDrop={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  const droppedFiles = Array.from(e.dataTransfer.files);
+                  e.currentTarget.style.borderColor = 'var(--border-color)';
+                  e.currentTarget.style.background = 'var(--bg-secondary)';
+
+                  // Collect files from dataTransfer.files, falling back to .items
+                  // (some drag sources only populate one of the two)
+                  let droppedFiles = Array.from(e.dataTransfer.files || []);
+                  if (droppedFiles.length === 0 && e.dataTransfer.items) {
+                    droppedFiles = Array.from(e.dataTransfer.items)
+                      .filter(item => item.kind === 'file')
+                      .map(item => item.getAsFile())
+                      .filter(Boolean);
+                  }
+
+                  // Dragging an email straight from Outlook doesn't hand the browser a real
+                  // file — explain instead of failing silently
+                  if (droppedFiles.length === 0) {
+                    setError('No file received. Dragging directly from Outlook is not supported by the browser — first drag the email to your desktop (this saves it as a .msg file), then drop that file here, or click to browse.');
+                    return;
+                  }
+
                   const validFiles = [];
                   for (const file of droppedFiles) {
                     const ext = '.' + file.name.split('.').pop().toLowerCase();
@@ -2783,6 +2996,36 @@ const OrderModal = ({
                 <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                   .msg, .eml, .pdf — Visible to validators for four-eyes check
                 </div>
+              </div>
+            )}
+
+            {/* Defer-attach attestation: lets the creator submit without a file
+                when uploading is impractical (mobile, technical issue). Bulk mode
+                always requires real files and never shows this. */}
+            {!isBulkMode && !clientOrderFile && (
+              <div style={{
+                marginTop: '10px',
+                padding: '10px 12px',
+                background: deferAttachment ? 'rgba(249, 115, 22, 0.08)' : 'var(--bg-secondary)',
+                border: `1px solid ${deferAttachment ? '#f97316' : 'var(--border-color)'}`,
+                borderRadius: '8px'
+              }}>
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={deferAttachment}
+                    onChange={(e) => setDeferAttachment(e.target.checked)}
+                    style={{ marginTop: '2px', cursor: 'pointer' }}
+                  />
+                  <div>
+                    <div style={{ fontSize: '12px', fontWeight: '600', color: deferAttachment ? '#f97316' : 'var(--text-primary)' }}>
+                      I have the client order and I will attach it later
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      You take responsibility for ensuring the original client instruction is attached to this order. The validator will see this and confirm they checked the source.
+                    </div>
+                  </div>
+                </label>
               </div>
             )}
           </>
@@ -3260,7 +3503,7 @@ const OrderModal = ({
           <div style={styles.reviewTitle}>Order Details</div>
           {!isBulkMode && (
             <div style={styles.reviewRow}>
-              <span style={styles.reviewLabel}>{assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Amount' : assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 'Nominal' : 'Quantity'}</span>
+              <span style={styles.reviewLabel}>{assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Amount' : assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 'Nominal' : assetType === ASSET_TYPES.FUND ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 'Nominal Amount' : 'Units') : 'Quantity'}</span>
               <span style={styles.reviewValue}>{OrderFormatters.formatQuantity(parseFloat(quantity) || 0)}</span>
             </div>
           )}
@@ -3491,6 +3734,13 @@ const OrderModal = ({
                 setMode('buy');
                 setSellManualSearch(false);
               }
+              // Term deposit direction is encoded by depositAction (increase/decrease);
+              // carry over the buy/sell intent then pin mode='buy' as a neutral default
+              if (e.target.value === ASSET_TYPES.TERM_DEPOSIT) {
+                setDepositAction(mode === 'sell' ? 'decrease' : 'increase');
+                setMode('buy');
+                setSellManualSearch(false);
+              }
             }}
           >
             <option value={ASSET_TYPES.EQUITY}>Equity</option>
@@ -3504,8 +3754,9 @@ const OrderModal = ({
           </select>
         </div>
 
-        {/* Buy/Sell Toggle — hidden for FX since direction is encoded by currency pair */}
-        {assetType !== ASSET_TYPES.FX && (
+        {/* Buy/Sell Toggle — hidden for FX (direction encoded by currency pair) and
+            Term Deposits (direction encoded by the Increase/Decrease toggle) */}
+        {assetType !== ASSET_TYPES.FX && assetType !== ASSET_TYPES.TERM_DEPOSIT && (
         <div style={styles.formGroup}>
           <label style={styles.label}>Order Type</label>
           <div style={{ display: 'flex', gap: '8px' }}>
@@ -3770,8 +4021,12 @@ const OrderModal = ({
           </div>
         )}
 
-        {/* Security search (buy mode, bulk mode, FX/TD forms, or sell manual search) */}
-        {(mode === 'buy' || sellManualSearch || isBulkMode || assetType === ASSET_TYPES.FX || assetType === ASSET_TYPES.TERM_DEPOSIT) && renderStep1()}
+        {/* Security search (buy mode, bulk mode, FX/TD forms, or sell manual search).
+            In sell manual mode, once a security is picked the "Selected Position" panel
+            above already shows it with a Change button — don't render the search step's
+            duplicate "Search Security" card. */}
+        {(mode === 'buy' || isBulkMode || assetType === ASSET_TYPES.FX || assetType === ASSET_TYPES.TERM_DEPOSIT
+          || (sellManualSearch && !(selectedHolding || selectedSecurity))) && renderStep1()}
 
         {/* Sell manual-entry escape hatch */}
         {mode === 'sell' && !sellManualSearch && !isBulkMode && assetType !== ASSET_TYPES.FX && assetType !== ASSET_TYPES.TERM_DEPOSIT && !(selectedHolding || selectedSecurity) && (
@@ -3788,10 +4043,38 @@ const OrderModal = ({
           <div style={{ marginTop: '8px' }}>
             <span
               style={{ fontSize: '12px', color: 'var(--accent-color)', cursor: 'pointer' }}
-              onClick={() => { setSellManualSearch(false); setSelectedSecurity(null); setSearchQuery(''); }}
+              onClick={() => { setSellManualSearch(false); setSelectedSecurity(null); setSearchQuery(''); setForceWithoutSourceHolding(false); }}
             >
               ← Back to positions list
             </span>
+          </div>
+        )}
+
+        {/* Force-override: allow sell without a source holding (bank-side discrepancy) */}
+        {mode === 'sell' && !isBulkMode && !selectedHolding && assetType !== ASSET_TYPES.FX && assetType !== ASSET_TYPES.TERM_DEPOSIT && (sellManualSearch || selectedSecurity) && (
+          <div style={{
+            marginTop: '12px',
+            padding: '10px 12px',
+            background: forceWithoutSourceHolding ? 'rgba(239, 68, 68, 0.08)' : 'var(--bg-secondary)',
+            border: `1px solid ${forceWithoutSourceHolding ? '#ef4444' : 'var(--border-color)'}`,
+            borderRadius: '8px'
+          }}>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={forceWithoutSourceHolding}
+                onChange={(e) => setForceWithoutSourceHolding(e.target.checked)}
+                style={{ marginTop: '2px', cursor: 'pointer' }}
+              />
+              <div>
+                <div style={{ fontSize: '12px', fontWeight: '600', color: forceWithoutSourceHolding ? '#ef4444' : 'var(--text-primary)' }}>
+                  Force sell without source holding
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  Use when the position is not in PMS (bank-side accounting discrepancy). The sell order will be created without the standard quantity check.
+                </div>
+              </div>
+            </label>
           </div>
         )}
       </div>
@@ -3846,7 +4129,9 @@ const OrderModal = ({
           ? (isBulkMode ? 'Bulk Order' : 'New Order')
           : assetType === ASSET_TYPES.FX
             ? (isBulkMode ? 'Bulk FX Order' : 'FX Order')
-            : `${isBulkMode ? 'Bulk ' : ''}${mode === 'buy' ? 'Buy' : 'Sell'} Order`
+            : assetType === ASSET_TYPES.TERM_DEPOSIT
+              ? `${isBulkMode ? 'Bulk ' : ''}Term Deposit — ${depositAction === 'decrease' ? 'Decrease' : 'Increase'}`
+              : `${isBulkMode ? 'Bulk ' : ''}${mode === 'buy' ? 'Buy' : 'Sell'} Order`
       }
       size={isBulkMode ? 'large' : 'medium'}
       footer={footer}

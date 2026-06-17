@@ -11,6 +11,7 @@ import { SharkNoteEvaluator } from '/imports/api/evaluators/sharkNoteEvaluator';
 import { ParticipationNoteEvaluator } from '/imports/api/evaluators/participationNoteEvaluator';
 import { ReverseConvertibleEvaluator } from '/imports/api/evaluators/reverseConvertibleEvaluator';
 import { ReverseConvertibleBondEvaluator } from '/imports/api/evaluators/reverseConvertibleBondEvaluator';
+import { BonusCertificateEvaluator } from '/imports/api/evaluators/bonusCertificateEvaluator';
 import { PhoenixChartBuilder } from '/imports/api/chartBuilders/phoenixChartBuilder';
 import { OrionChartBuilder } from '/imports/api/chartBuilders/orionChartBuilder';
 import { HimalayaChartBuilder } from '/imports/api/chartBuilders/himalayaChartBuilder';
@@ -18,6 +19,7 @@ import { SharkNoteChartBuilder } from '/imports/api/chartBuilders/sharkNoteChart
 import { ParticipationNoteChartBuilder } from '/imports/api/chartBuilders/participationNoteChartBuilder';
 import { ReverseConvertibleChartBuilder } from '/imports/api/chartBuilders/reverseConvertibleChartBuilder';
 import { ReverseConvertibleBondChartBuilder } from '/imports/api/chartBuilders/reverseConvertibleBondChartBuilder';
+import { BonusCertificateChartBuilder } from '/imports/api/chartBuilders/bonusCertificateChartBuilder';
 import { ProcessingIssueCollector } from '/imports/api/processingIssueCollector';
 import { MarketDataHelpers } from '/imports/api/marketDataCache';
 import { extractExportFields } from '/imports/api/helpers/reportExportFieldExtractor';
@@ -619,6 +621,18 @@ if (Meteor.isServer) {
       return 'himalaya';
     }
 
+    // Look for Bonus Certificate indicators in product name (HIGH PRIORITY,
+    // checked before explicit fields so "bonus certificate" wins even if a stale
+    // templateId is hanging around).
+    const isBonusByName = productName.includes('bonus certificate') ||
+                          productName.includes('bonus cert') ||
+                          productName.includes('bonus outperformance') ||
+                          productName.includes('capped bonus');
+    if (isBonusByName) {
+      console.log('[detectTemplateId] ✅ Detected BONUS CERTIFICATE by name');
+      return 'bonus_certificate';
+    }
+
     // Check explicit template fields (medium priority)
     if (productData.templateId) {
       console.log('[detectTemplateId] ✅ Using explicit templateId:', productData.templateId);
@@ -628,6 +642,16 @@ if (Meteor.isServer) {
     if (productData.template) {
       console.log('[detectTemplateId] ✅ Using explicit template:', productData.template);
       return productData.template;
+    }
+
+    // Bonus Certificate structural detection: participationRate + barrierLevel,
+    // without a coupon and without an autocall/observation schedule.
+    const hasParticipation = structureParams.participationRate !== undefined || structure.participationRate !== undefined;
+    const hasBarrierLevel = structureParams.barrierLevel !== undefined || structure.barrierLevel !== undefined;
+    const hasCouponRateStructural = structureParams.couponRate !== undefined || structure.couponRate !== undefined;
+    if (hasParticipation && hasBarrierLevel && !hasCouponRateStructural && !hasObservationSchedule) {
+      console.log('[detectTemplateId] ✅ Detected BONUS CERTIFICATE by structure (participation + barrier, no coupon, no schedule)');
+      return 'bonus_certificate';
     }
 
     // Look for Shark Note indicators (upper barrier + floor + NO observation schedule)
@@ -732,6 +756,11 @@ const TEMPLATE_REGISTRY = {
     evaluator: ReverseConvertibleBondEvaluator,
     chartBuilder: ReverseConvertibleBondChartBuilder,
     uiComponent: 'ReverseConvertibleBondReport'
+  },
+  bonus_certificate: {
+    evaluator: BonusCertificateEvaluator,
+    chartBuilder: BonusCertificateChartBuilder,
+    uiComponent: 'BonusCertificateReport'
   },
   // Future templates can be added here
 };

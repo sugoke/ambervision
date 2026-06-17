@@ -35,11 +35,18 @@ Meteor.publish("products", async function (sessionId = null, viewAsFilter = null
   const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE;
   const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
 
+  // Archived (closed-relationship) clients' allocations must not make a product visible
+  const { ClientEntityHelpers } = await import('/imports/api/clientEntities');
+  const archivedAllocExclusion = await ClientEntityHelpers.archivedAllocationsSelector();
+  const excludeArchived = (sel) => archivedAllocExclusion.$nor ? { $and: [sel, archivedAllocExclusion] } : sel;
+
   // Helper: find allocations for an entity (reused by viewAs and RM paths)
   const findEntityAllocations = async (entityId) => {
     const { ClientEntitiesCollection } = await import('/imports/api/clientEntities');
     const entity = await ClientEntitiesCollection.findOneAsync(entityId);
     if (!entity) return [];
+    // Hide archived relationships everywhere, no exception
+    if (ClientEntityHelpers.isEntityArchived(entity)) return [];
 
     const entityAccounts = await BankAccountsCollection.find({
       $or: [
@@ -69,7 +76,7 @@ Meteor.publish("products", async function (sessionId = null, viewAsFilter = null
     if (uniqueUserIds.length > 0) orConditions.push({ clientId: { $in: uniqueUserIds } });
 
     if (orConditions.length === 0) return [];
-    return AllocationsCollection.find({ $or: orConditions }).fetchAsync();
+    return AllocationsCollection.find(excludeArchived({ $or: orConditions })).fetchAsync();
   };
 
   // Handle View As filter for admins and RMs
@@ -91,11 +98,23 @@ Meteor.publish("products", async function (sessionId = null, viewAsFilter = null
       }
       allocations = await findEntityAllocations(viewAsFilter.id);
     } else if (viewAsFilter.type === 'client') {
-      allocations = await AllocationsCollection.find({ clientId: viewAsFilter.id }).fetchAsync();
+      allocations = await AllocationsCollection.find(excludeArchived({ clientId: viewAsFilter.id })).fetchAsync();
     } else if (viewAsFilter.type === 'account') {
+      // Bridge via accountNumber so legacy (userId-keyed) and entity-keyed records
+      // for the same real-world account both contribute their allocations.
       const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-      if (bankAccount?.userId) {
-        allocations = await AllocationsCollection.find({ clientId: bankAccount.userId }).fetchAsync();
+      if (bankAccount) {
+        const sameNumberAccounts = bankAccount.accountNumber
+          ? await BankAccountsCollection.find({ accountNumber: bankAccount.accountNumber }).fetchAsync()
+          : [bankAccount];
+        const allBankAccountIds = [...new Set(sameNumberAccounts.map(a => a._id))];
+        const allUserIds = [...new Set(sameNumberAccounts.map(a => a.userId).filter(Boolean))];
+        const orConditions = [];
+        if (allBankAccountIds.length > 0) orConditions.push({ bankAccountId: { $in: allBankAccountIds } });
+        if (allUserIds.length > 0) orConditions.push({ clientId: { $in: allUserIds } });
+        if (orConditions.length > 0) {
+          allocations = await AllocationsCollection.find(excludeArchived({ $or: orConditions })).fetchAsync();
+        }
       }
     }
 
@@ -154,7 +173,7 @@ Meteor.publish("products", async function (sessionId = null, viewAsFilter = null
     if (bankAccountIds.length > 0) orConditions.push({ bankAccountId: { $in: bankAccountIds } });
 
     const clientAllocations = await AllocationsCollection.find(
-      orConditions.length === 1 ? orConditions[0] : { $or: orConditions }
+      excludeArchived(orConditions.length === 1 ? orConditions[0] : { $or: orConditions })
     ).fetchAsync();
 
     const productIds = [...new Set(clientAllocations.map(alloc => alloc.productId))];
@@ -164,9 +183,9 @@ Meteor.publish("products", async function (sessionId = null, viewAsFilter = null
   // Client sees only products they have allocations in
   if (currentUser.role === USER_ROLES.CLIENT) {
     // Find all allocations for this client (active, matured, or cancelled)
-    const userAllocations = await AllocationsCollection.find({
+    const userAllocations = await AllocationsCollection.find(excludeArchived({
       clientId: currentUser._id
-    }).fetchAsync();
+    })).fetchAsync();
 
     const productIds = [...new Set(userAllocations.map(alloc => alloc.productId))];
 
@@ -293,10 +312,15 @@ Meteor.publish("productAllocations", async function (productId, sessionId = null
   // console.log('productAllocations publication: User role:', currentUser.role, 'productId:', productId);
 
   try {
+    // Archived (closed-relationship) clients' positions must not appear in a product's holders
+    const { ClientEntityHelpers } = await import('/imports/api/clientEntities');
+    const archivedAllocExclusion = await ClientEntityHelpers.archivedAllocationsSelector();
+    const excludeArchived = (sel) => archivedAllocExclusion.$nor ? { $and: [sel, archivedAllocExclusion] } : sel;
+
     // SuperAdmin and Admin see all allocations for the product
     if (currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.ADMIN) {
       // console.log('productAllocations publication: Admin/SuperAdmin access - returning all allocations');
-      return AllocationsCollection.find({ productId: productId });
+      return AllocationsCollection.find(excludeArchived({ productId: productId }));
     }
 
     // Relationship Manager sees allocations for their assigned clients only
@@ -316,19 +340,19 @@ Meteor.publish("productAllocations", async function (productId, sessionId = null
         return this.ready();
       }
 
-      return AllocationsCollection.find({
+      return AllocationsCollection.find(excludeArchived({
         productId: productId,
         clientId: { $in: clientIds }
-      });
+      }));
     }
 
     // Client sees only their own allocations
     if (currentUser.role === USER_ROLES.CLIENT) {
       // console.log('productAllocations publication: Client access - returning own allocations');
-      return AllocationsCollection.find({
+      return AllocationsCollection.find(excludeArchived({
         productId: productId,
         clientId: currentUser._id
-      });
+      }));
     }
 
     // Unknown role - return empty
@@ -368,6 +392,11 @@ Meteor.publish("allAllocations", async function (sessionId = null, viewAsFilter 
     const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
     const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
 
+    // Archived (closed-relationship) clients' allocations are hidden everywhere
+    const { ClientEntityHelpers } = await import('/imports/api/clientEntities');
+    const archivedAllocExclusion = await ClientEntityHelpers.archivedAllocationsSelector();
+    const excludeArchived = (sel) => archivedAllocExclusion.$nor ? { $and: [sel, archivedAllocExclusion] } : sel;
+
     // Handle View As filter for admins and RMs
     if (viewAsFilter && (isAdmin || isRM)) {
       console.log(`[ALLOCATIONS] ${currentUser.email} viewing as:`, viewAsFilter);
@@ -377,6 +406,8 @@ Meteor.publish("allAllocations", async function (sessionId = null, viewAsFilter 
         const { ClientEntitiesCollection } = await import('/imports/api/clientEntities');
         const entity = await ClientEntitiesCollection.findOneAsync(viewAsFilter.id);
         if (!entity) return this.ready();
+        // Hide archived relationships everywhere, no exception
+        if (ClientEntityHelpers.isEntityArchived(entity)) return this.ready();
 
         // For RMs, verify they manage this entity
         if (isRM) {
@@ -426,40 +457,53 @@ Meteor.publish("allAllocations", async function (sessionId = null, viewAsFilter 
 
         if (orConditions.length === 0) return this.ready();
 
-        return AllocationsCollection.find({ $or: orConditions });
+        return AllocationsCollection.find(excludeArchived({ $or: orConditions }));
 
+      } else if (viewAsFilter.type === 'account') {
+        // Account filter: bridge via accountNumber so legacy (userId-keyed) and
+        // entity-keyed records pointing at the same real-world account both match.
+        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
+        if (!bankAccount) return this.ready();
+
+        const sameNumberAccounts = bankAccount.accountNumber
+          ? await BankAccountsCollection.find({ accountNumber: bankAccount.accountNumber }).fetchAsync()
+          : [bankAccount];
+        const allBankAccountIds = [...new Set(sameNumberAccounts.map(a => a._id))];
+        const allUserIds = [...new Set(sameNumberAccounts.map(a => a.userId).filter(Boolean))];
+
+        if (isRM) {
+          const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
+          const allowedUser = allUserIds.length > 0
+            ? await UsersCollection.findOneAsync({ _id: { $in: allUserIds }, relationshipManagerId: { $in: rmIds } })
+            : null;
+          if (!allowedUser) return this.ready();
+        }
+
+        const orConditions = [];
+        if (allBankAccountIds.length > 0) orConditions.push({ bankAccountId: { $in: allBankAccountIds } });
+        if (allUserIds.length > 0) orConditions.push({ clientId: { $in: allUserIds } });
+        if (orConditions.length === 0) return this.ready();
+
+        return AllocationsCollection.find(excludeArchived({ $or: orConditions }));
+      } else if (viewAsFilter.type === 'client') {
+        const targetClientId = viewAsFilter.id;
+        if (isRM) {
+          const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
+          const targetClient = await UsersCollection.findOneAsync({
+            _id: targetClientId,
+            relationshipManagerId: { $in: rmIds }
+          });
+          if (!targetClient) return this.ready();
+        }
+        return AllocationsCollection.find(excludeArchived({ clientId: targetClientId }));
       } else {
-        // Client or account filter
-        let targetClientId = null;
-
-        if (viewAsFilter.type === 'client') {
-          targetClientId = viewAsFilter.id;
-        } else if (viewAsFilter.type === 'account') {
-          const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-          if (bankAccount) {
-            targetClientId = bankAccount.userId;
-          }
-        }
-
-        if (targetClientId) {
-          if (isRM) {
-            const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
-            const targetClient = await UsersCollection.findOneAsync({
-              _id: targetClientId,
-              relationshipManagerId: { $in: rmIds }
-            });
-            if (!targetClient) return this.ready();
-          }
-          return AllocationsCollection.find({ clientId: targetClientId });
-        } else {
-          return this.ready();
-        }
+        return this.ready();
       }
     }
 
     // SuperAdmin and Admin see all allocations (when not using View As)
     if (isAdmin) {
-      return AllocationsCollection.find();
+      return AllocationsCollection.find(excludeArchived({}));
     }
 
     // Relationship Manager/Assistant sees allocations for their assigned clients only
@@ -505,13 +549,13 @@ Meteor.publish("allAllocations", async function (sessionId = null, viewAsFilter 
       if (bankAccountIds.length > 0) orConditions.push({ bankAccountId: { $in: bankAccountIds } });
 
       return AllocationsCollection.find(
-        orConditions.length === 1 ? orConditions[0] : { $or: orConditions }
+        excludeArchived(orConditions.length === 1 ? orConditions[0] : { $or: orConditions })
       );
     }
 
     // Client sees only their own allocations
     if (currentUser.role === USER_ROLES.CLIENT) {
-      return AllocationsCollection.find({ clientId: currentUser._id });
+      return AllocationsCollection.find(excludeArchived({ clientId: currentUser._id }));
     }
 
     return this.ready();

@@ -376,6 +376,17 @@ export const BUILT_IN_TEMPLATES = [
     createdAt: new Date(),
     updatedAt: new Date(),
     droppedItems: []
+  },
+  {
+    _id: "bonus_certificate",
+    name: "Bonus Certificate",
+    icon: "🎁",
+    category: "participation",
+    description: "Bonus floor at par with optional capped/leveraged participation. If knock-in threshold breached (European at final or American continuous): 1:1 with underlying. Otherwise: bonus floor + max(0, participation × performance), optionally capped.",
+    isBuiltIn: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    droppedItems: []
   }
 ];
 

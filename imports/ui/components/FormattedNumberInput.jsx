@@ -5,12 +5,17 @@ import { formatNumberForInput, stripNumberFormatting } from '../../utils/formatt
  * Drop-in replacement for <input type="number"> that formats with thousand separators.
  * Parent state stays as raw strings (no commas), so parseFloat() works unchanged.
  *
+ * Supports magnitude shorthand while typing: "1k" → 1,000, "1.5m" → 1,500,000,
+ * "2b" → 2,000,000,000 (case-insensitive). Expansion happens as soon as the
+ * suffix is typed, so parent state always holds the full numeric value.
+ *
  * Props:
  *   value        - raw string from parent (e.g. "1000000.50")
  *   onChange      - called with event where e.target.value is the raw (unformatted) string
  *   maxDecimals   - max decimal places allowed (0 for integers, 2 for prices, 6 for FX)
  *   ...rest       - passed through to <input> (style, placeholder, disabled, etc.)
  */
+const SHORTHAND_MULTIPLIERS = { k: 1e3, m: 1e6, b: 1e9 };
 export default function FormattedNumberInput({ value, onChange, maxDecimals = 2, ...rest }) {
   const [displayValue, setDisplayValue] = useState('');
   const inputRef = useRef(null);
@@ -35,6 +40,24 @@ export default function FormattedNumberInput({ value, onChange, maxDecimals = 2,
     const caretBefore = input.selectionStart;
     const oldFormatted = displayValue;
     let raw = input.value;
+
+    // Magnitude shorthand: "1k" → 1000, "1.5m" → 1500000, "2b" → 2000000000
+    const shorthandMatch = raw.replace(/,/g, '').match(/^(-?(?:\d+\.?\d*|\.\d+))\s*([kKmMbB])$/);
+    if (shorthandMatch) {
+      const expanded = parseFloat(shorthandMatch[1]) * SHORTHAND_MULTIPLIERS[shorthandMatch[2].toLowerCase()];
+      if (Number.isFinite(expanded)) {
+        raw = maxDecimals > 0
+          ? String(parseFloat(expanded.toFixed(maxDecimals)))
+          : String(Math.round(expanded));
+        const formattedExpanded = formatNumberForInput(raw, { maxDecimals });
+        setDisplayValue(formattedExpanded);
+        cursorRef.current = formattedExpanded.length;
+        if (onChange) {
+          onChange({ target: { value: raw, name: rest.name || '' } });
+        }
+        return;
+      }
+    }
 
     // Strip everything except digits, decimal point, and leading minus
     raw = raw.replace(/[^0-9.\-]/g, '');

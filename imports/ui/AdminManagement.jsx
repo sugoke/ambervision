@@ -9,6 +9,7 @@ import SecuritiesBase from './SecuritiesBase.jsx';
 import IssuerManagementComponent from './IssuerManagementComponent.jsx';
 import SystemOperations from './SystemOperations.jsx';
 import MarketDataManager from './MarketDataManager.jsx';
+import DataProvidersManager from './DataProvidersManager.jsx';
 import Prices from './Prices.jsx';
 import CronJobsDashboard from './CronJobsDashboard.jsx';
 import NotificationsPage from './NotificationsPage.jsx';
@@ -297,6 +298,12 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
       requiredRole: 'admin'
     },
     {
+      id: 'providers',
+      label: 'Data Providers',
+      icon: '🔀',
+      requiredRole: 'admin'
+    },
+    {
       id: 'cron',
       label: 'Cron Jobs',
       icon: '⏰',
@@ -345,6 +352,8 @@ const AdminManagement = React.memo(({ user, currentSection, onEditProduct }) => 
         return <SystemOperations key="system" user={user} />;
       case 'market':
         return <MarketDataManager key="market" user={user} />;
+      case 'providers':
+        return <DataProvidersManager key="providers" user={user} />;
       case 'cron':
         return <CronJobsDashboard key="cron" user={user} />;
       case 'notifications':

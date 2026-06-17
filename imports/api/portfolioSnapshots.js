@@ -210,6 +210,11 @@ export const PortfolioSnapshotHelpers = {
     holdings = [],  // Array of position objects
     transferOpsCache = null  // Pre-fetched transfer operations for capital invested calculation
   }) {
+    // Defense in depth: exclude inactive holdings so stale isLatest=true + isActive=false
+    // ghost records (e.g. FX-forward legs orphaned by a rollover with a new uniqueKey)
+    // cannot contaminate totals if a caller forgets to pre-filter.
+    holdings = holdings.filter(h => h.isActive !== false);
+
     // Separate cash positions from investment holdings
     const cashHoldings = holdings.filter(h => {
       const type = String(h.securityType || '').trim().toUpperCase();

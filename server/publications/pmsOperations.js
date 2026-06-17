@@ -5,7 +5,7 @@ import { check, Match } from 'meteor/check';
 import { PMSOperationsCollection } from '/imports/api/pmsOperations';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
-import { ClientEntitiesCollection } from '/imports/api/clientEntities';
+import { ClientEntitiesCollection, ClientEntityHelpers } from '/imports/api/clientEntities';
 import { SessionsCollection } from '/imports/api/sessions';
 import { Meteor } from 'meteor/meteor';
 
@@ -78,6 +78,8 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
         // Entity-based filter
         const entity = await ClientEntitiesCollection.findOneAsync(viewAsFilter.id);
         if (!entity) return this.ready();
+        // Archived (closed) relationships are hidden everywhere, no exception
+        if (ClientEntityHelpers.isEntityArchived(entity)) return this.ready();
         if (isRM && entity.relationshipManagerId !== currentUser._id) return this.ready();
 
         // Find bank accounts owned by this entity
@@ -215,6 +217,12 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
       } else {
         queryFilter.userId = currentUser._id;
       }
+    }
+
+    // Exclude operations of archived (closed-relationship) clients from every path
+    const archivedExclusion = await ClientEntityHelpers.archivedHoldingsSelector();
+    if (archivedExclusion.$nor) {
+      queryFilter.$nor = archivedExclusion.$nor;
     }
 
     // Return operations sorted by date (most recent first)

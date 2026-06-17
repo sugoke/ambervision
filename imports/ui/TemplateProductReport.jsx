@@ -19,6 +19,7 @@ import SharkNoteReport from './templates/SharkNoteReport.jsx';
 import ParticipationNoteReport from './templates/ParticipationNoteReport.jsx';
 import ReverseConvertibleReport from './templates/ReverseConvertibleReport.jsx';
 import ReverseConvertibleBondReport from './templates/ReverseConvertibleBondReport.jsx';
+import BonusCertificateReport from './templates/BonusCertificateReport.jsx';
 import ProductCommentaryCard from './components/ProductCommentaryCard.jsx';
 import PriceSparkline from './components/PriceSparkline.jsx';
 import TermSheetManager from './components/TermSheetManager.jsx';
@@ -496,14 +497,28 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
       const marketValue = h.marketValuePortfolioCurrency ?? h.marketValue;
       const marketPrice = h.marketPrice;
 
+      // Convert price to decimal-of-par for display. Most parsers store decimal
+      // (1.0 = 100%); some store the absolute currency-per-note for structured
+      // products (e.g. 1000 EUR for a €1,000 denom note). Without an explicit
+      // denomination field, pick the nearest standard denomination (100 / 1000
+      // / 10000) at or above the price.
+      const decimalPrice = (() => {
+        if (marketPrice == null) return null;
+        if (h.priceType !== 'absolute') return marketPrice;
+        if (marketPrice >= 5000) return marketPrice / 10000;
+        if (marketPrice >= 500) return marketPrice / 1000;
+        if (marketPrice >= 50) return marketPrice / 100;
+        return marketPrice; // very low — leave as-is to avoid wrong rescale
+      })();
+
       return {
         _id: h._id,
         bankName,
         portfolioCode: h.portfolioCode,
         isin: h.isin,
         quantity: h.quantity ?? h.balance,
-        marketPrice,
-        marketPriceFormatted: marketPrice != null ? `${(marketPrice * 100).toFixed(2)}%` : 'N/A',
+        marketPrice: decimalPrice,
+        marketPriceFormatted: decimalPrice != null ? `${(decimalPrice * 100).toFixed(2)}%` : 'N/A',
         marketValue,
         marketValueFormatted: marketValue != null
           ? new Intl.NumberFormat('en-US', { style: 'currency', currency: h.currency || 'EUR', maximumFractionDigits: 0 }).format(marketValue)
@@ -1170,8 +1185,8 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
             </div>
           </div>
 
-          {/* Current Product Price - Show for live products */}
-          {latestReport?.templateResults?.currentStatus?.productStatus === 'live' && (
+          {/* Current Product Price - Show only for live products that are still held in at least one portfolio */}
+          {latestReport?.templateResults?.currentStatus?.productStatus === 'live' && linkedHoldings && linkedHoldings.length > 0 && (
             <div style={{
               padding: '1rem 1.5rem',
               background: productPrice
@@ -1802,6 +1817,7 @@ const getTemplateName = (templateId) => {
     'participation_note': 'Participation Note',
     'reverse_convertible': 'Reverse Convertible',
     'reverse_convertible_bond': 'Reverse Convertible Bond',
+    'bonus_certificate': 'Bonus Certificate',
     'unknown_template': 'Unknown Template',
     'unknown': 'Unknown'
   };
@@ -1819,6 +1835,7 @@ const getTemplateIcon = (templateId) => {
     'participation_note': '📈',
     'reverse_convertible': '🔄',
     'reverse_convertible_bond': '📜',
+    'bonus_certificate': '🎁',
     'unknown_template': '📄',
     'unknown': '📄'
   };
@@ -1855,6 +1872,10 @@ const renderTemplateResults = (results, templateId, productId, product, user) =>
 
   if (templateId === 'reverse_convertible_bond' && results.templateType === 'reverse_convertible_bond') {
     return <ReverseConvertibleBondReport results={results} productId={productId} />;
+  }
+
+  if (templateId === 'bonus_certificate' && results.templateType === 'bonus_certificate') {
+    return <BonusCertificateReport results={results} productId={productId} />;
   }
 
   // Default generic display for unknown templates

@@ -684,12 +684,34 @@ const RiskAnalysisReport = ({ report }) => {
                                 {product.productIsin}
                               </div>
                             </div>
-                            <div style={{ textAlign: 'right', fontSize: '0.8rem' }}>
-                              <div style={{ color: product.distanceToBarrier >= 0 ? '#10b981' : '#ef4444', fontWeight: '600' }}>
-                                {product.distanceToBarrier >= 0 ? '+' : ''}{product.distanceToBarrier.toFixed(1)}%
+                            <div style={{ textAlign: 'right', fontSize: '0.8rem', display: 'flex', gap: '1.25rem', alignItems: 'center' }}>
+                              <div>
+                                <div style={{ fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: isDarkMode ? '#6b7280' : '#9ca3af', marginBottom: '0.15rem' }}>
+                                  Price
+                                </div>
+                                <div style={{ fontWeight: '600', color: isDarkMode ? '#e5e7eb' : '#1f2937' }}>
+                                  {product.currentPriceFormatted
+                                    ? `${product.currentPriceFormatted}${product.productCurrency ? ' ' + product.productCurrency : ''}`
+                                    : '—'}
+                                </div>
                               </div>
-                              <div style={{ color: isDarkMode ? '#6b7280' : '#9ca3af' }}>
-                                {product.daysRemaining}d
+                              <div>
+                                <div style={{ fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: isDarkMode ? '#6b7280' : '#9ca3af', marginBottom: '0.15rem' }}>
+                                  Performance
+                                </div>
+                                <div style={{ fontWeight: '600', color: product.performance >= 0 ? '#10b981' : '#ef4444' }}>
+                                  {product.performanceFormatted || '—'}
+                                </div>
+                              </div>
+                              <div>
+                                <div style={{ fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: isDarkMode ? '#6b7280' : '#9ca3af', marginBottom: '0.15rem' }}>
+                                  Time left
+                                </div>
+                                <div style={{ fontWeight: '600', color: isDarkMode ? '#e5e7eb' : '#1f2937' }}>
+                                  {product.daysRemaining < 0
+                                    ? `${product.daysRemaining}d (expired)`
+                                    : `${product.daysRemaining} days`}
+                                </div>
                               </div>
                             </div>
                           </div>

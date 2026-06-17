@@ -1297,6 +1297,12 @@ Meteor.methods({
     // Escape regex special characters so input like "TSLA/AAPL" doesn't break the query
     const escapedQuery = searchQuery.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
 
+    // ISO 6166 ISIN: 2-letter country code + 9 alphanumerics + 1 check digit.
+    // When the query is an ISIN, bypass the assetType strict filter — ISIN is
+    // a unique identifier so the user has named the exact security regardless
+    // of which order-type tab is active.
+    const isIsinQuery = /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(searchQuery);
+
     const results = [];
     const seenISINs = new Set();
 
@@ -1336,7 +1342,9 @@ Meteor.methods({
     }
 
     // 2. EOD Historical live search — for market instruments (equity, etf, fund, bond) or no filter
-    if (isMarketInstrument || !assetType) {
+    // Also runs unconditionally for ISIN queries so an ISIN typed under e.g. the
+    // "equity" tab still surfaces if the security turns out to be an ETF/bond.
+    if (isMarketInstrument || !assetType || isIsinQuery) {
       try {
         const eodResults = await EODApiHelpers.searchSecurities(query.trim(), isMarketInstrument ? limit : 10);
         const typeMap = {
@@ -1356,10 +1364,11 @@ Meteor.methods({
           if (eodIsin && seenISINs.has(eodIsin.toUpperCase())) return;
           if (eodIsin) seenISINs.add(eodIsin.toUpperCase());
 
-          // If a specific asset type is selected, filter EOD results to match
+          // If a specific asset type is selected, filter EOD results to match —
+          // unless the query is an ISIN (unique identifier, user wants this exact security).
           const eodType = (eod.Type || '').toLowerCase();
           const eodAssetClass = typeMap[eod.Type] || (eodType.includes('bond') ? 'bond' : eodType.includes('fund') ? 'fund' : eodType.includes('etf') ? 'etf' : 'equity');
-          if (isMarketInstrument && assetType !== eodAssetClass && assetType !== 'other') return;
+          if (isMarketInstrument && !isIsinQuery && assetType !== eodAssetClass && assetType !== 'other') return;
 
           results.push({
             _id: `eod_${eod.Code}_${eod.Exchange}`,
@@ -1386,10 +1395,10 @@ Meteor.methods({
           { ticker: { $regex: escapedQuery, $options: 'i' } }
         ]
       };
-      // Filter by asset class if specified
-      if (isMarketInstrument) {
+      // Filter by asset class if specified (skip the filter for ISIN queries)
+      if (isMarketInstrument && !isIsinQuery) {
         metaQuery.assetClass = assetType;
-      } else if (isStructuredProduct) {
+      } else if (isStructuredProduct && !isIsinQuery) {
         metaQuery.assetClass = 'structured_product';
       }
 
@@ -1424,7 +1433,7 @@ Meteor.methods({
           { securityName: { $regex: escapedQuery, $options: 'i' } }
         ]
       };
-      if (isMarketInstrument || isStructuredProduct) {
+      if ((isMarketInstrument || isStructuredProduct) && !isIsinQuery) {
         holdingQuery.assetClass = isStructuredProduct ? 'structured_product' : assetType;
       }
 

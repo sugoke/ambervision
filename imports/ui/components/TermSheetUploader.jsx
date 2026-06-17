@@ -31,7 +31,8 @@ const TermSheetUploader = ({ onProductExtracted, sessionId }) => {
     { id: 'shark_note', name: 'Shark Note', icon: '🦈' },
     { id: 'participation_note', name: 'Participation Note', icon: '📈' },
     { id: 'reverse_convertible', name: 'Reverse Convertible', icon: '🔄' },
-    { id: 'reverse_convertible_bond', name: 'Reverse Convertible (Bond)', icon: '📜' }
+    { id: 'reverse_convertible_bond', name: 'Reverse Convertible (Bond)', icon: '📜' },
+    { id: 'bonus_certificate', name: 'Bonus Certificate', icon: '🎁' }
   ];
 
   // Progress stages with percentage milestones
