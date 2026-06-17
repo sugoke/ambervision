@@ -86,6 +86,7 @@ import './migrations/activateSGConnection';
 import './migrations/initializeSeenLocalFiles';
 import './migrations/syncProductsToSecuritiesMetadata';
 import './migrations/migrateToEntities';
+import './migrations/dedupeBankAccounts';
 import { resetTermsheetWithoutEvidence } from './migrations/resetTermsheetWithoutEvidence';
 // import './migrations/fixNullAssetClass';  // One-time migration - already run
 import './methods/securitiesMethods';
