@@ -14,11 +14,21 @@ export const PMSOperationsCollection = new Mongo.Collection('pmsOperations');
 // Helper functions for PMS Operations management
 export const PMSOperationsHelpers = {
   /**
-   * Generate unique key for deduplication
-   * Hash of: bankId + portfolioCode + operationCode + operationDate + instrumentCode
+   * Generate unique key for deduplication.
+   *
+   * Each operation is uniquely identified by the bank's own per-transaction reference
+   * (operationId / Order). Using it prevents distinct trades from collapsing into one.
+   * Parsers populate `operationType`/`isin` (not `operationCode`/`instrumentCode`), so the
+   * legacy key (bankId|portfolioCode|operationCode|date|instrumentCode) resolved to
+   * `...|UNKNOWN|date|CASH` for every row — collapsing ALL same-day trades of a portfolio
+   * into a single record. When no operationId exists, fall back to a composite of the
+   * distinguishing fields (type + instrument + amount) rather than constants.
    */
-  generateUniqueKey({ bankId, portfolioCode, operationCode, operationDate, instrumentCode }) {
-    const data = `${bankId}|${portfolioCode}|${operationCode}|${operationDate.toISOString().split('T')[0]}|${instrumentCode || 'CASH'}`;
+  generateUniqueKey({ bankId, portfolioCode, operationDate, operationId, operationCode, instrumentCode, isin, operationType, amount }) {
+    const day = operationDate.toISOString().split('T')[0];
+    const distinguisher = operationId
+      || `${operationType || operationCode || 'UNKNOWN'}|${isin || instrumentCode || 'CASH'}|${amount != null ? amount : ''}`;
+    const data = `${bankId}|${portfolioCode}|${day}|${distinguisher}`;
     return crypto.createHash('sha256').update(data).digest('hex');
   },
 
@@ -33,9 +43,13 @@ export const PMSOperationsHelpers = {
     const uniqueKey = this.generateUniqueKey({
       bankId: operationData.bankId,
       portfolioCode: operationData.portfolioCode,
-      operationCode: operationData.operationCode || 'UNKNOWN',
       operationDate: operationData.operationDate,
-      instrumentCode: operationData.instrumentCode || 'CASH'
+      operationId: operationData.operationId || operationData.externalReference,
+      operationCode: operationData.operationCode,
+      instrumentCode: operationData.instrumentCode,
+      isin: operationData.isin,
+      operationType: operationData.operationType,
+      amount: operationData.netAmount != null ? operationData.netAmount : operationData.grossAmount
     });
 
     const now = new Date();

@@ -924,7 +924,28 @@ export const CMBMonacoParser = {
     const rows = this.parseCSV(csvContent);
     console.log(`[CMB_PARSER] Found ${rows.length} operation rows`);
 
-    const operations = rows.map(row => this.mapOperationToSchema(row, bankId, bankName, sourceFile, fileDate, userId));
+    // CMB books each securities trade as TWO rows sharing the same Order reference: a
+    // cash-account leg (internal ISIN code, e.g. 62055/62060) and a security leg (real
+    // ISIN). Collapse to one row per Order, preferring the security leg so the transaction
+    // shows the instrument bought/sold. Rows without an Order (or single-row events like
+    // fees/FX) pass through unchanged.
+    const isRealIsin = (v) => /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(String(v || '').trim());
+    const byOrder = new Map();
+    const passthrough = [];
+    for (const row of rows) {
+      const order = row.Order && String(row.Order).trim();
+      if (!order) { passthrough.push(row); continue; }
+      const existing = byOrder.get(order);
+      if (!existing) { byOrder.set(order, row); continue; }
+      // Prefer the security leg (real ISIN) over the cash-account leg.
+      if (!isRealIsin(existing.ISIN) && isRealIsin(row.ISIN)) byOrder.set(order, row);
+    }
+    const dedupedRows = [...byOrder.values(), ...passthrough];
+    if (dedupedRows.length !== rows.length) {
+      console.log(`[CMB_PARSER] Collapsed ${rows.length} rows to ${dedupedRows.length} (merged 2-leg trades by Order)`);
+    }
+
+    const operations = dedupedRows.map(row => this.mapOperationToSchema(row, bankId, bankName, sourceFile, fileDate, userId));
 
     console.log(`[CMB_PARSER] Mapped ${operations.length} operations`);
 
