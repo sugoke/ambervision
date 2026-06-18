@@ -1725,9 +1725,21 @@ Meteor.methods({
     const bank = await BanksCollection.findOneAsync(connection.bankId);
     if (!bank) throw new Meteor.Error('not-found', 'Bank not found');
 
-    // Resolve the bank files folder (mirrors processLatest)
+    // Resolve the bank files folder exactly as processLatest does: local connections use the
+    // configured folder; SFTP connections use the sanitized bank name (e.g. "CMB Monaco" ->
+    // "cmb-monaco"). localFolderName is null for SFTP, so never fall back to connectionName.
     const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
-    const bankFolderPath = path.join(bankfilesRoot, connection.localFolderName || connection.connectionName || '');
+    let bankFolderPath;
+    if (connection.connectionType === 'local' && connection.localFolderName) {
+      bankFolderPath = path.join(bankfilesRoot, connection.localFolderName);
+    } else {
+      const sanitizedBankName = bank.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+      bankFolderPath = path.join(bankfilesRoot, sanitizedBankName);
+    }
 
     // 1. Parse ALL operation files first (ignore seen markers). Do this BEFORE clearing so a
     //    parse failure never leaves the bank with no operations.
