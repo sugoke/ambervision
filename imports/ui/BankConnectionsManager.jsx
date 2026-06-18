@@ -52,6 +52,7 @@ const BankConnectionsManager = ({ user }) => {
   const [isDownloading, setIsDownloading] = useState(false);
   const [isDownloadingAll, setIsDownloadingAll] = useState(false);
   const [isProcessingPositions, setIsProcessingPositions] = useState(false);
+  const [reprocessingOpsId, setReprocessingOpsId] = useState(null);
   const [isTestProcessing, setIsTestProcessing] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [fileList, setFileList] = useState(null);
@@ -483,6 +484,34 @@ const BankConnectionsManager = ({ user }) => {
       showError(`Failed to process positions: ${error.reason || error.message}`);
     } finally {
       setIsProcessingPositions(false);
+    }
+  };
+
+  // Superadmin: rebuild ALL transaction history for this connection from the source files.
+  const handleReprocessOperations = async (connection) => {
+    if (!window.confirm(
+      `Reprocess ALL operations for "${connection.connectionName}"?\n\n` +
+      `This clears this bank's stored transactions and rebuilds them from the source files ` +
+      `(fixes the dedup bug that collapsed same-day trades). Positions/holdings are not affected.`
+    )) return;
+
+    setReprocessingOpsId(connection._id);
+    try {
+      const result = await Meteor.callAsync('bankPositions.reprocessOperations', {
+        connectionId: connection._id,
+        sessionId
+      });
+      window.dispatchEvent(new CustomEvent('pmsHoldingsRefresh', { detail: Date.now() }));
+      showSuccess(
+        `Reprocessed ${connection.connectionName}: cleared ${result.cleared}, ` +
+        `rebuilt ${result.opNew} transactions from ${result.filesProcessed} files` +
+        (result.opUnmapped > 0 ? ` (${result.opUnmapped} unmapped, skipped)` : '')
+      );
+    } catch (error) {
+      console.error('Reprocess operations failed:', error);
+      showError(`Failed to reprocess operations: ${error.reason || error.message}`);
+    } finally {
+      setReprocessingOpsId(null);
     }
   };
 
@@ -1053,6 +1082,25 @@ const BankConnectionsManager = ({ user }) => {
                       }}>
                         {isProcessingPositions && isSelected ? '⏳ Processing...' : '📊 Process Files'}
                       </button>
+
+                      {user?.role === 'superadmin' && (
+                        <button
+                          onClick={() => handleReprocessOperations(connection)}
+                          disabled={reprocessingOpsId === connection._id}
+                          title="Clear and rebuild all transactions for this bank from the source files (fixes collapsed same-day trades). Positions are not affected."
+                          style={{
+                            padding: '8px 14px',
+                            background: reprocessingOpsId === connection._id ? 'var(--text-muted)' : '#d97706',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '6px',
+                            cursor: reprocessingOpsId === connection._id ? 'not-allowed' : 'pointer',
+                            fontSize: '13px',
+                            fontWeight: '600'
+                          }}>
+                          {reprocessingOpsId === connection._id ? '⏳ Reprocessing...' : '🔁 Reprocess transactions'}
+                        </button>
+                      )}
 
                       <button onClick={() => { setSelectedConnection(connection); setShowLogs(!showLogs); }} style={{
                         padding: '8px 14px',

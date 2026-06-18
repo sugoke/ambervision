@@ -1701,6 +1701,84 @@ Meteor.methods({
   },
 
   /**
+   * Reprocess ALL operation/transaction files for a connection (superadmin only).
+   *
+   * Rebuilds the bank's transaction history from the source files. Needed after the
+   * operations dedup-key fix: existing operations were stored under a key that collapsed
+   * all same-day trades of a portfolio into one record. This re-parses every operation
+   * file (ignoring the seen-file markers), clears the bank's existing operations, and
+   * re-imports with the corrected per-transaction key. Positions/holdings are untouched.
+   */
+  async 'bankPositions.reprocessOperations'({ connectionId, sessionId }) {
+    check(connectionId, String);
+    check(sessionId, String);
+    this.unblock();
+
+    // Superadmin only — this rebuilds a bank's whole transaction history.
+    const user = await validateAdminSession(sessionId);
+    if (!user || user.role !== 'superadmin') {
+      throw new Meteor.Error('not-authorized', 'Superadmin privileges required');
+    }
+
+    const connection = await BankConnectionsCollection.findOneAsync(connectionId);
+    if (!connection) throw new Meteor.Error('not-found', 'Connection not found');
+    const bank = await BanksCollection.findOneAsync(connection.bankId);
+    if (!bank) throw new Meteor.Error('not-found', 'Bank not found');
+
+    // Resolve the bank files folder (mirrors processLatest)
+    const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
+    const bankFolderPath = path.join(bankfilesRoot, connection.localFolderName || connection.connectionName || '');
+
+    // 1. Parse ALL operation files first (ignore seen markers). Do this BEFORE clearing so a
+    //    parse failure never leaves the bank with no operations.
+    const parseResult = BankOperationParser.parseAllFiles(bankFolderPath, {
+      bankId: connection.bankId,
+      bankName: bank.name,
+      userId: null,
+      seenFiles: []
+    });
+    if (parseResult.error) throw new Meteor.Error('parse-error', parseResult.error);
+    const operations = parseResult.operations || [];
+
+    // 2. Clear the bank's existing operations (stored under the old collapsed key).
+    const cleared = await PMSOperationsCollection.removeAsync({ bankId: connection.bankId });
+
+    // 3. Re-import with entity/userId matching and the corrected unique key.
+    const portfolioEntityMap = await buildPortfolioEntityMap(connection.bankId);
+    let opNew = 0, opUpdated = 0, opSkipped = 0, opUnmapped = 0;
+    for (const operation of operations) {
+      try {
+        const mapping = getEntityIdFromMap(operation.portfolioCode, portfolioEntityMap);
+        if (!mapping.entityId && !mapping.userId) { opUnmapped++; opSkipped++; continue; }
+        if (mapping.entityId) operation.entityId = mapping.entityId;
+        if (mapping.userId) operation.userId = mapping.userId;
+        operation.connectionId = connectionId;
+        operation.sourceFilePath = path.join(bankFolderPath, operation.sourceFile || 'unknown');
+        const result = await PMSOperationsHelpers.upsertOperation(operation);
+        if (result.updated) opUpdated++; else opNew++;
+      } catch (e) {
+        opSkipped++;
+      }
+    }
+
+    // 4. Record the processed files as seen so normal syncs don't re-read them.
+    const processedFiles = (parseResult.processedFiles || []).map(f => (typeof f === 'string' ? f : (f.filename || String(f))));
+    await BankConnectionsCollection.updateAsync(connectionId, { $set: { seenOperationFiles: processedFiles } });
+
+    await BankConnectionLogHelpers.logConnectionAttempt({
+      connectionId,
+      bankId: connection.bankId,
+      connectionName: connection.connectionName,
+      action: 'reprocess_operations',
+      status: 'success',
+      message: `Reprocessed operations: cleared ${cleared}, parsed ${operations.length} → ${opNew} new, ${opUpdated} merged, ${opSkipped} skipped (${opUnmapped} unmapped)`,
+      userId: user._id
+    });
+
+    return { success: true, cleared, parsed: operations.length, opNew, opUpdated, opSkipped, opUnmapped, filesProcessed: processedFiles.length };
+  },
+
+  /**
    * Get available position files for a connection
    */
   async 'bankPositions.getAvailableFiles'({ connectionId, sessionId }) {
