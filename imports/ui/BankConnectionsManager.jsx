@@ -53,6 +53,7 @@ const BankConnectionsManager = ({ user }) => {
   const [isDownloadingAll, setIsDownloadingAll] = useState(false);
   const [isProcessingPositions, setIsProcessingPositions] = useState(false);
   const [reprocessingOpsId, setReprocessingOpsId] = useState(null);
+  const [regenSnapshotsId, setRegenSnapshotsId] = useState(null);
   const [isTestProcessing, setIsTestProcessing] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [fileList, setFileList] = useState(null);
@@ -512,6 +513,32 @@ const BankConnectionsManager = ({ user }) => {
       showError(`Failed to reprocess operations: ${error.reason || error.message}`);
     } finally {
       setReprocessingOpsId(null);
+    }
+  };
+
+  // Superadmin: rebuild missing portfolio snapshots from stored holdings (fixes performance
+  // charts, incl. entity-only clients whose snapshots were never generated).
+  const handleRegenerateSnapshots = async (connection) => {
+    if (!window.confirm(
+      `Regenerate missing portfolio snapshots for "${connection.connectionName}" from stored ` +
+      `holdings?\n\nThis fills gaps in the performance/TWR charts (e.g. entity-only clients). ` +
+      `Existing snapshots are kept.`
+    )) return;
+
+    setRegenSnapshotsId(connection._id);
+    try {
+      const result = await Meteor.callAsync('bankPositions.regenerateMissingSnapshots', {
+        connectionId: connection._id,
+        sessionId,
+        maxDates: 1000
+      });
+      window.dispatchEvent(new CustomEvent('pmsHoldingsRefresh', { detail: Date.now() }));
+      showSuccess(`Regenerated ${result.regenerated} snapshot(s) for ${connection.connectionName}.`);
+    } catch (error) {
+      console.error('Regenerate snapshots failed:', error);
+      showError(`Failed to regenerate snapshots: ${error.reason || error.message}`);
+    } finally {
+      setRegenSnapshotsId(null);
     }
   };
 
@@ -1099,6 +1126,25 @@ const BankConnectionsManager = ({ user }) => {
                             fontWeight: '600'
                           }}>
                           {reprocessingOpsId === connection._id ? '⏳ Reprocessing...' : '🔁 Reprocess transactions'}
+                        </button>
+                      )}
+
+                      {user?.role === 'superadmin' && (
+                        <button
+                          onClick={() => handleRegenerateSnapshots(connection)}
+                          disabled={regenSnapshotsId === connection._id}
+                          title="Rebuild missing portfolio snapshots from stored holdings (fixes performance/TWR charts, including entity-only clients). Existing snapshots are kept."
+                          style={{
+                            padding: '8px 14px',
+                            background: regenSnapshotsId === connection._id ? 'var(--text-muted)' : '#0891b2',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '6px',
+                            cursor: regenSnapshotsId === connection._id ? 'not-allowed' : 'pointer',
+                            fontSize: '13px',
+                            fontWeight: '600'
+                          }}>
+                          {regenSnapshotsId === connection._id ? '⏳ Regenerating...' : '📈 Regenerate snapshots'}
                         </button>
                       )}
 

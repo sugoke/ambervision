@@ -3058,9 +3058,11 @@ Meteor.methods({
         // Get account info
         const accountNumber = holdings[0]?.accountNumber || null;
 
-        // Create the snapshot
+        // Create the snapshot. Carry entityId from the holdings so entity-only clients
+        // (userId null) get readable snapshots — the performance read matches by entityId.
         await PortfolioSnapshotHelpers.createSnapshot({
           userId: missing.userId,
+          entityId: holdings.find(h => h.entityId)?.entityId || null,
           bankId: connection.bankId,
           bankName: bank.name,
           connectionId,
