@@ -586,6 +586,11 @@ async function createConsolidatedHoldings() {
   console.log('[CRON] Creating consolidated holdings...');
 
   try {
+    // Exclude archived (closed-relationship) clients — don't waste work building
+    // CONSOLIDATED roll-up copies for clients we've left.
+    const { userIds: archivedUserIds } = await ClientEntityHelpers.getArchivedOwnerIds();
+    const archivedUserIdSet = new Set(archivedUserIds);
+
     // Get all unique userIds that have latest active holdings (excluding existing CONSOLIDATED)
     const usersWithHoldings = await PMSHoldingsCollection.rawCollection().distinct('userId', {
       isLatest: true,
@@ -601,6 +606,7 @@ async function createConsolidatedHoldings() {
       await yieldToEventLoop(i, 5);
       const userId = usersWithHoldings[i];
       if (!userId) continue;
+      if (archivedUserIdSet.has(userId)) continue; // Skip archived clients
 
       // Get all latest active holdings for this user (excluding CONSOLIDATED)
       // Must filter isActive to exclude sold/transferred positions that still have isLatest=true
@@ -1256,14 +1262,15 @@ async function regenerateTodaySnapshots() {
 
       if (holdings.length === 0) continue;
 
-      // Group by userId + portfolioCode (include entityId for entity architecture)
+      // Group by owner + portfolioCode. Owner is the legacy userId OR the client entity —
+      // entity-only clients (no legacy userId) must still get snapshots.
       const portfolioGroups = {};
       for (const h of holdings) {
-        if (!h.userId) continue;
-        const key = `${h.userId}__${h.portfolioCode || 'UNKNOWN'}`;
+        if (!h.userId && !h.entityId) continue;
+        const key = `${h.userId || h.entityId}__${h.portfolioCode || 'UNKNOWN'}`;
         if (!portfolioGroups[key]) {
           portfolioGroups[key] = {
-            userId: h.userId,
+            userId: h.userId || null,
             entityId: h.entityId || null,
             portfolioCode: h.portfolioCode || 'UNKNOWN',
             accountNumber: h.accountNumber || null,

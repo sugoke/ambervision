@@ -24,6 +24,7 @@ import { findNewSGZipFiles, extractSGZipFile } from '../../imports/utils/zipUtil
 import { decryptAllGpgFiles, isGpgAvailable } from '../../imports/utils/gpgUtils.js';
 import { yieldToEventLoop } from '../../imports/utils/asyncHelpers.js';
 import { buildPortfolioEntityMap, getEntityIdFromMap } from '../../imports/utils/entityResolver.js';
+import { ClientEntityHelpers } from '../../imports/api/clientEntities.js';
 import path from 'path';
 import fs from 'fs';
 
@@ -1029,9 +1030,11 @@ Meteor.methods({
       // Create portfolio snapshots for each portfolio (only for matched positions with userId)
       console.log(`[BANK_POSITIONS] Creating portfolio snapshots...`);
 
-      // Group positions by portfolio code (only positions with userId - i.e., matched positions)
+      // Group positions by portfolio code (matched positions — linked to a legacy userId
+      // OR a client entity). Entity-only clients (created directly as entities, no legacy
+      // userId) must still get snapshots.
       const positionsByPortfolio = positions
-        .filter(pos => pos.userId) // Only include matched positions
+        .filter(pos => pos.userId || pos.entityId) // matched positions (userId or entity)
         .reduce((groups, pos) => {
           const portfolioCode = pos.portfolioCode || 'UNKNOWN';
           if (!groups[portfolioCode]) {
@@ -1057,6 +1060,7 @@ Meteor.methods({
 
           await PortfolioSnapshotHelpers.createSnapshot({
             userId: portfolioUserId,
+            entityId: portfolioPositions[0].entityId || null,
             bankId: connection.bankId,
             bankName: bank.name,
             connectionId,
@@ -1075,6 +1079,13 @@ Meteor.methods({
 
       // CHECK ALLOCATION LIMITS after creating snapshots
       console.log(`[BANK_POSITIONS] Checking allocation limits against investment profiles...`);
+      // Resolve archived (closed-relationship) clients once. Their positions are still
+      // stored above (soft-archive keeps history), but we raise NO alerts for them —
+      // no negative-cash/overdraft and no allocation-breach notifications.
+      const archivedExclusion = await ClientEntityHelpers.getArchivedExclusion();
+      const archivedUserIdSet = new Set(archivedExclusion.userIds);
+      const archivedEntityIdSet = new Set(archivedExclusion.entityIds);
+      const archivedBankAccountIdSet = new Set(archivedExclusion.bankAccountIds);
       try {
         for (const [portfolioCode, portfolioPositions] of Object.entries(positionsByPortfolio)) {
           const portfolioUserId = portfolioPositions[0].userId;
@@ -1087,6 +1098,14 @@ Meteor.methods({
           });
 
           if (!bankAccount) continue;
+
+          // Skip all alerts for archived clients (closed relationships)
+          if (archivedBankAccountIdSet.has(bankAccount._id) ||
+              (bankAccount.entityId && archivedEntityIdSet.has(bankAccount.entityId)) ||
+              (portfolioUserId && archivedUserIdSet.has(portfolioUserId))) {
+            console.log(`[BANK_POSITIONS] Skipping alerts for archived client (portfolio ${portfolioCode})`);
+            continue;
+          }
 
           // Get the latest snapshot for this portfolio (needed for both negative cash and allocation checks)
           const snapshot = await PortfolioSnapshotsCollection.findOneAsync({
@@ -2093,9 +2112,10 @@ Meteor.methods({
         }
       }
 
-      // Create portfolio snapshots
+      // Create portfolio snapshots (matched positions — userId or entity; entity-only
+      // clients must still get snapshots).
       const positionsByPortfolio = positions
-        .filter(pos => pos.userId)
+        .filter(pos => pos.userId || pos.entityId)
         .reduce((groups, pos) => {
           const portfolioCode = pos.portfolioCode || 'UNKNOWN';
           if (!groups[portfolioCode]) {
@@ -2119,6 +2139,7 @@ Meteor.methods({
 
           await PortfolioSnapshotHelpers.createSnapshot({
             userId: portfolioUserId,
+            entityId: portfolioPositions[0].entityId || null,
             bankId: connection.bankId,
             bankName: bank.name,
             connectionId,
@@ -2413,9 +2434,11 @@ Meteor.methods({
       // Create portfolio snapshots for each portfolio (only for matched positions with userId)
       console.log(`[BANK_POSITIONS_TEST] Creating portfolio snapshots...`);
 
-      // Group positions by portfolio code (only positions with userId - i.e., matched positions)
+      // Group positions by portfolio code (matched positions — linked to a legacy userId
+      // OR a client entity). Entity-only clients (created directly as entities, no legacy
+      // userId) must still get snapshots.
       const positionsByPortfolio = positions
-        .filter(pos => pos.userId) // Only include matched positions
+        .filter(pos => pos.userId || pos.entityId) // matched positions (userId or entity)
         .reduce((groups, pos) => {
           const portfolioCode = pos.portfolioCode || 'UNKNOWN';
           if (!groups[portfolioCode]) {

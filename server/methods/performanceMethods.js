@@ -97,7 +97,10 @@ Meteor.methods({
     if (viewAsFilter && (user.role === 'admin' || user.role === 'superadmin')) {
       const { BankAccountsCollection } = await import('../../imports/api/bankAccounts.js');
 
-      if (viewAsFilter.type === 'client') {
+      if (viewAsFilter.type === 'client' || viewAsFilter.type === 'entity') {
+        // For entity clients, the snapshot helpers match by entityId via
+        // `$or: [{ userId }, { entityId: userId }]`, so passing the entity id as the
+        // target id resolves entity-only clients (no legacy userId) correctly.
         targetUserId = viewAsFilter.id;
         // Only reset portfolioCode if not explicitly provided
         // (allows selecting specific account within a client view)
@@ -107,7 +110,8 @@ Meteor.methods({
       } else if (viewAsFilter.type === 'account') {
         const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
         if (bankAccount) {
-          targetUserId = bankAccount.userId;
+          // Entity-owned accounts have no userId — fall back to entityId (helpers OR on both).
+          targetUserId = bankAccount.userId || bankAccount.entityId;
           targetPortfolioCode = bankAccount.accountNumber;
         }
       }

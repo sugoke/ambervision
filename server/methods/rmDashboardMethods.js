@@ -90,18 +90,26 @@ async function getAssignedClients(currentUser) {
     return [currentUser];
   }
 
+  // Exclude archived (closed-relationship) clients from every dashboard view —
+  // cash monitoring, alerts, etc. should never surface a client we've left.
+  const { userIds: archivedUserIds } = await ClientEntityHelpers.getArchivedOwnerIds();
+
   // Admin/Superadmin/Compliance sees all clients
   if (currentUser.role === USER_ROLES.ADMIN ||
       currentUser.role === USER_ROLES.SUPERADMIN ||
       currentUser.role === USER_ROLES.COMPLIANCE) {
-    return await UsersCollection.find({ role: USER_ROLES.CLIENT }).fetchAsync();
+    return await UsersCollection.find({
+      role: USER_ROLES.CLIENT,
+      _id: { $nin: archivedUserIds }
+    }).fetchAsync();
   }
 
   // RM/Assistant sees only assigned clients
   const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
   return await UsersCollection.find({
     role: USER_ROLES.CLIENT,
-    relationshipManagerId: { $in: rmIds }
+    relationshipManagerId: { $in: rmIds },
+    _id: { $nin: archivedUserIds }
   }).fetchAsync();
 }
 
@@ -123,6 +131,10 @@ async function getFilteredClientIds(currentUser, viewAsFilter = null) {
     return [currentUser._id];
   }
 
+  // Archived (closed-relationship) clients are excluded everywhere — including
+  // explicit viewAs drill-down. Resolve the archived legacy userIds once.
+  const { userIds: archivedUserIds } = await ClientEntityHelpers.getArchivedOwnerIds();
+
   // If viewAsFilter is active, filter to specific client
   if (viewAsFilter && (isAdmin || isRM || isCompliance)) {
     if (viewAsFilter.type === 'client') {
@@ -138,6 +150,7 @@ async function getFilteredClientIds(currentUser, viewAsFilter = null) {
           return [];
         }
       }
+      if (archivedUserIds.includes(viewAsFilter.id)) return [];
       return [viewAsFilter.id];
     } else if (viewAsFilter.type === 'account') {
       // Get the client who owns this account
@@ -155,6 +168,7 @@ async function getFilteredClientIds(currentUser, viewAsFilter = null) {
             return [];
           }
         }
+        if (archivedUserIds.includes(bankAccount.userId)) return [];
         return [bankAccount.userId];
       }
       return [];
@@ -830,6 +844,27 @@ Meteor.methods({
         console.warn('[RM Dashboard] Could not calculate AUM variation:', snapshotError.message);
       }
 
+      // Self-heal the global AUM cache: this method only reaches the live computation above
+      // when the pre-computed cache is missing (e.g. it was cleared and the CMB-sync cron
+      // hasn't rebuilt it yet). Persist the result so subsequent loads hit the cache instead
+      // of recomputing on the fly. Guarded to the same scope the cached read uses.
+      if (isAdmin && targetCurrency === 'EUR' && !viewAsFilter) {
+        try {
+          await DashboardMetricsHelpers.saveMetrics({
+            metricType: 'aum_summary',
+            scope: 'global',
+            totalAUM,
+            previousDayAUM: previousAUM,
+            aumChange,
+            aumChangePercent,
+            clientCount,
+            snapshotDate: new Date()
+          });
+        } catch (cacheErr) {
+          console.warn('[RM Dashboard] Could not persist AUM cache (self-heal):', cacheErr.message);
+        }
+      }
+
       return {
         totalAUM,
         aumChange,
@@ -907,10 +942,14 @@ Meteor.methods({
 
       if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE) {
         // Admin/Compliance sees all portfolios - aggregate by date
-        // Exclude CONSOLIDATED snapshots to avoid double-counting
+        // Exclude CONSOLIDATED snapshots to avoid double-counting, and exclude
+        // archived (closed-relationship) clients so the AUM history line matches the
+        // headline AUM (same approach as computeDashboardMetrics' WTD snapshots).
+        const { userIds: archivedUserIds } = await ClientEntityHelpers.getArchivedOwnerIds();
         rawSnapshots = await PortfolioSnapshotsCollection.find({
           snapshotDate: { $gte: startDate, $lte: endDate },
-          portfolioCode: { $ne: 'CONSOLIDATED' }
+          portfolioCode: { $ne: 'CONSOLIDATED' },
+          userId: { $nin: archivedUserIds }
         }, {
           sort: { snapshotDate: 1 }
         }).fetchAsync();
