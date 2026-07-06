@@ -22,7 +22,10 @@ export const DOCUMENT_TYPES = {
   ADVISORY_MANDATE: 'advisory_mandate',
   INVESTOR_PROFILE: 'investor_profile',
   DISCHARGE_FORM: 'discharge_form',
-  BENEFICIAL_OWNER_FORM: 'beneficial_owner_form'
+  BENEFICIAL_OWNER_FORM: 'beneficial_owner_form',
+  STRUCTURED_PRODUCTS_FORM: 'structured_products_form',
+  // KYC (shown in the KYC tab, not the Documents tab)
+  KYC_FILE: 'kyc_file'
 };
 
 /**
@@ -71,6 +74,20 @@ export const DOCUMENT_TYPE_CONFIG = {
     requiresExpiration: false,
     icon: '👤',
     category: 'amberlake'
+  },
+  [DOCUMENT_TYPES.STRUCTURED_PRODUCTS_FORM]: {
+    label: 'Structured Products Form (Signed)',
+    requiresExpiration: false,
+    icon: '📈',
+    category: 'amberlake'
+  },
+  // KYC file(s) — surfaced in the KYC tab via the 'kyc' category
+  [DOCUMENT_TYPES.KYC_FILE]: {
+    label: 'KYC File',
+    requiresExpiration: false,
+    icon: '✅',
+    category: 'kyc',
+    allowsWord: true // KYC docs are often Word or PDF
   }
 };
 
@@ -174,12 +191,24 @@ export const ClientDocumentHelpers = {
 
 // Server-only: Set up indexes
 if (Meteor.isServer) {
-  Meteor.startup(() => {
-    // Unique index for one document per type per person (main client or family member)
-    ClientDocumentsCollection.createIndexAsync(
-      { userId: 1, documentType: 1, familyMemberIndex: 1 },
-      { unique: true }
-    );
+  Meteor.startup(async () => {
+    // We now allow several files per document type per person. The old unique
+    // index { userId, documentType, familyMemberIndex } enforced one-file-per-type,
+    // so drop it if present and replace with a plain index for query performance.
+    try {
+      await ClientDocumentsCollection.rawCollection().dropIndex('userId_1_documentType_1_familyMemberIndex_1');
+      console.log('[clientDocuments] Dropped legacy unique index (now allowing multiple files per type)');
+    } catch (err) {
+      // Index absent (fresh DB) or already dropped — safe to ignore
+    }
+    try {
+      await ClientDocumentsCollection.createIndexAsync(
+        { userId: 1, documentType: 1, familyMemberIndex: 1 },
+        { unique: false }
+      );
+    } catch (err) {
+      console.error('[clientDocuments] Error creating documents index:', err);
+    }
     ClientDocumentsCollection.createIndexAsync({ expirationDate: 1 });
   });
 }

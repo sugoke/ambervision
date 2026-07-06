@@ -4,6 +4,8 @@ import { SessionsCollection } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
 import { PortfolioSnapshotHelpers, filterSnapshotsByBankStartDate } from '../../imports/api/portfolioSnapshots.js';
 import { getAssetClassLabel, getGranularCategoryLabel } from '../../imports/api/securitiesMetadata.js';
+import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
+import { getHeldProductIdsForScope } from '../helpers/holdingsScope.js';
 
 /**
  * Validate session and get user
@@ -188,6 +190,186 @@ Meteor.methods({
     }
 
     return results;
+  },
+
+  /**
+   * Per-line period performance for the PMS holdings table.
+   *
+   * For each holding it returns the WTD / MTD / YTD price return
+   * (mark-to-market: currentPrice / startPrice − 1) and that line's
+   * value-change contribution to its booking portfolio's return over the
+   * same period ((currentValue − startValue) / portfolioValueAtStart).
+   * Summed over a booking portfolio (portfolioCode + portfolioCurrency),
+   * the contributions reconcile to that portfolio's period return.
+   *
+   * Start prices/values come from the latest PMSHoldings snapshot with
+   * snapshotDate <= periodStart. Positions with no snapshot before the
+   * period start (opened mid-period) return null for that period.
+   *
+   * The caller passes the current holdings it already received through the
+   * (access-controlled) pmsHoldings publication, so no additional owner
+   * scoping is needed here — we only look up historical prices by the
+   * opaque uniqueKey the client legitimately holds.
+   *
+   * @param {String}  sessionId
+   * @param {Array}   holdings   [{ uniqueKey, portfolioCode, portfolioCurrency, currentPrice, currentValue }]
+   * @param {Date}    asOfDate   period end reference (null = now / latest view)
+   * @returns {Object} map uniqueKey -> { wtd, mtd, ytd: { returnPercent, contributionPercent } }
+   */
+  async 'performance.getHoldingPeriodPerformance'({ sessionId, holdings = [], asOfDate = null }) {
+    check(sessionId, String);
+    check(asOfDate, Match.OneOf(Date, String, null, undefined));
+    check(holdings, [Match.ObjectIncluding({ uniqueKey: String })]);
+
+    await validateSession(sessionId);
+
+    if (!holdings.length) return {};
+
+    const uniqueKeys = [...new Set(holdings.map(h => h.uniqueKey).filter(Boolean))];
+
+    // Anchor the periods to the LATEST available data date (max snapshotDate of
+    // the in-scope holdings), not wall-clock "today". The current prices we
+    // compare against come from the latest bank file, so if that file is a few
+    // days stale (e.g. it is Monday but the last file is Friday's), anchoring to
+    // "today" would make WTD compare Friday-vs-Friday and read 0. Anchoring to
+    // the data date makes WTD span the week that actually contains the data.
+    let end;
+    if (asOfDate) {
+      end = new Date(asOfDate);
+    } else {
+      const latest = await PMSHoldingsCollection.rawCollection().aggregate([
+        { $match: { uniqueKey: { $in: uniqueKeys } } },
+        { $group: { _id: null, maxDate: { $max: '$snapshotDate' } } }
+      ]).toArray();
+      end = latest[0] && latest[0].maxDate ? new Date(latest[0].maxDate) : new Date();
+    }
+
+    // Period calendar starts relative to the end reference.
+    // WTD = current ISO week (Monday 00:00), MTD = 1st of month, YTD = Jan 1.
+    const weekStart = new Date(end);
+    const daysSinceMonday = (weekStart.getDay() + 6) % 7; // Mon=0 .. Sun=6
+    weekStart.setDate(weekStart.getDate() - daysSinceMonday);
+    weekStart.setHours(0, 0, 0, 0);
+    const monthStart = new Date(end.getFullYear(), end.getMonth(), 1);
+    const yearStart = new Date(end.getFullYear(), 0, 1);
+
+    // Baseline = last snapshot STRICTLY BEFORE the period's first day, i.e. the
+    // prior period's closing value: WTD vs last week's close, MTD vs prior
+    // month-end, YTD vs prior year-end. The exclusive cutoff (start − 1ms) stops
+    // a snapshot dated on the period's first day (e.g. today, when it is a
+    // Monday / the 1st) from becoming the baseline, which would make the period
+    // read ~0 against the current price.
+    const periods = {
+      wtd: new Date(weekStart.getTime() - 1),
+      mtd: new Date(monthStart.getTime() - 1),
+      ytd: new Date(yearStart.getTime() - 1)
+    };
+
+    // For each period, fetch the latest snapshot version per uniqueKey on/before
+    // the period start, returning its marketPrice + marketValue as the baseline.
+    const startByPeriod = {};
+    for (const [periodName, startDate] of Object.entries(periods)) {
+      const rows = await PMSHoldingsCollection.rawCollection().aggregate([
+        { $match: { uniqueKey: { $in: uniqueKeys }, snapshotDate: { $lte: startDate } } },
+        { $sort: { uniqueKey: 1, snapshotDate: -1, version: -1 } },
+        { $group: {
+          _id: '$uniqueKey',
+          startPrice: { $first: '$marketPrice' },
+          startValue: { $first: '$marketValue' }
+        } }
+      ]).toArray();
+
+      const byKey = {};
+      for (const r of rows) byKey[r._id] = r;
+      startByPeriod[periodName] = byKey;
+    }
+
+    // Fallback baseline: the EARLIEST snapshot per uniqueKey. When a position has
+    // no snapshot on/before a period start (opened mid-period, or tracking began
+    // after the period start), we carry the first available value forward instead
+    // of leaving the period blank/zero.
+    const earliestByKey = {};
+    {
+      const rows = await PMSHoldingsCollection.rawCollection().aggregate([
+        { $match: { uniqueKey: { $in: uniqueKeys } } },
+        { $sort: { uniqueKey: 1, snapshotDate: 1, version: 1 } },
+        { $group: {
+          _id: '$uniqueKey',
+          startPrice: { $first: '$marketPrice' },
+          startValue: { $first: '$marketValue' }
+        } }
+      ]).toArray();
+      for (const r of rows) earliestByKey[r._id] = r;
+    }
+
+    // Baseline for a period = last snapshot on/before the period start, else the
+    // earliest snapshot we have (carry-forward). null only if the holding has no
+    // snapshot history at all.
+    const baselineFor = (periodName, key) =>
+      startByPeriod[periodName][key] || earliestByKey[key] || null;
+
+    // Portfolio value at period start, grouped by portfolioCode|portfolioCurrency
+    // (matches the export's "Weight in Portfolio %" grouping — currency-consistent).
+    const pvStartByPeriod = {};
+    for (const periodName of Object.keys(periods)) {
+      const pv = {};
+      for (const h of holdings) {
+        const start = baselineFor(periodName, h.uniqueKey);
+        if (!start || start.startValue == null) continue;
+        const groupKey = `${h.portfolioCode || ''}|${h.portfolioCurrency || ''}`;
+        pv[groupKey] = (pv[groupKey] || 0) + start.startValue;
+      }
+      pvStartByPeriod[periodName] = pv;
+    }
+
+    const result = {};
+    for (const h of holdings) {
+      if (!h.uniqueKey) continue;
+      const groupKey = `${h.portfolioCode || ''}|${h.portfolioCurrency || ''}`;
+      const perHolding = {};
+
+      for (const periodName of Object.keys(periods)) {
+        const start = baselineFor(periodName, h.uniqueKey);
+        const pvStart = pvStartByPeriod[periodName][groupKey] || 0;
+
+        let returnPercent = null;
+        if (start && start.startPrice) {
+          returnPercent = (h.currentPrice / start.startPrice - 1) * 100;
+        }
+
+        let contributionPercent = null;
+        if (start && start.startValue != null && pvStart > 0) {
+          contributionPercent = ((h.currentValue || 0) - start.startValue) / pvStart * 100;
+        }
+
+        perHolding[periodName] = { returnPercent, contributionPercent };
+      }
+
+      result[h.uniqueKey] = perHolding;
+    }
+
+    return result;
+  },
+
+  /**
+   * Return the Products._id currently HELD within the given scope (actual bank
+   * holdings, source of truth). Used by the Underlyings view to hide sold/matured
+   * products. See server/helpers/holdingsScope.js.
+   *
+   * @param {String} sessionId
+   * @param {Object|null} viewAsFilter
+   * @returns {Promise<String[]>} held product ids
+   */
+  async 'holdings.getHeldProductIds'({ sessionId, viewAsFilter = null }) {
+    check(sessionId, String);
+    check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
+      type: String,
+      id: String
+    }), null, undefined));
+
+    const user = await validateSession(sessionId);
+    const ids = await getHeldProductIdsForScope({ currentUser: user, viewAsFilter });
+    return [...ids];
   },
 
   /**

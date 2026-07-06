@@ -11,6 +11,7 @@ import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
 import { ProductsCollection } from '/imports/api/products';
 import { AllocationsCollection } from '/imports/api/allocations';
 import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
+import { getHeldProductIdsForScope } from '/server/helpers/holdingsScope';
 
 // Publication that aggregates all observations from live products
 Meteor.publish("schedule.observations", async function (sessionId = null, viewAsFilter = null) {
@@ -256,12 +257,30 @@ Meteor.publish("schedule.observations", async function (sessionId = null, viewAs
     scopedAllocations = userAllocations;
   }
 
-  // Fetch all products with observation schedules
-  // Include all products the user has access to with observation schedules
-  console.log('[SCHEDULE] Product query:', JSON.stringify(productQuery));
+  // Gate by ACTUAL bank holdings (source of truth): only show products that are
+  // currently held in this scope. A sold/matured product leaves the holdings feed
+  // (isActive:false / quantity 0), so it drops out automatically. This restricts
+  // both the scoped case (client no longer holds it) and the admin global case
+  // (matured product held by nobody). See server/helpers/holdingsScope.js.
+  const heldProductIds = await getHeldProductIdsForScope({ currentUser, viewAsFilter });
+
+  // productQuery is either {} (admin, no scope) or { _id: { $in: [...] } } (access-scoped).
+  // Intersect its allowed ids with the held set.
+  let allowedProductIds;
+  if (productQuery._id && Array.isArray(productQuery._id.$in)) {
+    allowedProductIds = productQuery._id.$in.filter(id => heldProductIds.has(String(id)));
+  } else {
+    allowedProductIds = [...heldProductIds];
+  }
+
+  console.log(`[SCHEDULE] Held products in scope: ${heldProductIds.size}, allowed after access intersect: ${allowedProductIds.length}`);
+
+  if (allowedProductIds.length === 0) {
+    return this.ready();
+  }
 
   const products = await ProductsCollection.find({
-    ...productQuery,
+    _id: { $in: allowedProductIds },
     observationSchedule: { $exists: true, $ne: [] }
   }).fetchAsync();
 

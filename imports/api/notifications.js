@@ -714,6 +714,17 @@ if (Meteor.isServer) {
         query.sentToUsers = session.userId;
       }
 
+      // Exclude alerts belonging to archived (closed-relationship) clients. PMS alerts
+      // (unauthorized_overdraft / allocation_breach) carry metadata.clientId; $nin keeps
+      // product-level alerts that have no clientId field. Read-time filter only — the
+      // notification documents are not deleted.
+      const { ClientEntityHelpers } = await import('./clientEntities');
+      const { userIds: archivedUserIds, entityIds: archivedEntityIds } = await ClientEntityHelpers.getArchivedOwnerIds();
+      const archivedOwnerIds = [...archivedUserIds, ...archivedEntityIds];
+      if (archivedOwnerIds.length > 0) {
+        query['metadata.clientId'] = { $nin: archivedOwnerIds };
+      }
+
       // Filter by alert event types
       if (filters.eventTypes && filters.eventTypes.length > 0) {
         query.eventType = { $in: filters.eventTypes };

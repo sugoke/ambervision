@@ -721,6 +721,116 @@ if (Meteor.isServer) {
           basketType: "single"
         },
         template: "bonus_certificate"
+      },
+
+      twin_win: {
+        title: "Global X Uranium ETF Twin Win",
+        isin: "XS2748037541",
+        issuer: "Marex Group plc",
+        currency: "USD",
+        tradeDate: "2024-05-16",
+        valueDate: "2024-05-23",
+        finalObservation: "2027-05-17",
+        maturity: "2027-05-24",
+        maturityDate: "2027-05-24",
+        notional: 100,
+        denomination: 1000,
+        basketMode: "single",
+        underlyings: [
+          {
+            ticker: "URA",
+            name: "Global X Uranium ETF",
+            isin: "",
+            strike: 31.52,
+            securityData: {
+              symbol: "URA",
+              name: "Global X Uranium ETF",
+              exchange: "US",
+              currency: "USD",
+              country: "US",
+              ticker: "URA.US"
+            }
+          }
+        ],
+        finalObservationDate: "2027-05-17",
+        scheduleConfig: {
+          frequency: "maturity",
+          coolOffPeriods: 0,
+          stepDownValue: 0,
+          initialAutocallLevel: 100,
+          initialCouponBarrier: 70
+        },
+        templateId: "twin_win",
+        structureParams: {
+          // Capital protection level (% of denomination returned at maturity)
+          capitalProtection: 100,
+          // Guaranteed minimum participation ("Bonus") added on top of capital protection
+          bonus: 15,
+          // Lower barrier (% of initial) — touched if the underlying trades at/below it
+          lowerBarrier: 70,
+          // Upper barrier (% of initial) — touched if the underlying trades at/above it
+          upperBarrier: 130,
+          // Barriers are observed intraday/continuously over the whole life
+          barrierType: "american",
+          basketType: "single"
+        },
+        template: "twin_win"
+      },
+
+      rate: {
+        title: "10Y EUR Target Steepener Certificate",
+        isin: "XS2519475037",
+        issuer: "BNP Paribas",
+        currency: "EUR",
+        tradeDate: "2023-06-13",
+        valueDate: "2023-06-27",
+        finalObservation: "2033-06-23",
+        maturity: "2033-06-27",
+        maturityDate: "2033-06-27",
+        notional: 100,
+        denomination: 1000,
+        basketMode: "single",
+        // Reference rates are synthetic (not provider-priced). Use the rate name as the
+        // ticker and securityData.exchange = "RATE". No ISIN, no strike.
+        underlyings: [
+          {
+            ticker: "EUR CMS 30Y",
+            name: "EUR CMS 30Y swap rate",
+            isin: "",
+            strike: 0,
+            securityData: { symbol: "EUR CMS 30Y", name: "EUR CMS 30Y swap rate", exchange: "RATE", currency: "EUR", country: "EU", ticker: "EUR CMS 30Y" }
+          },
+          {
+            ticker: "EUR CMS 5Y",
+            name: "EUR CMS 5Y swap rate",
+            isin: "",
+            strike: 0,
+            securityData: { symbol: "EUR CMS 5Y", name: "EUR CMS 5Y swap rate", exchange: "RATE", currency: "EUR", country: "EU", ticker: "EUR CMS 5Y" }
+          }
+        ],
+        finalObservationDate: "2033-06-23",
+        scheduleConfig: {
+          frequency: "quarterly",
+          coolOffPeriods: 0,
+          stepDownValue: 0,
+          initialAutocallLevel: 100,
+          initialCouponBarrier: 100
+        },
+        templateId: "rate",
+        structureParams: {
+          // Capital protected at maturity (% of nominal)
+          capitalProtection: 100,
+          // Cumulative-coupon target; the note auto-redeems once reached (0/null disables)
+          targetCoupon: 18,
+          targetRedemptionEnabled: true,
+          // Fixed coupon for the first `fixedPeriods` periods (% per annum)
+          fixedCouponRate: 8.5,
+          fixedPeriods: 8,
+          couponFrequency: "quarterly",
+          // Display label of the floating coupon formula for the remaining periods
+          floatingFormulaLabel: "Max(EUR CMS 30Y − EUR CMS 5Y, 0%)"
+        },
+        template: "rate"
       }
     };
 
@@ -888,7 +998,20 @@ EXTRACTION RULES:
 8. Do NOT add fields that are not in the schema
 9. Do NOT modify the structure or field names
 10. For coupon rates, autocall levels, protection barriers: extract exact percentages from term sheet tables/text
-11. For memory coupon/autocall: detect from term sheet language (e.g., "memory", "cumulative")
+11. MEMORY AUTOCALL (structureParams.memoryAutocall) - CRITICAL, set TRUE when ANY of these apply:
+    - The product name/title contains "Snowball", "Memory", or "Phoenix Snowball" (Snowball = memory autocall).
+    - The Automatic Early Redemption condition lets each underlying satisfy its autocall level on the
+      CURRENT observation date OR on ANY PRECEDING observation date — i.e. the underlyings do NOT all
+      have to be above the barrier on the same date. Tell-tale wording:
+        * "...on that Automatic Early Redemption Valuation Date OR ANY OF the ... Valuation Dates WHICH PRECEDE ..."
+        * "...closing price ... on such date or on any previous valuation date ..."
+        * "lock-in", "one-star", "memory autocall", "cumulative autocall", "already-fixed underlyings"
+    - If the autocall requires ALL underlyings to be above the level ON THE SAME date (no reference to
+      preceding dates), set memoryAutocall = FALSE.
+    MEMORY COUPON (structureParams.memoryCoupon) - set TRUE when ANY of these apply:
+    - Wording "memory", "cumulative", "snowball", or coupons missed earlier are paid later ("catch-up").
+    - A coupon formula that multiplies by a counter of missed/elapsed periods, e.g. "N x Rate x (1 + T)"
+      where T counts coupon dates since the last paid coupon. That cumulative factor IS a memory coupon.
     For guaranteed coupon: detect from term sheet language (e.g., "guaranteed", "unconditional", "paid regardless of performance", "coupon paid at each observation", "fixed coupon")
 12. For issuer: MUST select the closest match from the VALID ISSUERS LIST provided above (use exact name from list)
 13. For observationSchedule: calculate dates based on frequency (quarterly, monthly, etc.)
@@ -1165,10 +1288,21 @@ You MUST generate observationSchedule as a complete array with ALL 10 periods:
 NOTE: The last observation date (2026-04-30) matches finalObservation exactly. If stepDownValue was -5, autocallLevel would decrease by 5 each period (100, 95, 90, 85, etc.).
 
 20. For Participation Notes - Issuer Call (Early Redemption) Detection - CRITICAL:
-    - Look for sections titled "Early Redemption", "Issuer Call", "Optional Redemption", "Call Feature", "Early Termination"
+    - A genuine issuer call exists ONLY when the term sheet defines CONCRETE early-redemption terms:
+      a dedicated "Early Redemption" / "Issuer Call" / "Optional Redemption" / "Autocall" section or a
+      TABLE of early-redemption observation dates WITH call prices/rebates and settlement dates.
     - Extract into structureParams.callableByIssuer (boolean):
-      * If term sheet mentions issuer can call/redeem early → true
-      * If no mention or states "No early redemption" → false
+      * TRUE only if such concrete call dates/prices/terms exist.
+      * FALSE if there is no early-redemption table or optional-redemption clause — i.e. the product simply
+        runs from the Initial Fixing Date to a single Final Fixing Date / Redemption Date.
+    - 🚫 DO NOT treat generic RISK-FACTOR boilerplate as an issuer call. The following are NOT issuer calls
+      and MUST yield callableByIssuer = false (unless real call terms exist elsewhere):
+      * A risk paragraph titled "Early Termination and Reinvestment Risk" (standard in Leonteq/EFG/Vontobel
+        term sheets) describing that the product "may be redeemed prior to maturity".
+      * Language about early redemption due to "hedging disruption", "extraordinary events",
+        "market disruption", "illegality", or "for tax reasons" — these are issuer protections, not a call schedule.
+    - A plain capital-protection participation note (SSPA 1100: Capital Protection + Participation, optional Cap,
+      single Final Fixing Date, no coupons) is NOT callable → callableByIssuer = false, no observation schedule.
 
     - Extract rebate into structureParams.issuerCallRebate (number as percentage):
       * Look for "Early Redemption Price", "Call Price", "Early Redemption Coupon Amount", "Rebate"
@@ -1415,6 +1549,27 @@ NOTE: The last observation date (2026-04-30) matches finalObservation exactly. I
       - If ANY observation is missing rebateAmount, ADD IT with calculated value
       - For Participation Notes: rebateAmount is MANDATORY, not optional
 
+      RATE PRODUCTS (templateId "rate" — CMS steepener / target-redemption / TARN rate certificates):
+      - These have NO equity/fund underlying. The references are INTEREST-RATE indices
+        (e.g. "EUR CMS 30Y", "EUR CMS 5Y", "Euribor"). Represent each as a synthetic underlying:
+        ticker = the rate name, securityData.exchange = "RATE", isin = "", strike = 0. Do NOT invent
+        equity tickers or ISINs for them.
+      - structureParams to extract:
+        * capitalProtection: the % of nominal returned at maturity (e.g. "100% x NA" → 100).
+        * fixedCouponRate + fixedPeriods: if early periods pay a fixed coupon (e.g. "t = 1 to 8: 8.50% per annum")
+          set fixedCouponRate = 8.5 and fixedPeriods = 8.
+        * floatingFormulaLabel: the verbatim floating-coupon formula for the remaining periods
+          (e.g. "Max(EUR CMS 30Y − EUR CMS 5Y, 0%)").
+        * targetCoupon + targetRedemptionEnabled: if there is a "Target Coupon" / "Target Redemption" /
+          "Automatic Early Redemption when cumulative coupon ≥ X%", set targetCoupon = X and
+          targetRedemptionEnabled = true. Otherwise targetRedemptionEnabled = false.
+        * couponFrequency: from the interest-period spacing (quarterly/semi-annually/annually).
+      - observationSchedule: extract ALL coupon/interest periods from the schedule table (these notes
+        commonly have 40+ rows). For each row include id ("period_0"…), observationDate (the fixing/observation
+        date if present, else the interest-period end date), valueDate (the interest payment date), periodIndex
+        (1-based). Do NOT skip rows. autocallLevel/couponBarrier may be null (not applicable to rate products).
+      - Floating coupon VALUES are NOT extracted here (the underlying rate fixings are entered manually later).
+
 CRITICAL: Return ONLY the JSON object with no additional text, explanations, or markdown formatting.`;
 
       const response = await HTTP.post(ANTHROPIC_API_URL, {
@@ -1538,6 +1693,51 @@ CRITICAL: Return ONLY the JSON object with no additional text, explanations, or 
           }
         }
 
+        // POST-PROCESSING: Memory autocall / memory coupon safeguard.
+        // The "Snowball" family describes memory autocall without ever using the word
+        // "memory" (each underlying may satisfy its level on the current OR any preceding
+        // observation date). Rather than rely solely on the model flipping the flag, also
+        // detect it from the extracted title and the model's own reasoning, and only ever
+        // promote false -> true (never override an explicit true).
+        if (extractedData.structureParams &&
+            (extractedData.structureParams.memoryAutocall !== undefined ||
+             extractedData.structureParams.memoryCoupon !== undefined)) {
+          const titleLower = (extractedData.title || '').toLowerCase();
+
+          const memoryAutocallSignal =
+            titleLower.includes('snowball') ||
+            titleLower.includes('memory') ||
+            thinkingLower.includes('snowball') ||
+            thinkingLower.includes('memory autocall') ||
+            thinkingLower.includes('which precede') ||
+            thinkingLower.includes('preceding valuation') ||
+            thinkingLower.includes('preceding observation') ||
+            thinkingLower.includes('any previous valuation') ||
+            thinkingLower.includes('or any of the') ||
+            thinkingLower.includes('lock-in') ||
+            thinkingLower.includes('lock in');
+
+          if (memoryAutocallSignal && !extractedData.structureParams.memoryAutocall) {
+            console.warn('[TermSheetExtractor] 🔁 POST-PROCESSING: Memory/Snowball autocall signal detected (title/thinking) but memoryAutocall was false. Forcing memoryAutocall = true.');
+            extractedData.structureParams.memoryAutocall = true;
+          }
+
+          const memoryCouponSignal =
+            titleLower.includes('snowball') ||
+            titleLower.includes('memory') ||
+            thinkingLower.includes('memory coupon') ||
+            thinkingLower.includes('cumulative coupon') ||
+            thinkingLower.includes('(1 + t)') ||
+            thinkingLower.includes('(1+t)') ||
+            thinkingLower.includes('catch-up') ||
+            thinkingLower.includes('previously unpaid');
+
+          if (memoryCouponSignal && extractedData.structureParams.memoryCoupon === false) {
+            console.warn('[TermSheetExtractor] 🔁 POST-PROCESSING: Memory coupon signal detected but memoryCoupon was false. Forcing memoryCoupon = true.');
+            extractedData.structureParams.memoryCoupon = true;
+          }
+        }
+
         // POST-PROCESSING: Validate observationSchedule count
         if (extractedData.observationSchedule && Array.isArray(extractedData.observationSchedule)) {
           const obsCount = extractedData.observationSchedule.length;
@@ -1570,6 +1770,28 @@ CRITICAL: Return ONLY the JSON object with no additional text, explanations, or 
             });
           } else {
             console.log('[TermSheetExtractor] ✅ POST-PROCESSING: All callable observations have rebateAmount field');
+          }
+        }
+
+        // POST-PROCESSING: Non-callable participation notes must NOT carry a callable
+        // observation schedule. The schedule-generation prompt is heavily biased toward the
+        // callable case, so a plain capital-protection participation note (SSPA 1100) can come
+        // back with a spurious monthly schedule. If the issuer cannot call, collapse it.
+        if ((extractedData.templateId === 'participation_note' || extractedData.template === 'participation_note')) {
+          const sp = extractedData.structureParams || {};
+          const isCallable = sp.callableByIssuer === true;
+          const sched = Array.isArray(extractedData.observationSchedule) ? extractedData.observationSchedule : [];
+          const hasCallableObs = sched.some(o => o && o.isCallable === true);
+
+          if (!isCallable && (sched.length > 1 || hasCallableObs)) {
+            console.warn(`[TermSheetExtractor] 🚫 POST-PROCESSING: Participation Note is NOT issuer-callable but a ${sched.length}-observation schedule was generated (callable: ${hasCallableObs}). Collapsing to no schedule (single redemption at maturity).`);
+            extractedData.observationSchedule = [];
+            if (extractedData.scheduleConfig) {
+              extractedData.scheduleConfig.frequency = 'maturity';
+            }
+            if (extractedData.structureParams) {
+              extractedData.structureParams.callableByIssuer = false;
+            }
           }
         }
 

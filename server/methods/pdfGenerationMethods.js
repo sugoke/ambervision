@@ -292,6 +292,12 @@ Meteor.methods({
           } else if (templateIdLower.includes('participation')) {
             reportUrl = `${baseUrl}pdf/participation/${reportId}?pdfToken=${tempToken}&userId=${userId}&lang=${lang}`;
             console.log('[PDF] Using dedicated Participation Note PDF template');
+          } else if (templateIdLower.includes('twin')) {
+            reportUrl = `${baseUrl}pdf/twinwin/${reportId}?pdfToken=${tempToken}&userId=${userId}&lang=${lang}`;
+            console.log('[PDF] Using dedicated Twin Win PDF template');
+          } else if (templateIdLower === 'rate' || templateIdLower.includes('steepener')) {
+            reportUrl = `${baseUrl}pdf/rate/${reportId}?pdfToken=${tempToken}&userId=${userId}&lang=${lang}`;
+            console.log('[PDF] Using dedicated Rate PDF template');
           } else {
             // Fallback to existing product view for other templates
             reportUrl = `${baseUrl}product/${reportId}?pdf=true&pdfToken=${tempToken}&userId=${userId}&lang=${lang}`;

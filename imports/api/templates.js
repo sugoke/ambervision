@@ -387,6 +387,28 @@ export const BUILT_IN_TEMPLATES = [
     createdAt: new Date(),
     updatedAt: new Date(),
     droppedItems: []
+  },
+  {
+    _id: "twin_win",
+    name: "Twin Win",
+    icon: "🔁",
+    category: "capital_protection",
+    description: "Capital-protected note (EUSIPA/SSPA 1135) with a guaranteed bonus floor and lower/upper barriers (continuously observed by default). If neither barrier is touched the investor gains in either direction (absolute-value participation). Touching the upper barrier keeps only the downside-converted gain, the lower barrier only the upside, and touching both pays capital protection + bonus.",
+    isBuiltIn: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    droppedItems: []
+  },
+  {
+    _id: "rate",
+    name: "Rate / CMS Steepener",
+    icon: "📈",
+    category: "capital_protection",
+    description: "Rate-linked, capital-protected coupon certificate with a Target Redemption (TARN) feature. Fixed coupons for the first N periods, then a floating reference-rate coupon (e.g. a CMS steepener spread Max(CMS long − CMS short, 0)). Auto-redeems early once cumulative coupons reach the target. No equity underlying; reference rates are not provider-priced — floating coupons are entered as manual fixings.",
+    isBuiltIn: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    droppedItems: []
   }
 ];
 

@@ -88,8 +88,8 @@ const CashMonitoringCard = ({ cashData, onAccountClick }) => {
       flexDirection: 'column',
       gap: '8px',
       flex: 1,
-      overflow: 'auto',
-      maxHeight: '220px'
+      minHeight: 0,
+      overflow: 'auto'
     },
     accountItem: (severity) => ({
       display: 'flex',

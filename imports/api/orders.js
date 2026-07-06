@@ -357,6 +357,18 @@ export const OrderFormatters = {
     return `Buy ${legs.buy} / Sell ${legs.sell}`;
   },
 
+  // Human-readable order direction for confirmations/tickets. FX shows both legs;
+  // a term deposit is increased or decreased (there is no "buy"/"sell" of a
+  // deposit); everything else uses the plain BUY/SELL order type.
+  orderDirectionLabel(order) {
+    if (!order) return '';
+    if (order.assetType === ASSET_TYPES.FX) return this.fxDirectionLabel(order);
+    if (order.assetType === ASSET_TYPES.TERM_DEPOSIT) {
+      return order.orderType === 'sell' ? 'Decrease' : 'Increase';
+    }
+    return (order.orderType || '').toUpperCase();
+  },
+
   // Format order reference
   formatOrderReference(year, number) {
     return `${year}-${String(number).padStart(5, '0')}`;

@@ -12,6 +12,8 @@ import { ParticipationNoteEvaluator } from '/imports/api/evaluators/participatio
 import { ReverseConvertibleEvaluator } from '/imports/api/evaluators/reverseConvertibleEvaluator';
 import { ReverseConvertibleBondEvaluator } from '/imports/api/evaluators/reverseConvertibleBondEvaluator';
 import { BonusCertificateEvaluator } from '/imports/api/evaluators/bonusCertificateEvaluator';
+import { TwinWinEvaluator } from '/imports/api/evaluators/twinWinEvaluator';
+import { RateEvaluator } from '/imports/api/evaluators/rateEvaluator';
 import { PhoenixChartBuilder } from '/imports/api/chartBuilders/phoenixChartBuilder';
 import { OrionChartBuilder } from '/imports/api/chartBuilders/orionChartBuilder';
 import { HimalayaChartBuilder } from '/imports/api/chartBuilders/himalayaChartBuilder';
@@ -20,6 +22,8 @@ import { ParticipationNoteChartBuilder } from '/imports/api/chartBuilders/partic
 import { ReverseConvertibleChartBuilder } from '/imports/api/chartBuilders/reverseConvertibleChartBuilder';
 import { ReverseConvertibleBondChartBuilder } from '/imports/api/chartBuilders/reverseConvertibleBondChartBuilder';
 import { BonusCertificateChartBuilder } from '/imports/api/chartBuilders/bonusCertificateChartBuilder';
+import { TwinWinChartBuilder } from '/imports/api/chartBuilders/twinWinChartBuilder';
+import { RateChartBuilder } from '/imports/api/chartBuilders/rateChartBuilder';
 import { ProcessingIssueCollector } from '/imports/api/processingIssueCollector';
 import { MarketDataHelpers } from '/imports/api/marketDataCache';
 import { extractExportFields } from '/imports/api/helpers/reportExportFieldExtractor';
@@ -178,8 +182,10 @@ if (Meteor.isServer) {
       }
 
       // Refresh market data cache for product underlyings before evaluation
-      // This ensures historical price data is available for observation calculations
-      if (productData.underlyings && productData.underlyings.length > 0) {
+      // This ensures historical price data is available for observation calculations.
+      // Rate products reference non-provider rates (e.g. CMS swap rates) and are
+      // coupon-driven — they need no price data, so skip the refresh entirely.
+      if (templateId !== 'rate' && productData.underlyings && productData.underlyings.length > 0) {
         const tickers = productData.underlyings.map(u => {
           return u.fullTicker || u.securityData?.ticker || `${u.ticker}.US`;
         }).filter(Boolean);
@@ -611,6 +617,33 @@ if (Meteor.isServer) {
       return 'himalaya';
     }
 
+    // Twin Win by name (HIGH PRIORITY — wins even if a stale templateId is present)
+    const isTwinWinByName = productName.includes('twin win') || productName.includes('twinwin') || productName.includes('twin-win');
+    if (isTwinWinByName) {
+      console.log('[detectTemplateId] ✅ Detected TWIN WIN by name');
+      return 'twin_win';
+    }
+
+    // Rate / CMS Steepener by name (HIGH PRIORITY)
+    const isRateByName = productName.includes('steepener') || productName.includes('cms ') ||
+      productName.includes('target redemption') || productName.includes('tarn') ||
+      productName.includes('snowball') && productName.includes('rate');
+    if (isRateByName) {
+      console.log('[detectTemplateId] ✅ Detected RATE by name');
+      return 'rate';
+    }
+
+    // Rate structural detection: target/fixed coupon params with no equity barrier,
+    // checked BEFORE the equity structural checks below.
+    const rateSp = structureParams || {};
+    const hasRateParams = (rateSp.fixedCouponRate !== undefined || rateSp.targetCoupon !== undefined ||
+      rateSp.floatingFormulaLabel !== undefined) && rateSp.upperBarrier === undefined &&
+      rateSp.protectionBarrierLevel === undefined && rateSp.barrierLevel === undefined;
+    if (hasRateParams) {
+      console.log('[detectTemplateId] ✅ Detected RATE by structure (target/fixed coupon params, no equity barrier)');
+      return 'rate';
+    }
+
     // Additional Himalaya structural indicators
     const hasFloor = structureParams.floor !== undefined || structureParams.floorLevel !== undefined;
     const observationSchedule = productData.observationSchedule || [];
@@ -642,6 +675,19 @@ if (Meteor.isServer) {
     if (productData.template) {
       console.log('[detectTemplateId] ✅ Using explicit template:', productData.template);
       return productData.template;
+    }
+
+    // Twin Win structural detection: lower AND upper barrier with a bonus/capital
+    // protection, no coupon, no observation schedule. Checked BEFORE Shark/Orion
+    // because a Twin Win's upperBarrier (>= 100) would otherwise match Orion.
+    const twHasLowerBarrier = structureParams.lowerBarrier !== undefined || structure.lowerBarrier !== undefined;
+    const twHasUpperBarrier = structureParams.upperBarrier !== undefined || structure.upperBarrier !== undefined;
+    const twHasFloorOrCP = structureParams.bonus !== undefined || structure.bonus !== undefined ||
+                           structureParams.capitalProtection !== undefined || structure.capitalProtection !== undefined;
+    const twHasCoupon = structureParams.couponRate !== undefined || structure.couponRate !== undefined;
+    if (twHasLowerBarrier && twHasUpperBarrier && twHasFloorOrCP && !twHasCoupon && !hasObservationSchedule) {
+      console.log('[detectTemplateId] ✅ Detected TWIN WIN by structure (lower + upper barrier + bonus/CP, no coupon, no schedule)');
+      return 'twin_win';
     }
 
     // Bonus Certificate structural detection: participationRate + barrierLevel,
@@ -761,6 +807,16 @@ const TEMPLATE_REGISTRY = {
     evaluator: BonusCertificateEvaluator,
     chartBuilder: BonusCertificateChartBuilder,
     uiComponent: 'BonusCertificateReport'
+  },
+  twin_win: {
+    evaluator: TwinWinEvaluator,
+    chartBuilder: TwinWinChartBuilder,
+    uiComponent: 'TwinWinReport'
+  },
+  rate: {
+    evaluator: RateEvaluator,
+    chartBuilder: RateChartBuilder,
+    uiComponent: 'RateReport'
   },
   // Future templates can be added here
 };

@@ -1059,6 +1059,25 @@ const StructuredProductInterface = ({
           denomination: 1000,
           barrierType: 'european'
         };
+      case 'twin_win':
+        return {
+          capitalProtection: 100,
+          bonus: 15,
+          lowerBarrier: 70,
+          upperBarrier: 130,
+          barrierType: 'american',
+          basketType: 'single'
+        };
+      case 'rate':
+        return {
+          capitalProtection: 100,
+          targetCoupon: 18,
+          targetRedemptionEnabled: true,
+          fixedCouponRate: 8.5,
+          fixedPeriods: 8,
+          couponFrequency: 'quarterly',
+          floatingFormulaLabel: 'Max(EUR CMS 30Y − EUR CMS 5Y, 0%)'
+        };
       default:
         return {
           couponRate: 8.5,
@@ -2282,7 +2301,8 @@ const StructuredProductInterface = ({
               if (tab.id === 'schedule' && (
                 selectedTemplateId === 'reverse_convertible_bond' ||
                 selectedTemplateId === 'orion_memory' ||
-                selectedTemplateId === 'bonus_certificate'
+                selectedTemplateId === 'bonus_certificate' ||
+                selectedTemplateId === 'twin_win'
               )) {
                 return false;
               }

@@ -528,5 +528,118 @@ export const EDRMonacoParser = {
     }
 
     return { valid: true };
+  },
+
+  /**
+   * Enrich EDR term-deposit holdings with a maturity *term* label.
+   *
+   * EDR term deposits carry no forward maturity in the positions file — date_fin
+   * (mapped to instrumentDates.endDate) is always empty for them. These deposits
+   * are placed on auto-rolling fixed terms or as open "call" deposits, so EDR
+   * never reports a single forward maturity date. The only échéance signal lives
+   * in each deposit's interest / rollover operation, whose description encodes the
+   * contract id and term, e.g.:
+   *   "INT.C0000039 V300126 E270226 1,75%"  -> rolling fixed-term deposit (E = échéance)
+   *   "CAT.C0003099 V191225 CALL    1,025%" -> open CALL deposit (no fixed maturity)
+   *
+   * We classify each deposit as 'call' (redeemable on notice) when its operations
+   * say so, otherwise 'rolling', and store it on the holding as
+   * bankSpecificData.depositTerm so the UI can show a label instead of "N/A".
+   *
+   * Matching is by contract id (id_cat), and every snapshot row for the deposit is
+   * updated — deliberately NOT relying on the isLatest flag, which is not reliably
+   * maintained for EDR holdings. Scoped to EDR by bankName, so it is a safe no-op
+   * when invoked for any other bank's import.
+   *
+   * @param {Object} params
+   * @param {Object} params.PMSHoldingsCollection
+   * @param {Object} params.PMSOperationsCollection
+   * @param {String} [params.bankId] - optional, further restrict to this bank id
+   * @returns {Promise<{matched:Number, total:Number}>}
+   */
+  async enrichTermDepositMaturity({ PMSHoldingsCollection, PMSOperationsCollection, bankId }) {
+    const holdingQuery = {
+      bankName: this.bankName,        // hard-scope to EDR -> safe no-op for other banks
+      securityType: SECURITY_TYPES.TERM_DEPOSIT,
+      isActive: true
+    };
+    if (bankId) holdingQuery.bankId = bankId;
+
+    const holdings = await PMSHoldingsCollection.find(holdingQuery, {
+      fields: { 'bankSpecificData.idCat': 1, 'bankSpecificData.depositTerm': 1 }
+    }).fetchAsync();
+    if (holdings.length === 0) return { matched: 0, total: 0 };
+
+    // Deposit operations: description (instrumentName) embeds the contract id as
+    // "C" + zero-padded id_cat, plus either an "E<DDMMYY>" échéance or "CALL".
+    const opQuery = { bankName: this.bankName };
+    if (bankId) opQuery.bankId = bankId;
+    const operations = await PMSOperationsCollection.find(opQuery, {
+      fields: { instrumentName: 1, operationDate: 1 }
+    }).fetchAsync();
+
+    const contractRe = /\bC0*(\d+)\b/i;               // C0000039 -> 39
+    const echeanceRe = /\bE(\d{2})(\d{2})(\d{2})\b/;  // E270226 -> 27/02/26
+    const callRe = /\bCALL\b/i;
+
+    // contractId(numeric) -> { isCall, maturity:Date|null, date:Date|null (op recency) }
+    const byContract = new Map();
+    for (const op of operations) {
+      const name = op.instrumentName || '';
+      const cm = name.match(contractRe);
+      if (!cm) continue;
+      const isCall = callRe.test(name);
+      const em = name.match(echeanceRe);
+      // C-codes can appear in unrelated labels; only treat as a deposit op when it
+      // carries a CALL flag or an échéance date.
+      if (!isCall && !em) continue;
+
+      const id = parseInt(cm[1], 10);
+      if (Number.isNaN(id)) continue;
+      const opDate = op.operationDate ? new Date(op.operationDate) : null;
+      const prev = byContract.get(id);
+      // Keep the most recent deposit op for this contract (latest term wins).
+      if (prev && prev.date && opDate && prev.date >= opDate) continue;
+
+      let maturity = null;
+      if (em) {
+        const day = parseInt(em[1], 10);
+        const month = parseInt(em[2], 10) - 1;
+        const year = 2000 + parseInt(em[3], 10);
+        maturity = new Date(year, month, day);
+      }
+      byContract.set(id, { isCall, maturity, date: opDate });
+    }
+
+    let matched = 0;
+    for (const h of holdings) {
+      const rawId = h.bankSpecificData?.idCat;
+      if (rawId == null) continue;
+      const id = parseInt(String(rawId), 10);
+      if (Number.isNaN(id)) continue;
+
+      const info = byContract.get(id);
+      // Term deposits with no positions-file maturity are auto-rolling unless an
+      // operation proves they are open CALL deposits.
+      const depositTerm = {
+        type: info?.isCall ? 'call' : 'rolling',
+        lastKnownMaturity: info?.maturity || null
+      };
+
+      // Skip write when nothing changed.
+      const cur = h.bankSpecificData?.depositTerm;
+      if (cur
+        && cur.type === depositTerm.type
+        && String(cur.lastKnownMaturity || '') === String(depositTerm.lastKnownMaturity || '')) {
+        continue;
+      }
+
+      await PMSHoldingsCollection.updateAsync(h._id, {
+        $set: { 'bankSpecificData.depositTerm': depositTerm }
+      });
+      matched++;
+    }
+
+    return { matched, total: holdings.length };
   }
 };

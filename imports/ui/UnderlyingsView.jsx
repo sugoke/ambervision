@@ -101,14 +101,40 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
     return () => { cancelled = true; };
   }, [asOfDateStr]);
 
+  // Live mode: gate by ACTUAL bank holdings (source of truth). A product that
+  // was sold or matured leaves the holdings feed, so it must not appear here even
+  // if a stale allocation still references it. heldProductIds is scoped to the
+  // current viewAsFilter (null = admin global "held by any client").
+  // null = not yet loaded (show none rather than a misleading "all").
+  const [heldProductIds, setHeldProductIds] = useState(null);
+  React.useEffect(() => {
+    // Historical mode keeps its own as-of scoping below; skip the live holdings fetch.
+    if (asOfDateStr) return;
+    setHeldProductIds(null);
+    let cancelled = false;
+    Meteor.callAsync('holdings.getHeldProductIds', { sessionId, viewAsFilter })
+      .then(ids => { if (!cancelled) setHeldProductIds(new Set(ids)); })
+      .catch(err => {
+        console.error('[Underlyings] Failed to load held product ids:', err);
+        if (!cancelled) setHeldProductIds(new Set());
+      });
+    return () => { cancelled = true; };
+  }, [sessionId, viewAsFilter, asOfDateStr]);
+
   // Extract data from analysis (all pre-computed server-side)
-  // Filter by accessible products if ViewAs is active
   const allUnderlyingsData = analysisData?.underlyings || [];
   const underlyingsData = useMemo(() => {
-    if (!viewAsFilter) return allUnderlyingsData; // No filter: show all
-    if (!allocationsReady) return []; // Allocations still loading: show none rather than misleading "all"
-    return allUnderlyingsData.filter(u => accessibleProductIds.includes(u.productId));
-  }, [allUnderlyingsData, accessibleProductIds, allocationsReady, viewAsFilter]);
+    if (asOfDateStr) {
+      // Historical (as-of) mode: keep the allocation-based scoping so a past-date
+      // view shows what was held then, not what is held today.
+      if (!viewAsFilter) return allUnderlyingsData;
+      if (!allocationsReady) return [];
+      return allUnderlyingsData.filter(u => accessibleProductIds.includes(u.productId));
+    }
+    // Live mode: show only products currently held in scope.
+    if (!heldProductIds) return [];
+    return allUnderlyingsData.filter(u => heldProductIds.has(u.productId));
+  }, [allUnderlyingsData, accessibleProductIds, allocationsReady, viewAsFilter, asOfDateStr, heldProductIds]);
 
   // Calculate summary stats from filtered data (respects ViewAs filter)
   const summary = useMemo(() => {

@@ -5,6 +5,7 @@ import { EODApiHelpers } from './eodApi';
 import { MarketDataRouter } from './marketData/marketDataRouter';
 import { ProductsCollection } from './products';
 import { UsersCollection } from './users';
+import { normalizeExchangeForEOD } from '/imports/utils/tickerUtils';
 
 /**
  * New MarketDataCache structure - One document per stock
@@ -101,10 +102,212 @@ export const MarketDataHelpers = {
         exchange: 1,
         currency: 1,
         'cache.latestDate': 1,
+        'cache.latestPrice': 1,
         firstDate: 1,
-        dataPoints: 1
+        dataPoints: 1,
+        lastUpdated: 1,
+        dataSource: 1,
+        lastRefreshError: 1
       }
     }).fetchAsync();
+  },
+
+  /**
+   * Find tracked tickers that did NOT get fresh market data.
+   *
+   * Current-state staleness derived entirely from existing cache data (no new
+   * collection). A ticker is reported when:
+   *   - MISSING: it is a tracked ticker (base security or product underlying) with no
+   *     cached document, or a cached document with no latest price.
+   *   - STALE: its latest cached price date is behind its peers on the same exchange
+   *     (peers got a newer close but this one did not).
+   *
+   * Exchange-peer comparison self-calibrates to the last close the system actually
+   * fetched per market, so normal weekends / market-wide holidays do not produce false
+   * positives (same-exchange tickers share the latest date).
+   */
+  async getStaleTickers() {
+    // The universe this report cares about = the underlyings referenced by products
+    // (the securities whose historical prices the platform actually needs for reports /
+    // evaluations). Base ticker-strip securities (indices, FX, crypto in BASE_SECURITIES)
+    // are intentionally NOT included: they are served from the short-lived
+    // TickerPriceCacheCollection, not the historical MarketDataCacheCollection this report
+    // reads, so they would otherwise show up as permanent false "MISSING" noise.
+    const products = await ProductsCollection.find({}, {
+      fields: { _id: 1, title: 1, isin: 1, underlyings: 1, payoffStructure: 1 }
+    }).fetchAsync();
+
+    // Exchange suffix helper (portion after the last '.', e.g. "AAPL.US" -> "US").
+    const exchangeOf = (fullTicker) => {
+      const idx = (fullTicker || '').lastIndexOf('.');
+      return idx >= 0 ? fullTicker.slice(idx + 1) : '';
+    };
+
+    // Build the universe + the products each ticker belongs to in a single scan.
+    // ticker -> Map(productId -> { _id, title, isin })
+    const productsByTicker = new Map();
+    const link = (product) => ({ _id: product._id, title: product.title || null, isin: product.isin || null });
+    const associate = (rawTicker, product) => {
+      if (!rawTicker || typeof rawTicker !== 'string' || !rawTicker.includes('.')) return;
+      const norm = normalizeExchangeForEOD(rawTicker);
+      if (!productsByTicker.has(norm)) productsByTicker.set(norm, new Map());
+      productsByTicker.get(norm).set(product._id, link(product));
+    };
+    products.forEach(product => {
+      (product.underlyings || []).forEach(u => {
+        associate(u?.securityData?.ticker || u?.ticker || u?.symbol, product);
+      });
+      (product.payoffStructure || []).forEach(c => {
+        if (c?.type === 'underlying') associate(c?.securityData?.ticker, product);
+      });
+    });
+    const trackedSet = new Set(productsByTicker.keys());
+
+    const cachedStocks = await this.getAllUniqueStocks();
+
+    // Index cached docs by normalized fullTicker for reliable matching.
+    const cacheByTicker = new Map();
+    cachedStocks.forEach(stock => {
+      cacheByTicker.set(normalizeExchangeForEOD(stock.fullTicker), stock);
+    });
+
+    const latestDateOf = (stock) => stock?.cache?.latestDate ? new Date(stock.cache.latestDate) : null;
+
+    // Normalize to a date-only value (strip the time component) so a same-calendar-day
+    // price with a later intraday timestamp is NOT treated as "newer" than a peer.
+    const dateOnly = (value) => {
+      if (!value) return null;
+      const d = new Date(value);
+      if (isNaN(d.getTime())) return null;
+      d.setHours(0, 0, 0, 0);
+      return d;
+    };
+
+    // Reference (newest) calendar date per exchange across all cached docs.
+    const referenceByExchange = new Map();
+    cachedStocks.forEach(stock => {
+      const exch = exchangeOf(stock.fullTicker);
+      const d = dateOnly(stock?.cache?.latestDate);
+      if (!d) return;
+      const current = referenceByExchange.get(exch);
+      if (!current || d > current) referenceByExchange.set(exch, d);
+    });
+
+    // Count weekdays strictly between two dates (generic "trading days behind" without a
+    // hardcoded holiday calendar). Time components are stripped first.
+    const weekdaysBetween = (from, to) => {
+      const start = dateOnly(from);
+      const end = dateOnly(to);
+      if (!start || !end || end <= start) return 0;
+      let count = 0;
+      const cursor = new Date(start);
+      while (cursor < end) {
+        cursor.setDate(cursor.getDate() + 1);
+        const day = cursor.getDay();
+        if (day !== 0 && day !== 6) count++;
+      }
+      return count;
+    };
+
+    const now = new Date();
+    const rows = [];
+
+    // Only flag STALE once a ticker is at least this many trading days behind its exchange
+    // peers. A 1-day gap is normal: while today's session is still open (or today's EOD
+    // bar has not been published yet) a security legitimately holds yesterday evening's
+    // close, and same-exchange peers often receive today's bar at slightly different times.
+    const STALE_THRESHOLD_TRADING_DAYS = 2;
+
+    trackedSet.forEach(fullTicker => {
+      const exch = exchangeOf(fullTicker);
+      const stock = cacheByTicker.get(fullTicker);
+      const latestDate = latestDateOf(stock);
+      const hasPrice = stock && stock.cache && stock.cache.latestPrice != null && latestDate;
+      const rowProducts = Array.from((productsByTicker.get(fullTicker) || new Map()).values());
+
+      if (!hasPrice) {
+        rows.push({
+          fullTicker,
+          symbol: stock?.symbol || fullTicker.split('.')[0],
+          exchange: exch,
+          currency: stock?.currency || null,
+          status: 'MISSING',
+          latestDate,
+          referenceDate: referenceByExchange.get(exch) || null,
+          daysBehind: null,
+          daysBehindToday: latestDate ? weekdaysBetween(latestDate, now) : null,
+          lastUpdated: stock?.lastUpdated || null,
+          dataSource: stock?.dataSource || null,
+          reason: stock?.lastRefreshError?.message || 'No cached price data',
+          products: rowProducts
+        });
+        return;
+      }
+
+      const reference = referenceByExchange.get(exch);
+      const latestDay = dateOnly(latestDate);
+      const daysBehind = (reference && latestDay && latestDay < reference) ? weekdaysBetween(latestDate, reference) : 0;
+      if (daysBehind >= STALE_THRESHOLD_TRADING_DAYS) {
+        rows.push({
+          fullTicker,
+          symbol: stock.symbol || fullTicker.split('.')[0],
+          exchange: exch,
+          currency: stock.currency || null,
+          status: 'STALE',
+          latestDate,
+          referenceDate: reference,
+          daysBehind,
+          daysBehindToday: weekdaysBetween(latestDate, now),
+          lastUpdated: stock.lastUpdated || null,
+          dataSource: stock.dataSource || null,
+          reason: stock.lastRefreshError?.message || `Behind peers on ${exch || 'exchange'}`,
+          products: rowProducts
+        });
+      }
+    });
+
+    // MISSING first, then STALE by days behind (desc).
+    rows.sort((a, b) => {
+      if (a.status !== b.status) return a.status === 'MISSING' ? -1 : 1;
+      return (b.daysBehind || 0) - (a.daysBehind || 0);
+    });
+
+    const allDates = cachedStocks.map(latestDateOf).filter(Boolean);
+    return {
+      summary: {
+        totalTracked: trackedSet.size,
+        totalCached: cachedStocks.length,
+        staleCount: rows.filter(r => r.status === 'STALE').length,
+        missingCount: rows.filter(r => r.status === 'MISSING').length,
+        newestDate: allDates.length > 0 ? new Date(Math.max(...allDates)) : null
+      },
+      rows
+    };
+  },
+
+  /**
+   * Persist the most recent refresh failure for a ticker onto its cache document so the
+   * admin "Stale / Missing Market Data" table can show why it failed. No-op when no
+   * document exists for the ticker (nothing to attach the error to).
+   */
+  async recordRefreshError(fullTicker, error) {
+    if (!fullTicker || !error) return;
+    try {
+      await MarketDataCacheCollection.updateAsync(
+        { fullTicker },
+        {
+          $set: {
+            lastRefreshError: {
+              message: error.message || String(error),
+              providersTried: error.providersTried || [],
+              at: new Date()
+            }
+          }
+        }
+      );
+    } catch (e) {
+      console.error(`[MarketDataCache] Failed to record refresh error for ${fullTicker}:`, e.message);
+    }
   },
 
   /**
@@ -798,6 +1001,7 @@ if (Meteor.isServer) {
               results.push({ fullTicker, ...result });
             } catch (error) {
               results.push({ fullTicker, error: error.message, errorDetails: error.reason || error.error || 'Unknown error', providersTried: error.providersTried || [] });
+              await MarketDataHelpers.recordRefreshError(fullTicker, error);
             }
           }
         } else {
@@ -833,6 +1037,7 @@ if (Meteor.isServer) {
               results.push({ fullTicker, ...result });
             } catch (error) {
               results.push({ fullTicker, error: error.message, providersTried: error.providersTried || [] });
+              await MarketDataHelpers.recordRefreshError(fullTicker, error);
             }
           }
         }
@@ -862,6 +1067,22 @@ if (Meteor.isServer) {
     // Get cache statistics
     async 'marketData.getStats'() {
       return await MarketDataHelpers.getCacheStats();
+    },
+
+    // Get tracked tickers that did not get fresh market data (stale / missing)
+    async 'marketData.getStaleTickers'(sessionId = null) {
+      check(sessionId, Match.OneOf(String, null, undefined));
+      this.unblock();
+
+      const currentUser = sessionId ?
+        await Meteor.callAsync('auth.getCurrentUser', sessionId) :
+        (this.userId ? await UsersCollection.findOneAsync(this.userId) : null);
+
+      if (!currentUser) {
+        throw new Meteor.Error('not-authorized', 'Must be logged in to view market data health');
+      }
+
+      return await MarketDataHelpers.getStaleTickers();
     },
 
     // Get cached data for a specific stock

@@ -115,27 +115,8 @@ Meteor.methods({
     console.log(`   File: ${fileName} -> ${storedFileName}`);
     console.log(`   Path: ${filePath}`);
 
-    // Delete existing document of same type for same subject if exists
-    const existingDoc = await ClientDocumentsCollection.findOneAsync({
-      userId,
-      documentType,
-      familyMemberIndex: familyMemberIndex ?? null
-    });
-
-    if (existingDoc) {
-      // Delete old file
-      try {
-        if (fs.existsSync(existingDoc.filePath)) {
-          fs.unlinkSync(existingDoc.filePath);
-          console.log(`Deleted old document: ${existingDoc.filePath}`);
-        }
-      } catch (err) {
-        console.error('Error deleting old document file:', err);
-      }
-
-      // Remove old database record
-      await ClientDocumentsCollection.removeAsync(existingDoc._id);
-    }
+    // Several files are allowed per document type, so we simply add a new record
+    // for each upload (the timestamped storedFileName keeps files distinct).
 
     // Save new file
     try {

@@ -15,7 +15,25 @@ const MarketDataManager = ({ user }) => {
   const [tickerProducts, setTickerProducts] = useState([]);
   const [isLoadingProducts, setIsLoadingProducts] = useState(false);
 
-  // Load cache statistics on component mount
+  // State for stale / missing market data table
+  const [staleData, setStaleData] = useState(null);
+  const [isLoadingStale, setIsLoadingStale] = useState(false);
+
+  const loadStaleTickers = async () => {
+    setIsLoadingStale(true);
+    try {
+      const sessionId = localStorage.getItem('sessionId');
+      const result = await Meteor.callAsync('marketData.getStaleTickers', sessionId);
+      setStaleData(result);
+    } catch (error) {
+      console.error('Error loading stale tickers:', error);
+      setStaleData(null);
+    } finally {
+      setIsLoadingStale(false);
+    }
+  };
+
+  // Load cache statistics + stale data on component mount
   useEffect(() => {
     const loadStats = async () => {
       setIsLoadingStats(true);
@@ -29,6 +47,7 @@ const MarketDataManager = ({ user }) => {
       }
     };
     loadStats();
+    loadStaleTickers();
   }, []);
 
   const handleRefreshMarketData = async () => {
@@ -136,6 +155,12 @@ const MarketDataManager = ({ user }) => {
     } else {
       return `${seconds}s`;
     }
+  };
+
+  const formatDate = (value) => {
+    if (!value) return '—';
+    const d = new Date(value);
+    return isNaN(d.getTime()) ? '—' : d.toLocaleDateString();
   };
 
   // Handle clicking on a ticker to show products
@@ -354,6 +379,176 @@ const MarketDataManager = ({ user }) => {
                 Latest Data
               </div>
             </div>
+          </div>
+        )}
+      </section>
+
+      {/* Stale / Missing Market Data */}
+      <section style={{
+        marginBottom: '2rem',
+        padding: '1.5rem',
+        border: '1px solid var(--border-color)',
+        borderRadius: '12px',
+        background: 'var(--bg-primary)'
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem', gap: '1rem', flexWrap: 'wrap' }}>
+          <div>
+            <h3 style={{
+              margin: '0 0 0.25rem 0',
+              fontSize: '1.2rem',
+              fontWeight: '600',
+              color: 'var(--text-primary)'
+            }}>
+              Stale / Missing Market Data
+            </h3>
+            <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+              Tracked securities that did not get fresh prices — missing from cache, or behind their exchange peers.
+            </p>
+          </div>
+          <button
+            onClick={loadStaleTickers}
+            disabled={isLoadingStale}
+            style={{
+              padding: '10px 18px',
+              background: 'transparent',
+              color: 'var(--accent-color)',
+              border: '1px solid var(--accent-color)',
+              borderRadius: '8px',
+              fontSize: '0.9rem',
+              fontWeight: '600',
+              cursor: isLoadingStale ? 'not-allowed' : 'pointer',
+              whiteSpace: 'nowrap'
+            }}
+          >
+            {isLoadingStale ? '🔄 Loading…' : '🔄 Refresh list'}
+          </button>
+        </div>
+
+        {staleData?.summary && (
+          <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', marginBottom: '1.25rem', fontSize: '0.9rem' }}>
+            <span style={{ color: 'var(--danger-color)', fontWeight: '600' }}>
+              {staleData.summary.missingCount} missing
+            </span>
+            <span style={{ color: '#d97706', fontWeight: '600' }}>
+              {staleData.summary.staleCount} stale
+            </span>
+            <span style={{ color: 'var(--text-secondary)' }}>
+              {staleData.summary.totalCached} cached / {staleData.summary.totalTracked} tracked
+            </span>
+            <span style={{ color: 'var(--text-secondary)' }}>
+              Latest data: {formatDate(staleData.summary.newestDate)}
+            </span>
+          </div>
+        )}
+
+        {isLoadingStale && !staleData ? (
+          <div style={{ padding: '1rem', color: 'var(--text-secondary)' }}>Loading…</div>
+        ) : !staleData || staleData.rows.length === 0 ? (
+          <div style={{
+            padding: '1.5rem',
+            textAlign: 'center',
+            color: 'var(--success-color)',
+            fontWeight: '500'
+          }}>
+            ✅ All tracked tickers are up to date.
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{
+              width: '100%',
+              borderCollapse: 'collapse',
+              border: '1px solid var(--border-color)',
+              minWidth: '960px'
+            }}>
+              <thead>
+                <tr style={{ backgroundColor: 'var(--bg-tertiary)' }}>
+                  {['Ticker', 'Exchange', 'Status', 'Last Price Date', 'Days Behind', 'Last Updated', 'Source', 'Reason', 'Products'].map(h => (
+                    <th key={h} style={{
+                      padding: '10px 12px',
+                      border: '1px solid var(--border-color)',
+                      textAlign: 'left',
+                      fontSize: '0.75rem',
+                      fontWeight: '600',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em',
+                      color: 'var(--text-secondary)'
+                    }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {staleData.rows.map((row, index) => {
+                  const isMissing = row.status === 'MISSING';
+                  return (
+                    <tr key={row.fullTicker} style={{ backgroundColor: index % 2 === 0 ? 'var(--bg-primary)' : 'var(--bg-secondary)' }}>
+                      <td style={{ padding: '10px 12px', border: '1px solid var(--border-color)', fontFamily: 'monospace', fontSize: '0.9rem' }}>
+                        <span
+                          onClick={() => handleTickerClick(row.fullTicker)}
+                          style={{ cursor: 'pointer', color: 'var(--accent-color)', textDecoration: 'underline' }}
+                          title="Click to view products with this underlying"
+                        >
+                          {row.fullTicker}
+                        </span>
+                      </td>
+                      <td style={{ padding: '10px 12px', border: '1px solid var(--border-color)', fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                        {row.exchange || '—'}
+                      </td>
+                      <td style={{ padding: '10px 12px', border: '1px solid var(--border-color)' }}>
+                        <span style={{
+                          display: 'inline-block',
+                          padding: '2px 8px',
+                          borderRadius: '999px',
+                          fontSize: '0.75rem',
+                          fontWeight: '600',
+                          color: 'white',
+                          backgroundColor: isMissing ? 'var(--danger-color)' : '#d97706'
+                        }}>
+                          {row.status}
+                        </span>
+                      </td>
+                      <td style={{ padding: '10px 12px', border: '1px solid var(--border-color)', fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                        {formatDate(row.latestDate)}
+                      </td>
+                      <td style={{ padding: '10px 12px', border: '1px solid var(--border-color)', fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                        {row.daysBehind != null ? `${row.daysBehind}` : (row.daysBehindToday != null ? `${row.daysBehindToday}*` : '—')}
+                      </td>
+                      <td style={{ padding: '10px 12px', border: '1px solid var(--border-color)', fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                        {formatDate(row.lastUpdated)}
+                      </td>
+                      <td style={{ padding: '10px 12px', border: '1px solid var(--border-color)', fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                        {row.dataSource || '—'}
+                      </td>
+                      <td style={{ padding: '10px 12px', border: '1px solid var(--border-color)', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                        {row.reason || '—'}
+                      </td>
+                      <td style={{ padding: '10px 12px', border: '1px solid var(--border-color)', fontSize: '0.85rem' }}>
+                        {row.products && row.products.length > 0 ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                            {row.products.map(p => (
+                              <a
+                                key={p._id}
+                                href={`/report/${p._id}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{ color: 'var(--accent-color)', textDecoration: 'underline', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '240px' }}
+                                title={p.title || p.isin || p._id}
+                              >
+                                {p.title || p.isin || p._id}
+                              </a>
+                            ))}
+                          </div>
+                        ) : (
+                          <span style={{ color: 'var(--text-muted)' }}>—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <p style={{ margin: '0.75rem 0 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              * For MISSING rows, "Days Behind" shows weekdays since the last cached price (if any), relative to today.
+            </p>
           </div>
         )}
       </section>

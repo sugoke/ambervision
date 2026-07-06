@@ -807,11 +807,12 @@ Meteor.methods({
                 </div>
                 <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); font-size: 13px;">
                   <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280; width: 140px;">Direction</td>
-                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; text-transform: uppercase; color: ${order.orderType === 'buy' ? '#166534' : '#991b1b'};">${(order.orderType || '').toUpperCase()}</td></tr>
-                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">Security</td>
+                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; text-transform: uppercase; color: ${order.orderType === 'buy' ? '#166534' : '#991b1b'};">${OrderFormatters.orderDirectionLabel(order)}</td></tr>
+                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">${order.assetType === 'term_deposit' || order.assetType === 'fx' ? 'Description' : 'Security'}</td>
                       <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb;">${order.securityName || ''}</td></tr>
+                  ${order.assetType === 'term_deposit' || order.assetType === 'fx' ? '' : `
                   <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">ISIN</td>
-                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-family: monospace;">${order.isin || ''}</td></tr>
+                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-family: monospace;">${order.isin || ''}</td></tr>`}
                   <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">${quantityLabel}</td>
                       <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #0ea5e9;">${OrderFormatters.formatQuantity(order.quantity)}</td></tr>
                   ${priceDisplay ? `
@@ -2319,17 +2320,18 @@ ${userDisplayName}
             <tr>
               <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280; width: 140px;">Order Type</td>
               <td style="padding: 15px; border-bottom: 1px solid #e5e7eb;">
-                <span style="background: ${order.orderType === 'buy' ? '#dcfce7' : '#fee2e2'}; color: ${order.orderType === 'buy' ? '#166534' : '#991b1b'}; padding: 4px 12px; border-radius: 4px; font-weight: 600; text-transform: uppercase;">${order.orderType}</span>
+                <span style="background: ${order.orderType === 'buy' ? '#dcfce7' : '#fee2e2'}; color: ${order.orderType === 'buy' ? '#166534' : '#991b1b'}; padding: 4px 12px; border-radius: 4px; font-weight: 600; text-transform: uppercase;">${OrderFormatters.orderDirectionLabel(order)}</span>
               </td>
             </tr>
             <tr>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">Security</td>
+              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">${order.assetType === 'term_deposit' || order.assetType === 'fx' ? 'Description' : 'Security'}</td>
               <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: 500;">${order.securityName}</td>
             </tr>
+            ${order.assetType === 'term_deposit' || order.assetType === 'fx' ? '' : `
             <tr>
               <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">ISIN</td>
               <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-family: monospace;">${order.isin}</td>
-            </tr>
+            </tr>`}
             <tr>
               <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">${quantityLabel}</td>
               <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #0ea5e9;">${OrderFormatters.formatQuantity(order.quantity)}</td>
@@ -2339,7 +2341,7 @@ ${userDisplayName}
               <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">Price</td>
               <td style="padding: 15px; border-bottom: 1px solid #e5e7eb;">${priceCellHtml}</td>
             </tr>
-            ` : '') : `
+            ` : '') : order.assetType === 'term_deposit' ? '' : `
             <tr>
               <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">Price Type</td>
               <td style="padding: 15px; border-bottom: 1px solid #e5e7eb;">${order.priceType === 'market' ? 'Market' : 'Limit'}</td>
@@ -2387,12 +2389,12 @@ ${userDisplayName}
     const emailText = `
 Order Confirmation: ${order.orderReference}
 
-Order Type: ${order.orderType.toUpperCase()}
-Security: ${order.securityName}
-ISIN: ${order.isin}
-${quantityLabel}: ${OrderFormatters.formatQuantity(order.quantity)}
+Order Type: ${OrderFormatters.orderDirectionLabel(order)}
+${order.assetType === 'term_deposit' || order.assetType === 'fx' ? 'Description' : 'Security'}: ${order.securityName}
+${order.assetType === 'term_deposit' || order.assetType === 'fx' ? '' : `ISIN: ${order.isin}\n`}${quantityLabel}: ${OrderFormatters.formatQuantity(order.quantity)}
 ${isStructuredProduct
   ? (priceTextValue ? `Price: ${priceTextValue}` : '')
+  : order.assetType === 'term_deposit' ? ''
   : `Price Type: ${order.priceType === 'market' ? 'Market' : 'Limit'}
 ${order.priceType === 'limit' && priceTextValue ? `Limit Price: ${priceTextValue}` : ''}
 ${order.validityType ? `Validity: ${order.validityType === 'gtc' ? 'Good Till Canceled' : order.validityType === 'gtd' ? `Good Till ${order.validityDate ? OrderFormatters.formatDate(order.validityDate) : 'Date'}` : 'Day Order'}` : ''}`
@@ -4451,7 +4453,7 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
     <div class="order-info">
       <div class="order-ref">${order.orderReference}</div>
       <div class="order-date">${orderDate}</div>
-      <div class="order-type">${order.orderType.toUpperCase()}</div>
+      <div class="order-type">${(order.assetType === 'term_deposit' ? OrderFormatters.orderDirectionLabel(order) : (order.orderType || '')).toUpperCase()}</div>
       <div class="execution-type ${order.executionType === 'pre_executed' ? 'pre-executed' : 'to-execute'}">${EXECUTION_TYPE_LABELS[order.executionType] || 'Order to be Executed'}</div>
     </div>
   </div>
@@ -4482,7 +4484,7 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
     <h2>${order.assetType === 'fx' ? 'FX Details' : order.assetType === 'term_deposit' ? 'Term Deposit Details' : 'Security Details'}</h2>
     <div class="info-grid">
       <div class="info-row full-width">
-        <span class="info-label">${order.assetType === 'fx' ? 'Description' : 'Security Name'}</span>
+        <span class="info-label">${order.assetType === 'fx' || order.assetType === 'term_deposit' ? 'Description' : 'Security Name'}</span>
         <span class="info-value">${order.securityName}</span>
       </div>
       ${order.assetType === 'fx' && order.fxPair ? `
@@ -4577,7 +4579,7 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
     <div class="highlight">
       <div class="highlight-row">
         <span class="highlight-label">Order Type</span>
-        <span class="highlight-value">${order.assetType === 'fx' ? OrderFormatters.fxDirectionLabel(order) : order.orderType.toUpperCase()}</span>
+        <span class="highlight-value">${OrderFormatters.orderDirectionLabel(order)}</span>
       </div>
       <div class="highlight-row">
         <span class="highlight-label">${order.assetType === 'structured_product' ? 'Nominal' : (order.assetType === 'term_deposit' || order.assetType === 'fx' ? 'Amount' : 'Quantity')}</span>
@@ -4590,7 +4592,7 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
           <span class="highlight-value">${Number(order.limitPrice).toFixed(2)}%</span>
         </div>
         ` : ''}
-      ` : `
+      ` : order.assetType === 'term_deposit' ? '' : `
         <div class="highlight-row">
           <span class="highlight-label">Price Type</span>
           <span class="highlight-value">${OrderFormatters.getPriceTypeLabel(order.priceType)}</span>
@@ -5050,7 +5052,7 @@ function generateAuditTrailPDFHTML(order, client, bankAccount, bank, createdByUs
     <div class="order-info">
       <div class="order-ref">${order.orderReference}</div>
       <div class="order-date">${orderDate}</div>
-      <div class="order-type">${(order.orderType || '').toUpperCase()}</div>
+      <div class="order-type">${(order.assetType === 'term_deposit' ? OrderFormatters.orderDirectionLabel(order) : (order.orderType || '')).toUpperCase()}</div>
     </div>
   </div>
 
@@ -5088,10 +5090,10 @@ function generateAuditTrailPDFHTML(order, client, bankAccount, bank, createdByUs
     <h2>${order.assetType === 'fx' ? 'FX Details' : order.assetType === 'term_deposit' ? 'Term Deposit Details' : 'Security Details'}</h2>
     <div class="info-grid">
       <div class="info-row full-width">
-        <span class="info-label">${order.assetType === 'fx' ? 'Description' : 'Security Name'}</span>
+        <span class="info-label">${order.assetType === 'fx' || order.assetType === 'term_deposit' ? 'Description' : 'Security Name'}</span>
         <span class="info-value">${order.securityName || 'N/A'}</span>
       </div>
-      ${order.isin && order.assetType !== 'fx' ? `
+      ${order.isin && order.assetType !== 'fx' && order.assetType !== 'term_deposit' ? `
       <div class="info-row">
         <span class="info-label">ISIN</span>
         <span class="info-value">${order.isin}</span>
@@ -5119,7 +5121,7 @@ function generateAuditTrailPDFHTML(order, client, bankAccount, bank, createdByUs
     <div class="highlight">
       <div class="highlight-row">
         <span class="highlight-label">Order Type</span>
-        <span class="highlight-value">${order.assetType === 'fx' ? OrderFormatters.fxDirectionLabel(order) : (order.orderType || '').toUpperCase()}</span>
+        <span class="highlight-value">${OrderFormatters.orderDirectionLabel(order)}</span>
       </div>
       <div class="highlight-row">
         <span class="highlight-label">${order.assetType === 'structured_product' ? 'Nominal' : (order.assetType === 'term_deposit' || order.assetType === 'fx' ? 'Amount' : 'Quantity')}</span>
@@ -5132,7 +5134,7 @@ function generateAuditTrailPDFHTML(order, client, bankAccount, bank, createdByUs
           <span class="highlight-value">${Number(order.limitPrice).toFixed(2)}%</span>
         </div>
         ` : ''}
-      ` : `
+      ` : order.assetType === 'term_deposit' ? '' : `
         <div class="highlight-row">
           <span class="highlight-label">Price Type</span>
           <span class="highlight-value">${OrderFormatters.getPriceTypeLabel(order.priceType)}</span>

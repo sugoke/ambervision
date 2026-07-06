@@ -16,7 +16,7 @@ import { OrdersCollection } from '../../imports/api/orders.js';
 export async function resetTermsheetWithoutEvidence() {
   const now = new Date();
 
-  const sentResult = await OrdersCollection.updateManyAsync(
+  const sentResult = await OrdersCollection.updateAsync(
     {
       termsheetStatus: 'sent',
       'emailTraces.traceType': { $ne: 'termsheet_sent' }
@@ -28,10 +28,11 @@ export async function resetTermsheetWithoutEvidence() {
         termsheetUpdatedAt: now,
         updatedAt: now
       }
-    }
+    },
+    { multi: true }
   );
 
-  const signedResult = await OrdersCollection.updateManyAsync(
+  const signedResult = await OrdersCollection.updateAsync(
     {
       termsheetStatus: 'signed',
       'emailTraces.traceType': { $ne: 'termsheet_signed' }
@@ -43,7 +44,8 @@ export async function resetTermsheetWithoutEvidence() {
         termsheetUpdatedAt: now,
         updatedAt: now
       }
-    }
+    },
+    { multi: true }
   );
 
   const sentCount = sentResult?.modifiedCount ?? sentResult ?? 0;

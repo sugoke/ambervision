@@ -2,6 +2,7 @@ import { Meteor } from 'meteor/meteor';
 import { NotificationHelpers } from './notifications';
 import { UsersCollection, USER_ROLES } from './users';
 import { AllocationsCollection } from './allocations';
+import { ClientEntityHelpers } from './clientEntities';
 import { EmailService } from './emailService';
 
 /**
@@ -104,10 +105,15 @@ export const NotificationService = {
       affectedEmails.add(user.username);
     });
 
-    // 3. Get allocations for this product
+    // 3. Get allocations for this product — exclude archived (closed-relationship)
+    // clients so their RM is no longer notified. Admins/superadmins above still
+    // receive everything; active co-holders of the same product are unaffected.
+    const archivedAllocExclusion = await ClientEntityHelpers.archivedAllocationsSelector();
     const allocations = await AllocationsCollection.find({
-      productId: product._id,
-      status: 'active'
+      $and: [
+        { productId: product._id, status: 'active' },
+        archivedAllocExclusion
+      ]
     }).fetchAsync();
 
     const clientIds = [...new Set(allocations.map(a => a.clientId))];

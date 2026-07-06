@@ -32,7 +32,9 @@ const TermSheetUploader = ({ onProductExtracted, sessionId }) => {
     { id: 'participation_note', name: 'Participation Note', icon: '📈' },
     { id: 'reverse_convertible', name: 'Reverse Convertible', icon: '🔄' },
     { id: 'reverse_convertible_bond', name: 'Reverse Convertible (Bond)', icon: '📜' },
-    { id: 'bonus_certificate', name: 'Bonus Certificate', icon: '🎁' }
+    { id: 'bonus_certificate', name: 'Bonus Certificate', icon: '🎁' },
+    { id: 'twin_win', name: 'Twin Win', icon: '🔁' },
+    { id: 'rate', name: 'Rate / CMS Steepener', icon: '📈' }
   ];
 
   // Progress stages with percentage milestones

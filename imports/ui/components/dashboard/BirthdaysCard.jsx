@@ -27,8 +27,8 @@ const BirthdaysCard = ({ birthdays, onBirthdayClick }) => {
       flexDirection: 'column',
       gap: '8px',
       flex: 1,
-      overflow: 'auto',
-      maxHeight: '180px'
+      minHeight: 0,
+      overflow: 'auto'
     },
     birthdayItem: (isToday) => ({
       display: 'flex',

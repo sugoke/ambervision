@@ -9,6 +9,8 @@ import InfinePage from './InfinePage.jsx';
 import PhoenixReportPDF from './templates/PhoenixReportPDF.jsx';
 import OrionReportPDF from './templates/OrionReportPDF.jsx';
 import ParticipationNoteReportPDF from './templates/ParticipationNoteReportPDF.jsx';
+import TwinWinReportPDF from './templates/TwinWinReportPDF.jsx';
+import RateReportPDF from './templates/RateReportPDF.jsx';
 import PMSReportPDF from './templates/PMSReportPDF.jsx';
 import RiskAnalysisPDF from './templates/RiskAnalysisPDF.jsx';
 import PortfolioReviewPDF from './templates/PortfolioReviewPDF.jsx';
@@ -106,6 +108,22 @@ const AppContent = () => {
       return { section: 'pdf-participation', productId };
     }
 
+    // Check for PDF Twin Win route: /pdf/twinwin/:productId
+    const pdfTwinWinMatch = pathname.match(/^\/pdf\/twinwin\/([a-zA-Z0-9]+)$/);
+    if (pdfTwinWinMatch) {
+      const productId = pdfTwinWinMatch[1];
+      console.log('App: Found PDF Twin Win route for product:', productId);
+      return { section: 'pdf-twinwin', productId };
+    }
+
+    // Check for PDF Rate route: /pdf/rate/:productId
+    const pdfRateMatch = pathname.match(/^\/pdf\/rate\/([a-zA-Z0-9]+)$/);
+    if (pdfRateMatch) {
+      const productId = pdfRateMatch[1];
+      console.log('App: Found PDF Rate route for product:', productId);
+      return { section: 'pdf-rate', productId };
+    }
+
     // Check for PDF PMS route: /pdf/pms/:accountFilter (or /pdf/pms for all accounts)
     const pdfPmsMatch = pathname.match(/^\/pdf\/pms(?:\/([a-zA-Z0-9]+))?$/);
     console.log('App: Checking PDF PMS route, pathname:', pathname, 'match:', pdfPmsMatch);
@@ -200,13 +218,24 @@ const AppContent = () => {
     if (userData && !user && typeof window !== 'undefined') {
       const storedSection = localStorage.getItem('currentSection');
       const currentPath = window.location.pathname;
-      
+
+      // Honor deep links from the URL (e.g. the "Open Order Book" button in the
+      // four-eyes validation email links to /#order-book). Without this, a login
+      // with empty localStorage would clobber the hash and bounce to the dashboard.
+      const hashSection = window.location.hash.slice(1).split('?')[0];
+      const hasReportPath = /^\/report\/([a-zA-Z0-9]+)$/.test(currentPath);
+
       // Check if we're on a report route without a valid productId
       const reportMatch = currentPath.match(/^\/report\/([a-zA-Z0-9]+)$/);
       const isReportRouteWithoutId = storedSection === 'report' && !reportMatch;
-      
-      // If no stored section or invalid report route, redirect to dashboard
-      if (!storedSection || isReportRouteWithoutId) {
+
+      if (hashSection) {
+        // URL carries an explicit destination (already parsed into currentSection/
+        // currentRoute at mount) - respect it and don't bounce to the dashboard.
+        console.log('App: Honoring deep-link section from URL hash after login:', hashSection);
+        localStorage.setItem('currentSection', hashSection);
+      } else if (!hasReportPath && (!storedSection || isReportRouteWithoutId)) {
+        // No deep link in the URL and nothing valid stored - fall back to dashboard
         console.log('App: Redirecting to dashboard after login - no valid stored section');
         setCurrentSection('dashboard');
         setCurrentRoute({ section: 'dashboard' });
@@ -797,7 +826,7 @@ const AppContent = () => {
         }} />}
 
         {/* Loading state during authentication check - Exclude PDF modes as they handle their own loading */}
-        {isAuthLoading && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'infine' && (
+        {isAuthLoading && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-twinwin' && currentSection !== 'pdf-rate' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'infine' && (
           <div style={{
             display: 'flex',
             justifyContent: 'center',
@@ -834,6 +863,16 @@ const AppContent = () => {
         {/* PDF Participation Note Report - Clean table-based layout for PDF generation */}
         {currentSection === 'pdf-participation' && currentRoute.productId && (
           <ParticipationNoteReportPDF productId={currentRoute.productId} />
+        )}
+
+        {/* PDF Twin Win Report - Clean table-based layout for PDF generation */}
+        {currentSection === 'pdf-twinwin' && currentRoute.productId && (
+          <TwinWinReportPDF productId={currentRoute.productId} />
+        )}
+
+        {/* PDF Rate Report - Clean table-based layout for PDF generation */}
+        {currentSection === 'pdf-rate' && currentRoute.productId && (
+          <RateReportPDF productId={currentRoute.productId} />
         )}
 
         {/* PDF PMS Report - Portfolio Management System PDF */}
@@ -879,7 +918,7 @@ const AppContent = () => {
         )}
 
         {/* Login Form Section - Only show when not logged in, not loading, not on reset password page, and not in PDF mode */}
-        {!user && !isAuthLoading && currentSection !== 'reset-password' && currentSection !== 'oauth-consent' && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'infine' && (
+        {!user && !isAuthLoading && currentSection !== 'reset-password' && currentSection !== 'oauth-consent' && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-twinwin' && currentSection !== 'pdf-rate' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'infine' && (
           <section style={{
             padding: '0 1rem',
             background: theme === 'light' ? 'transparent' : 'transparent'

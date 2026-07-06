@@ -13,6 +13,7 @@ import { BankPositionParser } from '../../imports/api/bankPositionParser.js';
 import { BankOperationParser } from '../../imports/api/bankOperationParser.js';
 import { BankFileStructureHelpers } from '../../imports/api/bankFileStructures.js';
 import { CFMParser } from '../../imports/api/parsers/cfmParser.js';
+import { EDRMonacoParser } from '../../imports/api/parsers/edrMonacoParser.js';
 import { NotificationHelpers } from '../../imports/api/notifications.js';
 import { AccountProfilesCollection, aggregateToFourCategories } from '../../imports/api/accountProfiles.js';
 import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetadata.js';
@@ -954,6 +955,22 @@ Meteor.methods({
         console.error(`[BANK_POSITIONS] FX forward date enrichment failed: ${fxEnrichError.message}`);
       }
 
+      // EDR TERM-DEPOSIT TERM LABEL: EDR term deposits carry no forward maturity in
+      // the positions file; classify them as rolling/call from their operations so
+      // the UI shows a label instead of "N/A". Hard-scoped to EDR -> no-op otherwise.
+      try {
+        const depEnrich = await EDRMonacoParser.enrichTermDepositMaturity({
+          PMSHoldingsCollection,
+          PMSOperationsCollection,
+          bankId: connection.bankId
+        });
+        if (depEnrich.matched > 0) {
+          console.log(`[BANK_POSITIONS] EDR term-deposit terms enriched: ${depEnrich.matched}/${depEnrich.total}`);
+        }
+      } catch (depEnrichError) {
+        console.error(`[BANK_POSITIONS] EDR term-deposit enrichment failed: ${depEnrichError.message}`);
+      }
+
       // REDEMPTION DETECTION: Check for allocations whose products disappeared from bank file
       console.log(`[BANK_POSITIONS] Checking for redeemed products...`);
       try {
@@ -1791,6 +1808,68 @@ Meteor.methods({
   },
 
   /**
+   * Realign bankAccounts.referenceCurrency with the currency holdings are actually stored in
+   * (superadmin only).
+   *
+   * Each holding's marketValue is converted by the parser into the holding's portfolioCurrency,
+   * which is therefore the only currency that matches the displayed numbers. bankAccounts
+   * .referenceCurrency is independent metadata that can drift (e.g. 302894.001 stored "USD" while
+   * its holdings are EUR) and still feeds order-currency defaults and negative-cash checks. For
+   * every account whose latest holdings share ONE portfolioCurrency that differs from a
+   * referenceCurrency record, this updates that record. Mixed-currency portfolios are skipped and
+   * reported for manual review. Read-only dry run unless apply=true. Holdings are never touched.
+   */
+  async 'bankAccounts.fixReferenceCurrencies'({ sessionId, apply = false } = {}) {
+    check(sessionId, String);
+    check(apply, Boolean);
+    this.unblock();
+
+    const user = await validateAdminSession(sessionId);
+    if (!user || user.role !== 'superadmin') {
+      throw new Meteor.Error('not-authorized', 'Superadmin privileges required');
+    }
+
+    // The single portfolioCurrency of an account's latest holdings, or null if absent/mixed.
+    const holdingsCurrencyByAccount = await PMSHoldingsCollection.rawCollection().aggregate([
+      { $match: { isLatest: true, portfolioCode: { $ne: null }, portfolioCurrency: { $ne: null } } },
+      { $group: { _id: '$portfolioCode', currencies: { $addToSet: '$portfolioCurrency' } } }
+    ]).toArray();
+
+    const singleCurrencyMap = new Map();   // portfolioCode -> currency
+    const mixedAccounts = [];
+    for (const row of holdingsCurrencyByAccount) {
+      if (row.currencies.length === 1) singleCurrencyMap.set(row._id, row.currencies[0]);
+      else mixedAccounts.push({ portfolioCode: row._id, currencies: row.currencies });
+    }
+
+    const changes = [];
+    for (const [accountNumber, holdingsCurrency] of singleCurrencyMap) {
+      // Cover ALL records for this accountNumber (legacy-userId + entity duplicates).
+      const records = await BankAccountsCollection.find({ accountNumber }).fetchAsync();
+      for (const rec of records) {
+        if (rec.referenceCurrency !== holdingsCurrency) {
+          changes.push({ _id: rec._id, accountNumber, from: rec.referenceCurrency || null, to: holdingsCurrency });
+        }
+      }
+    }
+
+    if (apply) {
+      for (const c of changes) {
+        await BankAccountsCollection.updateAsync(c._id, { $set: { referenceCurrency: c.to } });
+        console.log(`[fixReferenceCurrencies] ${c.accountNumber} (${c._id}): ${c.from} -> ${c.to}`);
+      }
+    }
+
+    return {
+      success: true,
+      applied: apply,
+      changedCount: changes.length,
+      changes,
+      skippedMixed: mixedAccounts
+    };
+  },
+
+  /**
    * Get available position files for a connection
    */
   async 'bankPositions.getAvailableFiles'({ connectionId, sessionId }) {
@@ -2258,6 +2337,20 @@ Meteor.methods({
         }
       } catch (fxEnrichError) {
         console.error(`[BANK_POSITIONS] FX forward date enrichment failed: ${fxEnrichError.message}`);
+      }
+
+      // EDR TERM-DEPOSIT TERM LABEL: same enrichment as processLatest (no-op for non-EDR banks)
+      try {
+        const depEnrich = await EDRMonacoParser.enrichTermDepositMaturity({
+          PMSHoldingsCollection,
+          PMSOperationsCollection,
+          bankId: connection.bankId
+        });
+        if (depEnrich.matched > 0) {
+          console.log(`[BANK_POSITIONS] EDR term-deposit terms enriched (processDate): ${depEnrich.matched}/${depEnrich.total}`);
+        }
+      } catch (depEnrichError) {
+        console.error(`[BANK_POSITIONS] EDR term-deposit enrichment failed: ${depEnrichError.message}`);
       }
 
       // Log success

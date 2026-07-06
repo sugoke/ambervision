@@ -434,6 +434,8 @@ const PortfolioManagementSystem = ({ user }) => {
   const [chartLoading, setChartLoading] = useState(false);
   const [lastFetchedRange, setLastFetchedRange] = useState(null);
   const [twrData, setTwrData] = useState(null);
+  // Per-line WTD/MTD/YTD performance keyed by holding uniqueKey (computed server-side)
+  const [holdingPerfByKey, setHoldingPerfByKey] = useState({});
   const [assetAllocation, setAssetAllocation] = useState(null);
   const [structuredProductHierarchy, setStructuredProductHierarchy] = useState({
     hasData: false,
@@ -736,6 +738,9 @@ const PortfolioManagementSystem = ({ user }) => {
 
       return {
         id: holding._id,
+        // Stable identity across snapshots (SHA256 of bank|portfolio|isin|...).
+        // Used to look up per-line period performance (WTD/MTD/YTD).
+        uniqueKey: holding.uniqueKey,
         ticker: holding.ticker || holding.isin || 'N/A',
         name: displayName,
         productIcon: productIcon, // Icon to display for structured products
@@ -760,9 +765,22 @@ const PortfolioManagementSystem = ({ user }) => {
         priceType: holding.priceType || 'absolute',
         isin: holding.isin,
         securityType: holding.securityType || null,
-        maturityDate: holding.bankSpecificData?.instrumentDates?.endDate || null,
+        // Maturity is stored inconsistently across bank parsers: Julius Baer / EDR / CFM
+        // write it to bankSpecificData.instrumentDates.endDate, while CMB Monaco and Andbank
+        // write it to bankSpecificData.maturityDate. Read both so term deposits, bonds, etc.
+        // show their maturity regardless of source bank.
+        maturityDate: holding.bankSpecificData?.instrumentDates?.endDate
+          || holding.bankSpecificData?.maturityDate
+          || null,
         tradeDate: holding.bankSpecificData?.instrumentDates?.beginDate || null,
-        valueDate: holding.bankSpecificData?.instrumentDates?.endDate || null,
+        valueDate: holding.bankSpecificData?.instrumentDates?.endDate
+          || holding.bankSpecificData?.maturityDate
+          || null,
+        // Some banks (notably EDR) place term deposits on auto-rolling / call terms
+        // and never report a forward maturity date. depositTerm.type ('rolling' | 'call')
+        // is set by the EDR term-deposit enrichment so the UI can show a meaningful
+        // label instead of "N/A" for these. null for everything else.
+        depositTerm: holding.bankSpecificData?.depositTerm || null,
         fxNotional: holding.bankSpecificData?.notional || null,
         fxLeg: holding.bankSpecificData?.fxLeg || null,
         // POES CAT_DETAIL = signed foreign-currency notional. This is the
@@ -1799,22 +1817,41 @@ const PortfolioManagementSystem = ({ user }) => {
     return null;
   };
 
+  // The currency marketValue is actually denominated in. The parser converts each holding's
+  // marketValue into the holding's portfolioCurrency, so THAT is the only currency guaranteed to
+  // match the numbers we display. account.referenceCurrency is independent metadata that can be
+  // stale, duplicated, or self-contradictory (e.g. account 302894.001 says USD while its holdings
+  // are stored in EUR), so it must never override the currency the values are actually in.
+  const holdingsCurrencySet = new Set(
+    dummyPositions.filter(p => p.portfolioCurrency).map(p => p.portfolioCurrency)
+  );
+  portfolioHasMixedCurrencies = holdingsCurrencySet.size > 1;
+  // When every holding shares one portfolioCurrency, that currency IS what marketValue is stored in.
+  const unanimousHoldingsCurrency = holdingsCurrencySet.size === 1 ? [...holdingsCurrencySet][0] : null;
+
   // Determine portfolio currency - Priority order:
-  // 1. Selected account tab's referenceCurrency (when specific account selected)
-  // 2. Client's profile.referenceCurrency (when client selected via viewAs)
-  // 3. Most common bank account referenceCurrency
-  // 4. Fall back to USD
+  // 1. Holdings' portfolioCurrency (the currency marketValue is denominated in) — authoritative
+  // 2. Selected account tab's referenceCurrency (when specific account selected)
+  // 3. Client's profile.referenceCurrency (when client selected via viewAs)
+  // 4. Most common bank account referenceCurrency
+  // 5. Fall back to USD
 
   if (activeAccountTab !== 'consolidated') {
-    // Priority 1: Use the selected account tab's reference currency
+    // Priority 1: the currency the holdings are actually denominated in.
+    // Priority 2: the selected account tab's reference currency (fallback when no holdings).
     const selectedAccount = bankAccounts.find(acc => acc._id === activeAccountTab);
-    if (selectedAccount && selectedAccount.referenceCurrency) {
+    if (unanimousHoldingsCurrency) {
+      portfolioCurrency = unanimousHoldingsCurrency;
+    } else if (selectedAccount && selectedAccount.referenceCurrency) {
       portfolioCurrency = selectedAccount.referenceCurrency;
     }
   } else if (viewAsFilter && (viewAsFilter.type === 'client' || viewAsFilter.type === 'entity')) {
-    // Priority 2: Entity/Client's referenceCurrency
+    // Priority 1: the currency the holdings are actually denominated in.
+    // Priority 3: Entity/Client's referenceCurrency (fallback when no holdings).
     const clientCurrency = viewAsFilter.data?.referenceCurrency || viewAsFilter.data?.profile?.referenceCurrency;
-    if (clientCurrency) {
+    if (unanimousHoldingsCurrency) {
+      portfolioCurrency = unanimousHoldingsCurrency;
+    } else if (clientCurrency) {
       portfolioCurrency = clientCurrency;
     } else if (bankAccounts.length > 0) {
       // Fall back to most common bank account currency for this client
@@ -2169,6 +2206,33 @@ const PortfolioManagementSystem = ({ user }) => {
       return (qty || 0) * percent / 100;
     };
 
+    // Per-line WTD/MTD/YTD performance. Reuse the map already loaded into state;
+    // fall back to fetching it (mirrors the product-enrichment call above) so the
+    // export is complete even if the user clicks before the background load lands.
+    let perfByKey = holdingPerfByKey;
+    if (!perfByKey || Object.keys(perfByKey).length === 0) {
+      try {
+        const sessionId = localStorage.getItem('sessionId');
+        perfByKey = await Meteor.callAsync('performance.getHoldingPeriodPerformance', {
+          sessionId,
+          holdings: allHoldings.filter(h => h.uniqueKey).map(h => ({
+            uniqueKey: h.uniqueKey,
+            portfolioCode: h.portfolioCode || '',
+            portfolioCurrency: h.portfolioCurrency || portfolioCurrency || '',
+            currentPrice: h.currentPrice || 0,
+            currentValue: h.marketValue || 0
+          })),
+          asOfDate: selectedDate ? new Date(selectedDate) : null
+        }) || {};
+      } catch (err) {
+        console.error('[exportToExcel] Failed to load per-line period performance:', err);
+        perfByKey = {};
+      }
+    }
+
+    // Blank when the position had no snapshot before the period start.
+    const perfCell = (v) => (v === null || v === undefined || !Number.isFinite(v)) ? '' : Number(v.toFixed(2));
+
     const TEMPLATE_LABELS = {
       phoenix_autocallable: 'Phoenix',
       orion_memory: 'Orion',
@@ -2213,6 +2277,8 @@ const PortfolioManagementSystem = ({ user }) => {
         ? (h.marketValue || 0) / portfolioTotal * 100
         : '';
 
+      const perf = h.uniqueKey ? perfByKey[h.uniqueKey] : null;
+
       return {
         'Name': h.name || '',
         'ISIN': h.isin || '',
@@ -2228,6 +2294,12 @@ const PortfolioManagementSystem = ({ user }) => {
         'Market Value': h.marketValue || 0,
         'Gain/Loss': h.gainLoss || 0,
         'Gain/Loss %': h.gainLossPercent || 0,
+        'WTD %': perfCell(perf?.wtd?.returnPercent),
+        'WTD Contribution %': perfCell(perf?.wtd?.contributionPercent),
+        'MTD %': perfCell(perf?.mtd?.returnPercent),
+        'MTD Contribution %': perfCell(perf?.mtd?.contributionPercent),
+        'YTD %': perfCell(perf?.ytd?.returnPercent),
+        'YTD Contribution %': perfCell(perf?.ytd?.contributionPercent),
         'Min Guaranteed (% of par)': minPct ?? '',
         'Capital Return (% of par)': capPct ?? '',
         'Indicative Maturity Value (% of par)': indPct ?? '',
@@ -2247,6 +2319,68 @@ const PortfolioManagementSystem = ({ user }) => {
     });
 
     const ws = XLSX.utils.json_to_sheet(data);
+
+    // Apply number formats + column widths. SheetJS community honors cell number
+    // formats (cell.z) and !cols; numeric cells auto-right-align in Excel while
+    // text left-aligns, so alignment follows from the values being real numbers.
+    // Percent columns hold percent-valued numbers (e.g. 12.34), so we use a
+    // literal-"%" format ('0.00"%"') that does NOT multiply by 100.
+    const PCT_FMT = '0.00"%"';
+    const CCY_FMT = '#,##0.00';
+    const PRICE_FMT = '#,##0.0000';
+    const QTY_FMT = '#,##0.####';
+    const formatByHeader = {
+      'Quantity': QTY_FMT,
+      'Avg Price': PRICE_FMT,
+      'Current Price': PRICE_FMT,
+      'Cost Basis': CCY_FMT,
+      'Market Value': CCY_FMT,
+      'Gain/Loss': CCY_FMT,
+      'Gain/Loss %': PCT_FMT,
+      'WTD %': PCT_FMT,
+      'WTD Contribution %': PCT_FMT,
+      'MTD %': PCT_FMT,
+      'MTD Contribution %': PCT_FMT,
+      'YTD %': PCT_FMT,
+      'YTD Contribution %': PCT_FMT,
+      'Min Guaranteed (% of par)': PCT_FMT,
+      'Capital Return (% of par)': PCT_FMT,
+      'Indicative Maturity Value (% of par)': PCT_FMT,
+      'Total Coupons Earned (% of par)': PCT_FMT,
+      'Min Guaranteed Cash': CCY_FMT,
+      'Indicative Maturity Cash Value': CCY_FMT,
+      'Indicative P&L if Matured Today': CCY_FMT,
+      'Weight in Portfolio %': PCT_FMT
+    };
+
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    const headerToCol = {};
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const cell = ws[XLSX.utils.encode_cell({ r: 0, c })];
+      if (cell && cell.v != null) headerToCol[String(cell.v)] = c;
+    }
+    for (const [header, fmt] of Object.entries(formatByHeader)) {
+      const c = headerToCol[header];
+      if (c == null) continue;
+      for (let r = 1; r <= range.e.r; r++) {
+        const cell = ws[XLSX.utils.encode_cell({ r, c })];
+        if (cell && cell.t === 'n') cell.z = fmt;
+      }
+    }
+
+    // Column widths from header length (Name/Portfolio wider), capped.
+    ws['!cols'] = [];
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const cell = ws[XLSX.utils.encode_cell({ r: 0, c })];
+      const header = cell && cell.v != null ? String(cell.v) : '';
+      let wch = Math.max(header.length + 2, 12);
+      if (header === 'Name' || header === 'Portfolio') wch = 30;
+      ws['!cols'].push({ wch: Math.min(wch, 40) });
+    }
+
+    // Header autofilter dropdowns across the full range.
+    ws['!autofilter'] = { ref: XLSX.utils.encode_range(range) };
+
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Holdings');
 
@@ -2261,7 +2395,44 @@ const PortfolioManagementSystem = ({ user }) => {
     setChartData(null);
     setLastFetchedRange(null);
     setTwrData(null);
+    setHoldingPerfByKey({});
   }, [viewAsFilter, activeAccountTab]);
+
+  // Compute per-line WTD/MTD/YTD performance once holdings load.
+  // The server does all the math (no calculations in the UI); we pass the
+  // current holdings we already received (uniqueKey + current price/value) and
+  // it returns a map keyed by uniqueKey. selectedDate sets the period end so a
+  // historical view stays consistent.
+  React.useEffect(() => {
+    const withKeys = holdings.filter(h => h.uniqueKey);
+    if (withKeys.length === 0) {
+      setHoldingPerfByKey({});
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const sessionId = localStorage.getItem('sessionId');
+        const payload = withKeys.map(h => ({
+          uniqueKey: h.uniqueKey,
+          portfolioCode: h.portfolioCode || '',
+          portfolioCurrency: h.portfolioCurrency || portfolioCurrency || '',
+          currentPrice: h.currentPrice || 0,
+          currentValue: h.marketValue || 0
+        }));
+        const map = await Meteor.callAsync('performance.getHoldingPeriodPerformance', {
+          sessionId,
+          holdings: payload,
+          asOfDate: selectedDate ? new Date(selectedDate) : null
+        });
+        if (!cancelled) setHoldingPerfByKey(map || {});
+      } catch (err) {
+        console.error('[PMS] Failed to load per-line period performance:', err);
+        if (!cancelled) setHoldingPerfByKey({});
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [holdings, selectedDate]);
 
   // Reset account tab when viewAsFilter changes
   // If viewAsFilter has selectedAccountId, auto-select that specific account tab
@@ -3849,7 +4020,9 @@ const PortfolioManagementSystem = ({ user }) => {
                             {position.isin
                               || (position.maturityDate
                                 ? `Matures ${new Date(position.maturityDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}`
-                                : 'N/A')}
+                                : position.securityType === 'TERM_DEPOSIT'
+                                  ? (position.depositTerm?.type === 'call' ? 'Call deposit' : 'Rolling deposit')
+                                  : 'N/A')}
                             {position.isin && (
                               <HoldingPriceChart
                                 isin={position.isin}
@@ -4019,6 +4192,34 @@ const PortfolioManagementSystem = ({ user }) => {
                           {position.bankName || 'N/A'}
                         </div>
                       </div>
+
+                      {/* Period performance (WTD/MTD/YTD): mark-to-market price return
+                          + this line's contribution to the portfolio's period return.
+                          All values pre-computed server-side; '—' when the position had
+                          no snapshot before the period start. */}
+                      {(() => {
+                        const linePerf = position.uniqueKey ? holdingPerfByKey[position.uniqueKey] : null;
+                        const fmtPct = (v) => (v === null || v === undefined || !Number.isFinite(v))
+                          ? '—'
+                          : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+                        const pctColor = (v) => (v === null || v === undefined || !Number.isFinite(v))
+                          ? 'var(--text-muted)'
+                          : (v >= 0 ? '#10b981' : '#ef4444');
+                        return ['wtd', 'mtd', 'ytd'].map((key) => {
+                          const p = linePerf ? linePerf[key] : null;
+                          return (
+                            <div key={key}>
+                              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{key.toUpperCase()}</div>
+                              <div style={{ fontSize: '0.85rem', fontVariantNumeric: 'tabular-nums', color: pctColor(p?.returnPercent) }}>
+                                {fmtPct(p?.returnPercent)}
+                              </div>
+                              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                                Contrib {fmtPct(p?.contributionPercent)}
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
 
                       {/* Buy/Sell Buttons - Only for RM/Admin */}
                       {['rm', 'admin', 'superadmin'].includes(user?.role) && (

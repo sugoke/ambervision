@@ -77,8 +77,8 @@ const styles = {
   },
   tableContainer: {
     flex: 1,
-    overflow: 'auto',
-    maxHeight: '340px'
+    minHeight: 0,
+    overflow: 'auto'
   },
   table: {
     width: '100%',

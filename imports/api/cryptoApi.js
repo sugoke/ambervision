@@ -114,6 +114,14 @@ export const CryptoApiHelper = {
 
       return null;
     } catch (error) {
+      // Binance refuses traffic from geo-restricted regions (HTTP 451). This is
+      // expected when the server is deployed in a blocked location (e.g. US), so
+      // don't spam the logs — the caller falls back to CoinGecko.
+      const statusCode = error?.response?.statusCode;
+      if (statusCode === 451) {
+        // console.log(`CryptoApi: Binance geo-restricted (451) for ${eodSymbol}, falling back`);
+        return null;
+      }
       console.error(`CryptoApi: Binance error for ${eodSymbol}:`, error);
       return null;
     }
@@ -123,18 +131,9 @@ export const CryptoApiHelper = {
   async getCryptoPrice(eodSymbol) {
     // console.log(`CryptoApi: Getting price for ${eodSymbol}`);
 
-    // Try Binance first (fastest, most reliable)
-    try {
-      const binanceData = await this.getFromBinance(eodSymbol);
-      if (binanceData) {
-        // console.log(`CryptoApi: Successfully got ${eodSymbol} from Binance`);
-        return binanceData;
-      }
-    } catch (error) {
-      // console.log(`CryptoApi: Binance failed for ${eodSymbol}, trying CoinGecko`);
-    }
-
-    // Fallback to CoinGecko
+    // Try CoinGecko first. Binance is geo-restricted (HTTP 451) from many server
+    // regions (e.g. US), so calling it first wastes a request and fails every
+    // time. CoinGecko has no such restriction.
     try {
       const coingeckoData = await this.getFromCoinGecko(eodSymbol);
       if (coingeckoData) {
@@ -142,7 +141,18 @@ export const CryptoApiHelper = {
         return coingeckoData;
       }
     } catch (error) {
-      // console.log(`CryptoApi: CoinGecko also failed for ${eodSymbol}`);
+      // console.log(`CryptoApi: CoinGecko failed for ${eodSymbol}, trying Binance`);
+    }
+
+    // Fallback to Binance (only succeeds from non-restricted regions)
+    try {
+      const binanceData = await this.getFromBinance(eodSymbol);
+      if (binanceData) {
+        // console.log(`CryptoApi: Successfully got ${eodSymbol} from Binance`);
+        return binanceData;
+      }
+    } catch (error) {
+      // console.log(`CryptoApi: Binance also failed for ${eodSymbol}`);
     }
 
     // console.log(`CryptoApi: All APIs failed for ${eodSymbol}`);

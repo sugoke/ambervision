@@ -9,7 +9,7 @@ import { BanksCollection } from '../api/banks.js';
 import { AccountProfilesCollection, PROFILE_TEMPLATES, aggregateToFourCategories } from '../api/accountProfiles.js';
 import { PortfolioSnapshotsCollection } from '../api/portfolioSnapshots.js';
 import LiquidGlassCard from './components/LiquidGlassCard.jsx';
-import ClientDocumentManager from './components/ClientDocumentManager.jsx';
+import ClientDocumentManager, { KycDocumentManager } from './components/ClientDocumentManager.jsx';
 import Dialog from './Dialog.jsx';
 import { useDialog } from './useDialog.js';
 import { useTheme } from './ThemeContext.jsx';
@@ -153,6 +153,25 @@ const ANNUAL_INCOME_OPTIONS = [
   { value: 'high', label: 'High', sublabel: '€250K – €500K' },
   { value: 'very_high', label: 'Very High', sublabel: '> €500K' }
 ];
+const MARITAL_STATUS_OPTIONS = [
+  { value: 'single', label: 'Single' },
+  { value: 'married', label: 'Married' },
+  { value: 'civil_union', label: 'Civil Union' },
+  { value: 'divorced', label: 'Divorced' },
+  { value: 'separated', label: 'Separated' },
+  { value: 'widowed', label: 'Widowed' },
+  { value: 'cohabiting', label: 'Cohabiting / Common-Law Partner' }
+];
+const MARITAL_STATUS_LABELS = MARITAL_STATUS_OPTIONS.reduce((acc, o) => { acc[o.value] = o.label; return acc; }, {});
+const FAMILY_RELATIONSHIP_OPTIONS = [
+  { value: 'partner', label: 'Partner' },
+  { value: 'spouse', label: 'Spouse' },
+  { value: 'child', label: 'Child' },
+  { value: 'sibling', label: 'Sibling' },
+  { value: 'parent', label: 'Parent' },
+  { value: 'other', label: 'Other' }
+];
+const FAMILY_RELATIONSHIP_LABELS = FAMILY_RELATIONSHIP_OPTIONS.reduce((acc, o) => { acc[o.value] = o.label; return acc; }, {});
 
 export default function UserDetailsScreen({ userId, entityId = null, onBack, embedded = false }) {
   const { isDark: isDarkMode } = useTheme(); // v2
@@ -269,6 +288,8 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
   const [entityKycDraft, setEntityKycDraft] = useState({});
   const [editingUsPerson, setEditingUsPerson] = useState(false);
   const [usPersonDraft, setUsPersonDraft] = useState({});
+  const [editingFamily, setEditingFamily] = useState(false);
+  const [familyDraft, setFamilyDraft] = useState([]);
 
   // KYC Risk Score state
   const [editingRiskScore, setEditingRiskScore] = useState(false);
@@ -382,6 +403,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
         birthPlace: entity.profile?.birthPlace || '',
         birthCountry: entity.profile?.birthCountry || '',
         nationalities: (entity.profile?.nationalities || []).join(', '),
+        maritalStatus: entity.profile?.maritalStatus || '',
         // Company identity
         incorporationDate: entity.profile?.incorporationDate ? new Date(entity.profile.incorporationDate).toISOString().split('T')[0] : '',
         incorporationCountry: entity.profile?.incorporationCountry || '',
@@ -1955,6 +1977,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
           { id: 'kyc', label: 'KYC', icon: '✅', entityOrClient: true },
           { id: 'usPerson', label: 'US Person', icon: '🇺🇸', entityOnly: true },
           { id: 'riskScore', label: 'Risk Score', icon: '📊', entityOrClient: true },
+          { id: 'familyMembers', label: 'Family Members', icon: '👨‍👩‍👧', entityOnly: true, personOnly: true },
           { id: 'family', label: 'Linked People', icon: '\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67\u200d\ud83d\udc66', clientOnly: true, personOnly: true },
           { id: 'access', label: 'User Access', icon: '\ud83d\udd11', entityOnly: true, notLifeInsurance: true },
           { id: 'password', label: 'Password', icon: '\ud83d\udd12', adminOnly: true, userOnly: true }
@@ -1978,8 +2001,8 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
           if (tab.rmOnly && !isViewingRM) return false;
           // Introducer-only tabs shown only when viewing an Introducer
           if (tab.introducerOnly && !isViewingIntroducer) return false;
-          // Person-only tabs hidden for company clients
-          if (tab.personOnly && isCompanyClient) return false;
+          // Person-only tabs hidden for company clients and company entities
+          if (tab.personOnly && (isCompanyClient || isEntityCompany)) return false;
           // Client-only tabs shown when viewing a client (admins included)
           if (tab.clientOnly && !isViewingClient) return false;
           // Entity-only tabs shown only when entityId prop is provided
@@ -2096,6 +2119,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                           updates.profile.birthPlace = formData.birthPlace || '';
                           updates.profile.birthCountry = formData.birthCountry || '';
                           updates.profile.nationalities = (formData.nationalities || '').split(',').map(s => s.trim()).filter(Boolean);
+                          updates.profile.maritalStatus = formData.maritalStatus || '';
                         } else {
                           updates.profile.companyName = formData.companyName;
                           updates.profile.incorporationDate = formData.incorporationDate ? new Date(formData.incorporationDate) : null;
@@ -2135,6 +2159,17 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                       placeholder="Primary first, comma-separated (e.g. French, Monegasque)"
                       display={(entity.profile?.nationalities || []).join(', ')}
                       onChange={v => setFormData({ ...formData, nationalities: v })} />
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' }}>Marital Status</label>
+                      {editingBasicInfo ? (
+                        <select value={formData.maritalStatus || ''} onChange={e => setFormData({ ...formData, maritalStatus: e.target.value })} style={{ width: '100%', padding: '10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '0.9rem', boxSizing: 'border-box', cursor: 'pointer' }}>
+                          <option value="">—</option>
+                          {MARITAL_STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                        </select>
+                      ) : (
+                        <div style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>{MARITAL_STATUS_LABELS[entity.profile?.maritalStatus] || '-'}</div>
+                      )}
+                    </div>
                   </>
                 ) : (
                   <>
@@ -4013,6 +4048,96 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                     onChange={v => setKyc({ otherBankAccounts: v })}
                   />
                 </div>
+
+                <KycDocumentManager userId={entityId} />
+              </LiquidGlassCard>
+            );
+          })()}
+
+          {/* Family Members — entity mode */}
+          {activeTab === 'familyMembers' && isEntityMode && entity && (() => {
+            const members = editingFamily ? familyDraft : (entity.profile?.familyMembers || []);
+            const updateMember = (idx, patch) => setFamilyDraft(familyDraft.map((m, i) => i === idx ? { ...m, ...patch } : m));
+            const addMember = () => setFamilyDraft([...familyDraft, { firstName: '', lastName: '', relationship: 'partner', birthDate: '', birthPlace: '', address: '' }]);
+            const removeMember = (idx) => setFamilyDraft(familyDraft.filter((_, i) => i !== idx));
+            const inputStyle = { width: '100%', padding: '8px 10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '0.88rem', boxSizing: 'border-box' };
+            const fieldLabel = { display: 'block', fontSize: '0.72rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' };
+            return (
+              <LiquidGlassCard borderRadius="12px" style={{ padding: isMobile ? '1.5rem' : '1.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '2px solid var(--border-color)', paddingBottom: '1rem' }}>
+                  <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: '700', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ fontSize: '1.5rem' }}>👨‍👩‍👧</span> Family Members
+                  </h2>
+                  {!editingFamily ? (
+                    <button onClick={() => { setFamilyDraft((entity.profile?.familyMembers || []).map(m => ({ ...m }))); setEditingFamily(true); }} style={{ padding: '8px 16px', background: 'var(--accent-color)', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Edit</button>
+                  ) : (
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button onClick={async () => {
+                        try {
+                          const cleaned = familyDraft.map(m => ({
+                            firstName: (m.firstName || '').trim(),
+                            lastName: (m.lastName || '').trim(),
+                            name: `${(m.firstName || '').trim()} ${(m.lastName || '').trim()}`.trim(),
+                            relationship: m.relationship || 'other',
+                            birthDate: m.birthDate || '',
+                            birthPlace: (m.birthPlace || '').trim(),
+                            address: (m.address || '').trim()
+                          })).filter(m => m.firstName || m.lastName);
+                          await Meteor.callAsync('clientEntities.update', entityId, { profile: { familyMembers: cleaned } }, sessionId);
+                          setEditingFamily(false);
+                        } catch (err) {
+                          console.error('Error updating family members:', err);
+                        }
+                      }} style={{ padding: '8px 16px', background: '#10b981', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Save</button>
+                      <button onClick={() => setEditingFamily(false)} style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}>Cancel</button>
+                    </div>
+                  )}
+                </div>
+
+                {members.length === 0 && !editingFamily && (
+                  <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem', padding: '12px 0' }}>No family members recorded.</div>
+                )}
+
+                {!editingFamily && members.map((m, idx) => (
+                  <div key={idx} style={{ padding: '12px 0', borderBottom: idx < members.length - 1 ? '1px solid var(--border-color)' : 'none' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
+                      <span style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.98rem' }}>{m.name || `${m.firstName || ''} ${m.lastName || ''}`.trim() || '—'}</span>
+                      <span style={{ padding: '2px 10px', borderRadius: '6px', background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6', fontSize: '0.75rem', fontWeight: '700' }}>{FAMILY_RELATIONSHIP_LABELS[m.relationship] || m.relationship || '—'}</span>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '4px 16px', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                      <div>Date of Birth: <span style={{ color: 'var(--text-primary)' }}>{m.birthDate ? new Date(m.birthDate).toLocaleDateString('en-GB') : '—'}</span></div>
+                      <div>Place of Birth: <span style={{ color: 'var(--text-primary)' }}>{m.birthPlace || '—'}</span></div>
+                      <div style={{ gridColumn: isMobile ? '1' : '1 / -1' }}>Address: <span style={{ color: 'var(--text-primary)' }}>{m.address || '—'}</span></div>
+                    </div>
+                  </div>
+                ))}
+
+                {editingFamily && (
+                  <div>
+                    {familyDraft.map((m, idx) => (
+                      <div key={idx} style={{ border: '1px solid var(--border-color)', borderRadius: '10px', padding: '14px', marginBottom: '12px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                          <span style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-secondary)' }}>Member #{idx + 1}</span>
+                          <button onClick={() => removeMember(idx)} style={{ padding: '4px 10px', background: '#ef4444', border: 'none', borderRadius: '6px', color: 'white', cursor: 'pointer', fontSize: '0.75rem' }}>Remove</button>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '10px' }}>
+                          <div><label style={fieldLabel}>First Name</label><input value={m.firstName || ''} onChange={e => updateMember(idx, { firstName: e.target.value })} style={inputStyle} /></div>
+                          <div><label style={fieldLabel}>Surname</label><input value={m.lastName || ''} onChange={e => updateMember(idx, { lastName: e.target.value })} style={inputStyle} /></div>
+                          <div>
+                            <label style={fieldLabel}>Relationship</label>
+                            <select value={m.relationship || 'other'} onChange={e => updateMember(idx, { relationship: e.target.value })} style={{ ...inputStyle, cursor: 'pointer' }}>
+                              {FAMILY_RELATIONSHIP_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                            </select>
+                          </div>
+                          <div><label style={fieldLabel}>Date of Birth</label><input type="date" value={m.birthDate || ''} onChange={e => updateMember(idx, { birthDate: e.target.value })} style={inputStyle} /></div>
+                          <div><label style={fieldLabel}>Place of Birth</label><input value={m.birthPlace || ''} onChange={e => updateMember(idx, { birthPlace: e.target.value })} style={inputStyle} /></div>
+                          <div style={{ gridColumn: isMobile ? '1' : '1 / -1' }}><label style={fieldLabel}>Address</label><input value={m.address || ''} onChange={e => updateMember(idx, { address: e.target.value })} style={inputStyle} /></div>
+                        </div>
+                      </div>
+                    ))}
+                    <button onClick={addMember} style={{ padding: '10px 16px', background: 'var(--bg-secondary)', border: '1px dashed var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600', width: '100%' }}>➕ Add Family Member</button>
+                  </div>
+                )}
               </LiquidGlassCard>
             );
           })()}
@@ -4275,6 +4400,8 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   </p>
                 </div>
               )}
+
+              <KycDocumentManager userId={userId} />
             </LiquidGlassCard>
           )}
 

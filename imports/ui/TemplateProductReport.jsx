@@ -20,6 +20,8 @@ import ParticipationNoteReport from './templates/ParticipationNoteReport.jsx';
 import ReverseConvertibleReport from './templates/ReverseConvertibleReport.jsx';
 import ReverseConvertibleBondReport from './templates/ReverseConvertibleBondReport.jsx';
 import BonusCertificateReport from './templates/BonusCertificateReport.jsx';
+import TwinWinReport from './templates/TwinWinReport.jsx';
+import RateReport from './templates/RateReport.jsx';
 import ProductCommentaryCard from './components/ProductCommentaryCard.jsx';
 import PriceSparkline from './components/PriceSparkline.jsx';
 import TermSheetManager from './components/TermSheetManager.jsx';
@@ -1818,6 +1820,8 @@ const getTemplateName = (templateId) => {
     'reverse_convertible': 'Reverse Convertible',
     'reverse_convertible_bond': 'Reverse Convertible Bond',
     'bonus_certificate': 'Bonus Certificate',
+    'twin_win': 'Twin Win',
+    'rate': 'Rate / CMS Steepener',
     'unknown_template': 'Unknown Template',
     'unknown': 'Unknown'
   };
@@ -1836,6 +1840,8 @@ const getTemplateIcon = (templateId) => {
     'reverse_convertible': '🔄',
     'reverse_convertible_bond': '📜',
     'bonus_certificate': '🎁',
+    'twin_win': '🔁',
+    'rate': '📈',
     'unknown_template': '📄',
     'unknown': '📄'
   };
@@ -1876,6 +1882,14 @@ const renderTemplateResults = (results, templateId, productId, product, user) =>
 
   if (templateId === 'bonus_certificate' && results.templateType === 'bonus_certificate') {
     return <BonusCertificateReport results={results} productId={productId} />;
+  }
+
+  if (templateId === 'twin_win' && results.templateType === 'twin_win') {
+    return <TwinWinReport results={results} productId={productId} />;
+  }
+
+  if (templateId === 'rate' && results.templateType === 'rate') {
+    return <RateReport results={results} productId={productId} />;
   }
 
   // Default generic display for unknown templates

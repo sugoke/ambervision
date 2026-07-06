@@ -1667,6 +1667,341 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
         );
       }
 
+      case 'twin_win': {
+        const sp = structureParams || {};
+        const capitalProtection = sp.capitalProtection !== undefined ? sp.capitalProtection : 100;
+        const bonus = sp.bonus !== undefined ? sp.bonus : 15;
+        const lowerBarrier = sp.lowerBarrier !== undefined ? sp.lowerBarrier : 70;
+        const upperBarrier = sp.upperBarrier !== undefined ? sp.upperBarrier : 130;
+        const barrierType = sp.barrierType || 'american';
+        const basketType = sp.basketType || 'single';
+        const minRedemption = (capitalProtection + bonus).toFixed(0);
+
+        return (
+          <div>
+            <div style={commonStyle}>
+              <h4 style={{
+                margin: '0 0 20px 0',
+                color: 'var(--text-secondary)',
+                fontSize: '1.1rem',
+                fontWeight: '600',
+                borderBottom: '2px solid var(--accent-color)',
+                paddingBottom: '8px'
+              }}>🔁 Twin Win Configuration</h4>
+
+              {/* Capital protection + bonus */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr 1fr',
+                gap: '1.5rem',
+                marginBottom: '2rem'
+              }}>
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Capital Protection (%)</label>
+                  <input
+                    type="number"
+                    value={capitalProtection}
+                    min="0"
+                    max="100"
+                    step="1"
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('capitalProtection', parseFloat(e.target.value) || 0)}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Guaranteed return of capital at maturity (e.g. 100%)
+                  </div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Bonus (%)</label>
+                  <input
+                    type="number"
+                    value={bonus}
+                    min="0"
+                    max="200"
+                    step="1"
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('bonus', parseFloat(e.target.value) || 0)}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Guaranteed minimum participation (floor)
+                  </div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Barrier Observation</label>
+                  <select
+                    value={barrierType}
+                    style={selectInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('barrierType', e.target.value)}
+                  >
+                    <option value="american">American (continuous)</option>
+                    <option value="european">European (final only)</option>
+                  </select>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    {barrierType === 'american'
+                      ? 'Any intraday touch over the life counts'
+                      : 'Checked only at the final fixing'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Barriers + basket */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr 1fr',
+                gap: '1.5rem',
+                marginBottom: '2rem'
+              }}>
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Lower Barrier (%)</label>
+                  <input
+                    type="number"
+                    value={lowerBarrier}
+                    min="0"
+                    max="100"
+                    step="1"
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('lowerBarrier', parseFloat(e.target.value) || 0)}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Touched if underlying trades at/below this level (e.g. 70%)
+                  </div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Upper Barrier (%)</label>
+                  <input
+                    type="number"
+                    value={upperBarrier}
+                    min="100"
+                    max="300"
+                    step="1"
+                    style={numberInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('upperBarrier', parseFloat(e.target.value) || 0)}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Touched if underlying trades at/above this level (e.g. 130%)
+                  </div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Basket Aggregation</label>
+                  <select
+                    value={basketType}
+                    style={selectInputStyle}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('basketType', e.target.value)}
+                  >
+                    <option value="single">Single</option>
+                    <option value="worst_of">Worst-of</option>
+                    <option value="best_of">Best-of</option>
+                    <option value="average">Average</option>
+                  </select>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Used only when N underlyings &gt; 1
+                  </div>
+                </div>
+              </div>
+
+              {/* Computed profile */}
+              <div style={{
+                background: 'var(--bg-tertiary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '8px',
+                padding: '1.5rem',
+                marginBottom: '1rem'
+              }}>
+                <h5 style={{ margin: '0 0 1rem 0', color: 'var(--text-primary)', fontSize: '1rem', fontWeight: '600' }}>Computed Profile</h5>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                  <div style={{ padding: '1rem', background: 'var(--bg-primary)', borderRadius: '6px' }}>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '0.5rem', fontWeight: '600' }}>Minimum Redemption</div>
+                    <div style={{ fontSize: '1.5rem', fontWeight: '700', color: 'var(--accent-color)', fontFamily: 'monospace' }}>{minRedemption}%</div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.5rem', lineHeight: '1.4' }}>
+                      Capital Protection ({capitalProtection}%) + Bonus ({bonus}%)
+                    </div>
+                  </div>
+                  <div style={{ padding: '1rem', background: 'var(--bg-primary)', borderRadius: '6px' }}>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '0.5rem', fontWeight: '600' }}>Example Scenario</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
+                      If underlying at +20% (no touch):<br />
+                      <span style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                        {capitalProtection}% + max({bonus}%, |+20%|)
+                      </span>
+                      <br />
+                      = <strong>{(capitalProtection + Math.max(bonus, 20)).toFixed(0)}%</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Info box */}
+              <div style={{
+                marginTop: '1.5rem',
+                padding: '1rem',
+                background: 'var(--bg-tertiary)',
+                borderRadius: '8px',
+                fontSize: '0.85rem',
+                color: 'var(--text-secondary)',
+                lineHeight: '1.5'
+              }}>
+                <div style={{ fontWeight: '600', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+                  ℹ️ How a Twin Win Works:
+                </div>
+                <ul style={{ margin: '0', paddingLeft: '1.5rem' }}>
+                  <li><strong>Neither barrier touched:</strong> {capitalProtection}% + max(Bonus, |performance|) — gains in either direction</li>
+                  <li><strong>Upper barrier ({upperBarrier}%) touched:</strong> {capitalProtection}% + max(Bonus, −performance) — only the downside-converted gain survives</li>
+                  <li><strong>Lower barrier ({lowerBarrier}%) touched:</strong> {capitalProtection}% + max(Bonus, performance) — only upside participation survives</li>
+                  <li><strong>Both barriers touched:</strong> {capitalProtection}% + Bonus = {minRedemption}% (the guaranteed minimum)</li>
+                  <li><strong>EUSIPA/SSPA classification:</strong> 1135 – Capital Protection with Twin Win</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      case 'rate': {
+        const sp = structureParams || {};
+        const capitalProtection = sp.capitalProtection !== undefined ? sp.capitalProtection : 100;
+        const targetCoupon = sp.targetCoupon !== undefined ? sp.targetCoupon : 18;
+        const targetRedemptionEnabled = sp.targetRedemptionEnabled !== undefined ? sp.targetRedemptionEnabled : true;
+        const fixedCouponRate = sp.fixedCouponRate !== undefined ? sp.fixedCouponRate : 8.5;
+        const fixedPeriods = sp.fixedPeriods !== undefined ? sp.fixedPeriods : 8;
+        const couponFrequency = sp.couponFrequency || 'quarterly';
+        const floatingFormulaLabel = sp.floatingFormulaLabel || 'Max(EUR CMS 30Y − EUR CMS 5Y, 0%)';
+
+        return (
+          <div>
+            <div style={commonStyle}>
+              <h4 style={{
+                margin: '0 0 20px 0',
+                color: 'var(--text-secondary)',
+                fontSize: '1.1rem',
+                fontWeight: '600',
+                borderBottom: '2px solid var(--accent-color)',
+                paddingBottom: '8px'
+              }}>📈 Rate / CMS Steepener Configuration</h4>
+
+              {/* Capital protection + target */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1.5rem', marginBottom: '2rem' }}>
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Capital Protection (%)</label>
+                  <input
+                    type="number" value={capitalProtection} min="0" max="100" step="1"
+                    style={numberInputStyle} onFocus={handleInputFocus} onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('capitalProtection', parseFloat(e.target.value) || 0)}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>Returned at maturity (e.g. 100%)</div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Target Coupon (%)</label>
+                  <input
+                    type="number" value={targetCoupon} min="0" max="100" step="0.5"
+                    disabled={!targetRedemptionEnabled}
+                    style={{ ...numberInputStyle, opacity: targetRedemptionEnabled ? 1 : 0.5 }}
+                    onFocus={handleInputFocus} onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('targetCoupon', parseFloat(e.target.value) || 0)}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>Auto-redeems when cumulative coupon reaches this</div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Target Redemption (TARN)</label>
+                  <select
+                    value={targetRedemptionEnabled ? 'yes' : 'no'} style={selectInputStyle}
+                    onFocus={handleInputFocus} onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('targetRedemptionEnabled', e.target.value === 'yes')}
+                  >
+                    <option value="yes">Enabled</option>
+                    <option value="no">Disabled</option>
+                  </select>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>Early redemption at the target</div>
+                </div>
+              </div>
+
+              {/* Coupon structure */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1.5rem', marginBottom: '2rem' }}>
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Fixed Coupon Rate (% p.a.)</label>
+                  <input
+                    type="number" value={fixedCouponRate} min="0" max="50" step="0.1"
+                    style={numberInputStyle} onFocus={handleInputFocus} onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('fixedCouponRate', parseFloat(e.target.value) || 0)}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>Coupon for the initial fixed periods</div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Fixed Periods (count)</label>
+                  <input
+                    type="number" value={fixedPeriods} min="0" max="200" step="1"
+                    style={numberInputStyle} onFocus={handleInputFocus} onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('fixedPeriods', parseInt(e.target.value) || 0)}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>Periods 1…N pay the fixed coupon; later periods float</div>
+                </div>
+
+                <div style={fieldContainerStyle}>
+                  <label style={labelStyle}>Coupon Frequency</label>
+                  <select
+                    value={couponFrequency} style={selectInputStyle}
+                    onFocus={handleInputFocus} onBlur={handleInputBlur}
+                    onChange={(e) => onParamChange && onParamChange('couponFrequency', e.target.value)}
+                  >
+                    <option value="monthly">Monthly</option>
+                    <option value="quarterly">Quarterly</option>
+                    <option value="semi-annually">Semi-annually</option>
+                    <option value="annually">Annually</option>
+                  </select>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>Day-count fraction per period</div>
+                </div>
+              </div>
+
+              {/* Floating formula label */}
+              <div style={{ ...fieldContainerStyle, marginBottom: '1.5rem' }}>
+                <label style={labelStyle}>Floating Coupon Formula (label)</label>
+                <input
+                  type="text" value={floatingFormulaLabel}
+                  style={{ ...numberInputStyle, fontFamily: 'inherit' }} onFocus={handleInputFocus} onBlur={handleInputBlur}
+                  onChange={(e) => onParamChange && onParamChange('floatingFormulaLabel', e.target.value)}
+                />
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  Display only (e.g. "Max(EUR CMS 30Y − EUR CMS 5Y, 0%)"). Floating coupon values are entered as manual fixings later.
+                </div>
+              </div>
+
+              {/* Info box */}
+              <div style={{
+                marginTop: '0.5rem', padding: '1rem', background: 'var(--bg-tertiary)', borderRadius: '8px',
+                fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.5'
+              }}>
+                <div style={{ fontWeight: '600', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>ℹ️ How a Rate / CMS Steepener Works:</div>
+                <ul style={{ margin: '0', paddingLeft: '1.5rem' }}>
+                  <li><strong>Capital protected:</strong> {capitalProtection}% of nominal returned at maturity.</li>
+                  <li><strong>Fixed phase:</strong> first {fixedPeriods} periods pay {fixedCouponRate}% p.a.</li>
+                  <li><strong>Floating phase:</strong> later periods pay {floatingFormulaLabel} — entered as manual fixings (no provider data for CMS rates).</li>
+                  {targetRedemptionEnabled && <li><strong>Target redemption:</strong> when cumulative coupons reach {targetCoupon}%, the note auto-redeems with the final coupon capped to hit the target exactly.</li>}
+                  <li>Define the coupon dates in the <strong>Schedule</strong> tab.</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
       case 'shark_note':
         return (
           <div>
