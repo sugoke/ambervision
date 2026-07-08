@@ -22,7 +22,7 @@ export const ProductCommentaryCollection = new Mongo.Collection('productCommenta
 // Anthropic API configuration
 const ANTHROPIC_API_KEY = Meteor.settings.private?.ANTHROPIC_API_KEY;
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const ANTHROPIC_MODEL = 'claude-sonnet-4-20250514';
+const ANTHROPIC_MODEL = 'claude-sonnet-5';
 
 if (Meteor.isServer) {
   /**
@@ -47,17 +47,17 @@ if (Meteor.isServer) {
         },
         data: {
           model: ANTHROPIC_MODEL,
-          max_tokens: maxTokens,
+          // Sonnet 5 thinks adaptively (budget_tokens is rejected); max_tokens
+          // covers thinking + response, so add headroom above the response size.
+          max_tokens: maxTokens + 2048,
           messages: [
             {
               role: 'user',
               content: prompt
             }
           ],
-          // Enable extended thinking for better analysis
           thinking: {
-            type: 'enabled',
-            budget_tokens: 2000
+            type: 'adaptive'
           }
         }
       });

@@ -15,7 +15,7 @@
  * - Key: Amberlake Partners SG <mf@amberlakepartners.com>
  */
 
-import { execSync, exec } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 
@@ -109,10 +109,12 @@ export function decryptGpgFile(inputPath, outputPath, options = {}) {
     console.log(`${LOG_PREFIX} Using GNUPGHOME: ${gnupgHome}`);
   }
 
-  const command = `gpg ${gpgArgs.join(' ')}`;
-
   try {
-    execSync(command, {
+    // SECURITY: use execFileSync (not execSync with a command string) so gpg
+    // arguments — including inputPath/outputPath derived from filenames inside an
+    // externally-supplied bank ZIP — are passed directly to the process and are
+    // never interpreted by a shell. Prevents command injection via crafted names.
+    execFileSync('gpg', gpgArgs, {
       encoding: 'utf-8',
       stdio: 'pipe',
       env: envVars

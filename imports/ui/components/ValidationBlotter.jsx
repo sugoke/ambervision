@@ -710,7 +710,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                         padding: '2px 6px', borderRadius: '4px',
                         background: order.orderType === 'buy' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)'
                       }}>
-                        {order.orderType}
+                        {order.assetType === ASSET_TYPES.FX ? (order.fxDirectionFormatted || order.orderType) : order.orderType}
                       </span>
                     </td>
                     <td style={styles.td}>
@@ -760,14 +760,16 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                     padding: '3px 10px', borderRadius: '4px',
                     background: reviewOrder.orderType === 'buy' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'
                   }}>
-                    {reviewOrder.orderType}
+                    {reviewOrder.assetType === ASSET_TYPES.FX ? (reviewOrder.fxDirectionFormatted || reviewOrder.orderType) : reviewOrder.orderType}
                   </span>
                   <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
                     {reviewOrder.securityName}
                   </span>
-                  <span style={{ fontSize: '11px', fontFamily: 'monospace', color: 'var(--text-muted)' }}>
-                    {reviewOrder.isin}
-                  </span>
+                  {reviewOrder.assetType !== ASSET_TYPES.FX && (
+                    <span style={{ fontSize: '11px', fontFamily: 'monospace', color: 'var(--text-muted)' }}>
+                      {reviewOrder.isin}
+                    </span>
+                  )}
                 </div>
               </div>
               <button
@@ -849,14 +851,25 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
               marginBottom: '14px', fontSize: '12px'
             }}>
               <div><span style={styles.reviewLabel}>Security</span><div style={styles.reviewValue}>{reviewOrder.securityName}</div></div>
-              <div><span style={styles.reviewLabel}>ISIN</span><div style={{ ...styles.reviewValue, fontFamily: 'monospace' }}>
+              <div><span style={styles.reviewLabel}>
+                {reviewOrder.assetType === ASSET_TYPES.FX ? 'Currency Pair' :
+                 reviewOrder.assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Tenor' : 'ISIN'}
+              </span><div style={{ ...styles.reviewValue, fontFamily: 'monospace' }}>
                 {reviewOrder.assetType === ASSET_TYPES.FX ? (reviewOrder.fxPairFormatted || 'FX') :
                  reviewOrder.assetType === ASSET_TYPES.TERM_DEPOSIT ? (reviewOrder.depositTenorLabel || 'TD') :
                  reviewOrder.isin}
               </div></div>
+              {reviewOrder.assetType === ASSET_TYPES.FX && reviewOrder.fxDirectionFormatted && (
+                <div style={{ gridColumn: 'span 2' }}><span style={styles.reviewLabel}>Direction</span><div style={{ ...styles.reviewValue, fontWeight: '700' }}>
+                  {reviewOrder.fxDirectionFormatted}
+                </div></div>
+              )}
               <div><span style={styles.reviewLabel}>Asset Type</span><div style={styles.reviewValue}>{reviewOrder.assetTypeLabel}</div></div>
               <div><span style={styles.reviewLabel}>Currency</span><div style={styles.reviewValue}>{reviewOrder.currency}</div></div>
-              <div><span style={styles.reviewLabel}>Quantity</span><div style={{ ...styles.reviewValue, fontWeight: '700', fontSize: '15px' }}>{reviewOrder.quantityFormatted}</div></div>
+              <div><span style={styles.reviewLabel}>Quantity</span><div style={{ ...styles.reviewValue, fontWeight: '700', fontSize: '15px' }}>
+                {reviewOrder.quantityFormatted}
+                {reviewOrder.assetType === ASSET_TYPES.FX && reviewOrder.fxAmountCurrencyFormatted ? ` ${reviewOrder.fxAmountCurrencyFormatted}` : ''}
+              </div></div>
               <div><span style={styles.reviewLabel}>Order Type</span><div style={styles.reviewValue}>{reviewOrder.priceTypeLabel || 'Market'}</div></div>
               {(reviewOrder.priceType === 'limit' || reviewOrder.priceType === 'stop_limit') && reviewOrder.limitPrice && (
                 <div><span style={styles.reviewLabel}>Limit Price</span><div style={{ ...styles.reviewValue, fontWeight: '700', color: '#0ea5e9' }}>{reviewOrder.limitPriceFormatted}</div></div>

@@ -47,7 +47,7 @@ const ALLOWED_AUTHOR_ROLES = [
 const ADMIN_ROLES = [USER_ROLES.ADMIN, USER_ROLES.SUPERADMIN, USER_ROLES.COMPLIANCE];
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const ANTHROPIC_MODEL = 'claude-sonnet-4-20250514';
+const ANTHROPIC_MODEL = 'claude-sonnet-5';
 
 if (Meteor.isServer) {
   Meteor.startup(() => {
@@ -217,16 +217,17 @@ export const MeetingReportHelpers = {
         headers: {
           'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
-          'anthropic-beta': 'web-search-2025-03-05',
           'content-type': 'application/json'
         },
         data: {
           model: ANTHROPIC_MODEL,
-          max_tokens: 8000,
+          // Sonnet 5 thinks adaptively by default and its tokenizer counts ~30%
+          // more tokens than Sonnet 4 — max_tokens caps thinking + text combined.
+          max_tokens: 16000,
           system: SYSTEM_PROMPT,
           messages: [{ role: 'user', content: userMessage }],
           tools: [{
-            type: 'web_search_20250305',
+            type: 'web_search_20260209',
             name: 'web_search',
             max_uses: 4
           }]

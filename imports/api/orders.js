@@ -339,11 +339,16 @@ export const OrderFormatters = {
     });
   },
 
-  // Derive the two legs of an FX order from its pair, which is stored as
+  // Derive the two legs of an FX order. Prefers the explicit fxBuyCurrency /
+  // fxSellCurrency fields; falls back to the pair, which is stored as
   // BUY/SELL (e.g. "EUR/ILS" = buy EUR, sell ILS). Returns null when the order
-  // isn't FX or the pair can't be parsed, so callers fall back to plain B/S.
+  // isn't FX or the legs can't be determined, so callers fall back to plain B/S.
   fxLegs(order) {
-    if (!order || order.assetType !== ASSET_TYPES.FX || !order.fxPair) return null;
+    if (!order || order.assetType !== ASSET_TYPES.FX) return null;
+    if (order.fxBuyCurrency && order.fxSellCurrency) {
+      return { buy: order.fxBuyCurrency, sell: order.fxSellCurrency };
+    }
+    if (!order.fxPair) return null;
     const [buy, sell] = String(order.fxPair).split('/').map(s => s.trim());
     if (!buy || !sell) return null;
     return { buy, sell };
@@ -722,6 +727,7 @@ export const OrderHelpers = {
       termsheetSignedTrace: (order.emailTraces || []).find(t => t.traceType === EMAIL_TRACE_TYPES.TERMSHEET_SIGNED) || null,
       // FX-specific formatted fields
       fxPairFormatted: order.fxPair || null,
+      fxDirectionFormatted: order.assetType === ASSET_TYPES.FX ? OrderFormatters.fxDirectionLabel(order) : null,
       fxSubtypeLabel: order.fxSubtype === 'forward' ? 'Forward' : order.fxSubtype === 'spot' ? 'Spot' : null,
       fxRateFormatted: order.fxRate ? order.fxRate.toFixed(4) : null,
       fxAmountCurrencyFormatted: order.fxAmountCurrency || null,

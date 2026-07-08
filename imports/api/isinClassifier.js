@@ -16,7 +16,7 @@ import { validateISIN } from '../utils/isinValidator';
 // Anthropic API configuration
 const ANTHROPIC_API_KEY = Meteor.settings.private?.ANTHROPIC_API_KEY;
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const ANTHROPIC_MODEL = 'claude-sonnet-4-20250514';
+const ANTHROPIC_MODEL = 'claude-sonnet-5';
 
 /**
  * Map ISIN country codes to country names and typical exchanges/currencies
@@ -78,8 +78,10 @@ async function callAnthropicAPI(prompt, maxTokens = 1500) {
       data: {
         model: ANTHROPIC_MODEL,
         max_tokens: maxTokens,
-        messages: [{ role: 'user', content: prompt }]
-        // Note: Extended thinking removed - not supported by API
+        messages: [{ role: 'user', content: prompt }],
+        // Sonnet 5 runs adaptive thinking when the field is omitted; disable it
+        // so the short classification output isn't squeezed by thinking tokens.
+        thinking: { type: 'disabled' }
       }
     });
 

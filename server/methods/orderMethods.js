@@ -4071,15 +4071,32 @@ Meteor.methods({
     };
     const authorizedEmailCheck = buildAuthorizedEmailCheck();
 
+    const isStructuredProduct = order.assetType === 'structured_product';
+
+    // FX orders don't trade a security: they buy one currency and sell another.
+    // The pair is stored as BUY/SELL (fxLegs resolves the explicit leg fields
+    // first), the quantity is denominated in fxAmountCurrency, and there is no
+    // ISIN — the summary must state all of this explicitly or the model
+    // misreads the order (e.g. assumes the quantity is in the buy currency).
+    const isFx = order.assetType === 'fx';
+    const fxLegs = isFx ? OrderFormatters.fxLegs(order) : null;
+    const fxAmountCcy = isFx ? (order.fxAmountCurrency || order.currency) : null;
+
     const orderSummary = [
       `Order Reference: ${order.orderReference}`,
-      `Direction: ${order.orderType?.toUpperCase()} (${order.orderType === 'buy' ? 'Purchase' : 'Sale'})`,
+      isFx && fxLegs
+        ? `Direction: BUY ${fxLegs.buy} / SELL ${fxLegs.sell} (client converts ${fxLegs.sell} into ${fxLegs.buy})`
+        : `Direction: ${order.orderType?.toUpperCase()} (${order.orderType === 'buy' ? 'Purchase' : 'Sale'})`,
       `Security: ${order.securityName}`,
-      `ISIN: ${order.isin}`,
+      isFx ? 'ISIN: none (FX trades have no ISIN)' : `ISIN: ${order.isin}`,
       `Asset Type: ${order.assetType}`,
-      `Quantity: ${order.quantity}`,
+      isFx
+        ? `Amount: ${order.quantity} ${fxAmountCcy} (the amount is denominated in ${fxAmountCcy})`
+        : `Quantity: ${order.quantity}`,
       order.assetType === 'fund' && order.fundQuantityMode ? `Fund Quantity Mode: ${order.fundQuantityMode}` : null,
-      `Currency: ${order.currency}`,
+      isFx && fxLegs
+        ? `Buy Currency: ${fxLegs.buy}\nSell Currency: ${fxLegs.sell}`
+        : `Currency: ${order.currency}`,
       `Price Type: ${order.priceType}`,
       order.limitPrice ? `Limit Price: ${order.limitPrice}` : null,
       order.stopPrice ? `Stop Price: ${order.stopPrice}` : null,
@@ -4091,42 +4108,30 @@ Meteor.methods({
       order.broker ? `Broker: ${order.broker}` : null,
       order.notes ? `Notes: ${order.notes}` : null,
       // FX specific
-      order.fxPair ? `FX Pair: ${order.fxPair}` : null,
+      order.fxPair ? `FX Pair: ${order.fxPair} (buy/sell convention: buy ${order.fxPair.split('/')[0]}, sell ${order.fxPair.split('/')[1] || ''})` : null,
       order.fxSubtype ? `FX Type: ${order.fxSubtype}` : null,
       order.fxRate ? `FX Rate: ${order.fxRate}` : null,
+      order.fxValueDate ? `Value Date: ${OrderFormatters.formatDate(order.fxValueDate)}` : null,
       // Validity
       order.validityType ? `Validity: ${order.validityType === 'gtc' ? 'Good Till Canceled' : order.validityType === 'gtd' ? `Good Till ${order.validityDate ? OrderFormatters.formatDate(order.validityDate) : 'Date'}` : 'Day Order'}` : null,
     ].filter(Boolean).join('\n');
 
-    const isStructuredProduct = order.assetType === 'structured_product';
-
-    // FX direction is quoted as a pair (BASE/QUOTE). Buying the pair = buying
-    // the base and selling the quote; clients describe the economic intent
-    // ("convert ILS to EUR", "sell ILS") rather than the pair direction, so we
-    // give the model the convention for THIS pair to translate before judging.
-    const isFx = order.assetType === 'fx';
     let fxGuidance = '';
-    if (isFx) {
-      const [fxBase, fxQuote] = String(order.fxPair || '').split('/').map(s => s.trim());
-      const dir = order.orderType?.toUpperCase() || '';
-      if (fxBase && fxQuote) {
-        fxGuidance = `
+    if (isFx && fxLegs) {
+      fxGuidance = `
 
-FX DIRECTION SEMANTICS (this order is an FX trade — READ CAREFULLY):
-- This order trades the pair ${fxBase}/${fxQuote} (base currency ${fxBase}, quote currency ${fxQuote}). The entered direction is ${dir}.
-- Convention: BUY ${fxBase}/${fxQuote} = BUY the base (${fxBase}) and SELL the quote (${fxQuote}). SELL ${fxBase}/${fxQuote} = SELL the base (${fxBase}) and BUY the quote (${fxQuote}).
-- Clients rarely say "buy ${fxBase}/${fxQuote}". They state the economic intent — e.g. "convert ${fxQuote} to ${fxBase}", "sell ${fxQuote}", "buy ${fxBase}", "switch our ${fxQuote} into ${fxBase}". Translate that to the pair direction BEFORE judging:
-    • "convert ${fxQuote} to ${fxBase}" / "sell ${fxQuote}" / "buy ${fxBase}"  ≡  BUY ${fxBase}/${fxQuote}.
-    • "convert ${fxBase} to ${fxQuote}" / "sell ${fxBase}" / "buy ${fxQuote}"  ≡  SELL ${fxBase}/${fxQuote}.
-- A client selling the quote currency to obtain the base currency is CONSISTENT with a BUY of the pair. Only flag a Direction mismatch if the client's intended conversion is the OPPOSITE of the entered direction.
-- The order Quantity (${order.quantity} ${order.currency}) is the amount in the order currency; confirm it matches the amount the client asked to convert where the email states one.`;
-      } else {
-        fxGuidance = `
+FX ORDER SEMANTICS (this order is an FX conversion — READ CAREFULLY):
+- This order BUYS ${fxLegs.buy} and SELLS ${fxLegs.sell}: the client converts ${fxLegs.sell} into ${fxLegs.buy}.
+- FX orders have NO ISIN. Do not expect one and do not flag a missing ISIN. Instead verify the currency pair: the currency being bought and the currency being sold.
+- The order amount (${order.quantity} ${fxAmountCcy}) is denominated in ${fxAmountCcy} — the currency being ${fxAmountCcy === fxLegs.sell ? 'SOLD' : 'BOUGHT'}. If the client states an amount in ${fxAmountCcy} (e.g. "${fxAmountCcy} 20k"), that matches this amount field directly; only flag Amount if the email states an amount in a currency or size that contradicts it.
+- Clients state economic intent, not pair conventions: "convert ${fxLegs.sell} to ${fxLegs.buy}", "sell ${fxLegs.sell}", "buy ${fxLegs.buy}", "switch our ${fxLegs.sell} into ${fxLegs.buy}" are ALL CONSISTENT with this order. Only flag a Direction mismatch if the client's intended conversion is the OPPOSITE (they want to sell ${fxLegs.buy} / receive ${fxLegs.sell}).
+- In your checks, use field "Direction" to state which currency is bought and which is sold and whether that matches the client's intent, and field "Amount" for the amount and its currency.`;
+    } else if (isFx) {
+      fxGuidance = `
 
-FX DIRECTION SEMANTICS (this order is an FX trade — READ CAREFULLY):
-- FX is quoted as a pair BASE/QUOTE. BUY the pair = buy the base currency and sell the quote currency; SELL the pair = sell the base and buy the quote.
-- Clients describe the economic intent ("convert X to Y", "sell X", "buy Y") rather than the pair direction. Selling the quote currency to obtain the base currency is CONSISTENT with a BUY of the pair. Only flag a Direction mismatch if the client's intent is the OPPOSITE of the entered direction.`;
-      }
+FX ORDER SEMANTICS (this order is an FX conversion — READ CAREFULLY):
+- The pair is written BUY/SELL: the first currency is bought, the second is sold. FX orders have NO ISIN — do not flag a missing ISIN.
+- Clients describe the economic intent ("convert X to Y", "sell X", "buy Y") rather than the pair. Only flag a Direction mismatch if the client's intent is the OPPOSITE of the entered legs.`;
     }
 
     const prompt = `You are a compliance officer at Amber Lake Partners, a wealth-management advisory firm. Amber Lake proposes investments to clients by email; clients then reply with their approval, often briefly ("ok", "ok pour moi", "yes", "accepted", "go", "perfect"). You must compare the client's instruction against the order that was entered into the system and identify real discrepancies.
@@ -4170,7 +4175,7 @@ Analyze and respond with a JSON object (no markdown, just raw JSON):
   "summary": "One sentence overall assessment",
   "checks": [
     {
-      "field": "field name (e.g. Direction, Security, Quantity, Price, Currency, Settlement Date${isStructuredProduct ? ', Term sheet ISIN' : ''})",
+      "field": "field name (e.g. ${isFx ? 'Direction, Currency Pair, Amount, Rate, Value Date' : `Direction, Security, Quantity, Price, Currency, Settlement Date${isStructuredProduct ? ', Term sheet ISIN' : ''}`})",
       "status": "ok" | "warning" | "mismatch",
       "detail": "Brief explanation grounded in the email thread"
     }
@@ -4183,7 +4188,9 @@ Important:
 - Do NOT include an "Authorized email" check — that is added separately.
 - Do NOT question whether Amber Lake Partners is an authorized intermediary — Amber Lake IS the firm.
 - Do NOT flag a mismatch because the email references additional securities/orders other than this one — multi-order emails are normal.
-- Compare direction (buy/sell), security/ISIN, quantity, price, currency. Missing fields → warning, not mismatch.
+${isFx
+  ? '- Compare direction (which currency is bought and which is sold), currency pair, amount (and the currency it is denominated in), rate if stated, and value date. FX orders have no ISIN — never flag one as missing. Missing fields → warning, not mismatch.'
+  : '- Compare direction (buy/sell), security/ISIN, quantity, price, currency. Missing fields → warning, not mismatch.'}
 - Be concise. Focus on real discrepancies between the order and what the client (or the proposal they approved) specified.`;
 
     try {

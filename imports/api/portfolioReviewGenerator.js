@@ -20,7 +20,7 @@ import {
 // Anthropic API configuration
 const ANTHROPIC_API_KEY = Meteor.settings.private?.ANTHROPIC_API_KEY;
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const ANTHROPIC_MODEL = 'claude-sonnet-4-20250514';
+const ANTHROPIC_MODEL = 'claude-sonnet-5';
 
 // Brave Search API configuration
 const BRAVE_SEARCH_API_KEY = Meteor.settings.private?.BRAVE_SEARCH_API_KEY;
@@ -260,15 +260,16 @@ async function callAnthropicAPI(prompt, maxTokens = 2000, options = {}) {
   }
 
   try {
-    const THINKING_BUDGET = 1024;
-    // max_tokens must be > budget_tokens; it covers both thinking + response
-    const totalMaxTokens = THINKING_BUDGET + maxTokens;
+    // Sonnet 5 thinks adaptively (budget_tokens is rejected); max_tokens
+    // covers thinking + response, so keep headroom above the response size.
+    const THINKING_HEADROOM = 2048;
+    const totalMaxTokens = THINKING_HEADROOM + maxTokens;
 
     const requestData = {
       model: ANTHROPIC_MODEL,
       max_tokens: totalMaxTokens,
       messages: [{ role: 'user', content: prompt }],
-      thinking: { type: 'enabled', budget_tokens: THINKING_BUDGET }
+      thinking: { type: 'adaptive' }
     };
 
     const headers = {
@@ -280,14 +281,13 @@ async function callAnthropicAPI(prompt, maxTokens = 2000, options = {}) {
     // Add web search tool if requested
     if (options.useWebSearch) {
       requestData.tools = [{
-        type: 'web_search_20250305',
+        type: 'web_search_20260209',
         name: 'web_search',
         max_uses: 3
       }];
-      headers['anthropic-beta'] = 'web-search-2025-03-05';
     }
 
-    console.log(`[PortfolioReview] API call: maxTokens=${totalMaxTokens}, thinking=${THINKING_BUDGET}, webSearch=${!!options.useWebSearch}`);
+    console.log(`[PortfolioReview] API call: maxTokens=${totalMaxTokens}, webSearch=${!!options.useWebSearch}`);
 
     const response = await HTTP.post(ANTHROPIC_API_URL, {
       headers,

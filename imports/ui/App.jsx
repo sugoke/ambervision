@@ -368,11 +368,11 @@ const AppContent = () => {
             overflow: 'hidden',
             backgroundImage: theme === 'light'
               ? 'url(/images/daymode.jpg)'
-              : 'url("https://wallpapers.com/images/high/elegant-abstract-geometric-pattern-with-monochromatic-black-rectangle-m8k9bhf9vr2ydzoh.webp")',
+              : 'none',
             backgroundSize: 'cover',
             backgroundPosition: 'center center',
             backgroundRepeat: 'no-repeat',
-            backgroundColor: theme === 'light' ? '#f8f9fa' : '#1a1a1a',
+            backgroundColor: theme === 'light' ? '#f8f9fa' : '#2a2a2a',
             willChange: 'transform',
             transform: 'translateZ(0)',
             WebkitTransform: 'translateZ(0)',
@@ -390,7 +390,8 @@ const AppContent = () => {
             height: '120%',
             backgroundImage: theme === 'light'
               ? 'url(/images/daymode.jpg)'
-              : 'url("https://wallpapers.com/images/high/elegant-abstract-geometric-pattern-with-monochromatic-black-rectangle-m8k9bhf9vr2ydzoh.webp")',
+              : 'none',
+            backgroundColor: theme === 'light' ? 'transparent' : '#2a2a2a',
             backgroundSize: 'cover',
             backgroundPosition: 'center center',
             backgroundRepeat: 'no-repeat',
@@ -532,24 +533,16 @@ const AppContent = () => {
             background-repeat: no-repeat;
           }
 
-          /* Dark mode background - elegant geometric pattern */
+          /* Dark mode background - solid dark gray */
           html[data-theme="dark"] body {
-            background-color: #1a1a1a !important;
-            background-image: url("https://wallpapers.com/images/high/elegant-abstract-geometric-pattern-with-monochromatic-black-rectangle-m8k9bhf9vr2ydzoh.webp") !important;
-            background-size: cover;
-            background-position: center;
-            background-attachment: fixed;
-            background-repeat: no-repeat;
+            background-color: #2a2a2a !important;
+            background-image: none !important;
           }
 
           /* Alternative selector for dark mode */
           body.dark-mode {
-            background-color: #1a1a1a !important;
-            background-image: url("https://wallpapers.com/images/high/elegant-abstract-geometric-pattern-with-monochromatic-black-rectangle-m8k9bhf9vr2ydzoh.webp") !important;
-            background-size: cover;
-            background-position: center;
-            background-attachment: fixed;
-            background-repeat: no-repeat;
+            background-color: #2a2a2a !important;
+            background-image: none !important;
           }
         `}</style>
         {/* Fixed Top Section - Header + Market Ticker */}

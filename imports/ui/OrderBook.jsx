@@ -152,6 +152,7 @@ const OrderBook = ({ user }) => {
   // State
   const [orders, setOrders] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isExporting, setIsExporting] = useState(false);
   const [totalOrders, setTotalOrders] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize] = useState(20);
@@ -279,33 +280,42 @@ const OrderBook = ({ user }) => {
     loadValidators();
   }, []);
 
+  // Build the active filter set from the current UI state. Shared by the
+  // paginated table load and the (unpaginated) Excel export so both respect
+  // the same status/bank/client/validator/search/date-range selection.
+  const buildFilters = () => {
+    const filters = {};
+
+    if (statusFilter !== 'all') {
+      filters.status = statusFilter;
+    }
+    if (bankFilter !== 'all') {
+      filters.bankId = bankFilter;
+    }
+    if (clientFilter !== 'all') {
+      filters.clientId = clientFilter;
+    }
+    if (validatorFilter !== 'all') {
+      filters.validatedByName = validatorFilter;
+    }
+    if (searchQuery) {
+      filters.search = searchQuery;
+    }
+    if (dateFrom) {
+      filters.dateFrom = new Date(dateFrom);
+    }
+    if (dateTo) {
+      filters.dateTo = new Date(dateTo + 'T23:59:59');
+    }
+
+    return filters;
+  };
+
   const loadOrders = async () => {
     setIsLoading(true);
     try {
       const sessionId = getSessionId();
-      const filters = {};
-
-      if (statusFilter !== 'all') {
-        filters.status = statusFilter;
-      }
-      if (bankFilter !== 'all') {
-        filters.bankId = bankFilter;
-      }
-      if (clientFilter !== 'all') {
-        filters.clientId = clientFilter;
-      }
-      if (validatorFilter !== 'all') {
-        filters.validatedByName = validatorFilter;
-      }
-      if (searchQuery) {
-        filters.search = searchQuery;
-      }
-      if (dateFrom) {
-        filters.dateFrom = new Date(dateFrom);
-      }
-      if (dateTo) {
-        filters.dateTo = new Date(dateTo + 'T23:59:59');
-      }
+      const filters = buildFilters();
 
       const result = await Meteor.callAsync('orders.list', {
         filters,
@@ -345,19 +355,59 @@ const OrderBook = ({ user }) => {
     }
   };
 
-  const handleExportExcel = () => {
-    if (!orders.length) return;
+  const handleExportExcel = async () => {
+    setIsExporting(true);
+    try {
+      const sessionId = getSessionId();
 
-    const data = orders.map(order => {
-      const health = getOrderHealthCheck(order);
-      const traceCount = (order.emailTraces || []).length;
-      const maxTraces = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 4 : 3;
+      // Fetch ALL orders matching the current filters (respecting the date
+      // range), not just the visible page. skip: 0 with a very high limit
+      // pulls the full result set in one call, sorted like the table.
+      const result = await Meteor.callAsync('orders.list', {
+        filters: buildFilters(),
+        pagination: {
+          limit: 100000,
+          skip: 0,
+          sortField,
+          sortOrder
+        },
+        sessionId
+      });
 
-      return {
+      const exportOrders = result.orders || [];
+      if (!exportOrders.length) {
+        setIsExporting(false);
+        return;
+      }
+
+      // Booking status is only pre-fetched for the visible page, so resolve it
+      // for the full export set (fall back to whatever is already cached).
+      let exportBookings = bookingResults;
+      const checkableIds = exportOrders
+        .filter(o => o.status !== ORDER_STATUSES.CANCELLED)
+        .map(o => o._id);
+      if (checkableIds.length > 0) {
+        try {
+          const bookings = await Meteor.callAsync('orders.batchCheckBooking', {
+            orderIds: checkableIds,
+            sessionId
+          });
+          exportBookings = { ...bookingResults, ...bookings };
+        } catch (bookingErr) {
+          console.error('Error checking bookings for export:', bookingErr);
+        }
+      }
+
+      const data = exportOrders.map(order => {
+        const health = getOrderHealthCheck(order);
+        const traceCount = (order.emailTraces || []).length;
+        const maxTraces = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 4 : 3;
+
+        return {
         'Reference': order.orderReference || '',
         'Date': order.createdAtFormatted || '',
         'Status': order.effectiveStatusLabel || order.statusLabel || order.status || '',
-        'Booked': bookingResults[order._id] ? 'Yes' : '-',
+        'Booked': exportBookings[order._id] ? 'Yes' : '-',
         'Ind/Bloc': order.tradeModeLabel || '',
         'WA': order.wealthAmbassadorFormatted || '',
         'Account #': order.accountNumber || '',
@@ -387,21 +437,26 @@ const OrderBook = ({ user }) => {
       };
     });
 
-    const ws = XLSX.utils.json_to_sheet(data);
+      const ws = XLSX.utils.json_to_sheet(data);
 
-    // Auto-size columns
-    const colWidths = Object.keys(data[0]).map(key => ({
-      wch: Math.max(key.length, ...data.map(row => String(row[key] || '').length)).toString().length > 40
-        ? 40
-        : Math.max(key.length + 2, ...data.map(row => String(row[key] || '').length + 2))
-    }));
-    ws['!cols'] = colWidths;
+      // Auto-size columns
+      const colWidths = Object.keys(data[0]).map(key => ({
+        wch: Math.max(key.length, ...data.map(row => String(row[key] || '').length)).toString().length > 40
+          ? 40
+          : Math.max(key.length + 2, ...data.map(row => String(row[key] || '').length + 2))
+      }));
+      ws['!cols'] = colWidths;
 
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Orders');
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Orders');
 
-    const dateStr = new Date().toISOString().split('T')[0];
-    XLSX.writeFile(wb, `order-book-${dateStr}.xlsx`);
+      const dateStr = new Date().toISOString().split('T')[0];
+      XLSX.writeFile(wb, `order-book-${dateStr}.xlsx`);
+    } catch (err) {
+      console.error('Error exporting orders:', err);
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const handleForceSettle = async () => {
@@ -1410,9 +1465,9 @@ const OrderBook = ({ user }) => {
                 variant="secondary"
                 size="small"
                 onClick={handleExportExcel}
-                disabled={!orders.length}
+                disabled={!totalOrders || isExporting}
               >
-                Export Excel
+                {isExporting ? 'Exporting…' : 'Export Excel'}
               </ActionButton>
             </div>
           </div>
@@ -2377,7 +2432,14 @@ const OrderBook = ({ user }) => {
               );
             })()}
 
-            {/* Traces Section */}
+            {/* Traces Section — a rejected order never proceeds, so we don't ask for
+                any evidence. We still surface traces captured before rejection (read-only),
+                but hide the section entirely when there are none. */}
+            {(() => {
+            const isRejected = selectedOrder.order.status === ORDER_STATUSES.REJECTED;
+            const existingTraces = selectedOrder.order.emailTraces || [];
+            if (isRejected && existingTraces.length === 0) return null;
+            return (
             <div style={styles.detailSection}>
               <div style={styles.detailTitle}>Traces</div>
               <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
@@ -2387,6 +2449,9 @@ const OrderBook = ({ user }) => {
                     // Legacy split tiles — replaced by the unified TERMSHEET tile.
                     if (traceType === EMAIL_TRACE_TYPES.TERMSHEET_SENT) return false;
                     if (traceType === EMAIL_TRACE_TYPES.TERMSHEET_SIGNED) return false;
+                    // Rejected orders: only show tiles for traces already captured — never
+                    // render an empty dropzone prompting for evidence on a dead order.
+                    if (isRejected) return existingTraces.some(t => t.traceType === traceType);
                     // Order-to-issuer and all termsheet tiles only apply to structured products.
                     if (TERMSHEET_TRACE_TYPES.has(traceType)) return isStructuredProduct;
                     if (traceType === EMAIL_TRACE_TYPES.ORDER_TO_ISSUER) return isStructuredProduct;
@@ -2588,6 +2653,8 @@ const OrderBook = ({ user }) => {
                 </div>
               )}
             </div>
+            );
+            })()}
           </div>
         )}
       </Modal>

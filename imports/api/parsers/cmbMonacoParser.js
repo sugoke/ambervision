@@ -581,22 +581,29 @@ export const CMBMonacoParser = {
    * For cash positions (no ISIN), use instrumentCode + currency as identifier.
    * Position_Number can vary for the same cash account across files.
    *
-   * NOTE: portfolioCode is normalized to base client number (without .001/.002 suffix)
-   * to handle inconsistent Portfolio_Number formats across different CMB files.
-   * Some files have "00302894", others have "00302894.001" for the same portfolio.
+   * IMPORTANT: the key is scoped to the FULL sub-account portfolio code (including
+   * the .001/.002 suffix). Each sub-account is a distinct portfolio at CMB, so the
+   * suffix MUST be part of the key. If it is stripped, two sub-accounts that each
+   * hold the same instrument collapse onto one key and silently overwrite each
+   * other — e.g. .001 and .002 both holding a EUR current account (same internal
+   * instrument code 62060 + same currency) produced one shared key, so the .001
+   * balance disappeared. Prices/values differ per sub-account, so this is data loss.
+   *
+   * (Previously the suffix was stripped to tolerate files that reported the same
+   * portfolio inconsistently as "00302894" vs "00302894.001". Current CMB files
+   * always carry the suffix; keeping it is the correct, sub-account-safe behaviour.)
    */
   generateUniqueKey(portfolioCode, isin, instrumentCode, currency, positionNumber) {
     const crypto = require('crypto');
 
-    // Normalize portfolioCode to base client number (strip .XXX suffix)
-    // This ensures consistent uniqueKeys regardless of file format variations
-    // "302894.001" -> "302894", "302894" -> "302894"
-    const basePortfolioCode = portfolioCode ? portfolioCode.split('.')[0] : portfolioCode;
+    // Full sub-account portfolio code, e.g. "304435.001" (leading zeros already
+    // stripped upstream). Keeps .001/.002 distinct so they never collide.
+    const scopedPortfolioCode = portfolioCode || '';
 
     // For positions WITH ISIN: Use ISIN as primary identifier (most stable)
     // ISIN doesn't change between file versions, unlike Position_Number
     if (isin) {
-      const key = `cmb-monaco|${basePortfolioCode}|${isin}`;
+      const key = `cmb-monaco|${scopedPortfolioCode}|${isin}`;
       return crypto.createHash('sha256').update(key).digest('hex');
     }
 
@@ -605,12 +612,12 @@ export const CMBMonacoParser = {
     // Previously used positionNumber which caused duplicates when it was missing from some files
     // instrumentCode identifies the specific account type (e.g., USD-A, EUR-B)
     if (instrumentCode) {
-      const key = `cmb-monaco|${basePortfolioCode}|CASH|${instrumentCode}|${currency}`;
+      const key = `cmb-monaco|${scopedPortfolioCode}|CASH|${instrumentCode}|${currency}`;
       return crypto.createHash('sha256').update(key).digest('hex');
     }
 
     // Last resort fallback - use currency only
-    const key = `cmb-monaco|${basePortfolioCode}|CASH|${currency}`;
+    const key = `cmb-monaco|${scopedPortfolioCode}|CASH|${currency}`;
     return crypto.createHash('sha256').update(key).digest('hex');
   },
 
