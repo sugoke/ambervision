@@ -17,7 +17,7 @@ import { OrdersCollection } from '/imports/api/orders';
 import { ProductsCollection } from '/imports/api/products';
 import { AllocationsCollection } from '/imports/api/allocations';
 import { CurrencyRateCacheCollection } from '/imports/api/currencyCache';
-import { UsersCollection } from '/imports/api/users';
+import { UsersCollection, USER_ROLES } from '/imports/api/users';
 import { NotificationsCollection, EVENT_TYPE_NAMES } from '/imports/api/notifications';
 import { ScheduleCollection } from '/imports/api/schedule';
 import { PMSOperationsCollection } from '/imports/api/pmsOperations';
@@ -32,7 +32,7 @@ import {
   convertToEUR
 } from '/imports/api/helpers/cashCalculator';
 
-import { resolveMcpScope, buildHoldingScopeFilter, buildSnapshotScopeFilter, applyArchivedAllocationExclusion } from './scopeHelper.js';
+import { resolveMcpScope, buildHoldingScopeFilter, buildSnapshotScopeFilter, buildOperationsScopeFilter, applyArchivedAllocationExclusion } from './scopeHelper.js';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -40,6 +40,44 @@ const MAX_LIMIT = 200;
 function clampLimit(n) {
   if (typeof n !== 'number' || isNaN(n)) return DEFAULT_LIMIT;
   return Math.max(1, Math.min(MAX_LIMIT, Math.floor(n)));
+}
+
+// Escape user input before it goes into a Mongo $regex. A raw client string
+// otherwise allows catastrophic-backtracking ReDoS (e.g. "(a+)+$") executed
+// inside the DB, and `.*` patterns forcing full-collection scans.
+function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Resolve a client-supplied accountNumber to a portfolioCode filter, verifying
+ * it belongs to the caller's scope. Returns { ok:false } when the account is
+ * not in scope (callers should return an empty result with a note), or
+ * { ok:true, portfolioCode, bankId? } to merge into a query. Mirrors the
+ * verification list_holdings does inline, so the four aggregate tools stop
+ * accepting an arbitrary accountNumber unchecked.
+ */
+async function resolveScopedAccountFilter(scope, accountNumber) {
+  const trimmed = String(accountNumber).trim();
+  let matchingAccounts;
+  if (scope.isAdmin) {
+    const rows = await BankAccountsCollection.find(
+      { isActive: true, accountNumber: trimmed },
+      { fields: { bankId: 1, accountNumber: 1 } }
+    ).fetchAsync();
+    matchingAccounts = rows.map(a => ({ bankId: a.bankId, accountNumber: a.accountNumber }));
+  } else {
+    matchingAccounts = (scope.bankAccounts || []).filter(
+      a => a.accountNumber === trimmed || a.accountNumberBase === trimmed
+    );
+  }
+  if (matchingAccounts.length === 0) return { ok: false };
+
+  const out = { ok: true, portfolioCode: { $regex: `^${escapeRegex(trimmed)}(-|$)` } };
+  const bankIds = [...new Set(matchingAccounts.map(a => a.bankId).filter(Boolean))];
+  if (bankIds.length === 1) out.bankId = bankIds[0];
+  else if (bankIds.length > 1) out.bankId = { $in: bankIds };
+  return out;
 }
 
 function textResult(obj) {
@@ -268,7 +306,9 @@ export function registerTools(mcpServer, user) {
     },
     async ({ search, limit }) => {
       const scope = await resolveMcpScope(user);
-      const query = { isActive: true };
+      // Exclude archived (closed) relationships — their holdings are hidden
+      // everywhere, so they should not appear in the entity list either.
+      const query = { isActive: true, status: { $ne: 'archived' } };
       if (!scope.isAdmin) {
         if (scope.entityIds.length === 0) return textResult({ items: [], total: 0, hasMore: false });
         query._id = { $in: scope.entityIds };
@@ -350,7 +390,7 @@ export function registerTools(mcpServer, user) {
             referenceCurrency: a.referenceCurrency,
             accountType: a.accountType,
             accountStructure: a.accountStructure,
-            comment: a.comment || null,
+            // comment omitted: it is an internal/RM free-text annotation.
             isActive: a.isActive,
             totalBalanceEUR: bal?.totalBalanceEUR ?? null,
             cashEUR: bal?.cashEUR ?? null,
@@ -420,7 +460,12 @@ export function registerTools(mcpServer, user) {
     async ({ entityId, accountNumber, bankName }) => {
       const scope = await resolveMcpScope(user, { entityId });
       const holdingFilter = { isActive: true, isLatest: true, ...(await buildHoldingScopeFilter(scope)) };
-      if (accountNumber) holdingFilter.portfolioCode = accountNumber;
+      if (accountNumber) {
+        const acct = await resolveScopedAccountFilter(scope, accountNumber);
+        if (!acct.ok) return textResult({ note: `No account "${accountNumber}" in your scope`, totalBalanceEUR: 0, byAccount: [] });
+        holdingFilter.portfolioCode = acct.portfolioCode;
+        if (acct.bankId) holdingFilter.bankId = acct.bankId;
+      }
       if (bankName) {
         const bankId = await resolveBankId(bankName);
         if (!bankId) return textResult({ note: `No bank matching "${bankName}"`, totalBalanceEUR: 0, byAccount: [] });
@@ -585,8 +630,9 @@ export function registerTools(mcpServer, user) {
         filter.bankId = bankId;
       }
       if (assetClass) filter.assetClass = assetClass;
-      if (isinContains) filter.isin = { $regex: isinContains, $options: 'i' };
-      if (securityNameContains) filter.securityName = { $regex: securityNameContains, $options: 'i' };
+      // ISIN is a prefix match (anchored); security name stays a contains, both escaped.
+      if (isinContains) filter.isin = { $regex: `^${escapeRegex(isinContains)}`, $options: 'i' };
+      if (securityNameContains) filter.securityName = { $regex: escapeRegex(securityNameContains), $options: 'i' };
 
       const lim = clampLimit(limit);
       const skip = Math.max(0, Math.floor(offset || 0));
@@ -896,7 +942,12 @@ export function registerTools(mcpServer, user) {
         if (!bankId) return textResult({ items: [], count: 0, note: `No bank matching "${bankName}"` });
         filter.bankId = bankId;
       }
-      if (accountNumber) filter.portfolioCode = accountNumber;
+      if (accountNumber) {
+        const acct = await resolveScopedAccountFilter(scope, accountNumber);
+        if (!acct.ok) return textResult({ items: [], count: 0, note: `No account "${accountNumber}" in your scope` });
+        filter.portfolioCode = acct.portfolioCode;
+        if (acct.bankId && !filter.bankId) filter.bankId = acct.bankId;
+      }
       if (from || to) {
         filter.snapshotDate = {};
         if (from) filter.snapshotDate.$gte = new Date(from);
@@ -957,7 +1008,12 @@ export function registerTools(mcpServer, user) {
       // Scope snapshots the same way get_portfolio_snapshots does
       const scopeFilter = await buildSnapshotScopeFilter(scope);
       const baseQuery = { ...scopeFilter };
-      if (accountNumber) baseQuery.portfolioCode = accountNumber;
+      if (accountNumber) {
+        const acct = await resolveScopedAccountFilter(scope, accountNumber);
+        if (!acct.ok) return textResult({ items: [], note: `No account "${accountNumber}" in your scope` });
+        baseQuery.portfolioCode = acct.portfolioCode;
+        if (acct.bankId) baseQuery.bankId = acct.bankId;
+      }
 
       // Pull all relevant snapshots once and bucket by date (YYYY-MM-DD)
       const allSnaps = await PortfolioSnapshotsCollection.find(baseQuery, {
@@ -1234,10 +1290,15 @@ export function registerTools(mcpServer, user) {
       ];
 
       const query = {};
-      const isAdmin = user.role === 'admin' || user.role === 'superadmin';
+      const isAdmin = [USER_ROLES.ADMIN, USER_ROLES.SUPERADMIN, USER_ROLES.COMPLIANCE].includes(user.role);
       if (!isAdmin) query.sentToUsers = user._id;
 
-      query.eventType = (eventTypes && eventTypes.length) ? { $in: eventTypes } : { $in: alertEventTypes };
+      // Constrain to the curated alert set even when the caller supplies
+      // eventTypes — an arbitrary internal event type must not be readable.
+      const requestedTypes = (eventTypes && eventTypes.length)
+        ? eventTypes.filter(t => alertEventTypes.includes(t))
+        : alertEventTypes;
+      query.eventType = { $in: requestedTypes.length ? requestedTypes : alertEventTypes };
       if (unreadOnly !== false) query.readBy = { $ne: user._id };
       if (from || to) {
         query.createdAt = {};
@@ -1261,8 +1322,9 @@ export function registerTools(mcpServer, user) {
           productIsin: n.productIsin || null,
           eventDate: n.eventDate || null,
           createdAt: n.createdAt,
-          read: Array.isArray(n.readBy) && n.readBy.includes(user._id),
-          data: n.eventData || null
+          read: Array.isArray(n.readBy) && n.readBy.includes(user._id)
+          // raw eventData omitted: the human-readable content is in `summary`;
+          // the raw payload can carry internal ids/fields.
         })),
         total,
         hasMore: notifs.length < total
@@ -1289,15 +1351,22 @@ export function registerTools(mcpServer, user) {
     },
     async ({ entityId, bankName, accountNumber, operationType, isinContains, from, to, limit, offset }) => {
       const scope = await resolveMcpScope(user, { entityId });
-      const filter = { isActive: true, ...(await buildSnapshotScopeFilter(scope)) };
+      // Scope against PMSOperations itself, not snapshots — a code with no
+      // snapshot would otherwise silently drop its transactions.
+      const filter = { isActive: true, ...(await buildOperationsScopeFilter(scope)) };
       if (bankName) {
         const bankId = await resolveBankId(bankName);
         if (!bankId) return textResult({ items: [], total: 0, hasMore: false, note: `No bank matching "${bankName}"` });
         filter.bankId = bankId;
       }
-      if (accountNumber) filter.portfolioCode = accountNumber;
+      if (accountNumber) {
+        const acct = await resolveScopedAccountFilter(scope, accountNumber);
+        if (!acct.ok) return textResult({ items: [], total: 0, hasMore: false, note: `No account "${accountNumber}" in your scope` });
+        filter.portfolioCode = acct.portfolioCode;
+        if (acct.bankId && !filter.bankId) filter.bankId = acct.bankId;
+      }
       if (operationType) filter.operationType = operationType;
-      if (isinContains) filter.isin = { $regex: isinContains, $options: 'i' };
+      if (isinContains) filter.isin = { $regex: `^${escapeRegex(isinContains)}`, $options: 'i' };
       if (from || to) {
         filter.operationDate = {};
         if (from) filter.operationDate.$gte = new Date(from);
@@ -1358,15 +1427,21 @@ export function registerTools(mcpServer, user) {
       const baseTicker = needle.split('.')[0];
       const re = new RegExp(baseTicker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
 
-      // 1. Direct holdings matching the underlying
+      // 1. Direct holdings matching the underlying.
+      // The scope filter and the underlying match are AND-ed via $and — NEVER
+      // spread-then-add-$or, which silently drops the owner predicate and dumps
+      // every client's holdings (the scope helper also returns $and now, but
+      // this call site is explicit so the guarantee is local and obvious).
       const holdingFilter = {
         isActive: true,
         isLatest: true,
-        ...(await buildHoldingScopeFilter(scope)),
-        $or: [
-          { isin: needle },
-          { securityName: re },
-          { ticker: re }
+        $and: [
+          await buildHoldingScopeFilter(scope),
+          { $or: [
+            { isin: needle },
+            { securityName: re },
+            { ticker: re }
+          ] }
         ]
       };
       const directHoldings = await PMSHoldingsCollection.find(holdingFilter, {

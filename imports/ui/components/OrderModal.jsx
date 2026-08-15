@@ -3,16 +3,35 @@ import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import Modal from './common/Modal.jsx';
 import ActionButton from './common/ActionButton.jsx';
-import { ASSET_TYPES, PRICE_TYPES, TRADE_MODES, FX_SUBTYPES, VALIDITY_TYPES, TERM_DEPOSIT_TENORS, EMAIL_TRACE_TYPES, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, ORDER_SOURCE_TYPES, EXECUTION_TYPES, EXECUTION_TYPE_LABELS, FUND_QUANTITY_MODES, OrderFormatters } from '/imports/api/orders';
+import { ASSET_TYPES, PRICE_TYPES, TRADE_MODES, FX_SUBTYPES, VALIDITY_TYPES, TERM_DEPOSIT_TENORS, EMAIL_TRACE_TYPES, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, ORDER_SOURCE_TYPES, EXECUTION_TYPES, EXECUTION_TYPE_LABELS, FUND_QUANTITY_MODES, OrderFormatters, assetTypeForAssetClass } from '/imports/api/orders';
 import { IssuersCollection } from '/imports/api/issuers';
 import FormattedNumberInput from './FormattedNumberInput.jsx';
 import AccountAutocomplete from './AccountAutocomplete.jsx';
+import { useIsMobile } from '../hooks/useIsMobile.js';
 
 // Main tradable currencies, ordered by importance. Used for every currency
 // dropdown in the new-order flow (FX legs, deposit, settlement, manual entry).
 const MAIN_CURRENCIES = [
   'USD', 'EUR', 'CHF', 'GBP', 'JPY', 'ILS', 'CAD', 'AUD', 'NZD', 'SEK'
 ];
+
+/**
+ * Read a File into a creation attachment ({ traceType, fileName, base64Data, mimeType }).
+ * Order evidence is sent inside the create call rather than uploaded afterwards, so an
+ * order is never queued for four-eyes validation without the email it came from.
+ */
+const readAttachment = (file, traceType, defaultMimeType = 'application/octet-stream') =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({
+      traceType,
+      fileName: file.name,
+      base64Data: reader.result.split(',')[1],
+      mimeType: file.type || defaultMimeType
+    });
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
 
 /**
  * OrderModal - Multi-step wizard for creating buy/sell orders
@@ -52,6 +71,15 @@ const OrderModal = ({
       document.head.appendChild(style);
     }
   }, []);
+
+  const isMobile = useIsMobile();
+
+  /**
+   * Collapse a multi-column form grid to a single column on a phone. Two-column
+   * groupings of short related fields (a value and its currency) stay side by side
+   * when explicitly asked to, since splitting those costs more than it gains.
+   */
+  const gridCols = (desktop, mobile = '1fr') => (isMobile ? mobile : desktop);
 
   const [currentStep, setCurrentStep] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -710,15 +738,7 @@ const OrderModal = ({
 
     // Auto-detect asset type
     if (security.assetClass) {
-      const assetClassMap = {
-        'equity': ASSET_TYPES.EQUITY,
-        'bond': ASSET_TYPES.BOND,
-        'structured_product': ASSET_TYPES.STRUCTURED_PRODUCT,
-        'fund': ASSET_TYPES.FUND,
-        'etf': ASSET_TYPES.ETF,
-        'fx': ASSET_TYPES.FX
-      };
-      setAssetType(assetClassMap[security.assetClass] || ASSET_TYPES.OTHER);
+      setAssetType(assetTypeForAssetClass(security.assetClass));
     }
 
     // Set currency
@@ -981,6 +1001,37 @@ const OrderModal = ({
           bulkCurrency = selectedSecurity.currency || 'USD';
         }
 
+        // Evidence travels with the create call so no order in the block is queued
+        // for validation before its files exist: emails covering the whole block go
+        // in `attachments`, per-account emails ride along on their own row.
+        const sharedAttachments = [];
+        for (const file of clientOrderFiles) {
+          sharedAttachments.push(await readAttachment(file, EMAIL_TRACE_TYPES.CLIENT_ORDER));
+        }
+        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && termsheetFile) {
+          sharedAttachments.push(await readAttachment(termsheetFile, EMAIL_TRACE_TYPES.INITIAL_TERMSHEET, 'application/pdf'));
+        }
+
+        const bulkRows = await Promise.all(validOrders.map(async (o) => {
+          const rowIdx = bulkOrders.indexOf(o);
+          const rowAccounts = bulkAccountsMap[rowIdx] || [];
+          const account = rowAccounts.find(a => a._id === o.bankAccountId);
+          const orderItem = {
+            clientId: o.clientId,
+            entityId: o.entityId || null,
+            bankAccountId: o.bankAccountId,
+            quantity: parseFloat(o.quantity)
+          };
+          if (account?.accountNumber) {
+            orderItem.portfolioCode = account.accountNumber;
+          }
+          const rowFile = bulkOrderFiles[rowIdx];
+          if (rowFile) {
+            orderItem.attachments = [await readAttachment(rowFile, EMAIL_TRACE_TYPES.CLIENT_ORDER)];
+          }
+          return orderItem;
+        }));
+
         const bulkOrderData = {
           orderType: mode,
           isin: bulkIsin,
@@ -988,20 +1039,7 @@ const OrderModal = ({
           assetType,
           currency: bulkCurrency,
           priceType,
-          orders: validOrders.map(o => {
-            const rowAccounts = bulkAccountsMap[bulkOrders.indexOf(o)] || [];
-            const account = rowAccounts.find(a => a._id === o.bankAccountId);
-            const orderItem = {
-              clientId: o.clientId,
-              entityId: o.entityId || null,
-              bankAccountId: o.bankAccountId,
-              quantity: parseFloat(o.quantity)
-            };
-            if (account?.accountNumber) {
-              orderItem.portfolioCode = account.accountNumber;
-            }
-            return orderItem;
-          })
+          orders: bulkRows
         };
 
         // Add optional fields only if they have values
@@ -1052,95 +1090,20 @@ const OrderModal = ({
 
         const result = await Meteor.callAsync('orders.createBulk', {
           bulkOrderData,
+          ...(sharedAttachments.length > 0 ? { attachments: sharedAttachments } : {}),
           sessionId
         });
 
-        // Upload shared email attachments to all created orders
-        if (clientOrderFiles.length > 0 && result?.createdOrders?.length > 0) {
-          for (const file of clientOrderFiles) {
-            try {
-              const base64 = await new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = () => resolve(reader.result.split(',')[1]);
-                reader.onerror = reject;
-                reader.readAsDataURL(file);
-              });
-              for (const created of result.createdOrders) {
-                const orderId = created?.orderId || created?._id;
-                if (orderId) {
-                  await Meteor.callAsync('orders.uploadEmailTrace', {
-                    orderId,
-                    traceType: EMAIL_TRACE_TYPES.CLIENT_ORDER,
-                    fileName: file.name,
-                    base64Data: base64,
-                    mimeType: file.type || 'application/octet-stream',
-                    sessionId
-                  });
-                }
-              }
-            } catch (uploadErr) {
-              console.error('Error uploading bulk email attachment:', uploadErr);
-            }
-          }
-        }
-
-        // For bulk structured-product orders, upload the same termsheet PDF to each created order
-        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && termsheetFile && result?.createdOrders?.length > 0) {
-          try {
-            const tsBase64 = await new Promise((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve(reader.result.split(',')[1]);
-              reader.onerror = reject;
-              reader.readAsDataURL(termsheetFile);
-            });
-            for (const created of result.createdOrders) {
-              const orderId = created?.orderId || created?._id;
-              if (orderId) {
-                await Meteor.callAsync('orders.uploadEmailTrace', {
-                  orderId,
-                  traceType: EMAIL_TRACE_TYPES.INITIAL_TERMSHEET,
-                  fileName: termsheetFile.name,
-                  base64Data: tsBase64,
-                  mimeType: termsheetFile.type || 'application/pdf',
-                  sessionId
-                });
-              }
-            }
-          } catch (tsErr) {
-            console.error('Error uploading termsheet for bulk orders:', tsErr);
-          }
-        }
-
-        // Upload per-account file attachments
-        if (Object.keys(bulkOrderFiles).length > 0 && result?.createdOrders?.length > 0) {
-          const validOrders = bulkOrders.filter(o => o.clientId && o.bankAccountId);
-          for (const [rowIdxStr, file] of Object.entries(bulkOrderFiles)) {
-            const rowIdx = parseInt(rowIdxStr);
-            // Find the matching created order (same position in valid orders)
-            const validIdx = validOrders.indexOf(bulkOrders[rowIdx]);
-            const created = result.createdOrders[validIdx];
-            const orderId = created?.orderId || created?._id;
-            if (orderId && file) {
-              try {
-                const base64 = await new Promise((resolve, reject) => {
-                  const reader = new FileReader();
-                  reader.onload = () => resolve(reader.result.split(',')[1]);
-                  reader.onerror = reject;
-                  reader.readAsDataURL(file);
-                });
-                await Meteor.callAsync('orders.uploadEmailTrace', {
-                  orderId,
-                  traceType: EMAIL_TRACE_TYPES.CLIENT_ORDER,
-                  fileName: file.name,
-                  base64Data: base64,
-                  mimeType: file.type || 'application/octet-stream',
-                  sessionId
-                });
-              } catch (uploadErr) {
-                console.error('Error uploading per-account file:', uploadErr);
-              }
-            }
-          }
+        // Rows can fail individually (rejected attachment, position check, …). That
+        // used to pass unnoticed — the modal closed as if the whole block had been
+        // created. Report it and stay open; any rows that did succeed are listed.
+        if (result?.totalErrors > 0) {
+          const failures = (result.errors || []).map(e => (
+            `${validOrders[e.index]?.accountLabel || `row ${e.index + 1}`}: ${e.error}`
+          ));
+          if (result.totalCreated > 0) onOrderCreated?.(result);
+          setError(`${result.totalCreated} of ${result.totalCreated + result.totalErrors} orders created. Failed — ${failures.join(' | ')}`);
+          return;
         }
 
         onOrderCreated?.(result);
@@ -1291,55 +1254,22 @@ const OrderModal = ({
           orderData.allocationJustification = allocationJustification.trim();
         }
 
+        // Read the evidence first and hand it to orders.create: the order is then
+        // inserted with its traces already attached, so it cannot show up for
+        // validation (or notify the validators) before its files exist.
+        const attachments = [];
+        if (clientOrderFile) {
+          attachments.push(await readAttachment(clientOrderFile, EMAIL_TRACE_TYPES.CLIENT_ORDER));
+        }
+        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && termsheetFile) {
+          attachments.push(await readAttachment(termsheetFile, EMAIL_TRACE_TYPES.INITIAL_TERMSHEET, 'application/pdf'));
+        }
+
         const result = await Meteor.callAsync('orders.create', {
           orderData,
+          ...(attachments.length > 0 ? { attachments } : {}),
           sessionId
         });
-
-        // Upload client order email attachment if provided
-        if (clientOrderFile && result?.orderId) {
-          try {
-            const base64 = await new Promise((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve(reader.result.split(',')[1]);
-              reader.onerror = reject;
-              reader.readAsDataURL(clientOrderFile);
-            });
-            await Meteor.callAsync('orders.uploadEmailTrace', {
-              orderId: result.orderId,
-              traceType: EMAIL_TRACE_TYPES.CLIENT_ORDER,
-              fileName: clientOrderFile.name,
-              base64Data: base64,
-              mimeType: clientOrderFile.type || 'application/octet-stream',
-              sessionId
-            });
-          } catch (uploadErr) {
-            console.error('Error uploading client order email:', uploadErr);
-            // Don't block order creation if attachment upload fails
-          }
-        }
-
-        // Upload initial termsheet PDF for structured products
-        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && termsheetFile && result?.orderId) {
-          try {
-            const tsBase64 = await new Promise((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve(reader.result.split(',')[1]);
-              reader.onerror = reject;
-              reader.readAsDataURL(termsheetFile);
-            });
-            await Meteor.callAsync('orders.uploadEmailTrace', {
-              orderId: result.orderId,
-              traceType: EMAIL_TRACE_TYPES.INITIAL_TERMSHEET,
-              fileName: termsheetFile.name,
-              base64Data: tsBase64,
-              mimeType: termsheetFile.type || 'application/pdf',
-              sessionId
-            });
-          } catch (tsErr) {
-            console.error('Error uploading termsheet PDF:', tsErr);
-          }
-        }
 
         onOrderCreated?.(result);
       }
@@ -1418,9 +1348,10 @@ const OrderModal = ({
   const styles = {
     stepIndicator: {
       display: 'flex',
+      alignItems: 'center',
       justifyContent: 'space-between',
-      marginBottom: '24px',
-      padding: '0 16px'
+      marginBottom: isMobile ? '16px' : '24px',
+      padding: isMobile ? 0 : '0 16px'
     },
     stepItem: (isActive, isComplete) => ({
       display: 'flex',
@@ -1449,7 +1380,7 @@ const OrderModal = ({
       flex: 1,
       height: '2px',
       background: 'var(--border-color)',
-      margin: '0 16px',
+      margin: isMobile ? '0 6px' : '0 16px',
       alignSelf: 'center'
     },
     formGroup: {
@@ -1462,22 +1393,25 @@ const OrderModal = ({
       fontWeight: '500',
       color: 'var(--text-secondary)'
     },
+    // iOS Safari auto-zooms the page when a focused control's font is under 16px,
+    // which on this form left the field off-screen and the layout stuck zoomed.
+    // 16px on mobile is a functional requirement, not a style preference.
     input: {
       width: '100%',
-      padding: '10px 12px',
+      padding: isMobile ? '12px 14px' : '10px 12px',
       border: '1px solid var(--border-color)',
       borderRadius: '6px',
-      fontSize: '14px',
+      fontSize: isMobile ? '16px' : '14px',
       background: 'var(--bg-primary)',
       color: 'var(--text-primary)',
       outline: 'none'
     },
     select: {
       width: '100%',
-      padding: '10px 12px',
+      padding: isMobile ? '12px 14px' : '10px 12px',
       border: '1px solid var(--border-color)',
       borderRadius: '6px',
-      fontSize: '14px',
+      fontSize: isMobile ? '16px' : '14px',
       background: 'var(--bg-primary)',
       color: 'var(--text-primary)',
       outline: 'none',
@@ -1485,10 +1419,10 @@ const OrderModal = ({
     },
     textarea: {
       width: '100%',
-      padding: '10px 12px',
+      padding: isMobile ? '12px 14px' : '10px 12px',
       border: '1px solid var(--border-color)',
       borderRadius: '6px',
-      fontSize: '14px',
+      fontSize: isMobile ? '16px' : '14px',
       background: 'var(--bg-primary)',
       color: 'var(--text-primary)',
       outline: 'none',
@@ -1497,19 +1431,23 @@ const OrderModal = ({
     },
     searchResults: {
       position: 'absolute',
-      bottom: '100%',
+      // Desktop opens upward (the field sits low in a short dialog). In the mobile
+      // sheet the field is near the top, where opening upward would be clipped.
+      ...(isMobile
+        ? { top: '100%', borderRadius: '0 0 6px 6px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }
+        : { bottom: '100%', borderRadius: '6px 6px 0 0', boxShadow: '0 -4px 12px rgba(0,0,0,0.15)' }),
       left: 0,
       right: 0,
       background: 'var(--bg-primary)',
       border: '1px solid var(--border-color)',
-      borderRadius: '6px 6px 0 0',
-      maxHeight: '300px',
+      maxHeight: isMobile ? '45vh' : '300px',
       overflowY: 'auto',
-      zIndex: 100,
-      boxShadow: '0 -4px 12px rgba(0,0,0,0.15)'
+      WebkitOverflowScrolling: 'touch',
+      zIndex: 100
     },
     searchResultItem: {
-      padding: '10px 12px',
+      // Taller rows so a fingertip can pick one security out of a list.
+      padding: isMobile ? '14px 12px' : '10px 12px',
       borderBottom: '1px solid var(--border-color)',
       cursor: 'pointer',
       transition: 'background 0.15s'
@@ -1567,7 +1505,7 @@ const OrderModal = ({
       fontSize: '12px',
       textTransform: 'uppercase',
       background: type === 'buy' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-      color: type === 'buy' ? '#10b981' : '#ef4444'
+      color: type === 'buy' ? 'var(--gain-color)' : 'var(--loss-color)'
     }),
     row: {
       display: 'flex',
@@ -1580,21 +1518,57 @@ const OrderModal = ({
 
   const steps = ['Account', 'Order Type', 'Details', 'Review'];
 
-  const renderStepIndicator = () => (
-    <div style={styles.stepIndicator}>
-      {steps.map((step, index) => (
-        <React.Fragment key={step}>
-          <div style={styles.stepItem(currentStep === index + 1, currentStep > index + 1)}>
-            <div style={styles.stepNumber(currentStep === index + 1, currentStep > index + 1)}>
-              {currentStep > index + 1 ? '✓' : index + 1}
-            </div>
-            <span style={styles.stepLabel}>{step}</span>
+  const renderStepIndicator = () => {
+    // On a phone there is no room for four labels plus connectors, so only the
+    // current step is named — enough to know where you are and how far is left.
+    if (isMobile) {
+      return (
+        <div style={{ marginBottom: '16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+            {steps.map((step, index) => (
+              <div
+                key={step}
+                style={{
+                  flex: 1,
+                  height: '4px',
+                  borderRadius: '2px',
+                  background: currentStep > index + 1
+                    ? 'var(--success-color)'
+                    : currentStep === index + 1
+                      ? 'var(--accent-color)'
+                      : 'var(--border-color)'
+                }}
+              />
+            ))}
           </div>
-          {index < steps.length - 1 && <div style={styles.stepConnector} />}
-        </React.Fragment>
-      ))}
-    </div>
-  );
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+            <span style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-muted)' }}>
+              STEP {currentStep} OF {steps.length}
+            </span>
+            <span style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>
+              {steps[currentStep - 1]}
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div style={styles.stepIndicator}>
+        {steps.map((step, index) => (
+          <React.Fragment key={step}>
+            <div style={styles.stepItem(currentStep === index + 1, currentStep > index + 1)}>
+              <div style={styles.stepNumber(currentStep === index + 1, currentStep > index + 1)}>
+                {currentStep > index + 1 ? '✓' : index + 1}
+              </div>
+              <span style={styles.stepLabel}>{step}</span>
+            </div>
+            {index < steps.length - 1 && <div style={styles.stepConnector} />}
+          </React.Fragment>
+        ))}
+      </div>
+    );
+  };
 
   const renderStep1 = () => (
     <div>
@@ -1727,7 +1701,7 @@ const OrderModal = ({
                         borderRadius: '3px',
                         fontWeight: '500',
                         background: result.source === 'product' ? 'rgba(99, 102, 241, 0.15)' : result.source === 'eod' ? 'rgba(245, 158, 11, 0.15)' : 'rgba(107, 114, 128, 0.15)',
-                        color: result.source === 'product' ? '#6366f1' : result.source === 'eod' ? '#f59e0b' : '#6b7280'
+                        color: result.source === 'product' ? '#6366f1' : result.source === 'eod' ? 'var(--warning-color)' : '#6b7280'
                       }}>
                         {result.source === 'product' ? 'Ambervision' : result.source === 'eod' ? 'EOD' : result.source === 'metadata' ? 'Local' : 'PMS'}
                       </span>
@@ -1847,7 +1821,7 @@ const OrderModal = ({
               onClick={() => setDepositAction('increase')}
               style={{
                 flex: 1, padding: '8px 12px', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: '600',
-                background: depositAction === 'increase' ? '#10b981' : 'var(--bg-primary)',
+                background: depositAction === 'increase' ? 'var(--gain-color)' : 'var(--bg-primary)',
                 color: depositAction === 'increase' ? '#fff' : 'var(--text-secondary)',
                 transition: 'all 0.15s ease'
               }}
@@ -1860,7 +1834,7 @@ const OrderModal = ({
               style={{
                 flex: 1, padding: '8px 12px', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: '600',
                 borderLeft: '1px solid var(--border-color)',
-                background: depositAction === 'decrease' ? '#ef4444' : 'var(--bg-primary)',
+                background: depositAction === 'decrease' ? 'var(--loss-color)' : 'var(--bg-primary)',
                 color: depositAction === 'decrease' ? '#fff' : 'var(--text-secondary)',
                 transition: 'all 0.15s ease'
               }}
@@ -2013,7 +1987,7 @@ const OrderModal = ({
               marginBottom: '12px'
             }}>
               {fxWarnings.map((w, i) => (
-                <div key={i} style={{ fontSize: '12px', color: '#f59e0b', marginBottom: i < fxWarnings.length - 1 ? '4px' : 0 }}>
+                <div key={i} style={{ fontSize: '12px', color: 'var(--warning-color)', marginBottom: i < fxWarnings.length - 1 ? '4px' : 0 }}>
                   ⚠ {w}
                 </div>
               ))}
@@ -2156,12 +2130,12 @@ const OrderModal = ({
                     {/* Cash check */}
                     {mode === 'buy' && (assetType === ASSET_TYPES.EQUITY || assetType === ASSET_TYPES.ETF) && rowCashInCcy && (
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', marginBottom: '4px' }}>
-                        <span style={{ color: 'var(--text-secondary)' }}>Cash {secCurrency}: <span style={{ fontWeight: '600', color: rowExceeds ? '#ef4444' : '#10b981' }}>{rowCashInCcy.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></span>
+                        <span style={{ color: 'var(--text-secondary)' }}>Cash {secCurrency}: <span style={{ fontWeight: '600', color: rowExceeds ? 'var(--loss-color)' : 'var(--gain-color)' }}>{rowCashInCcy.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></span>
                         {rowMaxShares !== null && rowMaxShares > 0 && (
                           <span style={{ color: 'var(--accent-color)', cursor: 'pointer' }} onClick={() => updateBulkOrder(origIdx, 'quantity', String(rowMaxShares))}>Max: {rowMaxShares.toLocaleString()}</span>
                         )}
                         {rowExceeds && rowQty > 0 && (
-                          <span style={{ color: '#ef4444', fontWeight: '500' }}>Exceeds cash</span>
+                          <span style={{ color: 'var(--loss-color)', fontWeight: '500' }}>Exceeds cash</span>
                         )}
                       </div>
                     )}
@@ -2169,8 +2143,8 @@ const OrderModal = ({
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px' }}>
                       {rowFile ? (
                         <>
-                          <span style={{ color: '#10b981' }}>📎 {rowFile.name}</span>
-                          <button onClick={() => setBulkOrderFiles(prev => { const next = { ...prev }; delete next[origIdx]; return next; })} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '12px', padding: '0 2px' }}>x</button>
+                          <span style={{ color: 'var(--gain-color)' }}>📎 {rowFile.name}</span>
+                          <button onClick={() => setBulkOrderFiles(prev => { const next = { ...prev }; delete next[origIdx]; return next; })} style={{ background: 'none', border: 'none', color: 'var(--loss-color)', cursor: 'pointer', fontSize: '12px', padding: '0 2px' }}>x</button>
                         </>
                       ) : (
                         <span
@@ -2288,7 +2262,7 @@ const OrderModal = ({
               }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: maxShares ? '4px' : 0 }}>
                   <span style={{ color: 'var(--text-secondary)' }}>Cash in {secCurrency}</span>
-                  <span style={{ fontWeight: '600', color: cashInCurrency ? (exceeds ? '#ef4444' : '#10b981') : 'var(--text-secondary)' }}>
+                  <span style={{ fontWeight: '600', color: cashInCurrency ? (exceeds ? 'var(--loss-color)' : 'var(--gain-color)') : 'var(--text-secondary)' }}>
                     {cashInCurrency ? cashInCurrency.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : 'No balance'}
                   </span>
                 </div>
@@ -2307,7 +2281,7 @@ const OrderModal = ({
                   </div>
                 )}
                 {exceeds && qty > 0 && (
-                  <div style={{ marginTop: '4px', color: '#ef4444', fontSize: '12px', fontWeight: '500' }}>
+                  <div style={{ marginTop: '4px', color: 'var(--loss-color)', fontSize: '12px', fontWeight: '500' }}>
                     Estimated cost {secCurrency} {estCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} exceeds available cash
                   </div>
                 )}
@@ -2319,7 +2293,9 @@ const OrderModal = ({
           {assetType !== ASSET_TYPES.TERM_DEPOSIT && assetType !== ASSET_TYPES.STRUCTURED_PRODUCT && (
             <div style={styles.formGroup}>
               <label style={styles.label}>Order Type</label>
-              <div style={{ display: 'grid', gridTemplateColumns: (assetType === ASSET_TYPES.EQUITY || assetType === ASSET_TYPES.ETF) ? '1fr 1fr 1fr 1fr' : '1fr 1fr', gap: '6px' }}>
+              {/* Four price types across a phone screen leave ~80px each, too narrow for
+                  "Stop Limit" — they wrap to a 2x2 grid instead. */}
+              <div style={{ display: 'grid', gridTemplateColumns: gridCols((assetType === ASSET_TYPES.EQUITY || assetType === ASSET_TYPES.ETF) ? '1fr 1fr 1fr 1fr' : '1fr 1fr', '1fr 1fr'), gap: '6px' }}>
                 {[
                   { value: PRICE_TYPES.MARKET, label: 'Market' },
                   { value: PRICE_TYPES.LIMIT, label: 'Limit' },
@@ -2419,7 +2395,7 @@ const OrderModal = ({
           {((priceType !== PRICE_TYPES.MARKET) || (assetType === ASSET_TYPES.FX && limitPrice)) && assetType !== ASSET_TYPES.TERM_DEPOSIT && assetType !== ASSET_TYPES.STRUCTURED_PRODUCT && (
             <div style={styles.formGroup}>
               <label style={styles.label}>Validity</label>
-              <div style={{ display: 'grid', gridTemplateColumns: validityType === VALIDITY_TYPES.GTD ? '1fr 1fr 1fr 2fr' : '1fr 1fr 1fr', gap: '6px', alignItems: 'start' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: gridCols(validityType === VALIDITY_TYPES.GTD ? '1fr 1fr 1fr 2fr' : '1fr 1fr 1fr'), gap: '6px', alignItems: 'start' }}>
                 {[
                   { value: VALIDITY_TYPES.DAY, label: 'Day' },
                   { value: VALIDITY_TYPES.GTC, label: 'Good Till Canceled' },
@@ -2480,7 +2456,7 @@ const OrderModal = ({
                 <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
                   Attached Orders (Optional)
                   {(attachedTakeProfit || attachedStopLoss) && (
-                    <span style={{ marginLeft: '8px', fontSize: '11px', color: '#10b981', fontWeight: '500' }}>
+                    <span style={{ marginLeft: '8px', fontSize: '11px', color: 'var(--gain-color)', fontWeight: '500' }}>
                       {[attachedTakeProfit && 'TP', attachedStopLoss && 'SL'].filter(Boolean).join(' + ')} set
                     </span>
                   )}
@@ -2558,7 +2534,7 @@ const OrderModal = ({
           transition: 'all 0.15s ease'
         }} onClick={() => setCapitalProtected(!capitalProtected)}>
           <div>
-            <span style={{ fontSize: '13px', fontWeight: '600', color: capitalProtected ? '#10b981' : 'var(--text-primary)' }}>
+            <span style={{ fontSize: '13px', fontWeight: '600', color: capitalProtected ? 'var(--gain-color)' : 'var(--text-primary)' }}>
               Capital Protected
             </span>
             <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
@@ -2569,7 +2545,7 @@ const OrderModal = ({
             width: '36px',
             height: '20px',
             borderRadius: '10px',
-            background: capitalProtected ? '#10b981' : 'var(--border-color)',
+            background: capitalProtected ? 'var(--gain-color)' : 'var(--border-color)',
             position: 'relative',
             transition: 'background 0.2s ease',
             flexShrink: 0
@@ -2666,7 +2642,7 @@ const OrderModal = ({
                 };
                 return termsheetFile ? (
                   <div style={{
-                    border: '2px solid #10b981',
+                    border: '2px solid var(--gain-color)',
                     background: 'rgba(16, 185, 129, 0.08)',
                     borderRadius: '8px',
                     padding: '10px 12px',
@@ -2675,7 +2651,7 @@ const OrderModal = ({
                     gap: '8px'
                   }}>
                     <span style={{ fontSize: '18px' }}>📄</span>
-                    <span style={{ fontSize: '13px', fontWeight: '600', color: '#10b981', flex: 1, wordBreak: 'break-all' }}>
+                    <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--gain-color)', flex: 1, wordBreak: 'break-all' }}>
                       {termsheetFile.name}
                     </span>
                     <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
@@ -2683,7 +2659,7 @@ const OrderModal = ({
                     </span>
                     <button
                       type="button"
-                      style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '14px', padding: '2px 6px' }}
+                      style={{ background: 'none', border: 'none', color: 'var(--loss-color)', cursor: 'pointer', fontSize: '14px', padding: '2px 6px' }}
                       onClick={() => setTermsheetFile(null)}
                       title="Remove file"
                     >
@@ -2753,10 +2729,10 @@ const OrderModal = ({
 
       <div style={styles.formGroup}>
         <label style={styles.label}>
-          {isCashExceeded ? <span style={{ color: '#ef4444' }}>Notes (Required — order exceeds available cash)</span> : 'Notes (Optional)'}
+          {isCashExceeded ? <span style={{ color: 'var(--loss-color)' }}>Notes (Required — order exceeds available cash)</span> : 'Notes (Optional)'}
         </label>
         <textarea
-          style={{ ...styles.textarea, ...(isCashExceeded && !notes.trim() ? { borderColor: '#ef4444' } : {}) }}
+          style={{ ...styles.textarea, ...(isCashExceeded && !notes.trim() ? { borderColor: 'var(--loss-color)' } : {}) }}
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           placeholder={isCashExceeded ? 'Please justify why this order exceeds available cash...' : 'Add any special instructions or notes...'}
@@ -2813,9 +2789,9 @@ const OrderModal = ({
             padding: '12px', borderRadius: '8px',
             background: 'rgba(59, 130, 246, 0.05)', border: '1px solid rgba(59, 130, 246, 0.2)'
           }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '6px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: gridCols('1fr 1fr'), gap: '10px', marginBottom: '6px' }}>
               <div>
-                <label style={{ fontSize: '12px', fontWeight: '600', color: '#3b82f6', display: 'block', marginBottom: '6px' }}>
+                <label style={{ fontSize: '12px', fontWeight: '600', color: 'var(--info-color)', display: 'block', marginBottom: '6px' }}>
                   Call received at
                 </label>
                 <input
@@ -2826,7 +2802,7 @@ const OrderModal = ({
                 />
               </div>
               <div>
-                <label style={{ fontSize: '12px', fontWeight: '600', color: '#3b82f6', display: 'block', marginBottom: '6px' }}>
+                <label style={{ fontSize: '12px', fontWeight: '600', color: 'var(--info-color)', display: 'block', marginBottom: '6px' }}>
                   Phone line
                 </label>
                 <input
@@ -2858,12 +2834,12 @@ const OrderModal = ({
                     border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '6px'
                   }}>
                     <span style={{ fontSize: '14px' }}>📎</span>
-                    <span style={{ fontSize: '12px', fontWeight: '500', color: '#10b981', flex: 1 }}>{file.name}</span>
+                    <span style={{ fontSize: '12px', fontWeight: '500', color: 'var(--gain-color)', flex: 1 }}>{file.name}</span>
                     <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                       ({(file.size / 1024).toFixed(0)} KB)
                     </span>
                     <button
-                      style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '13px', padding: '2px 6px' }}
+                      style={{ background: 'none', border: 'none', color: 'var(--loss-color)', cursor: 'pointer', fontSize: '13px', padding: '2px 6px' }}
                       onClick={() => setClientOrderFiles(prev => prev.filter((_, i) => i !== idx))}
                       title="Remove file"
                     >
@@ -2879,15 +2855,15 @@ const OrderModal = ({
               <div style={{
                 display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px',
                 padding: '8px 12px', background: 'rgba(16, 185, 129, 0.05)',
-                border: '2px solid #10b981', borderRadius: '8px'
+                border: '2px solid var(--gain-color)', borderRadius: '8px'
               }}>
                 <span style={{ fontSize: '16px' }}>📎</span>
-                <span style={{ fontSize: '13px', fontWeight: '600', color: '#10b981', flex: 1 }}>{clientOrderFile.name}</span>
+                <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--gain-color)', flex: 1 }}>{clientOrderFile.name}</span>
                 <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                   ({(clientOrderFile.size / 1024).toFixed(0)} KB)
                 </span>
                 <button
-                  style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '14px', padding: '2px 6px' }}
+                  style={{ background: 'none', border: 'none', color: 'var(--loss-color)', cursor: 'pointer', fontSize: '14px', padding: '2px 6px' }}
                   onClick={() => setClientOrderFile(null)}
                   title="Remove file"
                 >
@@ -2911,7 +2887,7 @@ const OrderModal = ({
                 onDragOver={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  e.currentTarget.style.borderColor = '#10b981';
+                  e.currentTarget.style.borderColor = 'var(--gain-color)';
                   e.currentTarget.style.background = 'rgba(16, 185, 129, 0.05)';
                 }}
                 onDragLeave={(e) => {
@@ -3177,7 +3153,7 @@ const OrderModal = ({
                     }}
                   />
                   {isDuplicate && (
-                    <div style={{ marginTop: '6px', fontSize: '11px', color: '#f59e0b' }}>
+                    <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--warning-color)' }}>
                       Duplicate client + account pair
                     </div>
                   )}
@@ -3227,7 +3203,7 @@ const OrderModal = ({
             marginTop: '8px',
             fontSize: '12px',
             fontWeight: '600',
-            color: executionType === EXECUTION_TYPES.PRE_EXECUTED ? '#f59e0b' : 'var(--text-secondary)',
+            color: executionType === EXECUTION_TYPES.PRE_EXECUTED ? 'var(--warning-color)' : 'var(--text-secondary)',
           }}>
             {EXECUTION_TYPE_LABELS[executionType]}
           </div>
@@ -3249,16 +3225,16 @@ const OrderModal = ({
             background: allocationCheck.hasBreaches ? 'rgba(245, 158, 11, 0.08)' : 'rgba(99, 102, 241, 0.05)',
             border: `1px solid ${allocationCheck.hasBreaches ? 'rgba(245, 158, 11, 0.3)' : 'rgba(99, 102, 241, 0.15)'}`
           }}>
-            <div style={{ fontSize: '13px', fontWeight: '700', color: allocationCheck.hasBreaches ? '#f59e0b' : 'var(--text-primary)', marginBottom: '10px' }}>
+            <div style={{ fontSize: '13px', fontWeight: '700', color: allocationCheck.hasBreaches ? 'var(--warning-color)' : 'var(--text-primary)', marginBottom: '10px' }}>
               {allocationCheck.hasBreaches
                 ? `Investment Profile Warning${allocationCheck.profileName ? ` — ${allocationCheck.profileName}` : ''}`
                 : `Allocation Impact${allocationCheck.profileName ? ` — ${allocationCheck.profileName}` : ''}`}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {[
-                { key: 'cash', label: 'Cash', icon: '💵', color: '#3b82f6' },
-                { key: 'bonds', label: 'Bonds', icon: '📄', color: '#10b981' },
-                { key: 'equities', label: 'Equities', icon: '📈', color: '#f59e0b' },
+                { key: 'cash', label: 'Cash', icon: '💵', color: 'var(--info-color)' },
+                { key: 'bonds', label: 'Bonds', icon: '📄', color: 'var(--gain-color)' },
+                { key: 'equities', label: 'Equities', icon: '📈', color: 'var(--warning-color)' },
                 { key: 'alternative', label: 'Alternative', icon: '🎯', color: '#8b5cf6' },
               ].map(item => {
                 const current = allocationCheck.currentAllocation?.[item.key] ?? 0;
@@ -3282,13 +3258,13 @@ const OrderModal = ({
                         {isAffected && <span style={{ fontSize: '10px', color: '#6366f1', fontWeight: '600', marginLeft: '4px' }}>affected</span>}
                       </span>
                       <span style={{
-                        color: isOverLimit ? '#ef4444' : 'var(--text-primary)',
+                        color: isOverLimit ? 'var(--loss-color)' : 'var(--text-primary)',
                         fontSize: '12px',
                         fontWeight: '600'
                       }}>
                         {showProjected ? (
                           <>
-                            {current.toFixed(1)}% → <span style={{ color: isOverLimit ? '#ef4444' : item.color }}>{projected.toFixed(1)}%</span>
+                            {current.toFixed(1)}% → <span style={{ color: isOverLimit ? 'var(--loss-color)' : item.color }}>{projected.toFixed(1)}%</span>
                           </>
                         ) : (
                           <>{current.toFixed(1)}%</>
@@ -3322,8 +3298,8 @@ const OrderModal = ({
                         left: 0, top: 0, bottom: 0,
                         width: `${Math.min(current, 100)}%`,
                         background: isOverLimit
-                          ? 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)'
-                          : `linear-gradient(90deg, ${item.color} 0%, ${item.color}dd 100%)`,
+                          ? 'linear-gradient(90deg, var(--loss-color) 0%, #dc2626 100%)'
+                          : `linear-gradient(90deg, ${item.color} 0%, color-mix(in srgb, ${item.color} 87%, transparent) 100%)`,
                         borderRadius: '8px',
                         transition: 'width 0.3s ease',
                         zIndex: 1
@@ -3337,7 +3313,7 @@ const OrderModal = ({
                           width: `${Math.min(projected - current, 100 - current)}%`,
                           background: isOverLimit
                             ? 'repeating-linear-gradient(90deg, rgba(239, 68, 68, 0.4) 0px, rgba(239, 68, 68, 0.4) 3px, rgba(239, 68, 68, 0.2) 3px, rgba(239, 68, 68, 0.2) 6px)'
-                            : `repeating-linear-gradient(90deg, ${item.color}66 0px, ${item.color}66 3px, ${item.color}33 3px, ${item.color}33 6px)`,
+                            : `repeating-linear-gradient(90deg, color-mix(in srgb, ${item.color} 40%, transparent) 0px, color-mix(in srgb, ${item.color} 40%, transparent) 3px, color-mix(in srgb, ${item.color} 20%, transparent) 3px, color-mix(in srgb, ${item.color} 20%, transparent) 6px)`,
                           borderRadius: '0 8px 8px 0',
                           transition: 'width 0.3s ease',
                           zIndex: 1
@@ -3350,7 +3326,7 @@ const OrderModal = ({
                           left: `${Math.min(projected, 100)}%`,
                           top: 0, bottom: 0,
                           width: `${Math.min(current - projected, 100)}%`,
-                          background: `repeating-linear-gradient(90deg, ${item.color}33 0px, ${item.color}33 3px, transparent 3px, transparent 6px)`,
+                          background: `repeating-linear-gradient(90deg, color-mix(in srgb, ${item.color} 20%, transparent) 0px, color-mix(in srgb, ${item.color} 20%, transparent) 3px, transparent 3px, transparent 6px)`,
                           borderRadius: '0 8px 8px 0',
                           transition: 'width 0.3s ease',
                           zIndex: 2
@@ -3445,7 +3421,7 @@ const OrderModal = ({
               {fxWarnings.length > 0 && (
                 <div style={{ marginTop: '12px', padding: '10px 12px', background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: '6px' }}>
                   {fxWarnings.map((w, i) => (
-                    <div key={i} style={{ fontSize: '12px', color: '#f59e0b', marginBottom: i < fxWarnings.length - 1 ? '4px' : 0 }}>
+                    <div key={i} style={{ fontSize: '12px', color: 'var(--warning-color)', marginBottom: i < fxWarnings.length - 1 ? '4px' : 0 }}>
                       ⚠ {w}
                     </div>
                   ))}
@@ -3459,7 +3435,7 @@ const OrderModal = ({
                 <span style={{
                   ...styles.reviewValue,
                   fontWeight: '600',
-                  color: depositAction === 'increase' ? '#10b981' : '#ef4444'
+                  color: depositAction === 'increase' ? 'var(--gain-color)' : 'var(--loss-color)'
                 }}>
                   {depositAction === 'increase' ? 'Increase' : 'Decrease'}
                 </span>
@@ -3566,7 +3542,7 @@ const OrderModal = ({
             {attachedTakeProfit && (
               <div style={styles.reviewRow}>
                 <span style={styles.reviewLabel}>Take Profit</span>
-                <span style={{ ...styles.reviewValue, color: '#10b981', fontWeight: '600' }}>
+                <span style={{ ...styles.reviewValue, color: 'var(--gain-color)', fontWeight: '600' }}>
                   {OrderFormatters.formatWithCurrency(parseFloat(attachedTakeProfit), getCurrencyForDisplay())}
                 </span>
               </div>
@@ -3574,7 +3550,7 @@ const OrderModal = ({
             {attachedStopLoss && (
               <div style={styles.reviewRow}>
                 <span style={styles.reviewLabel}>Stop Loss</span>
-                <span style={{ ...styles.reviewValue, color: '#ef4444', fontWeight: '600' }}>
+                <span style={{ ...styles.reviewValue, color: 'var(--loss-color)', fontWeight: '600' }}>
                   {OrderFormatters.formatWithCurrency(parseFloat(attachedStopLoss), getCurrencyForDisplay())}
                 </span>
               </div>
@@ -3653,7 +3629,7 @@ const OrderModal = ({
               <span style={{
                 display: 'inline-flex', alignItems: 'center', gap: '4px',
                 padding: '3px 10px', borderRadius: '12px',
-                background: 'rgba(59, 130, 246, 0.1)', color: '#3b82f6',
+                background: 'rgba(59, 130, 246, 0.1)', color: 'var(--info-color)',
                 fontSize: '12px', fontWeight: '600'
               }}>
                 📞 Phone Order
@@ -3703,7 +3679,10 @@ const OrderModal = ({
 
   // Step 2: Buy/Sell selection + Security
   const renderStepOrderType = () => {
-    const filteredHoldings = accountHoldings.filter(h => {
+    // Only offer positions matching the selected asset type — selling a fund
+    // shouldn't list structured products.
+    const typeHoldings = accountHoldings.filter(h => assetTypeForAssetClass(h.assetClass) === assetType);
+    const filteredHoldings = typeHoldings.filter(h => {
       if (!holdingSearchQuery) return true;
       const q = holdingSearchQuery.toLowerCase();
       return (h.securityName || '').toLowerCase().includes(q) || (h.isin || '').toLowerCase().includes(q);
@@ -3766,9 +3745,9 @@ const OrderModal = ({
                 flex: 1,
                 padding: '12px',
                 borderRadius: '8px',
-                border: `2px solid ${mode === 'buy' ? '#10b981' : 'var(--border-color)'}`,
+                border: `2px solid ${mode === 'buy' ? 'var(--gain-color)' : 'var(--border-color)'}`,
                 background: mode === 'buy' ? 'rgba(16, 185, 129, 0.1)' : 'var(--bg-secondary)',
-                color: mode === 'buy' ? '#10b981' : 'var(--text-secondary)',
+                color: mode === 'buy' ? 'var(--gain-color)' : 'var(--text-secondary)',
                 cursor: 'pointer',
                 fontWeight: '600',
                 fontSize: '15px',
@@ -3783,9 +3762,9 @@ const OrderModal = ({
                 flex: 1,
                 padding: '12px',
                 borderRadius: '8px',
-                border: `2px solid ${mode === 'sell' ? '#ef4444' : 'var(--border-color)'}`,
+                border: `2px solid ${mode === 'sell' ? 'var(--loss-color)' : 'var(--border-color)'}`,
                 background: mode === 'sell' ? 'rgba(239, 68, 68, 0.1)' : 'var(--bg-secondary)',
-                color: mode === 'sell' ? '#ef4444' : 'var(--text-secondary)',
+                color: mode === 'sell' ? 'var(--loss-color)' : 'var(--text-secondary)',
                 cursor: 'pointer',
                 fontWeight: '600',
                 fontSize: '15px',
@@ -3817,7 +3796,7 @@ const OrderModal = ({
                     <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{pos.currency}</span>
                     <span style={{
                       fontWeight: '600',
-                      color: pos.amount >= 0 ? '#10b981' : '#ef4444',
+                      color: pos.amount >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                       fontSize: '13px'
                     }}>
                       {pos.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -3852,7 +3831,8 @@ const OrderModal = ({
                 {validBulkOrders.map(o => {
                   const key = `${o.clientId}_${o.bankAccountId}`;
                   const cash = bulkCashBalances[key];
-                  const holdings = bulkAccountHoldings[key];
+                  const holdings = bulkAccountHoldings[key]
+                    && bulkAccountHoldings[key].filter(h => assetTypeForAssetClass(h.assetClass) === assetType);
                   return (
                     <div key={key} style={{ paddingBottom: '8px', borderBottom: '1px solid var(--border-color)' }}>
                       <div style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -3866,7 +3846,7 @@ const OrderModal = ({
                             {cash.cashPositions.map((pos, i) => (
                               <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{pos.currency}</span>
-                                <span style={{ fontWeight: '600', color: pos.amount >= 0 ? '#10b981' : '#ef4444', fontSize: '12px' }}>
+                                <span style={{ fontWeight: '600', color: pos.amount >= 0 ? 'var(--gain-color)' : 'var(--loss-color)', fontSize: '12px' }}>
                                   {pos.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </span>
                               </div>
@@ -3915,16 +3895,16 @@ const OrderModal = ({
             border: '1px solid var(--border-color)',
             marginBottom: '16px'
           }}>
-            <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: accountHoldings.length > 0 ? '8px' : '0' }}>
+            <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: typeHoldings.length > 0 ? '8px' : '0' }}>
               Positions Available
             </div>
             {isLoadingHoldings ? (
               <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Loading...</span>
-            ) : accountHoldings.length === 0 ? (
-              <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>No positions available</span>
+            ) : typeHoldings.length === 0 ? (
+              <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>No {OrderFormatters.getAssetTypeLabel(assetType)} positions available</span>
             ) : (
               <>
-                {accountHoldings.length > 6 && (
+                {typeHoldings.length > 6 && (
                   <input
                     type="text"
                     style={{ ...styles.input, marginBottom: '8px', fontSize: '13px', padding: '6px 10px' }}
@@ -3959,8 +3939,7 @@ const OrderModal = ({
                           enrichFromProduct(holding.isin);
                         }
                         if (holding.assetClass) {
-                          const classMap = { equity: ASSET_TYPES.EQUITY, bond: ASSET_TYPES.BOND, structured_product: ASSET_TYPES.STRUCTURED_PRODUCT, fund: ASSET_TYPES.FUND, etf: ASSET_TYPES.ETF };
-                          setAssetType(classMap[holding.assetClass] || ASSET_TYPES.OTHER);
+                          setAssetType(assetTypeForAssetClass(holding.assetClass));
                         }
                       }}
                       style={{
@@ -4056,7 +4035,7 @@ const OrderModal = ({
             marginTop: '12px',
             padding: '10px 12px',
             background: forceWithoutSourceHolding ? 'rgba(239, 68, 68, 0.08)' : 'var(--bg-secondary)',
-            border: `1px solid ${forceWithoutSourceHolding ? '#ef4444' : 'var(--border-color)'}`,
+            border: `1px solid ${forceWithoutSourceHolding ? 'var(--loss-color)' : 'var(--border-color)'}`,
             borderRadius: '8px'
           }}>
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', cursor: 'pointer' }}>
@@ -4067,7 +4046,7 @@ const OrderModal = ({
                 style={{ marginTop: '2px', cursor: 'pointer' }}
               />
               <div>
-                <div style={{ fontSize: '12px', fontWeight: '600', color: forceWithoutSourceHolding ? '#ef4444' : 'var(--text-primary)' }}>
+                <div style={{ fontSize: '12px', fontWeight: '600', color: forceWithoutSourceHolding ? 'var(--loss-color)' : 'var(--text-primary)' }}>
                   Force sell without source holding
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
@@ -4091,7 +4070,51 @@ const OrderModal = ({
     }
   };
 
-  const footer = (
+  const confirmVariant = (assetType === ASSET_TYPES.TERM_DEPOSIT
+    ? depositAction === 'increase'
+    : assetType === ASSET_TYPES.FX ? true : mode === 'buy') ? 'success' : 'danger';
+
+  const confirmLabel = isSubmitting ? 'Creating...' : isBulkMode
+    ? `Confirm ${bulkOrders.filter(o => o.clientId && o.bankAccountId).length} Orders`
+    : `Confirm ${assetType === ASSET_TYPES.TERM_DEPOSIT ? (depositAction === 'increase' ? 'INCREASE' : 'DECREASE') : assetType === ASSET_TYPES.FX ? 'FX ORDER' : mode.toUpperCase()}`;
+
+  // 'large' clears the ~44px minimum touch target; 'medium' renders ~32px tall.
+  const mobileBtnSize = isMobile ? 'large' : 'medium';
+
+  const primaryAction = currentStep < 4 ? (
+    <ActionButton variant="primary" onClick={handleNext} fullWidth={isMobile} size={mobileBtnSize}>
+      Continue
+    </ActionButton>
+  ) : (
+    <ActionButton
+      variant={confirmVariant}
+      onClick={handleSubmit}
+      loading={isSubmitting}
+      fullWidth={isMobile}
+      size={mobileBtnSize}
+    >
+      {confirmLabel}
+    </ActionButton>
+  );
+
+  // Mobile: the action you almost always want gets a full-width row of its own under
+  // the thumb; Back/Cancel share a smaller row beneath it. Three buttons crammed into
+  // one 360px row left every target too narrow to hit reliably.
+  const footer = isMobile ? (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', width: '100%' }}>
+      {primaryAction}
+      <div style={{ display: 'flex', gap: '0.5rem' }}>
+        {currentStep > 1 && (
+          <ActionButton variant="secondary" onClick={handleBack} disabled={isSubmitting} fullWidth size="large">
+            Back
+          </ActionButton>
+        )}
+        <ActionButton variant="secondary" onClick={handleClose} disabled={isSubmitting} fullWidth size="large">
+          Cancel
+        </ActionButton>
+      </div>
+    </div>
+  ) : (
     <>
       {currentStep > 1 && (
         <ActionButton variant="secondary" onClick={handleBack} disabled={isSubmitting}>
@@ -4102,21 +4125,7 @@ const OrderModal = ({
       <ActionButton variant="secondary" onClick={handleClose} disabled={isSubmitting}>
         Cancel
       </ActionButton>
-      {currentStep < 4 ? (
-        <ActionButton variant="primary" onClick={handleNext}>
-          Continue
-        </ActionButton>
-      ) : (
-        <ActionButton
-          variant={(assetType === ASSET_TYPES.TERM_DEPOSIT ? depositAction === 'increase' : assetType === ASSET_TYPES.FX ? true : mode === 'buy') ? 'success' : 'danger'}
-          onClick={handleSubmit}
-          loading={isSubmitting}
-        >
-          {isSubmitting ? 'Creating...' : isBulkMode
-            ? `Confirm ${bulkOrders.filter(o => o.clientId && o.bankAccountId).length} Orders`
-            : `Confirm ${assetType === ASSET_TYPES.TERM_DEPOSIT ? (depositAction === 'increase' ? 'INCREASE' : 'DECREASE') : assetType === ASSET_TYPES.FX ? 'FX ORDER' : mode.toUpperCase()}`}
-        </ActionButton>
-      )}
+      {primaryAction}
     </>
   );
 

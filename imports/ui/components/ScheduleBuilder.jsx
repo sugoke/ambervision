@@ -836,8 +836,8 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                         style={{
                           padding: '4px',
                           background: 'transparent',
-                          color: '#ef4444',
-                          border: '1px solid #ef4444',
+                          color: 'var(--loss-color)',
+                          border: '1px solid var(--loss-color)',
                           borderRadius: '4px',
                           cursor: 'pointer',
                           fontSize: '0.75rem',
@@ -850,12 +850,12 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                           transition: 'all 0.2s ease'
                         }}
                         onMouseEnter={(e) => {
-                          e.target.style.background = '#ef4444';
+                          e.target.style.background = 'var(--loss-color)';
                           e.target.style.color = 'white';
                         }}
                         onMouseLeave={(e) => {
                           e.target.style.background = 'transparent';
-                          e.target.style.color = '#ef4444';
+                          e.target.style.color = 'var(--loss-color)';
                         }}
                         title="Delete this observation"
                       >

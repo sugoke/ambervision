@@ -413,7 +413,7 @@ export default function SecuritiesBase({ user }) {
             disabled={isAIClassifying}
             style={{
               ...primaryButtonStyle,
-              background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)'
+              background: 'linear-gradient(135deg, var(--warning-color) 0%, #d97706 100%)'
             }}
           >
             {isAIClassifying ? '⏳ AI Classifying...' : '🤖 Classify Non-Ambervision (AI)'}

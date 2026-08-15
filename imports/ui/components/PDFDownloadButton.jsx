@@ -17,6 +17,8 @@ const PDFDownloadButton = ({
   title = 'Download PDF',
   className = '',
   style = {},
+  wrapperStyle = {}, // Overrides for the positioning wrapper (e.g. to let the
+                     // button stretch to a full-width column on mobile)
   options = {},
   contentSelector = '.report-content', // Selector for the content to convert to PDF
   iconOnly = false, // When true, only show icon (title becomes tooltip)
@@ -179,7 +181,7 @@ const PDFDownloadButton = ({
             type="button"
             style={{
               padding: '0.75rem 1.5rem',
-              background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+              background: 'linear-gradient(135deg, var(--info-color) 0%, #2563eb 100%)',
               color: 'white',
               border: 'none',
               borderRadius: '8px',
@@ -201,7 +203,7 @@ const PDFDownloadButton = ({
             type="button"
             style={{
               padding: '0.75rem 1.5rem',
-              background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+              background: 'linear-gradient(135deg, var(--info-color) 0%, #2563eb 100%)',
               color: 'white',
               border: 'none',
               borderRadius: '8px',
@@ -242,7 +244,7 @@ const PDFDownloadButton = ({
   );
 
   return (
-    <div style={{ display: 'inline-block', position: 'relative' }}>
+    <div style={{ display: 'inline-block', position: 'relative', ...wrapperStyle }}>
       {/* Language Selection Modal - rendered via Portal */}
       {languageModal}
 
@@ -254,7 +256,7 @@ const PDFDownloadButton = ({
           padding: iconOnly ? '0' : '0.65rem 1.25rem',
           background: isGenerating
             ? 'linear-gradient(135deg, #9ca3af 0%, #6b7280 100%)'
-            : 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
+            : 'linear-gradient(135deg, var(--loss-color) 0%, #dc2626 100%)',
           color: 'white',
           border: 'none',
           borderRadius: '8px',

@@ -1,6 +1,7 @@
 import { PhoenixEvaluationHelpers } from './phoenixEvaluationHelpers';
 import { MarketDataCacheCollection } from '/imports/api/marketDataCache';
 import { matchAllScheduledPayments } from '../helpers/paymentMatcher.js';
+import { CurrencyNormalization } from '/imports/utils/currencyNormalization.js';
 
 /**
  * Phoenix Autocallable Evaluator
@@ -26,9 +27,12 @@ export const PhoenixEvaluator = {
     // Extract underlying assets data with proper pricing hierarchy (includes news)
     const underlyingAssets = await PhoenixEvaluationHelpers.extractUnderlyingAssetsData(product);
 
-    // Build observation analysis first (needed for memory autocall flags)
+    // Build observation analysis first (needed for memory autocall flags).
+    // The issue collector is threaded through explicitly rather than held on `this`:
+    // PhoenixEvaluator is a module-level singleton, so two products evaluating
+    // concurrently would otherwise write into each other's issue list.
     const observationAnalysis = this.buildObservationSchedule
-      ? await this.buildObservationSchedule(product, underlyingAssets, phoenixParams)
+      ? await this.buildObservationSchedule(product, underlyingAssets, phoenixParams, context?.issueCollector)
       : null;
 
     // Enhance underlyings with barrier status and chart data
@@ -208,8 +212,15 @@ export const PhoenixEvaluator = {
     const performances = underlyings.map(u => u.performance);
     const worstPerformance = Math.min(...performances);
 
-    // Get memory autocall flags from observation analysis
-    const underlyingAutocallFlags = observationAnalysis?.underlyingAutocallFlags || {};
+    // Get memory autocall flags from observation analysis.
+    // The schedule tracks these for every product, but they only *mean* anything when the
+    // product actually has the memory-autocall feature: without it, an underlying touching
+    // the autocall level on one date locks in nothing. Surfacing the lock badge on a product
+    // with the feature switched off told the reader the opposite of how the note behaves.
+    const hasMemoryAutocallFeature = phoenixParams.memoryAutocall === true;
+    const underlyingAutocallFlags = hasMemoryAutocallFeature
+      ? (observationAnalysis?.underlyingAutocallFlags || {})
+      : {};
 
     return underlyings.map(underlying => {
       const isWorstPerforming = underlying.performance === worstPerformance;
@@ -326,6 +337,28 @@ export const PhoenixEvaluator = {
   /**
    * Get historical price for a ticker at a specific date
    */
+  /**
+   * Stock splits recorded for a ticker between the trade date and today.
+   *
+   * Used to tell a legitimate corporate action apart from a wrong price feed when the
+   * term sheet strike disagrees with the trade-date close. Imported lazily because
+   * eodApi reaches for server-only settings and Meteor's HTTP package.
+   *
+   * @returns {Promise<Array<{date: string, splitString: string, ratio: number}>>} empty on any failure
+   */
+  async getSplitsSince(fullTicker, tradeDate) {
+    try {
+      const { EODApiHelpers } = await import('/imports/api/eodApi.js');
+      const splits = await EODApiHelpers.getStockSplits(fullTicker, tradeDate, new Date());
+      return Array.isArray(splits) ? splits : [];
+    } catch (error) {
+      // A lookup failure must not be read as "no split" without saying so — the caller
+      // treats an empty list as unexplained and flags the product, which is the safe side.
+      console.warn(`⚠️ Phoenix: Could not verify splits for ${fullTicker}: ${error.message}`);
+      return [];
+    }
+  },
+
   async getPriceAtDate(ticker, targetDate, tradeDate) {
     try {
       const targetDateStr = new Date(targetDate).toISOString().split('T')[0];
@@ -441,7 +474,7 @@ export const PhoenixEvaluator = {
   /**
    * Build observation schedule analysis
    */
-  async buildObservationSchedule(product, underlyings, phoenixParams) {
+  async buildObservationSchedule(product, underlyings, phoenixParams, issueCollector = null) {
     let schedule = product.observationSchedule || [];
 
     // Generate schedule if missing
@@ -477,35 +510,93 @@ export const PhoenixEvaluator = {
     // Memory Autocall: Track which underlyings have reached autocall level (across any observation)
     const underlyingAutocallFlags = {}; // {ticker: firstFlaggedDate}
 
-    // Use contractual strike prices as initial reference for barrier/coupon evaluation
-    // Strike prices are the official reference levels from the term sheet
-    // underlyings[].initialPrice is already split-adjusted via extractUnderlyingAssetsData()
+    // Use contractual strike prices as initial reference for barrier/coupon evaluation.
+    // Strike prices are the official reference levels from the term sheet, so the strike is
+    // authoritative: it defines the contract, and every barrier is quoted as a percentage of it.
     //
-    // IMPORTANT: We validate strike prices against the market close on the trade date.
-    // If EOD retroactively adjusted historical close prices for a corporate action
-    // (split, rights issue, etc.) that the splits API didn't detect, the strike won't
-    // match the close on trade date. In that case, we use the close as the reference
-    // to ensure consistent performance calculations with historical observation prices.
+    // We still validate it against the feed's close on the trade date, because a mismatch is a
+    // reliable signal that something is wrong. But a mismatch has two very different causes:
+    //
+    //   1. A real corporate action — EOD retroactively restated the historical closes, so the
+    //      strike is quoted on a pre-split basis and must be rebased onto the adjusted series.
+    //   2. The feed is not the instrument the term sheet means (a stale or reused ticker).
+    //
+    // These require opposite responses, and they are told apart by asking the splits API — not
+    // by the size of the gap. Rebasing on a bare ratio test silently rewrites the contract
+    // whenever case 2 occurs: it is what made CH1506051833 report a false autocall, by swapping
+    // Barrick's real strike of 49.71 for 41.68, the close of an unrelated series still trading
+    // under Barrick's former "GOLD" ticker.
     const tradeDatePrices = {};
+    // Whatever basis we settle on is published back onto the underlying as
+    // `effectiveInitialPrice`, so the chart builder can rebase on exactly the number the
+    // observations were measured against instead of re-deriving its own.
+    const publishBasis = (u) => { u.effectiveInitialPrice = tradeDatePrices[u.ticker]; };
+
     for (const u of underlyings) {
       const fullTicker = u.fullTicker || `${u.ticker}.US`;
       const strike = u.initialPrice || u.strike;
       tradeDatePrices[u.ticker] = strike;
+      publishBasis(u);
 
       // Validate strike against close on trade date from market cache
       const closeOnTradeDate = await this.getPriceAtDate(fullTicker, tradeDate, tradeDate);
-      if (closeOnTradeDate && strike && closeOnTradeDate > 0) {
-        const ratio = strike / closeOnTradeDate;
-        if (Math.abs(ratio - 1.0) > 0.02) {
-          // Significant discrepancy: EOD adjusted historical prices for a corporate action
-          // Use close on trade date as reference so observation prices are consistent
-          console.warn(`⚠️ Phoenix: Corporate action detected for ${fullTicker}: strike=${strike}, close on trade date=${closeOnTradeDate}, ratio=${ratio.toFixed(4)}. Using close as reference for performance calculation.`);
-          tradeDatePrices[u.ticker] = closeOnTradeDate;
-        } else {
-          console.log(`📊 Phoenix: Using strike price for ${fullTicker}: ${strike} (matches close ${closeOnTradeDate})`);
-        }
-      } else {
+      if (!closeOnTradeDate || !strike || closeOnTradeDate <= 0) {
         console.log(`📊 Phoenix: Using strike price for ${fullTicker}: ${strike} (no close validation available)`);
+        continue;
+      }
+
+      const ratio = strike / closeOnTradeDate;
+      if (Math.abs(ratio - 1.0) <= 0.02) {
+        console.log(`📊 Phoenix: Using strike price for ${fullTicker}: ${strike} (matches close ${closeOnTradeDate})`);
+        continue;
+      }
+
+      // GBp vs GBP: the LSE quotes in pence while term sheets state the strike in pounds.
+      // That is a unit mismatch on the same instrument, not a wrong feed, so convert the
+      // strike into the feed's units rather than flagging it. Keeping the contractual number
+      // and only restating its unit preserves the strike exactly (x100 is lossless), where
+      // adopting the trade-date close would silently substitute a different price.
+      if (CurrencyNormalization.isPriceInPence(fullTicker, strike, closeOnTradeDate)) {
+        const strikeInPence = strike * 100;
+        console.log(`📊 Phoenix: ${fullTicker} is quoted in pence — restating strike ${strike} GBP as ${strikeInPence} GBp to match the feed`);
+        tradeDatePrices[u.ticker] = strikeInPence;
+        publishBasis(u);
+        continue;
+      }
+
+      // Gap detected — only a confirmed split justifies overriding the term sheet.
+      const splits = await this.getSplitsSince(fullTicker, tradeDate);
+      const gapPct = `${((ratio - 1) * 100).toFixed(1)}%`;
+
+      // EOD restates `close` for splits, so after an N-for-1 split the term sheet's strike
+      // sits N times above the adjusted close. Requiring the gap to match the cumulative
+      // split ratio stops an unrelated split from rubber-stamping a wrong-instrument feed.
+      const cumulativeSplitRatio = splits.reduce((acc, s) => acc * (s.ratio || 1), 1);
+      const splitExplainsGap = splits.length > 0
+        && cumulativeSplitRatio > 0
+        && Math.abs(ratio / cumulativeSplitRatio - 1) <= 0.05;
+
+      if (splitExplainsGap) {
+        const splitLabel = splits.map(s => `${s.date}: ${s.splitString}`).join(', ');
+        console.warn(`⚠️ Phoenix: Split confirmed for ${fullTicker} (${splitLabel}, cumulative ${cumulativeSplitRatio.toFixed(4)}) — rebasing strike ${strike} to split-adjusted close ${closeOnTradeDate}`);
+        tradeDatePrices[u.ticker] = closeOnTradeDate;
+        publishBasis(u);
+      } else {
+        if (splits.length > 0) {
+          console.error(`❌ Phoenix: ${fullTicker} has splits (cumulative ${cumulativeSplitRatio.toFixed(4)}) but they do not account for the ${gapPct} gap.`);
+        }
+        // No split explains the gap, so the feed is suspect, not the term sheet. Keep the
+        // strike — a wrong basis silently changes autocall and barrier verdicts, whereas a
+        // flagged mismatch is visible and correctable.
+        console.error(`❌ Phoenix: ${fullTicker} strike ${strike} disagrees with feed close ${closeOnTradeDate} on ${tradeDate.toISOString().split('T')[0]} (${gapPct}) and no split explains it. Keeping the term sheet strike and flagging the product.`);
+        issueCollector?.addIssue('STRIKE_FEED_MISMATCH', {
+          ticker: fullTicker,
+          underlying: u.ticker,
+          strike,
+          close: closeOnTradeDate,
+          date: tradeDate.toISOString().split('T')[0],
+          pct: gapPct
+        });
       }
     }
 

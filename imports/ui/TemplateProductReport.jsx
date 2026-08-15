@@ -65,8 +65,8 @@ const ProcessingIssuesAlert = ({ product }) => {
   // Determine colors based on severity
   const bgColor = hasProcessingErrors ? 'rgba(239, 68, 68, 0.08)' : 'rgba(245, 158, 11, 0.08)';
   const borderColor = hasProcessingErrors ? 'rgba(239, 68, 68, 0.25)' : 'rgba(245, 158, 11, 0.25)';
-  const iconColor = hasProcessingErrors ? '#ef4444' : '#f59e0b';
-  const headerColor = hasProcessingErrors ? '#ef4444' : '#f59e0b';
+  const iconColor = hasProcessingErrors ? 'var(--loss-color)' : 'var(--warning-color)';
+  const headerColor = hasProcessingErrors ? 'var(--loss-color)' : 'var(--warning-color)';
 
   return (
     <div style={{
@@ -876,7 +876,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
             <button
               onClick={() => onEditProduct(displayProduct)}
               style={{
-                background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                background: 'linear-gradient(135deg, var(--warning-color) 0%, #d97706 100%)',
                 color: 'white',
                 border: 'none',
                 width: '44px',
@@ -901,7 +901,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
             <button
               onClick={() => onAllocateProduct(displayProduct)}
               style={{
-                background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                background: 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
                 color: 'white',
                 border: 'none',
                 width: '44px',
@@ -1038,7 +1038,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
                           display: 'none',
                           width: '28px',
                           height: '28px',
-                          background: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
+                          background: 'linear-gradient(135deg, var(--info-color) 0%, #1d4ed8 100%)',
                           borderRadius: '4px',
                           alignItems: 'center',
                           justifyContent: 'center',
@@ -1192,7 +1192,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
             <div style={{
               padding: '1rem 1.5rem',
               background: productPrice
-                ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)'
+                ? 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)'
                 : 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)',
               borderRadius: '8px',
               minWidth: isMobile ? 'auto' : '220px',
@@ -1495,7 +1495,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
                 {allocationsSummary.hasMixedCurrencies && (
                   <div style={{ 
                     fontSize: '0.7rem', 
-                    color: '#f59e0b', 
+                    color: 'var(--warning-color)', 
                     marginTop: '4px',
                     fontWeight: '500'
                   }}>
@@ -1853,7 +1853,7 @@ const getTemplateIcon = (templateId) => {
 const renderTemplateResults = (results, templateId, productId, product, user) => {
   // Use template-specific report components for consistent architecture
   if (templateId === 'phoenix_autocallable' && results.templateType === 'phoenix_autocallable') {
-    return <PhoenixReport results={results} productId={productId} />;
+    return <PhoenixReport results={results} productId={productId} product={product} />;
   }
 
   if (templateId === 'orion_memory' && results.templateType === 'orion_memory') {

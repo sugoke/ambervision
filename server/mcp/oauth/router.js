@@ -27,24 +27,84 @@ import {
   hashToken
 } from '/imports/api/oauthAuthServer';
 import { AmbervisionOAuthProvider } from './provider.js';
+import { createRateLimiter, clientIp } from '../rateLimit.js';
 
 const ROOT_URL = process.env.ROOT_URL || 'http://localhost:3000';
 const issuerUrl = ROOT_URL.replace(/\/+$/, '');
 const resourceServerUrl = `${issuerUrl}/mcp`;
 
+// The only scope this resource server understands. Advertised in metadata,
+// defaulted at /authorize, and enforced at /mcp.
+const SUPPORTED_SCOPES = ['portfolio'];
+
 export const oauthProvider = new AmbervisionOAuthProvider();
 
 const app = express();
-app.use(express.json({ limit: '512kb' }));
-app.use(express.urlencoded({ extended: true, limit: '512kb' }));
 
-// CORS for well-known and token endpoints — OAuth clients may fetch these from arbitrary origins
+// This express app is mounted at the ROOT of Meteor's connect stack
+// (WebApp.connectHandlers.use(app) below), so it observes EVERY request in the
+// application, not just OAuth ones. Its middleware must therefore be a strict
+// no-op for anything that is not an OAuth endpoint — otherwise wildcard CORS
+// leaks onto the SPA and the document endpoints, every app-wide OPTIONS is
+// hijacked with a 204, and the body parsers consume the request stream before
+// downstream handlers (e.g. /mcp) ever see it.
+const OAUTH_PATH_PREFIXES = [
+  '/.well-known/oauth-authorization-server',
+  '/.well-known/oauth-protected-resource',
+  '/authorize',
+  '/token',
+  '/register',
+  '/revoke'
+];
+function isOAuthRequest(req) {
+  const path = (req.url || '').split('?')[0];
+  return OAUTH_PATH_PREFIXES.some(p => path === p || path.startsWith(p + '/'));
+}
+
+// CORS scoped to OAuth endpoints, with an origin allowlist instead of `*`.
+// These endpoints are either public metadata or body-authenticated (no cookies),
+// so CORS is only needed for browser-based discovery from the connector's origin.
+// Extra origins can be added via MCP_CORS_ORIGINS (comma-separated).
+const ALLOWED_CORS_ORIGINS = new Set([
+  'https://claude.ai',
+  'https://claude.com',
+  ...String(process.env.MCP_CORS_ORIGINS || '')
+    .split(',').map(s => s.trim()).filter(Boolean)
+]);
+
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  if (!isOAuthRequest(req)) return next();
+  const origin = req.headers.origin;
+  if (origin && ALLOWED_CORS_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  }
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
+});
+
+// Per-IP throttle on the OAuth endpoints — none were rate-limited, so
+// /register (unbounded inserts), /token (guessing/CPU load) and /authorize
+// (pending-request inserts) could be hammered freely. 60/min/IP is generous
+// for a real consent flow (a handful of requests) but caps abuse.
+const oauthIpRateLimit = createRateLimiter({ max: 60 });
+app.use((req, res, next) => {
+  if (!isOAuthRequest(req)) return next();
+  if (!oauthIpRateLimit(clientIp(req))) {
+    return res.status(429).json({ error: 'rate_limited' });
+  }
+  next();
+});
+
+// Body parsing, also scoped to OAuth endpoints so it never consumes another
+// handler's request stream.
+const jsonParser = express.json({ limit: '512kb' });
+const urlencodedParser = express.urlencoded({ extended: true, limit: '512kb' });
+app.use((req, res, next) => {
+  if (!isOAuthRequest(req)) return next();
+  jsonParser(req, res, (err) => (err ? next(err) : urlencodedParser(req, res, next)));
 });
 
 // ----- Metadata ---------------------------------------------------------
@@ -77,22 +137,62 @@ app.get('/.well-known/oauth-protected-resource/mcp', (req, res) => {
 
 // ----- Dynamic client registration (RFC 7591) --------------------------
 
+// Registration is open (claude.ai registers itself via DCR), but a registered
+// redirect_uri is where an authorization code is delivered — so an attacker who
+// can register an arbitrary redirect host can complete the consent-phishing →
+// code-exfiltration chain. We therefore constrain redirect_uris to an allowlist
+// of hosts (claude.ai/claude.com + loopback, extendable via env) over https.
+// An attacker cannot receive a code at a host they don't control, which defuses
+// the phishing chain regardless of the display name shown on the consent screen.
+const ALLOWED_REDIRECT_HOSTS = new Set([
+  'claude.ai',
+  'claude.com',
+  'anthropic.com',
+  ...String(process.env.MCP_ALLOWED_REDIRECT_HOSTS || '')
+    .split(',').map(s => s.trim()).filter(Boolean)
+]);
+function isLoopbackHost(h) {
+  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]';
+}
+function validateRedirectUri(uri) {
+  if (typeof uri !== 'string' || uri.length > 2048) return 'malformed';
+  let u;
+  try { u = new URL(uri); } catch { return 'malformed'; }
+  if (isLoopbackHost(u.hostname)) {
+    return (u.protocol === 'http:' || u.protocol === 'https:') ? null : 'scheme';
+  }
+  if (u.protocol !== 'https:') return 'https_required';
+  const host = u.hostname.toLowerCase();
+  const ok = [...ALLOWED_REDIRECT_HOSTS].some(a => host === a || host.endsWith('.' + a));
+  return ok ? null : 'host_not_allowed';
+}
+
 app.post('/register', async (req, res) => {
   try {
     const body = req.body || {};
     if (!Array.isArray(body.redirect_uris) || body.redirect_uris.length === 0) {
       return res.status(400).json({ error: 'invalid_client_metadata', error_description: 'redirect_uris required' });
     }
+    if (body.redirect_uris.length > 5) {
+      return res.status(400).json({ error: 'invalid_redirect_uri', error_description: 'too many redirect_uris' });
+    }
     for (const uri of body.redirect_uris) {
-      try { new URL(uri); } catch {
-        return res.status(400).json({ error: 'invalid_redirect_uri', error_description: `Invalid redirect_uri: ${uri}` });
+      if (validateRedirectUri(uri) !== null) {
+        // Do not echo the rejected URI back — keep the error generic.
+        return res.status(400).json({ error: 'invalid_redirect_uri', error_description: 'redirect_uri not permitted' });
       }
     }
-    const info = await OauthClientStore.registerClient(body);
+    // Cap attacker-controlled string fields before they are stored and later
+    // rendered on the consent screen.
+    const clean = { ...body };
+    if (clean.client_name != null) clean.client_name = String(clean.client_name).slice(0, 100);
+    if (clean.client_uri != null) clean.client_uri = String(clean.client_uri).slice(0, 2048);
+    if (clean.logo_uri != null) clean.logo_uri = String(clean.logo_uri).slice(0, 2048);
+    const info = await OauthClientStore.registerClient(clean);
     return res.status(201).json(info);
   } catch (err) {
     console.error('[OAuth /register] error:', err);
-    return res.status(500).json({ error: 'server_error', error_description: String(err?.message || err) });
+    return res.status(500).json({ error: 'server_error' });
   }
 });
 
@@ -105,9 +205,14 @@ function redirectUriMatches(requested, registered) {
     const a = new URL(requested);
     const b = new URL(registered);
     const isLoopback = h => h === 'localhost' || h === '127.0.0.1' || h === '[::1]';
+    // RFC 8252 §7.3: for loopback only the PORT may vary. Host, path and query
+    // must match exactly — don't cross localhost/127.0.0.1 and don't ignore the
+    // query string.
     if (isLoopback(a.hostname) && isLoopback(b.hostname)
+        && a.hostname === b.hostname
         && a.protocol === b.protocol
-        && a.pathname === b.pathname) {
+        && a.pathname === b.pathname
+        && a.search === b.search) {
       return true;
     }
   } catch { /* ignore */ }
@@ -153,9 +258,21 @@ app.get('/authorize', async (req, res) => {
     return redirectWithError(res, redirect_uri, state, 'invalid_request', 'PKCE S256 code_challenge is required');
   }
 
+  // Validate requested scopes against what we support, and default to the sole
+  // 'portfolio' scope when none is requested. The issued token is enforced to
+  // carry 'portfolio' at /mcp, so this keeps legit clients working while making
+  // the scope real. A request for only unsupported scopes is rejected.
+  const requestedScopes = scope ? String(scope).split(/\s+/).filter(Boolean) : [];
+  const grantedScopes = requestedScopes.length
+    ? requestedScopes.filter(s => SUPPORTED_SCOPES.includes(s))
+    : ['portfolio'];
+  if (requestedScopes.length && grantedScopes.length === 0) {
+    return redirectWithError(res, redirect_uri, state, 'invalid_scope', 'unsupported scope');
+  }
+
   const params = {
     state: state ? String(state) : undefined,
-    scopes: scope ? String(scope).split(/\s+/).filter(Boolean) : [],
+    scopes: grantedScopes,
     codeChallenge: String(code_challenge),
     redirectUri: String(redirect_uri),
     resource: resource ? new URL(String(resource)) : undefined
@@ -165,7 +282,9 @@ app.get('/authorize', async (req, res) => {
     await oauthProvider.authorize(client, params, res);
   } catch (err) {
     console.error('[OAuth /authorize] error:', err);
-    return redirectWithError(res, redirect_uri, state, 'server_error', String(err?.message || err));
+    // Never echo internal error text into the redirect URL — it lands in the
+    // (attacker-controllable) client's logs.
+    return redirectWithError(res, redirect_uri, state, 'server_error', 'internal error');
   }
 });
 
@@ -212,6 +331,9 @@ async function authenticateClient(req) {
 }
 
 app.post('/token', async (req, res) => {
+  // RFC 6749 §5.1 — token responses must never be cached.
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Pragma', 'no-cache');
   try {
     const client = await authenticateClient(req);
     const { grant_type } = req.body || {};
@@ -245,12 +367,16 @@ app.post('/token', async (req, res) => {
       return res.status(err.status).json({ error: err.error, error_description: err.description });
     }
     const msg = String(err?.message || err);
-    const isInvalidGrant = /^invalid_grant/.test(msg);
-    const isInvalidScope = /^invalid_scope/.test(msg);
-    if (isInvalidGrant) return res.status(400).json({ error: 'invalid_grant', error_description: msg });
-    if (isInvalidScope) return res.status(400).json({ error: 'invalid_scope', error_description: msg });
+    // Classify by the provider's error prefixes, but return FIXED descriptions —
+    // never echo the internal message (which can carry PKCE/redirect/Mongo detail).
+    if (/^invalid_grant/.test(msg)) {
+      return res.status(400).json({ error: 'invalid_grant', error_description: 'invalid or expired authorization grant' });
+    }
+    if (/^invalid_scope/.test(msg)) {
+      return res.status(400).json({ error: 'invalid_scope', error_description: 'requested scope is invalid' });
+    }
     console.error('[OAuth /token] error:', err);
-    return res.status(500).json({ error: 'server_error', error_description: msg });
+    return res.status(500).json({ error: 'server_error' });
   }
 });
 
@@ -268,7 +394,7 @@ app.post('/revoke', async (req, res) => {
       return res.status(err.status).json({ error: err.error, error_description: err.description });
     }
     console.error('[OAuth /revoke] error:', err);
-    return res.status(500).json({ error: 'server_error', error_description: String(err?.message || err) });
+    return res.status(500).json({ error: 'server_error' });
   }
 });
 
@@ -279,5 +405,17 @@ app.use('/.well-known', (req, res) => res.status(404).json({ error: 'not_found' 
 WebApp.connectHandlers.use(app);
 
 Meteor.startup(() => {
+  // Fail fast in production: if ROOT_URL is unset or non-https, every OAuth
+  // endpoint (issuer, authorize, token, resource metadata, WWW-Authenticate)
+  // advertises localhost/http, silently pointing clients at the wrong or an
+  // insecure authorization server.
+  if (process.env.NODE_ENV === 'production') {
+    if (!process.env.ROOT_URL) {
+      throw new Error('[MCP OAuth] ROOT_URL must be set in production (it drives every OAuth endpoint URL).');
+    }
+    if (!/^https:\/\//i.test(process.env.ROOT_URL)) {
+      throw new Error(`[MCP OAuth] ROOT_URL must be https in production, got: ${process.env.ROOT_URL}`);
+    }
+  }
   console.log(`[MCP OAuth] Authorization server ready: issuer=${issuerUrl}, resource=${resourceServerUrl}`);
 });

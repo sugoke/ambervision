@@ -3,6 +3,11 @@ import { check, Match } from 'meteor/check';
 import { SessionHelpers } from '/imports/api/sessions';
 import { UsersCollection } from '/imports/api/users';
 import { McpApiTokensCollection, McpTokenHelpers } from '/imports/api/mcpApiTokens';
+import { createRateLimiter } from '../mcp/rateLimit.js';
+
+// Token creation is not a high-frequency action; cap it per user so a
+// compromised session can't mint an unbounded number of long-lived tokens.
+const createTokenRateLimit = createRateLimiter({ max: 10 });
 
 async function resolveUserFromSession(sessionId) {
   const session = await SessionHelpers.validateSession(sessionId);
@@ -21,6 +26,15 @@ Meteor.methods({
     });
 
     const user = await resolveUserFromSession(sessionId);
+
+    if (!createTokenRateLimit(user._id)) {
+      throw new Meteor.Error('rate-limited', 'Too many tokens created recently. Try again shortly.');
+    }
+
+    // Durable audit record: a personal token carries the creator's full app
+    // scope over MCP (an admin's token = whole-platform read), so token minting
+    // is worth a reviewable log line.
+    console.log(`[MCP][AUDIT] token created: user=${user._id} role=${user.role} name=${String(params.name).slice(0, 60)} ttlDays=${params.ttlDays ?? 'none'}`);
 
     const { rawToken, tokenDoc } = await McpTokenHelpers.generate(
       user._id,

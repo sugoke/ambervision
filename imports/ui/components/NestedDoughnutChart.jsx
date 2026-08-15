@@ -17,8 +17,8 @@ const NestedDoughnutChart = ({
 }) => {
   // Color palette for Level 1 (underlying types)
   const level1Colors = {
-    'equity_linked': '#3b82f6',        // Blue
-    'fixed_income_linked': '#f59e0b',  // Orange
+    'equity_linked': 'var(--info-color)',        // Blue
+    'fixed_income_linked': 'var(--warning-color)',  // Orange
     'credit_linked': '#8b5cf6',        // Purple
     'commodities_linked': '#ec4899',   // Pink
     'other': '#64748b'                 // Gray

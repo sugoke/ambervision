@@ -190,7 +190,7 @@ const UserAccessesPanel = ({ currentUser }) => {
                     <td style={{ padding: '12px 16px', fontWeight: '600', color: 'var(--text-primary)', borderTop: '1px solid var(--border-color)' }}>{name}</td>
                     <td style={{ padding: '12px 16px', color: 'var(--text-secondary)', borderTop: '1px solid var(--border-color)' }}>{u.email}</td>
                     <td style={{ padding: '12px 16px', borderTop: '1px solid var(--border-color)' }}>
-                      <span style={{ padding: '2px 8px', borderRadius: '6px', fontSize: '0.7rem', fontWeight: '600', color: rd.color, background: `${rd.color}14` }}>{rd.label}</span>
+                      <span style={{ padding: '2px 8px', borderRadius: '6px', fontSize: '0.7rem', fontWeight: '600', color: rd.color, background: `color-mix(in srgb, ${rd.color} 8%, transparent)` }}>{rd.label}</span>
                     </td>
                   </tr>
                 );

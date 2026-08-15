@@ -98,21 +98,31 @@ const TermSheetManager = ({ product, user, productId }) => {
     setDragActive(false);
   };
 
+  // The /termsheets endpoint now requires a single-use capability token, so
+  // mint a signed URL via the server before opening.
+  const openTermSheet = async () => {
+    if (!hasTermSheet) return;
+    try {
+      const sessionId = localStorage.getItem('sessionId');
+      const url = await Meteor.callAsync('products.getTermSheetUrl', productId, sessionId);
+      window.open(url, '_blank');
+    } catch (error) {
+      console.error('Failed to open term sheet:', error);
+    }
+  };
+
   const handleIconClick = () => {
     if (isAdmin) {
       setShowModal(true);
       setUploadError(null);
       setUploadSuccess(false);
     } else if (hasTermSheet) {
-      // Non-admin users can download
-      window.open(product.termSheet.url, '_blank');
+      openTermSheet();
     }
   };
 
   const handleDownload = () => {
-    if (hasTermSheet) {
-      window.open(product.termSheet.url, '_blank');
-    }
+    openTermSheet();
   };
 
   const formatDate = (date) => {
@@ -237,7 +247,7 @@ const TermSheetManager = ({ product, user, productId }) => {
                 <button
                   onClick={handleDownload}
                   style={{
-                    backgroundColor: '#3b82f6',
+                    backgroundColor: 'var(--info-color)',
                     color: 'white',
                     border: 'none',
                     borderRadius: '4px',
@@ -255,7 +265,7 @@ const TermSheetManager = ({ product, user, productId }) => {
             {uploadSuccess && (
               <div
                 style={{
-                  backgroundColor: '#10b981',
+                  backgroundColor: 'var(--gain-color)',
                   color: 'white',
                   padding: '12px',
                   borderRadius: '4px',
@@ -271,7 +281,7 @@ const TermSheetManager = ({ product, user, productId }) => {
             {uploadError && (
               <div
                 style={{
-                  backgroundColor: '#ef4444',
+                  backgroundColor: 'var(--loss-color)',
                   color: 'white',
                   padding: '12px',
                   borderRadius: '4px',
@@ -290,7 +300,7 @@ const TermSheetManager = ({ product, user, productId }) => {
                   onDragOver={handleDragOver}
                   onDragLeave={handleDragLeave}
                   style={{
-                    border: `2px dashed ${dragActive ? '#3b82f6' : '#4b5563'}`,
+                    border: `2px dashed ${dragActive ? 'var(--info-color)' : '#4b5563'}`,
                     borderRadius: '8px',
                     padding: '32px',
                     textAlign: 'center',
@@ -343,7 +353,7 @@ const TermSheetManager = ({ product, user, productId }) => {
                     style={{
                       width: '100%',
                       height: '100%',
-                      backgroundColor: '#3b82f6',
+                      backgroundColor: 'var(--info-color)',
                       animation: 'progress 1.5s ease-in-out infinite',
                     }}
                   />

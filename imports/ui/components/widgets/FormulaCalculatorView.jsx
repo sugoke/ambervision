@@ -213,7 +213,7 @@ export const FormulaCalculatorView = ({ product, evaluationResults, report }) =>
         style={{
           width: '100%',
           padding: '0.75rem',
-          background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+          background: 'linear-gradient(135deg, var(--info-color) 0%, #2563eb 100%)',
           border: 'none',
           borderRadius: '6px',
           color: 'white',
@@ -248,7 +248,7 @@ export const FormulaCalculatorView = ({ product, evaluationResults, report }) =>
           <div style={{
             fontSize: '1.5rem',
             fontWeight: '600',
-            color: '#10b981'
+            color: 'var(--gain-color)'
           }}>
             {typeof formulaResult === 'number' ? 
               `${formulaResult.toFixed(2)}%` : 

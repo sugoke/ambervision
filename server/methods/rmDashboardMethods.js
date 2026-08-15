@@ -557,7 +557,12 @@ Meteor.methods({
         entityId: { $nin: archivedOwners.entityIds },
         userId: { $nin: archivedOwners.userIds }
       };
-      const archivedSnapshotFilter = { userId: { $nin: archivedOwners.userIds } };
+      // Filter snapshots on entityId too — entity-only clients (and the fictional demo
+      // client) have no legacy userId, so userId alone would leave them in the AUM.
+      const archivedSnapshotFilter = {
+        userId: { $nin: archivedOwners.userIds },
+        entityId: { $nin: archivedOwners.entityIds }
+      };
 
       // For admin/superadmin, get ALL holdings; for RM get only their clients' holdings
       let totalAUMInEUR = 0;
@@ -945,11 +950,16 @@ Meteor.methods({
         // Exclude CONSOLIDATED snapshots to avoid double-counting, and exclude
         // archived (closed-relationship) clients so the AUM history line matches the
         // headline AUM (same approach as computeDashboardMetrics' WTD snapshots).
-        const { userIds: archivedUserIds } = await ClientEntityHelpers.getArchivedOwnerIds();
+        // Exclude by entityId as well as userId: entity-only clients (and the fictional
+        // demo client) carry no legacy userId, so a userId-only filter would let their
+        // snapshots inflate the chart. $nin also matches documents missing the field,
+        // so snapshots with neither owner stamp are unaffected.
+        const { userIds: archivedUserIds, entityIds: archivedEntityIds } = await ClientEntityHelpers.getArchivedOwnerIds();
         rawSnapshots = await PortfolioSnapshotsCollection.find({
           snapshotDate: { $gte: startDate, $lte: endDate },
           portfolioCode: { $ne: 'CONSOLIDATED' },
-          userId: { $nin: archivedUserIds }
+          userId: { $nin: archivedUserIds },
+          entityId: { $nin: archivedEntityIds }
         }, {
           sort: { snapshotDate: 1 }
         }).fetchAsync();

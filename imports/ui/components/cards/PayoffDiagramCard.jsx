@@ -11,7 +11,7 @@ export const PayoffDiagramCard = ({ report, product, characteristics }) => {
     keyPoints.push({
       label: 'Capital Protection',
       value: '100%',
-      color: '#10b981'
+      color: 'var(--gain-color)'
     });
   }
   
@@ -20,7 +20,7 @@ export const PayoffDiagramCard = ({ report, product, characteristics }) => {
     keyPoints.push({
       label: 'Barrier Level',
       value: `${payoffData.barrierLevel || 'N/A'}%`,
-      color: '#ef4444'
+      color: 'var(--loss-color)'
     });
   }
   
@@ -29,7 +29,7 @@ export const PayoffDiagramCard = ({ report, product, characteristics }) => {
     keyPoints.push({
       label: 'Participation',
       value: `${payoffData.participationRate || 100}%`,
-      color: '#3b82f6'
+      color: 'var(--info-color)'
     });
   }
 

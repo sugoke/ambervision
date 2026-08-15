@@ -9,7 +9,7 @@ import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 
 import { SessionHelpers } from '/imports/api/sessions';
-import { UsersCollection } from '/imports/api/users';
+import { UsersCollection, USER_ROLES } from '/imports/api/users';
 import {
   OauthClientsCollection,
   PendingRequests,
@@ -17,6 +17,15 @@ import {
   OauthConsentsCollection
 } from '/imports/api/oauthAuthServer';
 import { revokeAllForUserClient } from '/server/mcp/oauth/provider';
+import { createRateLimiter } from '../mcp/rateLimit.js';
+
+// Consent approvals are a once-in-a-while human action; cap per user.
+const approveRateLimit = createRateLimiter({ max: 20 });
+
+// Roles whose MCP scope is effectively "every client" (see scopeHelper.js). When
+// one of these approves a third-party connector, that connector gains
+// whole-platform read — so it warrants a durable, reviewable audit record.
+const PRIVILEGED_ROLES = [USER_ROLES.ADMIN, USER_ROLES.SUPERADMIN, USER_ROLES.COMPLIANCE];
 
 async function resolveUser(sessionId) {
   const session = await SessionHelpers.validateSession(sessionId);
@@ -71,10 +80,24 @@ Meteor.methods({
     check(reqId, String);
 
     const user = await resolveUser(sessionId);
+
+    if (!approveRateLimit(user._id)) {
+      throw new Meteor.Error('rate-limited', 'Too many authorization attempts. Try again shortly.');
+    }
+
     const pending = await PendingRequests.find(reqId);
     if (!pending) throw new Meteor.Error('not-found', 'Authorization request not found or expired');
     if (pending.status !== 'pending') {
       throw new Meteor.Error('invalid-state', `Request already ${pending.status}`);
+    }
+
+    // Durable audit trail: a privileged account approving a connector grants
+    // that connector whole-platform read. Log it (WARN is persisted to
+    // serverLogs) so such grants are reviewable after the fact.
+    if (PRIVILEGED_ROLES.includes(user.role)) {
+      console.warn(`[MCP OAuth][AUDIT] privileged connector approval: user=${user._id} role=${user.role} client=${pending.clientId} scopes=${(pending.scopes || []).join(',')}`);
+    } else {
+      console.log(`[MCP OAuth][AUDIT] connector approval: user=${user._id} role=${user.role} client=${pending.clientId}`);
     }
 
     const { authCode } = await PendingRequests.approve(reqId, user._id);

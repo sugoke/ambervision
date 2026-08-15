@@ -272,7 +272,7 @@ const TermSheetUploader = ({ onProductExtracted, sessionId }) => {
         onDragOver={handleDragOver}
         onDrop={handleDrop}
         style={{
-          border: `2px dashed ${isDragging ? '#3b82f6' : (theme === 'light' ? '#d1d5db' : 'var(--border-color)')}`,
+          border: `2px dashed ${isDragging ? 'var(--info-color)' : (theme === 'light' ? '#d1d5db' : 'var(--border-color)')}`,
           borderRadius: '12px',
           padding: '2rem',
           textAlign: 'center',
@@ -393,7 +393,7 @@ const TermSheetUploader = ({ onProductExtracted, sessionId }) => {
             <div style={{
               width: `${progress}%`,
               height: '100%',
-              background: 'linear-gradient(90deg, #3b82f6 0%, #10b981 100%)',
+              background: 'linear-gradient(90deg, var(--info-color) 0%, var(--gain-color) 100%)',
               borderRadius: '4px',
               transition: 'width 0.5s ease',
               position: 'relative',
@@ -428,7 +428,7 @@ const TermSheetUploader = ({ onProductExtracted, sessionId }) => {
         <div style={{
           padding: '1rem',
           background: theme === 'light' ? '#fee2e2' : 'rgba(239, 68, 68, 0.1)',
-          border: `1px solid ${theme === 'light' ? '#fca5a5' : '#ef4444'}`,
+          border: `1px solid ${theme === 'light' ? '#fca5a5' : 'var(--loss-color)'}`,
           borderRadius: '8px',
           marginBottom: '1.5rem'
         }}>
@@ -455,7 +455,7 @@ const TermSheetUploader = ({ onProductExtracted, sessionId }) => {
           fontWeight: '600',
           background: (!selectedFile || isProcessing)
             ? (theme === 'light' ? '#d1d5db' : 'var(--bg-tertiary)')
-            : 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+            : 'linear-gradient(135deg, var(--info-color) 0%, #2563eb 100%)',
           color: (!selectedFile || isProcessing) ? 'var(--text-secondary)' : '#ffffff',
           border: 'none',
           borderRadius: '8px',

@@ -5,7 +5,7 @@ import { Meteor } from 'meteor/meteor';
  * Data provider configuration — one document per market data provider.
  *
  * {
- *   providerId: String,        // 'EOD' | 'TWELVE_DATA' | ... (unique index)
+ *   providerId: String,        // 'EOD' | 'TELEKURS' | ... (unique index)
  *   name: String,
  *   enabled: Boolean,          // dashboard toggle
  *   priority: Number,          // 1 = tried first
@@ -51,43 +51,23 @@ const SEED_PROVIDERS = () => [
     defaults: { enabled: true, priority: 1, rateLimit: null }
   },
   {
-    providerId: 'TWELVE_DATA',
-    name: 'Twelve Data',
-    hasApiKey: !!Meteor.settings.private?.TWELVE_DATA_API_KEY,
-    capabilities: { equity: true, etf: true, index: false, fx: true, bond: false, search: true },
+    providerId: 'TELEKURS',
+    name: 'Telekurs (Excel)',
+    hasApiKey: true, // DB-backed reads need no key — always eligible as last resort
+    // Last-resort fallback: serves prices pushed from Telekurs.xlsx for tickers
+    // EOD lacks (e.g. Japanese stocks). Not a search source.
+    capabilities: { equity: true, etf: true, index: false, fx: false, bond: false, search: false },
     defaults: {
-      enabled: !!Meteor.settings.private?.TWELVE_DATA_API_KEY,
-      priority: 2,
-      rateLimit: { perMinute: 8, perDay: 800 }
-    }
-  },
-  {
-    providerId: 'FMP',
-    name: 'Financial Modeling Prep',
-    hasApiKey: !!Meteor.settings.private?.FMP_API_KEY,
-    capabilities: { equity: true, etf: true, index: false, fx: true, bond: false, search: true },
-    defaults: {
-      enabled: !!Meteor.settings.private?.FMP_API_KEY,
-      priority: 3,
-      rateLimit: { perMinute: 10, perDay: 250 }
-    }
-  },
-  {
-    providerId: 'JQUANTS',
-    name: 'J-Quants (JPX)',
-    hasApiKey: !!Meteor.settings.private?.J_QUANTS_API_KEY,
-    // Japan-only: serves .TSE tickers exclusively (supports() filters the rest)
-    capabilities: { equity: true, etf: true, index: false, fx: false, bond: false, search: true },
-    defaults: {
-      enabled: !!Meteor.settings.private?.J_QUANTS_API_KEY,
-      priority: 4,
-      rateLimit: { perMinute: 60, perDay: 5000 }
+      enabled: true,
+      priority: 2, // tried after EOD
+      rateLimit: null
     }
   }
 ];
 
 export async function seedDataProviders() {
-  for (const seed of SEED_PROVIDERS()) {
+  const seeds = SEED_PROVIDERS();
+  for (const seed of seeds) {
     await DataProvidersCollection.upsertAsync(
       { providerId: seed.providerId },
       {
@@ -106,6 +86,14 @@ export async function seedDataProviders() {
         }
       }
     );
+  }
+
+  // Self-heal: drop any provider docs no longer in the code (e.g. FMP, JQUANTS
+  // after they were removed) so the dashboard and router stay in sync.
+  const validIds = seeds.map(s => s.providerId);
+  const removed = await DataProvidersCollection.removeAsync({ providerId: { $nin: validIds } });
+  if (removed) {
+    console.log(`[DataProviders] Removed ${removed} obsolete provider doc(s) not in the seed`);
   }
   console.log('[DataProviders] Seeded provider configuration');
 }

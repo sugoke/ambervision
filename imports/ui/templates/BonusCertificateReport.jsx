@@ -249,8 +249,8 @@ const BonusCertificateReport = ({ results, productId }) => {
                 padding: '1.25rem',
                 borderRadius: '8px',
                 border: underlying.isWorstPerforming
-                  ? '2px solid #ef4444'
-                  : `1px solid ${underlying.isPositive ? '#10b981' : '#ef4444'}20`,
+                  ? '2px solid var(--loss-color)'
+                  : `1px solid ${underlying.isPositive ? 'var(--gain-color)' : 'var(--loss-color)'}20`,
                 boxShadow: underlying.isWorstPerforming
                   ? '0 0 0 1px rgba(239, 68, 68, 0.1)'
                   : 'none'
@@ -391,7 +391,7 @@ const BonusCertificateReport = ({ results, productId }) => {
                     }}>
                       {underlying.currentPriceFormatted}
                       {underlying.priceSource === 'initial_fallback_error' && (
-                        <span style={{ fontSize: '0.7rem', marginLeft: '0.25rem', color: '#ef4444' }} title="Missing data">⚠️</span>
+                        <span style={{ fontSize: '0.7rem', marginLeft: '0.25rem', color: 'var(--loss-color)' }} title="Missing data">⚠️</span>
                       )}
                     </div>
                     {underlying.priceDateFormatted && (
@@ -433,7 +433,7 @@ const BonusCertificateReport = ({ results, productId }) => {
                     <div style={{
                       fontSize: '1.2rem',
                       fontWeight: '700',
-                      color: underlying.isPositive ? '#10b981' : '#ef4444',
+                      color: underlying.isPositive ? 'var(--gain-color)' : 'var(--loss-color)',
                       fontFamily: 'monospace'
                     }}>{underlying.performanceFormatted}</div>
                   </div>
@@ -460,14 +460,14 @@ const BonusCertificateReport = ({ results, productId }) => {
                     <div style={{
                       fontSize: '1.1rem',
                       fontWeight: '700',
-                      color: underlying.barrierStatus === 'breached' ? '#ef4444' :
-                             underlying.barrierStatus === 'near' ? '#f59e0b' : '#10b981',
+                      color: underlying.barrierStatus === 'breached' ? 'var(--loss-color)' :
+                             underlying.barrierStatus === 'near' ? 'var(--warning-color)' : 'var(--gain-color)',
                       fontFamily: 'monospace'
                     }}>{underlying.distanceToBarrierFormatted}</div>
                     <div style={{
                       fontSize: '0.7rem',
-                      color: underlying.barrierStatus === 'breached' ? '#ef4444' :
-                             underlying.barrierStatus === 'near' ? '#f59e0b' : '#10b981',
+                      color: underlying.barrierStatus === 'breached' ? 'var(--loss-color)' :
+                             underlying.barrierStatus === 'near' ? 'var(--warning-color)' : 'var(--gain-color)',
                       marginTop: '0.35rem',
                       fontWeight: '600'
                     }}>{underlying.barrierStatusText}</div>
@@ -482,9 +482,9 @@ const BonusCertificateReport = ({ results, productId }) => {
       {/* Knock-In Status */}
       <div style={{
         background: knockInBreached
-          ? 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)'
+          ? 'linear-gradient(135deg, var(--loss-color) 0%, #dc2626 100%)'
           : (knockIn.observed
-            ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)'
+            ? 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)'
             : 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)'),
         padding: '1.5rem',
         borderRadius: '8px',
@@ -599,8 +599,8 @@ const BonusCertificateReport = ({ results, productId }) => {
       {/* Redemption Calculation */}
       <div style={{
         background: knockInBreached
-          ? 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)'
-          : 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+          ? 'linear-gradient(135deg, var(--loss-color) 0%, #dc2626 100%)'
+          : 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
         padding: '1.5rem',
         borderRadius: '8px',
         marginBottom: '1.5rem',
@@ -648,13 +648,13 @@ const BonusCertificateReport = ({ results, productId }) => {
           <div style={{
             fontSize: '3rem',
             fontWeight: '800',
-            color: knockInBreached ? '#ef4444' : '#10b981',
+            color: knockInBreached ? 'var(--loss-color)' : 'var(--gain-color)',
             fontFamily: 'monospace',
             lineHeight: '1'
           }}>{redemption.totalValueFormatted}</div>
           <div style={{
             fontSize: '0.75rem',
-            color: '#94a3b8',
+            color: 'var(--neutral-color)',
             marginTop: '0.5rem'
           }}>{redemption.formula}</div>
         </div>
@@ -759,7 +759,7 @@ const BonusCertificateReport = ({ results, productId }) => {
               <div style={{
                 fontSize: '1.5rem',
                 fontWeight: '700',
-                color: basketAnalysis.criticalDistance >= 0 ? '#10b981' : '#ef4444',
+                color: basketAnalysis.criticalDistance >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                 marginBottom: '0.5rem'
               }}>{basketAnalysis.criticalDistanceFormatted}</div>
               <div style={{
@@ -778,7 +778,7 @@ const BonusCertificateReport = ({ results, productId }) => {
               <div style={{
                 fontSize: '1.5rem',
                 fontWeight: '700',
-                color: '#10b981',
+                color: 'var(--gain-color)',
                 marginBottom: '0.5rem'
               }}>{basketAnalysis.safeCount}</div>
               <div style={{
@@ -798,7 +798,7 @@ const BonusCertificateReport = ({ results, productId }) => {
                 <div style={{
                   fontSize: '1.5rem',
                   fontWeight: '700',
-                  color: '#f59e0b',
+                  color: 'var(--warning-color)',
                   marginBottom: '0.5rem'
                 }}>{basketAnalysis.nearCount}</div>
                 <div style={{
@@ -819,7 +819,7 @@ const BonusCertificateReport = ({ results, productId }) => {
                 <div style={{
                   fontSize: '1.5rem',
                   fontWeight: '700',
-                  color: '#ef4444',
+                  color: 'var(--loss-color)',
                   marginBottom: '0.5rem'
                 }}>{basketAnalysis.breachedCount}</div>
                 <div style={{

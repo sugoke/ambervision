@@ -258,7 +258,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
           padding: '1.5rem',
           borderRadius: '8px',
           marginBottom: '1.5rem',
-          border: '2px solid #f59e0b'
+          border: '2px solid #b45309'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
             <span style={{ fontSize: '2rem' }}>🏦</span>
@@ -447,7 +447,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
             <div style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: '0.25rem' }}>
               {tr.referencePerformanceLbl} ({getReferenceLabel(participationParams.referencePerformance)})
             </div>
-            <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
+            <div style={{ fontSize: '0.75rem', color: '#5c656d' }}>
               {t(lang, 'basedOnUnderlyings', { count: underlyings.length })}
             </div>
           </div>
@@ -529,10 +529,10 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
                     }}>
                       {underlying.ticker}
                       {underlying.isWorstPerforming && (
-                        <span style={{ fontSize: '0.75rem', color: '#ef4444' }}>⚠️</span>
+                        <span style={{ fontSize: '0.75rem', color: '#b91c1c' }}>⚠️</span>
                       )}
                       {underlying.isBestPerforming && (
-                        <span style={{ fontSize: '0.75rem', color: '#10b981' }}>★</span>
+                        <span style={{ fontSize: '0.75rem', color: '#047857' }}>★</span>
                       )}
                     </div>
 
@@ -549,7 +549,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
                         top: 0,
                         bottom: 0,
                         width: '2px',
-                        background: '#94a3b8',
+                        background: '#5c656d',
                         zIndex: 1
                       }} />
 
@@ -560,8 +560,8 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
                         bottom: '4px',
                         width: `${barWidth}%`,
                         background: performance >= 0
-                          ? 'linear-gradient(90deg, #10b981 0%, #059669 100%)'
-                          : 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)',
+                          ? 'linear-gradient(90deg, #047857 0%, #059669 100%)'
+                          : 'linear-gradient(90deg, #b91c1c 0%, #dc2626 100%)',
                         borderRadius: '3px',
                         zIndex: 3
                       }} />
@@ -607,7 +607,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
                     <div style={{
                       fontSize: '0.85rem',
                       fontWeight: 700,
-                      color: performance >= 0 ? '#10b981' : '#ef4444',
+                      color: performance >= 0 ? '#047857' : '#b91c1c',
                       textAlign: 'right',
                       fontFamily: 'monospace'
                     }}>
@@ -633,7 +633,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
                 <div style={{
                   width: '16px',
                   height: '10px',
-                  background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
+                  background: 'linear-gradient(90deg, #047857 0%, #059669 100%)',
                   borderRadius: '2px'
                 }} />
                 <span>{tr.positivePerformance}</span>
@@ -642,7 +642,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
                 <div style={{
                   width: '16px',
                   height: '10px',
-                  background: 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)',
+                  background: 'linear-gradient(90deg, #b91c1c 0%, #dc2626 100%)',
                   borderRadius: '2px'
                 }} />
                 <span>{tr.negativePerformance}</span>
@@ -843,7 +843,7 @@ const ParticipationNoteReportPDF = ({ productId: propProductId }) => {
       {/* Footer */}
       <div style={styles.footer}>
         <p>{tr.generatedBy} • {new Date().toLocaleString(getLocale(lang))}</p>
-        <p style={{fontSize: '0.75rem', color: '#9ca3af'}}>
+        <p style={{fontSize: '0.75rem', color: '#5c656d'}}>
           {tr.reportGeneratedOn} {formatDate(latestReport.evaluationDate || latestReport.createdAt)}
         </p>
       </div>

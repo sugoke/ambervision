@@ -18,9 +18,9 @@ const CashMonitoringCard = ({ cashData, onAccountClick }) => {
   };
 
   const getUtilizationColor = (percent, isWithinLimit) => {
-    if (!isWithinLimit) return '#ef4444'; // Red - exceeded
-    if (percent >= 80) return '#f59e0b'; // Orange - warning
-    return '#10b981'; // Green - OK
+    if (!isWithinLimit) return 'var(--loss-color)'; // Red - exceeded
+    if (percent >= 80) return 'var(--warning-color)'; // Orange - warning
+    return 'var(--gain-color)'; // Green - OK
   };
 
   const styles = {
@@ -103,7 +103,7 @@ const CashMonitoringCard = ({ cashData, onAccountClick }) => {
           ? 'rgba(245, 158, 11, 0.1)'
           : 'rgba(59, 130, 246, 0.1)',
       borderLeft: `3px solid ${
-        severity === 'critical' ? '#ef4444' : severity === 'warning' ? '#f59e0b' : '#3b82f6'
+        severity === 'critical' ? 'var(--loss-color)' : severity === 'warning' ? 'var(--warning-color)' : 'var(--info-color)'
       }`,
       cursor: 'pointer',
       transition: 'opacity 0.15s'
@@ -137,7 +137,7 @@ const CashMonitoringCard = ({ cashData, onAccountClick }) => {
     amount: (isNegative) => ({
       fontSize: '14px',
       fontWeight: '600',
-      color: isNegative ? '#ef4444' : '#10b981'
+      color: isNegative ? 'var(--loss-color)' : 'var(--gain-color)'
     }),
     limitInfo: {
       fontSize: '10px',
@@ -344,7 +344,7 @@ const CashMonitoringCard = ({ cashData, onAccountClick }) => {
           >
             Negative
             {negativeCount > 0 && (
-              <span style={styles.badge('#ef4444')}>
+              <span style={styles.badge('var(--loss-color)')}>
                 {negativeCount}
               </span>
             )}
@@ -355,7 +355,7 @@ const CashMonitoringCard = ({ cashData, onAccountClick }) => {
           >
             Credit
             {creditLineCount > 0 && (
-              <span style={styles.badge(hasExceededLimit ? '#ef4444' : '#f59e0b')}>
+              <span style={styles.badge(hasExceededLimit ? 'var(--loss-color)' : 'var(--warning-color)')}>
                 {creditLineCount}
               </span>
             )}
@@ -366,7 +366,7 @@ const CashMonitoringCard = ({ cashData, onAccountClick }) => {
           >
             High
             {highCount > 0 && (
-              <span style={styles.badge('#3b82f6')}>
+              <span style={styles.badge('var(--info-color)')}>
                 {highCount}
               </span>
             )}

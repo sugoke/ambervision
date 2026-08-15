@@ -182,13 +182,13 @@ const styles = {
   change: (isPositive, isNeutral) => ({
     fontSize: '13px',
     fontWeight: '600',
-    color: isNeutral ? 'var(--text-muted)' : isPositive ? '#10b981' : '#ef4444'
+    color: isNeutral ? 'var(--text-muted)' : isPositive ? 'var(--gain-color)' : 'var(--loss-color)'
   }),
   statusDot: (isLive) => ({
     width: '7px',
     height: '7px',
     borderRadius: '50%',
-    background: isLive ? '#10b981' : '#94a3b8',
+    background: isLive ? 'var(--gain-color)' : 'var(--neutral-color)',
     flexShrink: 0
   })
 };

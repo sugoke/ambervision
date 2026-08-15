@@ -61,9 +61,9 @@ const ServerLogsViewer = ({ sessionId }) => {
   const getLevelStyle = (level) => {
     switch (level) {
       case 'error':
-        return { color: '#ef4444', fontWeight: 600 };
+        return { color: 'var(--loss-color)', fontWeight: 600 };
       case 'warn':
-        return { color: '#f59e0b', fontWeight: 500 };
+        return { color: 'var(--warning-color)', fontWeight: 500 };
       default:
         return { color: '#9ca3af' };
     }
@@ -137,7 +137,7 @@ const ServerLogsViewer = ({ sessionId }) => {
             onClick={() => setAutoScroll(!autoScroll)}
             style={{
               ...styles.button,
-              backgroundColor: autoScroll ? '#10b981' : '#4b5563'
+              backgroundColor: autoScroll ? 'var(--gain-color)' : '#4b5563'
             }}
           >
             {autoScroll ? 'Auto-scroll ON' : 'Auto-scroll OFF'}

@@ -318,7 +318,7 @@ const TemplateManagement = ({ user, onNavigate, onEditTemplate }) => {
           border: '1px solid var(--border-color)',
           textAlign: 'center'
         }}>
-          <div style={{ fontSize: '2rem', fontWeight: '700', color: '#10b981' }}>
+          <div style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--gain-color)' }}>
             {templates.filter(t => !t.isBuiltIn).length}
           </div>
           <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
@@ -333,7 +333,7 @@ const TemplateManagement = ({ user, onNavigate, onEditTemplate }) => {
           border: '1px solid var(--border-color)',
           textAlign: 'center'
         }}>
-          <div style={{ fontSize: '2rem', fontWeight: '700', color: '#f59e0b' }}>
+          <div style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--warning-color)' }}>
             {categories.length}
           </div>
           <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
@@ -490,7 +490,7 @@ const TemplateManagement = ({ user, onNavigate, onEditTemplate }) => {
                 <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
                   Status
                 </div>
-                <div style={{ fontSize: '0.875rem', fontWeight: '600', color: template.isPublic ? '#10b981' : '#f59e0b' }}>
+                <div style={{ fontSize: '0.875rem', fontWeight: '600', color: template.isPublic ? 'var(--gain-color)' : 'var(--warning-color)' }}>
                   {template.isPublic ? 'Public' : 'Private'}
                 </div>
               </div>

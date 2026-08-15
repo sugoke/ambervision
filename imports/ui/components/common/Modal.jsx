@@ -1,9 +1,16 @@
 import React, { useEffect } from 'react';
 import ActionButton from './ActionButton.jsx';
+import { useIsMobile } from '../../hooks/useIsMobile.js';
 
 /**
  * Modal - Reusable modal component with consistent styling and behavior
- * 
+ *
+ * On phone-sized viewports the modal becomes a full-height sheet: the header and
+ * footer are pinned and only the content scrolls. Previously the whole modal grew
+ * with its content inside a scrolling overlay, which pushed the action buttons
+ * (Continue / Confirm / Validate) below the fold — on a long form you had to
+ * scroll to the very end of the document to find them.
+ *
  * @param {Object} props
  * @param {boolean} props.isOpen - Whether modal is open
  * @param {Function} props.onClose - Close handler
@@ -29,6 +36,7 @@ const Modal = ({
   style = {},
   ...props
 }) => {
+  const isMobile = useIsMobile();
   // Handle escape key
   useEffect(() => {
     if (!isOpen || !closeOnEscape) return;
@@ -62,9 +70,9 @@ const Modal = ({
     small: { maxWidth: '400px', margin: '10vh auto' },
     medium: { maxWidth: '600px', margin: '8vh auto' },
     large: { maxWidth: '800px', margin: '5vh auto' },
-    fullscreen: { 
-      maxWidth: '95vw', 
-      maxHeight: '95vh', 
+    fullscreen: {
+      maxWidth: '95vw',
+      maxHeight: '95vh',
       margin: '2.5vh auto',
       height: 'calc(95vh - 4rem)'
     }
@@ -78,40 +86,64 @@ const Modal = ({
     bottom: 0,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
     display: 'flex',
-    alignItems: 'flex-start',
     justifyContent: 'center',
     zIndex: 1000,
-    padding: '1rem',
-    overflowY: 'auto'
+    // On mobile the sheet fills the viewport and owns its own scrolling, so the
+    // overlay must not scroll or pad — otherwise the pinned footer scrolls away.
+    alignItems: isMobile ? 'flex-end' : 'flex-start',
+    padding: isMobile ? 0 : '1rem',
+    overflowY: isMobile ? 'hidden' : 'auto'
   };
 
   const modalStyle = {
     background: 'var(--bg-secondary)',
-    borderRadius: '12px',
     boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
     border: '1px solid var(--border-color)',
     width: '100%',
     position: 'relative',
     display: 'flex',
     flexDirection: 'column',
-    ...sizes[size],
+    ...(isMobile
+      ? {
+          borderRadius: '16px 16px 0 0',
+          maxWidth: '100%',
+          margin: 0,
+          // Height follows the content so a short confirm stays a compact bottom
+          // sheet, while a long form is capped and scrolls internally with its
+          // footer pinned. The cap is a percentage of the fixed overlay rather
+          // than vh, so it can't overflow under mobile browser chrome.
+          height: 'auto',
+          maxHeight: '92%',
+          borderLeft: 'none',
+          borderRight: 'none',
+          borderBottom: 'none'
+        }
+      : { borderRadius: '12px', ...sizes[size] }),
     ...style
   };
 
   const headerStyle = {
-    padding: '1.5rem 1.5rem 1rem 1.5rem',
+    padding: isMobile ? '0.875rem 1rem' : '1.5rem 1.5rem 1rem 1.5rem',
+    paddingTop: isMobile ? 'calc(0.875rem + env(safe-area-inset-top, 0px))' : undefined,
     borderBottom: '1px solid var(--border-color)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    flexShrink: 0
+    gap: '0.5rem',
+    flexShrink: 0,
+    background: 'var(--bg-secondary)'
   };
 
   const titleStyle = {
     margin: 0,
-    fontSize: '1.2rem',
+    fontSize: isMobile ? '1.05rem' : '1.2rem',
     fontWeight: '600',
-    color: 'var(--text-primary)'
+    color: 'var(--text-primary)',
+    // A long title ("Term Deposit — Decrease") must not squeeze the close button off-screen.
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: isMobile ? 'nowrap' : 'normal'
   };
 
   const closeButtonStyle = {
@@ -125,24 +157,36 @@ const Modal = ({
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    width: '2rem',
-    height: '2rem',
+    // 44px is the minimum comfortable touch target.
+    width: isMobile ? '2.75rem' : '2rem',
+    height: isMobile ? '2.75rem' : '2rem',
+    flexShrink: 0,
     transition: 'all 0.2s ease'
   };
 
   const contentStyle = {
-    padding: '1.5rem',
+    padding: isMobile ? '1rem' : '1.5rem',
     flex: 1,
-    overflowY: 'auto'
+    overflowY: 'auto',
+    // Keeps momentum scrolling inside the sheet instead of rubber-banding the page.
+    WebkitOverflowScrolling: 'touch',
+    overscrollBehavior: 'contain'
   };
 
   const footerStyle = {
-    padding: '1rem 1.5rem 1.5rem 1.5rem',
+    padding: isMobile ? '0.75rem 1rem' : '1rem 1.5rem 1.5rem 1.5rem',
+    paddingBottom: isMobile ? 'calc(0.75rem + env(safe-area-inset-bottom, 0px))' : undefined,
     borderTop: '1px solid var(--border-color)',
     display: 'flex',
+    // Left unset on desktop so the previous default (stretch) is preserved exactly.
+    ...(isMobile ? { alignItems: 'stretch' } : {}),
     justifyContent: 'flex-end',
+    // Action bars with several buttons (the order detail view has up to seven) overflow
+    // a phone-width row; wrapping keeps every one of them reachable.
+    flexWrap: isMobile ? 'wrap' : 'nowrap',
     gap: '0.75rem',
-    flexShrink: 0
+    flexShrink: 0,
+    background: 'var(--bg-secondary)'
   };
 
   const handleOverlayClick = (e) => {

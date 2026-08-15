@@ -69,7 +69,7 @@ const AUMMiniChart = ({ sessionId, viewAsFilter, currency = 'EUR', isMobile = fa
               labels: formattedLabels,
               datasets: [{
                 data: result.values,
-                borderColor: '#10b981',
+                borderColor: 'var(--gain-color)',
                 backgroundColor: (context) => {
                   const ctx = context.chart.ctx;
                   const gradient = ctx.createLinearGradient(0, 0, 0, context.chart.height);
@@ -240,7 +240,7 @@ const AUMMiniChart = ({ sessionId, viewAsFilter, currency = 'EUR', isMobile = fa
           <div style={{
             fontSize: '0.85rem',
             fontWeight: '600',
-            color: change.isPositive ? '#10b981' : '#ef4444'
+            color: change.isPositive ? 'var(--gain-color)' : 'var(--loss-color)'
           }}>
             {change.isPositive ? '+' : ''}{change.percent.toFixed(1)}%
           </div>

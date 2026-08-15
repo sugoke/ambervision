@@ -834,7 +834,7 @@ const BankConnectionsManager = ({ user }) => {
 
           <button onClick={handleTestProcessJuliusBaer} disabled={isTestProcessing || !sessionId} style={{
             padding: '10px 20px',
-            backgroundColor: (isTestProcessing || !sessionId) ? 'var(--text-muted)' : '#f59e0b',
+            backgroundColor: (isTestProcessing || !sessionId) ? 'var(--text-muted)' : 'var(--warning-color)',
             color: 'white',
             border: 'none',
             borderRadius: '8px',

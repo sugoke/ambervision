@@ -85,7 +85,7 @@ export const RangeAccrualCard = ({ report, product, featureManifest }) => {
             fontSize: '0.75rem',
             fontWeight: '600',
             background: isInRange ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)',
-            color: isInRange ? '#22c55e' : '#ef4444',
+            color: isInRange ? '#22c55e' : 'var(--loss-color)',
             border: `1px solid ${isInRange ? 'rgba(34, 197, 94, 0.4)' : 'rgba(239, 68, 68, 0.4)'}`
           }}>
             {isInRange ? 'IN RANGE' : 'OUT OF RANGE'}
@@ -152,7 +152,7 @@ export const RangeAccrualCard = ({ report, product, featureManifest }) => {
               top: '-5px',
               bottom: '-5px',
               width: '3px',
-              background: isInRange ? '#22c55e' : '#ef4444',
+              background: isInRange ? '#22c55e' : 'var(--loss-color)',
               boxShadow: `0 0 8px ${isInRange ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)'}`,
               zIndex: 2
             }} />

@@ -35,11 +35,13 @@ import PortfolioReviewModal from './components/PortfolioReviewModal.jsx';
 import { DataFreshnessPanel } from './components/DataFreshnessIndicator.jsx';
 import { checkDataFreshness } from '/imports/api/helpers/dataFreshness.js';
 import HoldingPriceChart from './components/HoldingPriceChart.jsx';
+import PositionCardMobile from './components/pms/PositionCardMobile.jsx';
+import { getCurrencySymbol, getCurrencyFlag, formatCurrency, formatPrice } from './components/pms/pmsFormatters.js';
+import CashBalanceCardsMobile from './components/pms/CashBalanceCardsMobile.jsx';
 import * as XLSX from 'xlsx';
 
 // Local collection for snapshot dates (synthetic collection from publication)
 const PMSHoldingsSnapshotDatesCollection = new Mongo.Collection('pmsHoldingsSnapshotDates');
-import * as CountryFlags from 'country-flag-icons/react/3x2';
 import { Line, Doughnut } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -249,35 +251,6 @@ const getAssetSubClassLabel = (subClass) => {
   return labels[subClass] || subClass;
 };
 
-// Helper function to get currency symbol from currency code
-const getCurrencySymbol = (currencyCode) => {
-  const symbols = {
-    'USD': '$',
-    'EUR': '€',
-    'GBP': '£',
-    'CHF': 'CHF',
-    'JPY': '¥',
-    'CNY': '¥',
-    'CAD': 'C$',
-    'AUD': 'A$',
-    'NZD': 'NZ$',
-    'HKD': 'HK$',
-    'SGD': 'S$',
-    'SEK': 'kr',
-    'NOK': 'kr',
-    'DKK': 'kr',
-    'INR': '₹',
-    'RUB': '₽',
-    'BRL': 'R$',
-    'ZAR': 'R',
-    'MXN': 'Mex$',
-    'KRW': '₩',
-    'TRY': '₺',
-    'PLN': 'zł'
-  };
-  return symbols[currencyCode] || currencyCode || '$';
-};
-
 // Helper function to define asset class display order
 const getAssetClassSortOrder = (assetClass) => {
   const sortOrder = {
@@ -293,108 +266,6 @@ const getAssetClassSortOrder = (assetClass) => {
   return sortOrder[assetClass] || 999; // Unknown asset classes go to the end
 };
 
-// Helper function to get currency flag component
-const getCurrencyFlag = (currencyCode) => {
-  // Map currency codes to ISO 3166-1 alpha-2 country codes
-  const countryCodeMap = {
-    'USD': 'US',
-    'EUR': 'EU',
-    'GBP': 'GB',
-    'CHF': 'CH',
-    'JPY': 'JP',
-    'CNY': 'CN',
-    'CAD': 'CA',
-    'AUD': 'AU',
-    'NZD': 'NZ',
-    'HKD': 'HK',
-    'SGD': 'SG',
-    'SEK': 'SE',
-    'NOK': 'NO',
-    'DKK': 'DK',
-    'INR': 'IN',
-    'RUB': 'RU',
-    'BRL': 'BR',
-    'ZAR': 'ZA',
-    'MXN': 'MX',
-    'KRW': 'KR',
-    'TRY': 'TR',
-    'PLN': 'PL',
-    'CZK': 'CZ',
-    'HUF': 'HU',
-    'RON': 'RO',
-    'BGN': 'BG',
-    'HRK': 'HR',
-    'ILS': 'IL',
-    'THB': 'TH',
-    'MYR': 'MY',
-    'IDR': 'ID',
-    'PHP': 'PH',
-    'TWD': 'TW',
-    'VND': 'VN',
-    'AED': 'AE',
-    'SAR': 'SA',
-    'QAR': 'QA',
-    'KWD': 'KW',
-    'BHD': 'BH',
-    'OMR': 'OM',
-    'EGP': 'EG',
-    'MAD': 'MA',
-    'TND': 'TN',
-    'NGN': 'NG',
-    'KES': 'KE',
-    'GHS': 'GH',
-    'ARS': 'AR',
-    'CLP': 'CL',
-    'COP': 'CO',
-    'PEN': 'PE',
-    'UYU': 'UY',
-    'VEF': 'VE',
-    'ISK': 'IS',
-    'UAH': 'UA'
-  };
-
-  const countryCode = countryCodeMap[currencyCode] || currencyCode;
-  const FlagComponent = CountryFlags[countryCode];
-
-  // Return flag component if found, otherwise return null
-  return FlagComponent || null
-};
-
-// Helper function to format currency value
-const formatCurrency = (value, currencyCode, options = {}) => {
-  const symbol = getCurrencySymbol(currencyCode);
-  const formattedValue = value.toLocaleString('en-US', {
-    minimumFractionDigits: options.decimals !== undefined ? options.decimals : 2,
-    maximumFractionDigits: options.decimals !== undefined ? options.decimals : 2
-  });
-
-  // For symbols that should appear after the value
-  if (['kr', 'zł'].includes(symbol)) {
-    return `${formattedValue} ${symbol}`;
-  }
-
-  return `${symbol} ${formattedValue}`;
-};
-
-// Smart price formatter - uses priceType from bank data to determine format
-const formatPrice = (value, currencyCode, priceType) => {
-  if (!value && value !== 0) return '-';
-
-  // If priceType is percentage, format as percentage
-  // Values are stored as decimals (0.9840 = 98.40%, 1.07 = 107%)
-  // Always multiply by 100 for display
-  if (priceType === 'percentage') {
-    const formattedValue = (value * 100).toLocaleString('en-US', {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    });
-    return `${formattedValue}%`;
-  }
-
-  // Otherwise format as absolute currency
-  return formatCurrency(value, currencyCode);
-};
-
 const PortfolioManagementSystem = ({ user }) => {
   const { theme } = useTheme();
   const { viewAsFilter } = useViewAs();
@@ -405,13 +276,23 @@ const PortfolioManagementSystem = ({ user }) => {
   const [expandedSections, setExpandedSections] = useState(() => {
     try { return JSON.parse(localStorage.getItem('pms_expandedSections')) || {}; } catch { return {}; }
   });
-  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [isMobile, setIsMobile] = useState(
+    typeof window !== 'undefined' ? window.innerWidth < 768 : false
+  );
 
-  // Handle window resize for mobile detection
+  // Handle window resize for mobile detection (debounced - this page re-renders a lot)
   useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    if (typeof window === 'undefined') return undefined;
+    let timeoutId = null;
+    const handleResize = () => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => setIsMobile(window.innerWidth < 768), 150);
+    };
     window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    return () => {
+      clearTimeout(timeoutId);
+      window.removeEventListener('resize', handleResize);
+    };
   }, []);
 
   // Transactions filters and sorting
@@ -732,8 +613,16 @@ const PortfolioManagementSystem = ({ user }) => {
         ? (metadata?.structuredProductUnderlyingType || getStructuredProductUnderlyingType(linkedProduct, holding.securityName))
         : null;
 
-      // Use product name if linked, otherwise use security name from bank
-      const displayName = linkedProduct?.title || holding.securityName || 'Unknown Security';
+      // Use product name if linked, otherwise the harmonized security name.
+      // The same ISIN can arrive from different banks under different names, so
+      // prefer the canonical name from Securities Base: `metadata.securityName`
+      // (live for admin/RM), then `holding.displayName` (server-stored copy that
+      // also reaches client-role users), then the bank's raw name.
+      const displayName = linkedProduct?.title
+        || metadata?.securityName
+        || holding.displayName
+        || holding.securityName
+        || 'Unknown Security';
       const productIcon = linkedProduct ? getProductTypeIcon(linkedProduct.templateId || linkedProduct.template) : null;
 
       return {
@@ -1799,29 +1688,16 @@ const PortfolioManagementSystem = ({ user }) => {
   const totalGainLoss = totalNonCashGainLoss; // Gain/loss only applies to non-cash positions
 
   // Determine portfolio reference currency
-  // Priority: 1) viewAsFilter currency, 2) Selected account's reference currency, 3) Holdings' portfolioCurrency, 4) Most common bank account currency, 5) USD default
+  // Priority: 1) Holdings' portfolioCurrency, 2) Scope's reference currency (account tab or
+  // viewAs account/client/entity), 3) Most common bank account currency, 4) USD default
   let portfolioCurrency = 'USD';
   let portfolioHasMixedCurrencies = false;
-
-  // Helper function to get most common portfolioCurrency from holdings
-  const getHoldingsPortfolioCurrency = () => {
-    const holdingsWithCurrency = dummyPositions.filter(p => p.portfolioCurrency);
-    if (holdingsWithCurrency.length > 0) {
-      const currencyCounts = holdingsWithCurrency.reduce((acc, p) => {
-        acc[p.portfolioCurrency] = (acc[p.portfolioCurrency] || 0) + 1;
-        return acc;
-      }, {});
-      return Object.keys(currencyCounts).reduce((a, b) =>
-        currencyCounts[a] > currencyCounts[b] ? a : b, null);
-    }
-    return null;
-  };
 
   // The currency marketValue is actually denominated in. The parser converts each holding's
   // marketValue into the holding's portfolioCurrency, so THAT is the only currency guaranteed to
   // match the numbers we display. account.referenceCurrency is independent metadata that can be
-  // stale, duplicated, or self-contradictory (e.g. account 302894.001 says USD while its holdings
-  // are stored in EUR), so it must never override the currency the values are actually in.
+  // stale, duplicated, or self-contradictory (e.g. account 302894.001 says EUR while its holdings
+  // are stored in USD), so it must never override the currency the values are actually in.
   const holdingsCurrencySet = new Set(
     dummyPositions.filter(p => p.portfolioCurrency).map(p => p.portfolioCurrency)
   );
@@ -1831,49 +1707,50 @@ const PortfolioManagementSystem = ({ user }) => {
 
   // Determine portfolio currency - Priority order:
   // 1. Holdings' portfolioCurrency (the currency marketValue is denominated in) — authoritative
-  // 2. Selected account tab's referenceCurrency (when specific account selected)
-  // 3. Client's profile.referenceCurrency (when client selected via viewAs)
-  // 4. Most common bank account referenceCurrency
-  // 5. Fall back to USD
-
-  if (activeAccountTab !== 'consolidated') {
-    // Priority 1: the currency the holdings are actually denominated in.
-    // Priority 2: the selected account tab's reference currency (fallback when no holdings).
-    const selectedAccount = bankAccounts.find(acc => acc._id === activeAccountTab);
-    if (unanimousHoldingsCurrency) {
-      portfolioCurrency = unanimousHoldingsCurrency;
-    } else if (selectedAccount && selectedAccount.referenceCurrency) {
-      portfolioCurrency = selectedAccount.referenceCurrency;
-    }
-  } else if (viewAsFilter && (viewAsFilter.type === 'client' || viewAsFilter.type === 'entity')) {
-    // Priority 1: the currency the holdings are actually denominated in.
-    // Priority 3: Entity/Client's referenceCurrency (fallback when no holdings).
-    const clientCurrency = viewAsFilter.data?.referenceCurrency || viewAsFilter.data?.profile?.referenceCurrency;
-    if (unanimousHoldingsCurrency) {
-      portfolioCurrency = unanimousHoldingsCurrency;
-    } else if (clientCurrency) {
-      portfolioCurrency = clientCurrency;
-    } else if (bankAccounts.length > 0) {
-      // Fall back to most common bank account currency for this client
-      const refCurrencyCounts = bankAccounts.reduce((counts, acc) => {
-        const curr = acc.referenceCurrency || 'EUR';
-        counts[curr] = (counts[curr] || 0) + 1;
-        return counts;
-      }, {});
-      portfolioCurrency = Object.keys(refCurrencyCounts).reduce((a, b) =>
-        refCurrencyCounts[a] > refCurrencyCounts[b] ? a : b, 'EUR'
-      );
-    }
-  } else if (bankAccounts.length > 0) {
-    // Priority 3: Most common bank account reference currency
+  // 2. The scope's own referenceCurrency (selected account tab, or the account/client/entity
+  //    picked in the "View as" filter) — only reachable when there are no holdings to read
+  // 3. Most common bank account referenceCurrency
+  // 4. Fall back to USD
+  //
+  // Priority 1 must be checked BEFORE any branching on the current scope: whatever narrows the
+  // view — account tab, viewAs account, viewAs client/entity — the numbers rendered are still
+  // `marketValue`, so a disagreeing referenceCurrency would only relabel them (that is how a
+  // viewAs-account scope on 302894.001 printed USD amounts behind a € sign).
+  const mostCommonAccountCurrency = () => {
+    if (bankAccounts.length === 0) return null;
     const refCurrencyCounts = bankAccounts.reduce((counts, acc) => {
       const curr = acc.referenceCurrency || 'EUR';
       counts[curr] = (counts[curr] || 0) + 1;
       return counts;
     }, {});
-    portfolioCurrency = Object.keys(refCurrencyCounts).reduce((a, b) =>
+    return Object.keys(refCurrencyCounts).reduce((a, b) =>
       refCurrencyCounts[a] > refCurrencyCounts[b] ? a : b, 'EUR'
     );
+  };
+
+  if (unanimousHoldingsCurrency) {
+    // Priority 1: the currency the displayed values are actually denominated in.
+    portfolioCurrency = unanimousHoldingsCurrency;
+  } else if (activeAccountTab !== 'consolidated') {
+    // Priority 2: the selected account tab's reference currency.
+    const selectedAccount = bankAccounts.find(acc => acc._id === activeAccountTab);
+    if (selectedAccount && selectedAccount.referenceCurrency) {
+      portfolioCurrency = selectedAccount.referenceCurrency;
+    }
+  } else if (viewAsFilter && viewAsFilter.type === 'account') {
+    // Priority 2: the single account picked in the "View as" filter.
+    if (viewAsFilter.data?.referenceCurrency) {
+      portfolioCurrency = viewAsFilter.data.referenceCurrency;
+    } else {
+      portfolioCurrency = mostCommonAccountCurrency() || portfolioCurrency;
+    }
+  } else if (viewAsFilter && (viewAsFilter.type === 'client' || viewAsFilter.type === 'entity')) {
+    // Priority 2: Entity/Client's referenceCurrency, then priority 3.
+    const clientCurrency = viewAsFilter.data?.referenceCurrency || viewAsFilter.data?.profile?.referenceCurrency;
+    portfolioCurrency = clientCurrency || mostCommonAccountCurrency() || portfolioCurrency;
+  } else {
+    // Priority 3: Most common bank account reference currency
+    portfolioCurrency = mostCommonAccountCurrency() || portfolioCurrency;
   }
 
   // No view-as filter and no specific account tab → this is the user's own consolidated
@@ -2825,52 +2702,54 @@ const PortfolioManagementSystem = ({ user }) => {
       : null;
 
     return (
-    <div style={{ padding: '1.5rem' }}>
+    <div style={{ padding: isMobile ? '0.75rem' : '1.5rem' }}>
       {/* Data Freshness Indicator */}
       {mostRecentDataDate && (
         <div style={{
-          padding: '0.75rem 1.25rem',
-          marginBottom: '1.5rem',
+          padding: isMobile ? '0.875rem 1rem' : '0.75rem 1.25rem',
+          marginBottom: isMobile ? '1rem' : '1.5rem',
           background: theme === 'light'
             ? 'linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(59, 130, 246, 0.03) 100%)'
             : 'linear-gradient(135deg, rgba(59, 130, 246, 0.15) 0%, rgba(59, 130, 246, 0.05) 100%)',
           borderRadius: '8px',
-          borderLeft: '3px solid #3b82f6',
+          borderLeft: '3px solid var(--info-color)',
           display: 'flex',
           alignItems: 'center',
           gap: '0.75rem',
-          fontSize: '0.875rem',
+          fontSize: isMobile ? '0.9375rem' : '0.875rem',
           color: 'var(--text-secondary)'
         }}>
-          <span style={{ fontSize: '1.1rem' }}>📅</span>
+          <span style={{ fontSize: '1.1rem', flexShrink: 0 }}>📅</span>
           <span>
             <strong style={{ color: 'var(--text-primary)' }}>Data as of:</strong>{' '}
-            {mostRecentDataDate.toLocaleDateString('en-US', {
-              weekday: 'long',
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric'
-            })}
+            {mostRecentDataDate.toLocaleDateString('en-US', isMobile
+              ? { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }
+              : { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
           </span>
         </div>
       )}
 
-      {/* Simple Portfolio Header */}
+      {/* Simple Portfolio Header - label above the figure on mobile so the
+          amount gets the full width and never wraps mid-number */}
       <div style={{
-        padding: '1.5rem',
+        padding: isMobile ? '0.25rem 0.25rem 0' : '1.5rem',
         marginBottom: '1rem'
       }}>
         <span style={{
-          fontSize: '1.125rem',
-          color: 'var(--text-secondary)'
+          fontSize: isMobile ? '0.9375rem' : '1.125rem',
+          color: 'var(--text-secondary)',
+          display: isMobile ? 'block' : 'inline',
+          marginBottom: isMobile ? '0.25rem' : 0
         }}>
-          Total Portfolio Value:{' '}
+          Total Portfolio Value:{isMobile ? '' : ' '}
         </span>
         <span style={{
-          fontSize: '1.5rem',
-          fontWeight: '600',
+          fontSize: isMobile ? '1.75rem' : '1.5rem',
+          fontWeight: '700',
           color: 'var(--text-primary)',
-          fontVariantNumeric: 'tabular-nums'
+          fontVariantNumeric: 'tabular-nums',
+          display: isMobile ? 'block' : 'inline',
+          whiteSpace: 'nowrap'
         }}>
           {formatCurrency(totalPortfolioValue, portfolioCurrency)}
         </span>
@@ -2883,11 +2762,11 @@ const PortfolioManagementSystem = ({ user }) => {
           backdropFilter: 'none',
           marginBottom: '2rem'
         }}>
-          <div style={{ padding: '1.5rem' }}>
+          <div style={{ padding: isMobile ? '1rem' : '1.5rem' }}>
             <h3 style={{
-              margin: '0 0 1.5rem 0',
-              fontSize: '1.25rem',
-              fontWeight: '400',
+              margin: isMobile ? '0 0 1rem 0' : '0 0 1.5rem 0',
+              fontSize: isMobile ? '1.125rem' : '1.25rem',
+              fontWeight: isMobile ? '600' : '400',
               color: 'var(--text-primary)',
               display: 'flex',
               alignItems: 'center',
@@ -2897,6 +2776,14 @@ const PortfolioManagementSystem = ({ user }) => {
               Cash Balances
             </h3>
 
+            {isMobile ? (
+              <CashBalanceCardsMobile
+                cashByCurrency={cashByCurrency}
+                portfolioCurrency={portfolioCurrency}
+                totalCashPortfolioValue={totalCashPortfolioValue}
+                theme={theme}
+              />
+            ) : (
             <div style={{ overflowX: 'auto' }}>
               <table style={{
                 width: '100%',
@@ -3039,7 +2926,7 @@ const PortfolioManagementSystem = ({ user }) => {
                       padding: '1rem',
                       textAlign: 'right',
                       fontWeight: '700',
-                      color: '#3b82f6',
+                      color: 'var(--info-color)',
                       fontSize: '1.1rem'
                     }}>
                       {Object.keys(cashByCurrency).length === 1
@@ -3050,7 +2937,7 @@ const PortfolioManagementSystem = ({ user }) => {
                       padding: '1rem',
                       textAlign: 'right',
                       fontWeight: '700',
-                      color: '#3b82f6',
+                      color: 'var(--info-color)',
                       fontSize: '1.1rem'
                     }}>
                       {formatCurrency(totalCashPortfolioValue, portfolioCurrency)}
@@ -3060,6 +2947,7 @@ const PortfolioManagementSystem = ({ user }) => {
                 </tbody>
               </table>
             </div>
+            )}
           </div>
         </LiquidGlassCard>
       )}
@@ -3132,11 +3020,11 @@ const PortfolioManagementSystem = ({ user }) => {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', gap: '1rem', flexWrap: 'wrap' }}>
                   <div style={{ display: 'flex', gap: '1rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
                     <span title="Sum of P&L across all paired trades (groups of ≥2 trades sharing currency pair + value date). Singles don't have a P&L.">
-                      Pair P&L: <strong style={{ color: totalMtm >= 0 ? '#10b981' : '#ef4444' }}>{formatCurrency(totalMtm, portfolioCurrency)}</strong>
+                      Pair P&L: <strong style={{ color: totalMtm >= 0 ? 'var(--gain-color)' : 'var(--loss-color)' }}>{formatCurrency(totalMtm, portfolioCurrency)}</strong>
                     </span>
                     {closedCount > 0 && (
                       <span title="Realized P&L from round-trip pairs (open trade offset by a closing trade).">
-                        Realized P&L: <strong style={{ color: totalRealized >= 0 ? '#10b981' : '#ef4444' }}>{formatCurrency(totalRealized, portfolioCurrency)}</strong>
+                        Realized P&L: <strong style={{ color: totalRealized >= 0 ? 'var(--gain-color)' : 'var(--loss-color)' }}>{formatCurrency(totalRealized, portfolioCurrency)}</strong>
                       </span>
                     )}
                   </div>
@@ -3269,7 +3157,7 @@ const PortfolioManagementSystem = ({ user }) => {
                     // Assign each group a distinct accent colour for the left
                     // band. Only groups with ≥2 members get colour; singletons
                     // get no band.
-                    const groupColors = ['#0ea5e9', '#a855f7', '#f59e0b', '#10b981', '#ef4444', '#22d3ee'];
+                    const groupColors = ['#0ea5e9', '#a855f7', 'var(--warning-color)', 'var(--gain-color)', 'var(--loss-color)', '#22d3ee'];
                     const colorByGroup = new Map();
                     let colorIdx = 0;
                     for (const [k, count] of groupCounts) {
@@ -3327,14 +3215,14 @@ const PortfolioManagementSystem = ({ user }) => {
                       textAlign: 'right',
                       fontWeight: '600',
                       fontFamily: "'JetBrains Mono', monospace",
-                      color: '#10b981'
+                      color: 'var(--gain-color)'
                     };
                     const soldCellStyle = {
                       padding: '1rem',
                       textAlign: 'right',
                       fontWeight: '600',
                       fontFamily: "'JetBrains Mono', monospace",
-                      color: '#ef4444'
+                      color: 'var(--loss-color)'
                     };
 
                     // Source for leg display:
@@ -3433,8 +3321,8 @@ const PortfolioManagementSystem = ({ user }) => {
                     const statusBadge = (() => {
                       if (status === 'closed') return { label: 'Closed', color: '#6b7280', bg: 'rgba(107, 114, 128, 0.15)' };
                       if (status === 'rolled') return { label: `Rolled (${rollCount})`, color: '#0ea5e9', bg: 'rgba(14, 165, 233, 0.15)' };
-                      if (status === 'unenriched') return { label: 'Unenriched', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.15)' };
-                      return { label: 'Open', color: '#10b981', bg: 'rgba(16, 185, 129, 0.15)' };
+                      if (status === 'unenriched') return { label: 'Unenriched', color: 'var(--warning-color)', bg: 'rgba(245, 158, 11, 0.15)' };
+                      return { label: 'Open', color: 'var(--gain-color)', bg: 'rgba(16, 185, 129, 0.15)' };
                     })();
 
                     // Entry rate priority:
@@ -3571,7 +3459,7 @@ const PortfolioManagementSystem = ({ user }) => {
                                   style={{
                                     fontSize: '0.7rem', fontWeight: '600',
                                     padding: '2px 6px', borderRadius: '4px',
-                                    color: groupColor, background: `${groupColor}22`
+                                    color: groupColor, background: `color-mix(in srgb, ${groupColor} 22%, transparent)`
                                   }}
                                 >
                                   🔗 Pair ({row._groupCount})
@@ -3638,7 +3526,7 @@ const PortfolioManagementSystem = ({ user }) => {
                                 }
                               }
                             }
-                            const pnlColor = (pnlBase || 0) >= 0 ? '#10b981' : '#ef4444';
+                            const pnlColor = (pnlBase || 0) >= 0 ? 'var(--gain-color)' : 'var(--loss-color)';
                             return (
                               <>
                                 <td style={{
@@ -3784,7 +3672,7 @@ const PortfolioManagementSystem = ({ user }) => {
                           padding: '1rem',
                           textAlign: 'right',
                           fontWeight: '700',
-                          color: netPnL >= 0 ? '#10b981' : '#ef4444',
+                          color: netPnL >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                           fontSize: '1.1rem'
                         }}>
                           {formatCurrency(netPnL, portfolioCurrency)}
@@ -3915,7 +3803,7 @@ const PortfolioManagementSystem = ({ user }) => {
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = 'var(--bg-tertiary)';
-                e.currentTarget.style.borderColor = '#10b981';
+                e.currentTarget.style.borderColor = 'var(--gain-color)';
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.background = 'var(--bg-secondary)';
@@ -3970,6 +3858,33 @@ const PortfolioManagementSystem = ({ user }) => {
               const totalBuyQty = buyOrders.reduce((sum, o) => sum + (o.quantity || 0), 0);
               const totalSellQty = sellOrders.reduce((sum, o) => sum + (o.quantity || 0), 0);
 
+              // On phones the 700px-wide table row is unreadable - render a
+              // tap-to-expand card instead (same data, no horizontal scroll).
+              if (isMobile) {
+                return (
+                  <PositionCardMobile
+                    key={position.id}
+                    position={position}
+                    isExpanded={isPositionExpanded}
+                    onToggle={() => toggleSection(positionKey)}
+                    portfolioCurrency={portfolioCurrency}
+                    totalPortfolioValue={totalPortfolioValue}
+                    linePerf={position.uniqueKey ? holdingPerfByKey[position.uniqueKey] : null}
+                    isStale={isStale}
+                    positionFreshness={positionFreshness}
+                    totalBuyQty={totalBuyQty}
+                    totalSellQty={totalSellQty}
+                    buyOrderCount={buyOrders.length}
+                    sellOrderCount={sellOrders.length}
+                    theme={theme}
+                    userRole={user?.role}
+                    onBuy={(p) => openOrderModal('buy', p)}
+                    onSell={(p) => openOrderModal('sell', p)}
+                    onReclassify={handleReclassify}
+                  />
+                );
+              }
+
               return (
                 <div key={position.id}>
                   {/* Main Row - P&L Dominant Layout with horizontal scroll on mobile */}
@@ -4009,7 +3924,7 @@ const PortfolioManagementSystem = ({ user }) => {
                                 href={`/report/${position.linkedProduct._id}`}
                                 onClick={(e) => e.stopPropagation()}
                                 style={{ color: 'var(--text-primary)', textDecoration: 'none' }}
-                                onMouseEnter={(e) => e.currentTarget.style.color = '#3b82f6'}
+                                onMouseEnter={(e) => e.currentTarget.style.color = 'var(--info-color)'}
                                 onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-primary)'}
                               >
                                 {position.name}
@@ -4048,7 +3963,7 @@ const PortfolioManagementSystem = ({ user }) => {
                           fontSize: '1.1rem',
                           fontWeight: '700',
                           fontVariantNumeric: 'tabular-nums',
-                          color: position.gainLoss >= 0 ? '#10b981' : '#ef4444',
+                          color: position.gainLoss >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                           lineHeight: '1.2'
                         }}>
                           {position.gainLoss >= 0 ? '+' : ''}{formatCurrency(position.gainLoss, portfolioCurrency)}
@@ -4057,7 +3972,7 @@ const PortfolioManagementSystem = ({ user }) => {
                           fontSize: '0.75rem',
                           fontWeight: '500',
                           fontVariantNumeric: 'tabular-nums',
-                          color: position.gainLossPercent >= 0 ? '#10b981' : '#ef4444',
+                          color: position.gainLossPercent >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                           opacity: 0.85
                         }}>
                           {position.gainLossPercent >= 0 ? '+' : ''}{position.gainLossPercent.toFixed(2)}%
@@ -4095,7 +4010,7 @@ const PortfolioManagementSystem = ({ user }) => {
                             style={{
                               fontSize: '0.65rem',
                               fontWeight: '600',
-                              color: '#10b981',
+                              color: 'var(--gain-color)',
                               background: 'rgba(16, 185, 129, 0.15)',
                               padding: '1px 4px',
                               borderRadius: '3px'
@@ -4110,7 +4025,7 @@ const PortfolioManagementSystem = ({ user }) => {
                             style={{
                               fontSize: '0.65rem',
                               fontWeight: '600',
-                              color: '#ef4444',
+                              color: 'var(--loss-color)',
                               background: 'rgba(239, 68, 68, 0.15)',
                               padding: '1px 4px',
                               borderRadius: '3px'
@@ -4143,7 +4058,7 @@ const PortfolioManagementSystem = ({ user }) => {
                         {position.priceDate ? new Date(position.priceDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Last Price'}
                       </div>
                       <div style={{
-                        color: position.currentPrice >= position.avgPrice ? '#10b981' : '#ef4444',
+                        color: position.currentPrice >= position.avgPrice ? 'var(--gain-color)' : 'var(--loss-color)',
                         fontSize: '0.8rem',
                         fontVariantNumeric: 'tabular-nums'
                       }}>
@@ -4152,7 +4067,7 @@ const PortfolioManagementSystem = ({ user }) => {
                       <div style={{
                         fontSize: '0.65rem',
                         fontVariantNumeric: 'tabular-nums',
-                        color: position.currentPrice >= position.avgPrice ? '#10b981' : '#ef4444'
+                        color: position.currentPrice >= position.avgPrice ? 'var(--gain-color)' : 'var(--loss-color)'
                       }}>
                         {position.avgPrice > 0
                           ? `${position.currentPrice >= position.avgPrice ? '+' : ''}${(((position.currentPrice - position.avgPrice) / position.avgPrice) * 100).toFixed(1)}%`
@@ -4204,7 +4119,7 @@ const PortfolioManagementSystem = ({ user }) => {
                           : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
                         const pctColor = (v) => (v === null || v === undefined || !Number.isFinite(v))
                           ? 'var(--text-muted)'
-                          : (v >= 0 ? '#10b981' : '#ef4444');
+                          : (v >= 0 ? 'var(--gain-color)' : 'var(--loss-color)');
                         return ['wtd', 'mtd', 'ytd'].map((key) => {
                           const p = linePerf ? linePerf[key] : null;
                           return (
@@ -4234,7 +4149,7 @@ const PortfolioManagementSystem = ({ user }) => {
                               borderRadius: '6px',
                               border: 'none',
                               background: 'rgba(16, 185, 129, 0.15)',
-                              color: '#10b981',
+                              color: 'var(--gain-color)',
                               fontSize: '0.8rem',
                               fontWeight: '600',
                               cursor: 'pointer',
@@ -4259,7 +4174,7 @@ const PortfolioManagementSystem = ({ user }) => {
                               borderRadius: '6px',
                               border: 'none',
                               background: 'rgba(239, 68, 68, 0.15)',
-                              color: '#ef4444',
+                              color: 'var(--loss-color)',
                               fontSize: '0.8rem',
                               fontWeight: '600',
                               cursor: 'pointer',
@@ -4274,8 +4189,8 @@ const PortfolioManagementSystem = ({ user }) => {
                           >
                             Sell
                           </button>
-                          {/* Reclassify Button - Admin/Superadmin only */}
-                          {['admin', 'superadmin'].includes(user?.role) && (
+                          {/* Reclassify Button - Admin/Superadmin/Compliance only */}
+                          {['admin', 'superadmin', 'compliance'].includes(user?.role) && (
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -4321,33 +4236,41 @@ const PortfolioManagementSystem = ({ user }) => {
                       : 'linear-gradient(135deg, rgba(59, 130, 246, 0.15) 0%, rgba(59, 130, 246, 0.08) 100%)',
                     border: '1px solid var(--border-color)',
                     borderRadius: '8px',
-                    padding: '0.75rem 1rem',
+                    padding: isMobile ? '1rem' : '0.75rem 1rem',
                     cursor: 'pointer',
                     transition: 'all 0.15s ease'
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  <div style={{
+                    display: 'flex',
+                    // On phones the value + P&L string is too wide to sit beside
+                    // the title, so stack them instead of clipping.
+                    flexDirection: isMobile ? 'column' : 'row',
+                    justifyContent: 'space-between',
+                    alignItems: isMobile ? 'stretch' : 'center',
+                    gap: '0.5rem'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
+                      <span style={{ fontSize: isMobile ? '0.9rem' : '0.8rem', color: 'var(--text-muted)' }}>
                         {isExpanded ? '▼' : '▶'}
                       </span>
-                      <div>
-                        <div style={{ fontWeight: '500', color: 'var(--text-primary)', fontSize: '0.95rem', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: isMobile ? '600' : '500', color: 'var(--text-primary)', fontSize: isMobile ? '1.0625rem' : '0.95rem', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
                           {assetClass.replace(/_/g, ' ')}
                         </div>
-                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                        <div style={{ fontSize: isMobile ? '0.8125rem' : '0.7rem', color: isMobile ? 'var(--text-secondary)' : 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                           {subtotal.count} position{subtotal.count !== 1 ? 's' : ''} • {subtotal.percentage.toFixed(1)}%
                         </div>
                       </div>
                     </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '1rem', fontVariantNumeric: 'tabular-nums' }}>
+                    <div style={{ textAlign: 'right', minWidth: 0, flexShrink: 0, whiteSpace: 'nowrap' }}>
+                      <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: isMobile ? '1.125rem' : '1rem', fontVariantNumeric: 'tabular-nums' }}>
                         {formatCurrency(subtotal.marketValue, portfolioCurrency)}
                       </div>
                       <div style={{
-                        fontSize: '0.8rem',
+                        fontSize: isMobile ? '0.875rem' : '0.8rem',
                         fontWeight: '500',
-                        color: subtotal.gainLoss >= 0 ? '#10b981' : '#ef4444',
+                        color: subtotal.gainLoss >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                         fontVariantNumeric: 'tabular-nums'
                       }}>
                         {subtotal.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(subtotal.gainLoss), portfolioCurrency)}
@@ -4361,7 +4284,14 @@ const PortfolioManagementSystem = ({ user }) => {
 
                 {/* Expanded Content */}
                 {isExpanded && (
-                  <div style={{
+                  <div style={isMobile ? {
+                    // Mobile: cards are self-contained, so drop the outer frame
+                    // and let each position read as a discrete block.
+                    marginTop: '0.5rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.5rem'
+                  } : {
                     marginTop: '0.5rem',
                     borderRadius: '8px',
                     overflow: 'hidden',
@@ -4386,36 +4316,40 @@ const PortfolioManagementSystem = ({ user }) => {
                             }}
                             style={{
                               display: 'flex',
+                              flexDirection: isMobile ? 'column' : 'row',
                               justifyContent: 'space-between',
-                              alignItems: 'center',
-                              padding: '0.625rem 1rem',
-                              paddingLeft: '1.5rem',
+                              alignItems: isMobile ? 'stretch' : 'center',
+                              gap: '0.5rem',
+                              padding: isMobile ? '0.875rem 1rem' : '0.625rem 1rem',
+                              paddingLeft: isMobile ? '0.875rem' : '1.5rem',
                               background: theme === 'light' ? 'rgba(16, 185, 129, 0.05)' : 'rgba(16, 185, 129, 0.08)',
-                              borderBottom: '1px solid var(--border-color)',
+                              borderBottom: isMobile ? 'none' : '1px solid var(--border-color)',
+                              border: isMobile ? '1px solid var(--border-color)' : undefined,
+                              borderRadius: isMobile ? '8px' : undefined,
                               borderLeft: '3px solid rgba(16, 185, 129, 0.4)',
                               cursor: 'pointer'
                             }}
                           >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
+                              <span style={{ fontSize: isMobile ? '0.85rem' : '0.7rem', color: 'var(--text-muted)' }}>
                                 {isLevel1Expanded ? '▼' : '▶'}
                               </span>
-                              <div>
-                                <div style={{ fontWeight: '500', color: 'var(--text-primary)', fontSize: '0.85rem' }}>
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontWeight: isMobile ? '600' : '500', color: 'var(--text-primary)', fontSize: isMobile ? '1rem' : '0.85rem' }}>
                                   {getUnderlyingTypeLabel(underlyingType)}
                                 </div>
-                                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                                <div style={{ fontSize: isMobile ? '0.8125rem' : '0.65rem', color: isMobile ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
                                   {level1Total.count} position{level1Total.count !== 1 ? 's' : ''}
                                 </div>
                               </div>
                             </div>
-                            <div style={{ textAlign: 'right' }}>
-                              <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.9rem', fontVariantNumeric: 'tabular-nums' }}>
+                            <div style={{ textAlign: 'right', minWidth: 0, flexShrink: 0, whiteSpace: 'nowrap' }}>
+                              <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: isMobile ? '1.0625rem' : '0.9rem', fontVariantNumeric: 'tabular-nums' }}>
                                 {formatCurrency(level1Total.marketValue, portfolioCurrency)}
                               </div>
                               <div style={{
-                                fontSize: '0.75rem',
-                                color: level1Total.gainLoss >= 0 ? '#10b981' : '#ef4444',
+                                fontSize: isMobile ? '0.875rem' : '0.75rem',
+                                color: level1Total.gainLoss >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                                 fontVariantNumeric: 'tabular-nums'
                               }}>
                                 {level1Total.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(level1Total.gainLoss), portfolioCurrency)}
@@ -4442,36 +4376,41 @@ const PortfolioManagementSystem = ({ user }) => {
                                   }}
                                   style={{
                                     display: 'flex',
+                                    flexDirection: isMobile ? 'column' : 'row',
                                     justifyContent: 'space-between',
-                                    alignItems: 'center',
-                                    padding: '0.5rem 1rem',
-                                    paddingLeft: '2.5rem',
+                                    alignItems: isMobile ? 'stretch' : 'center',
+                                    gap: '0.5rem',
+                                    padding: isMobile ? '0.75rem 1rem' : '0.5rem 1rem',
+                                    paddingLeft: isMobile ? '0.75rem' : '2.5rem',
                                     background: theme === 'light' ? 'rgba(59, 130, 246, 0.03)' : 'rgba(59, 130, 246, 0.05)',
-                                    borderBottom: '1px solid var(--border-color)',
+                                    borderBottom: isMobile ? 'none' : '1px solid var(--border-color)',
+                                    border: isMobile ? '1px solid var(--border-color)' : undefined,
+                                    borderRadius: isMobile ? '8px' : undefined,
+                                    margin: isMobile ? '0.5rem 0 0 0.5rem' : undefined,
                                     borderLeft: '3px solid rgba(59, 130, 246, 0.3)',
                                     cursor: 'pointer'
                                   }}
                                 >
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                    <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
+                                    <span style={{ fontSize: isMobile ? '0.8rem' : '0.65rem', color: 'var(--text-muted)' }}>
                                       {isLevel2Expanded ? '▼' : '▶'}
                                     </span>
-                                    <div>
-                                      <div style={{ fontWeight: '500', color: 'var(--text-primary)', fontSize: '0.8rem' }}>
+                                    <div style={{ minWidth: 0 }}>
+                                      <div style={{ fontWeight: isMobile ? '600' : '500', color: 'var(--text-primary)', fontSize: isMobile ? '0.9375rem' : '0.8rem' }}>
                                         {getProtectionTypeLabel(protectionType)}
                                       </div>
-                                      <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>
+                                      <div style={{ fontSize: isMobile ? '0.8125rem' : '0.6rem', color: isMobile ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
                                         {level2Total.count} position{level2Total.count !== 1 ? 's' : ''}
                                       </div>
                                     </div>
                                   </div>
-                                  <div style={{ textAlign: 'right' }}>
-                                    <div style={{ fontWeight: '500', color: 'var(--text-primary)', fontSize: '0.85rem', fontVariantNumeric: 'tabular-nums' }}>
+                                  <div style={{ textAlign: 'right', minWidth: 0, flexShrink: 0, whiteSpace: 'nowrap' }}>
+                                    <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: isMobile ? '1rem' : '0.85rem', fontVariantNumeric: 'tabular-nums' }}>
                                       {formatCurrency(level2Total.marketValue, portfolioCurrency)}
                                     </div>
                                     <div style={{
-                                      fontSize: '0.7rem',
-                                      color: level2Total.gainLoss >= 0 ? '#10b981' : '#ef4444',
+                                      fontSize: isMobile ? '0.875rem' : '0.7rem',
+                                      color: level2Total.gainLoss >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                                       fontVariantNumeric: 'tabular-nums'
                                     }}>
                                       {level2Total.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(level2Total.gainLoss), portfolioCurrency)}
@@ -4481,7 +4420,9 @@ const PortfolioManagementSystem = ({ user }) => {
 
                                 {/* Level 2 Positions */}
                                 {isLevel2Expanded && (
-                                  <div style={{ paddingLeft: '1.5rem' }}>
+                                  <div style={isMobile
+                                    ? { paddingLeft: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }
+                                    : { paddingLeft: '1.5rem' }}>
                                     {level2Positions.map((pos, idx) => renderPositionRow(pos, idx === level2Positions.length - 1))}
                                   </div>
                                 )}
@@ -4509,40 +4450,44 @@ const PortfolioManagementSystem = ({ user }) => {
                             }}
                             style={{
                               display: 'flex',
+                              flexDirection: isMobile ? 'column' : 'row',
                               justifyContent: 'space-between',
-                              alignItems: 'center',
-                              padding: '0.625rem 1rem',
-                              paddingLeft: '1.5rem',
+                              alignItems: isMobile ? 'stretch' : 'center',
+                              gap: '0.5rem',
+                              padding: isMobile ? '0.875rem 1rem' : '0.625rem 1rem',
+                              paddingLeft: isMobile ? '0.875rem' : '1.5rem',
                               background: theme === 'light' ? 'rgba(16, 185, 129, 0.05)' : 'rgba(16, 185, 129, 0.08)',
-                              borderBottom: '1px solid var(--border-color)',
+                              borderBottom: isMobile ? 'none' : '1px solid var(--border-color)',
+                              border: isMobile ? '1px solid var(--border-color)' : undefined,
+                              borderRadius: isMobile ? '8px' : undefined,
                               borderLeft: '3px solid rgba(16, 185, 129, 0.4)',
                               cursor: 'pointer'
                             }}
                           >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
+                              <span style={{ fontSize: isMobile ? '0.85rem' : '0.7rem', color: 'var(--text-muted)' }}>
                                 {isSubExpanded ? '▼' : '▶'}
                               </span>
-                              <div>
-                                <div style={{ fontWeight: '500', color: 'var(--text-primary)', fontSize: '0.85rem' }}>
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontWeight: isMobile ? '600' : '500', color: 'var(--text-primary)', fontSize: isMobile ? '1rem' : '0.85rem' }}>
                                   {subClass === 'direct_equity' ? 'Direct'
                                     : subClass === 'equity_fund' ? 'Funds'
                                     : subClass === 'direct_bond' ? 'Direct'
                                     : subClass === 'fixed_income_fund' ? 'Funds'
                                     : subClass}
                                 </div>
-                                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                                <div style={{ fontSize: isMobile ? '0.8125rem' : '0.65rem', color: isMobile ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
                                   {subTotal.count} position{subTotal.count !== 1 ? 's' : ''}
                                 </div>
                               </div>
                             </div>
-                            <div style={{ textAlign: 'right' }}>
-                              <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.9rem', fontVariantNumeric: 'tabular-nums' }}>
+                            <div style={{ textAlign: 'right', minWidth: 0, flexShrink: 0, whiteSpace: 'nowrap' }}>
+                              <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: isMobile ? '1.0625rem' : '0.9rem', fontVariantNumeric: 'tabular-nums' }}>
                                 {formatCurrency(subTotal.marketValue, portfolioCurrency)}
                               </div>
                               <div style={{
-                                fontSize: '0.75rem',
-                                color: subTotal.gainLoss >= 0 ? '#10b981' : '#ef4444',
+                                fontSize: isMobile ? '0.875rem' : '0.75rem',
+                                color: subTotal.gainLoss >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                                 fontVariantNumeric: 'tabular-nums'
                               }}>
                                 {subTotal.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(subTotal.gainLoss), portfolioCurrency)}
@@ -4552,7 +4497,9 @@ const PortfolioManagementSystem = ({ user }) => {
 
                           {/* Sub-Group Positions - Indented */}
                           {isSubExpanded && (
-                            <div style={{ paddingLeft: '1rem' }}>
+                            <div style={isMobile
+                              ? { paddingLeft: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }
+                              : { paddingLeft: '1rem' }}>
                               {subPositions.map((pos, idx) => renderPositionRow(pos, idx === subPositions.length - 1))}
                             </div>
                           )}
@@ -4658,13 +4605,13 @@ const PortfolioManagementSystem = ({ user }) => {
                           ? 'rgba(245, 158, 11, 0.1)'
                           : 'rgba(139, 92, 246, 0.1)',
                         color: transaction.type === 'BUY'
-                          ? '#10b981'
+                          ? 'var(--gain-color)'
                           : transaction.type === 'SELL'
-                          ? '#ef4444'
+                          ? 'var(--loss-color)'
                           : transaction.type === 'DIVIDEND' || transaction.type === 'COUPON'
-                          ? '#3b82f6'
+                          ? 'var(--info-color)'
                           : transaction.type === 'FEE'
-                          ? '#f59e0b'
+                          ? 'var(--warning-color)'
                           : '#8b5cf6',
                         fontWeight: '400',
                         fontSize: '0.75rem'
@@ -4747,7 +4694,7 @@ const PortfolioManagementSystem = ({ user }) => {
     // Get color from pre-computed TWR value
     const getTwrColor = (period) => {
       if (!period || !period.hasData) return 'var(--text-muted)';
-      return period.twr >= 0 ? '#10b981' : '#ef4444';
+      return period.twr >= 0 ? 'var(--gain-color)' : 'var(--loss-color)';
     };
 
     return (
@@ -5108,9 +5055,9 @@ const PortfolioManagementSystem = ({ user }) => {
                       datasets: [{
                         data: assetAllocation.assetClasses.map(ac => ac.value),
                         backgroundColor: [
-                          '#10b981', // Green - Structured Products
-                          '#3b82f6', // Blue - Equities
-                          '#f59e0b', // Orange - Direct Bonds
+                          'var(--gain-color)', // Green - Structured Products
+                          'var(--info-color)', // Blue - Equities
+                          'var(--warning-color)', // Orange - Direct Bonds
                           '#8b5cf6', // Purple - Cash
                           '#ec4899', // Pink - Other
                           '#06b6d4', // Cyan - Additional
@@ -5151,7 +5098,7 @@ const PortfolioManagementSystem = ({ user }) => {
                 {/* Legend / List */}
                 <div style={{ display: 'grid', gap: '0.5rem' }}>
                   {assetAllocation.assetClasses.map((assetClass, idx) => {
-                    const colors = ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
+                    const colors = ['var(--gain-color)', 'var(--info-color)', 'var(--warning-color)', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
                     return (
                       <div key={idx} style={{
                         padding: '0.6rem',
@@ -5252,8 +5199,8 @@ const PortfolioManagementSystem = ({ user }) => {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                 {structuredProductHierarchy.level1.map((level1Item) => {
                   const level1Colors = {
-                    'equity_linked': '#3b82f6',
-                    'fixed_income_linked': '#f59e0b',
+                    'equity_linked': 'var(--info-color)',
+                    'fixed_income_linked': 'var(--warning-color)',
                     'credit_linked': '#8b5cf6',
                     'commodities_linked': '#ec4899',
                     'other': '#64748b'
@@ -5291,7 +5238,7 @@ const PortfolioManagementSystem = ({ user }) => {
                           marginLeft: '1rem',
                           background: 'var(--bg-secondary)',
                           borderRadius: '4px',
-                          borderLeft: `2px solid ${color}80`,
+                          borderLeft: `2px solid color-mix(in srgb, ${color} 80%, transparent)`,
                           marginBottom: '0.15rem',
                           display: 'flex',
                           justifyContent: 'space-between',
@@ -5349,11 +5296,11 @@ const PortfolioManagementSystem = ({ user }) => {
                         data: currencyAllocation.currencies.map(c => c.value),
                         backgroundColor: currencyAllocation.currencies.map((c, idx) => {
                           const currencyColors = {
-                            'EUR': '#3b82f6',  // Blue
-                            'USD': '#10b981',  // Green
-                            'CHF': '#ef4444',  // Red
+                            'EUR': 'var(--info-color)',  // Blue
+                            'USD': 'var(--gain-color)',  // Green
+                            'CHF': 'var(--loss-color)',  // Red
                             'GBP': '#8b5cf6',  // Purple
-                            'JPY': '#f59e0b',  // Orange
+                            'JPY': 'var(--warning-color)',  // Orange
                             'AUD': '#06b6d4',  // Cyan
                             'CAD': '#ec4899',  // Pink
                             'HKD': '#14b8a6',  // Teal
@@ -5363,7 +5310,7 @@ const PortfolioManagementSystem = ({ user }) => {
                             'NOK': '#7c3aed',  // Violet
                             'DKK': '#db2777'   // Pink-Red
                           };
-                          const defaultColors = ['#64748b', '#475569', '#94a3b8', '#6b7280', '#4b5563'];
+                          const defaultColors = ['#64748b', '#475569', 'var(--neutral-color)', '#6b7280', '#4b5563'];
                           return currencyColors[c.name] || defaultColors[idx % defaultColors.length];
                         }),
                         borderColor: theme === 'light' ? '#ffffff' : '#111827',
@@ -5402,11 +5349,11 @@ const PortfolioManagementSystem = ({ user }) => {
                 <div style={{ display: 'grid', gap: '0.5rem' }}>
                   {currencyAllocation.currencies.map((currency, idx) => {
                     const currencyColors = {
-                      'EUR': '#3b82f6',
-                      'USD': '#10b981',
-                      'CHF': '#ef4444',
+                      'EUR': 'var(--info-color)',
+                      'USD': 'var(--gain-color)',
+                      'CHF': 'var(--loss-color)',
                       'GBP': '#8b5cf6',
-                      'JPY': '#f59e0b',
+                      'JPY': 'var(--warning-color)',
                       'AUD': '#06b6d4',
                       'CAD': '#ec4899',
                       'HKD': '#14b8a6',
@@ -5416,7 +5363,7 @@ const PortfolioManagementSystem = ({ user }) => {
                       'NOK': '#7c3aed',
                       'DKK': '#db2777'
                     };
-                    const defaultColors = ['#64748b', '#475569', '#94a3b8', '#6b7280', '#4b5563'];
+                    const defaultColors = ['#64748b', '#475569', 'var(--neutral-color)', '#6b7280', '#4b5563'];
                     const color = currencyColors[currency.name] || defaultColors[idx % defaultColors.length];
                     return (
                       <div key={idx} style={{
@@ -5511,7 +5458,7 @@ const PortfolioManagementSystem = ({ user }) => {
                   // simple hash so the same issuer keeps the same colour
                   // across renders even when ordering changes.
                   const palette = [
-                    '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444',
+                    'var(--info-color)', 'var(--gain-color)', 'var(--warning-color)', '#8b5cf6', 'var(--loss-color)',
                     '#06b6d4', '#ec4899', '#14b8a6', '#f97316', '#a855f7',
                     '#0891b2', '#dc2626', '#7c3aed', '#db2777', '#64748b'
                   ];
@@ -5556,7 +5503,7 @@ const PortfolioManagementSystem = ({ user }) => {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                 {(() => {
                   const palette = [
-                    '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444',
+                    'var(--info-color)', 'var(--gain-color)', 'var(--warning-color)', '#8b5cf6', 'var(--loss-color)',
                     '#06b6d4', '#ec4899', '#14b8a6', '#f97316', '#a855f7',
                     '#0891b2', '#dc2626', '#7c3aed', '#db2777', '#64748b'
                   ];
@@ -5674,7 +5621,7 @@ const PortfolioManagementSystem = ({ user }) => {
                           textAlign: 'right',
                           fontWeight: '700',
                           fontSize: '1rem',
-                          color: isPositive ? '#10b981' : '#ef4444'
+                          color: isPositive ? 'var(--gain-color)' : 'var(--loss-color)'
                         }}>
                           {period.twrFormatted}
                           {periodKey === 'ALL' && period.isAnnualized && period.twrAnnualizedFormatted && (
@@ -5872,7 +5819,7 @@ const PortfolioManagementSystem = ({ user }) => {
               <LiquidGlassCard key={notification._id || index} style={{ marginBottom: '1rem' }}>
                 <div style={{
                   padding: '1.5rem',
-                  borderLeft: `4px solid ${notification.eventType === 'critical_alert' ? '#ef4444' : '#f59e0b'}`
+                  borderLeft: `4px solid ${notification.eventType === 'critical_alert' ? 'var(--loss-color)' : 'var(--warning-color)'}`
                 }}>
                   {/* Header Row */}
                   <div style={{
@@ -5900,7 +5847,7 @@ const PortfolioManagementSystem = ({ user }) => {
                           padding: '0.25rem 0.5rem',
                           borderRadius: '4px',
                           backgroundColor: notification.eventType === 'critical_alert' ? '#fef2f2' : '#fffbeb',
-                          color: notification.eventType === 'critical_alert' ? '#ef4444' : '#f59e0b',
+                          color: notification.eventType === 'critical_alert' ? 'var(--loss-color)' : 'var(--warning-color)',
                           fontWeight: '600',
                           textTransform: 'uppercase'
                         }}>
@@ -5974,7 +5921,7 @@ const PortfolioManagementSystem = ({ user }) => {
               textAlign: 'right',
               fontSize: '2rem',
               fontWeight: '700',
-              color: '#ef4444'
+              color: 'var(--loss-color)'
             }}>
               {enrichedAlerts.reduce((sum, alert) => sum + alert.totalBalance, 0).toLocaleString('en-US', {
                 minimumFractionDigits: 2,
@@ -5989,7 +5936,7 @@ const PortfolioManagementSystem = ({ user }) => {
           <LiquidGlassCard key={index} style={{ marginBottom: '1rem' }}>
             <div style={{
               padding: '1.5rem',
-              borderLeft: '4px solid #ef4444'
+              borderLeft: '4px solid var(--loss-color)'
             }}>
               {/* Header Row */}
               <div style={{
@@ -6035,7 +5982,7 @@ const PortfolioManagementSystem = ({ user }) => {
                   <div style={{
                     fontSize: '1.8rem',
                     fontWeight: '700',
-                    color: '#ef4444',
+                    color: 'var(--loss-color)',
                     marginBottom: '0.25rem'
                   }}>
                     {alert.totalBalance.toLocaleString('en-US', {
@@ -6086,7 +6033,7 @@ const PortfolioManagementSystem = ({ user }) => {
                           {currency}:
                         </span>
                         <span style={{
-                          color: data.balanceOriginal < 0 ? '#ef4444' : 'var(--text-primary)',
+                          color: data.balanceOriginal < 0 ? 'var(--loss-color)' : 'var(--text-primary)',
                           fontWeight: data.balanceOriginal < 0 ? '600' : '400'
                         }}>
                           {data.balanceOriginal.toLocaleString('en-US', {
@@ -6127,313 +6074,499 @@ const PortfolioManagementSystem = ({ user }) => {
       margin: '0 auto',
       padding: '2rem 1rem'
     }}>
-      {/* Header */}
-      <div style={{ marginBottom: '2rem' }}>
-        <div style={{
+      {/* ── Portfolio header card ────────────────────────────────────────
+          One surface, three bands, instead of five separate strips each
+          holding a small left-aligned chip. Every band reads the same way:
+          information on the left, the control that changes it on the right. */}
+      {(() => {
+        const bandPadding = isMobile ? '0.875rem 1rem' : '0.875rem 1.25rem';
+
+        const eyebrowStyle = {
+          fontSize: '0.75rem',
+          fontWeight: '600',
+          textTransform: 'uppercase',
+          letterSpacing: '0.06em',
+          color: 'var(--text-muted)',
+          marginBottom: '0.4rem'
+        };
+
+        const bandStyle = (isFirst = false) => ({
+          padding: bandPadding,
+          // The right-hand navigation rail is position:fixed at z-index 1001 and
+          // floats over page content. Reserve a gutter on desktop so a band's
+          // right-aligned controls can never end up underneath it.
+          paddingRight: isMobile ? '1rem' : '4.5rem',
+          borderTop: isFirst ? 'none' : '1px solid var(--border-color)',
           display: 'flex',
           flexDirection: isMobile ? 'column' : 'row',
           justifyContent: 'space-between',
-          alignItems: isMobile ? 'stretch' : 'flex-start',
-          gap: isMobile ? '1rem' : '0',
-          marginBottom: '1rem'
-        }}>
-          {/* Title and PDF button */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '1rem',
-            flexWrap: 'wrap'
-          }}>
-            <h1 style={{
-              margin: 0,
-              fontSize: isMobile ? '1.5rem' : '2rem',
-              fontWeight: '700',
-              color: 'var(--text-primary)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem'
-            }}>
-              <span style={{ fontSize: isMobile ? '1.5rem' : '2rem' }}>💼</span>
-              {isMobile ? 'PMS' : 'Portfolio Management System'}
-            </h1>
-            {/* PDF Report Download Button - Next to title */}
-            <PDFDownloadButton
-              reportId={activeAccountTab}
-              reportType="pms"
-              filename={`Portfolio_Report_${new Date().toISOString().split('T')[0]}`}
-              title="Report PDF"
-              options={{
-                viewAsFilter: viewAsFilter ? JSON.stringify(viewAsFilter) : null,
-                accountFilter: activeAccountTab
-              }}
-              style={{
-                padding: '0.5rem 0.75rem',
-                background: 'linear-gradient(135deg, #1e3a5f 0%, #2d4a6f 100%)',
-                borderRadius: '8px',
-                fontSize: '0.8rem',
-                fontWeight: '600',
-                boxShadow: '0 2px 8px rgba(30, 58, 95, 0.25)'
-              }}
-            />
-          </div>
+          alignItems: isMobile ? 'stretch' : 'center',
+          gap: isMobile ? '0.875rem' : '1.5rem',
+          flexWrap: 'wrap'
+        });
 
-          {/* Date and Account Filters */}
+        const chipStyle = (color, bg, border) => ({
+          fontSize: '0.8125rem',
+          fontWeight: '600',
+          padding: '0.25rem 0.625rem',
+          borderRadius: '6px',
+          background: bg,
+          color,
+          border: `1px solid ${border}`,
+          whiteSpace: 'nowrap'
+        });
+
+        // ── Band 2: which accounts are in view + how fresh the data is
+        const showAccountTabs = (viewAsFilter || user?.role === 'client') && accountTabs.length > 1;
+        const showFreshness = !selectedDate && holdings.length > 0;
+        const showScopeBand = showAccountTabs || showFreshness;
+
+        // ── Band 3: mandate attributes + the actions that act on this view
+        const getProfileName = (profile) => {
+          if (!profile) return null;
+          const match = Object.entries(PROFILE_TEMPLATES).find(([, tpl]) =>
+            tpl.maxCash === profile.maxCash &&
+            tpl.maxBonds === profile.maxBonds &&
+            tpl.maxEquities === profile.maxEquities &&
+            tpl.maxAlternative === profile.maxAlternative
+          );
+          return match ? match[1].name : 'Custom';
+        };
+
+        let profileLabel = null;
+        if (viewAsFilter) {
+          if (activeAccountTab === 'consolidated') {
+            const names = [...new Set(accountProfiles.map(p => getProfileName(p)).filter(Boolean))];
+            if (names.length > 0) profileLabel = names.join(' / ');
+          } else {
+            profileLabel = getProfileName(selectedAccountProfile);
+          }
+        }
+
+        const riskLevel = viewAsFilter?.data?.profile?.kyc?.riskLevel;
+        const showRisk = viewAsFilter && user?.role !== 'client' && riskLevel;
+        const riskConfig = {
+          low: { label: 'Low Risk', color: 'var(--gain-color)', bg: 'rgba(16, 185, 129, 0.1)', border: 'rgba(16, 185, 129, 0.3)' },
+          medium: { label: 'Medium Risk', color: 'var(--warning-color)', bg: 'rgba(245, 158, 11, 0.1)', border: 'rgba(245, 158, 11, 0.3)' },
+          high: { label: 'High Risk', color: 'var(--loss-color)', bg: 'rgba(239, 68, 68, 0.1)', border: 'rgba(239, 68, 68, 0.3)' }
+        };
+        const riskCfg = riskConfig[riskLevel] || riskConfig.medium;
+
+        return (
           <div style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '0.5rem',
-            alignItems: isMobile ? 'stretch' : 'flex-end'
+            marginBottom: '1.5rem',
+            background: 'var(--bg-secondary)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '12px',
+            overflow: 'visible'
           }}>
-            {!isMobile && (
-              <label style={{
-                fontSize: '0.875rem',
-                fontWeight: '600',
-                color: 'var(--text-muted)'
-              }}>
-                Portfolio Date:
-              </label>
-            )}
-            {/* Date selector - stacked on mobile */}
-            <div style={{
-              display: 'flex',
-              flexDirection: isMobile ? 'column' : 'row',
-              gap: '0.5rem',
-              alignItems: isMobile ? 'stretch' : 'center'
-            }}>
-              <select
-                value={selectedDate || 'latest'}
-                onChange={(e) => setSelectedDate(e.target.value === 'latest' ? null : e.target.value)}
-                style={{
-                  padding: isMobile ? '0.625rem 0.75rem' : '0.75rem 1rem',
-                  borderRadius: '8px',
-                  border: '1px solid var(--border-color)',
-                  background: 'var(--bg-secondary)',
-                  color: 'var(--text-primary)',
-                  fontSize: isMobile ? '0.875rem' : '0.95rem',
-                  cursor: 'pointer',
-                  minWidth: isMobile ? 'auto' : '200px',
-                  fontWeight: '500',
-                  transition: 'all 0.2s ease'
-                }}
-              >
-                <option value="latest">Latest (Today)</option>
-                {availableDates.map(date => {
-                  // Convert Date objects to ISO strings for proper value handling
-                  const isoDate = date instanceof Date ? date.toISOString() : (typeof date === 'string' ? date : String(date));
-                  return (
-                    <option key={isoDate} value={isoDate}>
-                      {new Date(date).toLocaleDateString('en-US', {
-                        year: 'numeric',
-                        month: 'short',
-                        day: 'numeric'
-                      })}
-                    </option>
-                  );
-                })}
-              </select>
-              {/* "or" and date picker row */}
-              <div style={{
+
+            {/* ── Band 1: identity + as-of date ─────────────────────── */}
+            <div style={bandStyle(true)}>
+              <h1 style={{
+                margin: 0,
+                fontSize: isMobile ? '1.375rem' : '1.75rem',
+                fontWeight: '700',
+                color: 'var(--text-primary)',
                 display: 'flex',
-                gap: '0.5rem',
                 alignItems: 'center',
-                ...(isMobile && { justifyContent: 'space-between' })
+                gap: '0.5rem',
+                lineHeight: '1.2'
               }}>
-                <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>or</span>
-                <input
-                  type="date"
-                  value={selectedDate ? new Date(selectedDate).toISOString().split('T')[0] : ''}
-                  onChange={(e) => {
-                    if (e.target.value) {
-                      // Convert to ISO string format matching the dropdown values
-                      const date = new Date(e.target.value);
-                      date.setUTCHours(0, 0, 0, 0);
-                      setSelectedDate(date.toISOString());
-                    } else {
-                      setSelectedDate(null);
-                    }
-                  }}
-                  max={(() => {
-                    const today = new Date();
-                    return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-                  })()}
-                  style={{
-                    padding: isMobile ? '0.5rem 0.625rem' : '0.75rem 1rem',
-                    borderRadius: '8px',
-                    border: '1px solid var(--border-color)',
-                    background: 'var(--bg-secondary)',
-                    color: 'var(--text-primary)',
-                    fontSize: isMobile ? '0.8rem' : '0.95rem',
-                    cursor: 'pointer',
-                    fontWeight: '500',
-                    transition: 'all 0.2s ease',
-                    flex: isMobile ? 1 : 'none'
-                  }}
-                  title="Pick a specific date"
-                />
-                {selectedDate && (
-                  <button
-                    onClick={() => setSelectedDate(null)}
+                <span style={{ fontSize: isMobile ? '1.375rem' : '1.75rem' }}>💼</span>
+                {isMobile ? 'PMS' : 'Portfolio Management System'}
+              </h1>
+
+              {/* On a phone the date picker is dead weight at the top of the
+                  screen - it is "Latest (Today)" almost always. Show it only
+                  when a past date is actually in effect, so the "↻ Latest"
+                  escape hatch can never become unreachable. */}
+              {(!isMobile || selectedDate) && (
+              <div style={{ minWidth: 0 }}>
+                <div style={{ ...eyebrowStyle, textAlign: isMobile ? 'left' : 'right' }}>
+                  Portfolio date
+                </div>
+                <div style={{
+                  display: 'flex',
+                  flexDirection: isMobile ? 'column' : 'row',
+                  gap: '0.5rem',
+                  alignItems: isMobile ? 'stretch' : 'center',
+                  justifyContent: isMobile ? 'flex-start' : 'flex-end'
+                }}>
+                  <select
+                    value={selectedDate || 'latest'}
+                    onChange={(e) => setSelectedDate(e.target.value === 'latest' ? null : e.target.value)}
                     style={{
-                      padding: isMobile ? '0.5rem 0.625rem' : '0.75rem 1rem',
+                      padding: '0.5rem 0.75rem',
                       borderRadius: '8px',
                       border: '1px solid var(--border-color)',
-                      background: 'var(--bg-secondary)',
-                      color: 'var(--accent-color)',
-                      fontSize: isMobile ? '0.75rem' : '0.875rem',
+                      background: 'var(--bg-primary)',
+                      color: 'var(--text-primary)',
+                      fontSize: '0.875rem',
                       cursor: 'pointer',
-                      fontWeight: '600',
-                      transition: 'all 0.2s ease',
-                      whiteSpace: 'nowrap'
+                      minWidth: isMobile ? 'auto' : '180px',
+                      fontWeight: '500'
                     }}
-                    title="Return to latest portfolio view"
                   >
-                    ↻ Latest
-                  </button>
+                    <option value="latest">Latest (Today)</option>
+                    {availableDates.map(date => {
+                      const isoDate = date instanceof Date ? date.toISOString() : (typeof date === 'string' ? date : String(date));
+                      return (
+                        <option key={isoDate} value={isoDate}>
+                          {new Date(date).toLocaleDateString('en-US', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric'
+                          })}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <div style={{
+                    display: 'flex',
+                    gap: '0.5rem',
+                    alignItems: 'center',
+                    ...(isMobile && { justifyContent: 'space-between' })
+                  }}>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.8125rem' }}>or</span>
+                    <input
+                      type="date"
+                      value={selectedDate ? new Date(selectedDate).toISOString().split('T')[0] : ''}
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          const date = new Date(e.target.value);
+                          date.setUTCHours(0, 0, 0, 0);
+                          setSelectedDate(date.toISOString());
+                        } else {
+                          setSelectedDate(null);
+                        }
+                      }}
+                      max={(() => {
+                        const today = new Date();
+                        return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+                      })()}
+                      style={{
+                        padding: '0.5rem 0.75rem',
+                        borderRadius: '8px',
+                        border: '1px solid var(--border-color)',
+                        background: 'var(--bg-primary)',
+                        color: 'var(--text-primary)',
+                        fontSize: '0.875rem',
+                        cursor: 'pointer',
+                        fontWeight: '500',
+                        flex: isMobile ? 1 : 'none'
+                      }}
+                      title="Pick a specific date"
+                    />
+                    {selectedDate && (
+                      <button
+                        onClick={() => setSelectedDate(null)}
+                        style={{
+                          padding: '0.5rem 0.75rem',
+                          borderRadius: '8px',
+                          border: '1px solid var(--border-color)',
+                          background: 'var(--bg-primary)',
+                          color: 'var(--warning-color)',
+                          fontSize: '0.8125rem',
+                          cursor: 'pointer',
+                          fontWeight: '600',
+                          whiteSpace: 'nowrap'
+                        }}
+                        title="Return to latest portfolio view"
+                      >
+                        ↻ Latest
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {selectedDate && (
+                  <div style={{
+                    fontSize: '0.75rem',
+                    color: 'var(--warning-color)',
+                    fontWeight: '600',
+                    marginTop: '0.4rem',
+                    textAlign: isMobile ? 'left' : 'right'
+                  }}>
+                    ⚠️ Viewing historical snapshot
+                  </div>
                 )}
               </div>
+              )}
             </div>
-            {selectedDate && (
-              <div style={{
-                fontSize: '0.75rem',
-                color: '#f59e0b',
-                fontStyle: 'italic',
-                fontWeight: '600'
-              }}>
-                ⚠️ Viewing historical snapshot
+
+            {/* ── Band 2: scope + data status ───────────────────────── */}
+            {showScopeBand && (
+              <div style={bandStyle()}>
+                {showAccountTabs && (
+                  <div style={{ minWidth: 0 }}>
+                    <div style={eyebrowStyle}>Viewing</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                      {accountTabs.map((tab) => {
+                        const isActive = activeAccountTab === tab.id;
+                        return (
+                          <button
+                            key={tab.id}
+                            onClick={() => setActiveAccountTab(tab.id)}
+                            style={{
+                              // Full-width rows on a phone: a bigger, easier target
+                              flex: isMobile ? '1 1 100%' : '0 0 auto',
+                              padding: isMobile ? '0.625rem 0.75rem' : '0.5rem 0.75rem',
+                              background: isActive
+                                ? 'linear-gradient(135deg, #1e3a5f 0%, #2d4a6f 100%)'
+                                : 'var(--bg-primary)',
+                              color: isActive ? 'white' : 'var(--text-secondary)',
+                              border: `1px solid ${isActive ? 'transparent' : 'var(--border-color)'}`,
+                              borderRadius: '8px',
+                              cursor: 'pointer',
+                              fontWeight: '600',
+                              fontSize: '0.8125rem',
+                              transition: 'all 0.2s ease',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'flex-start',
+                              gap: '0.1rem',
+                              textAlign: 'left',
+                              boxShadow: isActive ? '0 2px 6px rgba(30, 58, 95, 0.3)' : 'none'
+                            }}
+                            onMouseEnter={(e) => {
+                              if (!isActive) e.currentTarget.style.borderColor = 'var(--info-color)';
+                            }}
+                            onMouseLeave={(e) => {
+                              if (!isActive) e.currentTarget.style.borderColor = 'var(--border-color)';
+                            }}
+                          >
+                            <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', whiteSpace: 'nowrap' }}>
+                              <span style={{ fontSize: '0.9rem' }}>{tab.icon}</span>
+                              <span>{tab.label}</span>
+                            </span>
+                            {tab.caption && (
+                              <span style={{
+                                fontSize: '0.75rem',
+                                fontWeight: '400',
+                                opacity: 0.75,
+                                whiteSpace: 'nowrap'
+                              }}>
+                                {tab.caption}
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {showFreshness && (
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ ...eyebrowStyle, textAlign: isMobile ? 'left' : 'right' }}>
+                      Data status
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: isMobile ? 'flex-start' : 'flex-end' }}>
+                      <DataFreshnessPanel
+                        sessionId={typeof window !== 'undefined' ? localStorage.getItem('sessionId') : null}
+                        userId={user?._id || viewAsFilter}
+                        showWarning={true}
+                        compact={false}
+                        visibleBankIds={visibleBankIds}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             )}
-          </div>
-        </div>
 
-        {/* Portfolio Review Button + Language Picker + Progress */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.75rem' }}>
-          <div style={{ position: 'relative', display: 'inline-flex' }}
-            onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setReviewLangPickerOpen(false); }}
-            tabIndex={-1}
-          >
-            <button
-              onClick={() => !reviewGenerating && setReviewLangPickerOpen(!reviewLangPickerOpen)}
-              disabled={reviewGenerating}
-              style={{
-                padding: '0.5rem 0.75rem',
-                background: reviewGenerating
-                  ? 'linear-gradient(135deg, #6b7280 0%, #9ca3af 100%)'
-                  : 'linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)',
-                color: 'white',
-                border: 'none',
-                borderRadius: '8px',
-                fontSize: '0.8rem',
-                fontWeight: '600',
-                cursor: reviewGenerating ? 'not-allowed' : 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.35rem',
-                boxShadow: '0 2px 8px rgba(79, 70, 229, 0.25)',
-                transition: 'all 0.2s',
-                whiteSpace: 'nowrap'
-              }}
-            >
-              {reviewGenerating ? 'Generating...' : 'Portfolio Review ▾'}
-            </button>
-            {reviewLangPickerOpen && !reviewGenerating && (
+            {/* ── Band 3: mandate + actions ─────────────────────────── */}
+            <div style={bandStyle()}>
+              <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', minWidth: 0 }}>
+                {profileLabel && (
+                  <div>
+                    <div style={eyebrowStyle}>Investor profile</div>
+                    <span style={chipStyle('var(--info-color)', 'rgba(59, 130, 246, 0.1)', 'rgba(59, 130, 246, 0.25)')}>
+                      {profileLabel}
+                    </span>
+                  </div>
+                )}
+                {showRisk && (
+                  <div>
+                    <div style={eyebrowStyle}>Risk matrix</div>
+                    <span style={chipStyle(riskCfg.color, riskCfg.bg, riskCfg.border)}>
+                      {riskCfg.label}
+                    </span>
+                  </div>
+                )}
+              </div>
+
               <div style={{
-                position: 'absolute',
-                top: '100%',
-                left: 0,
-                marginTop: '4px',
-                background: theme === 'dark' ? '#1f2937' : '#fff',
-                border: `1px solid ${theme === 'dark' ? '#374151' : '#e5e7eb'}`,
-                borderRadius: '8px',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                zIndex: 50,
-                overflow: 'hidden',
-                minWidth: '120px'
+                display: isMobile ? 'grid' : 'flex',
+                gridTemplateColumns: isMobile ? '1fr 1fr' : undefined,
+                alignItems: 'center',
+                gap: '0.5rem',
+                flexWrap: 'wrap',
+                justifyContent: 'flex-end'
               }}>
-                {[{ code: 'en', label: 'English' }, { code: 'fr', label: 'Français' }].map(lang => (
-                  <button
-                    key={lang.code}
-                    onClick={() => {
-                      setReviewLangPickerOpen(false);
-                      handleGeneratePortfolioReview(lang.code);
+                <div style={{ display: 'grid', minWidth: 0 }}>
+                  <PDFDownloadButton
+                    // Its wrapper is inline-block by default, which shrink-wraps
+                    // the button; go block on mobile so it fills the grid cell.
+                    wrapperStyle={isMobile ? { display: 'block' } : undefined}
+                    reportId={activeAccountTab}
+                    reportType="pms"
+                    filename={`Portfolio_Report_${new Date().toISOString().split('T')[0]}`}
+                    title="Report PDF"
+                    options={{
+                      viewAsFilter: viewAsFilter ? JSON.stringify(viewAsFilter) : null,
+                      accountFilter: activeAccountTab
                     }}
                     style={{
-                      display: 'block',
-                      width: '100%',
-                      padding: '0.5rem 0.75rem',
-                      background: 'none',
-                      border: 'none',
-                      textAlign: 'left',
-                      fontSize: '0.8rem',
-                      color: theme === 'dark' ? '#e5e7eb' : '#1e293b',
-                      cursor: 'pointer'
+                      padding: '0.5rem 0.875rem',
+                      background: 'linear-gradient(135deg, #1e3a5f 0%, #2d4a6f 100%)',
+                      borderRadius: '8px',
+                      fontSize: '0.8125rem',
+                      fontWeight: '600',
+                      width: isMobile ? '100%' : 'auto',
+                      justifyContent: 'center',
+                      boxShadow: '0 2px 8px rgba(30, 58, 95, 0.25)'
                     }}
-                    onMouseEnter={e => e.currentTarget.style.background = theme === 'dark' ? 'rgba(255,255,255,0.1)' : '#f3f4f6'}
-                    onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                  />
+                </div>
+
+                <div
+                  style={{ position: 'relative', display: 'flex', minWidth: 0 }}
+                  onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setReviewLangPickerOpen(false); }}
+                  tabIndex={-1}
+                >
+                  <button
+                    onClick={() => !reviewGenerating && setReviewLangPickerOpen(!reviewLangPickerOpen)}
+                    disabled={reviewGenerating}
+                    style={{
+                      padding: '0.5rem 0.875rem',
+                      background: reviewGenerating
+                        ? 'linear-gradient(135deg, #6b7280 0%, #9ca3af 100%)'
+                        : 'linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      fontSize: '0.8125rem',
+                      fontWeight: '600',
+                      cursor: reviewGenerating ? 'not-allowed' : 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.35rem',
+                      width: isMobile ? '100%' : 'auto',
+                      boxShadow: '0 2px 8px rgba(79, 70, 229, 0.25)',
+                      transition: 'all 0.2s',
+                      whiteSpace: 'nowrap'
+                    }}
                   >
-                    {lang.label}
+                    {reviewGenerating ? 'Generating...' : 'Portfolio Review ▾'}
                   </button>
-                ))}
+                  {reviewLangPickerOpen && !reviewGenerating && (
+                    <div style={{
+                      position: 'absolute',
+                      top: '100%',
+                      right: 0,
+                      marginTop: '4px',
+                      background: theme === 'dark' ? '#1f2937' : '#fff',
+                      border: `1px solid ${theme === 'dark' ? '#374151' : '#e5e7eb'}`,
+                      borderRadius: '8px',
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                      zIndex: 50,
+                      overflow: 'hidden',
+                      minWidth: '140px'
+                    }}>
+                      {[{ code: 'en', label: 'English' }, { code: 'fr', label: 'Français' }].map(lang => (
+                        <button
+                          key={lang.code}
+                          onClick={() => {
+                            setReviewLangPickerOpen(false);
+                            handleGeneratePortfolioReview(lang.code);
+                          }}
+                          style={{
+                            display: 'block',
+                            width: '100%',
+                            padding: '0.625rem 0.875rem',
+                            background: 'none',
+                            border: 'none',
+                            textAlign: 'left',
+                            fontSize: '0.8125rem',
+                            color: theme === 'dark' ? '#e5e7eb' : '#1e293b',
+                            cursor: 'pointer'
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.background = theme === 'dark' ? 'rgba(255,255,255,0.1)' : '#f3f4f6'}
+                          onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                        >
+                          {lang.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Review progress / error - full width under the actions band */}
+            {(reviewGenerating && reviewProgress) && (
+              <div style={{
+                padding: `0 ${isMobile ? '1rem' : '1.25rem'} 0.875rem`,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                fontSize: '0.8125rem',
+                color: 'var(--text-secondary)'
+              }}>
+                <div style={{
+                  width: '80px',
+                  height: '4px',
+                  background: 'var(--border-color, #e5e7eb)',
+                  borderRadius: '2px',
+                  overflow: 'hidden',
+                  flexShrink: 0
+                }}>
+                  <div style={{
+                    width: `${((reviewProgress.completedSections || 0) / (reviewProgress.totalSections || 7)) * 100}%`,
+                    height: '100%',
+                    background: '#6366f1',
+                    borderRadius: '2px',
+                    transition: 'width 0.5s ease'
+                  }} />
+                </div>
+                <span>{reviewProgress.currentStepLabel}</span>
+              </div>
+            )}
+            {reviewError && (
+              <div style={{
+                padding: `0 ${isMobile ? '1rem' : '1.25rem'} 0.875rem`,
+                fontSize: '0.8125rem',
+                color: 'var(--loss-color)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.3rem'
+              }}>
+                <span>Portfolio review failed: {reviewError}</span>
+                <button
+                  onClick={() => setReviewError(null)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--loss-color)',
+                    cursor: 'pointer',
+                    fontSize: '0.95rem',
+                    padding: '0 2px'
+                  }}
+                >&times;</button>
               </div>
             )}
           </div>
-          {reviewGenerating && reviewProgress && (
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.4rem',
-              fontSize: '0.75rem',
-              color: 'var(--text-muted)',
-              whiteSpace: 'nowrap'
-            }}>
-              <div style={{
-                width: '60px',
-                height: '4px',
-                background: 'var(--border-color, #e5e7eb)',
-                borderRadius: '2px',
-                overflow: 'hidden'
-              }}>
-                <div style={{
-                  width: `${((reviewProgress.completedSections || 0) / (reviewProgress.totalSections || 7)) * 100}%`,
-                  height: '100%',
-                  background: '#6366f1',
-                  borderRadius: '2px',
-                  transition: 'width 0.5s ease'
-                }} />
-              </div>
-              <span>{reviewProgress.currentStepLabel}</span>
-            </div>
-          )}
-          {reviewError && (
-            <div style={{
-              fontSize: '0.75rem',
-              color: '#ef4444',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.3rem'
-            }}>
-              <span>Failed: {reviewError}</span>
-              <button
-                onClick={() => setReviewError(null)}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: '#ef4444',
-                  cursor: 'pointer',
-                  fontSize: '0.85rem',
-                  padding: '0 2px'
-                }}
-              >&times;</button>
-            </div>
-          )}
-        </div>
-      </div>
+        );
+      })()}
 
       {/* Historical Data Banner */}
       {selectedDate && (
         <div style={{
           padding: '0.75rem 1rem',
           background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(245, 158, 11, 0.05) 100%)',
-          border: '2px solid #f59e0b',
+          border: '2px solid var(--warning-color)',
           borderRadius: '12px',
           marginBottom: '1.5rem',
           display: 'flex',
@@ -6446,7 +6579,7 @@ const PortfolioManagementSystem = ({ user }) => {
             <span style={{
               fontSize: '0.95rem',
               fontWeight: '600',
-              color: '#f59e0b'
+              color: 'var(--warning-color)'
             }}>
               Historical Portfolio:
             </span>
@@ -6469,7 +6602,7 @@ const PortfolioManagementSystem = ({ user }) => {
               padding: '0.6rem 1rem',
               borderRadius: '8px',
               border: 'none',
-              background: '#f59e0b',
+              background: 'var(--warning-color)',
               color: 'white',
               fontSize: '0.85rem',
               fontWeight: '600',
@@ -6485,7 +6618,7 @@ const PortfolioManagementSystem = ({ user }) => {
               e.currentTarget.style.boxShadow = '0 4px 12px rgba(245, 158, 11, 0.35)';
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.background = '#f59e0b';
+              e.currentTarget.style.background = 'var(--warning-color)';
               e.currentTarget.style.transform = 'translateY(0)';
               e.currentTarget.style.boxShadow = '0 2px 8px rgba(245, 158, 11, 0.25)';
             }}
@@ -6494,175 +6627,6 @@ const PortfolioManagementSystem = ({ user }) => {
           </button>
         </div>
       )}
-
-      {/* Data Freshness Panel - Show when viewing latest data, scoped to visible banks */}
-      {!selectedDate && holdings.length > 0 && (
-        <div style={{ marginBottom: '1rem' }}>
-          <DataFreshnessPanel
-            sessionId={typeof window !== 'undefined' ? localStorage.getItem('sessionId') : null}
-            userId={user?._id || viewAsFilter}
-            showWarning={true}
-            compact={false}
-            visibleBankIds={visibleBankIds}
-          />
-        </div>
-      )}
-
-      {/* Account Tab Layer - Show when viewing a specific client via viewAsFilter, or for clients viewing their own accounts */}
-      {(viewAsFilter || user?.role === 'client') && accountTabs.length > 1 && (
-        <div style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '0.5rem',
-          marginBottom: '1rem',
-          padding: '0.5rem',
-          background: theme === 'light'
-            ? 'rgba(255, 255, 255, 0.6)'
-            : 'rgba(30, 41, 59, 0.4)',
-          borderRadius: '12px',
-          border: '1px solid var(--border-color)'
-        }}>
-          {accountTabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveAccountTab(tab.id)}
-              style={{
-                padding: '0.5rem 0.875rem',
-                background: activeAccountTab === tab.id
-                  ? 'linear-gradient(135deg, #1e3a5f 0%, #2d4a6f 100%)'
-                  : 'transparent',
-                color: activeAccountTab === tab.id ? 'white' : 'var(--text-secondary)',
-                border: activeAccountTab === tab.id ? 'none' : '1px solid var(--border-color)',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                fontWeight: '600',
-                fontSize: '0.8rem',
-                transition: 'all 0.2s ease',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'flex-start',
-                gap: '0.15rem',
-                whiteSpace: 'nowrap',
-                boxShadow: activeAccountTab === tab.id ? '0 2px 6px rgba(30, 58, 95, 0.3)' : 'none'
-              }}
-              onMouseEnter={(e) => {
-                if (activeAccountTab !== tab.id) {
-                  e.currentTarget.style.background = 'var(--bg-tertiary)';
-                  e.currentTarget.style.borderColor = 'var(--accent-color)';
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (activeAccountTab !== tab.id) {
-                  e.currentTarget.style.background = 'transparent';
-                  e.currentTarget.style.borderColor = 'var(--border-color)';
-                }
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                <span style={{ fontSize: '0.9rem' }}>{tab.icon}</span>
-                <span>{tab.label}</span>
-              </div>
-              {tab.caption && (
-                <span style={{
-                  fontSize: '0.65rem',
-                  fontWeight: '400',
-                  opacity: 0.7,
-                  fontStyle: 'italic',
-                  paddingLeft: '1.25rem'
-                }}>
-                  {tab.caption}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Investor Profile & Risk Bar - Always visible when a client is selected */}
-      {viewAsFilter && (() => {
-        // Detect profile name for selected account or all accounts on consolidated
-        const getProfileName = (profile) => {
-          if (!profile) return null;
-          const match = Object.entries(PROFILE_TEMPLATES).find(([, tpl]) =>
-            tpl.maxCash === profile.maxCash &&
-            tpl.maxBonds === profile.maxBonds &&
-            tpl.maxEquities === profile.maxEquities &&
-            tpl.maxAlternative === profile.maxAlternative
-          );
-          return match ? match[1].name : 'Custom';
-        };
-
-        let profileLabel = null;
-        if (activeAccountTab === 'consolidated') {
-          // Show all unique profile names across accounts
-          const names = [...new Set(accountProfiles.map(p => getProfileName(p)).filter(Boolean))];
-          if (names.length > 0) profileLabel = names.join(' / ');
-        } else {
-          profileLabel = getProfileName(selectedAccountProfile);
-        }
-
-        const riskLevel = viewAsFilter?.data?.profile?.kyc?.riskLevel;
-        const showRisk = user?.role !== 'client' && riskLevel;
-
-        if (!profileLabel && !showRisk) return null;
-
-        const riskConfig = {
-          low: { label: 'Low Risk', color: '#10b981', bg: 'rgba(16, 185, 129, 0.1)', border: 'rgba(16, 185, 129, 0.3)' },
-          medium: { label: 'Medium Risk', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.1)', border: 'rgba(245, 158, 11, 0.3)' },
-          high: { label: 'High Risk', color: '#ef4444', bg: 'rgba(239, 68, 68, 0.1)', border: 'rgba(239, 68, 68, 0.3)' }
-        };
-
-        return (
-          <div style={{
-            marginBottom: '0.75rem',
-            padding: '8px 14px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '10px',
-            flexWrap: 'wrap',
-            background: theme === 'light' ? 'rgba(255, 255, 255, 0.7)' : 'rgba(30, 41, 59, 0.5)',
-            borderRadius: '8px',
-            border: '1px solid var(--border-color)'
-          }}>
-            {profileLabel && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Investor Profile:</span>
-                <span style={{
-                  fontSize: '12px',
-                  fontWeight: '600',
-                  padding: '2px 10px',
-                  borderRadius: '4px',
-                  background: 'rgba(59, 130, 246, 0.1)',
-                  color: '#3b82f6',
-                  border: '1px solid rgba(59, 130, 246, 0.2)'
-                }}>
-                  {profileLabel}
-                </span>
-              </div>
-            )}
-            {showRisk && (() => {
-              const cfg = riskConfig[riskLevel] || riskConfig.medium;
-              return (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Risk Matrix:</span>
-                  <span style={{
-                    fontSize: '12px',
-                    fontWeight: '600',
-                    padding: '2px 10px',
-                    borderRadius: '4px',
-                    background: cfg.bg,
-                    color: cfg.color,
-                    border: `1px solid ${cfg.border}`
-                  }}>
-                    {cfg.label}
-                  </span>
-                </div>
-              );
-            })()}
-          </div>
-        );
-      })()}
 
       {/* Allocation Bar - Show when a specific account is selected (not Consolidated) */}
       {viewAsFilter && activeAccountTab !== 'consolidated' && fourCategoryAllocation.total > 0 && (
@@ -6675,32 +6639,54 @@ const PortfolioManagementSystem = ({ user }) => {
           borderRadius: '10px',
           border: '1px solid var(--border-color)'
         }}>
-          <h4 style={{ margin: '0 0 12px', color: 'var(--text-primary)', fontSize: '13px', fontWeight: '600' }}>
+          <h4 style={{ margin: '0 0 12px', color: 'var(--text-primary)', fontSize: isMobile ? '0.9375rem' : '13px', fontWeight: '600' }}>
             Current vs Maximum Allocation
           </h4>
-          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+          {/* Grid, not wrapping flex: there are exactly four categories, so a
+              fixed track count keeps every cell the same width. Wrapping flex
+              left a ragged last row and squeezed cells whose value string then
+              wrapped, knocking the bars out of alignment. */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: isMobile ? '1fr' : 'repeat(4, minmax(0, 1fr))',
+            gap: isMobile ? '0.875rem' : '1rem'
+          }}>
             {[
-              { key: 'cash', label: 'Cash', icon: '💵', max: selectedAccountProfile?.maxCash ?? null, current: fourCategoryAllocation.cash, color: '#3b82f6', tooltip: 'Cash • Term Deposits • Monetary Products • Money Market Funds' },
-              { key: 'bonds', label: 'Bonds', icon: '📄', max: selectedAccountProfile?.maxBonds ?? null, current: fourCategoryAllocation.bonds, color: '#10b981', tooltip: 'Fixed-Income Bonds • Convertible Bonds • Bond Funds • Capital-Guaranteed Structured Products' },
-              { key: 'equities', label: 'Equities', icon: '📈', max: selectedAccountProfile?.maxEquities ?? null, current: fourCategoryAllocation.equities, color: '#f59e0b', tooltip: 'Equities & Stocks • Equity Funds • Equity-Linked Structured Products (without capital protection)' },
+              { key: 'cash', label: 'Cash', icon: '💵', max: selectedAccountProfile?.maxCash ?? null, current: fourCategoryAllocation.cash, color: 'var(--info-color)', tooltip: 'Cash • Term Deposits • Monetary Products • Money Market Funds' },
+              { key: 'bonds', label: 'Bonds', icon: '📄', max: selectedAccountProfile?.maxBonds ?? null, current: fourCategoryAllocation.bonds, color: 'var(--gain-color)', tooltip: 'Fixed-Income Bonds • Convertible Bonds • Bond Funds • Capital-Guaranteed Structured Products' },
+              { key: 'equities', label: 'Equities', icon: '📈', max: selectedAccountProfile?.maxEquities ?? null, current: fourCategoryAllocation.equities, color: 'var(--warning-color)', tooltip: 'Equities & Stocks • Equity Funds • Equity-Linked Structured Products (without capital protection)' },
               { key: 'alternative', label: 'Alternative', icon: '🎯', max: selectedAccountProfile?.maxAlternative ?? null, current: fourCategoryAllocation.alternative, color: '#8b5cf6', tooltip: 'Private Equity • Private Debt • Commodities • Real Estate • Hedge Funds • Derivatives • Other' }
             ].map(item => {
               const hasProfile = item.max !== null;
               const isOverLimit = hasProfile && item.current > item.max;
 
               return (
-                <div key={item.key} style={{ flex: '1 1 140px', minWidth: '120px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                <div key={item.key} style={{ minWidth: 0 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '0.5rem', marginBottom: '4px' }}>
                     <span
-                      style={{ color: 'var(--text-secondary)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', cursor: 'help' }}
+                      style={{
+                        color: 'var(--text-secondary)',
+                        fontSize: isMobile ? '0.875rem' : '12px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        cursor: 'help',
+                        minWidth: 0,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap'
+                      }}
                       title={item.tooltip}
                     >
                       <span>{item.icon}</span> {item.label}
                     </span>
                     <span style={{
-                      color: isOverLimit ? '#ef4444' : 'var(--text-primary)',
-                      fontSize: '12px',
-                      fontWeight: '600'
+                      color: isOverLimit ? 'var(--loss-color)' : 'var(--text-primary)',
+                      fontSize: isMobile ? '0.875rem' : '12px',
+                      fontWeight: '600',
+                      fontVariantNumeric: 'tabular-nums',
+                      whiteSpace: 'nowrap',
+                      flexShrink: 0
                     }}>
                       {item.current.toFixed(1)}%{hasProfile ? ` / ${item.max}%` : ''}
                       {isOverLimit && <span style={{ marginLeft: '4px' }}>⚠️</span>}
@@ -6708,7 +6694,7 @@ const PortfolioManagementSystem = ({ user }) => {
                   </div>
                   <div style={{
                     position: 'relative',
-                    height: '16px',
+                    height: isMobile ? '18px' : '16px',
                     background: theme === 'light' ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)',
                     borderRadius: '8px',
                     overflow: 'hidden'
@@ -6733,8 +6719,8 @@ const PortfolioManagementSystem = ({ user }) => {
                       bottom: 0,
                       width: `${Math.min(item.current, 100)}%`,
                       background: isOverLimit
-                        ? 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)'
-                        : `linear-gradient(90deg, ${item.color} 0%, ${item.color}dd 100%)`,
+                        ? 'linear-gradient(90deg, var(--loss-color) 0%, #dc2626 100%)'
+                        : `linear-gradient(90deg, ${item.color} 0%, color-mix(in srgb, ${item.color} 87%, transparent) 100%)`,
                       borderRadius: '8px',
                       transition: 'width 0.3s ease'
                     }} />
@@ -6744,7 +6730,7 @@ const PortfolioManagementSystem = ({ user }) => {
             })}
           </div>
           {!selectedAccountProfile && (
-            <p style={{ margin: '10px 0 0', color: 'var(--text-secondary)', fontSize: '11px', textAlign: 'center' }}>
+            <p style={{ margin: '10px 0 0', color: 'var(--text-secondary)', fontSize: isMobile ? '0.8125rem' : '11px', textAlign: 'center' }}>
               Set a profile to see limit comparisons
             </p>
           )}

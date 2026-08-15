@@ -4,6 +4,7 @@ import { useTracker } from 'meteor/react-meteor-data';
 import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, OrderFormatters, OrderHelpers } from '/imports/api/orders';
 import { UsersCollection } from '/imports/api/users';
 import { BanksCollection } from '/imports/api/banks';
+import { useIsMobile } from '../hooks/useIsMobile.js';
 
 /**
  * ValidationBlotter - Displays orders pending four-eyes validation
@@ -12,6 +13,17 @@ import { BanksCollection } from '/imports/api/banks';
  * Auto-hides when no orders need validation or user lacks canValidateOrders.
  */
 const ValidationBlotter = ({ user, onOrderUpdate }) => {
+  const isMobile = useIsMobile();
+
+  /**
+   * Sizing for the Validate / Reject / Request Modification buttons. On mobile they
+   * grow to fill the row and clear the ~44px minimum touch target; a 31px-tall,
+   * 13px-font button is easy to miss and expensive to mis-tap on an order approval.
+   */
+  const actionBtnSize = isMobile
+    ? { padding: '13px 16px', fontSize: '14px', flex: '1 1 auto', minHeight: '44px' }
+    : { padding: '8px 20px', fontSize: '13px' };
+
   const [rejectModalOrder, setRejectModalOrder] = useState(null);
   const [rejectionReason, setRejectionReason] = useState('');
   const [revisionModalOrder, setRevisionModalOrder] = useState(null);
@@ -47,6 +59,10 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
   const [emailCompared, setEmailCompared] = useState(false);
   const [uploadingTrace, setUploadingTrace] = useState(false);
   const [parsedEmails, setParsedEmails] = useState({});
+  // Signed download URLs for order-trace files, keyed by storedFileName. The
+  // /order_traces endpoint requires a capability token; these are minted when
+  // the review order opens so the inline img/iframe previews can render.
+  const [signedTraceUrls, setSignedTraceUrls] = useState({});
   const [selectedTraceType, setSelectedTraceType] = useState(null);
   const [aiCheckResult, setAiCheckResult] = useState(null); // { loading, result, error }
   const [aiCheckOrderId, setAiCheckOrderId] = useState(null);
@@ -104,6 +120,9 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
       const bank = order.bankId ? BanksCollection.findOne(order.bankId) : null;
       return {
         ...formatted,
+        // Harmonize the name across banks: prefer the canonical name propagated
+        // from Securities Base (displayName) over the raw bank-provided name.
+        securityName: order.displayName || formatted.securityName,
         clientName: client
           ? `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() || client.email
           : order.clientName || 'Unknown',
@@ -272,6 +291,25 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
     setSecSearchQuery('');
     setSecSearchResults([]);
   };
+
+  // Mint signed URLs for this order's trace files when the review order opens.
+  useEffect(() => {
+    if (!reviewOrder) { setSignedTraceUrls({}); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const sessionId = getSessionId();
+        const urls = await Meteor.callAsync('orders.getEmailTraceSignedUrls', {
+          orderId: reviewOrder._id, sessionId
+        });
+        if (!cancelled) setSignedTraceUrls(urls || {});
+      } catch (err) {
+        console.error('Error minting trace URLs:', err);
+        if (!cancelled) setSignedTraceUrls({});
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [reviewOrder?._id]);
 
   // Auto-parse .eml traces when review order is opened
   useEffect(() => {
@@ -621,6 +659,113 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
 
         {isLoading ? (
           <div style={styles.loading}>Loading...</div>
+        ) : isMobile ? (
+          /* Phones get one tappable card per order instead of 13 columns behind a
+             horizontal scrollbar. Same click target and same review modal. */
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px' }}>
+            {displayOrders.map(order => {
+              const locked = isLockedByOther(order);
+              const blocked = locked && !isOwnOrder(order);
+              const own = isOwnOrder(order);
+              return (
+                <div
+                  key={order._id}
+                  onClick={() => {
+                    if (blocked) {
+                      alert(`This order is currently being reviewed by ${lockHolderLabel(order)}. Please wait until they finish or the 5-minute lock expires.`);
+                      return;
+                    }
+                    openReview(order);
+                  }}
+                  style={{
+                    padding: '12px',
+                    borderRadius: '10px',
+                    background: 'var(--bg-primary)',
+                    border: '1px solid var(--border-color)',
+                    borderLeft: `3px solid ${own ? '#f97316' : 'var(--gain-color)'}`,
+                    cursor: blocked ? 'not-allowed' : 'pointer',
+                    opacity: blocked ? 0.55 : 1
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                    <span style={{ fontFamily: 'monospace', fontWeight: '600', fontSize: '13px' }}>
+                      {order.orderReference}
+                    </span>
+                    <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
+                      {locked && (
+                        <span style={{ fontSize: '9px', fontWeight: '700', color: 'var(--warning-color)', background: 'rgba(245,158,11,0.12)', padding: '2px 6px', borderRadius: '3px', textTransform: 'uppercase' }}>
+                          🔒 In review
+                        </span>
+                      )}
+                      {order.status === 'pending_modification' && (
+                        <span style={{ fontSize: '9px', fontWeight: '700', color: '#a855f7', background: 'rgba(168,85,247,0.1)', padding: '2px 6px', borderRadius: '3px', textTransform: 'uppercase' }}>
+                          Modif.
+                        </span>
+                      )}
+                      {order.status === 'revision_requested' && (
+                        <span style={{ fontSize: '9px', fontWeight: '700', color: '#e879f9', background: 'rgba(232,121,249,0.1)', padding: '2px 6px', borderRadius: '3px', textTransform: 'uppercase' }}>
+                          {own ? 'Revise' : 'Revision'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', marginBottom: '2px' }}>
+                    <span style={{
+                      fontSize: '10px', fontWeight: '700', textTransform: 'uppercase',
+                      color: order.orderType === 'buy' ? 'var(--gain-color)' : 'var(--loss-color)',
+                      padding: '2px 6px', borderRadius: '4px',
+                      background: order.orderType === 'buy' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)'
+                    }}>
+                      {order.assetType === ASSET_TYPES.FX ? (order.fxDirectionFormatted || order.orderType) : order.orderType}
+                    </span>
+                    <span style={{ fontWeight: '600', fontSize: '14px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {order.securityName}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '11px', fontFamily: 'monospace', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                    {order.assetType === ASSET_TYPES.FX ? (order.fxPairFormatted || 'FX')
+                      : order.assetType === ASSET_TYPES.TERM_DEPOSIT ? (order.depositTenorLabel || 'TD')
+                      : order.isin}
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 10px', fontSize: '12px' }}>
+                    <div>
+                      <span style={{ color: 'var(--text-muted)' }}>Qty </span>
+                      <span style={{ fontWeight: '500' }}>{order.quantityFormatted}</span>
+                      {order.currency && <span style={{ color: 'var(--text-muted)' }}> {order.currency}</span>}
+                    </div>
+                    <div style={{ textAlign: 'right', color: 'var(--text-secondary)' }}>
+                      {order.priceType !== 'market' && order.limitPrice ? order.limitPriceFormatted : (order.priceTypeLabel || 'Market')}
+                    </div>
+                    <div style={{ gridColumn: '1 / -1', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {order.clientName}{order.bankName ? ` · ${order.bankName}` : ''}
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '10px', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '11px', color: own ? '#f97316' : 'var(--text-muted)', fontWeight: own ? '600' : '400' }}>
+                      By {order.createdByName}{own ? ' (you)' : ''}
+                    </span>
+                    {order.emailTraces?.some(t => t.traceType === 'client_order') && (
+                      <span title="Client order email attached" style={{ fontSize: '12px' }}>📎</span>
+                    )}
+                    <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'var(--text-muted)' }}>
+                      {order.createdAtFormatted}
+                    </span>
+                  </div>
+
+                  {/* The four-eyes rule is the single most common reason a tap does
+                      nothing useful, so say so on the card rather than in a tooltip. */}
+                  {own && (
+                    <div style={{ marginTop: '8px', fontSize: '11px', color: '#f97316' }}>
+                      You created this — another validator must approve it
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         ) : (
           <div style={styles.tableWrapper}>
             <table style={styles.table}>
@@ -666,7 +811,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                         {order.orderReference}
                       </span>
                       {locked && (
-                        <span style={{ marginLeft: '6px', fontSize: '9px', fontWeight: '700', color: '#f59e0b', background: 'rgba(245,158,11,0.12)', padding: '1px 5px', borderRadius: '3px', textTransform: 'uppercase' }}
+                        <span style={{ marginLeft: '6px', fontSize: '9px', fontWeight: '700', color: 'var(--warning-color)', background: 'rgba(245,158,11,0.12)', padding: '1px 5px', borderRadius: '3px', textTransform: 'uppercase' }}
                           title={`Being reviewed by ${lockHolderLabel(order)}`}>
                           🔒 In review
                         </span>
@@ -706,7 +851,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                     <td style={styles.td}>
                       <span style={{
                         fontSize: '11px', fontWeight: '700', textTransform: 'uppercase',
-                        color: order.orderType === 'buy' ? '#10b981' : '#ef4444',
+                        color: order.orderType === 'buy' ? 'var(--gain-color)' : 'var(--loss-color)',
                         padding: '2px 6px', borderRadius: '4px',
                         background: order.orderType === 'buy' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)'
                       }}>
@@ -746,8 +891,28 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
 
       {/* Review & Validate Modal */}
       {reviewOrder && (
-        <div style={{ ...styles.modalOverlay, alignItems: 'flex-start', overflowY: 'auto', padding: '40px 0' }} onClick={() => closeReview()}>
-          <div style={{ ...styles.modalContent, maxWidth: '1100px', margin: 'auto', background: 'var(--bg-secondary)' }} onClick={(e) => e.stopPropagation()}>
+        <div
+          style={{
+            ...styles.modalOverlay,
+            alignItems: 'flex-start',
+            overflowY: 'auto',
+            padding: isMobile ? 0 : '40px 0'
+          }}
+          onClick={() => closeReview()}
+        >
+          <div
+            style={{
+              ...styles.modalContent,
+              maxWidth: isMobile ? '100%' : '1100px',
+              width: isMobile ? '100%' : '90%',
+              minHeight: isMobile ? '100%' : undefined,
+              borderRadius: isMobile ? 0 : '12px',
+              padding: isMobile ? '14px' : '24px',
+              margin: isMobile ? 0 : 'auto',
+              background: 'var(--bg-secondary)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
               <div>
@@ -756,7 +921,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                   <span style={{ fontFamily: 'monospace', fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)' }}>{reviewOrder.orderReference}</span>
                   <span style={{
                     fontSize: '12px', fontWeight: '700', textTransform: 'uppercase',
-                    color: reviewOrder.orderType === 'buy' ? '#10b981' : '#ef4444',
+                    color: reviewOrder.orderType === 'buy' ? 'var(--gain-color)' : 'var(--loss-color)',
                     padding: '3px 10px', borderRadius: '4px',
                     background: reviewOrder.orderType === 'buy' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'
                   }}>
@@ -795,7 +960,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                     Analyzing email vs order...
                   </div>
                 ) : aiCheckResult.error ? (
-                  <div style={{ padding: '10px 14px', fontSize: '12px', color: '#ef4444' }}>
+                  <div style={{ padding: '10px 14px', fontSize: '12px', color: 'var(--loss-color)' }}>
                     AI check failed: {aiCheckResult.error}
                   </div>
                 ) : (
@@ -804,7 +969,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                       <span style={{ fontSize: '16px' }}>
                         {aiCheckResult.result.status === 'match' ? '✅' : aiCheckResult.result.status === 'mismatch' ? '🚨' : '⚠️'}
                       </span>
-                      <span style={{ fontSize: '13px', fontWeight: '600', color: aiCheckResult.result.status === 'match' ? '#10b981' : aiCheckResult.result.status === 'mismatch' ? '#ef4444' : '#f59e0b' }}>
+                      <span style={{ fontSize: '13px', fontWeight: '600', color: aiCheckResult.result.status === 'match' ? 'var(--gain-color)' : aiCheckResult.result.status === 'mismatch' ? 'var(--loss-color)' : 'var(--warning-color)' }}>
                         {aiCheckResult.result.summary}
                       </span>
                       <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -822,7 +987,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                           <span key={i} style={{
                             fontSize: '11px', padding: '3px 8px', borderRadius: '4px',
                             background: check.status === 'ok' ? 'rgba(16,185,129,0.1)' : check.status === 'mismatch' ? 'rgba(239,68,68,0.1)' : 'rgba(245,158,11,0.1)',
-                            color: check.status === 'ok' ? '#10b981' : check.status === 'mismatch' ? '#ef4444' : '#f59e0b',
+                            color: check.status === 'ok' ? 'var(--gain-color)' : check.status === 'mismatch' ? 'var(--loss-color)' : 'var(--warning-color)',
                             fontWeight: '600'
                           }} title={check.detail}>
                             {check.status === 'ok' ? '✓' : check.status === 'mismatch' ? '✗' : '!'} {check.field}
@@ -875,13 +1040,13 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                 <div><span style={styles.reviewLabel}>Limit Price</span><div style={{ ...styles.reviewValue, fontWeight: '700', color: '#0ea5e9' }}>{reviewOrder.limitPriceFormatted}</div></div>
               )}
               {reviewOrder.stopPrice && (
-                <div><span style={styles.reviewLabel}>Stop Price</span><div style={{ ...styles.reviewValue, fontWeight: '700', color: '#f59e0b' }}>{OrderFormatters.formatWithCurrency(reviewOrder.stopPrice, reviewOrder.currency)}</div></div>
+                <div><span style={styles.reviewLabel}>Stop Price</span><div style={{ ...styles.reviewValue, fontWeight: '700', color: 'var(--warning-color)' }}>{OrderFormatters.formatWithCurrency(reviewOrder.stopPrice, reviewOrder.currency)}</div></div>
               )}
               {reviewOrder.stopLossPriceFormatted && (
-                <div><span style={styles.reviewLabel}>Stop Loss</span><div style={{ ...styles.reviewValue, color: '#ef4444' }}>{reviewOrder.stopLossPriceFormatted}</div></div>
+                <div><span style={styles.reviewLabel}>Stop Loss</span><div style={{ ...styles.reviewValue, color: 'var(--loss-color)' }}>{reviewOrder.stopLossPriceFormatted}</div></div>
               )}
               {reviewOrder.takeProfitPriceFormatted && (
-                <div><span style={styles.reviewLabel}>Take Profit</span><div style={{ ...styles.reviewValue, color: '#10b981' }}>{reviewOrder.takeProfitPriceFormatted}</div></div>
+                <div><span style={styles.reviewLabel}>Take Profit</span><div style={{ ...styles.reviewValue, color: 'var(--gain-color)' }}>{reviewOrder.takeProfitPriceFormatted}</div></div>
               )}
               {reviewOrder.estimatedValueFormatted && (
                 <div><span style={styles.reviewLabel}>Est. Value</span><div style={{ ...styles.reviewValue, fontWeight: '700' }}>{reviewOrder.estimatedValueFormatted}</div></div>
@@ -1047,7 +1212,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                                 <div style={{ fontWeight: '500', fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{result.name || result.ticker}</div>
                                 <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '3px', fontWeight: '500', flexShrink: 0,
                                   background: result.source === 'product' ? 'rgba(99, 102, 241, 0.15)' : result.source === 'eod' ? 'rgba(245, 158, 11, 0.15)' : 'rgba(107, 114, 128, 0.15)',
-                                  color: result.source === 'product' ? '#6366f1' : result.source === 'eod' ? '#f59e0b' : '#6b7280' }}>
+                                  color: result.source === 'product' ? '#6366f1' : result.source === 'eod' ? 'var(--warning-color)' : '#6b7280' }}>
                                   {result.source === 'product' ? 'Ambervision' : result.source === 'eod' ? 'EOD' : result.source === 'metadata' ? 'Local' : 'PMS'}
                                 </span>
                               </div>
@@ -1159,7 +1324,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
             {(() => {
               const traces = reviewOrder.emailTraces || [];
 
-              const getTraceUrl = (trace) => `/order_traces/${reviewOrder._id}/${trace.storedFileName}`;
+              const getTraceUrl = (trace) => signedTraceUrls[trace.storedFileName] || null;
               const isPreviewable = (trace) => {
                 const ext = (trace.fileName || '').toLowerCase();
                 return ext.endsWith('.pdf') || ext.endsWith('.jpg') || ext.endsWith('.jpeg') ||
@@ -1171,7 +1336,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                 // Only show Order to Bank and Bank Confirmation for orders past validation
                 ...(reviewOrder.status !== ORDER_STATUSES.PENDING_VALIDATION && reviewOrder.status !== 'pending_modification' ? [
                   { type: EMAIL_TRACE_TYPES.ORDER_TO_BANK, label: 'Order to Bank', icon: '📤', color: '#0ea5e9', statusHint: 'Transmitted' },
-                  { type: EMAIL_TRACE_TYPES.BANK_CONFIRMATION, label: 'Bank Confirmation', icon: '✅', color: '#10b981', statusHint: 'Executed' },
+                  { type: EMAIL_TRACE_TYPES.BANK_CONFIRMATION, label: 'Bank Confirmation', icon: '✅', color: 'var(--gain-color)', statusHint: 'Executed' },
                 ] : [])
               ];
 
@@ -1199,7 +1364,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                     }}>
                       <span style={{ fontSize: '14px' }}>📞</span>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: '11px', fontWeight: '600', color: '#3b82f6', textTransform: 'uppercase' }}>
+                        <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--info-color)', textTransform: 'uppercase' }}>
                           Phone Order
                         </div>
                         <div style={{ fontSize: '12px', color: 'var(--text-primary)' }}>
@@ -1224,7 +1389,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                       return (
                         <div key={type} style={{
                           borderRadius: '6px', background: 'var(--bg-secondary)',
-                          border: `1px solid ${trace ? color + '40' : 'var(--border-color)'}`, overflow: 'hidden'
+                          border: `1px solid ${trace ? 'color-mix(in srgb, ' + color + ' 40%, transparent)' : 'var(--border-color)'}`, overflow: 'hidden'
                         }}>
                           <div style={{
                             display: 'flex', alignItems: 'center', gap: '8px',
@@ -1253,8 +1418,8 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                             {!trace && (
                               <button
                                 style={{
-                                  padding: '4px 10px', borderRadius: '4px', border: `1px solid ${color}40`,
-                                  background: `${color}10`, color: color, fontSize: '11px',
+                                  padding: '4px 10px', borderRadius: '4px', border: `1px solid color-mix(in srgb, ${color} 40%, transparent)`,
+                                  background: `color-mix(in srgb, ${color} 10%, transparent)`, color: color, fontSize: '11px',
                                   fontWeight: '600', cursor: uploadingTrace ? 'wait' : 'pointer', whiteSpace: 'nowrap'
                                 }}
                                 onClick={() => triggerUpload(type)}
@@ -1305,7 +1470,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                                   Loading email...
                                 </div>
                               ) : parsed.error ? (
-                                <div style={{ padding: '16px', textAlign: 'center', fontSize: '12px', color: '#ef4444' }}>
+                                <div style={{ padding: '16px', textAlign: 'center', fontSize: '12px', color: 'var(--loss-color)' }}>
                                   Could not parse email: {parsed.error}
                                 </div>
                               ) : (
@@ -1411,7 +1576,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                 padding: '14px 16px', marginBottom: '14px', borderRadius: '8px',
                 background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.3)'
               }}>
-                <div style={{ fontSize: '12px', fontWeight: '700', color: '#f59e0b', marginBottom: '8px' }}>
+                <div style={{ fontSize: '12px', fontWeight: '700', color: 'var(--warning-color)', marginBottom: '8px' }}>
                   Investment Profile Warning
                 </div>
                 {reviewOrder.allocationWarning.breaches.map((b, idx) => (
@@ -1422,7 +1587,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                   }}>
                     <span style={{ fontWeight: '600', color: 'var(--text-primary)', textTransform: 'capitalize' }}>{b.category}</span>
                     <span style={{ color: 'var(--text-secondary)' }}>
-                      {b.current.toFixed(1)}% → <span style={{ color: '#f59e0b', fontWeight: '600' }}>{b.projected.toFixed(1)}%</span>
+                      {b.current.toFixed(1)}% → <span style={{ color: 'var(--warning-color)', fontWeight: '600' }}>{b.projected.toFixed(1)}%</span>
                       <span style={{ color: 'var(--text-muted)', marginLeft: '6px' }}>limit {b.limit}%</span>
                     </span>
                   </div>
@@ -1432,7 +1597,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                 </div>
                 {reviewOrder.allocationWarning.justification && (
                   <div style={{ fontSize: '12px', color: 'var(--text-primary)', marginTop: '8px', padding: '8px 10px', borderRadius: '6px', background: 'rgba(245, 158, 11, 0.05)', border: '1px solid rgba(245, 158, 11, 0.15)' }}>
-                    <span style={{ fontWeight: '600', color: '#f59e0b', fontSize: '11px' }}>Justification:</span>{' '}
+                    <span style={{ fontWeight: '600', color: 'var(--warning-color)', fontSize: '11px' }}>Justification:</span>{' '}
                     {reviewOrder.allocationWarning.justification}
                   </div>
                 )}
@@ -1449,7 +1614,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                   <div key={idx} style={{
                     fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '6px',
                     padding: '6px 8px', background: 'var(--bg-secondary)', borderRadius: '4px',
-                    borderLeft: `3px solid ${entry.status === 'rejected' ? '#ef4444' : entry.validatedByName ? '#10b981' : 'var(--border-color)'}`
+                    borderLeft: `3px solid ${entry.status === 'rejected' ? 'var(--loss-color)' : entry.validatedByName ? 'var(--gain-color)' : 'var(--border-color)'}`
                   }}>
                     <div>
                       {entry.changedAtFormatted} — {entry.changedByName || 'Unknown'}
@@ -1463,12 +1628,12 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                       </div>
                     )}
                     {entry.validatedByName && (
-                      <div style={{ fontSize: '11px', color: '#10b981', marginTop: '2px' }}>
+                      <div style={{ fontSize: '11px', color: 'var(--gain-color)', marginTop: '2px' }}>
                         Validated by {entry.validatedByName} on {entry.validatedAtFormatted}
                       </div>
                     )}
                     {entry.status === 'rejected' && (
-                      <div style={{ fontSize: '11px', color: '#ef4444', marginTop: '2px' }}>
+                      <div style={{ fontSize: '11px', color: 'var(--loss-color)', marginTop: '2px' }}>
                         Rejected by {entry.rejectedByName} on {entry.rejectedAtFormatted}
                         {entry.rejectionReason && ` — ${entry.rejectionReason}`}
                       </div>
@@ -1487,7 +1652,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
             {reviewOrder.status === 'pending_modification' && reviewOrder.pendingModification && (() => {
               const mod = reviewOrder.pendingModification;
               const isModRequester = mod.requestedBy === user._id;
-              const instrUrl = mod.instructionFile ? `/order_traces/${reviewOrder._id}/${mod.instructionFile.storedFileName}` : null;
+              const instrUrl = mod.instructionFile ? (signedTraceUrls[mod.instructionFile.storedFileName] || null) : null;
               const instrPreviewable = mod.instructionFile && /\.(pdf|jpg|jpeg|png|gif|html)$/i.test(mod.instructionFile.fileName || '');
               const instrIsImage = mod.instructionFile && /\.(jpg|jpeg|png|gif)$/i.test(mod.instructionFile.fileName || '');
               const instrIsEml = mod.instructionFile && /\.eml$/i.test(mod.instructionFile.fileName || '');
@@ -1524,13 +1689,13 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
 
                     {mod.oldValues.stopLossPrice !== mod.newValues.stopLossPrice && (<>
                       <div>Stop Loss</div>
-                      <div style={{ color: '#ef4444' }}>{mod.oldValues.stopLossPrice ?? '—'}</div>
+                      <div style={{ color: 'var(--loss-color)' }}>{mod.oldValues.stopLossPrice ?? '—'}</div>
                       <div style={{ color: '#a855f7', fontWeight: '600' }}>{mod.newValues.stopLossPrice ?? '—'}</div>
                     </>)}
 
                     {mod.oldValues.takeProfitPrice !== mod.newValues.takeProfitPrice && (<>
                       <div>Take Profit</div>
-                      <div style={{ color: '#10b981' }}>{mod.oldValues.takeProfitPrice ?? '—'}</div>
+                      <div style={{ color: 'var(--gain-color)' }}>{mod.oldValues.takeProfitPrice ?? '—'}</div>
                       <div style={{ color: '#a855f7', fontWeight: '600' }}>{mod.newValues.takeProfitPrice ?? '—'}</div>
                     </>)}
                   </div>
@@ -1556,7 +1721,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                         </div>
                       )}
                       {instrIsEml && parsedEml?.error && (
-                        <div style={{ padding: '12px', textAlign: 'center', fontSize: '12px', color: '#ef4444' }}>
+                        <div style={{ padding: '12px', textAlign: 'center', fontSize: '12px', color: 'var(--loss-color)' }}>
                           Failed to parse email: {parsedEml.error}
                         </div>
                       )}
@@ -1603,8 +1768,29 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
               );
             })()}
 
-            {/* Actions */}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', borderTop: '1px solid var(--border-color)', paddingTop: '14px' }}>
+            {/* Actions.
+                On mobile these stick to the bottom of the scrollport: the review body
+                (health checks, traces, audit trail) is long, and previously you had to
+                scroll all the way through it to reach Validate/Reject. Buttons wrap and
+                grow so each stays a usable touch target. */}
+            <div style={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              gap: '10px',
+              borderTop: '1px solid var(--border-color)',
+              paddingTop: '14px',
+              ...(isMobile ? {
+                position: 'sticky',
+                bottom: 0,
+                zIndex: 2,
+                flexWrap: 'wrap',
+                background: 'var(--bg-secondary)',
+                // Bleed to the sheet edges so the sticky bar covers content behind it.
+                margin: '0 -14px',
+                padding: '14px 14px calc(14px + env(safe-area-inset-bottom, 0px)) 14px',
+                boxShadow: '0 -4px 12px rgba(0,0,0,0.18)'
+              } : {})
+            }}>
               <button style={styles.modalCancelBtn} onClick={() => closeReview()}>
                 Cancel
               </button>
@@ -1612,7 +1798,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
               {reviewOrder.status === 'pending_modification' ? (
                 <>
                   <button
-                    style={{ ...styles.rejectBtn, padding: '8px 20px', fontSize: '13px', opacity: isActioning ? 0.5 : 1 }}
+                    style={{ ...styles.rejectBtn, ...actionBtnSize, opacity: isActioning ? 0.5 : 1 }}
                     onClick={() => { setRejectModalOrder(reviewOrder); setRejectionReason(''); closeReview(); }}
                     disabled={!!isActioning}
                   >
@@ -1620,7 +1806,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                   </button>
                   <button
                     style={{
-                      ...styles.validateBtn, padding: '8px 20px', fontSize: '13px',
+                      ...styles.validateBtn, ...actionBtnSize,
                       opacity: ((reviewOrder.pendingModification?.requestedBy === user._id) || isActioning || isLockedByOther(reviewOrder)) ? 0.5 : 1,
                       cursor: ((reviewOrder.pendingModification?.requestedBy === user._id) || isActioning || isLockedByOther(reviewOrder)) ? 'not-allowed' : 'pointer'
                     }}
@@ -1638,14 +1824,14 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
               ) : reviewOrder.status === ORDER_STATUSES.REVISION_REQUESTED ? (
                 <>
                   {editError && (
-                    <div style={{ flex: 1, fontSize: '12px', color: '#ef4444', marginRight: '8px', alignSelf: 'center' }}>
+                    <div style={{ flex: 1, fontSize: '12px', color: 'var(--loss-color)', marginRight: '8px', alignSelf: 'center' }}>
                       {editError}
                     </div>
                   )}
                   {reviewOrder.createdBy === user._id ? (
                     <>
                       <button
-                        style={{ ...styles.rejectBtn, padding: '8px 20px', fontSize: '13px', opacity: isActioning ? 0.5 : 1 }}
+                        style={{ ...styles.rejectBtn, ...actionBtnSize, opacity: isActioning ? 0.5 : 1 }}
                         onClick={() => { const o = reviewOrder; closeReview(); setDeleteModalOrder(o); }}
                         disabled={!!isActioning}
                         title="Discard this order entirely"
@@ -1653,7 +1839,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                         Delete
                       </button>
                       <button
-                        style={{ ...styles.validateBtn, padding: '8px 20px', fontSize: '13px', opacity: isActioning ? 0.5 : 1 }}
+                        style={{ ...styles.validateBtn, ...actionBtnSize, opacity: isActioning ? 0.5 : 1 }}
                         onClick={() => handleSaveAndResubmit(reviewOrder)}
                         disabled={!!isActioning}
                         title="Save your changes and send the order back to a validator"
@@ -1670,7 +1856,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
               ) : (
                 <>
                   <button
-                    style={{ ...styles.rejectBtn, padding: '8px 20px', fontSize: '13px', opacity: isActioning ? 0.5 : 1 }}
+                    style={{ ...styles.rejectBtn, ...actionBtnSize, opacity: isActioning ? 0.5 : 1 }}
                     onClick={() => { setRejectModalOrder(reviewOrder); setRejectionReason(''); closeReview(); }}
                     disabled={!!isActioning}
                   >
@@ -1678,7 +1864,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                   </button>
                   <button
                     style={{
-                      padding: '8px 20px', fontSize: '13px', borderRadius: '4px', border: 'none',
+                      ...actionBtnSize, borderRadius: '4px', border: 'none',
                       background: '#e879f9', color: '#fff', fontWeight: '600', cursor: 'pointer',
                       transition: 'opacity 0.15s',
                       opacity: isActioning ? 0.5 : 1
@@ -1696,7 +1882,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                     return (
                   <button
                     style={{
-                      ...styles.validateBtn, padding: '8px 20px', fontSize: '13px',
+                      ...styles.validateBtn, ...actionBtnSize,
                       opacity: validateDisabled ? 0.5 : 1,
                       cursor: validateDisabled ? 'not-allowed' : 'pointer'
                     }}
@@ -1827,7 +2013,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                 Cancel
               </button>
               <button
-                style={{ ...styles.rejectBtn, padding: '8px 20px', fontSize: '13px', opacity: isActioning ? 0.5 : 1 }}
+                style={{ ...styles.rejectBtn, ...actionBtnSize, opacity: isActioning ? 0.5 : 1 }}
                 onClick={handleDelete}
                 disabled={!!isActioning}
               >
@@ -1975,7 +2161,7 @@ const styles = {
     padding: '4px 12px',
     borderRadius: '4px',
     border: 'none',
-    background: '#10b981',
+    background: 'var(--gain-color)',
     color: '#fff',
     fontSize: '11px',
     fontWeight: '600',
@@ -1986,7 +2172,7 @@ const styles = {
     padding: '4px 12px',
     borderRadius: '4px',
     border: 'none',
-    background: '#ef4444',
+    background: 'var(--loss-color)',
     color: '#fff',
     fontSize: '11px',
     fontWeight: '600',

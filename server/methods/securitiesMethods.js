@@ -10,11 +10,14 @@ import { ISINClassifierHelpers } from '../../imports/api/isinClassifier.js';
 import { ProductsCollection } from '../../imports/api/products.js';
 import { mapAssetClassToSecurityType } from '../../imports/api/helpers/securityResolver.js';
 import { detectUnderlyingType } from '../../imports/api/helpers/underlyingTypeDetector.js';
+import { OrderHelpers } from '../../imports/api/orders.js';
 
 /**
- * Validate session and ensure user is admin
+ * Validate session and ensure user has one of the allowed roles.
+ * Defaults to admin/superadmin; pass extra roles for methods that a wider
+ * set of roles may run (e.g. compliance can reclassify securities).
  */
-async function validateAdminSession(sessionId) {
+async function validateAdminSession(sessionId, allowedRoles = ['admin', 'superadmin']) {
   if (!sessionId) {
     throw new Meteor.Error('not-authorized', 'Session required');
   }
@@ -34,7 +37,7 @@ async function validateAdminSession(sessionId) {
     throw new Meteor.Error('not-authorized', 'User not found');
   }
 
-  if (user.role !== 'admin' && user.role !== 'superadmin') {
+  if (!allowedRoles.includes(user.role)) {
     throw new Meteor.Error('not-authorized', 'Admin access required');
   }
 
@@ -50,8 +53,8 @@ Meteor.methods({
     check(classificationData, Object);
     check(sessionId, String);
 
-    // Validate admin access
-    const user = await validateAdminSession(sessionId);
+    // Reclassification is available to admins and compliance
+    const user = await validateAdminSession(sessionId, ['admin', 'superadmin', 'compliance']);
 
     console.log(`[SECURITIES_METADATA] Upserting classification for ISIN: ${isin}`);
     console.log(`[SECURITIES_METADATA] Security name in received data: "${classificationData.securityName}"`);
@@ -92,14 +95,20 @@ Meteor.methods({
         const propagationResult = await PMSHoldingsHelpers.reclassifyByIsin(isin, {
           securityType,
           assetClass: dataToSave.assetClass,
+          securityName: dataToSave.securityName,
           structuredProductUnderlyingType: dataToSave.structuredProductUnderlyingType,
           structuredProductProtectionType: dataToSave.structuredProductProtectionType,
           classifiedBy: 'admin'
         });
         console.log(`[SECURITIES_METADATA] Propagated classification to ${propagationResult.modifiedCount} PMSHoldings (securityType: ${securityType})`);
+
+        // Keep existing orders (the order book) in sync with the new asset type
+        // and the harmonized display name.
+        const orderResult = await OrderHelpers.reclassifyByIsin(isin, { securityType, securityName: dataToSave.securityName });
+        console.log(`[SECURITIES_METADATA] Propagated classification to ${orderResult.modifiedCount} orders (assetType: ${orderResult.assetType})`);
       } catch (propError) {
         // Log but don't fail the main operation - metadata saved successfully
-        console.error(`[SECURITIES_METADATA] Warning: Failed to propagate to PMSHoldings: ${propError.message}`);
+        console.error(`[SECURITIES_METADATA] Warning: Failed to propagate to PMSHoldings/orders: ${propError.message}`);
       }
 
       return {

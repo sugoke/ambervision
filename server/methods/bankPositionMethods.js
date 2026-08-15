@@ -197,6 +197,52 @@ function getUserIdFromMap(portfolioCode, portfolioUserMap) {
   return portfolioUserMap.get(normalizedCode) || null;
 }
 
+/**
+ * Record what a bank file actually wrote for one (portfolio, snapshot day), so
+ * PMSHoldingsHelpers.reconcileSnapshotKeys() can retire records that describe the
+ * same positions under an outdated uniqueKey.
+ *
+ * IMPORTANT: uses the uniqueKey returned by upsertHolding() — the key genuinely
+ * written — never a recomputed one. A recomputed key that differed by even one
+ * input would make the reconciler treat the row it just wrote as stale.
+ */
+function trackWrittenSnapshot(writtenSnapshots, position, writtenUniqueKey) {
+  if (!writtenSnapshots || !position?.portfolioCode || !writtenUniqueKey) return;
+
+  const snapshotDate = position.dataDate || position.fileDate;
+  if (!snapshotDate) return;
+
+  const day = new Date(snapshotDate);
+  if (Number.isNaN(day.getTime())) return;
+
+  const dayStamp = day.toISOString().split('T')[0];
+  const mapKey = `${position.portfolioCode}|${dayStamp}`;
+
+  let entry = writtenSnapshots.get(mapKey);
+  if (!entry) {
+    entry = {
+      portfolioCode: position.portfolioCode,
+      snapshotDate: day,
+      keys: new Set(),
+      identities: new Set(),
+      values: new Map()
+    };
+    writtenSnapshots.set(mapKey, entry);
+  }
+
+  entry.keys.add(writtenUniqueKey);
+  const identity = PMSHoldingsHelpers.positionIdentity(position);
+  if (identity) {
+    entry.identities.add(identity);
+    // Values let the reconciler verify a candidate really is the same position
+    // written twice, rather than a different position sharing this identity
+    entry.values.set(identity, {
+      quantity: position.quantity,
+      marketValue: position.marketValue
+    });
+  }
+}
+
 Meteor.methods({
   /**
    * Backfill CFM FX-forward holdings with their forward value date by joining
@@ -571,6 +617,8 @@ Meteor.methods({
       const unmappedPortfolioCodes = new Set();
       const processedUniqueKeys = new Set(); // Track uniqueKeys for sold position detection
       const processedPortfolioCodes = new Set(); // Track portfolios we processed for cleanup
+      // Track what we wrote per (portfolio, snapshot day) for stale-uniqueKey reconciliation
+      const writtenSnapshots = new Map();
 
       // Log all unique portfolio codes found in positions file for debugging
       const allPosPortfolioCodes = [...new Set(positions.map(pos => pos.portfolioCode))];
@@ -837,6 +885,9 @@ Meteor.methods({
             processedPortfolioCodes.add(position.portfolioCode);
           }
 
+          // Record the key actually written, for stale-uniqueKey reconciliation below
+          trackWrittenSnapshot(writtenSnapshots, position, result.uniqueKey);
+
           if (result.isNew) {
             newRecords++;
           } else if (result.updated) {
@@ -853,6 +904,32 @@ Meteor.methods({
           });
           skippedRecords++;
         }
+      }
+
+      // STALE UNIQUEKEY RECONCILIATION: retire records that hold the same positions
+      // under an outdated uniqueKey, so a position is never counted twice.
+      //
+      // Needed because uniqueKey is parser-owned and its recipe changes (e.g. the CMB
+      // sub-account fix). A reprocess then re-writes history under a new key while the
+      // old-key records stay active, and the historical (asOfDate) view — which dedups
+      // by uniqueKey — shows every position twice. Unlike the sold-position cleanup
+      // below, this looks at ALL records for the processed days, not just isLatest.
+      try {
+        if (writtenSnapshots.size > 0) {
+          const reconcile = await PMSHoldingsHelpers.reconcileSnapshotKeys({
+            bankId: connection.bankId,
+            written: writtenSnapshots
+          });
+          if (reconcile.recordsDeactivated > 0) {
+            console.warn(
+              `[BANK_POSITIONS] Stale uniqueKey duplicates cleared: ${reconcile.recordsDeactivated} record(s) ` +
+              `across ${reconcile.groupsAffected} portfolio/day group(s)`
+            );
+          }
+        }
+      } catch (reconcileError) {
+        // Never fail an import over reconciliation - the data itself is already written
+        console.error(`[BANK_POSITIONS] Stale uniqueKey reconciliation failed: ${reconcileError.message}`);
       }
 
       // SOLD POSITION CLEANUP: Mark positions that are no longer in the bank file as inactive
@@ -2131,6 +2208,8 @@ Meteor.methods({
       const unmappedPortfolioCodes = new Set();
       const processedUniqueKeys = new Set();
       const processedPortfolioCodes = new Set();
+      // Track what we wrote per (portfolio, snapshot day) for stale-uniqueKey reconciliation
+      const writtenSnapshots = new Map();
 
       // In-memory cache for enrichment during this file's processing
       const enrichmentCache = new Map();
@@ -2263,6 +2342,9 @@ Meteor.methods({
             processedPortfolioCodes.add(position.portfolioCode);
           }
 
+          // Record the key actually written, for stale-uniqueKey reconciliation below
+          trackWrittenSnapshot(writtenSnapshots, position, result.uniqueKey);
+
           if (result.isNew) {
             newRecords++;
           } else if (result.updated) {
@@ -2279,6 +2361,27 @@ Meteor.methods({
           });
           skippedRecords++;
         }
+      }
+
+      // STALE UNIQUEKEY RECONCILIATION: this is the path that reprocesses historical
+      // dates, so it is the one that re-writes old snapshots under a new uniqueKey.
+      // Retire the superseded records here, before snapshots are rebuilt from them —
+      // otherwise the snapshot totals double-count every affected position.
+      try {
+        if (writtenSnapshots.size > 0) {
+          const reconcile = await PMSHoldingsHelpers.reconcileSnapshotKeys({
+            bankId: connection.bankId,
+            written: writtenSnapshots
+          });
+          if (reconcile.recordsDeactivated > 0) {
+            console.warn(
+              `[BANK_POSITIONS] Stale uniqueKey duplicates cleared: ${reconcile.recordsDeactivated} record(s) ` +
+              `across ${reconcile.groupsAffected} portfolio/day group(s)`
+            );
+          }
+        }
+      } catch (reconcileError) {
+        console.error(`[BANK_POSITIONS] Stale uniqueKey reconciliation failed: ${reconcileError.message}`);
       }
 
       // Create portfolio snapshots (matched positions — userId or entity; entity-only

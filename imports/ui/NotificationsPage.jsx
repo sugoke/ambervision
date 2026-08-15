@@ -125,14 +125,14 @@ const NotificationsPage = ({ currentUser }) => {
 
   const getEventColor = (eventType) => {
     const colors = {
-      'coupon_paid': '#10b981',
-      'autocall_triggered': '#3b82f6',
-      'barrier_breached': '#ef4444',
-      'barrier_near': '#f59e0b',
+      'coupon_paid': 'var(--gain-color)',
+      'autocall_triggered': 'var(--info-color)',
+      'barrier_breached': 'var(--loss-color)',
+      'barrier_near': 'var(--warning-color)',
       'final_observation': '#8b5cf6',
       'product_matured': '#059669',
       'memory_coupon_added': '#a855f7',
-      'barrier_recovered': '#10b981'
+      'barrier_recovered': 'var(--gain-color)'
     };
     return colors[eventType] || '#6b7280';
   };
@@ -214,7 +214,7 @@ const NotificationsPage = ({ currentUser }) => {
               onClick={handleMarkAllAsRead}
               style={{
                 padding: '0.75rem 1.5rem',
-                background: '#3b82f6',
+                background: 'var(--info-color)',
                 color: 'white',
                 border: 'none',
                 borderRadius: '8px',
@@ -227,7 +227,7 @@ const NotificationsPage = ({ currentUser }) => {
                 e.currentTarget.style.background = '#2563eb';
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.background = '#3b82f6';
+                e.currentTarget.style.background = 'var(--info-color)';
               }}
             >
               Mark All as Read
@@ -348,7 +348,7 @@ const NotificationsPage = ({ currentUser }) => {
                     borderRadius: '12px',
                     border: `2px solid ${
                       unread
-                        ? '#3b82f6'
+                        ? 'var(--info-color)'
                         : theme === 'light' ? '#e5e7eb' : '#374151'
                     }`,
                     cursor: unread ? 'pointer' : 'default',
@@ -418,7 +418,7 @@ const NotificationsPage = ({ currentUser }) => {
                               <span
                                 style={{
                                   padding: '0.25rem 0.5rem',
-                                  background: '#3b82f6',
+                                  background: 'var(--info-color)',
                                   color: 'white',
                                   fontSize: '0.7rem',
                                   fontWeight: '600',
@@ -471,21 +471,21 @@ const NotificationsPage = ({ currentUser }) => {
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem' }}>
                         {notification.emailStatus === 'sent' ? (
                           <>
-                            <span style={{ color: '#10b981' }}>✓</span>
+                            <span style={{ color: 'var(--gain-color)' }}>✓</span>
                             <span style={{ color: theme === 'light' ? '#6b7280' : '#9ca3af' }}>
                               Email sent to {notification.sentToEmails?.length || 0} recipient(s)
                             </span>
                           </>
                         ) : notification.emailStatus === 'failed' ? (
                           <>
-                            <span style={{ color: '#ef4444' }}>✗</span>
+                            <span style={{ color: 'var(--loss-color)' }}>✗</span>
                             <span style={{ color: theme === 'light' ? '#6b7280' : '#9ca3af' }}>
                               Email failed to send
                             </span>
                           </>
                         ) : (
                           <>
-                            <span style={{ color: '#f59e0b' }}>⏳</span>
+                            <span style={{ color: 'var(--warning-color)' }}>⏳</span>
                             <span style={{ color: theme === 'light' ? '#6b7280' : '#9ca3af' }}>
                               Email pending
                             </span>

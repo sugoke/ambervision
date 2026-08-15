@@ -48,7 +48,7 @@ const BirthdaysCard = ({ birthdays, onBirthdayClick }) => {
       alignItems: 'center',
       justifyContent: 'center',
       fontSize: isToday ? '18px' : '14px',
-      color: isToday ? '#f59e0b' : 'var(--text-muted)'
+      color: isToday ? 'var(--warning-color)' : 'var(--text-muted)'
     }),
     content: {
       flex: 1,
@@ -71,7 +71,7 @@ const BirthdaysCard = ({ birthdays, onBirthdayClick }) => {
       fontSize: '11px',
       padding: '3px 8px',
       borderRadius: '10px',
-      backgroundColor: isToday ? '#f59e0b' : 'var(--bg-primary)',
+      backgroundColor: isToday ? 'var(--warning-color)' : 'var(--bg-primary)',
       color: isToday ? '#fff' : 'var(--text-muted)',
       fontWeight: isToday ? '600' : '400'
     }),

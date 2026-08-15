@@ -153,14 +153,14 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
 
   const getEventColor = (eventType) => {
     const colors = {
-      'coupon_paid': '#10b981',
-      'autocall_triggered': '#3b82f6',
-      'barrier_breached': '#ef4444',
-      'barrier_near': '#f59e0b',
+      'coupon_paid': 'var(--gain-color)',
+      'autocall_triggered': 'var(--info-color)',
+      'barrier_breached': 'var(--loss-color)',
+      'barrier_near': 'var(--warning-color)',
       'final_observation': '#8b5cf6',
       'product_matured': '#059669',
       'memory_coupon_added': '#a855f7',
-      'barrier_recovered': '#10b981'
+      'barrier_recovered': 'var(--gain-color)'
     };
     return colors[eventType] || '#6b7280';
   };
@@ -229,7 +229,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
               position: 'absolute',
               top: '2px',
               right: '2px',
-              background: '#ef4444',
+              background: 'var(--loss-color)',
               color: 'white',
               borderRadius: '10px',
               minWidth: '18px',
@@ -296,7 +296,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
                   }}
                   style={{
                     fontSize: '0.75rem',
-                    color: '#3b82f6',
+                    color: 'var(--info-color)',
                     background: 'transparent',
                     border: 'none',
                     padding: '0.25rem 0.5rem',
@@ -444,7 +444,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
                                 width: '8px',
                                 height: '8px',
                                 borderRadius: '50%',
-                                background: '#3b82f6',
+                                background: 'var(--info-color)',
                                 flexShrink: 0,
                                 marginLeft: '0.5rem'
                               }}
@@ -492,7 +492,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
                 style={{
                   background: 'transparent',
                   border: 'none',
-                  color: '#3b82f6',
+                  color: 'var(--info-color)',
                   fontSize: '0.875rem',
                   fontWeight: '500',
                   cursor: 'pointer',

@@ -3,7 +3,7 @@ import React from 'react';
 const UpcomingEventsCard = ({ events, onEventClick }) => {
   const getColorByUrgency = () => {
     // Always use blue for consistent styling
-    return { bg: 'rgba(59, 130, 246, 0.15)', border: '#3b82f6', text: '#3b82f6' };
+    return { bg: 'rgba(59, 130, 246, 0.15)', border: 'var(--info-color)', text: 'var(--info-color)' };
   };
 
   const styles = {

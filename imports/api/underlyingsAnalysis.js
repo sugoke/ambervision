@@ -31,7 +31,7 @@ function priceAsOf(marketDataDoc, asOfDate) {
   return { price: 0, lastUpdate: null };
 }
 
-function isProductLiveAsOf(product, asOfDate) {
+export function isProductLiveAsOf(product, asOfDate) {
   const trade = product.tradeDate ? new Date(product.tradeDate) : null;
   const finalObs = (product.finalObservation || product.finalObservationDate)
     ? new Date(product.finalObservation || product.finalObservationDate)

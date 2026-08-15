@@ -121,7 +121,7 @@ const PortfolioReviewsList = ({ viewAsFilter, accountFilter, onOpenReview, onGen
               width: '8px',
               height: '8px',
               borderRadius: '50%',
-              background: '#3b82f6',
+              background: 'var(--info-color)',
               animation: 'reviewPulse 1.5s infinite'
             }} />
             Generating
@@ -326,7 +326,7 @@ const PortfolioReviewsList = ({ viewAsFilter, accountFilter, onOpenReview, onGen
                   {review.status === 'generating' && review.progress && (
                     <div style={{
                       fontSize: '0.75rem',
-                      color: '#3b82f6',
+                      color: 'var(--info-color)',
                       textAlign: 'center',
                       minWidth: '150px'
                     }}>
@@ -341,7 +341,7 @@ const PortfolioReviewsList = ({ viewAsFilter, accountFilter, onOpenReview, onGen
                         <div style={{
                           width: `${((review.progress.completedSections || 0) / (review.progress.totalSections || 7)) * 100}%`,
                           height: '100%',
-                          background: 'linear-gradient(90deg, #6366f1, #3b82f6)',
+                          background: 'linear-gradient(90deg, #6366f1, var(--info-color))',
                           borderRadius: '2px',
                           transition: 'width 0.5s ease'
                         }} />
@@ -353,7 +353,7 @@ const PortfolioReviewsList = ({ viewAsFilter, accountFilter, onOpenReview, onGen
                   {review.status === 'failed' && review.progress?.currentStepLabel && (
                     <div style={{
                       fontSize: '0.75rem',
-                      color: '#ef4444',
+                      color: 'var(--loss-color)',
                       maxWidth: '200px',
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
@@ -390,7 +390,7 @@ const PortfolioReviewsList = ({ viewAsFilter, accountFilter, onOpenReview, onGen
                           border: 'none',
                           borderRadius: '6px',
                           background: 'rgba(239, 68, 68, 0.1)',
-                          color: '#ef4444',
+                          color: 'var(--loss-color)',
                           fontSize: '1rem',
                           cursor: 'pointer',
                           display: 'flex',
@@ -423,7 +423,7 @@ const PortfolioReviewsList = ({ viewAsFilter, accountFilter, onOpenReview, onGen
                           opacity: 0.6,
                           transition: 'opacity 0.15s'
                         }}
-                        onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = '#ef4444'; }}
+                        onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = 'var(--loss-color)'; }}
                         onMouseLeave={e => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.color = ''; }}
                       >
                         &#128465;

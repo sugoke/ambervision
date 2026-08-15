@@ -329,7 +329,7 @@ const ProductDetailsCard = ({ productDetails, onUpdateProductDetails, onRegenera
                 handleEdit(field, value);
               }
             }}
-            style={hasIsinError ? { color: '#ef4444', fontWeight: '500' } : {}}
+            style={hasIsinError ? { color: 'var(--loss-color)', fontWeight: '500' } : {}}
           >
             {value || 'Click to edit'}
           </span>
@@ -346,21 +346,21 @@ const ProductDetailsCard = ({ productDetails, onUpdateProductDetails, onRegenera
             )}
 
             {!isCheckingIsin && !isinValidation.valid && (
-              <div style={{ color: '#ef4444', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <div style={{ color: 'var(--loss-color)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <span>❌</span>
                 <span>{isinValidation.error}</span>
               </div>
             )}
 
             {!isCheckingIsin && isinValidation.valid && !isinUniqueness.isUnique && (
-              <div style={{ color: '#ef4444' }}>
+              <div style={{ color: 'var(--loss-color)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
                   <span>⚠️</span>
                   <span style={{ fontWeight: '500' }}>ISIN already exists in database</span>
                 </div>
                 {isinUniqueness.conflict && (
                   <div style={{ marginLeft: '1.75rem', color: '#6b7280', fontSize: '0.8rem' }}>
-                    Product: <strong style={{ color: '#ef4444' }}>{isinUniqueness.conflict.title}</strong>
+                    Product: <strong style={{ color: 'var(--loss-color)' }}>{isinUniqueness.conflict.title}</strong>
                     {isinUniqueness.conflict.createdAt && (
                       <> (created {new Date(isinUniqueness.conflict.createdAt).toLocaleDateString()})</>
                     )}
@@ -370,7 +370,7 @@ const ProductDetailsCard = ({ productDetails, onUpdateProductDetails, onRegenera
             )}
 
             {!isCheckingIsin && isinValidation.valid && isinUniqueness.isUnique && (
-              <div style={{ color: '#10b981', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <div style={{ color: 'var(--gain-color)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <span>✅</span>
                 <span>Valid ISIN</span>
               </div>
@@ -509,7 +509,7 @@ const ProductDetailsCard = ({ productDetails, onUpdateProductDetails, onRegenera
                   style={{
                     padding: '8px 16px',
                     fontSize: '0.8rem',
-                    background: (!productDetails.tradeDate || !productDuration || !productDuration.trim()) ? '#6b7280' : '#10b981',
+                    background: (!productDetails.tradeDate || !productDuration || !productDuration.trim()) ? '#6b7280' : 'var(--gain-color)',
                     color: 'white',
                     border: 'none',
                     borderRadius: '4px',

@@ -114,6 +114,27 @@ if (Meteor.isServer) {
      * Upload term sheet PDF for a product
      * Admin/SuperAdmin only
      */
+    // Mint a single-use capability token for a product's stored term sheet.
+    // Term sheets are product documents (not client PII), so any authenticated
+    // user may fetch one — but the /termsheets endpoint now requires the token,
+    // closing the previous anonymous access.
+    async 'products.getTermSheetUrl'(productId, sessionId) {
+      check(productId, String);
+      check(sessionId, String);
+
+      const user = await Meteor.callAsync('auth.getCurrentUser', sessionId);
+      if (!user) throw new Meteor.Error('not-authorized', 'You must be logged in');
+
+      const product = await ProductsCollection.findOneAsync(productId);
+      if (!product?.termSheet?.url) throw new Meteor.Error('not-found', 'No term sheet for this product');
+
+      const storedUrl = String(product.termSheet.url);
+      const filePath = storedUrl.split('?')[0]; // token binds to the exact path
+      const { issueDocumentToken } = await import('/server/documentAccess.js');
+      const token = await issueDocumentToken(filePath, user._id);
+      return `${filePath}?dl=${token}`;
+    },
+
     async 'products.uploadTermSheet'(productId, base64Data, filename, sessionId) {
       check(productId, String);
       check(base64Data, String);

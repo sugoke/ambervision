@@ -131,7 +131,7 @@ const AccountSelector = ({
 
         .account-dropdown:focus {
           outline: none;
-          border-color: #3b82f6;
+          border-color: var(--info-color);
           box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
         }
 

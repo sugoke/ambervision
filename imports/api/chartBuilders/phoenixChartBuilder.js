@@ -63,13 +63,20 @@ export const PhoenixChartBuilder = {
         // Calculate current performance for synthetic data fallback
         const currentPerformance = underlying.performance || underlying.performancePercent || 0;
 
-        // Generate performance data using actual stock prices rebased to 100
+        // Generate performance data using actual stock prices rebased to 100.
+        // Rebase on the same initialPrice the evaluator used for this underlying, so a
+        // point on the chart always equals the performance shown in the underlyings table
+        // (chart 100% <=> table 0%). Deriving the baseline from the feed instead let the
+        // two disagree whenever the strike and the trade-date close differ.
         const performanceData = await this.generateRebasedStockData(
           underlying.fullTicker || `${underlying.ticker}.US`,
           tradeDate,
           maturityDate,
           today,
-          currentPerformance // Pass actual performance for synthetic data fallback
+          currentPerformance, // Pass actual performance for synthetic data fallback
+          // effectiveInitialPrice is what the evaluator actually measured observations
+          // against — it equals initialPrice except when a confirmed split rebased it.
+          underlying.effectiveInitialPrice || underlying.initialPrice
         );
 
         // Use color from palette, cycling if there are more underlyings than colors
@@ -600,8 +607,11 @@ export const PhoenixChartBuilder = {
    * @param {Date} maturityDate - Product maturity date
    * @param {Date} today - Current date
    * @param {number} currentPerformance - Current performance percentage (e.g., -62.56 for -62.56%)
+   * @param {number} [strikePrice] - Contractual initial level from the evaluator. Rebasing on
+   *   this keeps the chart consistent with the underlyings table; omit only when unknown,
+   *   in which case the trade-date close is used as before.
    */
-  async generateRebasedStockData(ticker, tradeDate, maturityDate, today, currentPerformance = 0) {
+  async generateRebasedStockData(ticker, tradeDate, maturityDate, today, currentPerformance = 0, strikePrice = null) {
     try {
       const tradeDateStr = tradeDate.toISOString().split('T')[0];
       const maturityDateStr = maturityDate.toISOString().split('T')[0];
@@ -633,12 +643,18 @@ export const PhoenixChartBuilder = {
         return this.generateSyntheticData(tradeDate, maturityDate, today, currentPerformance);
       }
 
-      const initialPriceRecord = history.find(p =>
-        new Date(p.date).toISOString().split('T')[0] === tradeDateStr
-      ) || history[0];
+      // Prefer the contractual initial level the evaluator used; fall back to the feed's
+      // trade-date close only when it wasn't supplied.
       // Use close (actual/split-adjusted price), NOT adjustedClose (which includes dividend adjustments)
       // Structured products reference the actual spot price for barrier/coupon evaluation
-      const initialPrice = initialPriceRecord?.close || initialPriceRecord?.adjustedClose || 100;
+      const initialPrice = (strikePrice && strikePrice > 0)
+        ? strikePrice
+        : (() => {
+            const initialPriceRecord = history.find(p =>
+              new Date(p.date).toISOString().split('T')[0] === tradeDateStr
+            ) || history[0];
+            return initialPriceRecord?.close || initialPriceRecord?.adjustedClose || 100;
+          })();
 
       return history.map(record => ({
         x: new Date(record.date).toISOString().split('T')[0],

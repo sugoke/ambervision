@@ -73,10 +73,10 @@ const AllocationBarChart = ({ currentAllocation, profileLimits }) => {
   if (!currentAllocation) return null;
 
   const categories = [
-    { key: 'cash', label: 'Cash', color: '#3b82f6' },
-    { key: 'bonds', label: 'Bonds', color: '#10b981' },
-    { key: 'equities', label: 'Equities', color: '#f59e0b' },
-    { key: 'alternative', label: 'Alternative', color: '#8b5cf6' }
+    { key: 'cash', label: 'Cash', color: '#1d4ed8' },
+    { key: 'bonds', label: 'Bonds', color: '#047857' },
+    { key: 'equities', label: 'Equities', color: '#b45309' },
+    { key: 'alternative', label: 'Alternative', color: '#6d28d9' }
   ];
 
   const limitKey = (key) => `max${key.charAt(0).toUpperCase() + key.slice(1)}`;
@@ -112,13 +112,13 @@ const AllocationBarChart = ({ currentAllocation, profileLimits }) => {
                 top: '2px',
                 bottom: '2px',
                 width: `${Math.min(current, 100)}%`,
-                background: isBreached ? '#ef4444' : color,
+                background: isBreached ? '#b91c1c' : color,
                 borderRadius: '3px',
                 minWidth: current > 0 ? '4px' : 0,
                 transition: 'width 0.3s'
               }} />
             </div>
-            <div style={{ width: '110px', fontSize: '11px', fontWeight: '600', color: isBreached ? '#ef4444' : '#0f172a', textAlign: 'left' }}>
+            <div style={{ width: '110px', fontSize: '11px', fontWeight: '600', color: isBreached ? '#b91c1c' : '#0f172a', textAlign: 'left' }}>
               {current.toFixed(1)}%{max != null ? ` / ${max}%` : ''}
             </div>
           </div>
@@ -134,7 +134,7 @@ const AllocationBarChart = ({ currentAllocation, profileLimits }) => {
 const CurrencyBarChart = ({ exposureByCurrency }) => {
   if (!exposureByCurrency?.length) return null;
 
-  const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+  const colors = ['#1d4ed8', '#047857', '#b45309', '#b91c1c', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
 
   return (
     <div style={{ marginBottom: '12px' }}>
@@ -248,7 +248,7 @@ const PortfolioReviewPDF = () => {
   if (error || !review) {
     return (
       <div style={{ background: 'white', minHeight: '100vh', padding: '2rem', fontFamily: '"Inter", sans-serif' }}>
-        <h1 style={{ color: '#ef4444' }}>Error</h1>
+        <h1 style={{ color: '#b91c1c' }}>Error</h1>
         <p style={{ color: '#475569' }}>{error || 'Review not found'}</p>
       </div>
     );
@@ -301,7 +301,7 @@ const PortfolioReviewPDF = () => {
             <h1 style={{ fontSize: '24px', fontWeight: '800', color: '#0f172a', margin: 0, letterSpacing: '-0.5px' }}>
               Portfolio Review
             </h1>
-            <p style={{ fontSize: '14px', color: '#6366f1', margin: '3px 0 0', fontWeight: '600' }}>
+            <p style={{ fontSize: '14px', color: '#4338ca', margin: '3px 0 0', fontWeight: '600' }}>
               {review.clientName || 'Consolidated Portfolio'}
             </p>
             <p style={{ fontSize: '10px', color: '#64748b', margin: '3px 0 0' }}>
@@ -443,7 +443,7 @@ const PortfolioReviewPDF = () => {
             {/* Recently Redeemed Products */}
             {review.eventsSchedule.recentRedemptions?.length > 0 && (
               <div style={{ marginBottom: '12px' }}>
-                <h3 style={{ fontSize: '12px', fontWeight: '700', color: '#059669', margin: '8px 0 5px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                <h3 style={{ fontSize: '12px', fontWeight: '700', color: '#047857', margin: '8px 0 5px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                   Recently Redeemed Products
                 </h3>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '10px' }}>
@@ -494,7 +494,7 @@ const PortfolioReviewPDF = () => {
             {/* Possible Upcoming Redemptions */}
             {review.eventsSchedule.possibleRedemptions?.length > 0 && (
               <div style={{ marginBottom: '12px' }}>
-                <h3 style={{ fontSize: '12px', fontWeight: '700', color: '#d97706', margin: '8px 0 5px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                <h3 style={{ fontSize: '12px', fontWeight: '700', color: '#b45309', margin: '8px 0 5px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                   Possible Redemptions (Next 30 Days)
                 </h3>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '10px' }}>

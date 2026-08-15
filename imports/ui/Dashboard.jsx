@@ -31,7 +31,7 @@ const ProcessingIssueIndicator = ({ product }) => {
   const warningCount = processingIssues?.filter(i => i.severity === 'warning').length || 0;
 
   // Determine colors based on severity - using amber/orange tones (less aggressive than red)
-  const iconColor = hasProcessingErrors ? '#d97706' : '#f59e0b';
+  const iconColor = hasProcessingErrors ? '#d97706' : 'var(--warning-color)';
   const bgColor = hasProcessingErrors ? 'rgba(217, 119, 6, 0.15)' : 'rgba(245, 158, 11, 0.15)';
   const borderColor = hasProcessingErrors ? 'rgba(217, 119, 6, 0.3)' : 'rgba(245, 158, 11, 0.3)';
 
@@ -119,7 +119,7 @@ const ProcessingIssueIndicator = ({ product }) => {
           }}>
             {processingIssues?.slice(0, 5).map((issue, idx) => (
               <li key={idx} style={{ marginBottom: '3px' }}>
-                <span style={{ color: issue.severity === 'error' ? '#d97706' : '#f59e0b' }}>
+                <span style={{ color: issue.severity === 'error' ? '#d97706' : 'var(--warning-color)' }}>
                   {issue.message}
                 </span>
                 {issue.underlying && (
@@ -433,6 +433,14 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
     return totals;
   }, [allocations]);
 
+  // A product counts as "live" for the dashboard only if it still has an active
+  // position in the PMS. Products that have been sold/redeemed (no remaining
+  // active allocation nominal) drop out of the live list and the live count,
+  // even when their lifecycle status is still 'live'.
+  const isLiveWithPosition = (product) =>
+    getStandardizedProductStatus(product) === 'live'
+    && (nominalByProduct[product._id] || 0) > 0;
+
   // Calculate weighted-average purchase price per product (weighted by nominal invested)
   // Purchase prices are stored in percentage format on allocations (100 = 100%)
   const purchasePriceByProduct = useMemo(() => {
@@ -545,11 +553,11 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
       );
     }
 
-    // Filter by live status if toggle is enabled
+    // Filter by live status if toggle is enabled. A sold/redeemed product (no
+    // active PMS position) is not considered live even if its lifecycle status
+    // still reads 'live'.
     if (showLiveOnly) {
-      filtered = filtered.filter(product => {
-        return getStandardizedProductStatus(product) === 'live';
-      });
+      filtered = filtered.filter(product => isLiveWithPosition(product));
     }
 
     // Then sort
@@ -1437,7 +1445,7 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
             color: 'var(--warning-color)',
             lineHeight: '1'
           }}>
-            {products.filter(p => getStandardizedProductStatus(p) === 'live').length}
+            {products.filter(p => isLiveWithPosition(p)).length}
           </div>
           <div style={{
             color: 'var(--text-secondary)',
@@ -1584,7 +1592,7 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
               if (status.startsWith('Matured')) return '#6b7280';
               switch (status) {
                 case 'Live': return '#059669';
-                case 'Pending': return '#f59e0b';
+                case 'Pending': return 'var(--warning-color)';
                 default: return '#6b7280';
               }
             };
@@ -2149,7 +2157,7 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
                         if (status.startsWith('Matured')) return '#6b7280'; // Gray
                         switch (status) {
                           case 'Live': return '#059669'; // Green
-                          case 'Pending': return '#f59e0b'; // Amber
+                          case 'Pending': return 'var(--warning-color)'; // Amber
                           default: return '#6b7280';
                         }
                       };

@@ -331,7 +331,7 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
                     onClick={handleExport}
                     style={{
                       padding: '0.5rem 0.875rem',
-                      background: '#3b82f6',
+                      background: 'var(--info-color)',
                       color: 'white',
                       border: 'none',
                       borderRadius: '8px',
@@ -387,7 +387,7 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
             )}
 
             {error && (
-              <div style={{ padding: '2rem', textAlign: 'center', color: '#ef4444' }}>
+              <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--loss-color)' }}>
                 Error loading review: {error}
               </div>
             )}
@@ -415,7 +415,7 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
                       <div style={{
                         fontSize: '1.1rem',
                         fontWeight: '700',
-                        color: (review.portfolioSnapshot.unrealizedPnLEUR || 0) >= 0 ? '#10b981' : '#ef4444'
+                        color: (review.portfolioSnapshot.unrealizedPnLEUR || 0) >= 0 ? 'var(--gain-color)' : 'var(--loss-color)'
                       }}>
                         EUR {formatCurrency(review.portfolioSnapshot.unrealizedPnLEUR)}
                       </div>
@@ -484,7 +484,7 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
                                 <div style={{
                                   fontSize: '0.75rem',
                                   fontWeight: '500',
-                                  color: (pos.unrealizedPnLPercent || 0) >= 0 ? '#10b981' : '#ef4444'
+                                  color: (pos.unrealizedPnLPercent || 0) >= 0 ? 'var(--gain-color)' : 'var(--loss-color)'
                                 }}>
                                   {(pos.unrealizedPnLPercent || 0) >= 0 ? '+' : ''}{pos.unrealizedPnLPercent?.toFixed(2)}%
                                 </div>
@@ -524,7 +524,7 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
                               }}>
                                 <span style={{
                                   fontWeight: '600',
-                                  color: isBreached ? '#ef4444' : 'var(--text-primary)',
+                                  color: isBreached ? 'var(--loss-color)' : 'var(--text-primary)',
                                   textTransform: 'capitalize'
                                 }}>
                                   {cat} {isBreached && '(!)'}
@@ -544,8 +544,8 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
                                   height: '100%',
                                   width: `${Math.min(pct, 100)}%`,
                                   background: isBreached
-                                    ? '#ef4444'
-                                    : cat === 'cash' ? '#6366f1' : cat === 'bonds' ? '#06b6d4' : cat === 'equities' ? '#10b981' : '#f59e0b',
+                                    ? 'var(--loss-color)'
+                                    : cat === 'cash' ? '#6366f1' : cat === 'bonds' ? '#06b6d4' : cat === 'equities' ? 'var(--gain-color)' : 'var(--warning-color)',
                                   borderRadius: '4px',
                                   transition: 'width 0.3s'
                                 }} />
@@ -575,7 +575,7 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
                         border: '1px solid rgba(239, 68, 68, 0.2)',
                         marginBottom: '1rem'
                       }}>
-                        <div style={{ fontSize: '0.8rem', fontWeight: '600', color: '#ef4444', marginBottom: '0.3rem' }}>
+                        <div style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--loss-color)', marginBottom: '0.3rem' }}>
                           Allocation Breaches
                         </div>
                         {review.allocationAnalysis.breaches.map((b, i) => (
@@ -634,7 +634,7 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
                         <div style={{
                           fontSize: '0.8rem',
                           fontWeight: '600',
-                          color: '#10b981',
+                          color: 'var(--gain-color)',
                           textTransform: 'uppercase',
                           letterSpacing: '0.5px',
                           marginBottom: '0.5rem'
@@ -682,8 +682,8 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
                                       textTransform: 'capitalize',
                                       background: r.redemptionType === 'autocalled' ? 'rgba(59, 130, 246, 0.1)' :
                                         r.redemptionType === 'called' ? 'rgba(245, 158, 11, 0.1)' : 'rgba(16, 185, 129, 0.1)',
-                                      color: r.redemptionType === 'autocalled' ? '#3b82f6' :
-                                        r.redemptionType === 'called' ? '#f59e0b' : '#10b981'
+                                      color: r.redemptionType === 'autocalled' ? 'var(--info-color)' :
+                                        r.redemptionType === 'called' ? 'var(--warning-color)' : 'var(--gain-color)'
                                     }}>
                                       {r.redemptionType}
                                     </span>
@@ -695,7 +695,7 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
                                     {r.redemptionDate ? new Date(r.redemptionDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '-'}
                                   </td>
                                   <td style={{ textAlign: 'right', padding: '0.5rem 0.5rem', fontWeight: '600', whiteSpace: 'nowrap',
-                                    color: r.totalReturn && parseFloat(r.totalReturn) >= 100 ? '#10b981' : '#ef4444'
+                                    color: r.totalReturn && parseFloat(r.totalReturn) >= 100 ? 'var(--gain-color)' : 'var(--loss-color)'
                                   }}>
                                     {r.totalReturn || '-'}
                                   </td>
@@ -715,7 +715,7 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
                         <div style={{
                           fontSize: '0.8rem',
                           fontWeight: '600',
-                          color: '#f59e0b',
+                          color: 'var(--warning-color)',
                           textTransform: 'uppercase',
                           letterSpacing: '0.5px',
                           marginBottom: '0.5rem'
@@ -760,8 +760,8 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
                                       background: r.autocallLikelihood === 'likely' ? 'rgba(16, 185, 129, 0.1)'
                                         : r.autocallLikelihood === 'possible' ? 'rgba(245, 158, 11, 0.1)'
                                         : 'rgba(107, 114, 128, 0.1)',
-                                      color: r.autocallLikelihood === 'likely' ? '#10b981'
-                                        : r.autocallLikelihood === 'possible' ? '#f59e0b'
+                                      color: r.autocallLikelihood === 'likely' ? 'var(--gain-color)'
+                                        : r.autocallLikelihood === 'possible' ? 'var(--warning-color)'
                                         : '#6b7280'
                                     }}>
                                       {r.autocallLikelihood || r.observationType}
@@ -784,7 +784,7 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
                                   </td>
                                   <td style={{ textAlign: 'right', padding: '0.5rem 0.5rem', fontWeight: '600', whiteSpace: 'nowrap',
                                     color: r.currentWorstPerformance != null
-                                      ? (r.currentWorstPerformance >= 0 ? '#10b981' : r.currentWorstPerformance >= -10 ? '#f59e0b' : '#ef4444')
+                                      ? (r.currentWorstPerformance >= 0 ? 'var(--gain-color)' : r.currentWorstPerformance >= -10 ? 'var(--warning-color)' : 'var(--loss-color)')
                                       : 'var(--text-muted)'
                                   }}>
                                     {r.currentWorstPerformance != null ? `${r.currentWorstPerformance >= 0 ? '+' : ''}${r.currentWorstPerformance.toFixed(1)}%` : '-'}
@@ -875,7 +875,7 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
                               borderRadius: '6px',
                               fontSize: '0.7rem',
                               fontWeight: '600',
-                              color: evt.daysUntil <= 7 ? '#ef4444' : '#f59e0b'
+                              color: evt.daysUntil <= 7 ? 'var(--loss-color)' : 'var(--warning-color)'
                             }}>
                               {evt.daysUntil}d
                             </div>

@@ -72,18 +72,21 @@ export class AmbervisionOAuthProvider {
     if (pending.redirectUri !== redirectUri) {
       throw new Error('invalid_grant: redirect_uri mismatch');
     }
-    if (pending.authCodeUsed) {
-      // Auth code replay — revoke anything we issued from it to be safe
-      await AccessTokens.revokeForClient(pending.approvedByUserId, pending.clientId);
-      await RefreshTokens.revokeForClient(pending.approvedByUserId, pending.clientId);
-      throw new Error('invalid_grant: authorization code already used');
-    }
     if (!verifyPkceS256(codeVerifier, pending.codeChallenge)) {
       throw new Error('invalid_grant: PKCE verifier does not match challenge');
     }
 
-    // Consume the code
-    await PendingRequests.markAuthCodeUsed(pending._id);
+    // Atomically consume the code. The single caller that flips it to used wins;
+    // a concurrent double-spend or a later replay gets false, which for a code
+    // that was already delivered means replay — revoke everything issued from
+    // this grant (RFC 9700 §4.1.1).
+    const won = await PendingRequests.consumeAuthCode(pending._id);
+    if (!won) {
+      await AccessTokens.revokeForClient(pending.approvedByUserId, pending.clientId);
+      await RefreshTokens.revokeForClient(pending.approvedByUserId, pending.clientId);
+      console.warn(`[MCP OAuth] auth-code replay/double-spend; revoked grant for user=${pending.approvedByUserId} client=${pending.clientId}`);
+      throw new Error('invalid_grant: authorization code already used');
+    }
 
     const userId = pending.approvedByUserId;
     const scopes = pending.scopes || [];
@@ -102,7 +105,20 @@ export class AmbervisionOAuthProvider {
 
   async exchangeRefreshToken(client, refreshToken, scopes /*, resource */) {
     const existing = await RefreshTokens.find(refreshToken);
-    if (!existing) throw new Error('invalid_grant: refresh token not found or expired');
+    if (!existing) {
+      // Reuse detection (RFC 9700 §4.14.2): a refresh token that exists but is
+      // already revoked is a rotated-and-superseded token being replayed — the
+      // classic stolen-refresh-token signal. Tear down the whole family plus
+      // every access token for this (user, client), so an attacker who captured
+      // an earlier token in the chain cannot keep minting from its descendants.
+      const stale = await RefreshTokens.findAnyByValue(refreshToken);
+      if (stale && stale.revokedAt) {
+        await RefreshTokens.revokeForClient(stale.userId, stale.clientId);
+        await AccessTokens.revokeForClient(stale.userId, stale.clientId);
+        console.warn(`[MCP OAuth] refresh-token reuse detected; revoked family for user=${stale.userId} client=${stale.clientId}`);
+      }
+      throw new Error('invalid_grant: refresh token not found or expired');
+    }
     if (existing.clientId !== client.client_id) {
       throw new Error('invalid_grant: refresh token issued to a different client');
     }
@@ -161,17 +177,19 @@ export class AmbervisionOAuthProvider {
     const { token, token_type_hint } = request;
     if (!token) return;
 
-    // Honor hints but fall back to trying both types
+    // Scope revocation to the authenticating client (RFC 7009: the token must
+    // have been issued to it). Honor the hint, else try both types.
+    const clientId = client?.client_id || null;
     if (token_type_hint === 'refresh_token') {
-      await RefreshTokens.revokeByValue(token);
+      await RefreshTokens.revokeByValue(token, clientId);
       return;
     }
     if (token_type_hint === 'access_token') {
-      await AccessTokens.revokeByValue(token);
+      await AccessTokens.revokeByValue(token, clientId);
       return;
     }
-    await AccessTokens.revokeByValue(token);
-    await RefreshTokens.revokeByValue(token);
+    await AccessTokens.revokeByValue(token, clientId);
+    await RefreshTokens.revokeByValue(token, clientId);
   }
 }
 

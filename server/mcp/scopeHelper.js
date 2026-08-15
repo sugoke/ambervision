@@ -28,6 +28,7 @@ import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { UserEntityAccessHelpers } from '/imports/api/userEntityAccess';
 import { PMSHoldingsCollection } from '/imports/api/pmsHoldings';
 import { PortfolioSnapshotsCollection } from '/imports/api/portfolioSnapshots';
+import { PMSOperationsCollection } from '/imports/api/pmsOperations';
 import { resolveEntityId, buildEntityOrUserFilter } from '/imports/utils/entityResolver';
 
 export async function resolveMcpScope(user, { entityId = null } = {}) {
@@ -47,8 +48,15 @@ export async function resolveMcpScope(user, { entityId = null } = {}) {
 
   if (isRM) {
     const rmIds = UserHelpers.getEffectiveRmIds(user);
+    // Match the canonical selector (clientEntities.getEntitiesByRMs,
+    // schedule.js): entities are linked to an RM via `assignedUserIds`, with
+    // `relationshipManagerId` only a legacy fallback. Matching the deprecated
+    // field alone made RMs whose entities use assignedUserIds see nothing.
     const entities = await ClientEntitiesCollection.find({
-      relationshipManagerId: { $in: rmIds },
+      $or: [
+        { assignedUserIds: { $in: rmIds } },
+        { relationshipManagerId: { $in: rmIds } }
+      ],
       isActive: true
     }, { fields: { _id: 1, migratedFromUserId: 1 } }).fetchAsync();
     allowedEntityIds = entities.map(e => e._id);
@@ -79,6 +87,11 @@ export async function resolveMcpScope(user, { entityId = null } = {}) {
     if (isAdmin) {
       const entity = await ClientEntitiesCollection.findOneAsync(entityId);
       if (!entity) throw new Error(`Entity ${entityId} not found`);
+      // Archived (closed) relationships are hidden everywhere, no exception —
+      // refuse explicit drill-down too (matches the pmsHoldings publication).
+      if (ClientEntityHelpers.isEntityArchived(entity)) {
+        throw new Error(`Entity ${entityId} is archived`);
+      }
       allowedEntityIds = [entityId];
       allowedUserIds = entity.migratedFromUserId ? [entity.migratedFromUserId] : [];
     } else {
@@ -158,8 +171,13 @@ async function buildEntityOrAccountMatchFilter(scope, Collection) {
     }
     for (const [bankId, baseSet] of byBank.entries()) {
       const bases = [...baseSet];
-      // Pre-resolve actual portfolio codes that start with any of these bases
-      const regex = new RegExp('^(' + bases.map(escapeRegex).join('|') + ')');
+      // Pre-resolve actual portfolio codes for these account bases. The suffix
+      // `(-|$)` anchors the match to a whole account: base `504024` matches
+      // `504024` and currency sub-accounts `504024-USD`, but NOT a different
+      // client's `5040241`. Without the anchor an account base bleeds into every
+      // neighbouring code sharing its prefix — a cross-client read. The web app
+      // uses the same `(-|$)` anchor (tools.js:572, pmsHoldings.js:293).
+      const regex = new RegExp('^(' + bases.map(escapeRegex).join('|') + ')(-|$)');
       let codes;
       try {
         codes = await rawColl.distinct('portfolioCode', { bankId, portfolioCode: { $regex: regex } });
@@ -178,7 +196,15 @@ async function buildEntityOrAccountMatchFilter(scope, Collection) {
     // No access — impossible filter
     return { _id: { $exists: false } };
   }
-  return or.length === 1 ? or[0] : { $or: or };
+  // Return the scope predicate wrapped in a top-level $and, NEVER a bare
+  // { $or: [...] }. Call sites spread this filter into a larger query object
+  // and frequently add their own $or (e.g. an underlying/text match). A bare
+  // $or here would be silently overwritten by the caller's $or — the exact
+  // key-collision that dropped the owner predicate in get_underlying_exposure
+  // and dumped every client's holdings. $and is an implicit-AND top-level key
+  // that cannot collide with a spread-in $or, so the scope always survives.
+  const scopeClause = or.length === 1 ? or[0] : { $or: or };
+  return { $and: [scopeClause] };
 }
 
 function escapeRegex(s) {
@@ -198,6 +224,15 @@ export async function buildHoldingScopeFilter(scope) {
 /** Scope filter for PortfolioSnapshots */
 export async function buildSnapshotScopeFilter(scope) {
   return buildEntityOrAccountMatchFilter(scope, PortfolioSnapshotsCollection);
+}
+
+/**
+ * Scope filter for PMSOperations (transactions). Resolves portfolio codes from
+ * the operations collection itself — scoping via snapshots silently drops
+ * transactions for accounts that never produced a snapshot.
+ */
+export async function buildOperationsScopeFilter(scope) {
+  return buildEntityOrAccountMatchFilter(scope, PMSOperationsCollection);
 }
 
 /**

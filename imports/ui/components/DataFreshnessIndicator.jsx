@@ -19,13 +19,13 @@ export const DataFreshnessBadge = ({
     switch (status) {
       case 'fresh':
         return {
-          background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+          background: 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
           borderColor: '#059669',
           textColor: '#ffffff'
         };
       case 'stale':
         return {
-          background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+          background: 'linear-gradient(135deg, var(--warning-color) 0%, #d97706 100%)',
           borderColor: '#d97706',
           textColor: '#ffffff'
         };
@@ -37,7 +37,7 @@ export const DataFreshnessBadge = ({
         };
       case 'error':
         return {
-          background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
+          background: 'linear-gradient(135deg, var(--loss-color) 0%, #dc2626 100%)',
           borderColor: '#dc2626',
           textColor: '#ffffff'
         };
@@ -203,7 +203,7 @@ export const DataFreshnessPanel = ({
 
   if (error) {
     return (
-      <div style={{ padding: '8px', color: '#ef4444', fontSize: '13px' }}>
+      <div style={{ padding: '8px', color: 'var(--loss-color)', fontSize: '13px' }}>
         {error}
       </div>
     );

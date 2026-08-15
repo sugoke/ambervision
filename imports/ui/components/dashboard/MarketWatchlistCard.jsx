@@ -136,7 +136,7 @@ const MarketWatchlistCard = ({ watchlist, onTickerClick }) => {
     change: (isPositive) => ({
       fontSize: '13px',
       fontWeight: '600',
-      color: isPositive ? '#10b981' : '#ef4444'
+      color: isPositive ? 'var(--gain-color)' : 'var(--loss-color)'
     }),
     emptyState: {
       display: 'flex',

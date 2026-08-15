@@ -20,14 +20,14 @@ const RateReport = ({ results, productId }) => {
   const referenceRates = results.referenceRates || [];
   const timeline = results.timeline || {};
 
-  const statusColor = status.productStatus === 'redeemed' ? '#f59e0b'
-    : status.productStatus === 'matured' ? '#6b7280' : '#10b981';
+  const statusColor = status.productStatus === 'redeemed' ? 'var(--warning-color)'
+    : status.productStatus === 'matured' ? '#6b7280' : 'var(--gain-color)';
 
   const statusBg = (st) => {
     switch (st) {
-      case 'paid': return { bg: 'rgba(16, 185, 129, 0.12)', color: '#10b981', label: 'Paid' };
+      case 'paid': return { bg: 'rgba(16, 185, 129, 0.12)', color: 'var(--gain-color)', label: 'Paid' };
       case 'upcoming': return { bg: 'var(--bg-tertiary)', color: 'var(--text-muted)', label: 'Upcoming' };
-      case 'pending_fixing': return { bg: 'rgba(245, 158, 11, 0.12)', color: '#f59e0b', label: 'Pending fixing' };
+      case 'pending_fixing': return { bg: 'rgba(245, 158, 11, 0.12)', color: 'var(--warning-color)', label: 'Pending fixing' };
       case 'redeemed': return { bg: 'rgba(245, 158, 11, 0.18)', color: '#b45309', label: 'Redeemed' };
       case 'cancelled': return { bg: 'var(--bg-tertiary)', color: 'var(--text-muted)', label: 'Cancelled' };
       default: return { bg: 'var(--bg-tertiary)', color: 'var(--text-muted)', label: st };
@@ -91,7 +91,7 @@ const RateReport = ({ results, productId }) => {
           <h4 style={{ margin: '0 0 1rem 0', fontSize: '1rem', color: 'var(--text-primary)' }}>🎯 Target Redemption Progress</h4>
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.75rem' }}>
             <div style={{ flex: 1, height: '14px', background: 'var(--bg-tertiary)', borderRadius: '7px', overflow: 'hidden' }}>
-              <div style={{ width: `${schedule.targetProgressPct || 0}%`, height: '100%', background: target.reached ? '#f59e0b' : '#10b981', borderRadius: '7px' }} />
+              <div style={{ width: `${schedule.targetProgressPct || 0}%`, height: '100%', background: target.reached ? 'var(--warning-color)' : 'var(--gain-color)', borderRadius: '7px' }} />
             </div>
             <div style={{ fontFamily: 'monospace', fontWeight: '700', color: 'var(--text-primary)' }}>
               {schedule.knownCumulativeFormatted} / {s.targetCouponFormatted}
@@ -131,7 +131,7 @@ const RateReport = ({ results, productId }) => {
                     <td style={td}>{p.observationDateFormatted || '—'}</td>
                     <td style={td}>{p.paymentDateFormatted || '—'}</td>
                     <td style={td}>
-                      <span style={{ fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px', background: p.couponType === 'fixed' ? 'rgba(59,130,246,0.15)' : 'rgba(139,92,246,0.15)', color: p.couponType === 'fixed' ? '#3b82f6' : '#8b5cf6', fontWeight: 600 }}>
+                      <span style={{ fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px', background: p.couponType === 'fixed' ? 'rgba(59,130,246,0.15)' : 'rgba(139,92,246,0.15)', color: p.couponType === 'fixed' ? 'var(--info-color)' : '#8b5cf6', fontWeight: 600 }}>
                         {p.couponType === 'fixed' ? 'Fixed' : 'Floating'}
                       </span>
                     </td>
@@ -150,14 +150,14 @@ const RateReport = ({ results, productId }) => {
       </div>
 
       {/* Redemption */}
-      <div style={{ background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)', padding: '1.5rem', borderRadius: '8px', marginBottom: '1.5rem', border: '2px solid #34d399', boxShadow: '0 8px 24px rgba(16, 185, 129, 0.3)' }}>
+      <div style={{ background: 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)', padding: '1.5rem', borderRadius: '8px', marginBottom: '1.5rem', border: '2px solid #34d399', boxShadow: '0 8px 24px rgba(16, 185, 129, 0.3)' }}>
         <h4 style={{ margin: '0 0 1rem 0', fontSize: '1.1rem', color: 'white', fontWeight: '700' }}>💰 Redemption</h4>
         <div style={{ background: 'white', padding: '1.5rem', borderRadius: '8px', textAlign: 'center', marginBottom: '1.5rem' }}>
           <div style={{ fontSize: '0.85rem', color: '#64748b', textTransform: 'uppercase', fontWeight: '700', letterSpacing: '1px', marginBottom: '0.75rem' }}>
             {target.reached ? 'Redemption Value' : 'Value (capital + known coupons)'}
           </div>
-          <div style={{ fontSize: '2.6rem', fontWeight: '800', color: '#10b981', fontFamily: 'monospace', lineHeight: '1' }}>{redemption.totalValueFormatted}</div>
-          <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '0.5rem' }}>{redemption.formula}</div>
+          <div style={{ fontSize: '2.6rem', fontWeight: '800', color: 'var(--gain-color)', fontFamily: 'monospace', lineHeight: '1' }}>{redemption.totalValueFormatted}</div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--neutral-color)', marginTop: '0.5rem' }}>{redemption.formula}</div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
           <div style={cardBase}>

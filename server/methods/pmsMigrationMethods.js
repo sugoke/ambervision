@@ -1,9 +1,9 @@
 import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
+import { check, Match } from 'meteor/check';
 import { BankAccountsCollection } from '../../imports/api/bankAccounts.js';
 import { SessionsCollection } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
-import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
+import { PMSHoldingsCollection, PMSHoldingsHelpers } from '../../imports/api/pmsHoldings.js';
 import { PMSOperationsCollection } from '../../imports/api/pmsOperations.js';
 import { PortfolioSnapshotsCollection } from '../../imports/api/portfolioSnapshots.js';
 
@@ -731,6 +731,48 @@ Meteor.methods({
     } catch (error) {
       console.error(`[PMS_MIGRATION] Full migration failed: ${error.message}`);
       throw new Meteor.Error('migration-failed', error.message);
+    }
+  },
+
+  /**
+   * Clear double-counted holdings left behind by a past uniqueKey format change.
+   *
+   * When a parser's uniqueKey recipe changes (e.g. CMB Monaco stopping the strip of
+   * the .001/.002 sub-account suffix) and the bank files are reprocessed, history is
+   * re-written under the new key while the old-key records stay active. The
+   * historical (asOfDate) PMS view dedups by uniqueKey, so every affected position
+   * appears twice on every past date.
+   *
+   * Deactivates the superseded records, per day, keeping the key still in use.
+   * SUPERADMIN ONLY - This modifies existing data. Defaults to a dry run.
+   */
+  async 'pms.cleanupDuplicateSnapshotRecords'({ sessionId, bankId = null, dryRun = true }) {
+    check(sessionId, String);
+    check(bankId, Match.Maybe(String));
+    check(dryRun, Boolean);
+
+    const user = await validateSuperadminSession(sessionId);
+
+    console.log(
+      `[PMS_MIGRATION] Duplicate snapshot cleanup started by ${user.username} ` +
+      `(bankId=${bankId || 'all'}, dryRun=${dryRun})`
+    );
+
+    try {
+      const result = await PMSHoldingsHelpers.cleanupDuplicateSnapshotRecords({
+        ...(bankId ? { bankId } : {}),
+        dryRun
+      });
+
+      console.log(
+        `[PMS_MIGRATION] Duplicate snapshot cleanup ${dryRun ? '(dry run) ' : ''}complete: ` +
+        `${result.recordsDeactivated} record(s) across ${result.positionsAffected} position(s)`
+      );
+
+      return { success: true, ...result };
+    } catch (error) {
+      console.error(`[PMS_MIGRATION] Duplicate snapshot cleanup failed: ${error.message}`);
+      throw new Meteor.Error('cleanup-failed', error.message);
     }
   }
 });

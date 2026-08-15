@@ -454,8 +454,8 @@ export default function SecurityClassificationModal({ security, onSave, onClose 
                   <span style={{
                     padding: '4px 10px',
                     borderRadius: '6px',
-                    background: classificationResult.source === 'internal_product' ? '#10b981' :
-                               classificationResult.source === 'ai_analysis' ? '#3b82f6' : '#f59e0b',
+                    background: classificationResult.source === 'internal_product' ? 'var(--gain-color)' :
+                               classificationResult.source === 'ai_analysis' ? 'var(--info-color)' : 'var(--warning-color)',
                     color: 'white',
                     fontSize: '12px',
                     fontWeight: '600'
@@ -466,8 +466,8 @@ export default function SecurityClassificationModal({ security, onSave, onClose 
                   <span style={{
                     padding: '4px 10px',
                     borderRadius: '6px',
-                    background: classificationResult.confidence === 'high' ? '#10b981' :
-                               classificationResult.confidence === 'medium' ? '#f59e0b' : '#ef4444',
+                    background: classificationResult.confidence === 'high' ? 'var(--gain-color)' :
+                               classificationResult.confidence === 'medium' ? 'var(--warning-color)' : 'var(--loss-color)',
                     color: 'white',
                     fontSize: '12px',
                     fontWeight: '600'
@@ -498,7 +498,7 @@ export default function SecurityClassificationModal({ security, onSave, onClose 
                     padding: '12px 20px',
                     borderRadius: '8px',
                     border: 'none',
-                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                    background: 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
                     color: 'white',
                     fontSize: '14px',
                     fontWeight: '600',

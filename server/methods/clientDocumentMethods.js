@@ -12,6 +12,7 @@ import path from 'path';
 import { ClientDocumentsCollection, DOCUMENT_TYPES } from '/imports/api/clientDocuments.js';
 import { SessionsCollection } from '/imports/api/sessions.js';
 import { UsersCollection } from '/imports/api/users.js';
+import { issueDocumentToken } from '../documentAccess.js';
 
 /**
  * Validate session and get user
@@ -285,14 +286,26 @@ Meteor.methods({
     check(documentId, String);
     check(sessionId, String);
 
-    await validateSession(sessionId);
+    const user = await validateSession(sessionId);
 
     const doc = await ClientDocumentsCollection.findOneAsync(documentId);
     if (!doc) {
       throw new Meteor.Error('not-found', 'Document not found');
     }
 
-    // Return URL for file serving
-    return `/fichier_central/${doc.userId}/${doc.storedFileName}`;
+    // Authorize: the client themselves, or a staff member (client documents are
+    // KYC/PII, so a bare valid session is not sufficient).
+    const STAFF_ROLES = ['admin', 'superadmin', 'compliance', 'rm', 'assistant'];
+    const isSelf = user._id === doc.userId;
+    const isStaff = STAFF_ROLES.includes(user.role);
+    if (!isSelf && !isStaff) {
+      throw new Meteor.Error('not-authorized', 'Not authorized to access this document');
+    }
+
+    // Mint a short-lived, single-use token bound to this exact path. The
+    // endpoint (/fichier_central) requires it — the URL alone is not enough.
+    const filePath = `/fichier_central/${doc.userId}/${doc.storedFileName}`;
+    const token = await issueDocumentToken(filePath, user._id);
+    return `${filePath}?dl=${token}`;
   }
 });

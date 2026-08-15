@@ -838,7 +838,7 @@ const UserManagement = ({ user: currentUser }) => {
                         backgroundColor:
                           user.role === USER_ROLES.SUPERADMIN ? 'var(--danger-color)' :
                           user.role === USER_ROLES.ADMIN ? 'var(--warning-color)' :
-                          user.role === USER_ROLES.RELATIONSHIP_MANAGER ? '#3b82f6' :
+                          user.role === USER_ROLES.RELATIONSHIP_MANAGER ? 'var(--info-color)' :
                           'var(--success-color)',
                         color: 'white',
                         borderRadius: '3px',
@@ -856,7 +856,7 @@ const UserManagement = ({ user: currentUser }) => {
                           <span style={{
                             padding: '4px 8px',
                             backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                            color: '#3b82f6',
+                            color: 'var(--info-color)',
                             borderRadius: '4px',
                             fontSize: '0.85em',
                             fontWeight: '500'
@@ -873,7 +873,7 @@ const UserManagement = ({ user: currentUser }) => {
                       <span style={{
                         padding: '4px 8px',
                         backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                        color: '#f59e0b',
+                        color: 'var(--warning-color)',
                         borderRadius: '4px',
                         fontSize: '0.85em',
                         fontWeight: '500'
@@ -974,7 +974,7 @@ const UserManagement = ({ user: currentUser }) => {
               <div style={{
                 fontSize: '2rem',
                 fontWeight: '700',
-                color: '#3b82f6',
+                color: 'var(--info-color)',
                 marginBottom: '0.5rem'
               }}>
                 {relationshipManagers.length}
@@ -1026,7 +1026,7 @@ const UserManagement = ({ user: currentUser }) => {
               <div style={{
                 fontSize: '2rem',
                 fontWeight: '700',
-                color: '#f59e0b',
+                color: 'var(--warning-color)',
                 marginBottom: '0.5rem'
               }}>
                 {unassignedClients.length}
@@ -1135,7 +1135,7 @@ const UserManagement = ({ user: currentUser }) => {
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <span style={{
                               padding: '4px 8px',
-                              backgroundColor: '#3b82f6',
+                              backgroundColor: 'var(--info-color)',
                               color: 'white',
                               borderRadius: '4px',
                               fontSize: '0.75rem',
@@ -1169,7 +1169,7 @@ const UserManagement = ({ user: currentUser }) => {
                               onClick={() => handleEditUser(rm)}
                               style={{
                                 padding: '6px 12px',
-                                backgroundColor: '#10b981',
+                                backgroundColor: 'var(--gain-color)',
                                 color: 'white',
                                 border: 'none',
                                 borderRadius: '6px',
@@ -1185,7 +1185,7 @@ const UserManagement = ({ user: currentUser }) => {
                               onClick={() => setSelectedRmId(selectedRmId === rm._id ? null : rm._id)}
                               style={{
                                 padding: '6px 12px',
-                                backgroundColor: selectedRmId === rm._id ? '#3b82f6' : 'var(--accent-color)',
+                                backgroundColor: selectedRmId === rm._id ? 'var(--info-color)' : 'var(--accent-color)',
                                 color: 'white',
                                 border: 'none',
                                 borderRadius: '6px',
@@ -1215,7 +1215,7 @@ const UserManagement = ({ user: currentUser }) => {
             return (
               <section style={{
                 background: 'var(--bg-primary)',
-                border: '2px solid #3b82f6',
+                border: '2px solid var(--info-color)',
                 borderRadius: '12px',
                 padding: '1.5rem',
                 marginBottom: '2rem'
@@ -1231,7 +1231,7 @@ const UserManagement = ({ user: currentUser }) => {
                 }}>
                   <span style={{
                     padding: '4px 8px',
-                    backgroundColor: '#3b82f6',
+                    backgroundColor: 'var(--info-color)',
                     color: 'white',
                     borderRadius: '4px',
                     fontSize: '0.75rem'
@@ -1304,7 +1304,7 @@ const UserManagement = ({ user: currentUser }) => {
           {unassignedClients.length > 0 && (
             <section style={{
               background: 'var(--bg-primary)',
-              border: '2px solid #f59e0b',
+              border: '2px solid var(--warning-color)',
               borderRadius: '12px',
               padding: '1.5rem'
             }}>
@@ -1319,7 +1319,7 @@ const UserManagement = ({ user: currentUser }) => {
               }}>
                 <span style={{
                   padding: '4px 8px',
-                  backgroundColor: '#f59e0b',
+                  backgroundColor: 'var(--warning-color)',
                   color: 'white',
                   borderRadius: '4px',
                   fontSize: '0.75rem'
@@ -1750,7 +1750,7 @@ const UserManagement = ({ user: currentUser }) => {
                     backgroundColor: 'rgba(59, 130, 246, 0.1)',
                     borderRadius: '6px',
                     fontSize: '0.85rem',
-                    color: '#3b82f6'
+                    color: 'var(--info-color)'
                   }}>
                     ℹ️ This client is assigned to {(() => {
                       const rm = users.find(u => u._id === editingUser.relationshipManagerId);
@@ -2325,7 +2325,7 @@ const UserManagement = ({ user: currentUser }) => {
                     onClick={() => handleOpenPasswordReset(editingUser._id)}
                     style={{
                       padding: '8px 16px',
-                      backgroundColor: '#f59e0b',
+                      backgroundColor: 'var(--warning-color)',
                       color: 'white',
                       border: 'none',
                       borderRadius: '6px',
@@ -2541,7 +2541,7 @@ const UserManagement = ({ user: currentUser }) => {
               border: '1px solid rgba(245, 158, 11, 0.3)',
               borderRadius: '8px',
               fontSize: '0.85rem',
-              color: '#f59e0b',
+              color: 'var(--warning-color)',
               marginBottom: '1.5rem'
             }}>
               ⚠️ Warning: The user will be logged out of all active sessions and must use the new password to log in again.
@@ -2576,7 +2576,7 @@ const UserManagement = ({ user: currentUser }) => {
                 disabled={isResettingPassword}
                 style={{
                   padding: '10px 20px',
-                  background: isResettingPassword ? 'var(--text-muted)' : '#f59e0b',
+                  background: isResettingPassword ? 'var(--text-muted)' : 'var(--warning-color)',
                   color: 'white',
                   border: 'none',
                   borderRadius: '6px',

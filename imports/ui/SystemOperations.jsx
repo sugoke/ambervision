@@ -505,7 +505,7 @@ const SystemOperations = ({ user }) => {
           <div style={{
             width: '48px',
             height: '48px',
-            background: 'var(--warning-color, #f59e0b)',
+            background: 'var(--warning-color, var(--warning-color))',
             borderRadius: '12px',
             display: 'flex',
             alignItems: 'center',
@@ -633,7 +633,7 @@ const SystemOperations = ({ user }) => {
           <div style={{
             width: '48px',
             height: '48px',
-            background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+            background: 'linear-gradient(135deg, var(--info-color) 0%, #2563eb 100%)',
             borderRadius: '12px',
             display: 'flex',
             alignItems: 'center',

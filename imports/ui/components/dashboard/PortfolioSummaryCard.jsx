@@ -60,7 +60,7 @@ const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, use
   // Calculate variation display
   const hasVariation = summary?.previousAUM !== null && summary?.previousAUM !== undefined;
   const variationIsPositive = summary?.aumChange >= 0;
-  const variationColor = variationIsPositive ? '#10b981' : '#ef4444';
+  const variationColor = variationIsPositive ? 'var(--gain-color)' : 'var(--loss-color)';
 
   // Build stats array - conditionally exclude Clients count for client users
   const stats = [
@@ -69,7 +69,7 @@ const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, use
       value: formatCurrency(summary?.totalAUM),
       icon: getCurrencyIcon(),
       fullWidth: true,
-      color: '#10b981',
+      color: 'var(--gain-color)',
       variation: hasVariation ? {
         change: summary?.aumChange,
         percent: summary?.aumChangePercent,
@@ -89,7 +89,7 @@ const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, use
           <path d="M16 3.13a4 4 0 0 1 0 7.75" />
         </svg>
       ),
-      color: '#3b82f6'
+      color: 'var(--info-color)'
     }] : []),
     {
       label: 'Live',
@@ -100,7 +100,7 @@ const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, use
           <polyline points="12 6 12 12 16 14" />
         </svg>
       ),
-      color: '#10b981'
+      color: 'var(--gain-color)'
     },
     {
       label: 'Autocalled',

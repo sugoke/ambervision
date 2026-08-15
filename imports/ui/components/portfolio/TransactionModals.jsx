@@ -190,11 +190,11 @@ const TransactionModals = ({
             }
 
             .pnl.positive {
-              color: #10b981;
+              color: var(--gain-color);
             }
 
             .pnl.negative {
-              color: #ef4444;
+              color: var(--loss-color);
             }
 
             .stock-actions {
@@ -213,7 +213,7 @@ const TransactionModals = ({
             }
 
             .action-btn.modify {
-              background: #3b82f6;
+              background: var(--info-color);
               color: white;
             }
 
@@ -222,7 +222,7 @@ const TransactionModals = ({
             }
 
             .action-btn.sell {
-              background: #ef4444;
+              background: var(--loss-color);
               color: white;
             }
 
@@ -341,7 +341,7 @@ const TransactionModals = ({
             }
 
             .confirm-btn.remove {
-              background: #ef4444;
+              background: var(--loss-color);
               color: white;
             }
 
@@ -406,7 +406,7 @@ const TransactionModals = ({
             }
 
             .action-btn.save {
-              background: #10b981;
+              background: var(--gain-color);
               color: white;
               padding: 0.75rem 1.5rem;
               border: none;

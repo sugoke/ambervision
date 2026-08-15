@@ -151,27 +151,63 @@ export const ClientEntityHelpers = {
     return { entityIds, userIds, bankAccountIds, accountKeys };
   },
 
-  // Backwards-compatible shape for existing dashboard/cron AUM callers.
+  // Owner ids every firm-wide aggregate must skip: AUM, cash monitoring, alerts,
+  // notifications, AUM history and consolidation. Every current caller is such an
+  // aggregate — none of them is ever "scoped to the demo" — so demo is folded in here
+  // rather than churning each call site. Kept under the historical name for those callers.
   async getArchivedOwnerIds() {
-    const { entityIds, userIds } = await this.getArchivedExclusion();
-    return { entityIds, userIds };
+    return this.getExcludedOwnerIds();
   },
 
-  // Mongo selector fragment that EXCLUDES holdings belonging to archived clients.
-  // Returns {} when nothing is archived. Compose into a query with:
-  //   collection.find({ $and: [ baseSelector, await archivedHoldingsSelector() ] })
-  // Uses $nor so holdings whose owner field is absent are kept (only archived-owned drop).
-  async archivedHoldingsSelector() {
-    const { entityIds, userIds, accountKeys } = await this.getArchivedExclusion();
-    if (entityIds.length === 0 && userIds.length === 0) return {};
+  // Resolve every identifier tied to a DEMO entity, in the same shape as
+  // getArchivedExclusion(). Demo clients are fictional: they must never reach an AUM
+  // figure, dashboard stat, alert or product holder list. They differ from archived
+  // clients in one decisive way — a demo IS meant to be viewable when someone explicitly
+  // selects it in the View As picker, which is the entire point of it existing. So its
+  // exclusion is conditional (see hiddenHoldingsSelector), never blanket.
+  async getDemoExclusion() {
+    const demo = await ClientEntitiesCollection.find(
+      { isDemo: true },
+      { fields: { _id: 1, migratedFromUserId: 1 } }
+    ).fetchAsync();
 
+    const entityIds = demo.map(e => e._id);
+    const userIds = demo.map(e => e.migratedFromUserId).filter(Boolean);
+
+    let bankAccountIds = [];
+    let accountKeys = [];
+    if (entityIds.length > 0) {
+      const { BankAccountsCollection } = await import('./bankAccounts');
+      const accounts = await BankAccountsCollection.find(
+        { entityId: { $in: entityIds } },
+        { fields: { _id: 1, bankId: 1, accountNumber: 1 } }
+      ).fetchAsync();
+      bankAccountIds = accounts.map(a => a._id);
+      // No live-account reassignment guard here (unlike archived): demo accounts are
+      // synthetic and sit on a synthetic bank, so their (bankId, accountNumber) pair can
+      // never be shared with a real client's account.
+      accountKeys = accounts
+        .filter(a => a.bankId && a.accountNumber)
+        .map(a => ({ bankId: a.bankId, accountNumber: a.accountNumber }));
+    }
+
+    return { entityIds, userIds, bankAccountIds, accountKeys };
+  },
+
+  // True when the entity is the fictional demo client.
+  isEntityDemo(entity) {
+    return !!entity && entity.isDemo === true;
+  },
+
+  // Turn an exclusion descriptor into $nor clauses against PMSHoldings/PMSOperations.
+  // Shared by the archived and demo paths so both stay in step.
+  async _holdingsClausesFor({ entityIds, userIds, accountKeys }) {
     const clauses = [];
     if (entityIds.length > 0) clauses.push({ entityId: { $in: entityIds } });
     if (userIds.length > 0) clauses.push({ userId: { $in: userIds } });
 
     // Un-migrated holdings carry only (bankId + portfolioCode). Pre-resolve the actual
-    // portfolioCodes for each archived account to avoid $regex in the selector, which
-    // would break oplog tailing (same approach as the inclusion logic in pmsHoldings).
+    // portfolioCodes to avoid $regex in the selector, which would break oplog tailing.
     if (accountKeys.length > 0) {
       const { PMSHoldingsCollection } = await import('./pmsHoldings');
       for (const key of accountKeys) {
@@ -183,21 +219,106 @@ export const ClientEntityHelpers = {
         if (codes.length > 0) clauses.push({ bankId: key.bankId, portfolioCode: { $in: codes } });
       }
     }
+    return clauses;
+  },
+
+  /**
+   * Holdings selector hiding everything the caller must not aggregate: archived clients
+   * (always) and demo clients (unless the view is explicitly scoped to that demo entity).
+   *
+   * Returns a SINGLE merged `$nor`. Call sites assign it (`filter.$nor = sel.$nor`), so
+   * handing back two separate selectors would silently clobber one of them.
+   *
+   * @param {Object}  [opts]
+   * @param {string}  [opts.exceptEntityId] - entity the view is scoped to; when it is the
+   *   demo entity, demo rows are let through so the demo portfolio actually renders.
+   */
+  async hiddenHoldingsSelector({ exceptEntityId = null } = {}) {
+    const archived = await this.getArchivedExclusion();
+    const demo = await this.getDemoExclusion();
+
+    const clauses = await this._holdingsClausesFor(archived);
+
+    // Drill-down into the demo client is the one context where its data belongs on screen.
+    const viewingThisDemo = exceptEntityId && demo.entityIds.includes(exceptEntityId);
+    if (!viewingThisDemo) {
+      clauses.push(...await this._holdingsClausesFor(demo));
+    }
 
     return clauses.length > 0 ? { $nor: clauses } : {};
   },
 
-  // Mongo selector fragment that EXCLUDES allocations belonging to archived clients.
-  // Allocations key on clientId (legacy userId or entityId) and bankAccountId.
-  async archivedAllocationsSelector() {
-    const { entityIds, userIds, bankAccountIds } = await this.getArchivedExclusion();
-    const ownerIds = [...userIds, ...entityIds];
+  /**
+   * Allocations equivalent of hiddenHoldingsSelector. Allocations key on clientId
+   * (legacy userId or entityId) and bankAccountId.
+   */
+  async hiddenAllocationsSelector({ exceptEntityId = null } = {}) {
+    const archived = await this.getArchivedExclusion();
+    const demo = await this.getDemoExclusion();
 
     const clauses = [];
-    if (ownerIds.length > 0) clauses.push({ clientId: { $in: ownerIds } });
-    if (bankAccountIds.length > 0) clauses.push({ bankAccountId: { $in: bankAccountIds } });
+    const addClauses = ({ entityIds, userIds, bankAccountIds }) => {
+      const ownerIds = [...userIds, ...entityIds];
+      if (ownerIds.length > 0) clauses.push({ clientId: { $in: ownerIds } });
+      if (bankAccountIds.length > 0) clauses.push({ bankAccountId: { $in: bankAccountIds } });
+    };
+
+    addClauses(archived);
+
+    const viewingThisDemo = exceptEntityId && demo.entityIds.includes(exceptEntityId);
+    if (!viewingThisDemo) addClauses(demo);
 
     return clauses.length > 0 ? { $nor: clauses } : {};
+  },
+
+  /**
+   * The entity a View As filter drills into, or null for a broad view.
+   * `entity` filters name it directly; `account` filters name it through the account's
+   * owner. `client` filters address a legacy user account, which a demo never is.
+   *
+   * Callers pass the result as `exceptEntityId` so a demo client stays visible in the one
+   * view that is explicitly about it.
+   */
+  async resolveScopedEntityId(viewAsFilter) {
+    if (!viewAsFilter || !viewAsFilter.id) return null;
+    if (viewAsFilter.type === 'entity') return viewAsFilter.id;
+    if (viewAsFilter.type === 'account') {
+      const { BankAccountsCollection } = await import('./bankAccounts');
+      const account = await BankAccountsCollection.findOneAsync(
+        viewAsFilter.id,
+        { fields: { entityId: 1 } }
+      );
+      return account?.entityId || null;
+    }
+    return null;
+  },
+
+  // Owner ids to strip from firm-wide aggregates (AUM, alerts, snapshots, consolidation).
+  // Aggregates are never "scoped to the demo", so both sets always apply.
+  async getExcludedOwnerIds() {
+    const archived = await this.getArchivedExclusion();
+    const demo = await this.getDemoExclusion();
+    return {
+      entityIds: [...archived.entityIds, ...demo.entityIds],
+      userIds: [...archived.userIds, ...demo.userIds]
+    };
+  },
+
+  // Mongo selector fragment that EXCLUDES holdings the caller must not see.
+  // Returns {} when there is nothing to hide. Compose into a query with:
+  //   collection.find({ $and: [ baseSelector, await hiddenHoldingsSelector() ] })
+  // Uses $nor so holdings whose owner field is absent are kept (only owned rows drop).
+  //
+  // Kept under the historical name for the call sites that have no view scope to offer;
+  // it now also hides demo clients, which is correct for every one of them. Paths that
+  // resolve a view scope should call hiddenHoldingsSelector({ exceptEntityId }) directly.
+  async archivedHoldingsSelector() {
+    return this.hiddenHoldingsSelector();
+  },
+
+  // Allocations equivalent; see archivedHoldingsSelector for why the name is retained.
+  async archivedAllocationsSelector() {
+    return this.hiddenAllocationsSelector();
   },
 
   // True when the entity is an archived (closed) relationship. Used to reject
@@ -240,6 +361,33 @@ export const ClientEntityHelpers = {
       default:
         return { label: 'Active', color: '#10b981' };
     }
+  },
+
+  // Computed lifecycle status — the single source of truth for the Prospect/Active
+  // distinction. "Prospect" is derived, not stored: a prospect is an entity we have no
+  // relationship with yet. Any of these ends that and makes it active:
+  //   - hasAccounts          → holds a bank account itself (a direct client)
+  //   - hasStakeholderRoles  → UBO/director/signatory/shareholder of another entity
+  //   - isBeneficialOwner    → beneficial owner of a life-insurance contract held by
+  //                            the insurer (e.g. Utmost). Not a direct client — the
+  //                            account belongs to the insurer — but not a prospect
+  //                            either, so this MUST be checked; ignoring it files real
+  //                            beneficiaries under "Prospects".
+  // Only "archived" is honoured from the stored status.
+  // Both the contacts list and the entity detail header must use this so the badges
+  // can never contradict each other.
+  getComputedEntityStatus(entity, { hasAccounts = false, hasStakeholderRoles = false, isBeneficialOwner = false } = {}) {
+    if (!entity) return ENTITY_STATUSES.ACTIVE;
+    if (entity.status === ENTITY_STATUSES.ARCHIVED) return ENTITY_STATUSES.ARCHIVED;
+    if (hasAccounts || hasStakeholderRoles || isBeneficialOwner) return ENTITY_STATUSES.ACTIVE;
+    return ENTITY_STATUSES.PROSPECT;
+  },
+
+  // Beneficial owners of an account, tolerating the legacy singular field.
+  getAccountBeneficialOwnerIds(account) {
+    if (!account) return [];
+    if (account.beneficialOwnerIds?.length) return account.beneficialOwnerIds.filter(Boolean);
+    return account.beneficialOwnerId ? [account.beneficialOwnerId] : [];
   },
 
   // Get entity by ID

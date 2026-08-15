@@ -8,6 +8,10 @@ export const McpApiTokensCollection = new Mongo.Collection('mcpApiTokens');
 
 export const MCP_TOKEN_PREFIX = 'amvs_';
 
+// Personal MCP tokens are always time-bounded — no never-expiring option.
+const DEFAULT_TTL_DAYS = 90;
+const MAX_TTL_DAYS = 365;
+
 if (Meteor.isServer) {
   McpApiTokensCollection.createIndex({ tokenHash: 1 }, { unique: true });
   McpApiTokensCollection.createIndex({ userId: 1 });
@@ -24,7 +28,7 @@ export const McpTokenHelpers = {
    * Raw token is only returned once — the caller MUST surface it to the user immediately.
    * Only the hash is persisted.
    */
-  async generate(userId, name, ttlDays = null) {
+  async generate(userId, name, ttlDays = DEFAULT_TTL_DAYS) {
     if (!userId) throw new Meteor.Error('invalid-user', 'userId required');
     if (!name || typeof name !== 'string') throw new Meteor.Error('invalid-name', 'name required');
 
@@ -32,9 +36,13 @@ export const McpTokenHelpers = {
     const tokenHash = hashToken(rawToken);
     const prefix = rawToken.slice(0, MCP_TOKEN_PREFIX.length + 8); // e.g. "amvs_ab12cd34"
     const now = new Date();
-    const expiresAt = ttlDays && Number(ttlDays) > 0
-      ? new Date(now.getTime() + Number(ttlDays) * 24 * 60 * 60 * 1000)
-      : null;
+    // Every token expires. Non-finite/≤0 (incl. null/undefined) → default;
+    // clamp to the maximum. Previously null/0/huge all yielded a permanent
+    // token (huge → Invalid Date → NaN<now == false → never expired).
+    let days = Number(ttlDays);
+    if (!Number.isFinite(days) || days <= 0) days = DEFAULT_TTL_DAYS;
+    days = Math.min(days, MAX_TTL_DAYS);
+    const expiresAt = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
 
     const doc = {
       userId,

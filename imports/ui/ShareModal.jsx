@@ -76,8 +76,8 @@ const ShareModal = ({ isOpen, onClose, productId, productTitle }) => {
         };
       default:
         return {
-          backgroundColor: 'var(--info-color, #3b82f6)',
-          borderColor: 'var(--info-color, #3b82f6)'
+          backgroundColor: 'var(--info-color, var(--info-color))',
+          borderColor: 'var(--info-color, var(--info-color))'
         };
     }
   };

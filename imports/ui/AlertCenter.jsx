@@ -31,16 +31,16 @@ const AlertCenter = ({ user }) => {
   const alertTypes = [
     { value: '', label: 'All Alerts' },
     // Structured product alerts
-    { value: 'barrier_breached', label: 'Barrier Breached', icon: '🚨', color: '#ef4444', priority: 'critical' },
-    { value: 'barrier_near', label: 'Near Barrier', icon: '⚡', color: '#f59e0b', priority: 'warning' },
-    { value: 'underlying_down_20', label: 'Underlying -20%', icon: '📉', color: '#ef4444', priority: 'critical' },
-    { value: 'coupon_paid', label: 'Coupon Paid', icon: '💰', color: '#10b981', priority: 'info' },
+    { value: 'barrier_breached', label: 'Barrier Breached', icon: '🚨', color: 'var(--loss-color)', priority: 'critical' },
+    { value: 'barrier_near', label: 'Near Barrier', icon: '⚡', color: 'var(--warning-color)', priority: 'warning' },
+    { value: 'underlying_down_20', label: 'Underlying -20%', icon: '📉', color: 'var(--loss-color)', priority: 'critical' },
+    { value: 'coupon_paid', label: 'Coupon Paid', icon: '💰', color: 'var(--gain-color)', priority: 'info' },
     { value: 'product_matured', label: 'Product Matured', icon: '✅', color: '#059669', priority: 'info' },
-    { value: 'autocall_triggered', label: 'Autocall Triggered', icon: '🔔', color: '#3b82f6', priority: 'important' },
-    { value: 'early_redemption', label: 'Early Redemption', icon: '📤', color: '#3b82f6', priority: 'important' },
+    { value: 'autocall_triggered', label: 'Autocall Triggered', icon: '🔔', color: 'var(--info-color)', priority: 'important' },
+    { value: 'early_redemption', label: 'Early Redemption', icon: '📤', color: 'var(--info-color)', priority: 'important' },
     // PMS alerts
-    { value: 'allocation_breach', label: 'Allocation Breach', icon: '⚖️', color: '#ef4444', priority: 'critical' },
-    { value: 'unauthorized_overdraft', label: 'Negative Cash', icon: '💳', color: '#ef4444', priority: 'critical' }
+    { value: 'allocation_breach', label: 'Allocation Breach', icon: '⚖️', color: 'var(--loss-color)', priority: 'critical' },
+    { value: 'unauthorized_overdraft', label: 'Negative Cash', icon: '💳', color: 'var(--loss-color)', priority: 'critical' }
   ];
 
   // Event type configurations
@@ -222,7 +222,7 @@ const AlertCenter = ({ user }) => {
                 <span
                   style={{
                     padding: '0.25rem 0.75rem',
-                    background: '#ef4444',
+                    background: 'var(--loss-color)',
                     color: 'white',
                     fontSize: '0.9rem',
                     fontWeight: '600',
@@ -249,7 +249,7 @@ const AlertCenter = ({ user }) => {
               onClick={handleMarkAllAsRead}
               style={{
                 padding: '0.75rem 1.5rem',
-                background: '#3b82f6',
+                background: 'var(--info-color)',
                 color: 'white',
                 border: 'none',
                 borderRadius: '8px',
@@ -262,7 +262,7 @@ const AlertCenter = ({ user }) => {
                 e.currentTarget.style.background = '#2563eb';
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.background = '#3b82f6';
+                e.currentTarget.style.background = 'var(--info-color)';
               }}
             >
               Mark All as Read
@@ -423,11 +423,11 @@ const AlertCenter = ({ user }) => {
                     borderRadius: '12px',
                     border: `2px solid ${
                       config.priority === 'critical'
-                        ? '#ef4444'
+                        ? 'var(--loss-color)'
                         : config.priority === 'warning'
-                        ? '#f59e0b'
+                        ? 'var(--warning-color)'
                         : unread
-                        ? '#3b82f6'
+                        ? 'var(--info-color)'
                         : isDark ? '#374151' : '#e5e7eb'
                     }`,
                     cursor: unread ? 'pointer' : 'default',
@@ -473,7 +473,7 @@ const AlertCenter = ({ user }) => {
                         width: '56px',
                         height: '56px',
                         borderRadius: '12px',
-                        background: `${config.color}20`,
+                        background: `color-mix(in srgb, ${config.color} 13%, transparent)`,
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
@@ -512,7 +512,7 @@ const AlertCenter = ({ user }) => {
                               <span
                                 style={{
                                   padding: '0.25rem 0.5rem',
-                                  background: '#3b82f6',
+                                  background: 'var(--info-color)',
                                   color: 'white',
                                   fontSize: '0.7rem',
                                   fontWeight: '600',
@@ -614,7 +614,7 @@ const AlertCenter = ({ user }) => {
                           {alert.eventData?.couponRate && (
                             <div>
                               <span style={{ color: isDark ? '#9ca3af' : '#6b7280' }}>Coupon: </span>
-                              <span style={{ color: '#10b981', fontWeight: '600' }}>
+                              <span style={{ color: 'var(--gain-color)', fontWeight: '600' }}>
                                 {alert.eventData.couponRate}%
                               </span>
                             </div>
@@ -642,10 +642,10 @@ const AlertCenter = ({ user }) => {
                                       padding: '0.5rem 0.75rem',
                                       background: isDark ? '#1f2937' : '#fee2e2',
                                       borderRadius: '6px',
-                                      border: '1px solid #ef4444'
+                                      border: '1px solid var(--loss-color)'
                                     }}
                                   >
-                                    <span style={{ fontWeight: '600', color: '#ef4444' }}>
+                                    <span style={{ fontWeight: '600', color: 'var(--loss-color)' }}>
                                       {breach.category}:
                                     </span>{' '}
                                     <span style={{ color: isDark ? '#f9fafb' : '#1f2937' }}>
@@ -663,7 +663,7 @@ const AlertCenter = ({ user }) => {
                               {alert.metadata.totalNegativeCash !== undefined && (
                                 <div>
                                   <span style={{ color: isDark ? '#9ca3af' : '#6b7280' }}>Negative Cash: </span>
-                                  <span style={{ color: '#ef4444', fontWeight: '600' }}>
+                                  <span style={{ color: 'var(--loss-color)', fontWeight: '600' }}>
                                     {typeof alert.metadata.totalNegativeCash === 'number'
                                       ? alert.metadata.totalNegativeCash.toLocaleString('en-US', { style: 'currency', currency: alert.metadata.currency || 'EUR' })
                                       : alert.metadata.totalNegativeCash}
@@ -683,7 +683,7 @@ const AlertCenter = ({ user }) => {
                               {alert.metadata.excessOverdraft !== undefined && (
                                 <div>
                                   <span style={{ color: isDark ? '#9ca3af' : '#6b7280' }}>Excess: </span>
-                                  <span style={{ color: '#ef4444', fontWeight: '600' }}>
+                                  <span style={{ color: 'var(--loss-color)', fontWeight: '600' }}>
                                     {typeof alert.metadata.excessOverdraft === 'number'
                                       ? alert.metadata.excessOverdraft.toLocaleString('en-US', { style: 'currency', currency: alert.metadata.currency || 'EUR' })
                                       : alert.metadata.excessOverdraft}

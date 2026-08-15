@@ -27,9 +27,9 @@ export const ProtectionMonitorCard = ({ report, product, characteristics }) => {
     ((currentLevel - lowestProtection) / lowestProtection * 100) : null;
 
   const getDistanceColor = (distance) => {
-    if (distance > 20) return '#10b981'; // green - safe
-    if (distance > 10) return '#f59e0b'; // amber - caution
-    return '#ef4444'; // red - danger
+    if (distance > 20) return 'var(--gain-color)'; // green - safe
+    if (distance > 10) return 'var(--warning-color)'; // amber - caution
+    return 'var(--loss-color)'; // red - danger
   };
 
   return (
@@ -190,7 +190,7 @@ export const ProtectionMonitorCard = ({ report, product, characteristics }) => {
                   top: 0,
                   bottom: 0,
                   width: '2px',
-                  background: '#ef4444',
+                  background: 'var(--loss-color)',
                   opacity: 0.8
                 }} />
               ))}

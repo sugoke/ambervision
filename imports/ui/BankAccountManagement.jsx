@@ -772,7 +772,7 @@ const BankAccountManagement = ({ user }) => {
                           </div>
                           <div style={{
                             fontSize: '1rem',
-                            color: account.authorizedOverdraft > 0 ? '#10b981' : 'var(--text-secondary)',
+                            color: account.authorizedOverdraft > 0 ? 'var(--gain-color)' : 'var(--text-secondary)',
                             fontWeight: '600'
                           }}>
                             {account.authorizedOverdraft > 0

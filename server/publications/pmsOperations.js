@@ -219,8 +219,11 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
       }
     }
 
-    // Exclude operations of archived (closed-relationship) clients from every path
-    const archivedExclusion = await ClientEntityHelpers.archivedHoldingsSelector();
+    // Exclude operations of archived (closed-relationship) clients from every path, and
+    // of demo clients unless this view is drilled into that demo client.
+    const archivedExclusion = await ClientEntityHelpers.hiddenHoldingsSelector({
+      exceptEntityId: await ClientEntityHelpers.resolveScopedEntityId(viewAsFilter)
+    });
     if (archivedExclusion.$nor) {
       queryFilter.$nor = archivedExclusion.$nor;
     }

@@ -35,15 +35,15 @@ const AlertsCard = ({ alerts, onAlertClick }) => {
       case 'warning':
         return {
           bg: 'rgba(245, 158, 11, 0.15)',
-          border: '#f59e0b',
-          icon: '#f59e0b',
+          border: 'var(--warning-color)',
+          icon: 'var(--warning-color)',
           iconBg: 'rgba(245, 158, 11, 0.2)'
         };
       default:
         return {
           bg: 'rgba(59, 130, 246, 0.15)',
-          border: '#3b82f6',
-          icon: '#3b82f6',
+          border: 'var(--info-color)',
+          icon: 'var(--info-color)',
           iconBg: 'rgba(59, 130, 246, 0.2)'
         };
     }
@@ -123,7 +123,7 @@ const AlertsCard = ({ alerts, onAlertClick }) => {
       gap: '8px'
     },
     badge: {
-      backgroundColor: alerts?.filter(a => a.severity === 'critical').length > 0 ? '#d97706' : '#3b82f6',
+      backgroundColor: alerts?.filter(a => a.severity === 'critical').length > 0 ? '#d97706' : 'var(--info-color)',
       color: '#fff',
       padding: '2px 8px',
       borderRadius: '12px',

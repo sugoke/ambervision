@@ -160,6 +160,10 @@ export const translations = {
     flaggedForMemoryAutocall: 'Flagged for Memory Autocall on',
     protectionAt: 'Protection at',
 
+    // Data-quality banner
+    dataQualityWarning: 'Data quality',
+    dataQualityWarningHint: 'Figures below may not reflect the term sheet until this is resolved.',
+
     // Report footer
     pageOf: 'Page {current} of {total}',
     confidential: 'Confidential',
@@ -437,6 +441,10 @@ export const translations = {
     worstPerforming: 'Moins Performant',
     flaggedForMemoryAutocall: 'Marqué pour Autocall Mémoire le',
     protectionAt: 'Protection à',
+
+    // Data-quality banner
+    dataQualityWarning: 'Qualité des données',
+    dataQualityWarningHint: "Les chiffres ci-dessous peuvent ne pas refléter la termsheet tant que ce point n'est pas résolu.",
 
     // Report footer
     pageOf: 'Page {current} sur {total}',

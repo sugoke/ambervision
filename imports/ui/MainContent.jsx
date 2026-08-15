@@ -29,6 +29,7 @@ import PortfolioManagementSystem from './PortfolioManagementSystem.jsx';
 import ClientsSection from './ClientsSection.jsx';
 import AlertCenter from './AlertCenter.jsx';
 import OrderBook from './OrderBook.jsx';
+import GenericProductsPage from './generic/GenericProductsPage.jsx';
 
 const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibraryStateChange, currentRoute, isMenuOpen, setIsMenuOpen, isSettingsOpen, setIsSettingsOpen, isMobile }) => {
   // Use lifted menu and settings state from App.jsx (for mobile header integration)
@@ -228,6 +229,10 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
           </div>
         );
       
+      case 'generic-products':
+        if (!hasAccess(USER_ROLES.ADMIN)) return <div>Access denied</div>;
+        return <GenericProductsPage user={user} />;
+
       case 'profile':
         if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
         return <ProfileManagement user={user} currentSection={currentSection} />;

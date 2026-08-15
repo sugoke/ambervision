@@ -60,9 +60,12 @@ export const EventDetector = {
       events.push(maturityEvent);
     }
 
-    // Detect memory coupon additions
+    // Detect memory coupon additions.
+    // The coupon rate lives on the report's phoenixStructure, so pass it in: detectMemoryCoupons
+    // referenced an out-of-scope `currentReport`, which threw a ReferenceError the moment a
+    // product actually added a coupon to memory and aborted the whole evaluation.
     if (currentObs) {
-      const memoryCouponEvents = this.detectMemoryCoupons(previousObs, currentObs, product);
+      const memoryCouponEvents = this.detectMemoryCoupons(previousObs, currentObs, product, current.phoenixStructure);
       events.push(...memoryCouponEvents);
     }
 
@@ -319,7 +322,7 @@ export const EventDetector = {
   /**
    * Detect memory coupon additions
    */
-  detectMemoryCoupons(previousObs, currentObs, product) {
+  detectMemoryCoupons(previousObs, currentObs, product, phoenixStructure = null) {
     const events = [];
 
     if (!currentObs || !currentObs.observations || !currentObs.hasMemoryCoupon) {
@@ -337,7 +340,6 @@ export const EventDetector = {
       const isMemoryAdded = currObs.memoryCouponAdded;
 
       if (!wasMemoryAdded && isMemoryAdded && currObs.hasOccurred) {
-        const phoenixStructure = currentReport?.templateResults?.phoenixStructure;
         const couponRate = phoenixStructure?.couponRate || 0;
 
         events.push({

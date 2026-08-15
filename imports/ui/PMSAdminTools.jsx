@@ -211,7 +211,7 @@ Check browser console for sample records.`;
                     borderRadius: '8px',
                     border: '2px solid rgba(239, 68, 68, 0.3)'
                   }}>
-                    <div style={{ fontSize: '2rem', color: '#ef4444', marginBottom: '0.5rem' }}>
+                    <div style={{ fontSize: '2rem', color: 'var(--loss-color)', marginBottom: '0.5rem' }}>
                       {unmappedData.totalUnmappedHoldings}
                     </div>
                     <div style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
@@ -225,7 +225,7 @@ Check browser console for sample records.`;
                     borderRadius: '8px',
                     border: '2px solid rgba(239, 68, 68, 0.3)'
                   }}>
-                    <div style={{ fontSize: '2rem', color: '#ef4444', marginBottom: '0.5rem' }}>
+                    <div style={{ fontSize: '2rem', color: 'var(--loss-color)', marginBottom: '0.5rem' }}>
                       {unmappedData.totalUnmappedOperations}
                     </div>
                     <div style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
@@ -325,7 +325,7 @@ Check browser console for sample records.`;
                     border: '2px solid rgba(16, 185, 129, 0.3)'
                   }}>
                     <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>✅</div>
-                    <div style={{ color: '#10b981', fontSize: '1.25rem', fontWeight: '500' }}>
+                    <div style={{ color: 'var(--gain-color)', fontSize: '1.25rem', fontWeight: '500' }}>
                       All portfolio codes are mapped!
                     </div>
                     <div style={{ color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
@@ -373,7 +373,7 @@ Check browser console for sample records.`;
                 disabled={loading}
                 style={{
                   padding: '1rem',
-                  background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                  background: 'linear-gradient(135deg, var(--info-color) 0%, #2563eb 100%)',
                   color: '#fff',
                   border: 'none',
                   borderRadius: '8px',
@@ -392,7 +392,7 @@ Check browser console for sample records.`;
                 disabled={loading}
                 style={{
                   padding: '1rem',
-                  background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
+                  background: 'linear-gradient(135deg, var(--loss-color) 0%, #dc2626 100%)',
                   color: '#fff',
                   border: 'none',
                   borderRadius: '8px',
@@ -411,7 +411,7 @@ Check browser console for sample records.`;
                 disabled={loading}
                 style={{
                   padding: '1rem',
-                  background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                  background: 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
                   color: '#fff',
                   border: 'none',
                   borderRadius: '8px',
@@ -482,7 +482,7 @@ Check browser console for sample records.`;
                       borderRadius: '8px',
                       border: '2px solid rgba(16, 185, 129, 0.3)'
                     }}>
-                      <div style={{ fontSize: '2rem', color: '#10b981', marginBottom: '0.5rem' }}>
+                      <div style={{ fontSize: '2rem', color: 'var(--gain-color)', marginBottom: '0.5rem' }}>
                         {migrationResult.summary.totalMatched}
                       </div>
                       <div style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
@@ -496,7 +496,7 @@ Check browser console for sample records.`;
                       borderRadius: '8px',
                       border: '2px solid rgba(239, 68, 68, 0.3)'
                     }}>
-                      <div style={{ fontSize: '2rem', color: '#ef4444', marginBottom: '0.5rem' }}>
+                      <div style={{ fontSize: '2rem', color: 'var(--loss-color)', marginBottom: '0.5rem' }}>
                         {migrationResult.summary.totalUnmapped}
                       </div>
                       <div style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
@@ -512,8 +512,8 @@ Check browser console for sample records.`;
                     <h4 style={{ marginBottom: '0.5rem', color: 'var(--text-primary)' }}>Holdings Migration</h4>
                     <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
                       Processed: {migrationResult.holdings.totalProcessed} |
-                      Matched: <span style={{ color: '#10b981' }}>{migrationResult.holdings.matched}</span> |
-                      Unmapped: <span style={{ color: '#ef4444' }}>{migrationResult.holdings.unmatchedCount}</span>
+                      Matched: <span style={{ color: 'var(--gain-color)' }}>{migrationResult.holdings.matched}</span> |
+                      Unmapped: <span style={{ color: 'var(--loss-color)' }}>{migrationResult.holdings.unmatchedCount}</span>
                     </div>
                   </div>
                 )}
@@ -524,8 +524,8 @@ Check browser console for sample records.`;
                     <h4 style={{ marginBottom: '0.5rem', color: 'var(--text-primary)' }}>Operations Migration</h4>
                     <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
                       Processed: {migrationResult.operations.totalProcessed} |
-                      Matched: <span style={{ color: '#10b981' }}>{migrationResult.operations.matched}</span> |
-                      Unmapped: <span style={{ color: '#ef4444' }}>{migrationResult.operations.unmatchedCount}</span>
+                      Matched: <span style={{ color: 'var(--gain-color)' }}>{migrationResult.operations.matched}</span> |
+                      Unmapped: <span style={{ color: 'var(--loss-color)' }}>{migrationResult.operations.unmatchedCount}</span>
                     </div>
                   </div>
                 )}
@@ -536,8 +536,8 @@ Check browser console for sample records.`;
                     <h4 style={{ marginBottom: '0.5rem', color: 'var(--text-primary)' }}>Snapshots Migration</h4>
                     <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
                       Processed: {migrationResult.snapshots.totalProcessed} |
-                      Matched: <span style={{ color: '#10b981' }}>{migrationResult.snapshots.matched}</span> |
-                      Unmapped: <span style={{ color: '#ef4444' }}>{migrationResult.snapshots.unmatchedCount}</span>
+                      Matched: <span style={{ color: 'var(--gain-color)' }}>{migrationResult.snapshots.matched}</span> |
+                      Unmapped: <span style={{ color: 'var(--loss-color)' }}>{migrationResult.snapshots.unmatchedCount}</span>
                     </div>
                   </div>
                 )}

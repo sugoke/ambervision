@@ -662,13 +662,13 @@ const SummaryModule = ({
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
             <div style={infoRowStyle}>
               <span style={labelStyle}>Coupon Rate p.a.:</span>
-              <span style={{ ...valueStyle, fontWeight: '600', color: '#10b981' }}>
+              <span style={{ ...valueStyle, fontWeight: '600', color: 'var(--gain-color)' }}>
                 {structureParams?.couponRate !== undefined ? `${structureParams.couponRate}%` : '3.5%'}
               </span>
             </div>
             <div style={infoRowStyle}>
               <span style={labelStyle}>Capital Protection Barrier:</span>
-              <span style={{ ...valueStyle, fontWeight: '600', color: '#f59e0b' }}>
+              <span style={{ ...valueStyle, fontWeight: '600', color: 'var(--warning-color)' }}>
                 {structureParams?.barrierType === 'american' ? 'American' : 'European'} {structureParams?.capitalProtectionBarrier || (isBondVersion ? 100 : 70)}%
               </span>
             </div>
@@ -680,7 +680,7 @@ const SummaryModule = ({
             )}
             <div style={infoRowStyle}>
               <span style={labelStyle}>Gearing Factor:</span>
-              <span style={{ ...valueStyle, fontWeight: '600', color: '#ef4444' }}>
+              <span style={{ ...valueStyle, fontWeight: '600', color: 'var(--loss-color)' }}>
                 {(1 / ((structureParams?.capitalProtectionBarrier || (isBondVersion ? 100 : 70)) / 100)).toFixed(2)}x
               </span>
             </div>
@@ -731,7 +731,7 @@ const SummaryModule = ({
             onClick={onSaveProduct}
             style={{
               padding: '1rem 3rem',
-              background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+              background: 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
               color: 'white',
               border: 'none',
               borderRadius: '8px',

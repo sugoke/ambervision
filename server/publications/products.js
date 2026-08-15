@@ -35,9 +35,12 @@ Meteor.publish("products", async function (sessionId = null, viewAsFilter = null
   const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE;
   const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
 
-  // Archived (closed-relationship) clients' allocations must not make a product visible
+  // Archived (closed-relationship) clients' allocations must not make a product visible.
+  // Demo allocations are hidden the same way, except while viewing as that demo client.
   const { ClientEntityHelpers } = await import('/imports/api/clientEntities');
-  const archivedAllocExclusion = await ClientEntityHelpers.archivedAllocationsSelector();
+  const archivedAllocExclusion = await ClientEntityHelpers.hiddenAllocationsSelector({
+    exceptEntityId: await ClientEntityHelpers.resolveScopedEntityId(viewAsFilter)
+  });
   const excludeArchived = (sel) => archivedAllocExclusion.$nor ? { $and: [sel, archivedAllocExclusion] } : sel;
 
   // Helper: find allocations for an entity (reused by viewAs and RM paths)
@@ -392,9 +395,12 @@ Meteor.publish("allAllocations", async function (sessionId = null, viewAsFilter 
     const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
     const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
 
-    // Archived (closed-relationship) clients' allocations are hidden everywhere
+    // Archived (closed-relationship) clients' allocations are hidden everywhere; demo
+    // allocations too, except while this view is drilled into that demo client.
     const { ClientEntityHelpers } = await import('/imports/api/clientEntities');
-    const archivedAllocExclusion = await ClientEntityHelpers.archivedAllocationsSelector();
+    const archivedAllocExclusion = await ClientEntityHelpers.hiddenAllocationsSelector({
+      exceptEntityId: await ClientEntityHelpers.resolveScopedEntityId(viewAsFilter)
+    });
     const excludeArchived = (sel) => archivedAllocExclusion.$nor ? { $and: [sel, archivedAllocExclusion] } : sel;
 
     // Handle View As filter for admins and RMs

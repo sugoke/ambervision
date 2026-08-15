@@ -115,7 +115,7 @@ export default function McpApiTokens() {
   const tokenStatus = (t) => {
     if (t.revokedAt) return { label: 'Revoked', color: '#dc2626' };
     if (t.expiresAt && new Date(t.expiresAt).getTime() < Date.now()) return { label: 'Expired', color: '#dc2626' };
-    return { label: 'Active', color: '#10b981' };
+    return { label: 'Active', color: 'var(--gain-color)' };
   };
 
   return (
@@ -135,7 +135,7 @@ export default function McpApiTokens() {
       {newToken && (
         <div style={{
           ...boxStyle,
-          borderColor: '#f59e0b',
+          borderColor: 'var(--warning-color)',
           background: 'rgba(245, 158, 11, 0.05)'
         }}>
           <h4 style={{ margin: '0 0 0.5rem 0', color: '#b45309' }}>
@@ -165,7 +165,7 @@ export default function McpApiTokens() {
               onClick={handleCopy}
               style={{
                 padding: '0.75rem 1rem',
-                background: copied ? '#10b981' : 'var(--accent-color)',
+                background: copied ? 'var(--gain-color)' : 'var(--accent-color)',
                 color: 'white',
                 border: 'none',
                 borderRadius: '6px',

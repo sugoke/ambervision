@@ -56,10 +56,10 @@ const StatusBadge = ({ document }) => {
   if (!document) return null;
   const status = ClientDocumentHelpers.getDocumentStatus(document);
   const badgeStyles = {
-    expired: { backgroundColor: '#ef4444', color: 'white' },
-    warning: { backgroundColor: '#f59e0b', color: 'white' },
-    stale: { backgroundColor: '#f59e0b', color: 'white' },
-    ok: { backgroundColor: '#10b981', color: 'white' },
+    expired: { backgroundColor: 'var(--loss-color)', color: 'white' },
+    warning: { backgroundColor: 'var(--warning-color)', color: 'white' },
+    stale: { backgroundColor: 'var(--warning-color)', color: 'white' },
+    ok: { backgroundColor: 'var(--gain-color)', color: 'white' },
     missing: { backgroundColor: '#6b7280', color: 'white' }
   };
   return (
@@ -180,7 +180,7 @@ const DocumentFileRow = ({ document, config, onUploadComplete }) => {
         </div>
         <div style={{ display: 'flex', gap: '6px', marginLeft: '10px' }}>
           <button onClick={handleView} style={{ padding: '3px 10px', fontSize: '0.75rem', backgroundColor: 'var(--accent-color)', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>View</button>
-          <button onClick={handleDelete} style={{ padding: '3px 10px', fontSize: '0.75rem', backgroundColor: '#ef4444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Delete</button>
+          <button onClick={handleDelete} style={{ padding: '3px 10px', fontSize: '0.75rem', backgroundColor: 'var(--loss-color)', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Delete</button>
         </div>
       </div>
 
@@ -433,7 +433,7 @@ const PersonDocuments = ({
             </span>
           )}
           {hasWarnings && (
-            <span style={{ backgroundColor: '#f59e0b', color: 'white', padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: '600' }}>!</span>
+            <span style={{ backgroundColor: 'var(--warning-color)', color: 'white', padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: '600' }}>!</span>
           )}
           <span style={{ fontSize: '1rem', color: 'var(--text-secondary)', transform: isCollapsed ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.2s ease' }}>▼</span>
         </div>
@@ -505,7 +505,7 @@ const ClientDocumentManager = ({ userId, familyMembers = [] }) => {
             <span style={{ backgroundColor: '#6b7280', color: 'white', padding: '2px 8px', borderRadius: '4px', fontSize: '0.75rem', fontWeight: '600' }}>{missing} missing</span>
           )}
           {warnings > 0 && (
-            <span style={{ backgroundColor: '#f59e0b', color: 'white', padding: '2px 8px', borderRadius: '4px', fontSize: '0.75rem', fontWeight: '600' }}>{warnings} need attention</span>
+            <span style={{ backgroundColor: 'var(--warning-color)', color: 'white', padding: '2px 8px', borderRadius: '4px', fontSize: '0.75rem', fontWeight: '600' }}>{warnings} need attention</span>
           )}
         </div>
       </div>

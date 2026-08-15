@@ -207,7 +207,7 @@ const RMDashboard = ({ user, onNavigate }) => {
     quoteText: {
       fontSize: '14px',
       fontStyle: 'italic',
-      color: '#f59e0b'
+      color: 'var(--warning-color)'
     },
     quoteAuthor: {
       fontSize: '14px',
@@ -240,7 +240,7 @@ const RMDashboard = ({ user, onNavigate }) => {
       border: '1px solid rgba(239, 68, 68, 0.3)',
       borderRadius: '8px',
       padding: '16px',
-      color: '#ef4444',
+      color: 'var(--loss-color)',
       textAlign: 'center',
       marginBottom: '20px'
     },

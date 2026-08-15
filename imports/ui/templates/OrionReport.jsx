@@ -273,7 +273,7 @@ const OrionReport = ({ results, productId, product }) => {
                           textAlign: 'center',
                           fontFamily: 'monospace',
                           fontWeight: '700',
-                          color: underlying.isPositive ? '#10b981' : '#ef4444',
+                          color: underlying.isPositive ? 'var(--gain-color)' : 'var(--loss-color)',
                           fontSize: '1rem'
                         }}>
                           {underlying.performanceFormatted || '-'}
@@ -284,7 +284,7 @@ const OrionReport = ({ results, productId, product }) => {
                           textAlign: 'center',
                           fontFamily: 'monospace',
                           fontWeight: '700',
-                          color: consideredIsPositive ? '#10b981' : '#ef4444',
+                          color: consideredIsPositive ? 'var(--gain-color)' : 'var(--loss-color)',
                           fontSize: '1rem',
                           padding: '0.5rem',
                           background: consideredIsPositive ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
@@ -305,7 +305,7 @@ const OrionReport = ({ results, productId, product }) => {
                               borderRadius: '12px',
                               fontSize: '0.75rem',
                               fontWeight: '700',
-                              background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                              background: 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
                               color: 'white',
                               boxShadow: '0 2px 8px rgba(16, 185, 129, 0.3)',
                               letterSpacing: '0.5px'
@@ -356,7 +356,7 @@ const OrionReport = ({ results, productId, product }) => {
               <div style={{
                 fontSize: '1.25rem',
                 fontWeight: '700',
-                color: results.basketConsideredPerformance >= 0 ? '#10b981' : '#ef4444',
+                color: results.basketConsideredPerformance >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                 fontFamily: 'monospace'
               }}>
                 {results.basketConsideredPerformanceFormatted}
@@ -448,7 +448,7 @@ const OrionReport = ({ results, productId, product }) => {
               <div style={{
                 fontSize: '3rem',
                 fontWeight: '800',
-                color: results.indicativeMaturityValue.totalValue >= 100 ? '#10b981' : '#ef4444',
+                color: results.indicativeMaturityValue.totalValue >= 100 ? 'var(--gain-color)' : 'var(--loss-color)',
                 fontFamily: 'monospace',
                 lineHeight: '1'
               }}>
@@ -489,7 +489,7 @@ const OrionReport = ({ results, productId, product }) => {
                 <div style={{
                   fontSize: '1.8rem',
                   fontWeight: '700',
-                  color: results.indicativeMaturityValue.basketPerformance >= 0 ? '#10b981' : '#ef4444',
+                  color: results.indicativeMaturityValue.basketPerformance >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                   marginBottom: '0.5rem',
                   fontFamily: 'monospace'
                 }}>
@@ -524,7 +524,7 @@ const OrionReport = ({ results, productId, product }) => {
                 <div style={{
                   fontSize: '1.8rem',
                   fontWeight: '700',
-                  color: results.indicativeMaturityValue.worstPerformer >= 0 ? '#10b981' : '#ef4444',
+                  color: results.indicativeMaturityValue.worstPerformer >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                   marginBottom: '0.5rem',
                   fontFamily: 'monospace'
                 }}>
@@ -558,7 +558,7 @@ const OrionReport = ({ results, productId, product }) => {
                 <div style={{
                   fontSize: '1.2rem',
                   fontWeight: '700',
-                  color: results.indicativeMaturityValue.hitBarrierCount > 0 ? '#10b981' : 'var(--text-muted)',
+                  color: results.indicativeMaturityValue.hitBarrierCount > 0 ? 'var(--gain-color)' : 'var(--text-muted)',
                   marginBottom: '0.5rem'
                 }}>
                   {results.indicativeMaturityValue.hitBarrierCount}/{results.indicativeMaturityValue.totalUnderlyings} Hit

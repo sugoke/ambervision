@@ -205,21 +205,23 @@ const RiskAnalysisPDF = () => {
         padding: '2rem',
         fontFamily: '"Inter", -apple-system, system-ui, sans-serif'
       }}>
-        <h1 style={{ color: '#ef4444', marginBottom: '1rem' }}>Error Loading Report</h1>
+        <h1 style={{ color: '#b91c1c', marginBottom: '1rem' }}>Error Loading Report</h1>
         <p style={{ color: '#64748b' }}>{error || 'Report not found'}</p>
       </div>
     );
   }
 
-  const { summary, analyses, executiveSummary, impactedProducts, generatedAt } = report;
+  const { summary, analyses, executiveSummary, impactedProducts, productsDownSinceLaunch, generatedAt } = report;
 
   return (
     <>
       <style>{`
         html, body, #react-target { background: white !important; }
+        /* Root font size drives every rem-based size in this template - keeps the PDF compact */
+        html { font-size: 13px; }
         @media print {
           .risk-pdf-section { page-break-inside: avoid; }
-          .risk-analysis-item { page-break-before: always; }
+          .risk-analysis-item { page-break-before: always; page-break-inside: avoid; }
           .risk-analysis-item:first-child { page-break-before: auto; }
         }
         @page { margin: 1cm; }
@@ -246,7 +248,7 @@ const RiskAnalysisPDF = () => {
         <div style={styles.summaryGrid} className="risk-pdf-section">
           <div style={styles.summaryCard}>
             <div style={styles.summaryLabel}>{lang === 'fr' ? 'À Risque' : 'At Risk'}</div>
-            <div style={{ ...styles.summaryValue, color: '#ef4444' }}>
+            <div style={{ ...styles.summaryValue, color: '#b91c1c' }}>
               {summary.uniqueUnderlyings}
             </div>
             <div style={styles.summarySubtext}>{lang === 'fr' ? 'Sous-jacents uniques' : 'Unique underlyings'}</div>
@@ -264,7 +266,7 @@ const RiskAnalysisPDF = () => {
             <div style={styles.summaryLabel}>{tr.averageDistanceToBarrier}</div>
             <div style={{
               ...styles.summaryValue,
-              color: summary.averageDistanceToBarrier >= 0 ? '#10b981' : '#ef4444'
+              color: summary.averageDistanceToBarrier >= 0 ? '#047857' : '#b91c1c'
             }}>
               {summary.averageDistanceToBarrier >= 0 ? '+' : ''}{summary.averageDistanceToBarrier.toFixed(1)}%
             </div>
@@ -304,7 +306,7 @@ const RiskAnalysisPDF = () => {
                       <div style={styles.worstDistanceLabel}>{lang === 'fr' ? 'Pire Distance' : 'Worst Distance'}</div>
                       <div style={{
                         ...styles.worstDistanceValue,
-                        color: product.worstDistance >= 0 ? '#10b981' : '#ef4444'
+                        color: product.worstDistance >= 0 ? '#047857' : '#b91c1c'
                       }}>
                         {product.worstDistance >= 0 ? '+' : ''}{product.worstDistance.toFixed(1)}%
                       </div>
@@ -319,7 +321,7 @@ const RiskAnalysisPDF = () => {
                       <div key={uIdx} style={styles.underlyingChip}>
                         <span style={styles.underlyingSymbol}>{underlying.symbol}</span>
                         <span style={{
-                          color: underlying.distanceToBarrier >= 0 ? '#10b981' : '#ef4444',
+                          color: underlying.distanceToBarrier >= 0 ? '#047857' : '#b91c1c',
                           fontWeight: '600'
                         }}>
                           {underlying.distanceToBarrier >= 0 ? '+' : ''}{underlying.distanceToBarrier.toFixed(1)}%
@@ -330,6 +332,91 @@ const RiskAnalysisPDF = () => {
                       </div>
                     ))}
                   </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Products Down 15%+ Since Launch */}
+        {productsDownSinceLaunch && productsDownSinceLaunch.length > 0 && (
+          <div style={styles.productsDownSection}>
+            <h2 style={styles.productsDownTitle}>
+              {lang === 'fr' ? 'Produits en Baisse de 15%+ Depuis le Lancement' : 'Products Down 15%+ Since Launch'} ({productsDownSinceLaunch.length})
+            </h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              {productsDownSinceLaunch.map((product) => (
+                <div key={product.productId} style={styles.productCard} className="risk-pdf-section">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '0.75rem' }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={styles.productTitle}>{product.productTitle}</div>
+                      <div style={styles.productIsin}>{product.productIsin}</div>
+                    </div>
+                    <div style={{ display: 'flex', gap: '1.25rem', textAlign: 'right' }}>
+                      <div>
+                        <div style={styles.worstDistanceLabel}>{lang === 'fr' ? 'Prix Actuel' : 'Latest Price'}</div>
+                        <div style={{ ...styles.worstDistanceValue, color: '#1f2937' }}>
+                          {product.latestPrice != null ? product.latestPrice.toFixed(2) : '—'}
+                        </div>
+                        {product.priceDate && (
+                          <div style={{ fontSize: '0.7rem', color: '#5c656d' }}>
+                            {formatShortDate(product.priceDate, lang)}
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <div style={styles.worstDistanceLabel}>{lang === 'fr' ? 'Coût Moyen' : 'Baseline'}</div>
+                        <div style={{ ...styles.worstDistanceValue, color: '#1f2937' }}>
+                          {product.baselineCost != null ? product.baselineCost.toFixed(2) : '—'}
+                        </div>
+                      </div>
+                      <div>
+                        <div style={styles.worstDistanceLabel}>{lang === 'fr' ? 'Perte' : 'Loss'}</div>
+                        <div style={{ ...styles.worstDistanceValue, color: '#b91c1c' }}>
+                          {product.lossPercent.toFixed(1)}%
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {product.note === 'no-declining-underlyings' && (
+                    <div style={{ fontSize: '0.85rem', fontStyle: 'italic', color: '#6b7280' }}>
+                      {lang === 'fr'
+                        ? 'Perte non attribuable à la performance des sous-jacents (aucun sous-jacent en baisse).'
+                        : 'Loss not attributable to underlying equity performance (no declining underlyings).'}
+                    </div>
+                  )}
+                  {product.underlyingsDataUnavailable && (
+                    <div style={{ fontSize: '0.85rem', fontStyle: 'italic', color: '#6b7280' }}>
+                      {lang === 'fr'
+                        ? 'Données des sous-jacents indisponibles pour ce produit.'
+                        : 'Underlying data unavailable for this product.'}
+                    </div>
+                  )}
+
+                  {product.underlyings && product.underlyings.length > 0 && (
+                    <>
+                      <div style={styles.atRiskLabel}>
+                        {lang === 'fr' ? 'Sous-jacents en Baisse' : 'Declining Underlyings'} ({product.underlyings.length})
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                        {product.underlyings.map((underlying, uIdx) => (
+                          <div key={uIdx} style={{ ...styles.aiAnalysisBox, margin: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                              <span style={{ fontWeight: '700', color: '#1f2937' }}>{underlying.symbol}</span>
+                              <span style={{ fontSize: '0.85rem', color: '#6b7280' }}>{underlying.name}</span>
+                              <span style={{ fontWeight: '600', fontSize: '0.85rem', color: '#b91c1c' }}>
+                                {underlying.performance != null ? `${underlying.performance.toFixed(2)}%` : ''}
+                              </span>
+                            </div>
+                            <div style={styles.aiAnalysisText}>
+                              {renderMarkdownBold(underlying.analysis)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
               ))}
             </div>
@@ -370,7 +457,7 @@ const RiskAnalysisPDF = () => {
                 </div>
                 <div style={styles.metricItem}>
                   <div style={styles.metricLabel}>{lang === 'fr' ? 'Prix Barrière' : 'Barrier Price'}</div>
-                  <div style={{ ...styles.metricValue, color: '#ef4444' }}>
+                  <div style={{ ...styles.metricValue, color: '#b91c1c' }}>
                     {analysis.barrierPrice.toFixed(2)}
                   </div>
                 </div>
@@ -378,7 +465,7 @@ const RiskAnalysisPDF = () => {
                   <div style={styles.metricLabel}>{tr.performance}</div>
                   <div style={{
                     ...styles.metricValue,
-                    color: analysis.performance >= 0 ? '#10b981' : '#ef4444'
+                    color: analysis.performance >= 0 ? '#047857' : '#b91c1c'
                   }}>
                     {analysis.performance >= 0 ? '+' : ''}{analysis.performance.toFixed(2)}%
                   </div>
@@ -387,7 +474,7 @@ const RiskAnalysisPDF = () => {
                   <div style={styles.metricLabel}>{tr.barrierDistance}</div>
                   <div style={{
                     ...styles.metricValue,
-                    color: analysis.distanceToBarrier >= 0 ? '#10b981' : '#ef4444'
+                    color: analysis.distanceToBarrier >= 0 ? '#047857' : '#b91c1c'
                   }}>
                     {analysis.distanceToBarrier >= 0 ? '+' : ''}{analysis.distanceToBarrier.toFixed(1)}%
                   </div>
@@ -421,7 +508,7 @@ const RiskAnalysisPDF = () => {
                         </div>
                         <div style={{ textAlign: 'right', fontSize: '0.8rem', display: 'flex', gap: '1.25rem', alignItems: 'center' }}>
                           <div>
-                            <div style={{ fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: '#9ca3af', marginBottom: '0.1rem' }}>
+                            <div style={{ fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: '#5c656d', marginBottom: '0.1rem' }}>
                               {lang === 'fr' ? 'Prix' : 'Price'}
                             </div>
                             <div style={{ fontWeight: '600', color: '#1f2937' }}>
@@ -431,15 +518,15 @@ const RiskAnalysisPDF = () => {
                             </div>
                           </div>
                           <div>
-                            <div style={{ fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: '#9ca3af', marginBottom: '0.1rem' }}>
+                            <div style={{ fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: '#5c656d', marginBottom: '0.1rem' }}>
                               {lang === 'fr' ? 'Performance' : 'Performance'}
                             </div>
-                            <div style={{ fontWeight: '600', color: product.performance >= 0 ? '#10b981' : '#ef4444' }}>
+                            <div style={{ fontWeight: '600', color: product.performance >= 0 ? '#047857' : '#b91c1c' }}>
                               {product.performanceFormatted || '—'}
                             </div>
                           </div>
                           <div>
-                            <div style={{ fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: '#9ca3af', marginBottom: '0.1rem' }}>
+                            <div style={{ fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: '#5c656d', marginBottom: '0.1rem' }}>
                               {lang === 'fr' ? 'Temps restant' : 'Time left'}
                             </div>
                             <div style={{ fontWeight: '600', color: '#1f2937' }}>
@@ -478,8 +565,8 @@ const RiskAnalysisPDF = () => {
 const styles = {
   container: {
     fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-    fontSize: '10pt',
-    lineHeight: 1.5,
+    fontSize: '9pt',
+    lineHeight: 1.45,
     color: '#1f2937',
     background: 'white',
     padding: '2rem',
@@ -496,7 +583,7 @@ const styles = {
     margin: '0 0 0.25rem 0',
     fontSize: '1.75rem',
     fontWeight: '700',
-    color: '#ef4444'
+    color: '#b91c1c'
   },
   subtitle: {
     margin: '0 0 0.5rem 0',
@@ -507,7 +594,7 @@ const styles = {
   generatedAt: {
     margin: 0,
     fontSize: '0.875rem',
-    color: '#9ca3af'
+    color: '#5c656d'
   },
   summaryGrid: {
     display: 'grid',
@@ -537,11 +624,11 @@ const styles = {
   },
   summarySubtext: {
     fontSize: '0.75rem',
-    color: '#9ca3af'
+    color: '#5c656d'
   },
   executiveSummary: {
     background: '#fffbeb',
-    borderLeft: '4px solid #f59e0b',
+    borderLeft: '4px solid #b45309',
     borderRadius: '8px',
     padding: '1.5rem',
     marginBottom: '2rem'
@@ -550,17 +637,17 @@ const styles = {
     margin: '0 0 1rem 0',
     fontSize: '1.25rem',
     fontWeight: '700',
-    color: '#f59e0b'
+    color: '#b45309'
   },
   executiveSummaryText: {
     fontSize: '0.95rem',
-    lineHeight: '1.7',
+    lineHeight: '1.55',
     color: '#374151',
     whiteSpace: 'pre-wrap'
   },
   impactedProductsSection: {
     background: '#eff6ff',
-    borderLeft: '4px solid #3b82f6',
+    borderLeft: '4px solid #1d4ed8',
     borderRadius: '8px',
     padding: '1.5rem',
     marginBottom: '2rem'
@@ -569,7 +656,20 @@ const styles = {
     margin: '0 0 1rem 0',
     fontSize: '1.25rem',
     fontWeight: '700',
-    color: '#3b82f6'
+    color: '#1d4ed8'
+  },
+  productsDownSection: {
+    background: '#fef2f2',
+    borderLeft: '4px solid #b91c1c',
+    borderRadius: '8px',
+    padding: '1.5rem',
+    marginBottom: '2rem'
+  },
+  productsDownTitle: {
+    margin: '0 0 1rem 0',
+    fontSize: '1.25rem',
+    fontWeight: '700',
+    color: '#b91c1c'
   },
   productCard: {
     background: '#ffffff',
@@ -585,7 +685,7 @@ const styles = {
   },
   productIsin: {
     fontSize: '0.75rem',
-    color: '#9ca3af',
+    color: '#5c656d',
     fontFamily: 'monospace'
   },
   worstDistanceLabel: {
@@ -682,11 +782,11 @@ const styles = {
     margin: '0 0 1rem 0',
     fontSize: '1rem',
     fontWeight: '600',
-    color: '#8b5cf6'
+    color: '#6d28d9'
   },
   aiAnalysisText: {
     fontSize: '0.925rem',
-    lineHeight: '1.7',
+    lineHeight: '1.55',
     color: '#374151',
     whiteSpace: 'pre-wrap'
   },
@@ -715,7 +815,7 @@ const styles = {
   },
   affectedProductIsin: {
     fontSize: '0.75rem',
-    color: '#9ca3af',
+    color: '#5c656d',
     fontFamily: 'monospace'
   },
   footer: {

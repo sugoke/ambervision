@@ -13,6 +13,12 @@ import { SessionsCollection } from '/imports/api/sessions';
 // - RM: entities where relationshipManagerId matches
 // - Assistant: entities for their assigned RMs
 // - Client/other: entities they have access to via userEntityAccess
+//
+// The fictional demo client is excluded from all of them: it must not turn up in
+// Contacts, entity pickers or counts. It stays reachable through the View As search
+// (a separate method, `viewAs.search`), which is the only way in by design.
+const EXCLUDE_DEMO = { isDemo: { $ne: true } };
+
 Meteor.publish('clientEntities', async function (sessionId) {
   if (!sessionId) return this.ready();
 
@@ -38,7 +44,7 @@ Meteor.publish('clientEntities', async function (sessionId) {
 
     if (isAdmin) {
       // Admins see all active entities
-      return ClientEntitiesCollection.find({ isActive: true });
+      return ClientEntitiesCollection.find({ isActive: true, ...EXCLUDE_DEMO });
     }
 
     if (isRM) {
@@ -48,7 +54,8 @@ Meteor.publish('clientEntities', async function (sessionId) {
           { assignedUserIds: currentUser._id },
           { relationshipManagerId: currentUser._id }
         ],
-        isActive: true
+        isActive: true,
+        ...EXCLUDE_DEMO
       });
     }
 
@@ -60,7 +67,8 @@ Meteor.publish('clientEntities', async function (sessionId) {
           { assignedUserIds: { $in: rmIds } },
           { relationshipManagerId: { $in: rmIds } }
         ],
-        isActive: true
+        isActive: true,
+        ...EXCLUDE_DEMO
       });
     }
 
@@ -75,7 +83,8 @@ Meteor.publish('clientEntities', async function (sessionId) {
 
     return ClientEntitiesCollection.find({
       _id: { $in: entityIds },
-      isActive: true
+      isActive: true,
+      ...EXCLUDE_DEMO
     });
 
   } catch (error) {

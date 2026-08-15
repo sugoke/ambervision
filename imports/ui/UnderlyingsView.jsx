@@ -431,14 +431,14 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
               type: 'line',
               yMin: 0,
               yMax: 0,
-              borderColor: '#ef4444',
+              borderColor: 'var(--loss-color)',
               borderWidth: 2,
               borderDash: [5, 5],
               label: {
                 display: true,
                 content: 'Barrier Threshold',
                 position: 'end',
-                backgroundColor: '#ef4444',
+                backgroundColor: 'var(--loss-color)',
                 color: '#fff',
                 padding: 4,
                 font: {
@@ -620,7 +620,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
             disabled={isRefreshing}
             style={{
               padding: '0.75rem 1.5rem',
-              background: isRefreshing ? 'var(--bg-tertiary)' : 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+              background: isRefreshing ? 'var(--bg-tertiary)' : 'linear-gradient(135deg, var(--info-color) 0%, #2563eb 100%)',
               color: '#fff',
               border: 'none',
               borderRadius: '10px',
@@ -640,7 +640,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
               padding: '0.75rem 1.5rem',
               background: (summary.totalProducts === 0)
                 ? 'var(--bg-tertiary)'
-                : 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                : 'linear-gradient(135deg, var(--warning-color) 0%, #d97706 100%)',
               color: '#fff',
               border: 'none',
               borderRadius: '10px',
@@ -721,7 +721,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
           <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
             Positive Performance
           </div>
-          <div style={{ fontSize: '2rem', fontWeight: '700', color: '#10b981' }}>
+          <div style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--gain-color)' }}>
             {summary.positivePerformance}
           </div>
         </div>
@@ -735,7 +735,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
           <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
             Negative Performance
           </div>
-          <div style={{ fontSize: '2rem', fontWeight: '700', color: '#ef4444' }}>
+          <div style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--loss-color)' }}>
             {summary.negativePerformance}
           </div>
         </div>
@@ -763,7 +763,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
           <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
             Below Barrier
           </div>
-          <div style={{ fontSize: '2rem', fontWeight: '700', color: '#ef4444' }}>
+          <div style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--loss-color)' }}>
             {summary.belowBarrier}
           </div>
         </div>
@@ -834,7 +834,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
             fontWeight: '500'
           }}>
             {filteredAndSortedData.length === 0 ? (
-              <span style={{ color: '#ef4444' }}>
+              <span style={{ color: 'var(--loss-color)' }}>
                 No results found for "{searchTerm}"
               </span>
             ) : (
@@ -1294,7 +1294,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
                   <div style={{
                     fontSize: '0.875rem',
                     textAlign: 'right',
-                    color: underlying.daysToFinalObservation < 0 ? '#ef4444' : 'var(--text-secondary)',
+                    color: underlying.daysToFinalObservation < 0 ? 'var(--loss-color)' : 'var(--text-secondary)',
                     fontWeight: underlying.daysToFinalObservation < 0 ? '700' : '600',
                     fontFamily: '"Inter", -apple-system, system-ui, sans-serif'
                   }}>
@@ -1385,9 +1385,9 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
           }}>
             Each bubble represents one product-underlying combination. Bubble size is proportional to the investment amount.
             <br />
-            <span style={{ color: '#10b981', fontWeight: '600' }}> Green</span> = safe (&gt;10% above barrier),
+            <span style={{ color: 'var(--gain-color)', fontWeight: '600' }}> Green</span> = safe (&gt;10% above barrier),
             <span style={{ color: '#f97316', fontWeight: '600' }}> Orange</span> = warning zone (0-10% above barrier),
-            <span style={{ color: '#ef4444', fontWeight: '600' }}> Red</span> = below barrier (capital at risk).
+            <span style={{ color: 'var(--loss-color)', fontWeight: '600' }}> Red</span> = below barrier (capital at risk).
             <br />
             <span style={{ fontWeight: '600' }}>💡 Click any bubble to view the full product report.</span>
           </p>
@@ -1453,7 +1453,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
                 onClick={() => handleGenerateRiskReport('en')}
                 style={{
                   padding: '1rem 1.5rem',
-                  background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                  background: 'linear-gradient(135deg, var(--info-color) 0%, #2563eb 100%)',
                   color: 'white',
                   border: 'none',
                   borderRadius: '12px',

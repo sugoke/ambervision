@@ -1,5 +1,6 @@
 import { Mongo } from 'meteor/mongo';
 import { check, Match } from 'meteor/check';
+import { SECURITY_TYPES } from './constants/instrumentTypes';
 
 // Orders collection for managing buy/sell orders
 export const OrdersCollection = new Mongo.Collection('orders');
@@ -150,9 +151,9 @@ export const EMAIL_TRACE_LABELS = {
   [EMAIL_TRACE_TYPES.BANK_CONFIRMATION]: 'Bank Confirmation',
   [EMAIL_TRACE_TYPES.ORDER_TO_ISSUER]: 'Order to Issuer',
   [EMAIL_TRACE_TYPES.INITIAL_TERMSHEET]: 'Initial Termsheet',
-  [EMAIL_TRACE_TYPES.TERMSHEET]: 'Termsheet',
+  [EMAIL_TRACE_TYPES.TERMSHEET]: 'Signed Termsheet',
   [EMAIL_TRACE_TYPES.TERMSHEET_SENT]: 'Termsheet Sent',
-  [EMAIL_TRACE_TYPES.TERMSHEET_SIGNED]: 'Termsheet Signed'
+  [EMAIL_TRACE_TYPES.TERMSHEET_SIGNED]: 'Signed Termsheet'
 };
 
 // Trace types that document the termsheet workflow (separate from order trace count)
@@ -209,6 +210,48 @@ export const ASSET_TYPES = {
   TERM_DEPOSIT: 'term_deposit',
   OTHER: 'other'
 };
+
+// Map a canonical SECURITY_TYPES value (as stored on securities/holdings) to the
+// order book's narrower assetType enum. Used when a security is reclassified so
+// existing orders stay in sync. Anything without a direct order equivalent
+// (commodities, options, private markets, cash…) falls back to 'other'.
+export const SECURITY_TYPE_TO_ASSET_TYPE = {
+  [SECURITY_TYPES.EQUITY]: ASSET_TYPES.EQUITY,
+  [SECURITY_TYPES.ETF]: ASSET_TYPES.ETF,
+  [SECURITY_TYPES.BOND]: ASSET_TYPES.BOND,
+  [SECURITY_TYPES.FUND]: ASSET_TYPES.FUND,
+  [SECURITY_TYPES.MONEY_MARKET]: ASSET_TYPES.FUND,
+  [SECURITY_TYPES.TERM_DEPOSIT]: ASSET_TYPES.TERM_DEPOSIT,
+  [SECURITY_TYPES.STRUCTURED_PRODUCT]: ASSET_TYPES.STRUCTURED_PRODUCT,
+  [SECURITY_TYPES.CERTIFICATE]: ASSET_TYPES.STRUCTURED_PRODUCT,
+  [SECURITY_TYPES.FX_FORWARD]: ASSET_TYPES.FX
+};
+
+// Map a holding's assetClass (as stored on pmsHoldings by the bank parsers,
+// e.g. 'fixed_income', 'time_deposit', 'monetary_products') to the order
+// book's assetType enum. Case-insensitive; anything unmapped (commodities,
+// private equity, …) falls back to 'other'.
+const ASSET_CLASS_TO_ASSET_TYPE = {
+  equity: ASSET_TYPES.EQUITY,
+  etf: ASSET_TYPES.ETF,
+  bond: ASSET_TYPES.BOND,
+  fixed_income: ASSET_TYPES.BOND,
+  fund: ASSET_TYPES.FUND,
+  funds: ASSET_TYPES.FUND,
+  money_market: ASSET_TYPES.FUND,
+  monetary_products: ASSET_TYPES.FUND,
+  structured_product: ASSET_TYPES.STRUCTURED_PRODUCT,
+  certificate: ASSET_TYPES.STRUCTURED_PRODUCT,
+  term_deposit: ASSET_TYPES.TERM_DEPOSIT,
+  time_deposit: ASSET_TYPES.TERM_DEPOSIT,
+  fx: ASSET_TYPES.FX,
+  fx_forward: ASSET_TYPES.FX
+};
+
+export function assetTypeForAssetClass(assetClass) {
+  if (!assetClass) return ASSET_TYPES.OTHER;
+  return ASSET_CLASS_TO_ASSET_TYPE[String(assetClass).toLowerCase()] || ASSET_TYPES.OTHER;
+}
 
 // Valid trade modes
 export const TRADE_MODES = {
@@ -318,12 +361,16 @@ export const OrderFormatters = {
     })}`;
   },
 
-  // Format quantity (integer)
+  // Format quantity. Whole quantities show no decimals (1,000 shares), but a
+  // fractional quantity keeps its precision: the same field carries FX and
+  // term-deposit cash amounts and fractional fund units, and rounding
+  // 12,125.43 GBP to 12,125 misstates the order on the blotter and the ticket.
   formatQuantity(value) {
     if (typeof value !== 'number' || isNaN(value)) return '0';
+    const isFractional = !Number.isInteger(value);
     return value.toLocaleString('en-US', {
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0
+      minimumFractionDigits: isFractional ? 2 : 0,
+      maximumFractionDigits: isFractional ? 4 : 0
     });
   },
 
@@ -379,10 +426,15 @@ export const OrderFormatters = {
     return `${year}-${String(number).padStart(5, '0')}`;
   },
 
+  // All order timestamps are displayed in Monaco time regardless of where the
+  // code runs (the server runs in UTC, so omitting the zone shifts PDF tickets).
+  DISPLAY_TIMEZONE: 'Europe/Monaco',
+
   // Format date for display
   formatDate(date) {
     if (!date) return 'N/A';
     return new Date(date).toLocaleDateString('en-US', {
+      timeZone: this.DISPLAY_TIMEZONE,
       year: 'numeric',
       month: 'short',
       day: 'numeric'
@@ -393,6 +445,7 @@ export const OrderFormatters = {
   formatDateTime(date) {
     if (!date) return 'N/A';
     return new Date(date).toLocaleString('en-US', {
+      timeZone: this.DISPLAY_TIMEZONE,
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -404,11 +457,12 @@ export const OrderFormatters = {
   // Format date as dd/mm/yy (short, no time)
   formatDateShort(date) {
     if (!date) return 'N/A';
-    const d = new Date(date);
-    const day = String(d.getDate()).padStart(2, '0');
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const year = String(d.getFullYear()).slice(-2);
-    return `${day}/${month}/${year}`;
+    return new Date(date).toLocaleDateString('en-GB', {
+      timeZone: this.DISPLAY_TIMEZONE,
+      day: '2-digit',
+      month: '2-digit',
+      year: '2-digit'
+    });
   },
 
   // Get status display label
@@ -487,11 +541,11 @@ export const OrderFormatters = {
   // Get termsheet status color
   getTermsheetColor(status) {
     const colors = {
-      [TERMSHEET_STATUSES.NONE]: '#6b7280',
+      [TERMSHEET_STATUSES.NONE]: '#f59e0b',
       [TERMSHEET_STATUSES.SENT]: '#f59e0b',
       [TERMSHEET_STATUSES.SIGNED]: '#10b981'
     };
-    return colors[status] || '#6b7280';
+    return colors[status] || '#f59e0b';
   },
 
   // Get booking status label
@@ -557,8 +611,9 @@ export function getOrderHealthCheck(order) {
     checks.push({ name: 'Order to issuer', ok: hasTrace(EMAIL_TRACE_TYPES.ORDER_TO_ISSUER) });
   }
 
-  // 5. Termsheet signed (structured products only, once sent+)
-  if (order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT && postSentStatuses.includes(order.status)) {
+  // 5. Termsheet signed (buy structured products only, once sent+). Sell orders
+  // never require a termsheet.
+  if (order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT && order.orderType === 'buy' && postSentStatuses.includes(order.status)) {
     checks.push({ name: 'Termsheet signed', ok: order.termsheetStatus === TERMSHEET_STATUSES.SIGNED });
   }
 
@@ -625,6 +680,32 @@ export const OrderHelpers = {
     }).countAsync();
   },
 
+  // Propagate a security reclassification to existing orders. When a security's
+  // classification changes in SecuritiesBase, every order referencing that ISIN
+  // should show the same asset type (mirrors PMSHoldingsHelpers.reclassifyByIsin).
+  // Returns the number of orders updated. Server-side only.
+  async reclassifyByIsin(isin, { securityType, securityName } = {}) {
+    if (!isin) throw new Error('ISIN is required for reclassification');
+    if (!securityType) throw new Error('securityType is required for reclassification');
+
+    const assetType = SECURITY_TYPE_TO_ASSET_TYPE[securityType] || ASSET_TYPES.OTHER;
+
+    const $set = { assetType, updatedAt: new Date() };
+    // Harmonize the display name across banks. Bank's raw `securityName` is left
+    // untouched; the canonical name lives in `displayName`.
+    if (securityName) $set.displayName = securityName;
+
+    // Only touch orders that actually carry this ISIN. FX / term-deposit orders
+    // have no ISIN and are therefore never affected.
+    const modified = await OrdersCollection.updateAsync(
+      { isin },
+      { $set },
+      { multi: true }
+    );
+
+    return { modifiedCount: modified, isin, assetType };
+  },
+
   // Check if user can place orders (RM or Admin only)
   canPlaceOrders(userRole) {
     return ['rm', 'assistant', 'admin', 'superadmin'].includes(userRole);
@@ -678,6 +759,18 @@ export const OrderHelpers = {
       });
     };
 
+    // For FX and term deposits the "quantity" is a cash amount, so it is always
+    // shown with its minor units (12,125.43 GBP) — same rule as the order
+    // ticket. Unit-based quantities stay whole unless genuinely fractional.
+    const isCashAmountQuantity = order.assetType === ASSET_TYPES.FX
+      || order.assetType === ASSET_TYPES.TERM_DEPOSIT;
+    const amountCurrency = order.fxAmountCurrency || order.depositCurrency || order.currency;
+    const formatQuantityForOrder = (value) => (
+      isCashAmountQuantity && typeof value === 'number' && !isNaN(value)
+        ? OrderFormatters.formatFxAmount(value, amountCurrency)
+        : OrderFormatters.formatQuantity(value)
+    );
+
     return {
       ...order,
       // Pre-format dates
@@ -687,8 +780,8 @@ export const OrderHelpers = {
       executionDateFormatted: OrderFormatters.formatDate(order.executionDate),
       cancelledAtFormatted: OrderFormatters.formatDateTime(order.cancelledAt),
       // Pre-format numbers
-      quantityFormatted: OrderFormatters.formatQuantity(order.quantity),
-      executedQuantityFormatted: OrderFormatters.formatQuantity(order.executedQuantity || 0),
+      quantityFormatted: formatQuantityForOrder(order.quantity),
+      executedQuantityFormatted: formatQuantityForOrder(order.executedQuantity || 0),
       limitPriceFormatted: order.limitPrice ? formatPriceForOrder(order.limitPrice) : null,
       executedPriceFormatted: order.executedPrice ? formatPriceForOrder(order.executedPrice) : null,
       estimatedValueFormatted: order.estimatedValue ? OrderFormatters.formatWithCurrency(order.estimatedValue, order.currency) : null,

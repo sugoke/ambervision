@@ -446,7 +446,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                     }}>
                       {underlying.ticker}
                       {underlying.isWorstPerforming && (
-                        <span style={{ fontSize: '0.75rem', color: '#ef4444' }}>⚠️</span>
+                        <span style={{ fontSize: '0.75rem', color: '#b91c1c' }}>⚠️</span>
                       )}
                     </div>
 
@@ -465,7 +465,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                         top: 0,
                         bottom: 0,
                         width: '2px',
-                        background: '#94a3b8',
+                        background: '#5c656d',
                         zIndex: 1
                       }} />
 
@@ -477,7 +477,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                           top: '-4px',
                           bottom: '-4px',
                           width: '3px',
-                          background: '#3b82f6',
+                          background: '#1d4ed8',
                           zIndex: 2
                         }}>
                           {index === 0 && (
@@ -487,7 +487,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                               left: '50%',
                               transform: 'translateX(-50%)',
                               fontSize: '0.6rem',
-                              color: '#3b82f6',
+                              color: '#1d4ed8',
                               fontWeight: 700,
                               whiteSpace: 'nowrap',
                               background: '#f8fafc',
@@ -508,10 +508,10 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                         bottom: '4px',
                         width: `${barWidth}%`,
                         background: underlying.barrierStatus === 'breached'
-                          ? 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)'
+                          ? 'linear-gradient(90deg, #b91c1c 0%, #dc2626 100%)'
                           : underlying.barrierStatus === 'near'
-                            ? 'linear-gradient(90deg, #f59e0b 0%, #d97706 100%)'
-                            : 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
+                            ? 'linear-gradient(90deg, #b45309 0%, #d97706 100%)'
+                            : 'linear-gradient(90deg, #047857 0%, #059669 100%)',
                         borderRadius: '3px',
                         zIndex: 3
                       }} />
@@ -560,10 +560,10 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                       fontSize: '0.85rem',
                       fontWeight: 700,
                       color: underlying.barrierStatus === 'breached'
-                        ? '#ef4444'
+                        ? '#b91c1c'
                         : underlying.barrierStatus === 'near'
-                          ? '#f59e0b'
-                          : '#10b981',
+                          ? '#b45309'
+                          : '#047857',
                       textAlign: 'right',
                       fontFamily: 'monospace'
                     }}>
@@ -590,7 +590,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                 <div style={{
                   width: '16px',
                   height: '10px',
-                  background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
+                  background: 'linear-gradient(90deg, #047857 0%, #059669 100%)',
                   borderRadius: '2px'
                 }} />
                 <span>{tr.aboveBarrierSafe}</span>
@@ -599,7 +599,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                 <div style={{
                   width: '16px',
                   height: '10px',
-                  background: 'linear-gradient(90deg, #f59e0b 0%, #d97706 100%)',
+                  background: 'linear-gradient(90deg, #b45309 0%, #d97706 100%)',
                   borderRadius: '2px'
                 }} />
                 <span>{tr.nearBarrierWarning}</span>
@@ -608,7 +608,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                 <div style={{
                   width: '16px',
                   height: '10px',
-                  background: 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)',
+                  background: 'linear-gradient(90deg, #b91c1c 0%, #dc2626 100%)',
                   borderRadius: '2px'
                 }} />
                 <span>{tr.belowBarrierBreached}</span>
@@ -618,7 +618,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
                   <div style={{
                     width: '3px',
                     height: '14px',
-                    background: '#3b82f6'
+                    background: '#1d4ed8'
                   }} />
                   <span>{tr.protectionBarrier} ({phoenixParams.protectionBarrier}%)</span>
                 </div>
@@ -967,7 +967,7 @@ const PhoenixReportPDF = ({ productId: propProductId }) => {
       {/* Footer */}
       <div style={styles.footer}>
         <p>{tr.generatedBy} • {new Date().toLocaleString(getLocale(lang))}</p>
-        <p style={{fontSize: '0.75rem', color: '#9ca3af'}}>
+        <p style={{fontSize: '0.75rem', color: '#5c656d'}}>
           {tr.reportGeneratedOn} {formatDate(latestReport.evaluationDate || latestReport.createdAt)}
         </p>
       </div>

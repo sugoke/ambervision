@@ -693,7 +693,7 @@ const AppContent = () => {
                           borderRadius: '50%',
                           border: 'none',
                           background: viewAsFilter
-                            ? 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)'
+                            ? 'linear-gradient(135deg, var(--info-color) 0%, #2563eb 100%)'
                             : 'linear-gradient(135deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%)',
                           color: viewAsFilter ? '#fff' : 'var(--text-primary)',
                           fontSize: '1rem',
@@ -1213,7 +1213,7 @@ const AppContent = () => {
                             justifyContent: 'center',
                             transition: 'all 0.15s ease'
                           }}
-                          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.12)'; e.currentTarget.style.color = '#ef4444'; }}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.12)'; e.currentTarget.style.color = 'var(--loss-color)'; }}
                           onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
                         >
                           ×

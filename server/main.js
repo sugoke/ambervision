@@ -18,6 +18,7 @@ if (process.env.METEOR_SETTINGS) {
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { Random } from 'meteor/random';
+import { authorizeDocumentRequest } from './documentAccess.js';
 import { WebApp } from 'meteor/webapp';
 import { MongoInternals } from 'meteor/mongo';
 
@@ -66,6 +67,7 @@ import { BankFileStructuresCollection, BankFileStructureHelpers } from '/imports
 import { globalProductValidator } from '/imports/api/validators/productStructureValidator.js';
 import '/imports/api/reports';
 import '/imports/api/templateReports';
+import '/imports/api/genericProducts';
 import '/imports/api/underlyingsAnalysis';
 import '/imports/api/riskAnalysis';
 import '/imports/api/portfolioReviews';
@@ -103,10 +105,13 @@ import './methods/orderMethods';
 import './methods/manualPriceTrackerMethods';
 import './methods/clientEntityMethods';
 import './methods/mcpTokenMethods';
+import './methods/dataQualityMethods';
+import './methods/demoClientMethods';
 import './methods/oauthMethods';
 import '/imports/api/meetingReports'; // Client meeting reports — collection + methods
 import './publications/meetingReports';
 import './mcp/mcpHttpHandler'; // MCP Streamable HTTP endpoint at /mcp (also mounts OAuth endpoints)
+import './telekursIngestHandler'; // Telekurs.xlsx price ingest endpoint at POST /api/telekurs/quotes
 import './pdfAuth'; // PDF authentication middleware
 import './publications/underlyingsAnalysis';
 import './publications/bankConnections';
@@ -155,7 +160,7 @@ Meteor.startup(async () => {
     console.log('⚠️  SFTP_PRIVATE_KEY not found in Meteor.settings.private');
   }
 
-  // Seed market data provider configuration (EOD, Twelve Data, ...)
+  // Seed market data provider configuration (EOD, Telekurs, ...)
   try {
     await seedDataProviders();
   } catch (error) {
@@ -6637,11 +6642,19 @@ import fs from 'fs';
 import path from 'path';
 
 WebApp.connectHandlers.use('/termsheets', async (req, res, next) => {
-  // URL format: /termsheets/{filename} (flat structure)
-  const urlParts = req.url.split('/').filter(p => p);
+  // URL format: /termsheets/{filename}?dl=<token> (flat structure)
+  const urlParts = req.url.split('?')[0].split('/').filter(p => p);
 
   if (urlParts.length !== 1) {
     return next();
+  }
+
+  // Require a single-use capability token minted by products.getTermSheetUrl.
+  const auth = await authorizeDocumentRequest(req);
+  if (!auth) {
+    res.writeHead(401, { 'Content-Type': 'text/plain' });
+    res.end('Unauthorized');
+    return;
   }
 
   const filename = decodeURIComponent(urlParts[0]);
@@ -6723,6 +6736,14 @@ WebApp.connectHandlers.use('/meetingReports', async (req, res, next) => {
   const filename = decodeURIComponent(urlParts[0]);
   if (!/^[A-Za-z0-9_-]+\.pdf$/.test(filename)) return next();
 
+  // Require a single-use capability token minted by meetingReports.generatePdf.
+  const auth = await authorizeDocumentRequest(req);
+  if (!auth) {
+    res.writeHead(401, { 'Content-Type': 'text/plain' });
+    res.end('Unauthorized');
+    return;
+  }
+
   let baseDir = process.env.MEETING_REPORTS_PATH;
   if (!baseDir) {
     let projectRoot = process.cwd();
@@ -6767,8 +6788,9 @@ WebApp.connectHandlers.use('/meetingReports', async (req, res, next) => {
 
 // Server-side routing for client documents (fichier_central) from persistent volume
 WebApp.connectHandlers.use('/fichier_central', async (req, res, next) => {
-  // URL format: /fichier_central/{userId}/{filename}
-  const urlParts = req.url.split('/').filter(p => p);
+  // URL format: /fichier_central/{userId}/{filename}?dl=<token>
+  // Strip the query string before splitting into path parts.
+  const urlParts = req.url.split('?')[0].split('/').filter(p => p);
 
   // If we're in development (no FICHIER_CENTRAL_PATH), let Meteor serve from public/
   if (!process.env.FICHIER_CENTRAL_PATH) {
@@ -6779,7 +6801,16 @@ WebApp.connectHandlers.use('/fichier_central', async (req, res, next) => {
     return next();
   }
 
-  const [userId, filename] = urlParts;
+  // These are KYC/PII documents — require a valid, single-use capability token
+  // minted by clientDocuments.getDownloadUrl for this exact path.
+  const auth = await authorizeDocumentRequest(req);
+  if (!auth) {
+    res.writeHead(401, { 'Content-Type': 'text/plain' });
+    res.end('Unauthorized');
+    return;
+  }
+
+  const [userId, filename] = urlParts.map(decodeURIComponent);
 
   try {
     // Construct file path from FICHIER_CENTRAL_PATH
@@ -6836,14 +6867,23 @@ WebApp.connectHandlers.use('/fichier_central', async (req, res, next) => {
 
 // Server-side routing for order email traces
 WebApp.connectHandlers.use('/order_traces', async (req, res, next) => {
-  // URL format: /order_traces/{orderId}/{filename}
-  const urlParts = req.url.split('/').filter(p => p);
+  // URL format: /order_traces/{orderId}/{filename}?dl=<token>
+  const urlParts = req.url.split('?')[0].split('/').filter(p => p);
 
   if (urlParts.length !== 2) {
     return next();
   }
 
-  const [orderId, filename] = urlParts;
+  // Require a single-use capability token minted by orders.getEmailTraceUrl /
+  // orders.getEmailTraceSignedUrls.
+  const auth = await authorizeDocumentRequest(req);
+  if (!auth) {
+    res.writeHead(401, { 'Content-Type': 'text/plain' });
+    res.end('Unauthorized');
+    return;
+  }
+
+  const [orderId, filename] = urlParts.map(decodeURIComponent);
 
   try {
     // Resolve base path: FICHIER_CENTRAL_PATH in production, .fichier_central/ in dev
@@ -6912,51 +6952,13 @@ WebApp.connectHandlers.use('/order_traces', async (req, res, next) => {
   }
 });
 
-// Temporary in-memory store for .eml files (auto-expires after 60s)
-const emlStore = new Map();
-
-// Clean up expired entries every 30s
-Meteor.setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of emlStore) {
-    if (now - entry.createdAt > 60000) emlStore.delete(key);
-  }
-}, 30000);
-
-// Server method to store .eml content and return a token
-Meteor.methods({
-  'eml.store'(emlContent, filename) {
-    check(emlContent, String);
-    check(filename, String);
-    const token = Random.id(20);
-    emlStore.set(token, { content: emlContent, filename, createdAt: Date.now() });
-    return token;
-  }
-});
-
-// Route to serve .eml files — Chrome auto-opens with Outlook if configured
-// URL format: /eml/{token}/{filename.eml}
-WebApp.connectHandlers.use('/eml', (req, res, next) => {
-  const parts = req.url.split('/').filter(p => p);
-  if (parts.length < 1) { return next(); }
-  const token = parts[0];
-  const entry = emlStore.get(token);
-  if (!entry) {
-    res.writeHead(404, { 'Content-Type': 'text/plain' });
-    res.end('Not found or expired');
-    return;
-  }
-  // Delete after first access (one-time use)
-  emlStore.delete(token);
-
-  const buffer = Buffer.from(entry.content, 'utf-8');
-  res.writeHead(200, {
-    'Content-Type': 'message/rfc822',
-    'Content-Length': buffer.length,
-    'Content-Disposition': `attachment; filename="${entry.filename}"`
-  });
-  res.end(buffer);
-});
+// NOTE: The former `eml.store` method + `/eml/{token}` route were removed
+// (M-10). They were unauthenticated — any anonymous DDP client could push
+// unbounded strings into an in-process Map (heap-exhaustion primitive) and have
+// them served back from our domain — and had no remaining callers: the .eml
+// export flow now builds the file client-side and downloads it via a Blob
+// (see imports/ui/OrderBook.jsx buildEmlFile). If a server-hosted .eml is ever
+// needed again, gate the method on a valid session and cap the content length.
 
 
 // Trigger restart

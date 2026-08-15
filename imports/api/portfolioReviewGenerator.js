@@ -1532,7 +1532,8 @@ Write the commentaries now as a JSON array:`;
           analyses.push({
             holdingId: h._id,
             isin: h.isin || '',
-            securityName: h.securityName || 'Unknown',
+            // Harmonized name across banks (canonical displayName if set)
+            securityName: h.displayName || h.securityName || 'Unknown',
             securityType: typeName.toUpperCase().replace(/ /g, '_'),
             assetClass: h.assetClass || 'other',
             currency: h.currency || 'EUR',
@@ -1554,7 +1555,8 @@ Write the commentaries now as a JSON array:`;
           analyses.push({
             holdingId: h._id,
             isin: h.isin || '',
-            securityName: h.securityName || 'Unknown',
+            // Harmonized name across banks (canonical displayName if set)
+            securityName: h.displayName || h.securityName || 'Unknown',
             securityType: typeName.toUpperCase().replace(/ /g, '_'),
             assetClass: h.assetClass || 'other',
             currency: h.currency || 'EUR',

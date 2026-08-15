@@ -17,8 +17,10 @@ const RiskReportModal = ({ report, onClose, isGenerating = false, progress = nul
 
   // Export an Excel workbook of the products that have a stock below the barrier
   const handleExportExcel = () => {
-    if (!report || !report.analyses || report.analyses.length === 0) {
-      console.log('[RiskReport] No products below barrier - skipping Excel export');
+    const hasBreaches = report && report.analyses && report.analyses.length > 0;
+    const hasProductsDown = report && report.productsDownSinceLaunch && report.productsDownSinceLaunch.length > 0;
+    if (!hasBreaches && !hasProductsDown) {
+      console.log('[RiskReport] No products below barrier or down 15%+ - skipping Excel export');
       return;
     }
 
@@ -38,7 +40,7 @@ const RiskReportModal = ({ report, onClose, isGenerating = false, progress = nul
 
     // Sheet 2: one row per product / breaching underlying pair
     const detailRows = [];
-    report.analyses.forEach(analysis => {
+    (report.analyses || []).forEach(analysis => {
       (analysis.products || []).forEach(product => {
         detailRows.push({
           'Product': product.productTitle || '',
@@ -86,6 +88,47 @@ const RiskReportModal = ({ report, onClose, isGenerating = false, progress = nul
       const wsDetails = XLSX.utils.json_to_sheet(detailRows);
       wsDetails['!cols'] = autoSizeColumns(detailRows);
       XLSX.utils.book_append_sheet(wb, wsDetails, 'Breach Details');
+    }
+
+    // Sheet 3: one row per product-down-15% / declining underlying pair
+    const productsDownRows = [];
+    (report.productsDownSinceLaunch || []).forEach(product => {
+      const baseRow = {
+        'Product': product.productTitle || '',
+        'ISIN': product.productIsin || '',
+        'Currency': product.currency || '',
+        'Latest Price': product.latestPrice != null ? Number(product.latestPrice.toFixed(2)) : '',
+        'Price Date': product.priceDate ? new Date(product.priceDate).toISOString().split('T')[0] : '',
+        'Baseline Cost': product.baselineCost != null ? Number(product.baselineCost.toFixed(2)) : '',
+        'Loss (%)': product.lossPercent != null ? Number(product.lossPercent.toFixed(1)) : ''
+      };
+      if (product.underlyings && product.underlyings.length > 0) {
+        product.underlyings.forEach(underlying => {
+          productsDownRows.push({
+            ...baseRow,
+            'Underlying': underlying.symbol || '',
+            'Company': underlying.name || '',
+            'Underlying Performance (%)': underlying.performance != null
+              ? Number(underlying.performance.toFixed(2))
+              : '',
+            'Comment Reused': underlying.reused ? 'Yes' : 'No'
+          });
+        });
+      } else {
+        productsDownRows.push({
+          ...baseRow,
+          'Underlying': '',
+          'Company': '',
+          'Underlying Performance (%)': '',
+          'Comment Reused': ''
+        });
+      }
+    });
+
+    if (productsDownRows.length > 0) {
+      const wsProductsDown = XLSX.utils.json_to_sheet(productsDownRows);
+      wsProductsDown['!cols'] = autoSizeColumns(productsDownRows);
+      XLSX.utils.book_append_sheet(wb, wsProductsDown, 'Products Down 15%');
     }
 
     if (wb.SheetNames.length === 0) {
@@ -154,6 +197,34 @@ const RiskReportModal = ({ report, onClose, isGenerating = false, progress = nul
 
       exportText += `\n`;
     });
+
+    if (report.productsDownSinceLaunch && report.productsDownSinceLaunch.length > 0) {
+      exportText += `PRODUCTS DOWN 15%+ SINCE LAUNCH\n`;
+      exportText += `${'='.repeat(80)}\n\n`;
+
+      report.productsDownSinceLaunch.forEach((product, index) => {
+        exportText += `${index + 1}. ${product.productTitle} (${product.productIsin})\n`;
+        exportText += `${'-'.repeat(80)}\n`;
+        const priceDateText = product.priceDate ? ` (${new Date(product.priceDate).toLocaleDateString()})` : '';
+        exportText += `Latest Price: ${product.latestPrice != null ? product.latestPrice.toFixed(2) : 'N/A'}${priceDateText}\n`;
+        exportText += `Baseline Cost: ${product.baselineCost != null ? product.baselineCost.toFixed(2) : 'N/A'}\n`;
+        exportText += `Loss Since Launch: ${product.lossPercent.toFixed(1)}%\n\n`;
+
+        if (product.note === 'no-declining-underlyings') {
+          exportText += `Loss not attributable to underlying equity performance (no declining underlyings).\n\n`;
+        } else if (product.underlyingsDataUnavailable) {
+          exportText += `Underlying data unavailable for this product.\n\n`;
+        } else {
+          (product.underlyings || []).forEach(underlying => {
+            const perfText = underlying.performance != null ? `${underlying.performance.toFixed(2)}%` : 'N/A';
+            exportText += `${underlying.symbol} (${underlying.name}): ${perfText}${underlying.reused ? ' [comment reused]' : ''}\n`;
+            exportText += `${underlying.analysis}\n\n`;
+          });
+        }
+
+        exportText += `\n`;
+      });
+    }
 
     // Create and download the file
     const blob = new Blob([exportText], { type: 'text/plain' });
@@ -299,7 +370,7 @@ const RiskReportModal = ({ report, onClose, isGenerating = false, progress = nul
                   onClick={handleExport}
                   style={{
                     padding: '0.625rem 1.25rem',
-                    background: '#3b82f6',
+                    background: 'var(--info-color)',
                     color: 'white',
                     border: 'none',
                     borderRadius: '8px',
@@ -316,7 +387,7 @@ const RiskReportModal = ({ report, onClose, isGenerating = false, progress = nul
                     e.currentTarget.style.transform = 'translateY(-1px)';
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.background = '#3b82f6';
+                    e.currentTarget.style.background = 'var(--info-color)';
                     e.currentTarget.style.transform = 'translateY(0)';
                   }}
                 >
@@ -327,7 +398,7 @@ const RiskReportModal = ({ report, onClose, isGenerating = false, progress = nul
                   onClick={handlePrint}
                   style={{
                     padding: '0.625rem 1.25rem',
-                    background: '#10b981',
+                    background: 'var(--gain-color)',
                     color: 'white',
                     border: 'none',
                     borderRadius: '8px',
@@ -344,7 +415,7 @@ const RiskReportModal = ({ report, onClose, isGenerating = false, progress = nul
                     e.currentTarget.style.transform = 'translateY(-1px)';
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.background = '#10b981';
+                    e.currentTarget.style.background = 'var(--gain-color)';
                     e.currentTarget.style.transform = 'translateY(0)';
                   }}
                 >
@@ -426,7 +497,7 @@ const RiskReportModal = ({ report, onClose, isGenerating = false, progress = nul
                   width: '60px',
                   height: '60px',
                   border: '4px solid ' + (isDarkMode ? '#374151' : '#e5e7eb'),
-                  borderTopColor: '#3b82f6',
+                  borderTopColor: 'var(--info-color)',
                   borderRadius: '50%',
                   animation: 'spin 1s linear infinite',
                   marginBottom: '1.5rem'

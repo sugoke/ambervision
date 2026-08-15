@@ -13,7 +13,7 @@ import { getTranslation, t } from '../../utils/reportTranslations';
  * observation schedule, and detailed charts.
  * Supports multiple languages (EN/FR) via URL parameter.
  */
-const PhoenixReport = ({ results, productId }) => {
+const PhoenixReport = ({ results, productId, product }) => {
   // Get language from URL params
   const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
   const lang = urlParams?.get('lang') || 'en';
@@ -24,6 +24,12 @@ const PhoenixReport = ({ results, productId }) => {
   const features = results.features || {};
   const placeholder = results.placeholderResults || {};
   const underlyings = results.underlyings || [];
+
+  // Data-quality issues recorded during evaluation. These change how the numbers below
+  // should be read (e.g. a price feed that doesn't match the term sheet), so they belong
+  // on the report itself and not only on the dashboard's hover badge.
+  const processingIssues = product?.processingIssues || [];
+  const blockingIssues = processingIssues.filter(i => i.severity === 'error' || i.severity === 'warning');
 
   // Debug: Log prediction data
   React.useEffect(() => {
@@ -55,6 +61,36 @@ const PhoenixReport = ({ results, productId }) => {
 
   return (
     <div>
+      {/* Data-quality banner — shown above everything because it qualifies every figure below */}
+      {blockingIssues.length > 0 && (
+        <div
+          className="pdf-card"
+          style={{
+            background: 'rgba(245, 158, 11, 0.08)',
+            border: '1px solid rgba(245, 158, 11, 0.4)',
+            borderLeft: '4px solid var(--warning-color)',
+            borderRadius: '8px',
+            padding: '14px 16px',
+            marginBottom: '16px'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+            <span style={{ fontSize: '16px' }}>⚠️</span>
+            <span style={{ fontWeight: '700', fontSize: '13px', color: '#b45309', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              {tr.dataQualityWarning || 'Data quality'}
+            </span>
+          </div>
+          <ul style={{ margin: 0, paddingLeft: '24px', color: 'var(--text-secondary)', fontSize: '13px', lineHeight: 1.6 }}>
+            {blockingIssues.map((issue, idx) => (
+              <li key={issue.code ? `${issue.code}-${idx}` : idx}>{issue.message}</li>
+            ))}
+          </ul>
+          <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+            {tr.dataQualityWarningHint || 'Figures below may not reflect the term sheet until this is resolved.'}
+          </div>
+        </div>
+      )}
+
       {/* Underlying Assets Performance Card */}
       {underlyings.length > 0 && (
         <div className="pdf-card" style={{
@@ -84,8 +120,8 @@ const PhoenixReport = ({ results, productId }) => {
                 padding: '1.25rem',
                 borderRadius: '8px',
                 border: underlying.isWorstPerforming
-                  ? '2px solid #ef4444'
-                  : `1px solid ${underlying.isPositive ? '#10b981' : '#ef4444'}20`,
+                  ? '2px solid var(--loss-color)'
+                  : `1px solid ${underlying.isPositive ? 'var(--gain-color)' : 'var(--loss-color)'}20`,
                 boxShadow: underlying.isWorstPerforming
                   ? '0 0 0 1px rgba(239, 68, 68, 0.1)'
                   : 'none'
@@ -166,7 +202,7 @@ const PhoenixReport = ({ results, productId }) => {
                         <span
                           style={{
                             fontSize: '0.9rem',
-                            color: '#10b981',
+                            color: 'var(--gain-color)',
                             cursor: 'help'
                           }}
                           title={`${tr.flaggedForMemoryAutocall} ${underlying.memoryAutocallFlaggedDateFormatted || 'N/A'}`}
@@ -260,7 +296,7 @@ const PhoenixReport = ({ results, productId }) => {
                     }}>
                       {underlying.currentPriceFormatted}
                       {underlying.isRedeemed && underlying.priceSource === 'initial_fallback_error' && (
-                        <span style={{ fontSize: '0.7rem', marginLeft: '0.25rem', color: '#ef4444' }} title="Missing historical data">⚠️</span>
+                        <span style={{ fontSize: '0.7rem', marginLeft: '0.25rem', color: 'var(--loss-color)' }} title="Missing historical data">⚠️</span>
                       )}
                     </div>
                     {underlying.priceDateFormatted && (
@@ -307,7 +343,7 @@ const PhoenixReport = ({ results, productId }) => {
                     <div style={{
                       fontSize: '1.2rem',
                       fontWeight: '700',
-                      color: underlying.isPositive ? '#10b981' : '#ef4444',
+                      color: underlying.isPositive ? 'var(--gain-color)' : 'var(--loss-color)',
                       fontFamily: 'monospace'
                     }}>
                       {underlying.performanceFormatted}
@@ -339,16 +375,16 @@ const PhoenixReport = ({ results, productId }) => {
                     <div style={{
                       fontSize: '1.1rem',
                       fontWeight: '700',
-                      color: underlying.barrierStatus === 'breached' ? '#ef4444' :
-                             underlying.barrierStatus === 'near' ? '#f59e0b' : '#10b981',
+                      color: underlying.barrierStatus === 'breached' ? 'var(--loss-color)' :
+                             underlying.barrierStatus === 'near' ? 'var(--warning-color)' : 'var(--gain-color)',
                       fontFamily: 'monospace'
                     }}>
                       {underlying.distanceToBarrierFormatted}
                     </div>
                     <div style={{
                       fontSize: '0.7rem',
-                      color: underlying.barrierStatus === 'breached' ? '#ef4444' :
-                             underlying.barrierStatus === 'near' ? '#f59e0b' : '#10b981',
+                      color: underlying.barrierStatus === 'breached' ? 'var(--loss-color)' :
+                             underlying.barrierStatus === 'near' ? 'var(--warning-color)' : 'var(--gain-color)',
                       marginTop: '0.35rem',
                       fontWeight: '600'
                     }}>
@@ -458,7 +494,7 @@ const PhoenixReport = ({ results, productId }) => {
                     }}>
                       {underlying.ticker}
                       {underlying.isWorstPerforming && (
-                        <span style={{ fontSize: '0.75rem', color: '#ef4444' }} title={tr.worstPerforming}>⚠️</span>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--loss-color)' }} title={tr.worstPerforming}>⚠️</span>
                       )}
                     </div>
 
@@ -523,10 +559,10 @@ const PhoenixReport = ({ results, productId }) => {
                         bottom: '4px',
                         width: `${barWidth}%`,
                         background: underlying.barrierStatus === 'breached'
-                          ? 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)'
+                          ? 'linear-gradient(90deg, var(--loss-color) 0%, #dc2626 100%)'
                           : underlying.barrierStatus === 'near'
-                            ? 'linear-gradient(90deg, #f59e0b 0%, #d97706 100%)'
-                            : 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
+                            ? 'linear-gradient(90deg, var(--warning-color) 0%, #d97706 100%)'
+                            : 'linear-gradient(90deg, var(--gain-color) 0%, #059669 100%)',
                         borderRadius: '3px',
                         transition: 'all 0.3s ease',
                         boxShadow: underlying.barrierStatus === 'breached'
@@ -584,10 +620,10 @@ const PhoenixReport = ({ results, productId }) => {
                       fontSize: '0.9rem',
                       fontWeight: '700',
                       color: underlying.barrierStatus === 'breached'
-                        ? '#ef4444'
+                        ? 'var(--loss-color)'
                         : underlying.barrierStatus === 'near'
-                          ? '#f59e0b'
-                          : '#10b981',
+                          ? 'var(--warning-color)'
+                          : 'var(--gain-color)',
                       textAlign: 'right',
                       fontFamily: 'monospace'
                     }}>
@@ -613,7 +649,7 @@ const PhoenixReport = ({ results, productId }) => {
                 <div style={{
                   width: '20px',
                   height: '12px',
-                  background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
+                  background: 'linear-gradient(90deg, var(--gain-color) 0%, #059669 100%)',
                   borderRadius: '2px'
                 }} />
                 <span>{tr.aboveBarrierSafe}</span>
@@ -622,7 +658,7 @@ const PhoenixReport = ({ results, productId }) => {
                 <div style={{
                   width: '20px',
                   height: '12px',
-                  background: 'linear-gradient(90deg, #f59e0b 0%, #d97706 100%)',
+                  background: 'linear-gradient(90deg, var(--warning-color) 0%, #d97706 100%)',
                   borderRadius: '2px'
                 }} />
                 <span>{tr.nearBarrierWarning}</span>
@@ -631,7 +667,7 @@ const PhoenixReport = ({ results, productId }) => {
                 <div style={{
                   width: '20px',
                   height: '12px',
-                  background: 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)',
+                  background: 'linear-gradient(90deg, var(--loss-color) 0%, #dc2626 100%)',
                   borderRadius: '2px'
                 }} />
                 <span>{tr.belowBarrierBreached}</span>
@@ -704,8 +740,8 @@ const PhoenixReport = ({ results, productId }) => {
             🛡️ {tr.capitalProtectionAnalysis}
             <span style={{
               fontSize: '0.8rem',
-              background: results.basketAnalysis.breachedCount > 0 ? '#ef4444' :
-                         results.basketAnalysis.nearCount > 0 ? '#f59e0b' : '#10b981',
+              background: results.basketAnalysis.breachedCount > 0 ? 'var(--loss-color)' :
+                         results.basketAnalysis.nearCount > 0 ? 'var(--warning-color)' : 'var(--gain-color)',
               color: 'white',
               padding: '4px 8px',
               borderRadius: '4px',
@@ -729,7 +765,7 @@ const PhoenixReport = ({ results, productId }) => {
               <div style={{
                 fontSize: '1.5rem',
                 fontWeight: '700',
-                color: results.basketAnalysis.criticalDistance >= 0 ? '#10b981' : '#ef4444',
+                color: results.basketAnalysis.criticalDistance >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                 marginBottom: '0.5rem'
               }}>
                 {results.basketAnalysis.criticalDistanceFormatted}
@@ -752,7 +788,7 @@ const PhoenixReport = ({ results, productId }) => {
               <div style={{
                 fontSize: '1.5rem',
                 fontWeight: '700',
-                color: '#10b981',
+                color: 'var(--gain-color)',
                 marginBottom: '0.5rem'
               }}>
                 {results.basketAnalysis.safeCount}
@@ -776,7 +812,7 @@ const PhoenixReport = ({ results, productId }) => {
                 <div style={{
                   fontSize: '1.5rem',
                   fontWeight: '700',
-                  color: '#f59e0b',
+                  color: 'var(--warning-color)',
                   marginBottom: '0.5rem'
                 }}>
                   {results.basketAnalysis.nearCount}
@@ -801,7 +837,7 @@ const PhoenixReport = ({ results, productId }) => {
                 <div style={{
                   fontSize: '1.5rem',
                   fontWeight: '700',
-                  color: '#ef4444',
+                  color: 'var(--loss-color)',
                   marginBottom: '0.5rem'
                 }}>
                   {results.basketAnalysis.breachedCount}
@@ -823,7 +859,7 @@ const PhoenixReport = ({ results, productId }) => {
       {results.indicativeMaturityValue && (results.indicativeMaturityValue.isLive || results.indicativeMaturityValue.isMatured || results.indicativeMaturityValue.isAutocalled) && (() => {
         const iv = results.indicativeMaturityValue;
         const isFinal = iv.isMatured || iv.isAutocalled;
-        const accentColor = isFinal ? (iv.pnlIsPositive ? '#10b981' : '#ef4444') : '#6366f1';
+        const accentColor = isFinal ? (iv.pnlIsPositive ? 'var(--gain-color)' : 'var(--loss-color)') : '#6366f1';
         const accentBg = isFinal
           ? (iv.pnlIsPositive ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)')
           : 'rgba(99, 102, 241, 0.1)';
@@ -924,7 +960,7 @@ const PhoenixReport = ({ results, productId }) => {
               <div style={{
                 fontSize: '1.5rem',
                 fontWeight: '700',
-                color: iv.pnlIsPositive ? '#10b981' : '#ef4444',
+                color: iv.pnlIsPositive ? 'var(--gain-color)' : 'var(--loss-color)',
                 fontFamily: 'monospace',
                 marginTop: '0.5rem'
               }}>
@@ -966,7 +1002,7 @@ const PhoenixReport = ({ results, productId }) => {
               <div style={{
                 fontSize: '1.8rem',
                 fontWeight: '700',
-                color: iv.capitalReturn < 100 ? '#ef4444' : 'var(--text-primary)',
+                color: iv.capitalReturn < 100 ? 'var(--loss-color)' : 'var(--text-primary)',
                 marginBottom: '0.5rem',
                 fontFamily: 'monospace'
               }}>
@@ -1001,7 +1037,7 @@ const PhoenixReport = ({ results, productId }) => {
               <div style={{
                 fontSize: '1.8rem',
                 fontWeight: '700',
-                color: iv.couponsEarned > 0 ? '#10b981' : 'var(--text-muted)',
+                color: iv.couponsEarned > 0 ? 'var(--gain-color)' : 'var(--text-muted)',
                 marginBottom: '0.5rem',
                 fontFamily: 'monospace'
               }}>
@@ -1036,7 +1072,7 @@ const PhoenixReport = ({ results, productId }) => {
                 <div style={{
                   fontSize: '1.8rem',
                   fontWeight: '700',
-                  color: iv.memoryCouponsForfeit ? '#ef4444' : '#f59e0b',
+                  color: iv.memoryCouponsForfeit ? 'var(--loss-color)' : 'var(--warning-color)',
                   marginBottom: '0.5rem',
                   fontFamily: 'monospace',
                   textDecoration: iv.memoryCouponsForfeit ? 'line-through' : 'none'
@@ -1101,7 +1137,7 @@ const PhoenixReport = ({ results, productId }) => {
             {results.observationAnalysis.isEarlyAutocall && (
               <span style={{
                 fontSize: '0.8rem',
-                background: '#10b981',
+                background: 'var(--gain-color)',
                 color: 'white',
                 padding: '4px 8px',
                 borderRadius: '4px',
@@ -1137,7 +1173,7 @@ const PhoenixReport = ({ results, productId }) => {
             {results.observationAnalysis.hasMemoryCoupon && !results.observationAnalysis.hasGuaranteedCoupon && (
               <span style={{
                 fontSize: '0.8rem',
-                background: '#f59e0b',
+                background: 'var(--warning-color)',
                 color: 'white',
                 padding: '4px 8px',
                 borderRadius: '4px',
@@ -1149,7 +1185,7 @@ const PhoenixReport = ({ results, productId }) => {
             {results.observationAnalysis.hasGuaranteedCoupon && (
               <span style={{
                 fontSize: '0.8rem',
-                background: '#10b981',
+                background: 'var(--gain-color)',
                 color: 'white',
                 padding: '4px 8px',
                 borderRadius: '4px',
@@ -1201,7 +1237,7 @@ const PhoenixReport = ({ results, productId }) => {
                 <div style={{
                   fontSize: '1.2rem',
                   fontWeight: '700',
-                  color: results.observationAnalysis.totalMemoryCoupons > 0 ? '#f59e0b' : 'var(--text-muted)',
+                  color: results.observationAnalysis.totalMemoryCoupons > 0 ? 'var(--warning-color)' : 'var(--text-muted)',
                   marginBottom: '0.5rem'
                 }}>
                   {results.observationAnalysis.totalMemoryCouponsFormatted}
@@ -1305,7 +1341,7 @@ const PhoenixReport = ({ results, productId }) => {
                   <span style={{
                     fontSize: '0.75rem',
                     background: 'rgba(59, 130, 246, 0.2)',
-                    color: '#3b82f6',
+                    color: 'var(--info-color)',
                     padding: '4px 8px',
                     borderRadius: '4px',
                     fontWeight: '600'
@@ -1369,7 +1405,7 @@ const PhoenixReport = ({ results, productId }) => {
                       }}>
                         {results.observationAnalysis.nextObservationPrediction.outcomeType === 'autocall' && (
                           <span style={{
-                            background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                            background: 'linear-gradient(135deg, var(--info-color) 0%, #2563eb 100%)',
                             color: '#ffffff',
                             padding: '0.5rem 1rem',
                             borderRadius: '8px',
@@ -1441,7 +1477,7 @@ const PhoenixReport = ({ results, productId }) => {
                         )}
                         {results.observationAnalysis.nextObservationPrediction.outcomeType === 'no_event' && (
                           <span style={{
-                            color: '#94a3b8',
+                            color: 'var(--neutral-color)',
                             fontStyle: 'italic',
                             fontSize: '0.9rem',
                             fontWeight: '500'
@@ -1482,7 +1518,7 @@ const PhoenixReport = ({ results, productId }) => {
                     <div style={{
                       fontSize: '1.3rem',
                       fontWeight: '700',
-                      color: results.observationAnalysis.nextObservationPrediction.currentBasketLevel >= 0 ? '#10b981' : '#ef4444'
+                      color: results.observationAnalysis.nextObservationPrediction.currentBasketLevel >= 0 ? 'var(--gain-color)' : 'var(--loss-color)'
                     }}>
                       {results.observationAnalysis.nextObservationPrediction.currentBasketLevelFormatted}
                     </div>
@@ -1680,7 +1716,7 @@ const PhoenixReport = ({ results, productId }) => {
                             ? 'rgba(148, 163, 184, 0.05)'
                             : 'transparent',
                       borderLeft: isMostRecentObservation
-                        ? '4px solid #3b82f6'
+                        ? '4px solid var(--info-color)'
                         : isRedemptionRow
                           ? '4px solid #059669'
                           : isFinalObservation
@@ -1715,7 +1751,7 @@ const PhoenixReport = ({ results, productId }) => {
                         color: isRedemptionRow
                           ? '#ffffff'
                           : isFutureRow
-                            ? '#94a3b8'
+                            ? 'var(--neutral-color)'
                             : 'var(--text-primary)',
                         fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
                         fontWeight: isMostRecentObservation ? '700' : '600',
@@ -1739,7 +1775,7 @@ const PhoenixReport = ({ results, productId }) => {
                         color: isRedemptionRow
                           ? '#ffffff'
                           : isFutureRow
-                            ? '#94a3b8'
+                            ? 'var(--neutral-color)'
                             : 'var(--text-primary)',
                         fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
                         fontWeight: isMostRecentObservation ? '700' : '600',
@@ -1754,7 +1790,7 @@ const PhoenixReport = ({ results, productId }) => {
                             {obs.paymentConfirmed ? (
                               <span
                                 style={{
-                                  background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                                  background: 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
                                   color: '#ffffff',
                                   padding: '0.25rem 0.5rem',
                                   borderRadius: '6px',
@@ -1775,7 +1811,7 @@ const PhoenixReport = ({ results, productId }) => {
                             ) : obs.isPastDue ? (
                               <span
                                 style={{
-                                  background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
+                                  background: 'linear-gradient(135deg, var(--loss-color) 0%, #dc2626 100%)',
                                   color: '#ffffff',
                                   padding: '0.25rem 0.5rem',
                                   borderRadius: '6px',
@@ -1818,7 +1854,7 @@ const PhoenixReport = ({ results, productId }) => {
                             {obs.redemptionConfirmed ? (
                               <span
                                 style={{
-                                  background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                                  background: 'linear-gradient(135deg, var(--info-color) 0%, #2563eb 100%)',
                                   color: '#ffffff',
                                   padding: '0.25rem 0.5rem',
                                   borderRadius: '6px',
@@ -1918,7 +1954,7 @@ const PhoenixReport = ({ results, productId }) => {
                           : !obs.isCallable
                             ? '#cbd5e1'
                             : isFutureRow
-                              ? '#94a3b8'
+                              ? 'var(--neutral-color)'
                               : 'var(--text-primary)',
                         fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
                         textAlign: 'center',
@@ -1937,7 +1973,7 @@ const PhoenixReport = ({ results, productId }) => {
                       }}>
                         {obs.productCalled === null ? (
                           <span style={{
-                            color: '#94a3b8',
+                            color: 'var(--neutral-color)',
                             fontStyle: 'italic',
                             fontSize: '0.8rem',
                             fontWeight: '500'
@@ -2054,7 +2090,7 @@ const PhoenixReport = ({ results, productId }) => {
                               // No flags yet
                               return (
                                 <span style={{
-                                  color: isRedemptionRow ? 'rgba(255, 255, 255, 0.5)' : '#94a3b8',
+                                  color: isRedemptionRow ? 'rgba(255, 255, 255, 0.5)' : 'var(--neutral-color)',
                                   fontStyle: 'italic',
                                   fontSize: '0.7rem'
                                 }}>
@@ -2069,7 +2105,7 @@ const PhoenixReport = ({ results, productId }) => {
                                 <span style={{
                                   background: isRedemptionRow
                                     ? 'rgba(255, 255, 255, 0.3)'
-                                    : 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                                    : 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
                                   color: '#ffffff',
                                   padding: '0.35rem 0.65rem',
                                   borderRadius: '8px',
@@ -2098,7 +2134,7 @@ const PhoenixReport = ({ results, productId }) => {
                                   color: isRedemptionRow ? '#ffffff' : '#059669',
                                   fontSize: '0.7rem',
                                   fontWeight: '700',
-                                  border: flag.isNewFlag ? '1px solid #10b981' : 'none',
+                                  border: flag.isNewFlag ? '1px solid var(--gain-color)' : 'none',
                                   gap: '0.25rem'
                                 }}
                                 title={`${flag.ticker} flagged${flag.isNewFlag ? ' (new!)' : ''}`}

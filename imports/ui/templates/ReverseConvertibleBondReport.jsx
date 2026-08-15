@@ -42,7 +42,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
 
       {/* Product Structure Summary */}
       <div style={{
-        background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+        background: 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
         padding: '1.5rem',
         borderRadius: '8px',
         marginBottom: '1.5rem',
@@ -202,8 +202,8 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                 padding: '1.25rem',
                 borderRadius: '8px',
                 border: underlying.isWorstPerforming
-                  ? '2px solid #ef4444'
-                  : `1px solid ${underlying.isPositive ? '#10b981' : '#ef4444'}20`,
+                  ? '2px solid var(--loss-color)'
+                  : `1px solid ${underlying.isPositive ? 'var(--gain-color)' : 'var(--loss-color)'}20`,
                 boxShadow: underlying.isWorstPerforming
                   ? '0 0 0 1px rgba(239, 68, 68, 0.1)'
                   : 'none'
@@ -390,7 +390,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                     }}>
                       {underlying.currentPriceFormatted}
                       {underlying.priceSource === 'initial_fallback_error' && (
-                        <span style={{ fontSize: '0.7rem', marginLeft: '0.25rem', color: '#ef4444' }} title="Missing data">!</span>
+                        <span style={{ fontSize: '0.7rem', marginLeft: '0.25rem', color: 'var(--loss-color)' }} title="Missing data">!</span>
                       )}
                     </div>
                     {underlying.priceDateFormatted && (
@@ -437,7 +437,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                     <div style={{
                       fontSize: '1.2rem',
                       fontWeight: '700',
-                      color: underlying.isPositive ? '#10b981' : '#ef4444',
+                      color: underlying.isPositive ? 'var(--gain-color)' : 'var(--loss-color)',
                       fontFamily: 'monospace'
                     }}>
                       {underlying.performanceFormatted}
@@ -469,16 +469,16 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                     <div style={{
                       fontSize: '1.1rem',
                       fontWeight: '700',
-                      color: underlying.strikeStatus === 'breached' ? '#ef4444' :
-                             underlying.strikeStatus === 'near' ? '#f59e0b' : '#10b981',
+                      color: underlying.strikeStatus === 'breached' ? 'var(--loss-color)' :
+                             underlying.strikeStatus === 'near' ? 'var(--warning-color)' : 'var(--gain-color)',
                       fontFamily: 'monospace'
                     }}>
                       {underlying.distanceToStrikeFormatted}
                     </div>
                     <div style={{
                       fontSize: '0.7rem',
-                      color: underlying.strikeStatus === 'breached' ? '#ef4444' :
-                             underlying.strikeStatus === 'near' ? '#f59e0b' : '#10b981',
+                      color: underlying.strikeStatus === 'breached' ? 'var(--loss-color)' :
+                             underlying.strikeStatus === 'near' ? 'var(--warning-color)' : 'var(--gain-color)',
                       marginTop: '0.35rem',
                       fontWeight: '600'
                     }}>
@@ -512,7 +512,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
             {reverseConvertibleParams.strikeLevel && (
               <span style={{
                 fontSize: '0.75rem',
-                background: '#10b981',
+                background: 'var(--gain-color)',
                 color: 'white',
                 padding: '3px 8px',
                 borderRadius: '4px',
@@ -590,7 +590,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                     }}>
                       {underlying.ticker}
                       {underlying.isWorstPerforming && (
-                        <span style={{ fontSize: '0.75rem', color: '#ef4444' }} title="Worst Performing">!</span>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--loss-color)' }} title="Worst Performing">!</span>
                       )}
                     </div>
 
@@ -654,8 +654,8 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                         bottom: '4px',
                         width: `${barWidth}%`,
                         background: barDev >= 0
-                          ? 'linear-gradient(90deg, #10b981 0%, #059669 100%)'
-                          : 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)',
+                          ? 'linear-gradient(90deg, var(--gain-color) 0%, #059669 100%)'
+                          : 'linear-gradient(90deg, var(--loss-color) 0%, #dc2626 100%)',
                         borderRadius: '3px',
                         transition: 'all 0.3s ease',
                         boxShadow: barDev >= 0
@@ -708,7 +708,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                     <div style={{
                       fontSize: '0.9rem',
                       fontWeight: '700',
-                      color: barDev >= 0 ? '#10b981' : '#ef4444',
+                      color: barDev >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                       textAlign: 'right',
                       fontFamily: 'monospace'
                     }}>
@@ -742,7 +742,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                 <div style={{
                   width: '20px',
                   height: '12px',
-                  background: 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)',
+                  background: 'linear-gradient(90deg, var(--loss-color) 0%, #dc2626 100%)',
                   borderRadius: '2px'
                 }} />
                 <span>Price below initial</span>
@@ -751,7 +751,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                 <div style={{
                   width: '20px',
                   height: '12px',
-                  background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
+                  background: 'linear-gradient(90deg, var(--gain-color) 0%, #059669 100%)',
                   borderRadius: '2px'
                 }} />
                 <span>Price above initial</span>
@@ -792,8 +792,8 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
             Strike Analysis
             <span style={{
               fontSize: '0.8rem',
-              background: basketAnalysis.breachedCount > 0 ? '#ef4444' :
-                         basketAnalysis.nearCount > 0 ? '#f59e0b' : '#10b981',
+              background: basketAnalysis.breachedCount > 0 ? 'var(--loss-color)' :
+                         basketAnalysis.nearCount > 0 ? 'var(--warning-color)' : 'var(--gain-color)',
               color: 'white',
               padding: '4px 8px',
               borderRadius: '4px',
@@ -817,7 +817,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
               <div style={{
                 fontSize: '1.5rem',
                 fontWeight: '700',
-                color: basketAnalysis.criticalDistance >= 0 ? '#10b981' : '#ef4444',
+                color: basketAnalysis.criticalDistance >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                 marginBottom: '0.5rem'
               }}>
                 {basketAnalysis.criticalDistanceFormatted}
@@ -840,7 +840,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
               <div style={{
                 fontSize: '1.5rem',
                 fontWeight: '700',
-                color: '#10b981',
+                color: 'var(--gain-color)',
                 marginBottom: '0.5rem'
               }}>
                 {basketAnalysis.safeCount}
@@ -864,7 +864,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                 <div style={{
                   fontSize: '1.5rem',
                   fontWeight: '700',
-                  color: '#f59e0b',
+                  color: 'var(--warning-color)',
                   marginBottom: '0.5rem'
                 }}>
                   {basketAnalysis.nearCount}
@@ -889,7 +889,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
                 <div style={{
                   fontSize: '1.5rem',
                   fontWeight: '700',
-                  color: '#ef4444',
+                  color: 'var(--loss-color)',
                   marginBottom: '0.5rem'
                 }}>
                   {basketAnalysis.breachedCount}
@@ -912,7 +912,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
         <div style={{
           background: redemption.strikeBreached
             ? 'rgba(249, 115, 22, 0.15)'
-            : 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+            : 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
           padding: '1.5rem',
           borderRadius: '8px',
           marginBottom: '1.5rem',
@@ -981,7 +981,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
             <div style={{
               fontSize: '3rem',
               fontWeight: '800',
-              color: redemption.strikeBreached ? '#ea580c' : '#10b981',
+              color: redemption.strikeBreached ? '#ea580c' : 'var(--gain-color)',
               fontFamily: 'monospace',
               lineHeight: '1'
             }}>
@@ -989,7 +989,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
             </div>
             <div style={{
               fontSize: '0.75rem',
-              color: '#94a3b8',
+              color: 'var(--neutral-color)',
               marginTop: '0.5rem'
             }}>
               {redemption.formula}
@@ -1057,7 +1057,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
               <div style={{
                 fontSize: '1.8rem',
                 fontWeight: '700',
-                color: '#10b981',
+                color: 'var(--gain-color)',
                 marginBottom: '0.5rem',
                 fontFamily: 'monospace'
               }}>

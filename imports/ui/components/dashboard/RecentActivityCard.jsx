@@ -55,13 +55,13 @@ const RecentActivityCard = ({ activities, onActivityClick }) => {
     switch (type) {
       case 'barrier_breach':
       case 'warning':
-        return '#f59e0b';
+        return 'var(--warning-color)';
       case 'autocall':
         return '#8b5cf6';
       case 'coupon':
-        return '#10b981';
+        return 'var(--gain-color)';
       case 'new_product':
-        return '#3b82f6';
+        return 'var(--info-color)';
       default:
         return '#6b7280';
     }
@@ -159,7 +159,7 @@ const RecentActivityCard = ({ activities, onActivityClick }) => {
       width: '6px',
       height: '6px',
       borderRadius: '50%',
-      backgroundColor: '#3b82f6',
+      backgroundColor: 'var(--info-color)',
       flexShrink: 0,
       marginTop: '6px'
     },

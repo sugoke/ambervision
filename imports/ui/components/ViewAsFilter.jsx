@@ -221,9 +221,9 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
               width: '100%',
               padding: '0.5rem 2.5rem 0.5rem 0.75rem',
               background: viewAsFilter ? 'rgba(59, 130, 246, 0.1)' : 'var(--bg-primary)',
-              border: viewAsFilter ? '2px solid #3b82f6' : '1px solid var(--border-color)',
+              border: viewAsFilter ? '2px solid var(--info-color)' : '1px solid var(--border-color)',
               borderRadius: '8px',
-              color: viewAsFilter ? '#3b82f6' : 'var(--text-primary)',
+              color: viewAsFilter ? 'var(--info-color)' : 'var(--text-primary)',
               fontSize: '0.875rem',
               fontWeight: viewAsFilter ? '600' : '400',
               outline: 'none',
@@ -242,7 +242,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                 transform: 'translateY(-50%)',
                 background: 'transparent',
                 border: 'none',
-                color: '#3b82f6',
+                color: 'var(--info-color)',
                 cursor: 'pointer',
                 fontSize: '1.2rem',
                 lineHeight: 1,
@@ -356,7 +356,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                           fontSize: '0.55rem',
                           padding: '0.1rem 0.35rem',
                           borderRadius: '3px',
-                          background: `${statusDisplay.color}15`,
+                          background: `color-mix(in srgb, ${statusDisplay.color} 8%, transparent)`,
                           color: statusDisplay.color,
                           fontWeight: '600'
                         }}>
@@ -387,7 +387,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                           cursor: 'pointer',
                           fontSize: '1rem',
                           padding: '0.25rem',
-                          color: isFavorite(entity._id) ? '#f59e0b' : 'var(--text-muted)',
+                          color: isFavorite(entity._id) ? 'var(--warning-color)' : 'var(--text-muted)',
                           transition: 'color 0.15s'
                         }}
                         title={isFavorite(entity._id) ? 'Remove from favorites' : 'Add to favorites'}
@@ -451,7 +451,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                 alignItems: 'center',
                 gap: '0.5rem'
               }}>
-                <span style={{ color: '#f59e0b', fontSize: '0.875rem' }}>{'\u2605'}</span>
+                <span style={{ color: 'var(--warning-color)', fontSize: '0.875rem' }}>{'\u2605'}</span>
                 <span style={{
                   fontSize: '0.75rem',
                   fontWeight: '600',
@@ -523,7 +523,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                         cursor: 'pointer',
                         fontSize: '1rem',
                         padding: '0.25rem',
-                        color: '#f59e0b',
+                        color: 'var(--warning-color)',
                         transition: 'color 0.15s'
                       }}
                       title="Remove from favorites"

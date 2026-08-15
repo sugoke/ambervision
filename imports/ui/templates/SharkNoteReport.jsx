@@ -215,7 +215,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
                           textAlign: 'center',
                           fontFamily: 'monospace',
                           fontWeight: '700',
-                          color: underlying.isPositive ? '#10b981' : '#ef4444',
+                          color: underlying.isPositive ? 'var(--gain-color)' : 'var(--loss-color)',
                           fontSize: '1rem',
                           padding: '0.5rem',
                           background: underlying.isPositive ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
@@ -253,7 +253,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
               <div style={{
                 fontSize: '1.25rem',
                 fontWeight: '700',
-                color: basketPerformance.isPositive ? '#10b981' : '#ef4444',
+                color: basketPerformance.isPositive ? 'var(--gain-color)' : 'var(--loss-color)',
                 fontFamily: 'monospace'
               }}>
                 {basketPerformance.currentFormatted}
@@ -335,7 +335,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
             <div style={{
               fontSize: '1.1rem',
               fontWeight: '700',
-              color: barrierTouch.touched ? '#f59e0b' : 'var(--text-primary)',
+              color: barrierTouch.touched ? 'var(--warning-color)' : 'var(--text-primary)',
               marginBottom: '0.5rem'
             }}>
               {barrierTouch.status}
@@ -359,7 +359,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
                 borderRadius: '12px',
                 fontSize: '0.85rem',
                 fontWeight: '700',
-                background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                background: 'linear-gradient(135deg, var(--warning-color) 0%, #d97706 100%)',
                 color: 'white',
                 boxShadow: '0 4px 12px rgba(245, 158, 11, 0.3)',
                 letterSpacing: '0.5px'
@@ -464,7 +464,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
             <div style={{
               fontSize: '2.5rem',
               fontWeight: '700',
-              color: redemption.type === 'barrier_touched' ? '#f59e0b' : '#10b981',
+              color: redemption.type === 'barrier_touched' ? 'var(--warning-color)' : 'var(--gain-color)',
               fontFamily: 'monospace'
             }}>
               {redemption.valueFormatted || 'N/A'}
@@ -486,7 +486,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
             Upper Barrier (Knock-Out)
           </div>
-          <div style={{ fontSize: '1.25rem', fontWeight: '600', color: '#f59e0b' }}>
+          <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--warning-color)' }}>
             {sharkParams.upperBarrierFormatted || 'N/A'}
           </div>
         </div>
@@ -495,7 +495,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
             Fixed Rebate Value
           </div>
-          <div style={{ fontSize: '1.25rem', fontWeight: '600', color: '#10b981' }}>
+          <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--gain-color)' }}>
             {sharkParams.rebateValueFormatted || 'N/A'}
           </div>
         </div>
@@ -504,7 +504,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
             Floor Level (Protection)
           </div>
-          <div style={{ fontSize: '1.25rem', fontWeight: '600', color: '#ef4444' }}>
+          <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--loss-color)' }}>
             {sharkParams.floorLevelFormatted || 'N/A'}
           </div>
         </div>

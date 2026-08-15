@@ -162,7 +162,7 @@ const TwinWinReport = ({ results, productId }) => {
                 background: 'var(--bg-tertiary)',
                 padding: '1.25rem',
                 borderRadius: '8px',
-                border: `1px solid ${underlying.isPositive ? '#10b981' : '#ef4444'}20`
+                border: `1px solid ${underlying.isPositive ? 'var(--gain-color)' : 'var(--loss-color)'}20`
               }}>
                 {/* Header */}
                 <div style={{
@@ -290,7 +290,7 @@ const TwinWinReport = ({ results, productId }) => {
                     border: `1px solid ${underlying.isPositive ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`
                   }}>
                     <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '0.5rem', fontWeight: '600', letterSpacing: '0.5px' }}>Performance</div>
-                    <div style={{ fontSize: '1.2rem', fontWeight: '700', color: underlying.isPositive ? '#10b981' : '#ef4444', fontFamily: 'monospace' }}>{underlying.performanceFormatted}</div>
+                    <div style={{ fontSize: '1.2rem', fontWeight: '700', color: underlying.isPositive ? 'var(--gain-color)' : 'var(--loss-color)', fontFamily: 'monospace' }}>{underlying.performanceFormatted}</div>
                   </div>
 
                   <div style={{ background: 'var(--bg-primary)', padding: '0.85rem', borderRadius: '6px', textAlign: 'center' }}>
@@ -310,9 +310,9 @@ const TwinWinReport = ({ results, productId }) => {
       {/* Dual Barrier Monitoring */}
       <div style={{
         background: anyTouched
-          ? 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)'
+          ? 'linear-gradient(135deg, var(--warning-color) 0%, #d97706 100%)'
           : (barriers.observed
-            ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)'
+            ? 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)'
             : 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)'),
         padding: '1.5rem',
         borderRadius: '8px',
@@ -362,7 +362,7 @@ const TwinWinReport = ({ results, productId }) => {
       <div style={{
         background: bothTouched
           ? 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)'
-          : 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+          : 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
         padding: '1.5rem',
         borderRadius: '8px',
         marginBottom: '1.5rem',
@@ -392,8 +392,8 @@ const TwinWinReport = ({ results, productId }) => {
           boxShadow: '0 4px 16px rgba(0, 0, 0, 0.1)'
         }}>
           <div style={{ fontSize: '0.85rem', color: '#64748b', textTransform: 'uppercase', fontWeight: '700', letterSpacing: '1px', marginBottom: '0.75rem' }}>Total Redemption Value</div>
-          <div style={{ fontSize: '3rem', fontWeight: '800', color: '#10b981', fontFamily: 'monospace', lineHeight: '1' }}>{redemption.totalValueFormatted}</div>
-          <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '0.5rem' }}>{redemption.formula}</div>
+          <div style={{ fontSize: '3rem', fontWeight: '800', color: 'var(--gain-color)', fontFamily: 'monospace', lineHeight: '1' }}>{redemption.totalValueFormatted}</div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--neutral-color)', marginTop: '0.5rem' }}>{redemption.formula}</div>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>

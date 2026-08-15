@@ -68,7 +68,7 @@ const HoldingPriceChart = ({ isin, securityName, sessionId }) => {
     if (!priceData) return null;
 
     const { prices, isPositive, currency, firstPrice, isPercentagePrice } = priceData;
-    const lineColor = isPositive ? '#10b981' : '#ef4444';
+    const lineColor = isPositive ? 'var(--gain-color)' : 'var(--loss-color)';
 
     // For percentage prices (structured products), display as % (multiply by 100)
     const displayPrices = isPercentagePrice
@@ -248,8 +248,8 @@ const HoldingPriceChart = ({ isin, securityName, sessionId }) => {
             strokeLinejoin="round"
             fill="none"
           />
-          <line x1="1" y1="13" x2="13" y2="13" stroke="#94a3b8" strokeWidth="0.75" />
-          <line x1="1" y1="1" x2="1" y2="13" stroke="#94a3b8" strokeWidth="0.75" />
+          <line x1="1" y1="13" x2="13" y2="13" stroke="var(--neutral-color)" strokeWidth="0.75" />
+          <line x1="1" y1="1" x2="1" y2="13" stroke="var(--neutral-color)" strokeWidth="0.75" />
         </svg>
       </span>
 
@@ -295,7 +295,7 @@ const HoldingPriceChart = ({ isin, securityName, sessionId }) => {
               <div style={{
                 fontSize: '1rem',
                 fontWeight: '600',
-                color: priceData.isPositive ? '#10b981' : '#ef4444'
+                color: priceData.isPositive ? 'var(--gain-color)' : 'var(--loss-color)'
               }}>
                 {perfText}
               </div>

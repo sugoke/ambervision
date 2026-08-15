@@ -43,6 +43,13 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
       role: 'admin'
     },
     {
+      id: 'generic-products',
+      label: 'Product Composer',
+      icon: '🧱',
+      description: 'Composition-based products (experimental)',
+      role: 'admin'
+    },
+    {
       id: 'profile',
       label: 'My Profile',
       icon: '👤',

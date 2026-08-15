@@ -28,6 +28,10 @@ async function buildHoldingsScopeSelector({ currentUser, viewAsFilter }) {
   if (!currentUser) return null;
 
   const queryFilter = { isActive: true };
+  // The entity this view is drilled into, if any. A demo client's holdings are hidden
+  // everywhere except here — selecting it in View As is the only context in which
+  // fictional data is meant to be on screen.
+  let scopedEntityId = null;
 
   const isAdmin = currentUser.role === USER_ROLES.ADMIN
     || currentUser.role === USER_ROLES.SUPERADMIN
@@ -41,6 +45,7 @@ async function buildHoldingsScopeSelector({ currentUser, viewAsFilter }) {
       const entity = await ClientEntitiesCollection.findOneAsync(viewAsFilter.id);
       if (!entity) return null;
       if (ClientEntityHelpers.isEntityArchived(entity)) return null;
+      scopedEntityId = entity._id;
       if (isRM) {
         const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
         if (!rmIds.includes(entity.relationshipManagerId)) return null;
@@ -84,6 +89,7 @@ async function buildHoldingsScopeSelector({ currentUser, viewAsFilter }) {
     } else if (viewAsFilter.type === 'account') {
       const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
       if (!bankAccount) return null;
+      scopedEntityId = bankAccount.entityId || null;
       if (isRM) {
         const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
         let hasAccess = false;
@@ -167,10 +173,13 @@ async function buildHoldingsScopeSelector({ currentUser, viewAsFilter }) {
     }
   }
 
-  // Exclude holdings of archived (closed-relationship) clients from every path.
-  const archivedExclusion = await ClientEntityHelpers.archivedHoldingsSelector();
-  if (archivedExclusion.$nor) {
-    queryFilter.$nor = archivedExclusion.$nor;
+  // Exclude holdings of archived (closed-relationship) clients from every path, and of
+  // demo clients from every path except a drill-down into that demo client itself.
+  const hiddenExclusion = await ClientEntityHelpers.hiddenHoldingsSelector({
+    exceptEntityId: scopedEntityId
+  });
+  if (hiddenExclusion.$nor) {
+    queryFilter.$nor = hiddenExclusion.$nor;
   }
 
   return queryFilter;

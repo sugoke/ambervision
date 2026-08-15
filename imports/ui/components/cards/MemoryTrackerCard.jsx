@@ -131,7 +131,7 @@ export const MemoryTrackerCard = ({ report, product, featureManifest }) => {
             <div style={{
               fontSize: '1.125rem',
               fontWeight: '600',
-              color: '#10b981'
+              color: 'var(--gain-color)'
             }}>
               {paidPeriods}
             </div>
@@ -153,7 +153,7 @@ export const MemoryTrackerCard = ({ report, product, featureManifest }) => {
             <div style={{
               fontSize: '1.125rem',
               fontWeight: '600',
-              color: '#f59e0b'
+              color: 'var(--warning-color)'
             }}>
               {missedPeriods}
             </div>

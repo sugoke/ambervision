@@ -13,6 +13,7 @@ import LoadingSpinner from './LoadingSpinner.jsx';
  * @param {React.ReactNode} props.icon - Optional icon
  * @param {Function} props.onClick - Click handler
  * @param {string} props.type - Button type (button, submit, reset)
+ * @param {boolean} props.fullWidth - Span the container and centre the label (touch targets)
  * @param {Object} props.style - Additional styles
  */
 const ActionButton = ({
@@ -24,6 +25,7 @@ const ActionButton = ({
   icon,
   onClick,
   type = 'button',
+  fullWidth = false,
   style = {},
   ...props
 }) => {
@@ -64,15 +66,21 @@ const ActionButton = ({
     large: {
       padding: '12px 24px',
       fontSize: '1rem',
-      borderRadius: '8px'
+      borderRadius: '8px',
+      // Guarantees the ~44px touch minimum regardless of variant: bordered variants
+      // gain 2px from their border, borderless ones would otherwise fall just short.
+      minHeight: '44px'
     }
   };
 
   const isDisabled = disabled || loading;
 
   const buttonStyle = {
-    display: 'inline-flex',
+    display: fullWidth ? 'flex' : 'inline-flex',
     alignItems: 'center',
+    // Only centre when we control the width — callers that size buttons themselves
+    // keep the previous default alignment.
+    ...(fullWidth ? { justifyContent: 'center' } : {}),
     gap: icon || loading ? '0.5rem' : 0,
     fontWeight: '600',
     cursor: isDisabled ? 'not-allowed' : 'pointer',
@@ -83,6 +91,7 @@ const ActionButton = ({
     userSelect: 'none',
     ...variants[variant],
     ...sizes[size],
+    ...(fullWidth ? { width: '100%' } : {}),
     ...style
   };
 

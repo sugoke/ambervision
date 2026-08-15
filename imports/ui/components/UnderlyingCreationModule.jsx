@@ -30,6 +30,18 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
     setUnderlyings(prev => prev.filter(u => u.id !== id));
   };
 
+  // Add a manual underlying (no securityData) for instruments the EOD-based
+  // autocomplete doesn't return — e.g. Japanese stocks. The user must enter an
+  // exchange-qualified ticker (SYMBOL.EXCHANGE, e.g. "7203.TSE"): because it
+  // contains a ".", refreshCache uses it directly as the fullTicker and the
+  // Telekurs (Excel) provider serves its prices as a fallback.
+  const addManualUnderlying = () => {
+    setUnderlyings(prev => [
+      ...prev,
+      { id: Date.now(), ticker: '', name: '', isin: '', strike: 0, strikeLevel: 0, securityData: null }
+    ]);
+  };
+
   const updateUnderlying = (id, field, value) => {
     setUnderlyings(prev =>
       prev.map(u => u.id === id ? { ...u, [field]: value } : u)
@@ -544,9 +556,22 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
                   />
                 </div>
               </div>
+              <div className="manual-add-row" style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={addManualUnderlying}
+                  style={{ fontSize: '0.85rem', padding: '6px 10px' }}
+                >
+                  + Add manual security
+                </button>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  Not in the search (e.g. Japanese stocks)? Add it manually with an exchange-qualified ticker like <code>7203.TSE</code> — prices come from the Telekurs feed.
+                </span>
+              </div>
             </div>
           </div>
-          
+
           {underlyings.length > 0 ? (
             <div className="underlying-table-container">
               <div className="underlying-table-header">
@@ -589,7 +614,7 @@ const UnderlyingCreationModule = ({ underlyings, setUnderlyings, basketMode, onB
                             type="text"
                             value={underlying.ticker}
                             onChange={(e) => updateUnderlying(underlying.id, 'ticker', e.target.value.toUpperCase())}
-                            placeholder="Ticker Symbol"
+                            placeholder="Ticker incl. exchange, e.g. 7203.TSE"
                             className="ticker-input-table"
                           />
                           <input

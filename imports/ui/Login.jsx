@@ -672,7 +672,7 @@ const Login = ({ onUserChange, compact = false }) => {
                 <h3
                   style={{
                     margin: '0 0 1rem 0',
-                    color: isDark ? '#10b981' : '#059669',
+                    color: isDark ? 'var(--gain-color)' : '#059669',
                     fontSize: '1.25rem',
                     fontWeight: '600'
                   }}

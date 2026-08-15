@@ -97,11 +97,15 @@ const ClientsSection = ({ user: currentUser, theme }) => {
     // Query access records
     const allAccess = UserEntityAccessCollection.find({ isActive: true }).fetch();
 
-    // All active bank accounts with entityId — deduplicated by accountNumber + bankId
+    // All active bank accounts with entityId — deduplicated per entity by
+    // accountNumber + bankId. The entityId MUST be part of the key: joint accounts are
+    // held by several entities under the same account number at the same bank, and a
+    // key without entityId silently drops all but one holder (they then look like
+    // prospects while their detail page shows them as clients).
     const allAccountsRaw = BankAccountsCollection.find({ entityId: { $exists: true }, isActive: true }).fetch();
     const seen = new Set();
     const bankAccountsData = allAccountsRaw.filter(a => {
-      const key = `${a.accountNumber}_${a.bankId}`;
+      const key = `${a.entityId}_${a.accountNumber}_${a.bankId}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -196,23 +200,34 @@ const ClientsSection = ({ user: currentUser, theme }) => {
     return map;
   }, [entities]);
 
-  // Compute which entities are prospects (no accounts, no stakeholder roles)
-  const prospectEntityIds = useMemo(() => {
-    const set = new Set();
-    entities.forEach(e => {
-      if (entityIdsWithAccounts.has(e._id)) return;
-      if (entityStakeholderRoles[e._id]?.length > 0) return;
-      set.add(e._id);
+  // Build map: entityId → [{ role: 'Beneficiary', companyName }] from life-insurance
+  // accounts. The contract is held by the insurer, so the beneficiary owns no account
+  // of their own — they are a related party, not a direct client and not a prospect.
+  const entityBeneficiaryRoles = useMemo(() => {
+    const map = {};
+    allBankAccounts.forEach(acc => {
+      const accountLabel = acc.name || acc.accountNumber;
+      ClientEntityHelpers.getAccountBeneficialOwnerIds(acc).forEach(ownerId => {
+        if (!map[ownerId]) map[ownerId] = [];
+        map[ownerId].push({ role: 'Beneficiary', companyName: accountLabel });
+      });
     });
-    return set;
-  }, [entities, entityIdsWithAccounts, entityStakeholderRoles]);
+    return map;
+  }, [allBankAccounts]);
 
-  // Computed status: prospect (dynamic) > archived (stored) > active (default)
-  const getEntityComputedStatus = (e) => {
-    if (e.status === ENTITY_STATUSES.ARCHIVED) return 'archived';
-    if (prospectEntityIds.has(e._id)) return 'prospect';
-    return 'active';
-  };
+  // All relationship badges for an entity, in one list
+  const getEntityRoles = (entityId) => [
+    ...(entityStakeholderRoles[entityId] || []),
+    ...(entityBeneficiaryRoles[entityId] || [])
+  ];
+
+  // Computed status — shared with the entity detail header via ClientEntityHelpers
+  // so the sidebar badge and the header badge always agree.
+  const getEntityComputedStatus = (e) => ClientEntityHelpers.getComputedEntityStatus(e, {
+    hasAccounts: entityIdsWithAccounts.has(e._id),
+    hasStakeholderRoles: entityStakeholderRoles[e._id]?.length > 0,
+    isBeneficialOwner: entityBeneficiaryRoles[e._id]?.length > 0
+  });
 
   // Filter entities by sub-tab, status, and search
   const filteredEntities = entities
@@ -245,9 +260,6 @@ const ClientsSection = ({ user: currentUser, theme }) => {
     return { all, clientsOnly };
   }, [entities, entityIdsWithAccounts]);
 
-
-  // Compute which entities are prospects (no accounts, no stakeholder roles)
-
   // Entity status counts — respects entitySubTab and typeFilter
   const entityStatusCounts = useMemo(() => {
     let filtered = entities;
@@ -259,10 +271,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
       if (counts[status] !== undefined) counts[status]++;
     });
     return counts;
-  }, [entities, entitySubTab, typeFilter, entityIdsWithAccounts, prospectEntityIds]);
-
-
-  // Build map: entityId → [{ role, companyName }] from all company stakeholders
+  }, [entities, entitySubTab, typeFilter, entityIdsWithAccounts, entityStakeholderRoles, entityBeneficiaryRoles]);
 
   const canCreateEntities = currentUser?.role === USER_ROLES.ADMIN || currentUser?.role === USER_ROLES.SUPERADMIN || currentUser?.role === USER_ROLES.COMPLIANCE;
 
@@ -459,8 +468,8 @@ const ClientsSection = ({ user: currentUser, theme }) => {
           background: 'var(--bg-secondary)'
         }}>
           {[
-            { id: 'active', label: 'Active', color: '#10b981', count: entityStatusCounts.active },
-            { id: 'prospect', label: 'Prospects', color: '#f59e0b', count: entityStatusCounts.prospect },
+            { id: 'active', label: 'Active', color: 'var(--gain-color)', count: entityStatusCounts.active },
+            { id: 'prospect', label: 'Prospects', color: 'var(--warning-color)', count: entityStatusCounts.prospect },
             { id: 'archived', label: 'Archived', color: '#6b7280', count: entityStatusCounts.archived }
           ].map(s => {
             const active = entityStatusFilter === s.id;
@@ -470,7 +479,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                   flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px',
                   padding: '5px 6px', borderRadius: '6px', cursor: 'pointer',
                   border: 'none',
-                  background: active ? `${s.color}18` : 'transparent',
+                  background: active ? `color-mix(in srgb, ${s.color} 9%, transparent)` : 'transparent',
                   color: active ? s.color : 'var(--text-muted)',
                   fontSize: '0.72rem', fontWeight: active ? '700' : '400', transition: 'all 0.15s ease'
                 }}>
@@ -514,28 +523,8 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                   <option value={ENTITY_TYPES.COMPANY}>Company</option>
                 </select>
               </div>
-              {(
-                <div style={{ marginBottom: '0.75rem' }}>
-                  <select
-                    value={newEntityStatus}
-                    onChange={(e) => setNewEntityStatus(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: '10px',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '6px',
-                      fontSize: '0.9rem',
-                      background: 'var(--bg-secondary)',
-                      color: 'var(--text-primary)',
-                      boxSizing: 'border-box',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    <option value={ENTITY_STATUSES.ACTIVE}>Active</option>
-                    <option value={ENTITY_STATUSES.PROSPECT}>Prospect</option>
-                  </select>
-                </div>
-              )}
+              {/* No status picker: Prospect/Active is derived from bank accounts and
+                  stakeholder roles, so picking one here would be ignored by the list. */}
               {newEntityType === ENTITY_TYPES.PHYSICAL_PERSON ? (
                 <div style={{ marginBottom: '0.75rem', display: 'flex', gap: '0.5rem' }}>
                   <input
@@ -631,7 +620,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
             padding: '0.75rem 1rem',
             background: 'rgba(16, 185, 129, 0.1)',
             borderBottom: '1px solid rgba(16, 185, 129, 0.3)',
-            color: '#10b981',
+            color: 'var(--gain-color)',
             fontSize: '0.85rem'
           }}>
             {success}
@@ -657,7 +646,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                 const displayName = getEntitySortName(entity);
                 const initials = getEntityInitials(entity);
                 const typeDisplay = getEntityTypeDisplay(entity.type);
-                const statusDisplay = ClientEntityHelpers.getEntityStatusDisplay(entity.status);
+                const statusDisplay = ClientEntityHelpers.getEntityStatusDisplay(getEntityComputedStatus(entity));
                 const isSelected = selectedEntityId === entity._id;
 
                 return (
@@ -679,11 +668,11 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                       <div style={{
                         width: '36px', height: '36px', borderRadius: '10px',
-                        background: isSelected ? 'rgba(255,255,255,0.2)' : `linear-gradient(135deg, ${typeDisplay.color}30, ${typeDisplay.color}10)`,
+                        background: isSelected ? 'rgba(255,255,255,0.2)' : `linear-gradient(135deg, color-mix(in srgb, ${typeDisplay.color} 19%, transparent), color-mix(in srgb, ${typeDisplay.color} 6%, transparent))`,
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                         color: isSelected ? 'white' : typeDisplay.color,
                         fontWeight: '700', fontSize: '0.78rem',
-                        border: isSelected ? 'none' : `1px solid ${typeDisplay.color}25`,
+                        border: isSelected ? 'none' : `1px solid color-mix(in srgb, ${typeDisplay.color} 15%, transparent)`,
                         flexShrink: 0
                       }}>
                         {initials}
@@ -736,7 +725,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                               Client
                             </span>
                           )}
-                          {entityStakeholderRoles[entity._id]?.map((sr, i) => (
+                          {getEntityRoles(entity._id).map((sr, i) => (
                             <span key={i} style={{
                               fontSize: '0.55rem', fontWeight: '600', padding: '1px 4px', borderRadius: '3px',
                               background: isSelected ? 'rgba(255,255,255,0.15)' : 'rgba(139, 92, 246, 0.12)',
@@ -746,26 +735,21 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                               {sr.role}
                             </span>
                           ))}
-                          {(() => {
-                            const cs = getEntityComputedStatus(entity);
-                            if (cs === 'active') return null;
-                            const csColor = cs === 'prospect' ? '#f59e0b' : cs === 'archived' ? '#6b7280' : statusDisplay.color;
-                            const csLabel = cs === 'prospect' ? 'Prospect' : cs === 'archived' ? 'Archived' : statusDisplay.label;
-                            return (
+                          {/* Only non-active statuses get a badge — "Active" is the norm */}
+                          {getEntityComputedStatus(entity) !== ENTITY_STATUSES.ACTIVE && (
                             <span style={{
                               fontSize: '0.6rem',
                               fontWeight: '600',
                               padding: '1px 5px',
                               borderRadius: '3px',
-                              background: isSelected ? 'rgba(255,255,255,0.15)' : `${csColor}15`,
-                              color: isSelected ? 'rgba(255,255,255,0.8)' : csColor,
+                              background: isSelected ? 'rgba(255,255,255,0.15)' : `color-mix(in srgb, ${statusDisplay.color} 8%, transparent)`,
+                              color: isSelected ? 'rgba(255,255,255,0.8)' : statusDisplay.color,
                               whiteSpace: 'nowrap',
                               flexShrink: 0
                             }}>
-                              {csLabel}
+                              {statusDisplay.label}
                             </span>
-                            );
-                          })()}
+                          )}
                         </div>
                         <div style={{
                           fontSize: '0.8rem',
@@ -844,7 +828,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                           {clientEntities.map((ent, i) => {
                             const typeDisplay = getEntityTypeDisplay(ent.type);
                             const accountCount = allBankAccounts.filter(a => a.entityId === ent._id).length;
-                            const statusDisplay = ClientEntityHelpers.getEntityStatusDisplay(ent.status);
+                            const statusDisplay = ClientEntityHelpers.getEntityStatusDisplay(getEntityComputedStatus(ent));
                             return (
                               <tr key={ent._id}
                                 onClick={() => { setSelectedEntityId(ent._id); }}

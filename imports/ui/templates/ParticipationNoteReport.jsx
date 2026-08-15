@@ -219,7 +219,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
               <div style={{
                 fontSize: '1.1rem',
                 fontWeight: '700',
-                color: '#f59e0b'
+                color: 'var(--warning-color)'
               }}>
                 {issuerCall.callDateFormatted}
               </div>
@@ -481,7 +481,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
                           textAlign: 'center',
                           fontFamily: 'monospace',
                           fontWeight: '700',
-                          color: underlying.isPositive ? '#10b981' : '#ef4444',
+                          color: underlying.isPositive ? 'var(--gain-color)' : 'var(--loss-color)',
                           fontSize: '1rem',
                           padding: '0.5rem',
                           background: underlying.isPositive ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
@@ -519,7 +519,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
               <div style={{
                 fontSize: '1.25rem',
                 fontWeight: '700',
-                color: basketPerformance.isPositive ? '#10b981' : '#ef4444',
+                color: basketPerformance.isPositive ? 'var(--gain-color)' : 'var(--loss-color)',
                 fontFamily: 'monospace'
               }}>
                 {basketPerformance.currentFormatted}
@@ -586,7 +586,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
               <span style={{
                 fontSize: '0.75rem',
                 background: 'rgba(16, 185, 129, 0.2)',
-                color: '#10b981',
+                color: 'var(--gain-color)',
                 padding: '4px 8px',
                 borderRadius: '4px',
                 fontWeight: '600'
@@ -630,7 +630,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
               <div style={{
                 fontSize: '3rem',
                 fontWeight: '800',
-                color: results.indicativeMaturityValue.isPositive ? '#10b981' : '#ef4444',
+                color: results.indicativeMaturityValue.isPositive ? 'var(--gain-color)' : 'var(--loss-color)',
                 fontFamily: 'monospace',
                 lineHeight: '1'
               }}>
@@ -671,7 +671,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
                 <div style={{
                   fontSize: '1.8rem',
                   fontWeight: '700',
-                  color: results.indicativeMaturityValue.rawPerformance >= 0 ? '#10b981' : '#ef4444',
+                  color: results.indicativeMaturityValue.rawPerformance >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                   marginBottom: '0.5rem',
                   fontFamily: 'monospace'
                 }}>
@@ -745,7 +745,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
                 <div style={{
                   fontSize: '1.8rem',
                   fontWeight: '700',
-                  color: results.indicativeMaturityValue.participatedPerformance >= 0 ? '#10b981' : '#ef4444',
+                  color: results.indicativeMaturityValue.participatedPerformance >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                   marginBottom: '0.5rem',
                   fontFamily: 'monospace'
                 }}>
@@ -775,7 +775,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
             }}>
               <span style={{ fontSize: '1rem' }}>🧮</span>
               <div>
-                <strong>Formula:</strong> 100% + ({results.indicativeMaturityValue.rawPerformanceFormatted} × {results.indicativeMaturityValue.participationRateFormatted}) = <strong style={{ color: results.indicativeMaturityValue.isPositive ? '#10b981' : '#ef4444' }}>{results.indicativeMaturityValue.totalValueFormatted}</strong>
+                <strong>Formula:</strong> 100% + ({results.indicativeMaturityValue.rawPerformanceFormatted} × {results.indicativeMaturityValue.participationRateFormatted}) = <strong style={{ color: results.indicativeMaturityValue.isPositive ? 'var(--gain-color)' : 'var(--loss-color)' }}>{results.indicativeMaturityValue.totalValueFormatted}</strong>
               </div>
             </div>
           </div>
@@ -855,7 +855,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
               <div style={{
                 fontSize: '1.1rem',
                 fontWeight: '700',
-                color: issuerCall.isCalled ? '#f59e0b' : 'var(--text-primary)',
+                color: issuerCall.isCalled ? 'var(--warning-color)' : 'var(--text-primary)',
                 marginBottom: '0.5rem'
               }}>
                 {issuerCall.status}
@@ -871,7 +871,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
                   )}
                   {issuerCall.rebateFormatted && (
                     <span>
-                      {' '}(Rebate: <strong style={{ color: '#10b981' }}>{issuerCall.rebateFormatted}</strong>
+                      {' '}(Rebate: <strong style={{ color: 'var(--gain-color)' }}>{issuerCall.rebateFormatted}</strong>
                       {issuerCall.rebateType === 'per_annum' && issuerCall.rebateCalculationDetails && (
                         <span style={{ fontSize: '0.8rem', fontStyle: 'italic', color: 'var(--text-muted)' }}>
                           {' '}— {issuerCall.rebateCalculationDetails.annualRate.toFixed(2)}% p.a. × {issuerCall.rebateCalculationDetails.daysHeld} days
@@ -897,7 +897,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
                   borderRadius: '12px',
                   fontSize: '0.85rem',
                   fontWeight: '700',
-                  background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                  background: 'linear-gradient(135deg, var(--warning-color) 0%, #d97706 100%)',
                   color: 'white',
                   boxShadow: '0 4px 12px rgba(245, 158, 11, 0.3)',
                   letterSpacing: '0.5px'
@@ -1144,7 +1144,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
                   fontSize: '0.9rem',
                   fontWeight: '600',
                   background: saveMessage.startsWith('✓') ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-                  color: saveMessage.startsWith('✓') ? '#10b981' : '#ef4444',
+                  color: saveMessage.startsWith('✓') ? 'var(--gain-color)' : 'var(--loss-color)',
                   border: `1px solid ${saveMessage.startsWith('✓') ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`
                 }}>
                   {saveMessage}
@@ -1181,7 +1181,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
                     padding: '0.75rem 1.5rem',
                     background: isSaving || (hasCallOption && !callDate)
                       ? '#9ca3af'
-                      : 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                      : 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
                     color: 'white',
                     border: 'none',
                     borderRadius: '6px',
@@ -1258,7 +1258,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
               <div style={{
                 fontSize: '1.5rem',
                 fontFamily: 'monospace',
-                color: participation.rawPerformance >= 0 ? '#10b981' : '#ef4444',
+                color: participation.rawPerformance >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                 fontWeight: '700'
               }}>
                 {participation.rawPerformanceFormatted || 'N/A'}
@@ -1298,7 +1298,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
               <div style={{
                 fontSize: '1.5rem',
                 fontFamily: 'monospace',
-                color: participation.participatedPerformance >= 0 ? '#10b981' : '#ef4444',
+                color: participation.participatedPerformance >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                 fontWeight: '700'
               }}>
                 {participation.participatedPerformanceFormatted || 'N/A'}
@@ -1385,7 +1385,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
               <div style={{
                 fontSize: '2.5rem',
                 fontWeight: '700',
-                color: '#f59e0b',
+                color: 'var(--warning-color)',
                 fontFamily: 'monospace'
               }}>
                 {(() => {
@@ -1428,7 +1428,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
               <div style={{
                 fontSize: '2.5rem',
                 fontWeight: '700',
-                color: '#10b981',
+                color: 'var(--gain-color)',
                 fontFamily: 'monospace'
               }}>
                 {redemption.valueFormatted || 'N/A'}
@@ -1451,7 +1451,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
             Participation Rate
           </div>
-          <div style={{ fontSize: '1.25rem', fontWeight: '600', color: '#10b981' }}>
+          <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--gain-color)' }}>
             {participationParams.participationRateFormatted || 'N/A'}
           </div>
         </div>
@@ -1479,7 +1479,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
             <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
               Issuer Call Option
             </div>
-            <div style={{ fontSize: '1.25rem', fontWeight: '600', color: issuerCall.isCalled ? '#f59e0b' : '#6b7280' }}>
+            <div style={{ fontSize: '1.25rem', fontWeight: '600', color: issuerCall.isCalled ? 'var(--warning-color)' : '#6b7280' }}>
               {issuerCall.isCalled ? 'Called' : 'Available'}
             </div>
           </div>
@@ -1522,7 +1522,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
                 <div style={{
                   fontSize: '0.95rem',
                   fontWeight: '700',
-                  color: '#f59e0b',
+                  color: 'var(--warning-color)',
                   marginBottom: '0.25rem'
                 }}>
                   Product Called on {issuerCall.callDateFormatted}
@@ -1677,7 +1677,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
                         textDecoration: isCancelledByCall ? 'line-through' : 'none'
                       }}>
                         {obs.rebateAmount !== undefined && obs.rebateAmount !== null ? (
-                          <span style={{ color: isCancelledByCall ? 'var(--text-muted)' : '#10b981' }}>{obs.rebateAmount.toFixed(2)}%</span>
+                          <span style={{ color: isCancelledByCall ? 'var(--text-muted)' : 'var(--gain-color)' }}>{obs.rebateAmount.toFixed(2)}%</span>
                         ) : (
                           <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>N/A</span>
                         )}
@@ -1702,7 +1702,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
                             padding: '6px 14px',
                             borderRadius: '6px',
                             fontSize: '0.8rem',
-                            background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                            background: 'linear-gradient(135deg, var(--warning-color) 0%, #d97706 100%)',
                             color: 'white',
                             fontWeight: '700',
                             boxShadow: '0 2px 8px rgba(245, 158, 11, 0.3)'
@@ -1726,7 +1726,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
                             borderRadius: '4px',
                             fontSize: '0.75rem',
                             background: 'rgba(59, 130, 246, 0.15)',
-                            color: '#3b82f6',
+                            color: 'var(--info-color)',
                             fontWeight: '500'
                           }}>
                             Upcoming

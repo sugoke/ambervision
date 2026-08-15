@@ -621,8 +621,8 @@ const ProductAllocation = ({ product, user, onClose }) => {
                                 disabled={isLoading || editingId !== null}
                                 style={{
                                   background: 'transparent',
-                                  border: '1px solid var(--info-color, #3b82f6)',
-                                  color: 'var(--info-color, #3b82f6)',
+                                  border: '1px solid var(--info-color, var(--info-color))',
+                                  color: 'var(--info-color, var(--info-color))',
                                   borderRadius: '4px',
                                   padding: '4px 12px',
                                   cursor: (isLoading || editingId !== null) ? 'not-allowed' : 'pointer',
@@ -785,7 +785,7 @@ const ProductAllocation = ({ product, user, onClose }) => {
                                   fontSize: '0.7rem',
                                   fontWeight: '600',
                                   background: isActive ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-                                  color: isActive ? '#10b981' : '#ef4444'
+                                  color: isActive ? 'var(--gain-color)' : 'var(--loss-color)'
                                 }}>
                                   {isActive ? '✓ Active' : '⚠ Missing'}
                                 </span>
@@ -945,7 +945,7 @@ const ProductAllocation = ({ product, user, onClose }) => {
               onClick={addToBatch}
               style={{
                 padding: '10px 20px',
-                background: 'var(--info-color, #3b82f6)',
+                background: 'var(--info-color, var(--info-color))',
                 border: 'none',
                 borderRadius: '4px',
                 color: 'white',

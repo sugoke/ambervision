@@ -2,10 +2,13 @@ import { Mongo } from 'meteor/mongo';
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { HTTP } from 'meteor/http';
-import { UnderlyingsAnalysisCollection, buildUnderlyingsAnalysis } from './underlyingsAnalysis';
+import { UnderlyingsAnalysisCollection, buildUnderlyingsAnalysis, isProductLiveAsOf } from './underlyingsAnalysis';
 import { EODApiHelpers } from './eodApi';
 import { ReportsCollection } from './reports';
 import { TemplateReportsCollection } from './templateReports';
+import { ProductsCollection } from './products';
+import { PMSHoldingsCollection } from './pmsHoldings';
+import { ProductPricesCollection } from './productPrices';
 
 /**
  * Risk Analysis Reports Collection
@@ -179,32 +182,18 @@ UNDERLYING DETAILS:
 - Affected Product: ${productTitle} (${productIsin})
 ${newsSection}
 TASK:
-Write a professional risk analysis consisting of 2-3 well-structured paragraphs (250-400 words total) covering:
+Write a concise risk analysis of 2-3 short paragraphs (180-260 words total). Cover, in flowing prose:
+- Where the underlying stands relative to the barrier (in percentage and absolute price terms) and whether the margin is narrow or substantial
+- The key factors explaining the performance, drawing on the news above with specific events and dates when available (or general sector context if no news)
+- Whether the ${daysToFinalObservation} days remaining leave room for recovery, and the protection features that support patience until maturity
 
-1. **Current Position & Barrier Analysis** (1 paragraph):
-   - Clearly state how far the underlying is from the barrier in both percentage and absolute price terms
-   - Explain what it would take for the barrier to be breached
-   - Put the distance in context (is this a narrow margin or substantial cushion?)
-
-2. **Recent Developments & Market Context** (1 paragraph):
-   - Based on the news provided above, identify key factors explaining the performance (company-specific or macro factors)
-   - Mention any relevant sector trends or market conditions from the news
-   - Include specific news events with dates when available
-   - If no news is available, provide general market context based on the sector
-
-3. **Time Horizon & Outlook** (1 paragraph):
-   - Analyze whether ${daysToFinalObservation} days is sufficient time for potential recovery
-   - Highlight positive factors: capital protection feature, historical volatility patterns, market cycle considerations
-   - Provide a balanced but hopeful outlook on why patience until maturity may be warranted
-   - Emphasize that structured product holders benefit from protection features
-
-CRITICAL REQUIREMENTS:
-- Tone: Professional, objective, but cautiously optimistic
-- Acknowledge real risks but emphasize the protection mechanisms
-- Use specific data points and dates from the news provided
-- Avoid overly technical jargon
+WRITING STYLE - VERY IMPORTANT:
+- Write like an experienced human analyst jotting a note for a colleague: plain flowing prose, natural transitions, varied sentence length
+- NO markdown of any kind: no headings, no bold (**), no bullet points, no numbered lists, no section labels
+- Do not announce the structure ("In this first paragraph...", "In conclusion...") and avoid formulaic filler ("It is important to note", "In today's dynamic market environment")
+- Tone: professional, objective, but cautiously optimistic; acknowledge real risks while noting the protection mechanisms
+- Use specific data points and dates from the news provided; avoid jargon
 - Do NOT make specific price predictions
-- Focus on risk management perspective
 ${language === 'fr' ? `
 LANGUAGE: Write the ENTIRE analysis in FRENCH (Français). All text must be in French.` : ''}
 Write the analysis now:`;
@@ -253,6 +242,381 @@ Write the analysis now:`;
   }
 
   /**
+   * Normalize a product price to percent-of-par.
+   * Some legacy productPrices records are stored in decimal format (0.9571 = 95.71%)
+   * while most are percent-of-par (95.71). A live product quoted below 5% of par is
+   * implausible, so values under 5 are treated as decimal format.
+   */
+  function normalizePctOfPar(price) {
+    if (price == null) return null;
+    return price > 0 && price < 5 ? price * 100 : price;
+  }
+
+  /**
+   * Get the latest bank price per ISIN from productPrices.
+   * @param {Array<string>} isins - Uppercase ISINs
+   * @param {Date|null} asOfDate - Only consider prices on or before this date
+   * @returns {Promise<Map>} - Map of isin -> { price, priceDate, currency }
+   */
+  async function getLatestBankPrices(isins, asOfDate = null) {
+    if (isins.length === 0) return new Map();
+
+    const match = { isin: { $in: isins }, isActive: true };
+    if (asOfDate) match.priceDate = { $lte: asOfDate };
+
+    const rows = await ProductPricesCollection.rawCollection().aggregate([
+      { $match: match },
+      { $sort: { priceDate: -1, uploadDate: -1 } },
+      {
+        $group: {
+          _id: '$isin',
+          price: { $first: '$price' },
+          priceDate: { $first: '$priceDate' },
+          currency: { $first: '$currency' }
+        }
+      }
+    ]).toArray();
+
+    return new Map(rows.map(r => [r._id, r]));
+  }
+
+  /**
+   * Compute the cost baseline per product from PMS holdings (what clients actually
+   * paid), since not all products are issued at par. costPrice is stored in
+   * normalized decimal format (1.0 = 100%); the returned baseline is percent-of-par.
+   * Uses isLatest holdings even in as-of mode: cost price is an acquisition cost and
+   * essentially static, so the latest snapshot is a valid baseline for any date.
+   * @param {Array<string>} productIds
+   * @returns {Promise<Map>} - Map of productId -> baseline in percent-of-par (e.g. 95.71)
+   */
+  async function getCostBaselines(productIds) {
+    if (productIds.length === 0) return new Map();
+
+    const holdings = await PMSHoldingsCollection.find(
+      { linkedProductId: { $in: productIds }, isLatest: true, isActive: true },
+      { fields: { linkedProductId: 1, costPrice: 1, portfolioCode: 1 } }
+    ).fetchAsync();
+
+    const costsByProduct = new Map();
+    for (const h of holdings) {
+      // Exclude pre-aggregated roll-up copies to avoid double counting
+      if (h.portfolioCode === 'CONSOLIDATED') continue;
+      if (!(h.costPrice > 0)) continue;
+      if (!costsByProduct.has(h.linkedProductId)) costsByProduct.set(h.linkedProductId, []);
+      costsByProduct.get(h.linkedProductId).push(h.costPrice);
+    }
+
+    const baselines = new Map();
+    for (const [productId, costs] of costsByProduct) {
+      const avgCost = costs.reduce((sum, c) => sum + c, 0) / costs.length;
+      baselines.set(productId, avgCost * 100);
+    }
+    return baselines;
+  }
+
+  /**
+   * Generate an explanation for a declining underlying of a product that lost
+   * significant value since launch. Lighter sibling of analyzeUnderlyingRisk:
+   * works without barrier data (non-Phoenix templates) and focuses on explaining
+   * the decline rather than barrier mechanics.
+   * @param {Object} underlying - { symbol, name, exchange, performance, currentPrice,
+   *   initialPrice, protectionBarrierLevel?, distanceToBarrier?, productTitle,
+   *   productIsin, productLossPercent }
+   * @param {string} language - 'en' or 'fr'
+   * @returns {Promise<Object>} - { symbol, companyName, currentPrice, performance, analysis }
+   */
+  async function analyzeDecliningUnderlying(underlying, language = 'en') {
+    const {
+      symbol,
+      name,
+      exchange,
+      performance,
+      currentPrice,
+      initialPrice,
+      protectionBarrierLevel,
+      distanceToBarrier,
+      productTitle,
+      productIsin,
+      productLossPercent
+    } = underlying;
+
+    // Fetch recent news from EOD API
+    let newsSection = '';
+    try {
+      console.log(`[RiskAnalysis] Fetching news for ${symbol}...`);
+      const newsArticles = await EODApiHelpers.getSecurityNews(symbol, exchange, 5);
+
+      if (newsArticles && newsArticles.length > 0) {
+        newsSection = '\nRECENT NEWS (from EOD Historical Data):\n';
+        newsArticles.forEach((article, idx) => {
+          const date = article.date ? new Date(article.date).toLocaleDateString() : 'Recent';
+          newsSection += `\n${idx + 1}. [${date}] ${article.title}\n`;
+          if (article.content) {
+            const content = article.content.length > 200
+              ? article.content.substring(0, 200) + '...'
+              : article.content;
+            newsSection += `   ${content}\n`;
+          }
+          if (article.sentiment) {
+            newsSection += `   Sentiment: ${article.sentiment}\n`;
+          }
+        });
+        newsSection += '\n';
+      } else {
+        newsSection = '\nRECENT NEWS: No recent news available from data provider.\n\n';
+      }
+    } catch (error) {
+      console.warn(`[RiskAnalysis] Failed to fetch news for ${symbol}:`, error.message);
+      newsSection = '\nRECENT NEWS: Unable to fetch news data.\n\n';
+    }
+
+    const barrierSection = (protectionBarrierLevel != null && distanceToBarrier != null)
+      ? `- Protection Barrier Level: ${protectionBarrierLevel}% of initial strike
+- Distance to Barrier: ${distanceToBarrier >= 0 ? '+' : ''}${distanceToBarrier.toFixed(1)}% ${distanceToBarrier < 0 ? '(ALREADY BELOW BARRIER)' : '(still above barrier)'}
+`
+      : '';
+
+    const prompt = `You are a professional financial analyst explaining why a structured product has lost value since launch. Your analysis will be read by risk officers and senior management.
+
+CONTEXT:
+The product "${productTitle}" (${productIsin}) has lost ${Math.abs(productLossPercent).toFixed(1)}% of its value since launch. The underlying below is one of the decliners driving that loss.
+
+UNDERLYING DETAILS:
+- Company: ${name} (${symbol})
+${currentPrice != null ? `- Current Price: ${currentPrice.toFixed(2)}\n` : ''}${initialPrice != null ? `- Initial Strike Price: ${initialPrice.toFixed(2)}\n` : ''}- Performance Since Initial Strike: ${performance.toFixed(2)}%
+${barrierSection}${newsSection}
+TASK:
+Write a concise analysis of 2 short paragraphs (100-180 words total). Cover, in flowing prose:
+- The key factors explaining the decline, drawing on the news above with specific events and dates when available (or general sector context if no news)
+- A balanced view of recovery considerations, noting relevant positive factors without minimizing the risks
+
+WRITING STYLE - VERY IMPORTANT:
+- Write like an experienced human analyst jotting a note for a colleague: plain flowing prose, natural transitions, varied sentence length
+- NO markdown of any kind: no headings, no bold (**), no bullet points, no numbered lists, no section labels
+- Do not announce the structure ("In this first paragraph...", "In conclusion...") and avoid formulaic filler ("It is important to note", "In today's dynamic market environment")
+- Tone: professional, objective, but cautiously optimistic
+- Use specific data points and dates from the news provided; avoid jargon
+- Do NOT make specific price predictions
+${language === 'fr' ? `
+LANGUAGE: Write the ENTIRE analysis in FRENCH (Français). All text must be in French.` : ''}
+Write the analysis now:`;
+
+    try {
+      console.log(`[RiskAnalysis] Analyzing declining underlying ${symbol} (${name})...`);
+      const analysisText = await callAnthropicAPI(prompt, 3500);
+      console.log(`[RiskAnalysis] Declining-underlying analysis complete for ${symbol}`);
+
+      return {
+        symbol,
+        companyName: name,
+        currentPrice,
+        performance,
+        analysis: analysisText,
+        generatedAt: new Date()
+      };
+    } catch (error) {
+      console.error(`[RiskAnalysis] Failed to analyze declining underlying ${symbol}:`, error);
+      return {
+        symbol,
+        companyName: name,
+        currentPrice,
+        performance,
+        analysis: `Analysis unavailable: ${error.message}`,
+        error: error.message,
+        generatedAt: new Date()
+      };
+    }
+  }
+
+  /**
+   * Build the "products down >=15% since launch" section of the risk report.
+   * Flags every live product (any template) whose latest bank price is at least
+   * 15% below the clients' average cost (fallback: par), then attaches an
+   * explanation comment to each declining underlying. Comments are generated
+   * once per unique symbol across the whole report and copied everywhere else.
+   * @param {Object} params - { asOfDate, analysisData, language, commentBySymbol }
+   *   commentBySymbol: Map of symbol -> analysis text, seeded from the at-risk
+   *   analyses; this function adds newly generated comments to it.
+   * @returns {Promise<Array>} - productsDownSinceLaunch entries, worst loss first
+   */
+  async function buildProductsDownSinceLaunch({ asOfDate, analysisData, language, commentBySymbol }) {
+    const LOSS_THRESHOLD = -15;
+
+    // 1. Live products, all templates
+    let products;
+    if (asOfDate) {
+      const allProducts = await ProductsCollection.find({}).fetchAsync();
+      products = allProducts.filter(p => isProductLiveAsOf(p, asOfDate));
+    } else {
+      products = await ProductsCollection.find({
+        $or: [
+          { status: 'live' },
+          { status: 'Live' },
+          { status: 'active' },
+          { status: 'Active' },
+          { productStatus: 'live' },
+          { productStatus: 'Live' },
+          { productStatus: 'active' },
+          { productStatus: 'Active' }
+        ]
+      }).fetchAsync();
+    }
+
+    // 2. Latest bank prices + cost baselines
+    const isins = [...new Set(products.map(p => p.isin && p.isin.toUpperCase()).filter(Boolean))];
+    const priceMap = await getLatestBankPrices(isins, asOfDate);
+    const baselines = await getCostBaselines(products.map(p => p._id));
+
+    // 3. Flag products down >= 15% vs their cost baseline
+    let skippedNoPrice = 0;
+    const flagged = [];
+    for (const product of products) {
+      const isin = product.isin && product.isin.toUpperCase();
+      const priceRecord = isin ? priceMap.get(isin) : null;
+      if (!priceRecord) {
+        skippedNoPrice++;
+        continue;
+      }
+
+      const latestPrice = normalizePctOfPar(priceRecord.price);
+      const baselineCost = baselines.get(product._id) || 100;
+      const lossPercent = (latestPrice / baselineCost - 1) * 100;
+      if (lossPercent > LOSS_THRESHOLD) continue;
+
+      flagged.push({
+        product,
+        entry: {
+          productId: product._id,
+          productTitle: product.title || product.name || isin,
+          productIsin: isin,
+          currency: product.currency || priceRecord.currency || null,
+          template: product.template || product.templateId || null,
+          latestPrice,
+          priceDate: priceRecord.priceDate,
+          baselineCost,
+          baselineSource: baselines.has(product._id) ? 'pms_holdings' : 'default_100',
+          lossPercent
+        }
+      });
+    }
+
+    if (skippedNoPrice > 0) {
+      console.log(`[RiskAnalysis] Products-down check: ${skippedNoPrice} live products skipped (no ISIN or no bank price)`);
+    }
+    console.log(`[RiskAnalysis] Products-down check: ${flagged.length} of ${products.length} live products down ${Math.abs(LOSS_THRESHOLD)}%+ since launch`);
+
+    // 4. Gather declining underlyings per flagged product
+    for (const { product, entry } of flagged) {
+      let underlyings = [];
+      let underlyingsSource = 'none';
+
+      // (a) Rows already computed for the underlyings analysis (Phoenix products),
+      //     correct for both live and as-of mode
+      const analysisRows = (analysisData?.underlyings || []).filter(u => u.productId === product._id);
+      if (analysisRows.length > 0) {
+        underlyingsSource = 'underlyingsAnalysis';
+        underlyings = analysisRows.map(u => ({
+          symbol: u.symbol,
+          name: u.name,
+          exchange: u.exchange || null,
+          performance: u.performance,
+          currentPrice: u.currentPrice ?? null,
+          initialPrice: u.initialPrice ?? null,
+          protectionBarrierLevel: u.protectionBarrierLevel ?? null,
+          distanceToBarrier: u.distanceToBarrier ?? null
+        }));
+      } else {
+        // (b) Latest evaluation report (any template exposes templateResults.underlyings)
+        const templateReport = await TemplateReportsCollection.findOneAsync(
+          { productId: product._id },
+          { sort: { createdAt: -1 } }
+        );
+        const reportUnderlyings = templateReport?.templateResults?.underlyings || [];
+        if (reportUnderlyings.length > 0) {
+          underlyingsSource = 'templateReport';
+          if (asOfDate) entry.dataAsOfCaveat = true; // report data is latest-known, not as-of
+          underlyings = reportUnderlyings.map(u => {
+            const fullTicker = u.fullTicker || u.ticker || '';
+            return {
+              symbol: (u.ticker || fullTicker).split('.')[0],
+              name: u.name || u.ticker || fullTicker,
+              exchange: fullTicker.includes('.') ? fullTicker.split('.')[1] : null,
+              performance: u.performance ?? null,
+              currentPrice: u.currentPrice ?? null,
+              initialPrice: u.initialPrice ?? u.strike ?? null,
+              protectionBarrierLevel: null,
+              distanceToBarrier: null
+            };
+          });
+        }
+      }
+
+      entry.underlyingsSource = underlyingsSource;
+      if (underlyingsSource === 'none') {
+        entry.underlyingsDataUnavailable = true;
+        entry.underlyings = [];
+        continue;
+      }
+
+      const declining = underlyings.filter(u => u.symbol && u.performance != null && u.performance < 0);
+      if (declining.length === 0) {
+        entry.note = 'no-declining-underlyings';
+        entry.underlyings = [];
+        continue;
+      }
+
+      entry.underlyings = declining;
+    }
+
+    // 5. Generate one comment per unique symbol not already analyzed elsewhere
+    const pendingBySymbol = new Map();
+    for (const { entry } of flagged) {
+      for (const u of entry.underlyings || []) {
+        if (!commentBySymbol.has(u.symbol) && !pendingBySymbol.has(u.symbol)) {
+          pendingBySymbol.set(u.symbol, {
+            ...u,
+            productTitle: entry.productTitle,
+            productIsin: entry.productIsin,
+            productLossPercent: entry.lossPercent
+          });
+        }
+      }
+    }
+
+    if (pendingBySymbol.size > 0) {
+      console.log(`[RiskAnalysis] Generating ${pendingBySymbol.size} new declining-underlying comments (others copied)`);
+      const newAnalyses = await Promise.all(
+        [...pendingBySymbol.values()].map(u => analyzeDecliningUnderlying(u, language))
+      );
+      for (const a of newAnalyses) {
+        commentBySymbol.set(a.symbol, a.analysis);
+      }
+    }
+
+    // 6. Attach comments (first generation site is the pending one; everything else is a copy)
+    const firstUseConsumed = new Set();
+    for (const { entry } of flagged) {
+      entry.underlyings = (entry.underlyings || []).map(u => {
+        const generatedHere = pendingBySymbol.has(u.symbol) && !firstUseConsumed.has(u.symbol);
+        if (generatedHere) firstUseConsumed.add(u.symbol);
+        return {
+          symbol: u.symbol,
+          name: u.name,
+          performance: u.performance,
+          currentPrice: u.currentPrice,
+          initialPrice: u.initialPrice,
+          analysis: commentBySymbol.get(u.symbol) || 'Analysis unavailable',
+          reused: !generatedHere
+        };
+      });
+    }
+
+    return flagged
+      .map(f => f.entry)
+      .sort((a, b) => a.lossPercent - b.lossPercent);
+  }
+
+  /**
    * Generate executive summary for the entire risk report
    * @param {Array} analyses - Array of individual stock analyses
    * @param {string} language - Language for summary ('en' or 'fr')
@@ -296,13 +660,16 @@ AT-RISK POSITIONS:
 ${JSON.stringify(analysesData, null, 2)}
 
 TASK:
-Write an executive summary (2-3 paragraphs, 200-300 words):
+Write an executive summary of 2-3 short paragraphs (150-250 words) covering:
 - Overall assessment of risk level for the AT-RISK positions (not the entire portfolio)
 - Be clear that these ${totalAtRisk} underlyings represent only the problematic positions, not the entire portfolio
-- Identify the most concerning positions (critical/high risk)
-- Highlight key trends or common factors across these at-risk positions
-- Mention mitigating factors (time remaining, protection features, recovery potential)
-- Overall risk management perspective
+- The most concerning positions (critical/high risk) and any common factors across them
+- Mitigating factors (time remaining, protection features, recovery potential)
+
+WRITING STYLE - VERY IMPORTANT:
+- Write like an experienced human risk officer: plain flowing prose, natural transitions, varied sentence length
+- NO markdown of any kind: no headings, no bold (**), no bullet points, no numbered lists, no section labels
+- Do not announce the structure and avoid formulaic filler ("It is important to note", "In today's dynamic market environment")
 - Keep tone professional, balanced, and cautiously optimistic
 ${language === 'fr' ? `
 LANGUAGE: Write the ENTIRE summary in FRENCH (Français). All text must be in French.` : ''}
@@ -363,12 +730,26 @@ Write the summary now:`;
 
       console.log(`[RiskAnalysis] Found ${atRiskUnderlyings.length} at-risk underlyings`);
 
-      // If no at-risk underlyings, generate a positive portfolio health report
+      // If no at-risk underlyings, generate a positive portfolio health report.
+      // Products can still be down 15%+ since launch without any barrier breach,
+      // so the products-down section is computed on this path too.
       if (atRiskUnderlyings.length === 0) {
+        const productsDownSinceLaunch = await buildProductsDownSinceLaunch({
+          asOfDate,
+          analysisData,
+          language,
+          commentBySymbol: new Map()
+        });
+
+        const executiveSummary = productsDownSinceLaunch.length > 0
+          ? `All underlyings are currently performing above their protection barriers, indicating no immediate barrier risks to your structured products.\n\nHowever, ${productsDownSinceLaunch.length} product${productsDownSinceLaunch.length > 1 ? 's have' : ' has'} lost 15% or more of value since launch. See the "Products Down 15%+ Since Launch" section below for details on the underlyings driving these losses.`
+          : 'Your portfolio is currently in excellent health. All underlyings are performing above their protection barriers, indicating no immediate risks to your structured products.\n\nThis is a positive indicator that your investment strategy is working well. Continue to monitor your positions regularly for any market changes.';
+
         const healthReport = {
           generatedAt: new Date(),
           generatedBy: this.userId,
           asOfDate: asOfDate || null,
+          language,
           summary: {
             totalAtRisk: 0,
             uniqueUnderlyings: 0,
@@ -376,11 +757,13 @@ Write the summary now:`;
             highRisk: 0,
             moderateRisk: 0,
             averageDistanceToBarrier: 0,
-            averageDaysRemaining: 0
+            averageDaysRemaining: 0,
+            productsDown15: productsDownSinceLaunch.length
           },
           analyses: [],
-          executiveSummary: '# Portfolio Health Report\n\n✅ **All Clear!** Your portfolio is currently in excellent health. All underlyings are performing above their protection barriers, indicating no immediate risks to your structured products.\n\nThis is a positive indicator that your investment strategy is working well. Continue to monitor your positions regularly for any market changes.',
+          executiveSummary,
           impactedProducts: [],
+          productsDownSinceLaunch,
           totalProducts: analysisData.underlyings.length,
           generationTime: 0
         };
@@ -434,6 +817,16 @@ Write the summary now:`;
 
       console.log('[RiskAnalysis] Individual analyses complete');
 
+      // Build the "products down 15%+ since launch" section, reusing the
+      // at-risk comments for underlyings already analyzed above
+      const commentBySymbol = new Map(analyses.map(a => [a.symbol, a.analysis]));
+      const productsDownSinceLaunch = await buildProductsDownSinceLaunch({
+        asOfDate,
+        analysisData,
+        language,
+        commentBySymbol
+      });
+
       // Generate executive summary
       const { executiveSummary } = await generateExecutiveSummary(analyses, language);
 
@@ -481,7 +874,8 @@ Write the summary now:`;
         highRisk: analyses.filter(a => a.riskLevel === 'high').length,
         moderateRisk: analyses.filter(a => a.riskLevel === 'moderate').length,
         averageDistanceToBarrier: analyses.reduce((sum, a) => sum + a.distanceToBarrier, 0) / analyses.length,
-        averageDaysRemaining: analyses.reduce((sum, a) => sum + a.daysRemaining, 0) / analyses.length
+        averageDaysRemaining: analyses.reduce((sum, a) => sum + a.daysRemaining, 0) / analyses.length,
+        productsDown15: productsDownSinceLaunch.length
       };
 
       // Create report document
@@ -497,8 +891,9 @@ Write the summary now:`;
         })),
         executiveSummary,
         impactedProducts: impactedProducts.sort((a, b) => a.worstDistance - b.worstDistance), // Sort by worst distance
+        productsDownSinceLaunch,
         processingTimeMs: Date.now() - startTime,
-        version: '1.0.0'
+        version: '1.1.0'
       };
 
       // Save to database

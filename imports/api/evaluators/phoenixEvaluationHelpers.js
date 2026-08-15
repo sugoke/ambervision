@@ -185,7 +185,12 @@ export const PhoenixEvaluationHelpers = {
    */
   async extractUnderlyingAssetsData(product) {
     const underlyings = [];
-    const currency = product.currency || 'USD';
+    // Note currency — the denomination of the product itself, used only as a last-resort
+    // fallback for display. An underlying's price is quoted in ITS OWN currency, which is
+    // frequently not the note's: a EUR-denominated note over NYSE stocks (e.g. CH1506051833
+    // on AngloGold/Barrick/Newmont) quotes those in USD, and labelling them "€" misstates
+    // the market price of every underlying.
+    const noteCurrency = product.currency || 'USD';
 
     if (product.underlyings && Array.isArray(product.underlyings)) {
       // Process all underlyings sequentially to fetch current prices and news
@@ -261,6 +266,13 @@ export const PhoenixEvaluationHelpers = {
         const evaluationPriceInfo = this.getEvaluationPrice(underlying, product);
         const currentPrice = evaluationPriceInfo.price;
 
+        // The currency this underlying is quoted in, which is a property of the instrument
+        // and its exchange — not of the note wrapped around it. Falls back to the note
+        // currency only when the security data doesn't say.
+        const underlyingCurrency = underlying.currency
+          || underlying.securityData?.currency
+          || noteCurrency;
+
         let performance = initialPrice > 0 ?
           ((currentPrice - initialPrice) / initialPrice) * 100 : 0;
 
@@ -277,8 +289,10 @@ export const PhoenixEvaluationHelpers = {
           performance: performance,
           isPositive: performance >= 0,
 
-          initialPriceFormatted: this.formatCurrency(initialPrice, currency),
-          currentPriceFormatted: this.formatCurrency(currentPrice, currency),
+          // Quote each underlying in the currency it actually trades in.
+          currency: underlyingCurrency,
+          initialPriceFormatted: this.formatCurrency(initialPrice, underlyingCurrency),
+          currentPriceFormatted: this.formatCurrency(currentPrice, underlyingCurrency),
           performanceFormatted: (performance >= 0 ? '+' : '') + performance.toFixed(2) + '%',
           priceDateFormatted: evaluationPriceInfo.date ?
             new Date(evaluationPriceInfo.date).toLocaleDateString('en-GB', {

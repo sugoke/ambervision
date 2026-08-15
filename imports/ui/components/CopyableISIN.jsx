@@ -25,7 +25,7 @@ const CopyableISIN = ({ isin, style = {}, prefix = '' }) => {
           top: '-28px',
           left: '50%',
           transform: 'translateX(-50%)',
-          background: '#10b981',
+          background: 'var(--gain-color)',
           color: '#fff',
           fontSize: '0.7rem',
           fontWeight: '600',

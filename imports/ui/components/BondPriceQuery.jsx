@@ -416,7 +416,7 @@ const BondPriceQuery = ({ isDark }) => {
                     fontWeight: '600',
                     textTransform: 'uppercase',
                     background: bond.type === 'stock' ? 'rgba(59, 130, 246, 0.15)' : 'rgba(139, 92, 246, 0.15)',
-                    color: bond.type === 'stock' ? '#3b82f6' : '#8b5cf6',
+                    color: bond.type === 'stock' ? 'var(--info-color)' : '#8b5cf6',
                     border: `1px solid ${bond.type === 'stock' ? 'rgba(59, 130, 246, 0.3)' : 'rgba(139, 92, 246, 0.3)'}`
                   }}>
                     {bond.type === 'stock' ? '📈 Stock' : '💰 Bond'}
@@ -578,7 +578,7 @@ const BondPriceQuery = ({ isDark }) => {
                     <div style={{
                       fontSize: '1.25rem',
                       fontWeight: '700',
-                      color: '#10b981',
+                      color: 'var(--gain-color)',
                       fontFamily: 'monospace'
                     }}>
                       {bond.yieldFormatted || formatPercentage(bond.yield)}
@@ -856,7 +856,7 @@ const BondPriceQuery = ({ isDark }) => {
                     <div style={{
                       fontSize: '0.95rem',
                       fontWeight: '600',
-                      color: bond.status === 'outstanding' ? '#10b981' : 'var(--text-primary)',
+                      color: bond.status === 'outstanding' ? 'var(--gain-color)' : 'var(--text-primary)',
                       textTransform: 'capitalize'
                     }}>
                       {bond.status}

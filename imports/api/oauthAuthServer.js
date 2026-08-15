@@ -36,18 +36,38 @@ export const PENDING_REQUEST_TTL_SECONDS = 10 * 60;          // 10m
 if (Meteor.isServer) {
   OauthClientsCollection.createIndex({ _id: 1 });
 
-  OauthPendingRequestsCollection.createIndex({ expiresAt: 1 });
   OauthPendingRequestsCollection.createIndex({ authCodeHash: 1 });
 
   OauthAccessTokensCollection.createIndex({ tokenHash: 1 }, { unique: true });
   OauthAccessTokensCollection.createIndex({ userId: 1, clientId: 1 });
-  OauthAccessTokensCollection.createIndex({ expiresAt: 1 });
 
   OauthRefreshTokensCollection.createIndex({ tokenHash: 1 }, { unique: true });
   OauthRefreshTokensCollection.createIndex({ userId: 1, clientId: 1 });
-  OauthRefreshTokensCollection.createIndex({ expiresAt: 1 });
 
   OauthConsentsCollection.createIndex({ userId: 1, clientId: 1 }, { unique: true });
+
+  // TTL indexes so expired pending requests, access and refresh tokens are
+  // reaped by Mongo instead of accumulating forever (there was no sweeper).
+  // expireAfterSeconds:0 means "delete once now > expiresAt". A refresh token's
+  // expiresAt is its 30-day expiry, so a revoked-but-unexpired token still
+  // survives for reuse detection (H-5) until it would have expired anyway.
+  //
+  // Deferred to Meteor.startup and fully guarded: rawCollection() needs the DB
+  // connection, and on a DB that already has a plain { expiresAt: 1 } index
+  // Mongo rejects adding TTL options to the same key (drop the old index once
+  // for the TTL to take effect). Neither must ever crash server startup.
+  Meteor.startup(async () => {
+    const ttl = async (coll, label) => {
+      try {
+        await coll.rawCollection().createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+      } catch (e) {
+        console.warn(`[OAuth] TTL index on ${label}: ${e?.message || e}`);
+      }
+    };
+    await ttl(OauthPendingRequestsCollection, 'oauthPendingRequests');
+    await ttl(OauthAccessTokensCollection, 'oauthAccessTokens');
+    await ttl(OauthRefreshTokensCollection, 'oauthRefreshTokens');
+  });
 }
 
 export function hashToken(rawToken) {
@@ -216,16 +236,23 @@ export const PendingRequests = {
     const authCodeHash = hashToken(authCode);
     const doc = await OauthPendingRequestsCollection.findOneAsync({ authCodeHash });
     if (!doc) return null;
-    if (doc.authCodeUsed) return null;
     if (doc.authCodeExpiresAt && doc.authCodeExpiresAt.getTime() < Date.now()) return null;
+    // NOTE: returns the doc even when authCodeUsed — the caller consumes it
+    // atomically (consumeAuthCode) and treats an already-used code as a replay.
+    // Filtering used codes here would make replay indistinguishable from
+    // not-found and silently skip token revocation.
     return doc;
   },
 
-  async markAuthCodeUsed(reqId) {
-    await OauthPendingRequestsCollection.updateAsync(
-      { _id: reqId },
+  // Atomically claim an unused auth code. Returns true only for the single
+  // caller that flips authCodeUsed false→true; concurrent/replayed exchanges
+  // get false. This closes the read-check-write double-spend window.
+  async consumeAuthCode(reqId) {
+    const n = await OauthPendingRequestsCollection.updateAsync(
+      { _id: reqId, authCodeUsed: false },
       { $set: { authCodeUsed: true, authCodeUsedAt: new Date() } }
     );
+    return n === 1;
   }
 };
 
@@ -265,11 +292,12 @@ export const AccessTokens = {
     );
   },
 
-  async revokeByValue(rawToken) {
-    await OauthAccessTokensCollection.updateAsync(
-      { tokenHash: hashToken(rawToken), revokedAt: null },
-      { $set: { revokedAt: new Date() } }
-    );
+  async revokeByValue(rawToken, clientId = null) {
+    const selector = { tokenHash: hashToken(rawToken), revokedAt: null };
+    // Scope revocation to the requesting client so one client cannot revoke
+    // another's token merely by learning its value.
+    if (clientId) selector.clientId = clientId;
+    await OauthAccessTokensCollection.updateAsync(selector, { $set: { revokedAt: new Date() } });
   }
 };
 
@@ -303,6 +331,14 @@ export const RefreshTokens = {
     return doc;
   },
 
+  // Look up a refresh token regardless of its revoked/expired state. Used only
+  // for reuse detection: a presented token that exists but is already revoked
+  // is a replay of a rotated token, and the whole family must be torn down.
+  async findAnyByValue(rawToken) {
+    if (!rawToken) return null;
+    return OauthRefreshTokensCollection.findOneAsync({ tokenHash: hashToken(rawToken) });
+  },
+
   async revokeById(tokenId, replacedBy = null) {
     await OauthRefreshTokensCollection.updateAsync(
       { _id: tokenId, revokedAt: null },
@@ -310,11 +346,10 @@ export const RefreshTokens = {
     );
   },
 
-  async revokeByValue(rawToken) {
-    await OauthRefreshTokensCollection.updateAsync(
-      { tokenHash: hashToken(rawToken), revokedAt: null },
-      { $set: { revokedAt: new Date() } }
-    );
+  async revokeByValue(rawToken, clientId = null) {
+    const selector = { tokenHash: hashToken(rawToken), revokedAt: null };
+    if (clientId) selector.clientId = clientId;
+    await OauthRefreshTokensCollection.updateAsync(selector, { $set: { revokedAt: new Date() } });
   },
 
   async revokeForClient(userId, clientId) {

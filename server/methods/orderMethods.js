@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { Random } from 'meteor/random';
 import { SessionsCollection } from '../../imports/api/sessions.js';
+import { issueDocumentToken } from '../documentAccess.js';
 import { generatePDFFromHTML } from '../helpers/pdfHelper.js';
 import { UsersCollection, UserHelpers } from '../../imports/api/users.js';
 import { BanksCollection } from '../../imports/api/banks.js';
@@ -21,6 +22,23 @@ import { IssuersCollection } from '../../imports/api/issuers.js';
 /**
  * Order Management Server Methods
  */
+
+/**
+ * Trace types that may be supplied inline when an order is created, so the order is
+ * inserted with its evidence already attached. Termsheet evidence that drives a status
+ * transition is excluded on purpose — it goes through orders.advanceTermsheetWithEvidence.
+ */
+const CREATION_TRACE_TYPES = [
+  EMAIL_TRACE_TYPES.CLIENT_ORDER,
+  EMAIL_TRACE_TYPES.INITIAL_TERMSHEET
+];
+
+const creationAttachmentPattern = Match.Maybe([{
+  traceType: Match.Where(x => CREATION_TRACE_TYPES.includes(x)),
+  fileName: String,
+  base64Data: String,
+  mimeType: Match.Maybe(String)
+}]);
 
 const TERMSHEET_MIME_BY_EXT = {
   '.pdf': 'application/pdf',
@@ -129,7 +147,10 @@ async function validateOrderAccess(order, user) {
     if (client && rmIds.includes(client.relationshipManagerId)) {
       return true;
     }
-    // Check entity-based client
+    // Check entity-based client. Match the canonical selector: an entity is
+    // linked to an RM via `assignedUserIds`, with `relationshipManagerId` only a
+    // legacy fallback. Matching the deprecated field alone wrongly denied RMs
+    // whose entities use assignedUserIds.
     const { ClientEntitiesCollection: EntCol } = require('../../imports/api/clientEntities.js');
     const entity = await EntCol.findOneAsync({
       $or: [
@@ -139,7 +160,10 @@ async function validateOrderAccess(order, user) {
       ],
       isActive: true
     });
-    if (entity && rmIds.includes(entity.relationshipManagerId)) {
+    if (entity && (
+      rmIds.includes(entity.relationshipManagerId) ||
+      (entity.assignedUserIds || []).some(id => rmIds.includes(id))
+    )) {
       return true;
     }
   }
@@ -420,8 +444,9 @@ Meteor.methods({
   /**
    * Create a new order
    */
-  async 'orders.create'({ orderData, sessionId }) {
+  async 'orders.create'({ orderData, attachments, sessionId }) {
     check(sessionId, String);
+    check(attachments, creationAttachmentPattern);
     check(orderData, {
       orderType: Match.Where(x => ['buy', 'sell'].includes(x)),
       isin: String,
@@ -676,7 +701,36 @@ Meteor.methods({
       order.linkedOrderGroup = orderReference;
     }
 
-    const orderId = await OrdersCollection.insertAsync(order);
+    // Creation-time evidence (client order email, initial termsheet) is written to disk
+    // and embedded in the document BEFORE the insert, so an order never becomes visible
+    // — nor triggers the "pending validation" notification — without the files it was
+    // created with. Uploading them in a second round-trip after the insert left a window
+    // (seconds, for a large .eml) in which the second pair of eyes could open the order
+    // and find no evidence; the window never closed at all if that upload failed or the
+    // creator's tab was closed. A rejected attachment now fails the whole creation.
+    const orderId = Random.id();
+    order._id = orderId;
+    order.emailTraces = [];
+    const writeCreationTraces = async (targetOrder) => {
+      for (const attachment of (attachments || [])) {
+        const trace = await writeTraceFileToOrder({
+          order: targetOrder,
+          traceType: attachment.traceType,
+          fileName: attachment.fileName,
+          base64Data: attachment.base64Data,
+          mimeType: attachment.mimeType,
+          userId,
+          userDisplayName
+        });
+        // One trace per type: mirror writeTraceFileToOrder's replace semantics locally
+        targetOrder.emailTraces = targetOrder.emailTraces
+          .filter(t => t.traceType !== attachment.traceType)
+          .concat(trace);
+      }
+    };
+    await writeCreationTraces(order);
+
+    await OrdersCollection.insertAsync(order);
 
     console.log(`[ORDERS] Created order ${orderReference} (${orderId}) by ${userDisplayName} (${userId})`);
 
@@ -692,7 +746,10 @@ Meteor.methods({
       const tpRef = `${orderReference}-TP`;
       const tpOrder = {
         ...order,
-        _id: undefined,
+        // Own id and own copies of the creation evidence — sharing the parent's
+        // filePath would let a delete on one leg orphan the other's trace.
+        _id: Random.id(),
+        emailTraces: [],
         orderReference: tpRef,
         priceType: PRICE_TYPES.TAKE_PROFIT,
         limitPrice: orderData.attachedTakeProfit,
@@ -704,6 +761,7 @@ Meteor.methods({
         createdAt: new Date(),
         updatedAt: new Date()
       };
+      await writeCreationTraces(tpOrder);
       const tpId = await OrdersCollection.insertAsync(tpOrder);
       console.log(`[ORDERS] Created linked TP order ${tpRef} (${tpId}) for ${orderReference}`);
     }
@@ -713,7 +771,9 @@ Meteor.methods({
       const slRef = `${orderReference}-SL`;
       const slOrder = {
         ...order,
-        _id: undefined,
+        // Own id and own copies of the creation evidence (see TP leg above)
+        _id: Random.id(),
+        emailTraces: [],
         orderReference: slRef,
         priceType: PRICE_TYPES.STOP_LOSS,
         limitPrice: null,
@@ -725,6 +785,7 @@ Meteor.methods({
         createdAt: new Date(),
         updatedAt: new Date()
       };
+      await writeCreationTraces(slOrder);
       const slId = await OrdersCollection.insertAsync(slOrder);
       console.log(`[ORDERS] Created linked SL order ${slRef} (${slId}) for ${orderReference}`);
     }
@@ -879,8 +940,11 @@ ${userDisplayName}
   /**
    * Create multiple orders in bulk (same security to multiple accounts)
    */
-  async 'orders.createBulk'({ bulkOrderData, sessionId }) {
+  async 'orders.createBulk'({ bulkOrderData, attachments, sessionId }) {
     check(sessionId, String);
+    // Evidence shared by every order in the block (e.g. one client email covering all
+    // accounts). Per-account evidence rides along on each row instead.
+    check(attachments, creationAttachmentPattern);
     check(bulkOrderData, {
       orderType: Match.Where(x => ['buy', 'sell'].includes(x)),
       isin: String,
@@ -890,6 +954,8 @@ ${userDisplayName}
       priceType: Match.Where(x => Object.values(PRICE_TYPES).includes(x)),
       limitPrice: Match.Maybe(Number),
       notes: Match.Maybe(String),
+      // Already forwarded to orders.create via sharedFields below
+      bankComment: Match.Maybe(String),
       broker: Match.Maybe(String),
       issuerId: Match.Maybe(String),
       settlementCurrency: Match.Maybe(String),
@@ -924,11 +990,16 @@ ${userDisplayName}
       fundQuantityMode: Match.Maybe(Match.Where(x => ['units', 'nominal'].includes(x))),
       orders: [{
         clientId: String,
+        // Resolved server-side from the bank account by orders.create; accepted here
+        // because the client sends it with the row.
+        entityId: Match.Maybe(String),
         bankAccountId: String,
         portfolioCode: Match.Maybe(String),
         quantity: Number,
         estimatedValue: Match.Maybe(Number),
-        sourceHoldingId: Match.Maybe(String)
+        sourceHoldingId: Match.Maybe(String),
+        // Evidence specific to this account (per-account client order email)
+        attachments: creationAttachmentPattern
       }]
     });
 
@@ -990,11 +1061,17 @@ ${userDisplayName}
         if (bulkOrderData.validityDate) sharedFields.validityDate = bulkOrderData.validityDate;
         if (bulkOrderData.fundQuantityMode) sharedFields.fundQuantityMode = bulkOrderData.fundQuantityMode;
 
+        // entityId and attachments are not part of the orders.create payload shape:
+        // the entity is resolved from the bank account, and the files are passed
+        // alongside so each order is inserted with its evidence already attached.
+        const { entityId: _rowEntityId, attachments: rowAttachments, ...rowFields } = individualOrder;
+
         const result = await Meteor.callAsync('orders.create', {
           orderData: {
             ...sharedFields,
-            ...individualOrder
+            ...rowFields
           },
+          attachments: [...(attachments || []), ...(rowAttachments || [])],
           sessionId
         });
 
@@ -1706,8 +1783,9 @@ ${userDisplayName}
       }
     }
 
-    // Structured products cannot be marked executed until the final (signed) termsheet is uploaded
-    if (order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT && order.termsheetStatus !== TERMSHEET_STATUSES.SIGNED) {
+    // BUY structured products cannot be marked executed until the final (signed)
+    // termsheet is uploaded. Sell orders never require a termsheet.
+    if (order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT && order.orderType === 'buy' && order.termsheetStatus !== TERMSHEET_STATUSES.SIGNED) {
       throw new Meteor.Error('missing-termsheet', 'Final signed termsheet must be uploaded before this structured product order can be marked executed');
     }
 
@@ -1853,6 +1931,25 @@ ${userDisplayName}
       acceptedExtensions: TERMSHEET_EVIDENCE_TYPES
     });
 
+    // The unified "Signed Termsheet" tile treats a legacy 'termsheet' trace as signed
+    // evidence — replace it too when new signed evidence lands, so one file remains.
+    if (traceType === EMAIL_TRACE_TYPES.TERMSHEET_SIGNED) {
+      const legacyTrace = (order.emailTraces || []).find(t => t.traceType === EMAIL_TRACE_TYPES.TERMSHEET);
+      if (legacyTrace) {
+        try {
+          if (legacyTrace.filePath && fs.existsSync(legacyTrace.filePath)) {
+            fs.unlinkSync(legacyTrace.filePath);
+            console.log(`   Deleted legacy termsheet trace file: ${legacyTrace.filePath}`);
+          }
+        } catch (err) {
+          console.error('Error deleting legacy termsheet trace file:', err);
+        }
+        await OrdersCollection.updateAsync(orderId, {
+          $pull: { emailTraces: { _id: legacyTrace._id } }
+        });
+      }
+    }
+
     const now = new Date();
     await OrdersCollection.updateAsync(orderId, {
       $push: { emailTraces: trace },
@@ -1933,7 +2030,8 @@ ${userDisplayName}
       dateTo: Match.Maybe(Date),
       search: Match.Maybe(String),
       bulkOrderGroupId: Match.Maybe(String),
-      validatedByName: Match.Maybe(String)
+      validatedByName: Match.Maybe(String),
+      missingTermsheet: Match.Maybe(Boolean)
     });
     check(pagination, {
       limit: Match.Maybe(Number),
@@ -1987,6 +2085,15 @@ ${userDisplayName}
       query.validatedByName = filters.validatedByName;
     }
 
+    // Missing termsheet: only BUY structured products whose termsheet has not
+    // yet been sent/signed (status 'none' or never set). Sell orders never
+    // require a termsheet. Triggered by clicking the "TS" column header.
+    if (filters.missingTermsheet) {
+      query.assetType = ASSET_TYPES.STRUCTURED_PRODUCT;
+      query.orderType = 'buy';
+      query.termsheetStatus = { $in: [TERMSHEET_STATUSES.NONE, null] };
+    }
+
     if (filters.dateFrom || filters.dateTo) {
       query.createdAt = {};
       if (filters.dateFrom) {
@@ -2002,6 +2109,7 @@ ${userDisplayName}
       query.$or = [
         { orderReference: searchRegex },
         { securityName: searchRegex },
+        { displayName: searchRegex },
         { isin: searchRegex }
       ];
     }
@@ -2561,7 +2669,9 @@ ${userDisplayName}
     if (!updateResult.value) {
       const current = await OrdersCollection.findOneAsync(orderId);
       const whoLabel = current?.reviewingByName || 'another user';
-      const since = current?.reviewingAt ? new Date(current.reviewingAt).toLocaleTimeString() : '';
+      const since = current?.reviewingAt
+        ? new Date(current.reviewingAt).toLocaleTimeString('en-US', { timeZone: OrderFormatters.DISPLAY_TIMEZONE, hour: '2-digit', minute: '2-digit' })
+        : '';
       throw new Meteor.Error(
         'locked-by-other',
         `This order is currently being reviewed by ${whoLabel}${since ? ` since ${since}` : ''}.`
@@ -3800,6 +3910,29 @@ Meteor.methods({
       console.log(`[ORDERS] Reverting order ${order.orderReference} from TRANSMITTED to PENDING (order-to-bank removed)`);
     }
 
+    // Termsheet evidence is linked to the termsheet status indicator: removing the
+    // evidence that justified the current status reverts the status accordingly.
+    // Legacy 'termsheet' traces count as signed evidence (pre-unification uploads).
+    const signedEvidenceTypes = [EMAIL_TRACE_TYPES.TERMSHEET_SIGNED, EMAIL_TRACE_TYPES.TERMSHEET];
+    const hasSignedEvidence = remainingTraces.some(t => signedEvidenceTypes.includes(t.traceType));
+    const hasSentEvidence = remainingTraces.some(t => t.traceType === EMAIL_TRACE_TYPES.TERMSHEET_SENT);
+
+    if (signedEvidenceTypes.includes(trace.traceType)
+        && order.termsheetStatus === TERMSHEET_STATUSES.SIGNED
+        && !hasSignedEvidence) {
+      updateSet.termsheetStatus = hasSentEvidence ? TERMSHEET_STATUSES.SENT : TERMSHEET_STATUSES.NONE;
+      updateSet.termsheetUpdatedBy = userDisplayName;
+      updateSet.termsheetUpdatedAt = new Date();
+      console.log(`[ORDERS] Reverting termsheet status of order ${order.orderReference} from SIGNED to ${updateSet.termsheetStatus} (signed evidence removed)`);
+    } else if (trace.traceType === EMAIL_TRACE_TYPES.TERMSHEET_SENT
+        && order.termsheetStatus === TERMSHEET_STATUSES.SENT
+        && !hasSentEvidence) {
+      updateSet.termsheetStatus = TERMSHEET_STATUSES.NONE;
+      updateSet.termsheetUpdatedBy = userDisplayName;
+      updateSet.termsheetUpdatedAt = new Date();
+      console.log(`[ORDERS] Reverting termsheet status of order ${order.orderReference} from SENT to NONE (sent evidence removed)`);
+    }
+
     await OrdersCollection.updateAsync(orderId, {
       $pull: { emailTraces: { _id: traceId } },
       $set: updateSet
@@ -3901,7 +4034,38 @@ Meteor.methods({
       throw new Meteor.Error('not-found', 'Email trace not found');
     }
 
-    return `/order_traces/${orderId}/${trace.storedFileName}`;
+    // The /order_traces endpoint requires a single-use capability token bound
+    // to the path — the URL alone is no longer sufficient.
+    const filePath = `/order_traces/${orderId}/${trace.storedFileName}`;
+    const token = await issueDocumentToken(filePath, user._id);
+    return `${filePath}?dl=${token}`;
+  },
+
+  /**
+   * Signed download URLs for every email trace (and the pending-modification
+   * instruction file) of an order, keyed by storedFileName. Used by the review
+   * blotter whose inline img/iframe previews render synchronously and so need
+   * the tokens resolved when the review panel opens.
+   */
+  async 'orders.getEmailTraceSignedUrls'({ orderId, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+
+    const { user } = await validateSession(sessionId);
+    const order = await OrdersCollection.findOneAsync(orderId);
+    await validateOrderAccess(order, user);
+
+    const urls = {};
+    const mint = async (storedFileName) => {
+      if (!storedFileName || urls[storedFileName]) return;
+      const filePath = `/order_traces/${orderId}/${storedFileName}`;
+      urls[storedFileName] = `${filePath}?dl=${await issueDocumentToken(filePath, user._id)}`;
+    };
+    for (const t of (order.emailTraces || [])) await mint(t.storedFileName);
+    if (order.pendingModification?.instructionFile?.storedFileName) {
+      await mint(order.pendingModification.instructionFile.storedFileName);
+    }
+    return urls;
   },
 
   /**
@@ -4690,7 +4854,7 @@ function buildAuditTimeline(order) {
 
   // Phone order source
   if (order.orderSource === 'phone') {
-    const phoneDetails = [order.phoneCallLine, order.phoneCallTime ? `at ${new Date(order.phoneCallTime).toLocaleString()}` : ''].filter(Boolean).join(' ');
+    const phoneDetails = [order.phoneCallLine, order.phoneCallTime ? `at ${OrderFormatters.formatDateTime(order.phoneCallTime)}` : ''].filter(Boolean).join(' ');
     events.push({ date: order.createdAt, event: 'Phone Order', by: order.createdByName || '', details: phoneDetails || 'Phone call' });
   }
 
@@ -5556,12 +5720,27 @@ Meteor.methods({
       scope = { bankId: bankAccount.bankId };
     }
 
+    // `marketValue` is stored in the portfolio's reference currency, NOT in the
+    // position's own currency (a CHF account holding 291.91 CHF is stored with
+    // marketValue = 313.82 when the portfolio reference is EUR). Each cash line
+    // must be shown in its own currency — unconverted — so read the native
+    // figure from marketValueOriginalCurrency, falling back to the account
+    // balance for records written before that field existed.
+    const nativeAmount = (h) => {
+      if (typeof h.marketValueOriginalCurrency === 'number') return h.marketValueOriginalCurrency;
+      if (typeof h.balance === 'number') return h.balance;
+      if (typeof h.quantity === 'number') return h.quantity;
+      return h.marketValue || 0;
+    };
+
+    // Consolidated total stays in the reference currency — it is the only figure
+    // here that is a cross-currency roll-up, and it is labelled as such.
     const totalCash = cashHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
     const currency = bankAccount.referenceCurrency || cashHoldings[0]?.currency || 'EUR';
 
     const cashPositions = cashHoldings.map(h => ({
       currency: h.currency,
-      amount: h.marketValue || 0,
+      amount: nativeAmount(h),
       name: h.securityName
     }));
 

@@ -57,8 +57,8 @@ export const BasketComparisonView = ({ product, evaluationResults, report }) => 
   }, [product, report]);
 
   const getPerformanceColor = (performance) => {
-    if (performance > 0) return '#10b981';
-    if (performance < 0) return '#ef4444';
+    if (performance > 0) return 'var(--gain-color)';
+    if (performance < 0) return 'var(--loss-color)';
     return '#9ca3af';
   };
 
@@ -227,8 +227,8 @@ export const BasketComparisonView = ({ product, evaluationResults, report }) => 
                     width: '80px',
                     height: `${Math.min(height, 100)}px`,
                     background: isPositive 
-                      ? 'linear-gradient(180deg, #10b981 0%, #059669 100%)'
-                      : 'linear-gradient(180deg, #ef4444 0%, #dc2626 100%)',
+                      ? 'linear-gradient(180deg, var(--gain-color) 0%, #059669 100%)'
+                      : 'linear-gradient(180deg, var(--loss-color) 0%, #dc2626 100%)',
                     borderRadius: '4px',
                     display: 'flex',
                     alignItems: 'center',

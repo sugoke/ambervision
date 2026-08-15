@@ -62,7 +62,7 @@ const HimalayaReport = ({ results, productId, product }) => {
             <div style={{
               fontSize: '1.5rem',
               fontWeight: '700',
-              color: results.averagePerformance >= 0 ? '#10b981' : '#ef4444',
+              color: results.averagePerformance >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
               fontFamily: 'monospace'
             }}>
               {results.averagePerformanceFormatted}
@@ -76,7 +76,7 @@ const HimalayaReport = ({ results, productId, product }) => {
             <div style={{
               fontSize: '1.5rem',
               fontWeight: '700',
-              color: results.flooredPerformance >= 0 ? '#10b981' : '#ef4444',
+              color: results.flooredPerformance >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
               fontFamily: 'monospace'
             }}>
               {results.flooredPerformanceFormatted}
@@ -101,11 +101,11 @@ const HimalayaReport = ({ results, productId, product }) => {
             <div style={{
               gridColumn: '1 / -1',
               padding: '0.75rem',
-              background: '#f59e0b20',
-              border: '1px solid #f59e0b',
+              background: 'color-mix(in srgb, var(--warning-color) 12%, transparent)',
+              border: '1px solid var(--warning-color)',
               borderRadius: '4px',
               fontSize: '0.85rem',
-              color: '#f59e0b',
+              color: 'var(--warning-color)',
               display: 'flex',
               alignItems: 'center',
               gap: '0.5rem'
@@ -264,7 +264,7 @@ const HimalayaReport = ({ results, productId, product }) => {
                         borderBottom: index < selectionHistory.length - 1 ? '1px solid rgba(148, 163, 184, 0.15)' : 'none',
                         alignItems: 'center',
                         background: selection.status === 'frozen' ? 'rgba(16, 185, 129, 0.05)' : 'transparent',
-                        borderLeft: selection.status === 'frozen' ? '3px solid #10b981' : '3px solid transparent'
+                        borderLeft: selection.status === 'frozen' ? '3px solid var(--gain-color)' : '3px solid transparent'
                       }}
                     >
                 {/* Observation Number */}
@@ -296,7 +296,7 @@ const HimalayaReport = ({ results, productId, product }) => {
                   {selection.status === 'frozen' && (
                     <span style={{
                       fontSize: '0.7rem',
-                      color: '#10b981',
+                      color: 'var(--gain-color)',
                       fontWeight: '600',
                       textTransform: 'uppercase',
                       letterSpacing: '0.5px'
@@ -384,7 +384,7 @@ const HimalayaReport = ({ results, productId, product }) => {
                   fontFamily: 'monospace',
                   fontWeight: selection.status === 'frozen' ? '900' : '700',
                   color: selection.status === 'frozen'
-                    ? (selection.performance >= 0 ? '#10b981' : '#ef4444')
+                    ? (selection.performance >= 0 ? 'var(--gain-color)' : 'var(--loss-color)')
                     : '#9ca3af',
                   fontSize: '0.95rem'
                 }}>
@@ -439,7 +439,7 @@ const HimalayaReport = ({ results, productId, product }) => {
                     <span style={{
                       fontWeight: isFrozen ? '700' : '400',
                       color: isFrozen
-                        ? (perf >= 0 ? '#10b981' : '#ef4444')
+                        ? (perf >= 0 ? 'var(--gain-color)' : 'var(--loss-color)')
                         : '#9ca3af'
                     }}>
                       {perfFormatted}
@@ -449,7 +449,7 @@ const HimalayaReport = ({ results, productId, product }) => {
                 );
               })}
               <span>) / {calculation.recordedPerformances?.length} = </span>
-              <span style={{ fontWeight: '700', color: results.averagePerformance >= 0 ? '#10b981' : '#ef4444' }}>
+              <span style={{ fontWeight: '700', color: results.averagePerformance >= 0 ? 'var(--gain-color)' : 'var(--loss-color)' }}>
                 {results.averagePerformanceFormatted}
               </span>
             </div>

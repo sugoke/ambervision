@@ -31,7 +31,7 @@ const PriceSparkline = ({ sparklineData, ticker, initialPrice, currency, isPosit
   }
 
   const prices = sparklineData.prices;
-  const lineColor = isPositive ? '#10b981' : '#ef4444';
+  const lineColor = isPositive ? 'var(--gain-color)' : 'var(--loss-color)';
 
   // --- Compact sparkline config ---
   const sparklineChartData = {

@@ -63,6 +63,450 @@ export const PMSHoldingsHelpers = {
   },
 
   /**
+   * Canonical position identity — deliberately INDEPENDENT of any uniqueKey format.
+   *
+   * uniqueKey is parser-owned and its recipe changes over time (e.g. the CMB
+   * sub-account fix that stopped stripping the .001/.002 suffix). When it changes,
+   * a reprocess re-inserts the same position under a NEW key while the records
+   * written under the OLD key stay isActive — and the historical (asOfDate) view,
+   * which dedups by uniqueKey, then shows the position twice. Double accounting.
+   *
+   * This identity is what a human means by "the same position in the same
+   * portfolio": the instrument, in that portfolio. It is used to detect that two
+   * different uniqueKeys describe one position, so the stale one can be retired.
+   *
+   * NOTE: cleanupDuplicateSnapshotRecords() rebuilds this same string inside an
+   * aggregation pipeline. Keep the two in sync.
+   */
+  positionIdentity(holding) {
+    if (!holding) return null;
+
+    // Mirror the discriminators generateUniqueKey() uses, or several genuinely
+    // different contracts collapse into one identity and get treated as duplicates.
+    // Real case: CFM reports every FX forward as "FX Forward EUR" in EUR and tells
+    // them apart ONLY by reference (FX0327389 vs FX0329536 vs ...); Julius Baer uses
+    // the value date. Without these, a cleanup would deactivate live contracts.
+    const dates = holding.bankSpecificData?.instrumentDates || {};
+    const endDateRaw = dates.endDate || holding.bankSpecificData?.endDate;
+    const endDate = endDateRaw
+      ? (endDateRaw instanceof Date ? endDateRaw.toISOString() : String(endDateRaw)).split('T')[0]
+      : '';
+    const reference = dates.reference || holding.bankSpecificData?.reference || '';
+    const discriminator = (endDate || reference) ? `|${endDate}|${reference}` : '';
+
+    if (holding.isin) return `I|${holding.isin}${discriminator}`;
+
+    // No ISIN (cash, term deposits, FX forwards): currency + instrument label
+    const label = holding.securityName || holding.instrumentName || '';
+    return `C|${holding.currency || ''}|${label}${discriminator}`;
+  },
+
+  /**
+   * Retire records that describe a position the bank file just re-stated under a
+   * different uniqueKey — the guard against double accounting.
+   *
+   * Principle: for a given (bank, portfolio, snapshot date), the bank's position
+   * file is the AUTHORITY on that day's positions. After writing it, any other
+   * still-active record for the same day whose uniqueKey is not one we just wrote,
+   * but whose position identity IS one we just wrote, is a duplicate of what we
+   * wrote and must be deactivated.
+   *
+   * Why both conditions are required:
+   * - "key not written" alone would deactivate positions delivered in a SEPARATE
+   *   file for the same day (some banks split cash from securities) and positions
+   *   legitimately absent from this file.
+   * - "identity written" alone would deactivate the very records we just wrote.
+   * Together they retire exactly the stale-key twins and nothing else. Two
+   * contracts sharing an identity (FX forward legs) both appear in the file, so
+   * both their keys are "written" and neither is touched.
+   *
+   * A candidate must also MATCH the written record's quantity and market value. A
+   * stale-key twin is the same position written twice, so its values are identical;
+   * anything that differs is a different position that merely shares this identity
+   * (e.g. two term deposits in one currency) and is left alone.
+   *
+   * @param {object} params
+   * @param {string} params.bankId
+   * @param {Map|Array} params.written - entries of { portfolioCode, snapshotDate, keys:Set, identities:Set, values?:Map }
+   * @param {boolean} [params.dryRun=false]
+   * @returns {Promise<{recordsDeactivated: number, groupsAffected: number, details: array, dryRun: boolean}>}
+   */
+  async reconcileSnapshotKeys({ bankId, written, dryRun = false }) {
+    if (!bankId || !written) {
+      return { recordsDeactivated: 0, groupsAffected: 0, details: [], dryRun };
+    }
+
+    const entries = Array.isArray(written) ? written : Array.from(written.values());
+    const details = [];
+    let recordsDeactivated = 0;
+    let groupsAffected = 0;
+
+    for (const entry of entries) {
+      const { portfolioCode, snapshotDate } = entry;
+      if (!portfolioCode || !snapshotDate) continue;
+
+      const keys = entry.keys instanceof Set ? entry.keys : new Set(entry.keys || []);
+      const identities = entry.identities instanceof Set ? entry.identities : new Set(entry.identities || []);
+      if (keys.size === 0 || identities.size === 0) continue;
+
+      // CONSOLIDATED rows are derived roll-ups: every client's roll-up carries the
+      // literal portfolioCode 'CONSOLIDATED' and they are told apart by the account id
+      // embedded in their key, not by portfolioCode. Reconciling them on
+      // (portfolioCode, identity) would merge different clients. They are regenerated
+      // from the per-account rows anyway, so they are out of scope here.
+      if (portfolioCode === 'CONSOLIDATED') continue;
+
+      const day = new Date(snapshotDate);
+      const dayStart = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate()));
+      const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+
+      // Active records for this portfolio+day that we did NOT just write
+      const candidates = await PMSHoldingsCollection.find({
+        bankId,
+        portfolioCode,
+        snapshotDate: { $gte: dayStart, $lt: dayEnd },
+        isActive: { $ne: false },
+        uniqueKey: { $nin: Array.from(keys) }
+      }, {
+        fields: {
+          uniqueKey: 1, isin: 1, currency: 1, securityName: 1,
+          instrumentName: 1, snapshotDate: 1, quantity: 1, marketValue: 1,
+          bankSpecificData: 1
+        }
+      }).fetchAsync();
+
+      // ...that describe a position this file DID restate under another key,
+      // with matching values (the twin test)
+      const values = entry.values instanceof Map ? entry.values : null;
+      const valuesMatch = (candidate, identity) => {
+        if (!values) return true; // caller did not supply values - identity match only
+        const written = values.get(identity);
+        if (!written) return false;
+        const close = (a, b, tolerance) => {
+          if (a == null || b == null) return a == b;
+          return Math.abs(a - b) < tolerance;
+        };
+        return close(candidate.quantity, written.quantity, 0.0001)
+          && close(candidate.marketValue, written.marketValue, 0.01);
+      };
+
+      const stale = candidates.filter(c => {
+        const identity = this.positionIdentity(c);
+        return identities.has(identity) && valuesMatch(c, identity);
+      });
+      if (stale.length === 0) continue;
+
+      groupsAffected++;
+      details.push({
+        portfolioCode,
+        snapshotDate: dayStart.toISOString().split('T')[0],
+        staleRecords: stale.length,
+        staleKeys: [...new Set(stale.map(s => s.uniqueKey))].length,
+        sample: stale.slice(0, 3).map(s => s.securityName || s.instrumentName || s.isin)
+      });
+
+      if (!dryRun) {
+        const now = new Date();
+        recordsDeactivated += await PMSHoldingsCollection.updateAsync(
+          { _id: { $in: stale.map(s => s._id) } },
+          {
+            $set: {
+              isActive: false,
+              isLatest: false,
+              replacedAt: now,
+              updatedAt: now,
+              supersededReason: 'stale_unique_key'
+            }
+          },
+          { multi: true }
+        );
+      } else {
+        recordsDeactivated += stale.length;
+      }
+
+      console.log(
+        `[PMS_HOLDINGS] Stale-key reconcile ${portfolioCode} @ ${dayStart.toISOString().split('T')[0]}: ` +
+        `${stale.length} duplicate record(s) ${dryRun ? 'would be ' : ''}deactivated`
+      );
+    }
+
+    return { recordsDeactivated, groupsAffected, details, dryRun };
+  },
+
+  /**
+   * One-off / backfill cleanup: remove double-counted holdings already in the
+   * database from a past uniqueKey format change.
+   *
+   * Works per (bankId, portfolioCode, snapshot day, position identity). Where that
+   * group holds records under more than one uniqueKey, the SURVIVING key is the one
+   * still in use — the key whose newest snapshotDate is the most recent overall
+   * (tie-break: most recently created record). All other records in that group are
+   * deactivated.
+   *
+   * Deliberately per-DAY rather than per-key: a key is only retired on days where a
+   * replacement record actually exists, so history is never left with a gap.
+   *
+   * The full portfolioCode (including the .001/.002 sub-account suffix) is part of
+   * the grouping. Grouping on a stripped "base" code would treat two sub-accounts
+   * holding the same instrument as duplicates and delete real positions.
+   *
+   * @param {object} options
+   * @param {string} [options.bankId] - limit to one bank
+   * @param {boolean} [options.dryRun=true]
+   * @returns {Promise<object>} summary + per-position details
+   */
+  async cleanupDuplicateSnapshotRecords(options = {}) {
+    const { bankId, dryRun = true } = options;
+    const startTime = Date.now();
+
+    console.log(`[PMS_HOLDINGS] cleanupDuplicateSnapshotRecords started (dryRun=${dryRun}, bankId=${bankId || 'all'})`);
+
+    // CONSOLIDATED rows are excluded: they are derived roll-ups that all share the
+    // literal portfolioCode 'CONSOLIDATED' (one per client, distinguished only by the
+    // account id inside their uniqueKey). Grouping them by portfolioCode would treat
+    // two different clients' roll-ups as duplicates of each other. They are rebuilt
+    // from the per-account rows, so fixing those is what matters.
+    const matchQuery = { isActive: true, portfolioCode: { $ne: 'CONSOLIDATED' } };
+    if (bankId) matchQuery.bankId = bankId;
+
+    const rawCollection = PMSHoldingsCollection.rawCollection();
+
+    // Mirrors positionIdentity() — keep in sync.
+    // Including the FX-forward / term-deposit discriminators is not optional: without
+    // them, several distinct contracts (e.g. CFM's "FX Forward EUR", separated only by
+    // reference) collapse into one identity and live positions get deactivated.
+    const endDateExpr = {
+      $let: {
+        vars: {
+          raw: {
+            $ifNull: [
+              '$bankSpecificData.instrumentDates.endDate',
+              { $ifNull: ['$bankSpecificData.endDate', null] }
+            ]
+          }
+        },
+        in: {
+          $switch: {
+            branches: [
+              { case: { $eq: [{ $type: '$$raw' }, 'missing'] }, then: '' },
+              { case: { $eq: [{ $type: '$$raw' }, 'null'] }, then: '' },
+              {
+                case: { $eq: [{ $type: '$$raw' }, 'date'] },
+                then: { $dateToString: { format: '%Y-%m-%d', date: '$$raw' } }
+              }
+            ],
+            default: { $arrayElemAt: [{ $split: [{ $toString: '$$raw' }, 'T'] }, 0] }
+          }
+        }
+      }
+    };
+
+    const referenceExpr = {
+      $let: {
+        vars: {
+          raw: {
+            $ifNull: [
+              '$bankSpecificData.instrumentDates.reference',
+              { $ifNull: ['$bankSpecificData.reference', null] }
+            ]
+          }
+        },
+        in: {
+          $cond: [
+            { $in: [{ $type: '$$raw' }, ['missing', 'null']] },
+            '',
+            { $toString: '$$raw' }
+          ]
+        }
+      }
+    };
+
+    const discriminatorExpr = {
+      $let: {
+        vars: { ed: endDateExpr, ref: referenceExpr },
+        in: {
+          $cond: [
+            { $and: [{ $eq: ['$$ed', ''] }, { $eq: ['$$ref', ''] }] },
+            '',
+            { $concat: ['|', '$$ed', '|', '$$ref'] }
+          ]
+        }
+      }
+    };
+
+    const identityExpr = {
+      $cond: [
+        { $ifNull: ['$isin', false] },
+        { $concat: ['I|', '$isin', discriminatorExpr] },
+        {
+          $concat: [
+            'C|',
+            { $ifNull: ['$currency', ''] },
+            '|',
+            { $ifNull: ['$securityName', { $ifNull: ['$instrumentName', ''] }] },
+            discriminatorExpr
+          ]
+        }
+      ]
+    };
+
+    // PASS 1: how "live" is each uniqueKey — its most recent snapshot date
+    const keyLiveness = new Map();
+    const keyRows = await rawCollection.aggregate([
+      { $match: matchQuery },
+      { $group: { _id: '$uniqueKey', maxSnapshotDate: { $max: '$snapshotDate' } } }
+    ], { allowDiskUse: true }).toArray();
+    for (const row of keyRows) {
+      keyLiveness.set(row._id, new Date(row.maxSnapshotDate).getTime());
+    }
+
+    // PASS 2: groups where one position/day carries several uniqueKeys
+    const duplicateGroups = await rawCollection.aggregate([
+      { $match: matchQuery },
+      {
+        $group: {
+          // clientCode is part of the grouping as an owner guard. It is stable across
+          // a uniqueKey change (verified: it never differs within a duplicate pair),
+          // unlike userId/entityId which legitimately differ between records written
+          // before and after the entity migration — grouping on those would leave most
+          // duplicates unfixed.
+          _id: {
+            bankId: '$bankId',
+            clientCode: '$clientCode',
+            portfolioCode: '$portfolioCode',
+            day: { $dateToString: { format: '%Y-%m-%d', date: '$snapshotDate' } },
+            identity: identityExpr
+          },
+          uniqueKeys: { $addToSet: '$uniqueKey' },
+          securityName: { $first: '$securityName' },
+          // Distinct values in the group — the twin test below
+          quantities: { $addToSet: '$quantity' },
+          marketValues: { $addToSet: '$marketValue' },
+          records: {
+            $push: { _id: '$_id', uniqueKey: '$uniqueKey', createdAt: '$createdAt' }
+          }
+        }
+      },
+      { $match: { $expr: { $gt: [{ $size: '$uniqueKeys' }, 1] } } }
+    ], { allowDiskUse: true }).toArray();
+
+    console.log(`[PMS_HOLDINGS] Found ${duplicateGroups.length} position/day groups with multiple active uniqueKeys`);
+
+    const idsToDeactivate = [];
+    const perPosition = new Map(); // portfolio|identity -> rolled-up detail
+    const needsReview = new Map(); // groups that are NOT safe to collapse
+
+    for (const group of duplicateGroups) {
+      // TWIN TEST — a stale-key duplicate is the SAME position written twice, so its
+      // records agree on quantity and market value. When they disagree, the records
+      // are different positions that merely share this identity (e.g. two term
+      // deposits in one currency whose maturity/reference the schema doesn't expose,
+      // several tranches of one instrument) and collapsing them would delete real
+      // holdings. Report those instead of touching them.
+      const sameQuantity = (group.quantities || []).length <= 1;
+      const sameMarketValue = (group.marketValues || []).length <= 1;
+
+      if (!sameQuantity || !sameMarketValue) {
+        const reviewKey = `${group._id.portfolioCode}|${group._id.identity}`;
+        if (!needsReview.has(reviewKey)) {
+          needsReview.set(reviewKey, {
+            portfolioCode: group._id.portfolioCode,
+            identity: group._id.identity,
+            securityName: group.securityName,
+            days: 0,
+            reason: 'values differ between records — not a stale-key twin'
+          });
+        }
+        needsReview.get(reviewKey).days++;
+        continue;
+      }
+
+      // Winner = key still in use (latest max snapshotDate), then newest record
+      const ranked = [...group.records].sort((a, b) => {
+        const liveDiff = (keyLiveness.get(b.uniqueKey) || 0) - (keyLiveness.get(a.uniqueKey) || 0);
+        if (liveDiff !== 0) return liveDiff;
+        return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+      });
+
+      const winner = ranked[0];
+      const losers = ranked.slice(1);
+      if (losers.length === 0) continue;
+
+      idsToDeactivate.push(...losers.map(l => l._id));
+
+      const detailKey = `${group._id.portfolioCode}|${group._id.identity}`;
+      if (!perPosition.has(detailKey)) {
+        perPosition.set(detailKey, {
+          portfolioCode: group._id.portfolioCode,
+          identity: group._id.identity,
+          securityName: group.securityName,
+          keptKey: `${winner.uniqueKey.substring(0, 12)}...`,
+          retiredKeys: new Set(),
+          days: 0,
+          records: 0
+        });
+      }
+      const detail = perPosition.get(detailKey);
+      detail.days++;
+      detail.records += losers.length;
+      losers.forEach(l => detail.retiredKeys.add(l.uniqueKey));
+    }
+
+    let recordsDeactivated = 0;
+    if (!dryRun && idsToDeactivate.length > 0) {
+      const now = new Date();
+      // Chunked to keep the $in selector a sane size
+      const CHUNK = 500;
+      for (let i = 0; i < idsToDeactivate.length; i += CHUNK) {
+        recordsDeactivated += await PMSHoldingsCollection.updateAsync(
+          { _id: { $in: idsToDeactivate.slice(i, i + CHUNK) } },
+          {
+            $set: {
+              isActive: false,
+              isLatest: false,
+              replacedAt: now,
+              updatedAt: now,
+              supersededReason: 'stale_unique_key'
+            }
+          },
+          { multi: true }
+        );
+      }
+    } else {
+      recordsDeactivated = idsToDeactivate.length;
+    }
+
+    const details = Array.from(perPosition.values())
+      .map(d => ({ ...d, retiredKeys: d.retiredKeys.size }))
+      .sort((a, b) => b.records - a.records);
+
+    const review = Array.from(needsReview.values()).sort((a, b) => b.days - a.days);
+
+    const elapsed = Date.now() - startTime;
+    console.log(
+      `[PMS_HOLDINGS] cleanupDuplicateSnapshotRecords completed in ${elapsed}ms: ` +
+      `${details.length} positions, ${recordsDeactivated} records ${dryRun ? 'would be ' : ''}deactivated`
+    );
+    if (review.length > 0) {
+      console.warn(
+        `[PMS_HOLDINGS] ${review.length} position(s) share an identity but hold DIFFERENT ` +
+        `values — left untouched, needs manual review: ` +
+        review.slice(0, 5).map(r => `${r.portfolioCode}/${r.securityName}`).join(', ')
+      );
+    }
+
+    return {
+      dryRun,
+      groupsFound: duplicateGroups.length,
+      positionsAffected: details.length,
+      recordsDeactivated,
+      details,
+      needsReview: review,
+      elapsed
+    };
+  },
+
+  /**
    * Create or update a holding record with versioning
    * Creates new version instead of overwriting existing data
    */
@@ -80,16 +524,27 @@ export const PMSHoldingsHelpers = {
       );
     }
 
-    // If still no assetClass but has ISIN, try to enrich from securitiesMetadata
-    // This handles cases where admin has classified a security but parser didn't provide assetClass
-    if (!holdingData.assetClass && holdingData.isin) {
+    // Enrich from securitiesMetadata by ISIN (the canonical, per-ISIN record).
+    // Two purposes:
+    //  1. Harmonize the display name — different banks send different names for
+    //     the same instrument (e.g. "ISHARES BITCOIN TRUST ETF (NY)" vs
+    //     "IShares Bitcoin Trust Shs Benef Int"). We store the canonical name in
+    //     `displayName` while leaving the bank's raw `securityName` untouched for
+    //     statement reconciliation.
+    //  2. Backfill assetClass/securityType when the parser didn't provide them.
+    if (holdingData.isin) {
       try {
         const metadata = await SecuritiesMetadataCollection.findOneAsync({ isin: holdingData.isin });
-        if (metadata?.assetClass) {
-          holdingData.assetClass = metadata.assetClass;
-          // Also copy securityType if missing and metadata has it
-          if (!holdingData.securityType && metadata.securityType) {
-            holdingData.securityType = metadata.securityType;
+        if (metadata) {
+          if (metadata.securityName) {
+            holdingData.displayName = metadata.securityName;
+          }
+          if (!holdingData.assetClass && metadata.assetClass) {
+            holdingData.assetClass = metadata.assetClass;
+            // Also copy securityType if missing and metadata has it
+            if (!holdingData.securityType && metadata.securityType) {
+              holdingData.securityType = metadata.securityType;
+            }
           }
         }
       } catch (e) {
@@ -169,7 +624,7 @@ export const PMSHoldingsHelpers = {
 
       if (qtyMatch && mvMatch && mpMatch && cbpMatch && cboMatch && mvocMatch) {
         // Data unchanged for this date - skip write entirely
-        return { _id: existingForDate._id, isNew: false, updated: false, versioned: false, skipped: true };
+        return { _id: existingForDate._id, uniqueKey, isNew: false, updated: false, versioned: false, skipped: true };
       }
 
       // Values changed - update the existing record for this date (don't create new version)
@@ -185,7 +640,7 @@ export const PMSHoldingsHelpers = {
           updatedAt: now
         }
       });
-      return { _id: existingForDate._id, isNew: false, updated: true, versioned: false };
+      return { _id: existingForDate._id, uniqueKey, isNew: false, updated: true, versioned: false };
     }
 
     // No record for this specific date - check if there's a "latest" version to inherit from
@@ -276,7 +731,7 @@ export const PMSHoldingsHelpers = {
         }
 
         console.log(`[PMS_HOLDINGS] Created version ${(existing.version || 0) + 1} for ${holdingData.securityName}`);
-        return { _id: newHoldingId, isNew: false, updated: true, versioned: true };
+        return { _id: newHoldingId, uniqueKey, isNew: false, updated: true, versioned: true };
       } else {
         // Incoming data is for an OLDER date (historical backfill)
         // Insert as historical record WITHOUT changing what's "latest"
@@ -299,7 +754,7 @@ export const PMSHoldingsHelpers = {
         });
 
         // Don't touch the existing "latest" record
-        return { _id: historicalHoldingId, isNew: true, updated: false, versioned: false, historical: true };
+        return { _id: historicalHoldingId, uniqueKey, isNew: true, updated: false, versioned: false, historical: true };
       }
     } else {
       // No existing record found for this uniqueKey
@@ -369,7 +824,7 @@ export const PMSHoldingsHelpers = {
           console.log(`[PMS_HOLDINGS] Fixed ${raceCheck.fixedCount} duplicate(s) for ${holdingData.securityName} (key migration)`);
         }
 
-        return { _id: newHoldingId, isNew: false, updated: true, versioned: true, keyMigrated: true };
+        return { _id: newHoldingId, uniqueKey, isNew: false, updated: true, versioned: true, keyMigrated: true };
       }
 
       // Truly first version - no existing records
@@ -398,7 +853,7 @@ export const PMSHoldingsHelpers = {
       }
 
       console.log(`[PMS_HOLDINGS] Created initial version for ${holdingData.securityName}`);
-      return { _id: holdingId, isNew: true, updated: false, versioned: false };
+      return { _id: holdingId, uniqueKey, isNew: true, updated: false, versioned: false };
     }
   },
 
@@ -519,6 +974,13 @@ export const PMSHoldingsHelpers = {
       classifiedBy: classification.classifiedBy || 'admin',
       updatedAt: new Date()
     };
+
+    // Harmonize the display name across banks. The bank's raw `securityName`
+    // is left untouched (statement reconciliation); the canonical name lives
+    // in `displayName`.
+    if (classification.securityName) {
+      updateFields.displayName = classification.securityName;
+    }
 
     // Add structured product fields if present
     if (classification.structuredProductUnderlyingType) {
@@ -801,9 +1263,13 @@ export const PMSHoldingsHelpers = {
    * Clean up duplicate positions that have different uniqueKeys but represent the same holding
    * This happens when parser uniqueKey logic changes (e.g., from positionNumber to ISIN-based)
    *
-   * Identifies duplicates by: bankId + portfolioCode (base) + isin
+   * Identifies duplicates by: bankId + portfolioCode + isin
    * Keeps the newest record (by snapshotDate) as isLatest=true
    * Marks older records as isLatest=false
+   *
+   * Only touches isLatest=true records, so it does NOT clear double entries on
+   * historical dates. Prefer cleanupDuplicateSnapshotRecords(), which covers the
+   * whole history and cash positions too.
    *
    * @param {object} options - Cleanup options
    * @param {string} [options.bankId] - Limit to specific bank
@@ -820,23 +1286,20 @@ export const PMSHoldingsHelpers = {
     const matchQuery = { isLatest: true, isin: { $ne: null, $exists: true } };
     if (bankId) matchQuery.bankId = bankId;
 
-    // Aggregation to find same (bankId, basePortfolioCode, isin) with different uniqueKeys
+    // Aggregation to find same (bankId, portfolioCode, isin) with different uniqueKeys
+    //
+    // Grouping uses the FULL portfolioCode. It must never strip the .001/.002
+    // sub-account suffix: each sub-account is a distinct portfolio, so two
+    // sub-accounts holding the same ISIN are two real positions, not duplicates.
+    // Stripping the suffix here would delete live holdings.
     const pipeline = [
       { $match: matchQuery },
-      // Normalize portfolioCode to base (strip .XXX suffix)
-      {
-        $addFields: {
-          basePortfolioCode: {
-            $arrayElemAt: [{ $split: ['$portfolioCode', '.'] }, 0]
-          }
-        }
-      },
-      // Group by identity (bankId + basePortfolio + isin)
+      // Group by identity (bankId + full portfolioCode + isin)
       {
         $group: {
           _id: {
             bankId: '$bankId',
-            basePortfolioCode: '$basePortfolioCode',
+            portfolioCode: '$portfolioCode',
             isin: '$isin'
           },
           count: { $sum: 1 },
@@ -894,7 +1357,7 @@ export const PMSHoldingsHelpers = {
 
       const detail = {
         isin: group._id.isin,
-        basePortfolioCode: group._id.basePortfolioCode,
+        portfolioCode: group._id.portfolioCode,
         securityName: keepRecord.securityName,
         totalRecords: group.count,
         uniqueKeysCount: group.uniqueKeys.length,
@@ -966,6 +1429,11 @@ export const PMSHoldingsHelpers = {
    * Deactivate records with stale uniqueKeys - for positions that have already been partially cleaned
    * This method looks at ALL records (not just isLatest=true) to find and deactivate stale uniqueKeys
    *
+   * Retires a stale key across its WHOLE history at once, and only covers positions
+   * with an ISIN. That leaves gaps if the surviving key has not been backfilled over
+   * the same dates, and ignores cash. Prefer cleanupDuplicateSnapshotRecords(),
+   * which retires per day (never leaving a gap) and handles cash positions.
+   *
    * @param {object} options - Cleanup options
    * @param {string} [options.bankId] - Limit to specific bank
    * @param {boolean} [options.dryRun=true] - If true, only report without fixing
@@ -982,20 +1450,17 @@ export const PMSHoldingsHelpers = {
     if (bankId) matchQuery.bankId = bankId;
 
     // Find positions with multiple uniqueKeys
+    //
+    // Grouping uses the FULL portfolioCode — stripping the .001/.002 sub-account
+    // suffix would treat two sub-accounts holding the same ISIN as duplicates and
+    // deactivate live holdings.
     const pipeline = [
       { $match: matchQuery },
-      {
-        $addFields: {
-          basePortfolioCode: {
-            $arrayElemAt: [{ $split: ['$portfolioCode', '.'] }, 0]
-          }
-        }
-      },
       {
         $group: {
           _id: {
             bankId: '$bankId',
-            basePortfolioCode: '$basePortfolioCode',
+            portfolioCode: '$portfolioCode',
             isin: '$isin'
           },
           uniqueKeys: { $addToSet: '$uniqueKey' },
@@ -1062,7 +1527,7 @@ export const PMSHoldingsHelpers = {
 
       const detail = {
         isin: group._id.isin,
-        basePortfolioCode: group._id.basePortfolioCode,
+        portfolioCode: group._id.portfolioCode,
         securityName: group.latestRecord.securityName,
         correctKey: correctKey.substring(0, 12) + '...',
         staleKeysCount: staleKeys.length,

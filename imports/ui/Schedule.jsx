@@ -1,15 +1,23 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { Mongo } from 'meteor/mongo';
 import { useTracker } from 'meteor/react-meteor-data';
 import { useViewAs } from './ViewAsContext.jsx';
+import { useTheme } from './ThemeContext.jsx';
+import { useIsMobile } from './hooks/useIsMobile.js';
+import ObservationCardMobile from './components/schedule/ObservationCardMobile.jsx';
 
 // Create a client-side collection to receive the published schedule data
 const ObservationScheduleCollection = new Mongo.Collection('observationSchedule');
 
 const Schedule = ({ user }) => {
   const { viewAsFilter } = useViewAs();
+  const { theme } = useTheme();
+  const isMobile = useIsMobile();
   const [isRefreshing, setIsRefreshing] = useState(false);
+  // Mobile only: the list opens on what's next, with history behind a toggle.
+  const [showPast, setShowPast] = useState(false);
+  const [expandedId, setExpandedId] = useState(null);
   const nextObservationRef = useRef(null);
   const tableContainerRef = useRef(null);
 
@@ -42,6 +50,29 @@ const Schedule = ({ user }) => {
   // Server now provides isPast flag, so we find first non-past observation
   const nextObservationIndex = observations.findIndex(obs => !obs.isPast);
 
+  // The prediction column/field only renders for the FIRST upcoming observation
+  // of each product. Resolving that per row with a slice().some() is O(n²) —
+  // ~99k iterations on a 445-row book, every render. One pass instead.
+  const firstUpcomingObsIds = useMemo(() => {
+    const seenProducts = new Set();
+    const ids = new Set();
+    for (const obs of observations) {
+      if (obs.isPast) continue;
+      if (seenProducts.has(obs.productId)) continue;
+      seenProducts.add(obs.productId);
+      ids.add(obs._id);
+    }
+    return ids;
+  }, [observations]);
+
+  // Mobile splits the book into upcoming / past; desktop keeps one full list.
+  const { pastObservations, upcomingObservations } = useMemo(() => ({
+    pastObservations: observations.filter(obs => obs.isPast),
+    upcomingObservations: observations.filter(obs => !obs.isPast)
+  }), [observations]);
+
+  const mobileList = showPast ? pastObservations : upcomingObservations;
+
   // Debug: Log next observation prediction data
   React.useEffect(() => {
     if (observations.length > 0 && nextObservationIndex >= 0) {
@@ -55,8 +86,11 @@ const Schedule = ({ user }) => {
     }
   }, [observations, nextObservationIndex]);
 
-  // Auto-scroll to next observation on initial load
+  // Auto-scroll to next observation on initial load.
+  // Mobile has nothing to do here: the list already starts at the next
+  // observation, and scrolling an inner box would fight the page scroll.
   useEffect(() => {
+    if (isMobile) return;
     if (!isLoading && nextObservationRef.current && tableContainerRef.current) {
       // Wait for DOM to render, then scroll
       setTimeout(() => {
@@ -79,7 +113,7 @@ const Schedule = ({ user }) => {
         }
       }, 100);
     }
-  }, [isLoading, observations.length]);
+  }, [isLoading, observations.length, isMobile]);
 
   // Handle manual refresh - triggers server-side recalculation
   const handleRefresh = () => {
@@ -110,19 +144,19 @@ const Schedule = ({ user }) => {
   const getObservationTypeBadgeStyle = (obs) => {
     if (obs.isFinal) {
       return {
-        background: '#ef4444',
+        background: 'var(--loss-color)',
         color: 'white'
       };
     }
     if (obs.observationType === 'coupon') {
       return {
-        background: '#10b981',
+        background: 'var(--gain-color)',
         color: 'white'
       };
     }
     if (obs.isCallable) {
       return {
-        background: '#3b82f6',
+        background: 'var(--info-color)',
         color: 'white'
       };
     }
@@ -134,7 +168,7 @@ const Schedule = ({ user }) => {
 
   return (
     <div style={{
-      padding: '2rem',
+      padding: isMobile ? '0.75rem' : '2rem',
       maxWidth: '1400px',
       margin: '0 auto',
       minHeight: 'calc(100vh - 200px)'
@@ -142,18 +176,20 @@ const Schedule = ({ user }) => {
       {/* Header */}
       <div style={{
         background: 'var(--bg-secondary)',
-        padding: '1.5rem',
+        padding: isMobile ? '1rem' : '1.5rem',
         borderRadius: '12px',
-        marginBottom: '1.5rem',
+        marginBottom: isMobile ? '1rem' : '1.5rem',
         display: 'flex',
+        flexDirection: isMobile ? 'column' : 'row',
         justifyContent: 'space-between',
-        alignItems: 'center',
+        alignItems: isMobile ? 'stretch' : 'center',
+        gap: isMobile ? '0.875rem' : '0',
         border: '1px solid var(--border-color)'
       }}>
         <div>
           <h1 style={{
             margin: '0 0 0.5rem 0',
-            fontSize: '1.8rem',
+            fontSize: isMobile ? '1.375rem' : '1.8rem',
             color: 'var(--text-primary)',
             display: 'flex',
             alignItems: 'center',
@@ -177,6 +213,8 @@ const Schedule = ({ user }) => {
           disabled={isRefreshing}
           style={{
             padding: '0.75rem 1.5rem',
+            minHeight: isMobile ? '44px' : undefined,
+            width: isMobile ? '100%' : undefined,
             background: isRefreshing ? 'var(--bg-tertiary)' : 'var(--accent-color)',
             color: 'white',
             border: 'none',
@@ -186,17 +224,21 @@ const Schedule = ({ user }) => {
             fontWeight: '500',
             display: 'flex',
             alignItems: 'center',
+            justifyContent: 'center',
             gap: '0.5rem',
             transition: 'all 0.2s ease',
-            opacity: isRefreshing ? 0.6 : 1
+            opacity: isRefreshing ? 0.6 : 1,
+            flexShrink: 0
           }}
-          onMouseEnter={(e) => {
+          // Hover-only styling sticks after a tap on touch devices, so it is
+          // wired up on pointer devices only.
+          onMouseEnter={isMobile ? undefined : (e) => {
             if (!isRefreshing) {
               e.target.style.background = '#0056b3';
               e.target.style.transform = 'translateY(-2px)';
             }
           }}
-          onMouseLeave={(e) => {
+          onMouseLeave={isMobile ? undefined : (e) => {
             if (!isRefreshing) {
               e.target.style.background = 'var(--accent-color)';
               e.target.style.transform = 'translateY(0)';
@@ -257,8 +299,123 @@ const Schedule = ({ user }) => {
         </div>
       )}
 
+      {/* Mobile: single-axis card list, opening on what's next */}
+      {!isLoading && observations.length > 0 && isMobile && (
+        <div>
+          {/* Upcoming / Past segmented toggle */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: '0.375rem',
+            padding: '0.375rem',
+            background: 'var(--bg-secondary)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '10px',
+            marginBottom: '1rem'
+          }}>
+            {[
+              { key: 'upcoming', label: 'Upcoming', count: upcomingObservations.length, active: !showPast },
+              { key: 'past', label: 'Past', count: pastObservations.length, active: showPast }
+            ].map(seg => (
+              <button
+                key={seg.key}
+                onClick={() => { setShowPast(seg.key === 'past'); setExpandedId(null); }}
+                style={{
+                  minHeight: '40px',
+                  border: 'none',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '0.875rem',
+                  fontWeight: '600',
+                  background: seg.active ? 'var(--accent-color)' : 'transparent',
+                  color: seg.active ? '#ffffff' : 'var(--text-secondary)'
+                }}
+              >
+                {seg.label} ({seg.count})
+              </button>
+            ))}
+          </div>
+
+          {mobileList.length === 0 ? (
+            <div style={{
+              padding: '2rem 1rem',
+              textAlign: 'center',
+              color: 'var(--text-muted)',
+              background: 'var(--bg-secondary)',
+              border: '1px dashed var(--border-color)',
+              borderRadius: '10px'
+            }}>
+              {showPast ? 'No past observations' : 'No upcoming observations'}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              {mobileList.map((obs, index) => {
+                // The date sits in a heading above each run of same-day cards
+                // rather than being repeated on every card.
+                const prev = mobileList[index - 1];
+                const showDateHeading = !prev
+                  || prev.observationDateFormatted !== obs.observationDateFormatted;
+                const daysColor = obs.daysLeftColor === 'urgent' ? 'var(--warning-color)'
+                  : obs.daysLeftColor === 'soon' ? 'var(--info-color)'
+                  : 'var(--text-muted)';
+
+                return (
+                  <React.Fragment key={obs._id}>
+                    {showDateHeading && (
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'baseline',
+                        flexWrap: 'wrap',
+                        gap: '0.5rem',
+                        padding: '0.75rem 0.25rem 0.25rem',
+                        borderTop: index === 0 ? 'none' : '1px solid var(--border-color)',
+                        marginTop: index === 0 ? 0 : '0.5rem'
+                      }}>
+                        {obs.isToday && (
+                          <span style={{
+                            background: 'var(--warning-color)',
+                            color: 'white',
+                            padding: '0.2rem 0.5rem',
+                            borderRadius: '6px',
+                            fontSize: '0.75rem',
+                            fontWeight: '700'
+                          }}>
+                            TODAY
+                          </span>
+                        )}
+                        <span style={{
+                          fontSize: '0.9375rem',
+                          fontWeight: '700',
+                          color: 'var(--text-primary)'
+                        }}>
+                          {obs.observationDateFormatted}
+                        </span>
+                        {obs.daysLeftText && (
+                          <span style={{ fontSize: '0.8125rem', fontWeight: '600', color: daysColor }}>
+                            {obs.daysLeftText}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    <ObservationCardMobile
+                      obs={obs}
+                      isExpanded={expandedId === obs._id}
+                      onToggle={() => setExpandedId(expandedId === obs._id ? null : obs._id)}
+                      isNext={!showPast && index === 0}
+                      showPrediction={firstUpcomingObsIds.has(obs._id)}
+                      typeLabel={getObservationTypeDisplay(obs)}
+                      theme={theme}
+                    />
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Observations Table - Elegant Design matching Phoenix Report */}
-      {!isLoading && observations.length > 0 && (
+      {!isLoading && observations.length > 0 && !isMobile && (
         <div style={{
           background: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
           borderRadius: '12px',
@@ -382,17 +539,14 @@ const Schedule = ({ user }) => {
                 const isPastRow = obs.isPast;
 
                 // Check if this is the first upcoming observation for THIS product
-                const isFirstUpcomingForProduct = !obs.isPast &&
-                  !observations.slice(0, index).some(prevObs =>
-                    prevObs.productId === obs.productId && !prevObs.isPast
-                  );
+                const isFirstUpcomingForProduct = firstUpcomingObsIds.has(obs._id);
 
                 // Get color based on server-calculated daysLeftColor
                 const getDaysLeftColor = (colorKey) => {
                   switch (colorKey) {
-                    case 'muted': return '#94a3b8';
-                    case 'urgent': return '#f59e0b';
-                    case 'soon': return '#3b82f6';
+                    case 'muted': return 'var(--neutral-color)';
+                    case 'urgent': return 'var(--warning-color)';
+                    case 'soon': return 'var(--info-color)';
                     default: return 'var(--text-primary)';
                   }
                 };
@@ -415,7 +569,7 @@ const Schedule = ({ user }) => {
                           ? 'rgba(148, 163, 184, 0.05)'
                           : 'transparent',
                       borderLeft: isNextObservation
-                        ? '4px solid #3b82f6'
+                        ? '4px solid var(--info-color)'
                         : obs.isFinal
                           ? '4px solid #ea580c'
                           : 'none',
@@ -426,7 +580,7 @@ const Schedule = ({ user }) => {
                     {/* Observation Date (with days-left counter inline) */}
                     <div style={{
                       fontSize: '0.875rem',
-                      color: isFutureRow ? '#94a3b8' : 'var(--text-primary)',
+                      color: isFutureRow ? 'var(--neutral-color)' : 'var(--text-primary)',
                       fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
                       fontWeight: isNextObservation ? '700' : '600',
                       display: 'flex',
@@ -435,7 +589,7 @@ const Schedule = ({ user }) => {
                     }}>
                       {obs.isToday && (
                         <span style={{
-                          background: '#f59e0b',
+                          background: 'var(--warning-color)',
                           color: 'white',
                           padding: '0.3rem 0.6rem',
                           borderRadius: '6px',
@@ -502,7 +656,7 @@ const Schedule = ({ user }) => {
                       title={obs.productTitle}
                       style={{
                         fontSize: '0.875rem',
-                        color: isFutureRow ? '#94a3b8' : 'var(--text-primary)',
+                        color: isFutureRow ? 'var(--neutral-color)' : 'var(--text-primary)',
                         fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
                         fontWeight: '600',
                         display: 'flex',
@@ -531,7 +685,7 @@ const Schedule = ({ user }) => {
                       }}
                       style={{
                         fontSize: '0.85rem',
-                        color: isFutureRow ? '#94a3b8' : 'var(--text-primary)',
+                        color: isFutureRow ? 'var(--neutral-color)' : 'var(--text-primary)',
                         fontFamily: 'monospace',
                         fontWeight: '500',
                         display: 'flex',
@@ -543,11 +697,11 @@ const Schedule = ({ user }) => {
                         transition: 'all 0.2s ease'
                       }}
                       onMouseEnter={(e) => {
-                        e.currentTarget.style.color = '#3b82f6';
+                        e.currentTarget.style.color = 'var(--info-color)';
                         e.currentTarget.style.textDecorationStyle = 'solid';
                       }}
                       onMouseLeave={(e) => {
-                        e.currentTarget.style.color = isFutureRow ? '#94a3b8' : 'var(--text-primary)';
+                        e.currentTarget.style.color = isFutureRow ? 'var(--neutral-color)' : 'var(--text-primary)';
                         e.currentTarget.style.textDecorationStyle = 'dotted';
                       }}
                       title={`Click to open ${obs.productTitle} report`}
@@ -558,7 +712,7 @@ const Schedule = ({ user }) => {
                     {/* Nominal held by the currently-viewed client/entity */}
                     <div style={{
                       fontSize: '0.875rem',
-                      color: isFutureRow ? '#94a3b8' : 'var(--text-primary)',
+                      color: isFutureRow ? 'var(--neutral-color)' : 'var(--text-primary)',
                       fontFamily: '"Inter", -apple-system, system-ui, sans-serif',
                       fontWeight: '600',
                       textAlign: 'right'
@@ -598,7 +752,7 @@ const Schedule = ({ user }) => {
                         </span>
                       ) : (
                         <span style={{
-                          color: '#94a3b8',
+                          color: 'var(--neutral-color)',
                           fontWeight: '400'
                         }}>
                           —
@@ -648,7 +802,7 @@ const Schedule = ({ user }) => {
                           )}
                           {obs.outcome.couponPaid === 0 && obs.outcome.couponInMemory === 0 && !obs.outcome.productCalled && (
                             <span style={{
-                              color: '#94a3b8',
+                              color: 'var(--neutral-color)',
                               fontStyle: 'italic',
                               fontSize: '0.75rem',
                               fontWeight: '500'
@@ -687,7 +841,7 @@ const Schedule = ({ user }) => {
                           )}
                           {!obs.couponRate && !obs.autocallLevel && (
                             <span style={{
-                              color: '#94a3b8',
+                              color: 'var(--neutral-color)',
                               fontWeight: '400'
                             }}>
                               —
@@ -715,7 +869,7 @@ const Schedule = ({ user }) => {
                         }}>
                           {obs.nextObservationPrediction.outcomeType === 'autocall' && (
                             <span style={{
-                              background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                              background: 'linear-gradient(135deg, var(--info-color) 0%, #2563eb 100%)',
                               color: '#ffffff',
                               padding: '0.35rem 0.7rem',
                               borderRadius: '8px',
@@ -773,7 +927,7 @@ const Schedule = ({ user }) => {
                           )}
                           {obs.nextObservationPrediction.outcomeType === 'no_event' && (
                             <span style={{
-                              color: '#94a3b8',
+                              color: 'var(--neutral-color)',
                               fontStyle: 'italic',
                               fontSize: '0.75rem',
                               fontWeight: '500'
@@ -783,7 +937,7 @@ const Schedule = ({ user }) => {
                           )}
                           <span style={{
                             fontSize: '0.65rem',
-                            color: '#94a3b8',
+                            color: 'var(--neutral-color)',
                             fontStyle: 'italic',
                             fontWeight: '400'
                           }}>
@@ -792,7 +946,7 @@ const Schedule = ({ user }) => {
                         </div>
                       ) : (
                         <span style={{
-                          color: '#94a3b8',
+                          color: 'var(--neutral-color)',
                           fontWeight: '400',
                           fontSize: '0.875rem'
                         }}>

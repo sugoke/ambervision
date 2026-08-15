@@ -2,17 +2,13 @@ import { Meteor } from 'meteor/meteor';
 import { DataProvidersCollection, recordProviderHealth } from './dataProvidersCollection';
 import { ProviderError, PROVIDER_ERROR, tickerCapability } from './providers/providerInterface';
 import { EODProvider } from './providers/eodProvider';
-import { TwelveDataProvider } from './providers/twelveDataProvider';
-import { FMPProvider } from './providers/fmpProvider';
-import { JQuantsProvider } from './providers/jquantsProvider';
+import { TelekursProvider } from './providers/telekursProvider';
 
 // Static registry — adding a future provider (bonds etc.) means writing an
 // adapter that implements providerInterface and listing it here + in the seed.
 const PROVIDER_REGISTRY = {
   [EODProvider.id]: EODProvider,
-  [TwelveDataProvider.id]: TwelveDataProvider,
-  [FMPProvider.id]: FMPProvider,
-  [JQuantsProvider.id]: JQuantsProvider
+  [TelekursProvider.id]: TelekursProvider
 };
 
 /**
@@ -105,48 +101,18 @@ export const MarketDataRouter = {
   },
 
   /**
-   * Multi-provider security search. EOD runs first (unchanged behavior); the
-   * secondary providers are only consulted when EOD returns few results, which
-   * keeps autocomplete keystrokes from draining the Twelve Data free tier.
-   * Results are EOD-shaped rows, deduped by ISIN then Code+Exchange (EOD wins).
+   * Security search — EOD is the only search-capable provider (Telekurs is a
+   * price-only fallback, not a discovery source), so this is a thin pass-through.
+   * Results are EOD-shaped rows.
    */
   async searchSecurities(query, limit = 15) {
-    let results = [];
     try {
-      results = await EODProvider.searchSecurities(query, limit);
+      const results = await EODProvider.searchSecurities(query, limit);
+      return results.slice(0, limit);
     } catch (error) {
       console.log(`[MarketDataRouter] EOD search failed for "${query}": ${error.message}`);
+      return [];
     }
-
-    // Gap-fill threshold: a strong EOD result set (5+) skips secondary
-    // providers to protect their request budget; a thin one (like a Japanese
-    // local code matching only stray bonds) consults them.
-    if (results.length >= 5) return results.slice(0, limit);
-
-    const secondaryDocs = await DataProvidersCollection.find(
-      { enabled: true, hasApiKey: true, providerId: { $ne: EODProvider.id }, 'capabilities.search': true },
-      { sort: { priority: 1 } }
-    ).fetchAsync();
-
-    for (const doc of secondaryDocs) {
-      const provider = PROVIDER_REGISTRY[doc.providerId];
-      if (!provider) continue;
-      try {
-        const extra = await provider.searchSecurities(query, limit);
-        const seenIsin = new Set(results.map(r => r.ISIN).filter(Boolean));
-        const seenKey = new Set(results.map(r => `${r.Code}.${r.Exchange}`));
-        for (const row of extra) {
-          if (row.ISIN && seenIsin.has(row.ISIN)) continue;
-          if (seenKey.has(`${row.Code}.${row.Exchange}`)) continue;
-          results.push(row);
-          if (row.ISIN) seenIsin.add(row.ISIN);
-          seenKey.add(`${row.Code}.${row.Exchange}`);
-        }
-      } catch (error) {
-        console.log(`[MarketDataRouter] ${doc.providerId} search failed for "${query}": ${error.message}`);
-      }
-    }
-    return results.slice(0, limit);
   },
 
   // Dashboard "test ticker": run a short history + quote against EVERY enabled

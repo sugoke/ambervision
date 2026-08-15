@@ -11,7 +11,22 @@ import { UsersCollection } from '../imports/api/users.js';
 
 // Middleware to handle PDF authentication
 WebApp.connectHandlers.use(async (req, res, next) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  // This middleware runs for EVERY request. Cheap pre-gate: only PDF-mode
+  // requests carry pdfToken, so skip the URL parse entirely otherwise. And
+  // parse defensively — a malformed Host header makes new URL() throw, and an
+  // uncaught throw in an async connect handler leaves the request hanging
+  // (next() never called) for every request, app-wide.
+  const rawUrl = req.url || '';
+  if (!rawUrl.includes('pdfToken')) {
+    return next();
+  }
+
+  let url;
+  try {
+    url = new URL(rawUrl, `http://${req.headers.host || 'localhost'}`);
+  } catch {
+    return next();
+  }
   const pdfToken = url.searchParams.get('pdfToken');
   const userId = url.searchParams.get('userId');
   const isPDFMode = url.searchParams.get('pdf') === 'true';

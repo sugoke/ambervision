@@ -35,13 +35,13 @@ ChartJS.register(ArcElement, Tooltip, Legend);
 // Asset class colors for chart
 const ASSET_CLASS_COLORS = {
   structured_product: '#6366f1',
-  equity: '#10b981',
-  fixed_income: '#f59e0b',
+  equity: '#047857',
+  fixed_income: '#b45309',
   cash: '#64748b',
   time_deposit: '#475569',
   monetary_products: '#8b5cf6',
   commodities: '#ec4899',
-  other: '#94a3b8'
+  other: '#5c656d'
 };
 
 // Helper functions
@@ -54,12 +54,18 @@ const getCurrencySymbol = (currencyCode) => {
 
 const formatCurrency = (value, currency = 'USD') => {
   if (value == null || isNaN(value)) return '-';
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: currency,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(value);
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(value);
+  } catch (e) {
+    // Intl throws RangeError on anything that isn't a well-formed ISO 4217 code. Per-position
+    // currencies come straight from bank files, so one odd code must not blank the whole report.
+    return `${formatNumber(value, 2)} ${currency || ''}`.trim();
+  }
 };
 
 const formatNumber = (value, decimals = 2) => {
@@ -74,6 +80,13 @@ const formatPercent = (value, showSign = true) => {
   if (value == null || isNaN(value)) return '-';
   const sign = showSign && value >= 0 ? '+' : '';
   return `${sign}${value.toFixed(2)}%`;
+};
+
+// Percentage carrying its own sign, without the "-0.00%" a tiny negative would round to.
+const formatSignedPercent = (value, decimals = 2) => {
+  if (value == null || isNaN(value)) return '-';
+  const rounded = Number(value.toFixed(decimals));
+  return `${(rounded === 0 ? 0 : rounded).toFixed(decimals)}%`;
 };
 
 const formatDate = (date) => {
@@ -95,6 +108,51 @@ const getAssetClassFromSecurityType = (securityType, securityName = '') => {
   if (name.includes('autocallable') || name.includes('barrier') || name.includes('certificate')) return 'structured_product';
 
   return 'structured_product';
+};
+
+// Bank operation parsers do not agree on field names for the same concept: the security name
+// arrives as `securityName` (CMB Monaco, Julius Baer, SG Monaco) or `instrumentName` (Andbank,
+// CFM, EDR), the unit price as `price` or `securityPrice`, the fees as `fees` or `totalFees`.
+// Reading only one spelling each left three transaction columns permanently blank.
+const getOperationPrice = (op) => (op.price != null ? op.price : (op.securityPrice != null ? op.securityPrice : null));
+const getOperationFees = (op) => (op.totalFees != null ? op.totalFees : (op.fees != null ? op.fees : null));
+
+// A real ISIN is 2 letters + 9 alphanumerics + a check digit. Banks put internal account and
+// position codes (e.g. "62060") in the same field, and printing those under an "ISIN" heading
+// presents an account reference as a security identifier.
+const ISIN_PATTERN = /^[A-Z]{2}[A-Z0-9]{9}\d$/;
+const isIsin = (value) => typeof value === 'string' && ISIN_PATTERN.test(value.trim().toUpperCase());
+
+/**
+ * Best available description of what a transaction was, with the identifier beneath it.
+ * Cash movements carry no security at all, so they fall back to the bank's booking text.
+ */
+const getOperationName = (op, metadataByIsin = {}) => {
+  const isin = op.isin && isIsin(op.isin) ? op.isin.trim().toUpperCase() : null;
+  const primary = op.securityName
+    || op.instrumentName
+    || (isin ? metadataByIsin[isin]?.securityName : null)
+    || op.description
+    || op.operationTypeName
+    || op.ticker
+    || (isin ? isin : null)
+    || 'Cash movement';
+
+  let secondary = null;
+  if (isin && primary !== isin) {
+    secondary = isin;
+  } else if (!isin && op.isin) {
+    // Not an ISIN — label it as what it actually is so it isn't mistaken for a security.
+    secondary = `Ref. ${op.isin}`;
+  }
+  return { primary, secondary };
+};
+
+// "PAYMENT_OUT" -> "Payment out"
+const formatOperationType = (type) => {
+  if (!type) return '—';
+  const words = String(type).replace(/_/g, ' ').toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
 };
 
 // Helper function to get product type icon based on template ID
@@ -342,11 +400,35 @@ const PMSReportPDF = () => {
     return filtered.sort((a, b) => new Date(b.operationDate) - new Date(a.operationDate));
   }, [operations, bankAccounts, accountFilter]);
 
+  // Canonical security names by ISIN, for naming transactions whose own record has no name.
+  const metadataByIsin = useMemo(() => {
+    const map = {};
+    securitiesMetadataData.forEach(m => {
+      if (m.isin) map[String(m.isin).toUpperCase()] = m;
+    });
+    return map;
+  }, [securitiesMetadataData]);
+
+  // Only show the price and fees columns when the source files actually carry them — some banks
+  // report neither, and an all-dashes column reads as missing data rather than as not applicable.
+  const opsHavePrice = useMemo(
+    () => currentYearOperations.some(op => getOperationPrice(op) != null),
+    [currentYearOperations]
+  );
+  const opsHaveFees = useMemo(
+    () => currentYearOperations.some(op => getOperationFees(op)),
+    [currentYearOperations]
+  );
+
   // Enrich holdings with asset class and product info
   const enrichedHoldings = useMemo(() => {
     return filteredHoldings.map(holding => {
-      const metadata = securitiesMetadataData.find(m => m.isin === holding.isin);
-      const linkedProduct = productsData.find(p => p.isin === holding.isin);
+      // Guard on a truthy ISIN. `find(m => m.isin === holding.isin)` matches the first
+      // metadata/product row whose own isin is null/undefined for EVERY ISIN-less holding
+      // (cash accounts, FX legs), stamping them all with the same unrelated name, icon and
+      // asset class — which is why four different cash accounts printed as one name.
+      const metadata = holding.isin ? securitiesMetadataData.find(m => m.isin === holding.isin) : null;
+      const linkedProduct = holding.isin ? productsData.find(p => p.isin === holding.isin) : null;
 
       let assetClass = metadata?.assetClass || getAssetClassFromSecurityType(holding.securityType, holding.securityName);
 
@@ -354,6 +436,10 @@ const PMSReportPDF = () => {
 
       return {
         ...holding,
+        // Harmonize the name across banks: prefer the canonical name (stored on
+        // the holding as displayName, or from Securities Base metadata) over the
+        // raw bank-provided name so the same ISIN reads consistently.
+        securityName: holding.displayName || metadata?.securityName || holding.securityName,
         assetClass,
         assetClassLabel: getAssetClassLabel(assetClass),
         linkedProduct,
@@ -423,8 +509,10 @@ const PMSReportPDF = () => {
     return { totalValue, totalCostBasis, totalGainLoss, totalGainLossPercent, cashBalance };
   }, [enrichedHoldings]);
 
-  // Asset allocation data for chart
-  const assetAllocationData = useMemo(() => {
+  // Asset allocation rows for the table. Every non-zero class is listed, including classes with
+  // a negative total (an overdrawn cash account) — dropping those left the table summing to
+  // something other than 100% with no explanation of the gap.
+  const assetAllocationRows = useMemo(() => {
     const allocation = {};
     enrichedHoldings.forEach(h => {
       const key = h.assetClass || 'other';
@@ -432,37 +520,82 @@ const PMSReportPDF = () => {
       allocation[key] += h.marketValue || 0;
     });
 
-    const labels = [];
-    const data = [];
-    const colors = [];
+    return Object.entries(allocation)
+      .filter(([, value]) => value !== 0)
+      .map(([key, value]) => ({
+        key,
+        label: getAssetClassLabel(key),
+        value,
+        color: ASSET_CLASS_COLORS[key] || ASSET_CLASS_COLORS.other,
+        percent: totals.totalValue !== 0 ? (value / totals.totalValue) * 100 : 0
+      }))
+      .sort((a, b) => b.value - a.value);
+  }, [enrichedHoldings, totals.totalValue]);
 
-    Object.entries(allocation).forEach(([key, value]) => {
-      if (value > 0) {
-        labels.push(getAssetClassLabel(key));
-        data.push(value);
-        colors.push(ASSET_CLASS_COLORS[key] || ASSET_CLASS_COLORS.other);
-      }
-    });
-
+  // Chart data — a doughnut can only render positive slices, so negative classes are listed in
+  // the table only (flagged there via the footnote).
+  const assetAllocationData = useMemo(() => {
+    const positive = assetAllocationRows.filter(r => r.value > 0);
     return {
-      labels,
+      labels: positive.map(r => r.label),
       datasets: [{
-        data,
-        backgroundColor: colors,
-        borderColor: colors.map(c => c),
+        data: positive.map(r => r.value),
+        backgroundColor: positive.map(r => r.color),
+        borderColor: positive.map(r => r.color),
         borderWidth: 2
       }]
     };
+  }, [assetAllocationRows]);
+
+  // Determine the report's reference currency — the currency every converted figure is in.
+  //
+  // The parser stores each holding's `marketValue` in that holding's own portfolioCurrency, so
+  // when all holdings agree, that currency IS what the figures are denominated in and nothing
+  // may override it. account.referenceCurrency is independent metadata that can be stale or
+  // self-contradictory (e.g. account 302894.001 says EUR while its holdings are stored in USD);
+  // trusting it there would only relabel USD amounts with a € sign.
+  const { portfolioCurrency, holdingsCurrencies } = useMemo(() => {
+    const currencies = [...new Set(
+      enrichedHoldings.filter(h => h.portfolioCurrency).map(h => h.portfolioCurrency)
+    )];
+    if (currencies.length === 1) {
+      return { portfolioCurrency: currencies[0], holdingsCurrencies: currencies };
+    }
+    const account = accountFilter !== 'all'
+      ? bankAccounts.find(acc => acc._id === accountFilter)
+      : null;
+    return {
+      portfolioCurrency: account?.referenceCurrency || enrichedHoldings[0]?.portfolioCurrency || 'USD',
+      holdingsCurrencies: currencies
+    };
+  }, [accountFilter, bankAccounts, enrichedHoldings]);
+  const portfolioHasMixedCurrencies = holdingsCurrencies.length > 1;
+
+  // Valuation date of the positions. Distinct from the report date: holdings come from the
+  // last bank file received, which on a Monday morning is still Friday's snapshot.
+  const asOfDate = useMemo(() => {
+    const dates = enrichedHoldings
+      .map(h => h.snapshotDate && new Date(h.snapshotDate))
+      .filter(d => d && !isNaN(d));
+    return dates.length > 0 ? new Date(Math.max(...dates)) : null;
   }, [enrichedHoldings]);
 
-  // Determine portfolio currency
-  const portfolioCurrency = useMemo(() => {
-    if (accountFilter !== 'all') {
-      const account = bankAccounts.find(acc => acc._id === accountFilter);
-      if (account?.referenceCurrency) return account.referenceCurrency;
-    }
-    return enrichedHoldings[0]?.portfolioCurrency || 'USD';
-  }, [accountFilter, bankAccounts, enrichedHoldings]);
+  // Who/what this report covers. The "View as" label carries the holder name, and the
+  // holdings carry the portfolio codes actually included in the figures.
+  const scopeLabel = useMemo(() => {
+    const codes = [...new Set(enrichedHoldings.map(h => h.portfolioCode).filter(Boolean))].sort();
+    const codeLabel = codes.length === 0
+      ? null
+      : codes.length <= 3
+        ? codes.join(', ')
+        : `${codes.length} accounts`;
+    const named = viewAsFilter?.label
+      || bankAccounts.find(a => a._id === accountFilter)?.accountNumber
+      || null;
+    // Avoid "302894.001 (302894.001)" when the label already is the account number.
+    if (named && codeLabel && !named.includes(codeLabel)) return `${named} (${codeLabel})`;
+    return named || codeLabel || 'All accounts';
+  }, [enrichedHoldings, viewAsFilter, bankAccounts, accountFilter]);
 
   // Signal PDF readiness
   useEffect(() => {
@@ -507,7 +640,7 @@ const PMSReportPDF = () => {
       }}>
         <h1 style={{ color: '#1e293b', marginBottom: '1rem' }}>Portfolio Report - Loading</h1>
         <p style={{ color: '#64748b', fontSize: '1rem' }}>{loadingMessage}</p>
-        <p style={{ color: '#94a3b8', fontSize: '0.875rem', marginTop: '1rem' }}>
+        <p style={{ color: '#5c656d', fontSize: '0.875rem', marginTop: '1rem' }}>
           Debug: isLoading={String(isLoading)}, validated={String(pdfAuthState.validated)}
         </p>
       </div>
@@ -537,14 +670,20 @@ const PMSReportPDF = () => {
                 Portfolio Report
               </h1>
               <div style={styles.headerMeta}>
-                <span style={styles.metaItem}>Report Date: {formatDate(new Date())}</span>
-                <span style={styles.metaItem}>Currency: {portfolioCurrency}</span>
-                {accountFilter !== 'all' && (
-                  <span style={styles.metaItem}>
-                    Account: {bankAccounts.find(a => a._id === accountFilter)?.accountNumber || 'Selected'}
-                  </span>
+                <span style={styles.metaItem}>Report date: {formatDate(new Date())}</span>
+                {asOfDate && (
+                  <span style={styles.metaItem}>Positions as of: {formatDate(asOfDate)}</span>
                 )}
+                <span style={styles.metaItem}>Reference currency: {portfolioCurrency}</span>
+                <span style={styles.metaItem}>Portfolio: {scopeLabel}</span>
               </div>
+              {portfolioHasMixedCurrencies && (
+                <div style={styles.headerWarning}>
+                  This perimeter holds positions valued in more than one reference currency
+                  ({holdingsCurrencies.join(', ')}). Totals below add those values together and
+                  are shown as {portfolioCurrency} for reference only.
+                </div>
+              )}
             </div>
             <img
               src="https://amberlakepartners.com/assets/logos/horizontal_logo2.png"
@@ -561,13 +700,15 @@ const PMSReportPDF = () => {
             <div style={styles.summaryCard}>
               <div style={styles.summaryLabel}>Total Portfolio Value</div>
               <div style={styles.summaryValue}>{formatCurrency(totals.totalValue, portfolioCurrency)}</div>
+              <div style={styles.summaryHint}>securities + cash, in {portfolioCurrency}</div>
             </div>
             <div style={styles.summaryCard}>
               <div style={styles.summaryLabel}>Total Cost Basis</div>
               <div style={styles.summaryValue}>{formatCurrency(totals.totalCostBasis, portfolioCurrency)}</div>
+              <div style={styles.summaryHint}>what the positions were bought for</div>
             </div>
             <div style={styles.summaryCard}>
-              <div style={styles.summaryLabel}>Total Gain/Loss</div>
+              <div style={styles.summaryLabel}>Unrealised Gain/Loss</div>
               <div style={{
                 ...styles.summaryValue,
                 color: totals.totalGainLoss >= 0 ? '#047857' : '#b91c1c'
@@ -577,10 +718,12 @@ const PMSReportPDF = () => {
                   ({formatPercent(totals.totalGainLossPercent)})
                 </span>
               </div>
+              <div style={styles.summaryHint}>current value vs. cost basis</div>
             </div>
             <div style={styles.summaryCard}>
               <div style={styles.summaryLabel}>Cash Balance</div>
               <div style={styles.summaryValue}>{formatCurrency(totals.cashBalance, portfolioCurrency)}</div>
+              <div style={styles.summaryHint}>all currency accounts, converted</div>
             </div>
           </div>
         </div>
@@ -588,6 +731,15 @@ const PMSReportPDF = () => {
         {/* Positions Section */}
         <div style={styles.section} className="pms-pdf-section">
           <h2 style={styles.sectionTitle}>Holdings by Asset Class</h2>
+          <p style={styles.sectionNote}>
+            <strong>Ccy</strong> is the currency the position trades in; prices and the first
+            Market Value column are in that currency. The second Market Value column, Unrealised
+            P&amp;L and every total are converted to the reference currency
+            (<strong>{portfolioCurrency}</strong>) at the rate supplied by the bank.
+            P&amp;L is unrealised and measured against average purchase cost; for cash accounts,
+            which have no purchase cost, it is the currency translation difference.
+            <strong> Weight</strong> is the position as a percentage of total portfolio value.
+          </p>
 
           {Object.entries(holdingsByAssetClass).map(([assetClass, group], index) => {
             const holdings = group.holdings;
@@ -605,75 +757,96 @@ const PMSReportPDF = () => {
                 ? (gainLoss / holding.costBasisPortfolioCurrency) * 100
                 : 0;
               const isPercentagePrice = holding.priceType === 'percentage';
+              // Cash carries a constant 1.00 placeholder price from the parsers. Printing that as
+              // a purchase price and a market price implies a valuation that doesn't exist.
+              const isCash = holding.assetClass === 'cash';
+              const localCurrency = holding.currency || portfolioCurrency;
+              // marketValue is in the reference currency; marketValueOriginalCurrency is the
+              // bank's figure in the security's own currency. They're equal by definition when
+              // the two currencies match, so falling back is safe only in that case.
+              const localValue = holding.marketValueOriginalCurrency != null
+                ? holding.marketValueOriginalCurrency
+                : (localCurrency === portfolioCurrency ? holding.marketValue : null);
+              const weight = totals.totalValue > 0
+                ? ((holding.marketValue || 0) / totals.totalValue) * 100
+                : null;
+              const formatPrice = (price) => isPercentagePrice
+                ? formatPercent((price || 0) * 100, false)
+                : formatNumber(price, 2);
 
               return (
                 <tr key={holding._id || idx}>
-                  {/* Name + P&L Hero Cell */}
-                  <td style={{...styles.td, width: '40%'}}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
-                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.4rem', flex: 1, minWidth: 0 }}>
-                        {/* Product Type Icon */}
-                        {holding.productIcon && (
-                          <span style={{ fontSize: '1rem', flexShrink: 0, lineHeight: 1.2 }}>{holding.productIcon}</span>
-                        )}
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontWeight: '600', fontSize: '0.85rem' }}>{holding.securityName || holding.ticker || '-'}</div>
-                          <div style={{ fontSize: '0.7rem', color: '#64748b', fontFamily: 'monospace' }}>
-                            {holding.isin || '-'}
-                            {holding.isin && !isPDFMode && (
-                              <HoldingPriceChart
-                                isin={holding.isin}
-                                securityName={holding.securityName || holding.ticker}
-                                sessionId={currentSessionId}
-                              />
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                        <div style={{
-                          fontWeight: '700',
-                          fontSize: '0.95rem',
-                          color: gainLoss >= 0 ? '#047857' : '#b91c1c'
-                        }}>
-                          {gainLoss >= 0 ? '+' : ''}{formatCurrency(gainLoss, portfolioCurrency)}
-                        </div>
-                        <div style={{
-                          fontSize: '0.75rem',
-                          color: returnPct >= 0 ? '#047857' : '#b91c1c',
-                          fontWeight: '500'
-                        }}>
-                          {returnPct >= 0 ? '+' : ''}{returnPct.toFixed(2)}%
+                  {/* Security */}
+                  <td style={{...styles.td, width: '23%'}}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.4rem', minWidth: 0 }}>
+                      {holding.productIcon && (
+                        <span style={{ fontSize: '1rem', flexShrink: 0, lineHeight: 1.2 }}>{holding.productIcon}</span>
+                      )}
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: '600', fontSize: '0.85rem' }}>{holding.securityName || holding.ticker || '-'}</div>
+                        <div style={{ fontSize: '0.7rem', color: '#64748b', fontFamily: 'monospace' }}>
+                          {holding.isin || (isCash ? 'Cash account' : '-')}
+                          {holding.isin && !isPDFMode && (
+                            <HoldingPriceChart
+                              isin={holding.isin}
+                              securityName={holding.securityName || holding.ticker}
+                              sessionId={currentSessionId}
+                            />
+                          )}
                         </div>
                       </div>
                     </div>
                   </td>
-                  {/* Value */}
-                  <td style={{...styles.td, textAlign: 'right', fontWeight: '600', fontFamily: 'monospace', width: '18%'}}>
+                  {/* Currency of the position */}
+                  <td style={{...styles.td, textAlign: 'center', fontFamily: 'monospace', fontSize: '0.8rem', width: '5%'}}>
+                    {localCurrency}
+                  </td>
+                  {/* Quantity — units held, or the balance for a cash account */}
+                  <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace', fontSize: '0.8rem', width: '9%'}}>
+                    {formatNumber(holding.quantity, isCash ? 2 : 0)}
+                  </td>
+                  {/* Average purchase price, per unit, in the position's currency */}
+                  <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace', fontSize: '0.8rem', color: '#64748b', width: '9%'}}>
+                    {isCash ? '—' : formatPrice(holding.costPrice)}
+                  </td>
+                  {/* Market price, per unit, in the position's currency */}
+                  <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace', fontSize: '0.8rem', width: '10%'}}>
+                    {isCash ? '—' : (
+                      <>
+                        <div style={{ color: (holding.marketPrice || 0) >= (holding.costPrice || 0) ? '#047857' : '#b91c1c' }}>
+                          {formatPrice(holding.marketPrice)}
+                        </div>
+                        {holding.priceDate && (
+                          <div style={{ fontSize: '0.65rem', color: '#5c656d' }}>{formatDate(holding.priceDate)}</div>
+                        )}
+                      </>
+                    )}
+                  </td>
+                  {/* Market value in the position's own currency */}
+                  <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace', fontSize: '0.8rem', color: '#475569', width: '12%'}}>
+                    {localValue != null ? formatCurrency(localValue, localCurrency) : '—'}
+                  </td>
+                  {/* Market value converted to the report's reference currency */}
+                  <td style={{...styles.td, textAlign: 'right', fontWeight: '600', fontFamily: 'monospace', width: '12%'}}>
                     {formatCurrency(holding.marketValue, portfolioCurrency)}
                   </td>
-                  {/* Qty */}
-                  <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace', fontSize: '0.8rem', color: '#64748b', width: '14%'}}>
-                    {formatNumber(holding.quantity, 0)}
+                  {/* Unrealised P&L in the reference currency */}
+                  <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace', width: '13%'}}>
+                    <div style={{ fontWeight: '700', fontSize: '0.85rem', color: gainLoss >= 0 ? '#047857' : '#b91c1c' }}>
+                      {gainLoss >= 0 ? '+' : ''}{formatCurrency(gainLoss, portfolioCurrency)}
+                    </div>
+                    {/* A cash account has no purchase cost, so a return percentage against the
+                        parsers' 1.00 placeholder would be meaningless — the amount is the
+                        currency translation difference and stands on its own. */}
+                    {!isCash && (
+                      <div style={{ fontSize: '0.72rem', fontWeight: '500', color: returnPct >= 0 ? '#047857' : '#b91c1c' }}>
+                        {returnPct >= 0 ? '+' : ''}{returnPct.toFixed(2)}%
+                      </div>
+                    )}
                   </td>
-                  {/* Avg */}
-                  <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace', fontSize: '0.8rem', color: '#64748b', width: '14%'}}>
-                    {isPercentagePrice
-                      ? formatPercent((holding.costPrice || 0) * 100, false)
-                      : formatNumber(holding.costPrice, 2)}
-                  </td>
-                  {/* Now */}
-                  <td style={{
-                    ...styles.td,
-                    textAlign: 'right',
-                    fontFamily: 'monospace',
-                    fontSize: '0.8rem',
-                    width: '14%',
-                    color: (holding.marketPrice || 0) >= (holding.costPrice || 0) ? '#047857' : '#b91c1c'
-                  }}>
-                    {isPercentagePrice
-                      ? formatPercent((holding.marketPrice || 0) * 100, false)
-                      : formatNumber(holding.marketPrice, 2)}
+                  {/* Weight in the total portfolio */}
+                  <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace', fontSize: '0.8rem', color: '#475569', width: '7%'}}>
+                    {weight != null ? formatSignedPercent(weight) : '—'}
                   </td>
                 </tr>
               );
@@ -713,11 +886,33 @@ const PMSReportPDF = () => {
                 <table style={styles.table}>
                   <thead>
                     <tr>
-                      <th style={{...styles.th, width: '40%'}}>Security / P&L</th>
-                      <th style={{...styles.th, textAlign: 'right', width: '18%'}}>Value</th>
-                      <th style={{...styles.th, textAlign: 'right', width: '14%'}}>Qty</th>
-                      <th style={{...styles.th, textAlign: 'right', width: '14%'}}>Avg</th>
-                      <th style={{...styles.th, textAlign: 'right', width: '14%'}}>Now</th>
+                      <th style={{...styles.th, width: '23%'}}>
+                        Security<div style={styles.thHint}>name / ISIN</div>
+                      </th>
+                      <th style={{...styles.th, textAlign: 'center', width: '5%'}}>
+                        Ccy<div style={styles.thHint}>traded in</div>
+                      </th>
+                      <th style={{...styles.th, textAlign: 'right', width: '9%'}}>
+                        Quantity<div style={styles.thHint}>units held</div>
+                      </th>
+                      <th style={{...styles.th, textAlign: 'right', width: '9%'}}>
+                        Avg Cost<div style={styles.thHint}>per unit, in Ccy</div>
+                      </th>
+                      <th style={{...styles.th, textAlign: 'right', width: '10%'}}>
+                        Market Price<div style={styles.thHint}>per unit, in Ccy</div>
+                      </th>
+                      <th style={{...styles.th, textAlign: 'right', width: '12%'}}>
+                        Market Value<div style={styles.thHint}>in Ccy</div>
+                      </th>
+                      <th style={{...styles.th, textAlign: 'right', width: '12%'}}>
+                        Market Value<div style={styles.thHint}>in {portfolioCurrency}</div>
+                      </th>
+                      <th style={{...styles.th, textAlign: 'right', width: '13%'}}>
+                        Unrealised P&L<div style={styles.thHint}>in {portfolioCurrency}, vs cost</div>
+                      </th>
+                      <th style={{...styles.th, textAlign: 'right', width: '7%'}}>
+                        Weight<div style={styles.thHint}>% of total</div>
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -732,7 +927,7 @@ const PMSReportPDF = () => {
                           <React.Fragment key={subClass}>
                             {/* Sub-group Header Row */}
                             <tr>
-                              <td colSpan={5} style={{ padding: 0 }}>
+                              <td colSpan={9} style={{ padding: 0 }}>
                                 <div style={styles.subGroupHeader}>
                                   <div>
                                     <span style={{ fontWeight: '500', fontSize: '0.85rem', color: '#1e293b' }}>{subClass}</span>
@@ -767,17 +962,20 @@ const PMSReportPDF = () => {
                     )}
                     {/* Subtotal row */}
                     <tr style={styles.subtotalRow}>
-                      <td style={{...styles.td, fontWeight: '700'}}>
+                      <td colSpan={6} style={{...styles.td, fontWeight: '700'}}>
                         {getAssetClassLabel(assetClass)} Total
+                        <span style={{ fontWeight: '400', fontSize: '0.75rem', color: '#64748b', marginLeft: '0.5rem' }}>
+                          ({holdings.length} position{holdings.length !== 1 ? 's' : ''})
+                        </span>
                       </td>
                       <td style={{...styles.td, textAlign: 'right', fontWeight: '700', fontFamily: 'monospace'}}>
                         {formatCurrency(groupTotal, portfolioCurrency)}
                       </td>
-                      <td colSpan={2} style={{...styles.td, textAlign: 'right', fontWeight: '700', fontFamily: 'monospace', color: groupGainLoss >= 0 ? '#047857' : '#b91c1c'}}>
+                      <td style={{...styles.td, textAlign: 'right', fontWeight: '700', fontFamily: 'monospace', color: groupGainLoss >= 0 ? '#047857' : '#b91c1c'}}>
                         {groupGainLoss >= 0 ? '+' : ''}{formatCurrency(groupGainLoss, portfolioCurrency)}
                       </td>
-                      <td style={{...styles.td, textAlign: 'right', fontWeight: '700'}}>
-                        {groupPercent.toFixed(1)}%
+                      <td style={{...styles.td, textAlign: 'right', fontWeight: '700', fontFamily: 'monospace'}}>
+                        {formatSignedPercent(groupPercent)}
                       </td>
                     </tr>
                   </tbody>
@@ -808,40 +1006,53 @@ const PMSReportPDF = () => {
                 <thead>
                   <tr>
                     <th style={styles.th}>Asset Class</th>
-                    <th style={{...styles.th, textAlign: 'right'}}>Value</th>
-                    <th style={{...styles.th, textAlign: 'right'}}>Allocation %</th>
+                    <th style={{...styles.th, textAlign: 'right'}}>
+                      Value<div style={styles.thHint}>in {portfolioCurrency}</div>
+                    </th>
+                    <th style={{...styles.th, textAlign: 'right'}}>
+                      Allocation<div style={styles.thHint}>% of total</div>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {assetAllocationData.labels.map((label, idx) => {
-                    const value = assetAllocationData.datasets[0].data[idx];
-                    const percent = totals.totalValue > 0 ? (value / totals.totalValue) * 100 : 0;
-                    const color = assetAllocationData.datasets[0].backgroundColor[idx];
-
-                    return (
-                      <tr key={label}>
-                        <td style={styles.td}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            <div style={{
-                              width: '12px',
-                              height: '12px',
-                              borderRadius: '3px',
-                              background: color
-                            }} />
-                            {label}
-                          </div>
-                        </td>
-                        <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>
-                          {formatCurrency(value, portfolioCurrency)}
-                        </td>
-                        <td style={{...styles.td, textAlign: 'right', fontWeight: '600'}}>
-                          {percent.toFixed(1)}%
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {assetAllocationRows.map(row => (
+                    <tr key={row.key}>
+                      <td style={styles.td}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <div style={{
+                            width: '12px',
+                            height: '12px',
+                            borderRadius: '3px',
+                            background: row.color
+                          }} />
+                          {row.label}
+                        </div>
+                      </td>
+                      <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>
+                        {formatCurrency(row.value, portfolioCurrency)}
+                      </td>
+                      <td style={{...styles.td, textAlign: 'right', fontWeight: '600', fontFamily: 'monospace'}}>
+                        {formatSignedPercent(row.percent)}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr style={styles.subtotalRow}>
+                    <td style={{...styles.td, fontWeight: '700'}}>Total Portfolio Value</td>
+                    <td style={{...styles.td, textAlign: 'right', fontWeight: '700', fontFamily: 'monospace'}}>
+                      {formatCurrency(totals.totalValue, portfolioCurrency)}
+                    </td>
+                    <td style={{...styles.td, textAlign: 'right', fontWeight: '700', fontFamily: 'monospace'}}>
+                      100.00%
+                    </td>
+                  </tr>
                 </tbody>
               </table>
+              {assetAllocationRows.some(r => r.value < 0) && (
+                <p style={styles.sectionNote}>
+                  Classes with a negative total (an overdrawn cash account or credit line) are
+                  listed above but cannot be drawn as a slice, so the chart shows positive classes only.
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -850,14 +1061,28 @@ const PMSReportPDF = () => {
         {performanceData && (
           <div style={styles.section} className="pms-pdf-section">
             <h2 style={styles.sectionTitle}>Performance Metrics</h2>
+            <p style={styles.sectionNote}>
+              Each period compares the portfolio's total value at the start and end of the period,
+              in {portfolioCurrency}. <strong>Return</strong> is the change divided by the start
+              value; it is not adjusted for money paid in or withdrawn during the period, so it
+              will differ from a cash-flow-weighted return (IRR) where deposits or withdrawals occurred.
+            </p>
             <table style={styles.table}>
               <thead>
                 <tr>
                   <th style={styles.th}>Period</th>
-                  <th style={{...styles.th, textAlign: 'right'}}>Start Value</th>
-                  <th style={{...styles.th, textAlign: 'right'}}>End Value</th>
-                  <th style={{...styles.th, textAlign: 'right'}}>Change</th>
-                  <th style={{...styles.th, textAlign: 'right'}}>Return %</th>
+                  <th style={{...styles.th, textAlign: 'right'}}>
+                    Start Value<div style={styles.thHint}>in {portfolioCurrency}</div>
+                  </th>
+                  <th style={{...styles.th, textAlign: 'right'}}>
+                    End Value<div style={styles.thHint}>in {portfolioCurrency}</div>
+                  </th>
+                  <th style={{...styles.th, textAlign: 'right'}}>
+                    Change<div style={styles.thHint}>end − start</div>
+                  </th>
+                  <th style={{...styles.th, textAlign: 'right'}}>
+                    Return<div style={styles.thHint}>change ÷ start</div>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -909,17 +1134,41 @@ const PMSReportPDF = () => {
             </span>
           </h2>
 
+          <p style={styles.sectionNote}>
+            Amounts are in the currency the transaction settled in, which is not always the
+            reference currency. A negative net amount left the account, a positive one came in.
+          </p>
+
           {currentYearOperations.length > 0 ? (
             <table style={{...styles.table, fontSize: '0.8rem'}}>
               <thead>
                 <tr>
-                  <th style={styles.th}>Date</th>
+                  <th style={styles.th}>
+                    Date<div style={styles.thHint}>booked</div>
+                  </th>
                   <th style={styles.th}>Type</th>
-                  <th style={styles.th}>Security</th>
-                  <th style={{...styles.th, textAlign: 'right'}}>Quantity</th>
-                  <th style={{...styles.th, textAlign: 'right'}}>Price</th>
-                  <th style={{...styles.th, textAlign: 'right'}}>Fees</th>
-                  <th style={{...styles.th, textAlign: 'right'}}>Net Amount</th>
+                  <th style={styles.th}>
+                    Security / Description<div style={styles.thHint}>name / ISIN</div>
+                  </th>
+                  <th style={{...styles.th, textAlign: 'right'}}>
+                    Quantity<div style={styles.thHint}>units, or amount for cash</div>
+                  </th>
+                  {opsHavePrice && (
+                    <th style={{...styles.th, textAlign: 'right'}}>
+                      Price<div style={styles.thHint}>per unit</div>
+                    </th>
+                  )}
+                  {opsHaveFees && (
+                    <th style={{...styles.th, textAlign: 'right'}}>
+                      Fees<div style={styles.thHint}>charged</div>
+                    </th>
+                  )}
+                  <th style={{...styles.th, textAlign: 'center'}}>
+                    Ccy<div style={styles.thHint}>settled in</div>
+                  </th>
+                  <th style={{...styles.th, textAlign: 'right'}}>
+                    Net Amount<div style={styles.thHint}>after fees, in Ccy</div>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -933,6 +1182,11 @@ const PMSReportPDF = () => {
                   };
                   const typeStyle = typeColors[op.operationType] || { bg: '#f3f4f6', color: '#374151' };
 
+                  const name = getOperationName(op, metadataByIsin);
+                  const price = getOperationPrice(op);
+                  const fees = getOperationFees(op);
+                  const opCurrency = op.currency || portfolioCurrency;
+
                   return (
                     <tr key={op._id || idx}>
                       <td style={styles.td}>{formatDate(op.operationDate)}</td>
@@ -945,24 +1199,33 @@ const PMSReportPDF = () => {
                           background: typeStyle.bg,
                           color: typeStyle.color
                         }}>
-                          {op.operationType}
+                          {formatOperationType(op.operationType)}
                         </span>
                       </td>
                       <td style={styles.td}>
-                        <div style={{ fontWeight: '500' }}>{op.ticker || op.instrumentName || '-'}</div>
-                        {op.isin && <div style={{ fontSize: '0.7rem', color: '#64748b' }}>{op.isin}</div>}
+                        <div style={{ fontWeight: '500' }}>{name.primary}</div>
+                        {name.secondary && (
+                          <div style={{ fontSize: '0.7rem', color: '#64748b' }}>{name.secondary}</div>
+                        )}
                       </td>
                       <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>
-                        {op.quantity ? formatNumber(op.quantity, 4) : '-'}
+                        {op.quantity ? formatNumber(op.quantity, Number.isInteger(op.quantity) ? 0 : 2) : '—'}
                       </td>
-                      <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>
-                        {op.price ? formatNumber(op.price, 2) : '-'}
-                      </td>
-                      <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>
-                        {op.totalFees ? formatCurrency(op.totalFees, op.currency || portfolioCurrency) : '-'}
+                      {opsHavePrice && (
+                        <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>
+                          {price != null ? formatNumber(price, 2) : '—'}
+                        </td>
+                      )}
+                      {opsHaveFees && (
+                        <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>
+                          {fees ? formatCurrency(fees, opCurrency) : '—'}
+                        </td>
+                      )}
+                      <td style={{...styles.td, textAlign: 'center', fontFamily: 'monospace'}}>
+                        {opCurrency}
                       </td>
                       <td style={{...styles.td, textAlign: 'right', fontWeight: '600', fontFamily: 'monospace'}}>
-                        {formatCurrency(op.netAmount || op.grossAmount, op.currency || portfolioCurrency)}
+                        {formatCurrency(op.netAmount != null ? op.netAmount : op.grossAmount, opCurrency)}
                       </td>
                     </tr>
                   );
@@ -979,7 +1242,7 @@ const PMSReportPDF = () => {
         {/* Footer */}
         <div style={styles.footer}>
           <p>Generated by Amberlake Partners - {new Date().toLocaleString()}</p>
-          <p style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.5rem' }}>
+          <p style={{ fontSize: '0.75rem', color: '#5c656d', marginTop: '0.5rem' }}>
             This report is for informational purposes only and does not constitute investment advice.
           </p>
         </div>
@@ -1029,7 +1292,9 @@ const styles = {
   },
   headerMeta: {
     display: 'flex',
-    gap: '2rem',
+    flexWrap: 'wrap',
+    columnGap: '2rem',
+    rowGap: '0.25rem',
     marginTop: '0.5rem',
     fontSize: '0.9rem',
     color: '#334155'
@@ -1037,6 +1302,16 @@ const styles = {
   metaItem: {
     color: '#334155',
     fontWeight: 500
+  },
+  headerWarning: {
+    marginTop: '0.5rem',
+    padding: '0.4rem 0.6rem',
+    background: '#fffbeb',
+    border: '1px solid #fcd34d',
+    borderRadius: '4px',
+    fontSize: '0.75rem',
+    color: '#92400e',
+    maxWidth: '70ch'
   },
   section: {
     marginBottom: '1.5rem',
@@ -1080,6 +1355,22 @@ const styles = {
     fontWeight: 700,
     color: '#1e293b'
   },
+  summaryHint: {
+    fontSize: '0.7rem',
+    color: '#64748b',
+    marginTop: '0.35rem',
+    lineHeight: 1.3
+  },
+  sectionNote: {
+    fontSize: '0.75rem',
+    color: '#475569',
+    lineHeight: 1.5,
+    margin: '0 0 0.75rem 0',
+    padding: '0.5rem 0.7rem',
+    background: '#f8fafc',
+    borderLeft: '3px solid #cbd5e1',
+    borderRadius: '0 4px 4px 0'
+  },
   groupHeader: {
     background: 'linear-gradient(135deg, #1e3a5f 0%, #2d4a6f 100%)',
     color: 'white',
@@ -1108,17 +1399,27 @@ const styles = {
   },
   th: {
     background: '#f3f4f6',
-    padding: '0.5rem 0.75rem',
+    padding: '0.5rem 0.6rem',
     textAlign: 'left',
     fontWeight: 600,
     color: '#374151',
     borderBottom: '2px solid #e5e7eb',
-    fontSize: '0.75rem',
+    fontSize: '0.72rem',
     textTransform: 'uppercase',
-    letterSpacing: '0.5px'
+    letterSpacing: '0.4px',
+    verticalAlign: 'bottom'
+  },
+  // Unit / basis of the column, so no figure in the table is ambiguous about what it measures.
+  thHint: {
+    fontWeight: 400,
+    fontSize: '0.62rem',
+    textTransform: 'none',
+    letterSpacing: 0,
+    color: '#64748b',
+    marginTop: '0.15rem'
   },
   td: {
-    padding: '0.5rem 0.75rem',
+    padding: '0.45rem 0.6rem',
     borderBottom: '1px solid #e5e7eb',
     color: '#1e293b',
     background: 'white'

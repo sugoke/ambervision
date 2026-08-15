@@ -12,6 +12,7 @@ import { OrdersCollection, ORDER_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS
 import { BanksCollection } from '/imports/api/banks';
 import { UsersCollection } from '/imports/api/users';
 import FormattedNumberInput from './components/FormattedNumberInput.jsx';
+import { useIsMobile } from './hooks/useIsMobile.js';
 
 /**
  * OrderBook - Main component for managing orders
@@ -147,6 +148,7 @@ const InlineExecPriceCell = ({ order, onSaved }) => {
 
 const OrderBook = ({ user }) => {
   const { theme } = useTheme();
+  const isMobile = useIsMobile();
   const getSessionId = () => localStorage.getItem('sessionId');
 
   // State
@@ -162,6 +164,7 @@ const OrderBook = ({ user }) => {
   const [bankFilter, setBankFilter] = useState('all');
   const [clientFilter, setClientFilter] = useState('all');
   const [validatorFilter, setValidatorFilter] = useState('all');
+  const [missingTermsheetFilter, setMissingTermsheetFilter] = useState(false);
   const [validators, setValidators] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [dateFrom, setDateFrom] = useState('');
@@ -250,7 +253,7 @@ const OrderBook = ({ user }) => {
   // Load orders on filter changes
   useEffect(() => {
     loadOrders();
-  }, [statusFilter, bankFilter, clientFilter, validatorFilter, searchQuery, dateFrom, dateTo, currentPage, sortField, sortOrder]);
+  }, [statusFilter, bankFilter, clientFilter, validatorFilter, missingTermsheetFilter, searchQuery, dateFrom, dateTo, currentPage, sortField, sortOrder]);
 
   // Load clients for new order modal
   useEffect(() => {
@@ -298,6 +301,9 @@ const OrderBook = ({ user }) => {
     if (validatorFilter !== 'all') {
       filters.validatedByName = validatorFilter;
     }
+    if (missingTermsheetFilter) {
+      filters.missingTermsheet = true;
+    }
     if (searchQuery) {
       filters.search = searchQuery;
     }
@@ -328,7 +334,13 @@ const OrderBook = ({ user }) => {
         sessionId
       });
 
-      const loadedOrders = result.orders || [];
+      // Harmonize the security name across banks: the same ISIN can have been
+      // stored under different bank-provided names. When a canonical name has
+      // been set in Securities Base it is propagated to `displayName`; prefer it
+      // so the whole order book (rows, detail panels, export) reads consistently.
+      const loadedOrders = (result.orders || []).map(order => (
+        order.displayName ? { ...order, securityName: order.displayName } : order
+      ));
       setOrders(loadedOrders);
       setTotalOrders(result.total || 0);
 
@@ -759,11 +771,38 @@ const OrderBook = ({ user }) => {
       return;
     }
 
-    // Forward path — open modal to collect evidence
+    // Forward path — open modal to collect evidence. Existing termsheet files are
+    // passed along so the modal can show / replace / delete what was already uploaded.
     setTermsheetEvidenceFile(null);
     setTermsheetEvidenceError(null);
     setTermsheetEvidenceUploading(false);
-    setTermsheetEvidenceModal({ orderId: order._id, targetStatus: nextStatus });
+    setTermsheetEvidenceModal({
+      orderId: order._id,
+      targetStatus: nextStatus,
+      existingTraces: (order.emailTraces || []).filter(t =>
+        TERMSHEET_TRACE_TYPES.has(t.traceType) && t.traceMode !== 'phone')
+    });
+  };
+
+  // Delete a termsheet file from within the evidence modal (keeps modal state in sync)
+  const handleDeleteEvidenceTrace = async (traceId) => {
+    if (!termsheetEvidenceModal) return;
+    const { orderId } = termsheetEvidenceModal;
+    try {
+      const sessionId = getSessionId();
+      await Meteor.callAsync('orders.deleteEmailTrace', { orderId, traceId, sessionId });
+      setTermsheetEvidenceModal(prev => prev
+        ? { ...prev, existingTraces: (prev.existingTraces || []).filter(t => t._id !== traceId) }
+        : prev);
+      if (selectedOrder?.order?._id === orderId) {
+        const result = await Meteor.callAsync('orders.get', { orderId, sessionId });
+        setSelectedOrder(result);
+      }
+      loadOrders();
+    } catch (err) {
+      console.error('Error deleting termsheet evidence:', err);
+      setTermsheetEvidenceError(err.reason || err.message);
+    }
   };
 
   const submitTermsheetEvidence = async () => {
@@ -866,6 +905,53 @@ const OrderBook = ({ user }) => {
       loadOrders();
     } catch (err) {
       console.error('Error uploading trace:', err);
+      setTraceError(err.reason || err.message);
+    } finally {
+      setUploadingTrace(null);
+    }
+  };
+
+  // Signed termsheet upload from the trace tile — linked to the TS status indicator:
+  // stores the file as signed evidence and advances termsheetStatus to "signed".
+  const handleSignedTermsheetUpload = async (file, orderId) => {
+    setTraceError(null);
+    if (!file) return;
+
+    const ext = '.' + file.name.split('.').pop().toLowerCase();
+    if (!TERMSHEET_EVIDENCE_TYPES.includes(ext)) {
+      setTraceError(`File type ${ext} not accepted for the signed termsheet. Use: ${TERMSHEET_EVIDENCE_TYPES.join(', ')}`);
+      return;
+    }
+    if (file.size > EMAIL_TRACE_MAX_SIZE) {
+      setTraceError('File exceeds 15MB limit');
+      return;
+    }
+
+    setUploadingTrace(EMAIL_TRACE_TYPES.TERMSHEET);
+    try {
+      const base64Data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      const sessionId = getSessionId();
+      await Meteor.callAsync('orders.advanceTermsheetWithEvidence', {
+        orderId,
+        targetStatus: TERMSHEET_STATUSES.SIGNED,
+        fileName: file.name,
+        base64Data,
+        mimeType: file.type || 'application/octet-stream',
+        sessionId
+      });
+
+      // Refresh order details and list (termsheet status advanced to signed)
+      const result = await Meteor.callAsync('orders.get', { orderId, sessionId });
+      setSelectedOrder(result);
+      loadOrders();
+    } catch (err) {
+      console.error('Error uploading signed termsheet:', err);
       setTraceError(err.reason || err.message);
     } finally {
       setUploadingTrace(null);
@@ -1137,28 +1223,30 @@ const OrderBook = ({ user }) => {
   // Styles
   const styles = {
     container: {
-      padding: '1.5rem'
+      padding: isMobile ? '0.75rem' : '1.5rem'
     },
     header: {
       display: 'flex',
       justifyContent: 'space-between',
-      alignItems: 'center',
-      marginBottom: '1.5rem',
+      alignItems: isMobile ? 'stretch' : 'center',
+      flexDirection: isMobile ? 'column' : 'row',
+      marginBottom: isMobile ? '1rem' : '1.5rem',
       flexWrap: 'wrap',
-      gap: '1rem'
+      gap: isMobile ? '0.75rem' : '1rem'
     },
     title: {
-      fontSize: '1.5rem',
+      fontSize: isMobile ? '1.25rem' : '1.5rem',
       fontWeight: '600',
       color: 'var(--text-primary)',
       margin: 0
     },
     filters: {
-      display: 'flex',
+      display: isMobile ? 'grid' : 'flex',
+      gridTemplateColumns: isMobile ? '1fr' : undefined,
       flexWrap: 'wrap',
       gap: '12px',
-      marginBottom: '1.5rem',
-      alignItems: 'center'
+      marginBottom: isMobile ? '1rem' : '1.5rem',
+      alignItems: isMobile ? 'stretch' : 'center'
     },
     filterGroup: {
       display: 'flex',
@@ -1171,26 +1259,31 @@ const OrderBook = ({ user }) => {
       textTransform: 'uppercase',
       letterSpacing: '0.5px'
     },
+    // 16px on mobile: below that, iOS Safari zooms the page when a field takes focus.
     input: {
-      padding: '8px 12px',
+      padding: isMobile ? '11px 12px' : '8px 12px',
       border: '1px solid var(--border-color)',
       borderRadius: '6px',
-      fontSize: '13px',
+      fontSize: isMobile ? '16px' : '13px',
       background: 'var(--bg-primary)',
       color: 'var(--text-primary)',
       outline: 'none',
-      minWidth: '150px'
+      width: isMobile ? '100%' : undefined,
+      minWidth: isMobile ? 0 : '150px',
+      boxSizing: 'border-box'
     },
     select: {
-      padding: '8px 12px',
+      padding: isMobile ? '11px 12px' : '8px 12px',
       border: '1px solid var(--border-color)',
       borderRadius: '6px',
-      fontSize: '13px',
+      fontSize: isMobile ? '16px' : '13px',
       background: 'var(--bg-primary)',
       color: 'var(--text-primary)',
       outline: 'none',
       cursor: 'pointer',
-      minWidth: '120px'
+      width: isMobile ? '100%' : undefined,
+      minWidth: isMobile ? 0 : '120px',
+      boxSizing: 'border-box'
     },
     table: {
       width: '100%',
@@ -1233,7 +1326,7 @@ const OrderBook = ({ user }) => {
       fontWeight: '600',
       textTransform: 'uppercase',
       background: type === 'buy' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-      color: type === 'buy' ? '#10b981' : '#ef4444'
+      color: type === 'buy' ? 'var(--gain-color)' : 'var(--loss-color)'
     }),
     actionButton: {
       padding: '4px 8px',
@@ -1249,6 +1342,8 @@ const OrderBook = ({ user }) => {
       display: 'flex',
       justifyContent: 'space-between',
       alignItems: 'center',
+      flexDirection: isMobile ? 'column' : 'row',
+      gap: isMobile ? '0.5rem' : 0,
       marginTop: '1rem',
       padding: '0.5rem 0'
     },
@@ -1258,7 +1353,8 @@ const OrderBook = ({ user }) => {
     },
     pageButtons: {
       display: 'flex',
-      gap: '8px'
+      gap: '8px',
+      width: isMobile ? '100%' : undefined
     },
     emptyState: {
       textAlign: 'center',
@@ -1295,6 +1391,152 @@ const OrderBook = ({ user }) => {
 
   const totalPages = Math.ceil(totalOrders / pageSize);
 
+  /**
+   * Order-detail action buttons (PDF, Email, Modify, Mark Executed, Delete, ...).
+   * 'small' is a ~27px target — too small to hit confidently on a phone, and these
+   * sit next to each other, so a mis-tap can mean deleting instead of executing.
+   */
+  const detailBtnSize = isMobile ? 'medium' : 'small';
+
+  /**
+   * Mobile order card.
+   *
+   * The blotter's 19 columns cannot be read on a phone — horizontally scrolling a
+   * table to find the status of a reference is unusable. Each order becomes a card
+   * carrying what you need to triage it (reference, status, side, security, account,
+   * size) with the full record one tap away in the existing detail modal.
+   */
+  const renderOrderCard = (order) => {
+    const statusColor = order.effectiveStatusColor || OrderFormatters.getStatusColor(order.status);
+    const validTraceTypes = new Set(Object.values(EMAIL_TRACE_TYPES));
+    const traces = order.emailTraces || [];
+    const traceCount = traces.filter(t => validTraceTypes.has(t.traceType) && !TERMSHEET_TRACE_TYPES.has(t.traceType)).length;
+    const maxTraces = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 4 : 3;
+    const traceColor = traceCount === maxTraces ? 'var(--gain-color)' : traceCount > 0 ? 'var(--warning-color)' : 'var(--text-muted)';
+    const secondaryId = order.assetType === ASSET_TYPES.FX
+      ? (order.fxPairFormatted || 'FX')
+      : order.assetType === ASSET_TYPES.TERM_DEPOSIT
+        ? (order.depositTenorLabel || 'TD')
+        : order.isin;
+
+    return (
+      <div
+        key={order._id}
+        onClick={() => handleViewDetails(order)}
+        style={{
+          padding: '12px',
+          borderRadius: '10px',
+          background: 'var(--bg-primary)',
+          border: '1px solid var(--border-color)',
+          borderLeft: `3px solid ${statusColor}`,
+          cursor: 'pointer'
+        }}
+      >
+        {/* Reference + status */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+          <span style={{ fontFamily: 'monospace', fontWeight: '600', fontSize: '13px', color: 'var(--text-primary)' }}>
+            {order.orderReference}
+          </span>
+          <span style={{
+            flexShrink: 0,
+            padding: '3px 9px',
+            borderRadius: '12px',
+            fontSize: '10px',
+            fontWeight: '700',
+            textTransform: 'uppercase',
+            background: `color-mix(in srgb, ${statusColor} 13%, transparent)`,
+            color: statusColor
+          }}>
+            {order.effectiveStatusLabel || order.statusLabel}
+          </span>
+        </div>
+
+        {/* Side + security */}
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', marginBottom: '2px' }}>
+          <span style={styles.orderTypeBadge(order.orderType)}>{order.orderType}</span>
+          <span style={{
+            fontWeight: '600',
+            fontSize: '14px',
+            color: 'var(--text-primary)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap'
+          }}>
+            {order.securityName}
+          </span>
+        </div>
+        {secondaryId && (
+          <div style={{ fontSize: '11px', fontFamily: 'monospace', color: 'var(--text-muted)', marginBottom: '8px' }}>
+            {secondaryId}
+          </div>
+        )}
+
+        {/* Size, account, date */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 10px', fontSize: '12px' }}>
+          <div>
+            <span style={{ color: 'var(--text-muted)' }}>Qty </span>
+            <span style={{ color: 'var(--text-primary)', fontWeight: '500' }}>{order.quantityFormatted}</span>
+            {order.currency && <span style={{ color: 'var(--text-muted)' }}> {order.currency}</span>}
+          </div>
+          <div style={{ textAlign: 'right', color: 'var(--text-secondary)' }}>
+            {order.createdAtFormatted}
+          </div>
+          <div style={{
+            gridColumn: '1 / -1',
+            color: 'var(--text-secondary)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap'
+          }}>
+            {order.accountNumber}{order.accountName ? ` · ${order.accountName}` : ''}
+          </div>
+          <div style={{
+            gridColumn: '1 / -1',
+            color: 'var(--text-muted)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap'
+          }}>
+            {order.bankName}
+          </div>
+        </div>
+
+        {/* Footer badges: who validated, evidence completeness */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '10px', flexWrap: 'wrap' }}>
+          <span style={{
+            fontSize: '10px', fontWeight: '600', color: traceColor,
+            padding: '2px 7px', borderRadius: '10px', background: `color-mix(in srgb, ${traceColor} 15%, transparent)`
+          }}>
+            Traces {traceCount}/{maxTraces}
+          </span>
+          {order.tradeMode === 'block' && (
+            <span style={{
+              fontSize: '10px', fontWeight: '600', color: '#8b5cf6',
+              padding: '2px 7px', borderRadius: '10px', background: 'rgba(139,92,246,0.12)'
+            }}>
+              {order.tradeModeLabel || 'Block'}
+            </span>
+          )}
+          {order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT && order.orderType === 'buy' && (
+            <span style={{
+              fontSize: '10px', fontWeight: '600',
+              color: order.termsheetColor || '#6b7280',
+              padding: '2px 7px', borderRadius: '10px',
+              background: `${order.termsheetColor || '#6b7280'}15`
+            }}>
+              TS: {order.termsheetLabel || 'None'}
+            </span>
+          )}
+          {order.validatedByName && (
+            <span style={{ fontSize: '10px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
+              ✓ {order.validatedByName}
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div style={styles.container}>
       <LiquidGlassCard>
@@ -1304,6 +1546,8 @@ const OrderBook = ({ user }) => {
             <h1 style={styles.title}>Order Book</h1>
             <ActionButton
               variant="primary"
+              size={isMobile ? 'large' : 'medium'}
+              fullWidth={isMobile}
               onClick={() => setNewOrderModalOpen(true)}
             >
               + New Order
@@ -1333,7 +1577,7 @@ const OrderBook = ({ user }) => {
                 {activeCount > 0 && (
                   <span style={{
                     fontSize: '11px', fontWeight: '700', color: '#fff',
-                    background: '#3b82f6', padding: '2px 8px', borderRadius: '10px'
+                    background: 'var(--info-color)', padding: '2px 8px', borderRadius: '10px'
                   }}>
                     {activeCount} active
                   </span>
@@ -1455,6 +1699,7 @@ const OrderBook = ({ user }) => {
                   setBankFilter('all');
                   setClientFilter('all');
                   setValidatorFilter('all');
+                  setMissingTermsheetFilter(false);
                   setDateFrom('');
                   setDateTo('');
                 }}
@@ -1476,8 +1721,10 @@ const OrderBook = ({ user }) => {
           {/* Validation Blotter (four-eyes principle) */}
           <ValidationBlotter user={user} onOrderUpdate={loadOrders} />
 
-          {/* Health Check Summary */}
-          {!isLoading && orders.length > 0 && (() => {
+          {/* Health Check Summary — desktop only. It is a back-office triage aid: on a
+              phone the badges wrap into several rows and push the orders themselves off
+              the first screen, and the per-order state is already on each card. */}
+          {!isMobile && !isLoading && orders.length > 0 && (() => {
             const healthStats = orders.reduce((acc, o) => {
               const h = getOrderHealthCheck(o);
               if (h.max > 0 && h.score < h.max) {
@@ -1495,13 +1742,13 @@ const OrderBook = ({ user }) => {
 
             const isAllGood = healthStats.incomplete === 0;
             const trackable = healthStats.complete + healthStats.incomplete;
-            const barColor = isAllGood ? '#10b981' : '#f59e0b';
+            const barColor = isAllGood ? 'var(--gain-color)' : 'var(--warning-color)';
 
             return (
               <div style={{
                 display: 'flex', alignItems: 'center', gap: '10px', padding: '6px 12px',
                 marginBottom: '10px', borderRadius: '8px', fontSize: '12px',
-                background: `${barColor}15`, border: `1px solid ${barColor}40`,
+                background: `color-mix(in srgb, ${barColor} 15%, transparent)`, border: `1px solid color-mix(in srgb, ${barColor} 40%, transparent)`,
                 flexWrap: 'wrap'
               }}>
                 {!isAllGood && (
@@ -1510,7 +1757,7 @@ const OrderBook = ({ user }) => {
                 <span style={{
                   fontWeight: '700', fontSize: '12px', color: barColor,
                   padding: '2px 8px', borderRadius: '10px',
-                  background: `${barColor}25`, flexShrink: 0
+                  background: `color-mix(in srgb, ${barColor} 25%, transparent)`, flexShrink: 0
                 }}>
                   {healthStats.complete}/{trackable}
                 </span>
@@ -1523,8 +1770,8 @@ const OrderBook = ({ user }) => {
                 {topMissing.map(([name, count]) => (
                   <span key={name} style={{
                     padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600',
-                    background: `${barColor}18`, color: barColor,
-                    border: `1px solid ${barColor}30`
+                    background: `color-mix(in srgb, ${barColor} 18%, transparent)`, color: barColor,
+                    border: `1px solid color-mix(in srgb, ${barColor} 30%, transparent)`
                   }}>
                     {name}: {count}
                   </span>
@@ -1545,9 +1792,25 @@ const OrderBook = ({ user }) => {
               <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
                 Create your first order or adjust the filters
               </div>
+              {missingTermsheetFilter && (
+                <div style={{ marginTop: '1rem' }}>
+                  <ActionButton
+                    variant="secondary"
+                    size="small"
+                    onClick={() => { setMissingTermsheetFilter(false); setCurrentPage(1); }}
+                  >
+                    Clear termsheet filter
+                  </ActionButton>
+                </div>
+              )}
             </div>
           ) : (
             <>
+              {isMobile ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {orders.map(renderOrderCard)}
+                </div>
+              ) : (
               <div style={{ overflowX: 'auto' }}>
                 <table style={styles.table}>
                   <thead>
@@ -1568,7 +1831,21 @@ const OrderBook = ({ user }) => {
                       <SortableHeader field="executedPrice" label="Exec Price" />
                       <SortableHeader field="broker" label="Broker" />
                       <SortableHeader field="settlementCurrency" label="Settl. Ccy" />
-                      <th style={styles.th} title="Termsheet">TS</th>
+                      <th
+                        style={{
+                          ...styles.th,
+                          cursor: 'pointer',
+                          userSelect: 'none',
+                          whiteSpace: 'nowrap',
+                          color: missingTermsheetFilter ? 'var(--warning-color)' : styles.th.color
+                        }}
+                        title={missingTermsheetFilter
+                          ? 'Showing only structured products with a missing termsheet — click to show all'
+                          : 'Termsheet — click to show only structured products with a missing termsheet'}
+                        onClick={() => { setMissingTermsheetFilter(v => !v); setCurrentPage(1); }}
+                      >
+                        TS{missingTermsheetFilter && <span style={{ fontSize: '10px' }}> ●</span>}
+                      </th>
                       <SortableHeader field="bulkOrderGroupId" label="Ind/Bloc" />
                       <th style={styles.th}>Traces</th>
                     </tr>
@@ -1712,7 +1989,7 @@ const OrderBook = ({ user }) => {
                           <span style={{ fontSize: '12px' }}>{order.settlementCurrency || ''}</span>
                         </td>
                         <td style={styles.td} onClick={(e) => e.stopPropagation()}>
-                          {order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? (
+                          {order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT && order.orderType === 'buy' ? (
                             <span
                               style={{
                                 fontSize: '11px',
@@ -1750,7 +2027,7 @@ const OrderBook = ({ user }) => {
                             const traces = order.emailTraces || [];
                             const traceCount = traces.filter(t => validTypes.has(t.traceType) && !TERMSHEET_TRACE_TYPES.has(t.traceType)).length;
                             const maxTraces = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 4 : 3;
-                            const color = traceCount === maxTraces ? '#10b981' : traceCount > 0 ? '#f59e0b' : 'var(--text-muted)';
+                            const color = traceCount === maxTraces ? 'var(--gain-color)' : traceCount > 0 ? 'var(--warning-color)' : 'var(--text-muted)';
                             const hasClientOrderTrace = traces.some(t => t.traceType === EMAIL_TRACE_TYPES.CLIENT_ORDER);
                             const showDeferred = order.clientOrderDeferred && !hasClientOrderTrace;
                             return (
@@ -1761,7 +2038,7 @@ const OrderBook = ({ user }) => {
                                   color,
                                   padding: '2px 8px',
                                   borderRadius: '10px',
-                                  background: `${color}15`
+                                  background: `color-mix(in srgb, ${color} 15%, transparent)`
                                 }}>
                                   {traceCount}/{maxTraces}
                                 </span>
@@ -1787,6 +2064,7 @@ const OrderBook = ({ user }) => {
                   </tbody>
                 </table>
               </div>
+              )}
 
               {/* Pagination */}
               <div style={styles.pagination}>
@@ -1796,7 +2074,8 @@ const OrderBook = ({ user }) => {
                 <div style={styles.pageButtons}>
                   <ActionButton
                     variant="secondary"
-                    size="small"
+                    size={isMobile ? 'large' : 'small'}
+                    fullWidth={isMobile}
                     disabled={currentPage === 1}
                     onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                   >
@@ -1804,7 +2083,8 @@ const OrderBook = ({ user }) => {
                   </ActionButton>
                   <ActionButton
                     variant="secondary"
-                    size="small"
+                    size={isMobile ? 'large' : 'small'}
+                    fullWidth={isMobile}
                     disabled={currentPage >= totalPages}
                     onClick={() => setCurrentPage(p => p + 1)}
                   >
@@ -1828,29 +2108,34 @@ const OrderBook = ({ user }) => {
         size="medium"
         footer={selectedOrder && (
           <>
-            <ActionButton
-              variant="secondary"
-              size="small"
-              disabled={loadingPDF === selectedOrder.order._id || selectedOrder.order.status === ORDER_STATUSES.PENDING_VALIDATION}
-              onClick={() => handleGeneratePDF(selectedOrder.order)}
-            >
-              {loadingPDF === selectedOrder.order._id ? '...' : 'PDF'}
-            </ActionButton>
-            <ActionButton
-              variant="secondary"
-              size="small"
-              disabled={loadingAuditPDF === selectedOrder.order._id}
-              onClick={() => handleGenerateAuditTrail(selectedOrder.order)}
-            >
-              {loadingAuditPDF === selectedOrder.order._id ? '...' : 'Audit Trail'}
-            </ActionButton>
+            {/* PDF / Audit Trail exports are desktop-only — not useful on a phone */}
+            {!isMobile && (
+              <>
+                <ActionButton
+                  variant="secondary"
+                  size={detailBtnSize}
+                  disabled={loadingPDF === selectedOrder.order._id || selectedOrder.order.status === ORDER_STATUSES.PENDING_VALIDATION}
+                  onClick={() => handleGeneratePDF(selectedOrder.order)}
+                >
+                  {loadingPDF === selectedOrder.order._id ? '...' : 'PDF'}
+                </ActionButton>
+                <ActionButton
+                  variant="secondary"
+                  size={detailBtnSize}
+                  disabled={loadingAuditPDF === selectedOrder.order._id}
+                  onClick={() => handleGenerateAuditTrail(selectedOrder.order)}
+                >
+                  {loadingAuditPDF === selectedOrder.order._id ? '...' : 'Audit Trail'}
+                </ActionButton>
+              </>
+            )}
             {selectedOrder.order.status !== ORDER_STATUSES.CANCELLED &&
              selectedOrder.order.status !== ORDER_STATUSES.EXECUTED && (
               <>
                 {selectedOrder.order.status !== ORDER_STATUSES.PENDING_VALIDATION && (
                   <ActionButton
                     variant="secondary"
-                    size="small"
+                    size={detailBtnSize}
                     disabled={loadingEmail === selectedOrder.order._id}
                     onClick={() => handleSendEmail(selectedOrder.order)}
                   >
@@ -1860,23 +2145,24 @@ const OrderBook = ({ user }) => {
                 {(selectedOrder.order.status === ORDER_STATUSES.PENDING || selectedOrder.order.status === ORDER_STATUSES.SENT) && (
                   <ActionButton
                     variant="secondary"
-                    size="small"
+                    size={detailBtnSize}
                     onClick={() => {
                       setDetailModalOpen(false);
                       openLimitModal(selectedOrder.order);
                     }}
-                    style={{ color: '#f59e0b' }}
+                    style={{ color: 'var(--warning-color)' }}
                   >
                     Modify
                   </ActionButton>
                 )}
                 {selectedOrder.order.status !== ORDER_STATUSES.PENDING_VALIDATION && (() => {
                   const needsTermsheet = selectedOrder.order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT
+                    && selectedOrder.order.orderType === 'buy'
                     && selectedOrder.order.termsheetStatus !== TERMSHEET_STATUSES.SIGNED;
                   return (
                     <ActionButton
                       variant="success"
-                      size="small"
+                      size={detailBtnSize}
                       disabled={needsTermsheet}
                       title={needsTermsheet ? 'Upload the final signed termsheet before marking this structured product as executed' : undefined}
                       onClick={() => {
@@ -1892,7 +2178,7 @@ const OrderBook = ({ user }) => {
                 {(selectedOrder.order.status === ORDER_STATUSES.PENDING || selectedOrder.order.status === ORDER_STATUSES.PENDING_VALIDATION) && (
                   <ActionButton
                     variant="danger"
-                    size="small"
+                    size={detailBtnSize}
                     onClick={() => {
                       setDetailModalOpen(false);
                       setDeleteModalOpen(true);
@@ -1903,7 +2189,7 @@ const OrderBook = ({ user }) => {
                 )}
               </>
             )}
-            <ActionButton variant="secondary" size="small" onClick={() => setDetailModalOpen(false)}>
+            <ActionButton variant="secondary" size={detailBtnSize} onClick={() => setDetailModalOpen(false)}>
               Close
             </ActionButton>
           </>
@@ -2014,7 +2300,7 @@ const OrderBook = ({ user }) => {
                       <span style={{
                         ...styles.detailValue,
                         fontWeight: '600',
-                        color: selectedOrder.order.depositAction === 'increase' ? '#10b981' : '#ef4444'
+                        color: selectedOrder.order.depositAction === 'increase' ? 'var(--gain-color)' : 'var(--loss-color)'
                       }}>
                         {selectedOrder.order.depositAction === 'increase' ? 'Increase' : 'Decrease'}
                       </span>
@@ -2040,7 +2326,7 @@ const OrderBook = ({ user }) => {
                   )}
                 </>
               )}
-              {selectedOrder.order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT && (
+              {selectedOrder.order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT && selectedOrder.order.orderType === 'buy' && (
                 <div style={styles.detailRow}>
                   <span style={styles.detailLabel}>Termsheet</span>
                   <span style={styles.detailValue}>
@@ -2190,7 +2476,7 @@ const OrderBook = ({ user }) => {
                 <div style={styles.detailTitle}>Settlement</div>
                 <div style={styles.detailRow}>
                   <span style={styles.detailLabel}>Status</span>
-                  <span style={{ ...styles.detailValue, fontWeight: '600', color: selectedOrder.order.settlementStatus === 'settled' ? '#10b981' : selectedOrder.order.settlementStatus === 'forced' ? '#6366f1' : '#f59e0b' }}>
+                  <span style={{ ...styles.detailValue, fontWeight: '600', color: selectedOrder.order.settlementStatus === 'settled' ? 'var(--gain-color)' : selectedOrder.order.settlementStatus === 'forced' ? '#6366f1' : 'var(--warning-color)' }}>
                     {selectedOrder.order.settlementStatus === 'settled' ? 'Settled' : selectedOrder.order.settlementStatus === 'forced' ? 'Forced' : 'Pending'}
                   </span>
                 </div>
@@ -2219,7 +2505,8 @@ const OrderBook = ({ user }) => {
               </div>
             )}
 
-            {/* Audit Trail */}
+            {/* Audit Trail — desktop-only */}
+            {!isMobile && (
             <div style={styles.detailSection}>
               <div style={styles.detailTitle}>Audit Trail</div>
               <div style={styles.detailRow}>
@@ -2247,6 +2534,9 @@ const OrderBook = ({ user }) => {
                   <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '6px', fontWeight: '600', letterSpacing: '0.5px' }}>
                     Execution Price Updates
                   </div>
+                  {/* Scrolls itself rather than widening the sheet, as the sibling
+                      Limit Modification History table already does. */}
+                  <div style={{ overflowX: 'auto' }}>
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
                     <thead>
                       <tr>
@@ -2267,14 +2557,16 @@ const OrderBook = ({ user }) => {
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 </div>
               )}
             </div>
+            )}
 
             {/* Rejection Info */}
             {selectedOrder.order.rejectedByName && (
               <div style={styles.detailSection}>
-                <div style={{ ...styles.detailTitle, color: '#ef4444' }}>Rejection</div>
+                <div style={{ ...styles.detailTitle, color: 'var(--loss-color)' }}>Rejection</div>
                 <div style={styles.detailRow}>
                   <span style={styles.detailLabel}>Rejected By</span>
                   <span style={styles.detailValue}>{selectedOrder.order.rejectedByName}</span>
@@ -2410,10 +2702,10 @@ const OrderBook = ({ user }) => {
                           padding: '6px 14px',
                           fontSize: '12px',
                           fontWeight: '500',
-                          border: '1px solid #10b981',
+                          border: '1px solid var(--gain-color)',
                           borderRadius: '6px',
                           background: 'rgba(16, 185, 129, 0.1)',
-                          color: '#10b981',
+                          color: 'var(--gain-color)',
                           cursor: 'pointer'
                         }}
                         onClick={async () => {
@@ -2436,6 +2728,8 @@ const OrderBook = ({ user }) => {
                 any evidence. We still surface traces captured before rejection (read-only),
                 but hide the section entirely when there are none. */}
             {(() => {
+            // Trace management (drag & drop uploads, phone logs) is desktop-only.
+            if (isMobile) return null;
             const isRejected = selectedOrder.order.status === ORDER_STATUSES.REJECTED;
             const existingTraces = selectedOrder.order.emailTraces || [];
             if (isRejected && existingTraces.length === 0) return null;
@@ -2446,22 +2740,32 @@ const OrderBook = ({ user }) => {
                 {Object.values(EMAIL_TRACE_TYPES)
                   .filter(traceType => {
                     const isStructuredProduct = selectedOrder.order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT;
+                    // Sell orders never require a termsheet.
+                    const needsTermsheet = isStructuredProduct && selectedOrder.order.orderType === 'buy';
                     // Legacy split tiles — replaced by the unified TERMSHEET tile.
                     if (traceType === EMAIL_TRACE_TYPES.TERMSHEET_SENT) return false;
                     if (traceType === EMAIL_TRACE_TYPES.TERMSHEET_SIGNED) return false;
                     // Rejected orders: only show tiles for traces already captured — never
                     // render an empty dropzone prompting for evidence on a dead order.
                     if (isRejected) return existingTraces.some(t => t.traceType === traceType);
-                    // Order-to-issuer and all termsheet tiles only apply to structured products.
-                    if (TERMSHEET_TRACE_TYPES.has(traceType)) return isStructuredProduct;
+                    // Termsheet tiles only apply to buy structured products.
+                    if (TERMSHEET_TRACE_TYPES.has(traceType)) return needsTermsheet;
                     if (traceType === EMAIL_TRACE_TYPES.ORDER_TO_ISSUER) return isStructuredProduct;
                     return true;
                   })
                   .map(traceType => {
                   const traces = selectedOrder.order.emailTraces || [];
-                  const trace = traces.find(t => t.traceType === traceType);
+                  // The "Signed Termsheet" tile is unified with the TS status indicator:
+                  // it shows the signed evidence uploaded via the status chip
+                  // (termsheet_signed) or a legacy 'termsheet' upload, and uploading
+                  // here advances the TS status to Signed.
+                  const isTermsheetTile = traceType === EMAIL_TRACE_TYPES.TERMSHEET;
+                  const trace = isTermsheetTile
+                    ? (traces.find(t => t.traceType === EMAIL_TRACE_TYPES.TERMSHEET_SIGNED)
+                      || traces.find(t => t.traceType === EMAIL_TRACE_TYPES.TERMSHEET))
+                    : traces.find(t => t.traceType === traceType);
                   const isUploading = uploadingTrace === traceType;
-                  const isPhoneMode = !!tracePhoneForms[traceType];
+                  const isPhoneMode = !isTermsheetTile && !!tracePhoneForms[traceType];
 
                   return (
                     <div
@@ -2469,7 +2773,7 @@ const OrderBook = ({ user }) => {
                       style={{
                         flex: '1 1 0',
                         minWidth: '200px',
-                        border: trace ? '2px solid #10b981' : '2px dashed var(--border-color)',
+                        border: trace ? '2px solid var(--gain-color)' : '2px dashed var(--border-color)',
                         borderRadius: '8px',
                         padding: '12px',
                         textAlign: 'center',
@@ -2489,17 +2793,32 @@ const OrderBook = ({ user }) => {
                         if (isPhoneMode) return;
                         e.preventDefault();
                         e.stopPropagation();
-                        e.currentTarget.style.borderColor = trace ? '#10b981' : 'var(--border-color)';
+                        e.currentTarget.style.borderColor = trace ? 'var(--gain-color)' : 'var(--border-color)';
                         e.currentTarget.style.background = trace ? 'rgba(16, 185, 129, 0.05)' : 'var(--bg-primary)';
                       }}
                       onDrop={(e) => {
                         if (isPhoneMode) { e.preventDefault(); return; }
+                        if (isTermsheetTile) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          e.currentTarget.style.borderColor = trace ? 'var(--gain-color)' : 'var(--border-color)';
+                          e.currentTarget.style.background = trace ? 'rgba(16, 185, 129, 0.05)' : 'var(--bg-primary)';
+                          const file = (e.dataTransfer.files && e.dataTransfer.files[0])
+                            || [...(e.dataTransfer.items || [])].filter(i => i.kind === 'file').map(i => i.getAsFile()).find(Boolean);
+                          if (file) handleSignedTermsheetUpload(file, selectedOrder.order._id);
+                          return;
+                        }
                         handleDropTrace(e, traceType, selectedOrder.order._id);
                       }}
                     >
-                      <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+                      <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: isTermsheetTile ? '2px' : '8px', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
                         {EMAIL_TRACE_LABELS[traceType]}
                       </div>
+                      {isTermsheetTile && (
+                        <div style={{ fontSize: '9px', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                          Evidence of client signature — linked to the TS status
+                        </div>
+                      )}
 
                       {isUploading ? (
                         <div style={{ fontSize: '12px', color: '#0ea5e9' }}>Saving...</div>
@@ -2507,7 +2826,7 @@ const OrderBook = ({ user }) => {
                         trace.traceMode === 'phone' ? (
                           /* Phone trace completed */
                           <div>
-                            <div style={{ fontSize: '18px', marginBottom: '4px', color: '#10b981' }}>&#9742; &#10003;</div>
+                            <div style={{ fontSize: '18px', marginBottom: '4px', color: 'var(--gain-color)' }}>&#9742; &#10003;</div>
                             <div style={{ fontSize: '11px', color: 'var(--text-primary)', marginBottom: '2px' }}>
                               {trace.phoneCaller} &rarr; {trace.phoneCallee}
                             </div>
@@ -2521,7 +2840,7 @@ const OrderBook = ({ user }) => {
                             )}
                             <div style={{ display: 'flex', gap: '4px', justifyContent: 'center' }}>
                               <button
-                                style={{ padding: '3px 8px', fontSize: '10px', border: '1px solid #ef4444', borderRadius: '4px', background: 'transparent', color: '#ef4444', cursor: 'pointer' }}
+                                style={{ padding: '3px 8px', fontSize: '10px', border: '1px solid var(--loss-color)', borderRadius: '4px', background: 'transparent', color: 'var(--loss-color)', cursor: 'pointer' }}
                                 onClick={(e) => { e.stopPropagation(); handleDeleteTrace(selectedOrder.order._id, trace._id); }}
                               >
                                 Remove
@@ -2531,13 +2850,18 @@ const OrderBook = ({ user }) => {
                         ) : (
                           /* File trace completed */
                           <div>
-                            <div style={{ fontSize: '18px', marginBottom: '4px', color: '#10b981' }}>&#10003;</div>
+                            <div style={{ fontSize: '18px', marginBottom: '4px', color: 'var(--gain-color)' }}>&#10003;</div>
                             <div style={{ fontSize: '11px', color: 'var(--text-primary)', wordBreak: 'break-all', marginBottom: '6px' }}>
                               {trace.fileName}
                             </div>
                             <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '8px' }}>
                               {new Date(trace.uploadedAt).toLocaleDateString()}
                             </div>
+                            {isTermsheetTile && (
+                              <div style={{ fontSize: '10px', fontWeight: '600', color: selectedOrder.order.termsheetColor || '#6b7280', marginBottom: '8px' }}>
+                                TS status: {selectedOrder.order.termsheetLabel || 'None'}
+                              </div>
+                            )}
                             <div style={{ display: 'flex', gap: '4px', justifyContent: 'center' }}>
                               <button
                                 style={{ padding: '3px 8px', fontSize: '10px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-secondary)', cursor: 'pointer' }}
@@ -2546,7 +2870,7 @@ const OrderBook = ({ user }) => {
                                 Download
                               </button>
                               <button
-                                style={{ padding: '3px 8px', fontSize: '10px', border: '1px solid #ef4444', borderRadius: '4px', background: 'transparent', color: '#ef4444', cursor: 'pointer' }}
+                                style={{ padding: '3px 8px', fontSize: '10px', border: '1px solid var(--loss-color)', borderRadius: '4px', background: 'transparent', color: 'var(--loss-color)', cursor: 'pointer' }}
                                 onClick={(e) => { e.stopPropagation(); handleDeleteTrace(selectedOrder.order._id, trace._id); }}
                               >
                                 Remove
@@ -2555,8 +2879,9 @@ const OrderBook = ({ user }) => {
                           </div>
                         )
                       ) : (
-                        /* Empty state with file/phone toggle */
+                        /* Empty state with file/phone toggle (signed termsheet is file-only) */
                         <div>
+                          {!isTermsheetTile && (
                           <div style={{ display: 'flex', justifyContent: 'center', gap: '4px', marginBottom: '8px' }}>
                             <button
                               onClick={() => setTracePhoneForms(prev => { const n = {...prev}; delete n[traceType]; return n; })}
@@ -2582,6 +2907,7 @@ const OrderBook = ({ user }) => {
                               }}
                             >Phone</button>
                           </div>
+                          )}
 
                           {isPhoneMode ? (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', textAlign: 'left' }}>
@@ -2611,14 +2937,14 @@ const OrderBook = ({ user }) => {
                               </div>
                               <button
                                 onClick={() => handleSavePhoneTrace(traceType, selectedOrder.order._id)}
-                                style={{ marginTop: '4px', padding: '5px', fontSize: '11px', fontWeight: '600', background: '#10b981', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+                                style={{ marginTop: '4px', padding: '5px', fontSize: '11px', fontWeight: '600', background: 'var(--gain-color)', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
                               >Save</button>
                             </div>
                           ) : (
                             <div>
                               <div style={{ fontSize: '22px', marginBottom: '4px', opacity: 0.3 }}>&#128233;</div>
                               <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '6px' }}>
-                                Drop file here
+                                {isTermsheetTile ? 'Drop the signed termsheet here — sets TS status to Signed' : 'Drop file here'}
                               </div>
                               <label style={{
                                 padding: '4px 14px', fontSize: '11px', fontWeight: '500',
@@ -2629,11 +2955,15 @@ const OrderBook = ({ user }) => {
                                 Browse
                                 <input
                                   type="file"
-                                  accept=".msg,.eml,.pdf,.jpg,.jpeg,.png,.gif,.html"
+                                  accept={isTermsheetTile ? TERMSHEET_EVIDENCE_TYPES.join(',') : ".msg,.eml,.pdf,.jpg,.jpeg,.png,.gif,.html"}
                                   style={{ display: 'none' }}
                                   onChange={(e) => {
                                     if (e.target.files && e.target.files.length > 0) {
-                                      handleTraceFile(e.target.files[0], traceType, selectedOrder.order._id);
+                                      if (isTermsheetTile) {
+                                        handleSignedTermsheetUpload(e.target.files[0], selectedOrder.order._id);
+                                      } else {
+                                        handleTraceFile(e.target.files[0], traceType, selectedOrder.order._id);
+                                      }
                                       e.target.value = '';
                                     }
                                   }}
@@ -2648,7 +2978,7 @@ const OrderBook = ({ user }) => {
                 })}
               </div>
               {traceError && (
-                <div style={{ marginTop: '8px', padding: '8px 12px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: '#ef4444', fontSize: '12px' }}>
+                <div style={{ marginTop: '8px', padding: '8px 12px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: 'var(--loss-color)', fontSize: '12px' }}>
                   {traceError}
                 </div>
               )}
@@ -2713,7 +3043,7 @@ const OrderBook = ({ user }) => {
           />
         </div>
         {actionError && (
-          <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: '#ef4444', fontSize: '13px' }}>
+          <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: 'var(--loss-color)', fontSize: '13px' }}>
             {actionError}
           </div>
         )}
@@ -2809,7 +3139,7 @@ const OrderBook = ({ user }) => {
           />
         </div>
         {actionError && (
-          <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: '#ef4444', fontSize: '13px' }}>
+          <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: 'var(--loss-color)', fontSize: '13px' }}>
             {actionError}
           </div>
         )}
@@ -2914,7 +3244,7 @@ const OrderBook = ({ user }) => {
               </div>
             )}
             {actionError && (
-              <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: '#ef4444', fontSize: '13px' }}>
+              <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: 'var(--loss-color)', fontSize: '13px' }}>
                 {actionError}
               </div>
             )}
@@ -2968,7 +3298,7 @@ const OrderBook = ({ user }) => {
           </p>
         </div>
         {actionError && (
-          <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: '#ef4444', fontSize: '13px' }}>
+          <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: 'var(--loss-color)', fontSize: '13px' }}>
             {actionError}
           </div>
         )}
@@ -3060,7 +3390,7 @@ const OrderBook = ({ user }) => {
                 </div>
               )}
               <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500', color: '#ef4444' }}>
+                <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500', color: 'var(--loss-color)' }}>
                   Stop Loss
                 </label>
                 <FormattedNumberInput
@@ -3076,7 +3406,7 @@ const OrderBook = ({ user }) => {
                 />
               </div>
               <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500', color: '#10b981' }}>
+                <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500', color: 'var(--gain-color)' }}>
                   Take Profit
                 </label>
                 <FormattedNumberInput
@@ -3118,7 +3448,7 @@ const OrderBook = ({ user }) => {
               </label>
               <div
                 style={{
-                  border: limitInstructionFile ? '2px solid #10b981' : '2px dashed var(--border-color)',
+                  border: limitInstructionFile ? '2px solid var(--gain-color)' : '2px dashed var(--border-color)',
                   borderRadius: '8px', padding: '14px', textAlign: 'center',
                   cursor: 'pointer',
                   background: limitInstructionFile ? 'rgba(16, 185, 129, 0.05)' : 'var(--bg-primary)',
@@ -3150,12 +3480,12 @@ const OrderBook = ({ user }) => {
                 {limitInstructionFile ? (
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
                     <span style={{ fontSize: '14px' }}>📎</span>
-                    <span style={{ fontSize: '13px', fontWeight: '600', color: '#10b981' }}>{limitInstructionFile.name}</span>
+                    <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--gain-color)' }}>{limitInstructionFile.name}</span>
                     <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                       ({(limitInstructionFile.size / 1024).toFixed(0)} KB)
                     </span>
                     <button
-                      style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '14px', padding: '2px 6px' }}
+                      style={{ background: 'none', border: 'none', color: 'var(--loss-color)', cursor: 'pointer', fontSize: '14px', padding: '2px 6px' }}
                       onClick={(e) => { e.stopPropagation(); setLimitInstructionFile(null); }}
                     >
                       ✕
@@ -3175,7 +3505,7 @@ const OrderBook = ({ user }) => {
             </div>
 
             {actionError && (
-              <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: '#ef4444', fontSize: '13px' }}>
+              <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: 'var(--loss-color)', fontSize: '13px' }}>
                 {actionError}
               </div>
             )}
@@ -3262,6 +3592,51 @@ const OrderBook = ({ user }) => {
             ? 'Attach the signed termsheet (PDF) returned by the client.'
             : 'Attach the email sent to the client (.eml or .msg) or a PDF of the termsheet that was sent.'}
         </p>
+        {termsheetEvidenceModal?.existingTraces?.length > 0 && (() => {
+          const targetTypes = termsheetEvidenceModal.targetStatus === TERMSHEET_STATUSES.SIGNED
+            ? [EMAIL_TRACE_TYPES.TERMSHEET_SIGNED, EMAIL_TRACE_TYPES.TERMSHEET]
+            : [EMAIL_TRACE_TYPES.TERMSHEET_SENT];
+          const willReplace = termsheetEvidenceModal.existingTraces.some(t => targetTypes.includes(t.traceType));
+          return (
+            <div style={{ marginBottom: '12px', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '10px', background: 'var(--bg-secondary)' }}>
+              <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: '6px' }}>
+                Termsheet files already on this order
+              </div>
+              {termsheetEvidenceModal.existingTraces.map(t => (
+                <div key={t._id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', padding: '3px 0' }}>
+                  <span style={{ color: 'var(--text-muted)', minWidth: '110px', flexShrink: 0 }}>
+                    {EMAIL_TRACE_LABELS[t.traceType] || t.traceType}
+                  </span>
+                  <a
+                    href="#"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      handleDownloadTrace(termsheetEvidenceModal.orderId, t._id, t.fileName);
+                    }}
+                    style={{ color: '#0ea5e9', textDecoration: 'underline', flex: 1, wordBreak: 'break-all' }}
+                  >
+                    {t.fileName}
+                  </a>
+                  <span style={{ color: 'var(--text-muted)', fontSize: '11px', flexShrink: 0 }}>
+                    {t.uploadedAt ? new Date(t.uploadedAt).toLocaleDateString() : ''}
+                  </span>
+                  <button
+                    onClick={() => handleDeleteEvidenceTrace(t._id)}
+                    disabled={termsheetEvidenceUploading}
+                    style={{ padding: '2px 8px', fontSize: '10px', border: '1px solid var(--loss-color)', borderRadius: '4px', background: 'transparent', color: 'var(--loss-color)', cursor: 'pointer', flexShrink: 0 }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              ))}
+              {willReplace && (
+                <div style={{ fontSize: '11px', color: 'var(--warning-color)', marginTop: '6px' }}>
+                  Uploading a new file will automatically replace the existing one for this step.
+                </div>
+              )}
+            </div>
+          );
+        })()}
         <div
           onDragOver={(e) => {
             e.preventDefault();
@@ -3343,7 +3718,7 @@ const OrderBook = ({ user }) => {
           </div>
         )}
         {termsheetEvidenceError && (
-          <div style={{ fontSize: '12px', color: '#ef4444', marginTop: '8px' }}>
+          <div style={{ fontSize: '12px', color: 'var(--loss-color)', marginTop: '8px' }}>
             {termsheetEvidenceError}
           </div>
         )}

@@ -275,8 +275,8 @@ const CronJobsDashboard = ({ user }) => {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1rem' }}>
         {schedule.map((job) => {
           const jobStats = stats[job.name] || {};
-          const statusColor = jobStats.lastRun?.status === 'success' ? '#10b981' :
-                            jobStats.lastRun?.status === 'error' ? '#ef4444' : '#6b7280';
+          const statusColor = jobStats.lastRun?.status === 'success' ? 'var(--gain-color)' :
+                            jobStats.lastRun?.status === 'error' ? 'var(--loss-color)' : '#6b7280';
 
           return (
             <div
@@ -362,7 +362,7 @@ const CronJobsDashboard = ({ user }) => {
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Total</div>
                   </div>
                   <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: '1.2rem', fontWeight: '600', color: '#10b981' }}>
+                    <div style={{ fontSize: '1.2rem', fontWeight: '600', color: 'var(--gain-color)' }}>
                       {jobStats.successRate?.toFixed(0)}%
                     </div>
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Success</div>
@@ -547,19 +547,19 @@ const CronJobsDashboard = ({ user }) => {
                               borderRadius: '12px',
                               fontSize: '0.75rem',
                               fontWeight: '600',
-                              background: log.skipped ? '#f59e0b20' :
-                                        log.status === 'success' ? '#10b98120' :
-                                        log.status === 'error' ? '#ef444420' : '#6b728020',
-                              color: log.skipped ? '#f59e0b' :
-                                    log.status === 'success' ? '#10b981' :
-                                    log.status === 'error' ? '#ef4444' : '#6b7280'
+                              background: log.skipped ? 'color-mix(in srgb, var(--warning-color) 13%, transparent)' :
+                                        log.status === 'success' ? 'color-mix(in srgb, var(--gain-color) 13%, transparent)' :
+                                        log.status === 'error' ? 'color-mix(in srgb, var(--loss-color) 13%, transparent)' : '#6b728020',
+                              color: log.skipped ? 'var(--warning-color)' :
+                                    log.status === 'success' ? 'var(--gain-color)' :
+                                    log.status === 'error' ? 'var(--loss-color)' : '#6b7280'
                             }}>
                               {log.skipped ? '⏭ Skipped' :
                                log.status === 'success' ? '✓ Success' :
                                log.status === 'error' ? '✗ Error' : '● Running'}
                             </span>
                             {log.skipReason && (
-                              <div style={{ fontSize: '0.7rem', color: '#f59e0b', marginTop: '0.25rem' }}>
+                              <div style={{ fontSize: '0.7rem', color: 'var(--warning-color)', marginTop: '0.25rem' }}>
                                 {log.skipReason}
                               </div>
                             )}
@@ -583,7 +583,7 @@ const CronJobsDashboard = ({ user }) => {
                               <span>
                                 {log.tickersSucceeded || 0}/{log.tickersProcessed || 0} tickers
                                 {log.tickersFailed > 0 && (
-                                  <span style={{ color: '#ef4444', marginLeft: '0.5rem' }}>
+                                  <span style={{ color: 'var(--loss-color)', marginLeft: '0.5rem' }}>
                                     ({log.tickersFailed} failed)
                                   </span>
                                 )}
@@ -592,12 +592,12 @@ const CronJobsDashboard = ({ user }) => {
                               <span>
                                 {log.connectionsSucceeded || 0}/{log.connectionsProcessed || 0} connections
                                 {log.connectionsFailed > 0 && (
-                                  <span style={{ color: '#ef4444', marginLeft: '0.5rem' }}>
+                                  <span style={{ color: 'var(--loss-color)', marginLeft: '0.5rem' }}>
                                     ({log.connectionsFailed} failed)
                                   </span>
                                 )}
                                 {log.filesDownloaded > 0 && (
-                                  <span style={{ color: '#10b981', marginLeft: '0.5rem' }}>
+                                  <span style={{ color: 'var(--gain-color)', marginLeft: '0.5rem' }}>
                                     ({log.filesDownloaded} files)
                                   </span>
                                 )}
@@ -606,7 +606,7 @@ const CronJobsDashboard = ({ user }) => {
                               <span>
                                 {log.trackersSucceeded || 0}/{log.trackersProcessed || 0} trackers
                                 {log.trackersFailed > 0 && (
-                                  <span style={{ color: '#ef4444', marginLeft: '0.5rem' }}>
+                                  <span style={{ color: 'var(--loss-color)', marginLeft: '0.5rem' }}>
                                     ({log.trackersFailed} failed)
                                   </span>
                                 )}
@@ -615,7 +615,7 @@ const CronJobsDashboard = ({ user }) => {
                               <span>
                                 {log.tickersCached || 0}/{log.tickersProcessed || 0} tickers
                                 {log.tickersFailed > 0 && (
-                                  <span style={{ color: '#ef4444', marginLeft: '0.5rem' }}>
+                                  <span style={{ color: 'var(--loss-color)', marginLeft: '0.5rem' }}>
                                     ({log.tickersFailed} failed)
                                   </span>
                                 )}
@@ -624,7 +624,7 @@ const CronJobsDashboard = ({ user }) => {
                               <span>
                                 {log.settled || 0}/{log.checked || 0} settled
                                 {log.total > log.checked && (
-                                  <span style={{ color: '#f59e0b', marginLeft: '0.5rem' }}>
+                                  <span style={{ color: 'var(--warning-color)', marginLeft: '0.5rem' }}>
                                     ({log.total - log.checked} skipped)
                                   </span>
                                 )}
@@ -633,12 +633,12 @@ const CronJobsDashboard = ({ user }) => {
                               <span>
                                 {log.productsSucceeded || 0}/{log.productsProcessed || 0} products
                                 {log.productsFailed > 0 && (
-                                  <span style={{ color: '#ef4444', marginLeft: '0.5rem' }}>
+                                  <span style={{ color: 'var(--loss-color)', marginLeft: '0.5rem' }}>
                                     ({log.productsFailed} failed)
                                   </span>
                                 )}
                                 {log.productsWithStaleData > 0 && (
-                                  <span style={{ color: '#f59e0b', marginLeft: '0.5rem' }}>
+                                  <span style={{ color: 'var(--warning-color)', marginLeft: '0.5rem' }}>
                                     ({log.productsWithStaleData} stale data)
                                   </span>
                                 )}

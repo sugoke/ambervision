@@ -134,7 +134,7 @@ const PasswordReset = ({ token, onComplete }) => {
         justifyContent: 'center',
         background: isDark
           ? 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)'
-          : 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+          : 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
         padding: '20px',
         boxSizing: 'border-box'
       }}>
@@ -152,7 +152,7 @@ const PasswordReset = ({ token, onComplete }) => {
           <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>✓</div>
           <h2 style={{
             margin: '0 0 1rem 0',
-            color: isDark ? '#10b981' : '#059669',
+            color: isDark ? 'var(--gain-color)' : '#059669',
             fontSize: '1.5rem',
             fontWeight: '700'
           }}>
@@ -210,7 +210,7 @@ const PasswordReset = ({ token, onComplete }) => {
           <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>❌</div>
           <h2 style={{
             margin: '0 0 1rem 0',
-            color: isDark ? '#ef4444' : '#dc2626',
+            color: isDark ? 'var(--loss-color)' : '#dc2626',
             fontSize: '1.5rem',
             fontWeight: '700'
           }}>

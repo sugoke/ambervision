@@ -31,6 +31,9 @@
     "LOGO_DEV_API_TOKEN": "your_logo_dev_api_token_here",
     "ANTHROPIC_API_KEY": "your_anthropic_api_key_here",
 
+    "_comment_telekurs": "Shared secret for the Telekurs.xlsx price-push endpoint (POST /api/telekurs/quotes). The Excel VBA macro sends this in the X-API-Key header. Use any long random string.",
+    "TELEKURS_API_KEY": "your_random_telekurs_secret_here",
+
     "_comment_cbonds": "CBonds API configuration for bond price queries",
     "CBONDS_API_LOGIN": "your_cbonds_login_here",
     "CBONDS_API_PASSWORD": "your_cbonds_password_here",

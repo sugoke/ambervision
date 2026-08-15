@@ -155,6 +155,9 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
 
     // Build query filter based on role and viewAsFilter
     let queryFilter = { isActive: true };
+    // Entity this view is drilled into. A demo client's fictional holdings are hidden
+    // from every other path, so this is what lets the demo portfolio render at all.
+    let scopedEntityId = null;
 
     const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE;
     const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
@@ -174,6 +177,7 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
           console.log('[PMS_HOLDINGS] Entity is archived, returning empty:', viewAsFilter.id);
           return this.ready();
         }
+        scopedEntityId = entity._id;
         // For RMs, verify they manage this entity
         if (isRM) {
           const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
@@ -235,6 +239,7 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
         // Filter by specific bank account
         const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
         if (bankAccount) {
+          scopedEntityId = bankAccount.entityId || null;
           // For RMs/Assistants, verify they have access via entity or user
           if (isRM) {
             const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
@@ -355,11 +360,14 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
       }
     }
 
-    // Exclude holdings of archived (closed-relationship) clients from every path.
+    // Exclude holdings of archived (closed-relationship) clients from every path, and of
+    // demo clients unless this view is drilled into that demo client.
     // Top-level keys are implicitly ANDed, so this composes with any existing $or.
-    const archivedExclusion = await ClientEntityHelpers.archivedHoldingsSelector();
-    if (archivedExclusion.$nor) {
-      queryFilter.$nor = archivedExclusion.$nor;
+    const hiddenExclusion = await ClientEntityHelpers.hiddenHoldingsSelector({
+      exceptEntityId: scopedEntityId
+    });
+    if (hiddenExclusion.$nor) {
+      queryFilter.$nor = hiddenExclusion.$nor;
     }
 
     console.log('[PMS_HOLDINGS] After role check - queryFilter:', JSON.stringify(queryFilter));
@@ -374,16 +382,22 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
 
       console.log('[PMS_HOLDINGS] Historical query filter:', JSON.stringify(queryFilter));
 
-      // Use aggregation with allowDiskUse to handle large datasets
-      // This avoids MongoDB's 32MB sort memory limit by allowing disk-based sorting
+      // Pick the newest record per uniqueKey with $top instead of a pipeline-level
+      // $sort + $group/$first. A blocking $sort over the full history exceeds
+      // MongoDB's 32MB sort memory limit while the multiplanner trials candidate
+      // plans (allowDiskUse is NOT honored during plan selection), which made this
+      // aggregation throw and the publication silently return zero holdings.
       const pipeline = [
         { $match: queryFilter },
-        { $sort: { snapshotDate: -1, version: -1 } },
         {
           $group: {
             _id: '$uniqueKey',
-            holdingId: { $first: '$_id' },
-            snapshotDate: { $first: '$snapshotDate' }
+            top: {
+              $top: {
+                sortBy: { snapshotDate: -1, version: -1 },
+                output: { holdingId: '$_id', snapshotDate: '$snapshotDate' }
+              }
+            }
           }
         }
       ];
@@ -392,7 +406,7 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
         .aggregate(pipeline, { allowDiskUse: true })
         .toArray();
 
-      const holdingIds = latestByKey.map(doc => doc.holdingId);
+      const holdingIds = latestByKey.map(doc => doc.top.holdingId);
       console.log(`[PMS_HOLDINGS] Returning ${holdingIds.length} unique positions for historical view`);
 
       return PMSHoldingsCollection.find({
@@ -485,15 +499,23 @@ Meteor.publish('pmsHoldings.snapshotDates', async function (sessionId = null, vi
 
     // Build query filter based on role and viewAsFilter (same logic as main publication)
     let queryFilter = { isActive: true };
+    // Entity being drilled into, so the demo client's snapshot dates survive the
+    // exclusion below when (and only when) the demo is the thing being viewed.
+    let scopedEntityId = null;
 
     const isSnapshotAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE;
 
     if (viewAsFilter && isSnapshotAdmin) {
       if (viewAsFilter.type === 'client') {
         queryFilter.userId = viewAsFilter.id;
+      } else if (viewAsFilter.type === 'entity') {
+        // No owner filter here (pre-existing behaviour — the date list stays broad);
+        // we only record the scope so the demo exclusion can stand down.
+        scopedEntityId = viewAsFilter.id;
       } else if (viewAsFilter.type === 'account') {
         const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
         if (bankAccount) {
+          scopedEntityId = bankAccount.entityId || null;
           queryFilter.userId = bankAccount.userId;
           queryFilter.portfolioCode = bankAccount.accountNumber;
           queryFilter.bankId = bankAccount.bankId;
@@ -515,8 +537,11 @@ Meteor.publish('pmsHoldings.snapshotDates', async function (sessionId = null, vi
       queryFilter.userId = currentUser._id;
     }
 
-    // Exclude archived (closed-relationship) clients' holdings from the date selector too
-    const snapshotArchivedExclusion = await ClientEntityHelpers.archivedHoldingsSelector();
+    // Exclude archived (closed-relationship) clients' holdings from the date selector too,
+    // and demo clients unless the demo is what is being viewed.
+    const snapshotArchivedExclusion = await ClientEntityHelpers.hiddenHoldingsSelector({
+      exceptEntityId: scopedEntityId
+    });
     if (snapshotArchivedExclusion.$nor) {
       queryFilter.$nor = snapshotArchivedExclusion.$nor;
     }

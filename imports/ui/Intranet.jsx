@@ -512,7 +512,7 @@ Thanks,
                   borderRadius: '6px',
                   cursor: 'pointer',
                   background: copiedId === pitch.id
-                    ? '#10b981'
+                    ? 'var(--gain-color)'
                     : 'var(--accent-color)',
                   color: 'white',
                   transition: 'all 0.2s ease',

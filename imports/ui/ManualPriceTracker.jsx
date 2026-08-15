@@ -154,16 +154,16 @@ export default function ManualPriceTracker({ user }) {
   // Status indicator
   const getStatusInfo = (tracker) => {
     if (tracker.lastScrapeError) {
-      return { color: '#ef4444', label: 'Error' };
+      return { color: 'var(--loss-color)', label: 'Error' };
     }
     if (!tracker.lastScrapedAt) {
       return { color: '#6b7280', label: 'Never scraped' };
     }
     const hoursSince = (Date.now() - new Date(tracker.lastScrapedAt).getTime()) / (1000 * 60 * 60);
     if (hoursSince < 24) {
-      return { color: '#10b981', label: 'Fresh' };
+      return { color: 'var(--gain-color)', label: 'Fresh' };
     }
-    return { color: '#f59e0b', label: 'Stale' };
+    return { color: 'var(--warning-color)', label: 'Stale' };
   };
 
   // Format date
@@ -192,9 +192,9 @@ export default function ManualPriceTracker({ user }) {
           marginBottom: '1rem',
           borderRadius: '6px',
           fontSize: '0.85rem',
-          background: toast.type === 'success' ? '#065f4620' : '#ef444420',
-          color: toast.type === 'success' ? '#10b981' : '#ef4444',
-          border: `1px solid ${toast.type === 'success' ? '#10b981' : '#ef4444'}`,
+          background: toast.type === 'success' ? '#065f4620' : 'color-mix(in srgb, var(--loss-color) 13%, transparent)',
+          color: toast.type === 'success' ? 'var(--gain-color)' : 'var(--loss-color)',
+          border: `1px solid ${toast.type === 'success' ? 'var(--gain-color)' : 'var(--loss-color)'}`,
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center'
@@ -521,9 +521,9 @@ export default function ManualPriceTracker({ user }) {
                           style={{
                             padding: '4px 8px',
                             borderRadius: '4px',
-                            border: '1px solid #ef4444',
+                            border: '1px solid var(--loss-color)',
                             background: 'transparent',
-                            color: '#ef4444',
+                            color: 'var(--loss-color)',
                             cursor: 'pointer',
                             fontSize: '0.8rem',
                             marginRight: '4px'

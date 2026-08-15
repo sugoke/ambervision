@@ -232,7 +232,11 @@ if (Meteor.isServer) {
       // Run template-specific evaluation
       const templateResults = await reportBuilder.generateReport(productData, {
         evaluationDate: new Date(),
-        evaluatedBy: user._id
+        evaluatedBy: user._id,
+        // Lets the evaluator record data-quality problems it can only detect mid-evaluation
+        // (e.g. a strike that disagrees with the price feed) onto the same product status
+        // that updateProductProcessingStatus persists below.
+        issueCollector
       });
 
       // Generate chart data if chart builder is available

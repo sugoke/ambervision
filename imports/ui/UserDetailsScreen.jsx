@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Meteor } from 'meteor/meteor';
 import { UsersCollection, USER_ROLES } from '../api/users.js';
@@ -84,7 +84,7 @@ const YesNoField = ({ label, sublabel, editing, value, onChange }) => (
           <button key={opt.text} onClick={() => onChange(value === opt.v ? null : opt.v)} style={{
             padding: '6px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.82rem', fontWeight: '600',
             border: value === opt.v ? 'none' : '1px solid var(--border-color)',
-            background: value === opt.v ? (opt.v ? '#ef4444' : '#10b981') : 'var(--bg-secondary)',
+            background: value === opt.v ? (opt.v ? 'var(--loss-color)' : 'var(--gain-color)') : 'var(--bg-secondary)',
             color: value === opt.v ? 'white' : 'var(--text-secondary)', transition: 'all 0.15s ease'
           }}>{opt.text}</button>
         ))}
@@ -93,7 +93,7 @@ const YesNoField = ({ label, sublabel, editing, value, onChange }) => (
       <span style={{
         padding: '3px 12px', borderRadius: '6px', fontSize: '0.8rem', fontWeight: '700', flexShrink: 0,
         background: value === true ? 'rgba(239, 68, 68, 0.12)' : value === false ? 'rgba(16, 185, 129, 0.12)' : 'var(--bg-secondary)',
-        color: value === true ? '#ef4444' : value === false ? '#10b981' : 'var(--text-muted)'
+        color: value === true ? 'var(--loss-color)' : value === false ? 'var(--gain-color)' : 'var(--text-muted)'
       }}>
         {value === true ? 'Yes' : value === false ? 'No' : '—'}
       </span>
@@ -305,7 +305,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
   const [introducerAccountsLoading, setIntroducerAccountsLoading] = useState(false);
 
   // Subscribe to data
-  const { user, entity, allEntities, linkedEntities, linkedUsers, bankAccounts, relationshipManagers, introducers, banks, accountProfiles, portfolioSnapshots, isLoading } = useTracker(() => {
+  const { user, entity, allEntities, linkedEntities, linkedUsers, bankAccounts, beneficiaryAccounts, relationshipManagers, introducers, banks, accountProfiles, portfolioSnapshots, isLoading } = useTracker(() => {
     const userHandle = Meteor.subscribe('customUsers');
     const banksHandle = Meteor.subscribe('banks');
     const bankAccountsHandle = Meteor.subscribe('allBankAccounts');
@@ -327,6 +327,16 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
       ? { entityId, isActive: true }
       : userId ? { userId, isActive: true } : { _id: null };
     const accountsData = BankAccountsCollection.find(accountQuery).fetch();
+
+    // Life-insurance contracts where this entity is a beneficial owner. These accounts
+    // belong to the insurer, not to this entity, so they are NOT in accountsData — but
+    // they still make the entity a related party rather than a prospect.
+    const beneficiaryAccountsData = entityId
+      ? BankAccountsCollection.find({
+          isActive: true,
+          $or: [{ beneficialOwnerIds: entityId }, { beneficialOwnerId: entityId }]
+        }).fetch()
+      : [];
 
     // Get account profiles for this user's accounts
     const accountIds = accountsData.map(a => a._id);
@@ -373,6 +383,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
       linkedEntities: linkedEntitiesData,
       linkedUsers: linkedUsersData,
       bankAccounts: accountsData,
+      beneficiaryAccounts: beneficiaryAccountsData,
       relationshipManagers: rms,
       introducers: introducersData,
       banks: banksData,
@@ -381,6 +392,26 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
       isLoading: !userHandle.ready() || !banksHandle.ready() || !bankAccountsHandle.ready()
     };
   }, [userId, entityId, sessionId]);
+
+  // Roles this entity holds in other entities (UBO, director, signatory, shareholder).
+  // Used both by the status badge and by the "Roles in Companies" block below.
+  const entityStakeholderRoles = useMemo(() => {
+    if (!entityId) return [];
+    const roleLabels = { ubo: 'UBO', director: 'Director', signatory: 'Signatory', shareholder: 'Shareholder' };
+    const roles = [];
+    allEntities.forEach(company => {
+      if (!company.stakeholders?.length) return;
+      company.stakeholders.forEach(sh => {
+        if (sh.entityId !== entityId) return;
+        roles.push({
+          role: roleLabels[sh.role] || sh.role,
+          companyName: ClientEntityHelpers.getEntityDisplayName(company),
+          ownership: sh.ownership
+        });
+      });
+    });
+    return roles;
+  }, [allEntities, entityId]);
 
   // Update form data when user or entity data loads
   useEffect(() => {
@@ -916,7 +947,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
   const getRoleBadgeColor = (role) => {
     switch (role) {
       case USER_ROLES.SUPERADMIN:
-        return 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
+        return 'linear-gradient(135deg, var(--loss-color) 0%, #dc2626 100%)';
       case USER_ROLES.ADMIN:
         return 'linear-gradient(135deg, #f97316 0%, #ea580c 100%)';
       case USER_ROLES.COMPLIANCE:
@@ -924,7 +955,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
       case USER_ROLES.RELATIONSHIP_MANAGER:
         return 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)';
       case USER_ROLES.CLIENT:
-        return 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)';
+        return 'linear-gradient(135deg, var(--info-color) 0%, #2563eb 100%)';
       default:
         return 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)';
     }
@@ -964,9 +995,9 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
     if (/\d/.test(password)) strength++;
     if (/[^a-zA-Z0-9]/.test(password)) strength++;
 
-    if (strength <= 2) return { strength, label: 'Weak', color: '#ef4444' };
-    if (strength <= 3) return { strength, label: 'Medium', color: '#f59e0b' };
-    return { strength, label: 'Strong', color: '#10b981' };
+    if (strength <= 2) return { strength, label: 'Weak', color: 'var(--loss-color)' };
+    if (strength <= 3) return { strength, label: 'Medium', color: 'var(--warning-color)' };
+    return { strength, label: 'Strong', color: 'var(--gain-color)' };
   };
 
   // KYC Risk Score Criteria Configuration (based on "Matrice risque Client AP.xlsx")
@@ -1160,11 +1191,11 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
   const getRiskLevelDisplay = (riskLevel) => {
     switch (riskLevel) {
       case 'low':
-        return { label: 'Risque Faible', labelEn: 'Low Risk', color: '#10b981', emoji: '🟢', reviewPeriod: '2 years' };
+        return { label: 'Risque Faible', labelEn: 'Low Risk', color: 'var(--gain-color)', emoji: '🟢', reviewPeriod: '2 years' };
       case 'medium':
-        return { label: 'Risque Moyen', labelEn: 'Medium Risk', color: '#f59e0b', emoji: '🟡', reviewPeriod: '2 years' };
+        return { label: 'Risque Moyen', labelEn: 'Medium Risk', color: 'var(--warning-color)', emoji: '🟡', reviewPeriod: '2 years' };
       case 'high':
-        return { label: 'Risque Eleve', labelEn: 'High Risk', color: '#ef4444', emoji: '🔴', reviewPeriod: '1 year' };
+        return { label: 'Risque Eleve', labelEn: 'High Risk', color: 'var(--loss-color)', emoji: '🔴', reviewPeriod: '1 year' };
       default:
         return { label: 'Non evalue', labelEn: 'Not Assessed', color: '#6b7280', emoji: '⚪', reviewPeriod: '-' };
     }
@@ -1578,6 +1609,24 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   Client
                 </span>
               )}
+              {/* Beneficiary of a life-insurance contract: a related party, not a
+                  direct client (the contract is held by the insurer) */}
+              {isEntityMode && entity && beneficiaryAccounts.length > 0 && (
+                <span
+                  style={{
+                    padding: '4px 10px',
+                    borderRadius: '16px',
+                    background: 'rgba(139, 92, 246, 0.12)',
+                    color: '#8b5cf6',
+                    fontSize: '11px',
+                    fontWeight: '600',
+                    letterSpacing: '0.3px'
+                  }}
+                  title={beneficiaryAccounts.map(a => a.name || a.accountNumber).join(', ')}
+                >
+                  Beneficiary
+                </span>
+              )}
               {hasUser && editingRole && currentUser?.role === USER_ROLES.SUPERADMIN ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <select
@@ -1607,7 +1656,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                       padding: '6px 12px',
                       borderRadius: '6px',
                       border: 'none',
-                      background: '#10b981',
+                      background: 'var(--gain-color)',
                       color: '#fff',
                       fontSize: '12px',
                       fontWeight: '600',
@@ -1677,7 +1726,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   borderRadius: '20px',
                   background: 'rgba(16, 185, 129, 0.15)',
                   border: '1px solid rgba(16, 185, 129, 0.3)',
-                  color: '#10b981',
+                  color: 'var(--gain-color)',
                   fontSize: '0.75rem',
                   fontWeight: '600'
                 }}>
@@ -1685,17 +1734,22 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                     width: '8px',
                     height: '8px',
                     borderRadius: '50%',
-                    background: '#10b981',
+                    background: 'var(--gain-color)',
                     animation: 'pulse 2s infinite'
                   }} />
                   Active
                 </span>
               )}
 
-              {/* Entity Status Badge */}
+              {/* Entity Status Badge — computed with the same rule as the contacts list */}
               {entity && (() => {
-                const statusDisplay = ClientEntityHelpers.getEntityStatusDisplay(entity.status);
-                const canManageStatus = [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.COMPLIANCE].includes(currentUser?.role);
+                const statusDisplay = ClientEntityHelpers.getEntityStatusDisplay(
+                  ClientEntityHelpers.getComputedEntityStatus(entity, {
+                    hasAccounts: bankAccounts.length > 0,
+                    hasStakeholderRoles: entityStakeholderRoles.length > 0,
+                    isBeneficialOwner: beneficiaryAccounts.length > 0
+                  })
+                );
                 return (
                   <span
                     style={{
@@ -1704,32 +1758,15 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                       gap: '6px',
                       padding: '6px 14px',
                       borderRadius: '20px',
-                      background: `${statusDisplay.color}20`,
-                      border: `1px solid ${statusDisplay.color}50`,
+                      background: `color-mix(in srgb, ${statusDisplay.color} 13%, transparent)`,
+                      border: `1px solid color-mix(in srgb, ${statusDisplay.color} 31%, transparent)`,
                       color: statusDisplay.color,
                       fontSize: '0.75rem',
-                      fontWeight: '600',
-                      cursor: canManageStatus ? 'pointer' : 'default'
+                      fontWeight: '600'
                     }}
-                    onClick={async () => {
-                      if (!canManageStatus) return;
-                      const statuses = Object.values(ENTITY_STATUSES);
-                      const currentIdx = statuses.indexOf(entity.status || ENTITY_STATUSES.ACTIVE);
-                      const nextStatus = statuses[(currentIdx + 1) % statuses.length];
-                      if (nextStatus === ENTITY_STATUSES.ARCHIVED) {
-                        setArchiveError('');
-                        setArchiveClosureFile(null);
-                        setArchiveClosureDate(new Date().toISOString().split('T')[0]);
-                        setShowArchiveModal(true);
-                        return;
-                      }
-                      try {
-                        await Meteor.callAsync('clientEntities.updateStatus', entityId, nextStatus, sessionId);
-                      } catch (err) {
-                        console.error('Failed to update entity status:', err);
-                      }
-                    }}
-                    title={canManageStatus ? 'Click to cycle status' : ''}
+                    // Prospect/Active is derived from bank accounts and stakeholder roles,
+                    // so it is not clickable. Archiving is done with the buttons below.
+                    title="Prospect until the entity has a bank account, a role in another entity, or a life-insurance contract as beneficiary"
                   >
                     {statusDisplay.label}
                   </span>
@@ -1760,7 +1797,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                       borderRadius: '20px',
                       background: isEnabled ? 'rgba(16, 185, 129, 0.15)' : 'rgba(107, 114, 128, 0.15)',
                       border: `1px solid ${isEnabled ? 'rgba(16, 185, 129, 0.3)' : 'rgba(107, 114, 128, 0.3)'}`,
-                      color: isEnabled ? '#10b981' : '#6b7280',
+                      color: isEnabled ? 'var(--gain-color)' : '#6b7280',
                       fontSize: '0.75rem',
                       fontWeight: '600',
                       cursor: canToggle ? 'pointer' : 'default',
@@ -1788,7 +1825,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                         setArchiveClosureDate(new Date().toISOString().split('T')[0]);
                         setShowArchiveModal(true);
                       }}
-                      style={{ padding: '6px 14px', borderRadius: '20px', background: 'rgba(251, 191, 36, 0.12)', border: '1px solid rgba(251, 191, 36, 0.3)', color: '#f59e0b', fontSize: '0.75rem', fontWeight: '600', cursor: 'pointer', transition: 'all 0.2s ease' }}
+                      style={{ padding: '6px 14px', borderRadius: '20px', background: 'rgba(251, 191, 36, 0.12)', border: '1px solid rgba(251, 191, 36, 0.3)', color: 'var(--warning-color)', fontSize: '0.75rem', fontWeight: '600', cursor: 'pointer', transition: 'all 0.2s ease' }}
                       onMouseEnter={e => { e.currentTarget.style.background = 'rgba(251, 191, 36, 0.25)'; }}
                       onMouseLeave={e => { e.currentTarget.style.background = 'rgba(251, 191, 36, 0.12)'; }}
                     >
@@ -1807,7 +1844,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                           console.error('Failed to reactivate entity:', err);
                         }
                       }}
-                      style={{ padding: '6px 14px', borderRadius: '20px', background: 'rgba(16, 185, 129, 0.12)', border: '1px solid rgba(16, 185, 129, 0.3)', color: '#10b981', fontSize: '0.75rem', fontWeight: '600', cursor: 'pointer', transition: 'all 0.2s ease' }}
+                      style={{ padding: '6px 14px', borderRadius: '20px', background: 'rgba(16, 185, 129, 0.12)', border: '1px solid rgba(16, 185, 129, 0.3)', color: 'var(--gain-color)', fontSize: '0.75rem', fontWeight: '600', cursor: 'pointer', transition: 'all 0.2s ease' }}
                       onMouseEnter={e => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.25)'; }}
                       onMouseLeave={e => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.12)'; }}
                     >
@@ -1836,7 +1873,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                       console.error('Error deleting:', err);
                     }
                   }}
-                  style={{ padding: '6px 14px', borderRadius: '20px', background: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.3)', color: '#ef4444', fontSize: '0.75rem', fontWeight: '600', cursor: 'pointer', transition: 'all 0.2s ease' }}
+                  style={{ padding: '6px 14px', borderRadius: '20px', background: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.3)', color: 'var(--loss-color)', fontSize: '0.75rem', fontWeight: '600', cursor: 'pointer', transition: 'all 0.2s ease' }}
                   onMouseEnter={e => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.25)'; }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.12)'; }}
                 >
@@ -1886,8 +1923,8 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                         alignItems: 'center',
                         gap: '6px',
                         padding: '3px 10px',
-                        background: `${display.color}15`,
-                        border: `1px solid ${display.color}40`,
+                        background: `color-mix(in srgb, ${display.color} 8%, transparent)`,
+                        border: `1px solid color-mix(in srgb, ${display.color} 25%, transparent)`,
                         borderRadius: '12px',
                         fontSize: '0.85rem',
                         fontWeight: '500',
@@ -2094,7 +2131,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                           background: 'rgba(239, 68, 68, 0.1)',
                           border: '1px solid rgba(239, 68, 68, 0.3)',
                           borderRadius: '8px',
-                          color: '#ef4444',
+                          color: 'var(--loss-color)',
                           cursor: 'pointer',
                           fontSize: '0.85rem',
                           fontWeight: '600',
@@ -2139,7 +2176,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                       } catch (err) {
                         console.error('Error updating entity:', err);
                       }
-                    }} style={{ padding: '8px 16px', background: '#10b981', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Save</button>
+                    }} style={{ padding: '8px 16px', background: 'var(--gain-color)', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Save</button>
                     <button onClick={() => setEditingBasicInfo(false)} style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}>Cancel</button>
                   </div>
                 )}
@@ -2258,16 +2295,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
 
               {/* Roles in other entities */}
               {(() => {
-                const roleLabels = { ubo: 'UBO', director: 'Director', signatory: 'Signatory', shareholder: 'Shareholder' };
-                const roles = [];
-                allEntities.forEach(company => {
-                  if (!company.stakeholders?.length) return;
-                  company.stakeholders.forEach(sh => {
-                    if (sh.entityId === entityId) {
-                      roles.push({ role: roleLabels[sh.role] || sh.role, companyName: ClientEntityHelpers.getEntityDisplayName(company), ownership: sh.ownership });
-                    }
-                  });
-                });
+                const roles = entityStakeholderRoles;
                 if (roles.length === 0) return null;
                 return (
                   <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-color)' }}>
@@ -2286,6 +2314,29 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   </div>
                 );
               })()}
+
+              {/* Life-insurance contracts this entity is the beneficiary of. The
+                  contract is held by the insurer, so it never shows in Accounts. */}
+              {beneficiaryAccounts.length > 0 && (
+                <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-color)' }}>
+                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '8px' }}>Beneficiary Of</label>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                    {beneficiaryAccounts.map(acc => {
+                      const holder = allEntities.find(e => e._id === acc.entityId);
+                      return (
+                        <span key={acc._id} style={{
+                          padding: '4px 10px', borderRadius: '6px',
+                          background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6',
+                          fontSize: '0.82rem', fontWeight: '600'
+                        }}>
+                          {acc.name || acc.accountNumber}
+                          {holder ? ` @ ${ClientEntityHelpers.getEntityDisplayName(holder)}` : ''}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </LiquidGlassCard>
           )}
 
@@ -2948,7 +2999,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                           width: '48px',
                           height: '48px',
                           borderRadius: '50%',
-                          background: 'linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)',
+                          background: 'linear-gradient(135deg, var(--info-color) 0%, #8b5cf6 100%)',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
@@ -3107,7 +3158,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                           }}>
                             <span>{account.accountNumber}</span>
                             <span style={{ color: 'var(--text-muted)' }}>•</span>
-                            <span style={{ fontWeight: '500', color: '#3b82f6' }}>{account.clientName}</span>
+                            <span style={{ fontWeight: '500', color: 'var(--info-color)' }}>{account.clientName}</span>
                           </div>
                         </div>
 
@@ -3176,7 +3227,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                         fontWeight: '600',
                         padding: '2px 8px',
                         borderRadius: '10px',
-                        background: `${statusDisplay.color}15`,
+                        background: `color-mix(in srgb, ${statusDisplay.color} 8%, transparent)`,
                         color: statusDisplay.color
                       }}>
                         {statusDisplay.label}
@@ -3237,7 +3288,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   <span style={{ fontSize: '0.8rem', fontWeight: '600', padding: '2px 8px', borderRadius: '10px', background: 'var(--accent-color)', color: 'white' }}>{bankAccounts.length}</span>
                 </h2>
                 <button onClick={() => { if (!showAddAccount) { setNewAccount(prev => ({...prev, name: accountDefaultName})); } setShowAddAccount(!showAddAccount); }} style={{
-                  background: showAddAccount ? 'var(--danger-color)' : '#10b981', color: 'white', border: 'none',
+                  background: showAddAccount ? 'var(--danger-color)' : 'var(--gain-color)', color: 'white', border: 'none',
                   padding: '8px 16px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600'
                 }}>{showAddAccount ? 'Cancel' : '+ Add Account'}</button>
               </div>
@@ -3329,15 +3380,15 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                             <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Authorized email</label>
                             <input type="email" placeholder="orders@example.com" value={newAccount.authorizedEmail}
                               onChange={e => { const val = e.target.value; setNewAccount(prev => ({ ...prev, authorizedEmail: val })); }}
-                              style={{ width: '100%', padding: '9px', border: `1px solid ${addEmailValid ? 'var(--border-color)' : '#ef4444'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', boxSizing: 'border-box' }} />
-                            {!addEmailValid && <div style={{ color: '#ef4444', fontSize: '0.7rem', marginTop: '3px' }}>Invalid email format</div>}
+                              style={{ width: '100%', padding: '9px', border: `1px solid ${addEmailValid ? 'var(--border-color)' : 'var(--loss-color)'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', boxSizing: 'border-box' }} />
+                            {!addEmailValid && <div style={{ color: 'var(--loss-color)', fontSize: '0.7rem', marginTop: '3px' }}>Invalid email format</div>}
                           </div>
                           <div>
                             <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Authorized phone (E.164)</label>
                             <input type="tel" placeholder="+33612345678" value={newAccount.authorizedPhone}
                               onChange={e => { const val = e.target.value; setNewAccount(prev => ({ ...prev, authorizedPhone: val })); }}
-                              style={{ width: '100%', padding: '9px', border: `1px solid ${addPhoneValid ? 'var(--border-color)' : '#ef4444'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', boxSizing: 'border-box' }} />
-                            {!addPhoneValid && <div style={{ color: '#ef4444', fontSize: '0.7rem', marginTop: '3px' }}>Must be E.164, e.g. +33612345678</div>}
+                              style={{ width: '100%', padding: '9px', border: `1px solid ${addPhoneValid ? 'var(--border-color)' : 'var(--loss-color)'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', boxSizing: 'border-box' }} />
+                            {!addPhoneValid && <div style={{ color: 'var(--loss-color)', fontSize: '0.7rem', marginTop: '3px' }}>Must be E.164, e.g. +33612345678</div>}
                           </div>
                           <div style={{ gridColumn: '1 / -1' }}>
                             <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>CC emails</label>
@@ -3353,12 +3404,12 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                               <input type="email" placeholder="cc@example.com" value={newAccountCcInput}
                                 onChange={e => setNewAccountCcInput(e.target.value)}
                                 onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddCc(); } }}
-                                style={{ flex: 1, padding: '9px', border: `1px solid ${addCcInputValid ? 'var(--border-color)' : '#ef4444'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', boxSizing: 'border-box' }} />
+                                style={{ flex: 1, padding: '9px', border: `1px solid ${addCcInputValid ? 'var(--border-color)' : 'var(--loss-color)'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', boxSizing: 'border-box' }} />
                               <button type="button" onClick={handleAddCc}
                                 disabled={!newAccountCcInput.trim() || !addCcInputValid}
                                 style={{ padding: '8px 14px', background: (!newAccountCcInput.trim() || !addCcInputValid) ? 'var(--bg-secondary)' : 'var(--accent-color)', color: (!newAccountCcInput.trim() || !addCcInputValid) ? 'var(--text-muted)' : 'white', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: (!newAccountCcInput.trim() || !addCcInputValid) ? 'not-allowed' : 'pointer', fontSize: '0.8rem', fontWeight: '600' }}>Add</button>
                             </div>
-                            {!addCcInputValid && <div style={{ color: '#ef4444', fontSize: '0.7rem', marginTop: '3px' }}>Invalid email format</div>}
+                            {!addCcInputValid && <div style={{ color: 'var(--loss-color)', fontSize: '0.7rem', marginTop: '3px' }}>Invalid email format</div>}
                           </div>
                         </div>
                       </div>
@@ -3375,7 +3426,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                       return (
                         <button onClick={handleAddBankAccount}
                           disabled={!canAdd}
-                          style={{ padding: '8px 16px', background: !canAdd ? 'rgba(16, 185, 129, 0.4)' : '#10b981', color: 'white', border: 'none', borderRadius: '8px', cursor: !canAdd ? 'not-allowed' : 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Add Account</button>
+                          style={{ padding: '8px 16px', background: !canAdd ? 'rgba(16, 185, 129, 0.4)' : 'var(--gain-color)', color: 'white', border: 'none', borderRadius: '8px', cursor: !canAdd ? 'not-allowed' : 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Add Account</button>
                       );
                     })()}
                   </div>
@@ -3431,7 +3482,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                               {entity?.isInsurance && <td style={{ padding: '10px 14px', fontSize: '0.82rem', color: ubos.length > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{ubos.length > 0 ? ubos.map(u => ClientEntityHelpers.getEntityDisplayName(u)).join(', ') : '-'}</td>}
                               <td style={{ padding: '10px 14px' }}>
                                 {profile ? (
-                                  <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: '600', background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>{profile.profileName || 'Set'}</span>
+                                  <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: '600', background: 'rgba(16, 185, 129, 0.1)', color: 'var(--gain-color)' }}>{profile.profileName || 'Set'}</span>
                                 ) : (
                                   <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>-</span>
                                 )}
@@ -3564,15 +3615,15 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                                     <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Authorized email</label>
                                                     <input type="email" placeholder="orders@example.com" value={editBankAccountData.authorizedEmail || ''}
                                                       onChange={e => setEditBankAccountData(prev => ({ ...prev, authorizedEmail: e.target.value }))}
-                                                      style={{ width: '100%', padding: '7px', border: `1px solid ${editEmailValid ? 'var(--border-color)' : '#ef4444'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', boxSizing: 'border-box' }} />
-                                                    {!editEmailValid && <div style={{ color: '#ef4444', fontSize: '0.68rem', marginTop: '3px' }}>Invalid email format</div>}
+                                                      style={{ width: '100%', padding: '7px', border: `1px solid ${editEmailValid ? 'var(--border-color)' : 'var(--loss-color)'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', boxSizing: 'border-box' }} />
+                                                    {!editEmailValid && <div style={{ color: 'var(--loss-color)', fontSize: '0.68rem', marginTop: '3px' }}>Invalid email format</div>}
                                                   </div>
                                                   <div>
                                                     <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Authorized phone (E.164)</label>
                                                     <input type="tel" placeholder="+33612345678" value={editBankAccountData.authorizedPhone || ''}
                                                       onChange={e => setEditBankAccountData(prev => ({ ...prev, authorizedPhone: e.target.value }))}
-                                                      style={{ width: '100%', padding: '7px', border: `1px solid ${editPhoneValid ? 'var(--border-color)' : '#ef4444'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', boxSizing: 'border-box' }} />
-                                                    {!editPhoneValid && <div style={{ color: '#ef4444', fontSize: '0.68rem', marginTop: '3px' }}>Must be E.164, e.g. +33612345678</div>}
+                                                      style={{ width: '100%', padding: '7px', border: `1px solid ${editPhoneValid ? 'var(--border-color)' : 'var(--loss-color)'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', boxSizing: 'border-box' }} />
+                                                    {!editPhoneValid && <div style={{ color: 'var(--loss-color)', fontSize: '0.68rem', marginTop: '3px' }}>Must be E.164, e.g. +33612345678</div>}
                                                   </div>
                                                   <div style={{ gridColumn: '1 / -1' }}>
                                                     <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>CC emails</label>
@@ -3588,21 +3639,21 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                                       <input type="email" placeholder="cc@example.com" value={editAccountCcInput}
                                                         onChange={e => setEditAccountCcInput(e.target.value)}
                                                         onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddEditCc(); } }}
-                                                        style={{ flex: 1, padding: '7px', border: `1px solid ${editCcInputValid ? 'var(--border-color)' : '#ef4444'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', boxSizing: 'border-box' }} />
+                                                        style={{ flex: 1, padding: '7px', border: `1px solid ${editCcInputValid ? 'var(--border-color)' : 'var(--loss-color)'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', boxSizing: 'border-box' }} />
                                                       <button type="button" onClick={handleAddEditCc}
                                                         disabled={!editAccountCcInput.trim() || !editCcInputValid}
                                                         style={{ padding: '6px 12px', background: (!editAccountCcInput.trim() || !editCcInputValid) ? 'var(--bg-secondary)' : 'var(--accent-color)', color: (!editAccountCcInput.trim() || !editCcInputValid) ? 'var(--text-muted)' : 'white', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: (!editAccountCcInput.trim() || !editCcInputValid) ? 'not-allowed' : 'pointer', fontSize: '0.78rem', fontWeight: '600' }}>Add</button>
                                                     </div>
-                                                    {!editCcInputValid && <div style={{ color: '#ef4444', fontSize: '0.68rem', marginTop: '3px' }}>Invalid email format</div>}
+                                                    {!editCcInputValid && <div style={{ color: 'var(--loss-color)', fontSize: '0.68rem', marginTop: '3px' }}>Invalid email format</div>}
                                                   </div>
                                                 </div>
                                               </div>
                                             );
                                           })()}
                                           <div style={{ gridColumn: '1 / -1', display: 'flex', gap: '8px', marginTop: '6px' }}>
-                                            <button onClick={() => handleSaveEditBankAccount(account._id)} style={{ padding: '7px 14px', background: '#10b981', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.82rem', fontWeight: '600' }}>Save</button>
+                                            <button onClick={() => handleSaveEditBankAccount(account._id)} style={{ padding: '7px 14px', background: 'var(--gain-color)', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.82rem', fontWeight: '600' }}>Save</button>
                                             <button onClick={() => { setEditingBankAccount(null); setEditBankAccountData({}); setEditAccountCcInput(''); }} style={{ padding: '7px 14px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.82rem' }}>Cancel</button>
-                                            <button onClick={() => handleDeleteBankAccount(account._id)} style={{ padding: '7px 14px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '6px', color: '#ef4444', cursor: 'pointer', fontSize: '0.82rem', marginLeft: 'auto' }}>Delete</button>
+                                            <button onClick={() => handleDeleteBankAccount(account._id)} style={{ padding: '7px 14px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '6px', color: 'var(--loss-color)', cursor: 'pointer', fontSize: '0.82rem', marginLeft: 'auto' }}>Delete</button>
                                           </div>
                                         </div>
                                       ) : (() => {
@@ -3622,7 +3673,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                             {account.authorizedOverdraft > 0 && (
                                               <div>
                                                 <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Credit Line</div>
-                                                <div style={{ fontSize: '0.85rem', fontWeight: '600', color: '#10b981' }}>{account.referenceCurrency} {account.authorizedOverdraft?.toLocaleString()}</div>
+                                                <div style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--gain-color)' }}>{account.referenceCurrency} {account.authorizedOverdraft?.toLocaleString()}</div>
                                               </div>
                                             )}
                                             <div>
@@ -3639,7 +3690,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                             )}
                                             <div>
                                               <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Introducer</div>
-                                              <div style={{ fontSize: '0.85rem', color: intro ? '#f59e0b' : 'var(--text-muted)' }}>{intro ? `${intro.profile?.firstName || ''} ${intro.profile?.lastName || ''}`.trim() : 'None'}</div>
+                                              <div style={{ fontSize: '0.85rem', color: intro ? 'var(--warning-color)' : 'var(--text-muted)' }}>{intro ? `${intro.profile?.firstName || ''} ${intro.profile?.lastName || ''}`.trim() : 'None'}</div>
                                             </div>
                                             {ubos.length > 0 && (
                                               <div>
@@ -3666,7 +3717,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                                         <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: '600', color: 'var(--text-primary)' }}>Investment Profile</h4>
                                         <button onClick={(e) => { e.stopPropagation(); if (editingAccountProfile === account._id) { handleSaveAccountProfile(account._id); } else { handleStartEditAccountProfile(account._id); } }}
-                                          style={{ padding: '4px 10px', background: editingAccountProfile === account._id ? '#10b981' : 'var(--accent-color)', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}>
+                                          style={{ padding: '4px 10px', background: editingAccountProfile === account._id ? 'var(--gain-color)' : 'var(--accent-color)', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}>
                                           {editingAccountProfile === account._id ? 'Save' : (profile ? 'Edit' : 'Set Profile')}
                                         </button>
                                       </div>
@@ -3700,7 +3751,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                       ) : profile ? (
                                         <div>
                                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
-                                            {profile.profileName && <span style={{ padding: '3px 8px', borderRadius: '5px', fontSize: '0.75rem', fontWeight: '600', background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>{profile.profileName}</span>}
+                                            {profile.profileName && <span style={{ padding: '3px 8px', borderRadius: '5px', fontSize: '0.75rem', fontWeight: '600', background: 'rgba(16, 185, 129, 0.1)', color: 'var(--gain-color)' }}>{profile.profileName}</span>}
                                             {profile.isProfessionalInvestor && <span style={{ padding: '3px 8px', borderRadius: '5px', fontSize: '0.75rem', fontWeight: '600', background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6' }}>Professional</span>}
                                           </div>
                                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px' }}>
@@ -3743,7 +3794,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
                                                 <span style={{
                                                   padding: '3px 10px', borderRadius: '12px', fontSize: '0.78rem', fontWeight: '600',
-                                                  background: `${display.color}15`, border: `1px solid ${display.color}40`, color: display.color
+                                                  background: `color-mix(in srgb, ${display.color} 8%, transparent)`, border: `1px solid color-mix(in srgb, ${display.color} 25%, transparent)`, color: display.color
                                                 }}>
                                                   {display.emoji} {display.labelEn}
                                                 </span>
@@ -3771,7 +3822,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                                   <span>Assessed: {new Date(riskScore.assessmentDate).toLocaleDateString()}</span>
                                                 )}
                                                 {riskScore.nextReviewDate && (
-                                                  <span style={{ color: isOverdue ? '#ef4444' : 'var(--text-muted)', fontWeight: isOverdue ? '600' : '400' }}>
+                                                  <span style={{ color: isOverdue ? 'var(--loss-color)' : 'var(--text-muted)', fontWeight: isOverdue ? '600' : '400' }}>
                                                     Review: {new Date(riskScore.nextReviewDate).toLocaleDateString()} {isOverdue ? '(overdue)' : ''}
                                                   </span>
                                                 )}
@@ -3805,7 +3856,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   <span style={{ fontSize: '1.3rem' }}>🏛️</span> Stakeholders
                 </h2>
                 <button onClick={() => setShowAddStakeholder(!showAddStakeholder)} style={{
-                  background: showAddStakeholder ? 'var(--danger-color)' : '#10b981', color: 'white', border: 'none',
+                  background: showAddStakeholder ? 'var(--danger-color)' : 'var(--gain-color)', color: 'white', border: 'none',
                   padding: '8px 16px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600'
                 }}>{showAddStakeholder ? 'Cancel' : '+ Add Stakeholder'}</button>
               </div>
@@ -3981,7 +4032,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                         } catch (err) {
                           console.error('Error updating KYC:', err);
                         }
-                      }} style={{ padding: '8px 16px', background: '#10b981', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Save</button>
+                      }} style={{ padding: '8px 16px', background: 'var(--gain-color)', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Save</button>
                       <button onClick={() => setEditingEntityKyc(false)} style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}>Cancel</button>
                     </div>
                   )}
@@ -4088,7 +4139,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                         } catch (err) {
                           console.error('Error updating family members:', err);
                         }
-                      }} style={{ padding: '8px 16px', background: '#10b981', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Save</button>
+                      }} style={{ padding: '8px 16px', background: 'var(--gain-color)', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Save</button>
                       <button onClick={() => setEditingFamily(false)} style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}>Cancel</button>
                     </div>
                   )}
@@ -4118,7 +4169,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                       <div key={idx} style={{ border: '1px solid var(--border-color)', borderRadius: '10px', padding: '14px', marginBottom: '12px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                           <span style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-secondary)' }}>Member #{idx + 1}</span>
-                          <button onClick={() => removeMember(idx)} style={{ padding: '4px 10px', background: '#ef4444', border: 'none', borderRadius: '6px', color: 'white', cursor: 'pointer', fontSize: '0.75rem' }}>Remove</button>
+                          <button onClick={() => removeMember(idx)} style={{ padding: '4px 10px', background: 'var(--loss-color)', border: 'none', borderRadius: '6px', color: 'white', cursor: 'pointer', fontSize: '0.75rem' }}>Remove</button>
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '10px' }}>
                           <div><label style={fieldLabel}>First Name</label><input value={m.firstName || ''} onChange={e => updateMember(idx, { firstName: e.target.value })} style={inputStyle} /></div>
@@ -4163,7 +4214,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                         } catch (err) {
                           console.error('Error updating US Person status:', err);
                         }
-                      }} style={{ padding: '8px 16px', background: '#10b981', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Save</button>
+                      }} style={{ padding: '8px 16px', background: 'var(--gain-color)', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Save</button>
                       <button onClick={() => setEditingUsPerson(false)} style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}>Cancel</button>
                     </div>
                   )}
@@ -4358,7 +4409,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>PEP Status</span>
                     <span style={{
-                      color: user.profile?.kyc?.isPEP ? '#f59e0b' : 'var(--text-primary)',
+                      color: user.profile?.kyc?.isPEP ? 'var(--warning-color)' : 'var(--text-primary)',
                       fontWeight: '500'
                     }}>
                       {user.profile?.kyc?.isPEP ? 'Yes - Politically Exposed Person' : 'No'}
@@ -4494,7 +4545,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                     <div>
                       <span style={{ color: 'var(--text-secondary)' }}>Next Review Due: </span>
                       <span style={{
-                        color: new Date(savedRiskScore.nextReviewDate) < new Date() ? '#ef4444' : 'var(--text-primary)',
+                        color: new Date(savedRiskScore.nextReviewDate) < new Date() ? 'var(--loss-color)' : 'var(--text-primary)',
                         fontWeight: '500'
                       }}>
                         {new Date(savedRiskScore.nextReviewDate).toLocaleDateString()}
@@ -4635,9 +4686,9 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                         : 'rgba(16, 185, 129, 0.3)'}`,
                                       borderRadius: '4px',
                                       fontSize: '0.8rem',
-                                      color: selectedOption.score >= 10 ? '#ef4444'
-                                        : selectedOption.score >= 3 ? '#f59e0b'
-                                        : '#10b981'
+                                      color: selectedOption.score >= 10 ? 'var(--loss-color)'
+                                        : selectedOption.score >= 3 ? 'var(--warning-color)'
+                                        : 'var(--gain-color)'
                                     }}>
                                       {selectedOption.labelEn} ({selectedOption.score})
                                     </span>
@@ -4689,8 +4740,8 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                               alignItems: 'center',
                               gap: '6px',
                               padding: '4px 12px',
-                              background: `${display.color}15`,
-                              border: `1px solid ${display.color}40`,
+                              background: `color-mix(in srgb, ${display.color} 8%, transparent)`,
+                              border: `1px solid color-mix(in srgb, ${display.color} 25%, transparent)`,
                               borderRadius: '20px',
                               fontSize: '0.8rem',
                               fontWeight: '600',
@@ -4718,15 +4769,15 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
               }}>
                 <div style={{ fontWeight: '600', color: 'var(--text-primary)', marginRight: '8px' }}>Score Classification:</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ color: '#10b981' }}>🟢</span>
+                  <span style={{ color: 'var(--gain-color)' }}>🟢</span>
                   <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>&lt; 15 pts = Low Risk (review every 2 years)</span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ color: '#f59e0b' }}>🟡</span>
+                  <span style={{ color: 'var(--warning-color)' }}>🟡</span>
                   <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>15-29 pts = Medium Risk (review every 2 years)</span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ color: '#ef4444' }}>🔴</span>
+                  <span style={{ color: 'var(--loss-color)' }}>🔴</span>
                   <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>≥ 30 pts = High Risk (review every year)</span>
                 </div>
               </div>
@@ -4802,7 +4853,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                     disabled={savingRiskScore}
                     style={{
                       padding: '12px 24px',
-                      background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                      background: 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
                       border: 'none',
                       borderRadius: '8px',
                       color: '#fff',
@@ -5148,7 +5199,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                             background: 'rgba(239, 68, 68, 0.1)',
                             border: '1px solid rgba(239, 68, 68, 0.3)',
                             borderRadius: '6px',
-                            color: '#ef4444',
+                            color: 'var(--loss-color)',
                             cursor: 'pointer',
                             fontSize: '12px',
                             fontWeight: '600',
@@ -5266,7 +5317,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                     onClick={() => setEditingPassword(true)}
                     style={{
                       padding: '8px 16px',
-                      background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
+                      background: 'linear-gradient(135deg, var(--loss-color) 0%, #dc2626 100%)',
                       border: 'none',
                       borderRadius: '8px',
                       color: '#fff',
@@ -5301,7 +5352,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                     <div style={{ flex: 1 }}>
                       <p style={{
                         margin: '0 0 6px',
-                        color: '#f59e0b',
+                        color: 'var(--warning-color)',
                         fontSize: '14px',
                         fontWeight: '600'
                       }}>
@@ -5425,7 +5476,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                       onClick={handleResetPassword}
                       style={{
                         padding: '12px 24px',
-                        background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
+                        background: 'linear-gradient(135deg, var(--loss-color) 0%, #dc2626 100%)',
                         border: 'none',
                         borderRadius: '8px',
                         color: '#fff',
@@ -5451,7 +5502,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   border: '1px solid rgba(16, 185, 129, 0.3)'
                 }}>
                   <div style={{ fontSize: '48px', marginBottom: '12px' }}>✅</div>
-                  <p style={{ margin: 0, color: '#10b981', fontSize: '16px', fontWeight: '600' }}>
+                  <p style={{ margin: 0, color: 'var(--gain-color)', fontSize: '16px', fontWeight: '600' }}>
                     Password Reset Successfully!
                   </p>
                   <p style={{ margin: '8px 0 0 0', color: 'var(--text-secondary)', fontSize: '14px' }}>
@@ -5597,7 +5648,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                               style={{
                                 padding: '6px 12px',
                                 background: 'rgba(239, 68, 68, 0.1)',
-                                color: '#ef4444',
+                                color: 'var(--loss-color)',
                                 border: '1px solid rgba(239, 68, 68, 0.3)',
                                 borderRadius: '6px',
                                 cursor: 'pointer',
@@ -5706,9 +5757,9 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                 <thead>
                   <tr style={{ borderBottom: '2px solid var(--border-color)' }}>
                     <th style={{ padding: '8px 10px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: '600', width: '40%' }}>Criteria</th>
-                    <th style={{ padding: '8px 10px', textAlign: 'center', color: '#3b82f6', fontWeight: '600' }}>Client</th>
+                    <th style={{ padding: '8px 10px', textAlign: 'center', color: 'var(--info-color)', fontWeight: '600' }}>Client</th>
                     <th style={{ padding: '8px 10px', textAlign: 'center', color: '#8b5cf6', fontWeight: '600' }}>Benef. Owner</th>
-                    <th style={{ padding: '8px 10px', textAlign: 'center', color: '#f59e0b', fontWeight: '600' }}>Business Rel.</th>
+                    <th style={{ padding: '8px 10px', textAlign: 'center', color: 'var(--warning-color)', fontWeight: '600' }}>Business Rel.</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -5744,7 +5795,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                       return (
                         <td key={column} style={{ padding: '10px', textAlign: 'center' }}>
                           <div style={{ fontSize: '1rem', fontWeight: '700', color: colDisplay.color }}>{result.totalScore}</div>
-                          <span style={{ padding: '2px 8px', borderRadius: '8px', fontSize: '0.68rem', fontWeight: '600', background: `${colDisplay.color}15`, color: colDisplay.color }}>
+                          <span style={{ padding: '2px 8px', borderRadius: '8px', fontSize: '0.68rem', fontWeight: '600', background: `color-mix(in srgb, ${colDisplay.color} 8%, transparent)`, color: colDisplay.color }}>
                             {colDisplay.emoji} {colDisplay.labelEn}
                           </span>
                         </td>
@@ -5780,7 +5831,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
               <button
                 onClick={async () => { await handleSaveRiskScore(); setRiskScoreModalOpen(false); setEditingRiskScore(false); }}
                 disabled={savingRiskScore}
-                style={{ padding: '8px 16px', background: '#10b981', color: 'white', border: 'none', borderRadius: '8px', cursor: savingRiskScore ? 'not-allowed' : 'pointer', fontSize: '0.85rem', fontWeight: '600', opacity: savingRiskScore ? 0.7 : 1 }}>
+                style={{ padding: '8px 16px', background: 'var(--gain-color)', color: 'white', border: 'none', borderRadius: '8px', cursor: savingRiskScore ? 'not-allowed' : 'pointer', fontSize: '0.85rem', fontWeight: '600', opacity: savingRiskScore ? 0.7 : 1 }}>
                 {savingRiskScore ? 'Saving...' : 'Save Assessment'}
               </button>
             </div>
@@ -5847,7 +5898,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
             )}
 
             {archiveError && (
-              <div style={{ marginTop: '8px', padding: '10px 12px', borderRadius: '8px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444', fontSize: '0.8rem' }}>
+              <div style={{ marginTop: '8px', padding: '10px 12px', borderRadius: '8px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: 'var(--loss-color)', fontSize: '0.8rem' }}>
                 {archiveError}
               </div>
             )}
@@ -5894,7 +5945,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   }
                 }}
                 disabled={archiveBusy}
-                style={{ padding: '9px 18px', background: '#f59e0b', border: 'none', borderRadius: '8px', color: 'white', cursor: archiveBusy ? 'not-allowed' : 'pointer', fontSize: '0.85rem', fontWeight: '600', opacity: archiveBusy ? 0.7 : 1 }}
+                style={{ padding: '9px 18px', background: 'var(--warning-color)', border: 'none', borderRadius: '8px', color: 'white', cursor: archiveBusy ? 'not-allowed' : 'pointer', fontSize: '0.85rem', fontWeight: '600', opacity: archiveBusy ? 0.7 : 1 }}
               >
                 {archiveBusy ? 'Archiving…' : 'Archive Client'}
               </button>
