@@ -2220,19 +2220,24 @@ const OrderModal = ({
                         && (selectedHolding?.quantity || prefillData?.quantity);
                       if (!fullQty) return null;
                       return (
-                        <span
+                        <button
+                          type="button"
                           onClick={() => setQuantity(String(fullQty))}
                           title="Fill with the full position quantity"
                           style={{
                             marginLeft: '8px',
+                            padding: '3px 10px',
+                            borderRadius: '6px',
+                            border: '1px solid var(--accent-color)',
+                            background: 'color-mix(in srgb, var(--accent-color) 10%, transparent)',
                             color: 'var(--accent-color)',
                             cursor: 'pointer',
                             fontWeight: '600',
-                            textDecoration: 'underline'
+                            fontSize: '12px'
                           }}
                         >
                           Full position
-                        </span>
+                        </button>
                       );
                     })()}
                   </label>

@@ -59,6 +59,18 @@ export default function FormattedNumberInput({ value, onChange, maxDecimals = 2,
       }
     }
 
+    // A comma the user just TYPED is a decimal separator (European habit —
+    // some mobile keyboards only offer a comma). It's distinguishable from the
+    // component's own thousands separators because it's the single character
+    // inserted at the caret that wasn't in the previous formatted value.
+    if (
+      maxDecimals > 0 &&
+      raw.length === oldFormatted.length + 1 &&
+      raw[caretBefore - 1] === ','
+    ) {
+      raw = raw.slice(0, caretBefore - 1) + '.' + raw.slice(caretBefore);
+    }
+
     // Strip everything except digits, decimal point, and leading minus
     raw = raw.replace(/[^0-9.\-]/g, '');
 
