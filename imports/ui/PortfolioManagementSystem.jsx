@@ -913,8 +913,154 @@ const PortfolioManagementSystem = ({ user }) => {
   }, [dummyTransactions, activeAccountTab, accountTabs]);
 
   // Use filtered data for display
-  const displayPositions = filteredHoldings;
+  const displayPositionsRaw = filteredHoldings;
   const displayTransactions = filteredOperations;
+
+  // Determine portfolio reference currency
+  // Priority: 1) Holdings' portfolioCurrency, 2) Scope's reference currency (account tab or
+  // viewAs account/client/entity), 3) Most common bank account currency, 4) USD default
+  let portfolioCurrency = 'USD';
+  let portfolioHasMixedCurrencies = false;
+
+  // The currency marketValue is actually denominated in. The parser converts each holding's
+  // marketValue into the holding's portfolioCurrency, so THAT is the only currency guaranteed to
+  // match the numbers we display. account.referenceCurrency is independent metadata that can be
+  // stale, duplicated, or self-contradictory (e.g. account 302894.001 says EUR while its holdings
+  // are stored in USD), so it must never override the currency the values are actually in.
+  const holdingsCurrencySet = new Set(
+    dummyPositions.filter(p => p.portfolioCurrency).map(p => p.portfolioCurrency)
+  );
+  portfolioHasMixedCurrencies = holdingsCurrencySet.size > 1;
+  // When every holding shares one portfolioCurrency, that currency IS what marketValue is stored in.
+  const unanimousHoldingsCurrency = holdingsCurrencySet.size === 1 ? [...holdingsCurrencySet][0] : null;
+
+  // Determine portfolio currency - Priority order:
+  // 1. Holdings' portfolioCurrency (the currency marketValue is denominated in) — authoritative
+  // 2. The scope's own referenceCurrency (selected account tab, or the account/client/entity
+  //    picked in the "View as" filter) — only reachable when there are no holdings to read
+  // 3. Most common bank account referenceCurrency
+  // 4. Fall back to USD
+  //
+  // Priority 1 must be checked BEFORE any branching on the current scope: whatever narrows the
+  // view — account tab, viewAs account, viewAs client/entity — the numbers rendered are still
+  // `marketValue`, so a disagreeing referenceCurrency would only relabel them (that is how a
+  // viewAs-account scope on 302894.001 printed USD amounts behind a € sign).
+  const mostCommonAccountCurrency = () => {
+    if (bankAccounts.length === 0) return null;
+    const refCurrencyCounts = bankAccounts.reduce((counts, acc) => {
+      const curr = acc.referenceCurrency || 'EUR';
+      counts[curr] = (counts[curr] || 0) + 1;
+      return counts;
+    }, {});
+    return Object.keys(refCurrencyCounts).reduce((a, b) =>
+      refCurrencyCounts[a] > refCurrencyCounts[b] ? a : b, 'EUR'
+    );
+  };
+
+  if (unanimousHoldingsCurrency) {
+    // Priority 1: the currency the displayed values are actually denominated in.
+    portfolioCurrency = unanimousHoldingsCurrency;
+  } else if (activeAccountTab !== 'consolidated') {
+    // Priority 2: the selected account tab's reference currency.
+    const selectedAccount = bankAccounts.find(acc => acc._id === activeAccountTab);
+    if (selectedAccount && selectedAccount.referenceCurrency) {
+      portfolioCurrency = selectedAccount.referenceCurrency;
+    }
+  } else if (viewAsFilter && viewAsFilter.type === 'account') {
+    // Priority 2: the single account picked in the "View as" filter.
+    if (viewAsFilter.data?.referenceCurrency) {
+      portfolioCurrency = viewAsFilter.data.referenceCurrency;
+    } else {
+      portfolioCurrency = mostCommonAccountCurrency() || portfolioCurrency;
+    }
+  } else if (viewAsFilter && (viewAsFilter.type === 'client' || viewAsFilter.type === 'entity')) {
+    // Priority 2: Entity/Client's referenceCurrency, then priority 3.
+    const clientCurrency = viewAsFilter.data?.referenceCurrency || viewAsFilter.data?.profile?.referenceCurrency;
+    portfolioCurrency = clientCurrency || mostCommonAccountCurrency() || portfolioCurrency;
+  } else {
+    // Priority 3: Most common bank account reference currency
+    portfolioCurrency = mostCommonAccountCurrency() || portfolioCurrency;
+  }
+
+  // No view-as filter and no specific account tab → this is the user's own consolidated
+  // view, which should match the home dashboard's Total AUM. Use the logged-in user's
+  // preferred display currency (set in My Profile). With a filter active, the priority
+  // logic above already resolved the correct portfolio currency, so leave it untouched.
+  if (!viewAsFilter && activeAccountTab === 'consolidated' && user?.profile?.preferredCurrency) {
+    portfolioCurrency = user.profile.preferredCurrency;
+  }
+
+  // Cross rates for mixed-currency scopes: a holding stores marketValue in its own
+  // portfolioCurrency, so any holding whose currency differs from the display
+  // currency (e.g. USD sub-account 302894.001 under an EUR client) needs a spot
+  // rate before its values can be labeled with `portfolioCurrency`.
+  useEffect(() => {
+    const needed = new Set();
+    for (const p of displayPositionsRaw) {
+      if (p.portfolioCurrency && p.portfolioCurrency !== portfolioCurrency) {
+        needed.add(`${p.portfolioCurrency}${portfolioCurrency}`);
+      }
+    }
+    const missing = [...needed].filter(pair => !(pair in fxSpotRates));
+    if (missing.length === 0) return;
+    Meteor.callAsync('currencyCache.getRates', missing.map(p => `${p}.FOREX`))
+      .then(result => {
+        if (!result?.success || !result.rates) return;
+        setFxSpotRates(prev => {
+          const next = { ...prev };
+          for (const pair of missing) {
+            const raw = result.rates[`${pair}.FOREX`];
+            const numeric = raw != null && typeof raw === 'object'
+              ? Number(raw.rate ?? raw.value ?? raw.price)
+              : Number(raw);
+            if (Number.isFinite(numeric)) next[pair] = numeric;
+          }
+          return next;
+        });
+      })
+      .catch(err => console.warn('[PMS] Failed to fetch cross-currency rates:', err));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [portfolioCurrency, displayPositionsRaw.map(p => p.portfolioCurrency).join(',')]);
+
+  // Express a holding-level value in the display currency. Falls back to the raw
+  // value while the spot rate is still loading (re-renders once it arrives).
+  const toDisplayCurrency = (value, holdingCurrency) => {
+    if (!value) return value || 0;
+    if (!holdingCurrency || holdingCurrency === portfolioCurrency) return value;
+    const direct = fxSpotRates[`${holdingCurrency}${portfolioCurrency}`];
+    if (direct > 0) return value * direct;
+    const inverse = fxSpotRates[`${portfolioCurrency}${holdingCurrency}`];
+    if (inverse > 0) return value / inverse;
+    return value;
+  };
+
+  // All portfolio-currency-denominated fields converted ONCE at the source, so
+  // every downstream consumer (cash table, totals, position rows, allocations)
+  // shows coherent numbers behind the `portfolioCurrency` label. Original-currency
+  // fields (marketValueOriginalCurrency, currency) are untouched.
+  const displayPositions = displayPositionsRaw.map(p => {
+    if (!p.portfolioCurrency || p.portfolioCurrency === portfolioCurrency) return p;
+    // A cash balance already denominated in the display currency needs no FX at
+    // all — its original-currency value IS the display value, exactly (a spot
+    // round-trip would drift it away from the printed balance).
+    const exactOriginal = p.assetClass === 'cash'
+      && p.currency === portfolioCurrency
+      && Number.isFinite(p.marketValueOriginalCurrency);
+    return {
+      ...p,
+      marketValue: exactOriginal
+        ? p.marketValueOriginalCurrency
+        : toDisplayCurrency(p.marketValue, p.portfolioCurrency),
+      marketValueNoAccruedInterest: exactOriginal
+        ? p.marketValueOriginalCurrency
+        : (p.marketValueNoAccruedInterest != null
+          ? toDisplayCurrency(p.marketValueNoAccruedInterest, p.portfolioCurrency)
+          : p.marketValueNoAccruedInterest),
+      costBasis: p.costBasis != null ? toDisplayCurrency(p.costBasis, p.portfolioCurrency) : p.costBasis,
+      gainLoss: p.gainLoss != null ? toDisplayCurrency(p.gainLoss, p.portfolioCurrency) : p.gainLoss,
+      unrealizedPnL: p.unrealizedPnL != null ? toDisplayCurrency(p.unrealizedPnL, p.portfolioCurrency) : p.unrealizedPnL
+    };
+  });
 
   // Calculate 4-category allocation for risk profile comparison
   const fourCategoryAllocation = useMemo(() => {
@@ -1688,79 +1834,9 @@ const PortfolioManagementSystem = ({ user }) => {
   const totalPortfolioValue = totalNonCashPortfolioValue + totalCashValue + totalFxForwardPortfolioValue;
   const totalGainLoss = totalNonCashGainLoss; // Gain/loss only applies to non-cash positions
 
-  // Determine portfolio reference currency
-  // Priority: 1) Holdings' portfolioCurrency, 2) Scope's reference currency (account tab or
-  // viewAs account/client/entity), 3) Most common bank account currency, 4) USD default
-  let portfolioCurrency = 'USD';
-  let portfolioHasMixedCurrencies = false;
-
-  // The currency marketValue is actually denominated in. The parser converts each holding's
-  // marketValue into the holding's portfolioCurrency, so THAT is the only currency guaranteed to
-  // match the numbers we display. account.referenceCurrency is independent metadata that can be
-  // stale, duplicated, or self-contradictory (e.g. account 302894.001 says EUR while its holdings
-  // are stored in USD), so it must never override the currency the values are actually in.
-  const holdingsCurrencySet = new Set(
-    dummyPositions.filter(p => p.portfolioCurrency).map(p => p.portfolioCurrency)
-  );
-  portfolioHasMixedCurrencies = holdingsCurrencySet.size > 1;
-  // When every holding shares one portfolioCurrency, that currency IS what marketValue is stored in.
-  const unanimousHoldingsCurrency = holdingsCurrencySet.size === 1 ? [...holdingsCurrencySet][0] : null;
-
-  // Determine portfolio currency - Priority order:
-  // 1. Holdings' portfolioCurrency (the currency marketValue is denominated in) — authoritative
-  // 2. The scope's own referenceCurrency (selected account tab, or the account/client/entity
-  //    picked in the "View as" filter) — only reachable when there are no holdings to read
-  // 3. Most common bank account referenceCurrency
-  // 4. Fall back to USD
-  //
-  // Priority 1 must be checked BEFORE any branching on the current scope: whatever narrows the
-  // view — account tab, viewAs account, viewAs client/entity — the numbers rendered are still
-  // `marketValue`, so a disagreeing referenceCurrency would only relabel them (that is how a
-  // viewAs-account scope on 302894.001 printed USD amounts behind a € sign).
-  const mostCommonAccountCurrency = () => {
-    if (bankAccounts.length === 0) return null;
-    const refCurrencyCounts = bankAccounts.reduce((counts, acc) => {
-      const curr = acc.referenceCurrency || 'EUR';
-      counts[curr] = (counts[curr] || 0) + 1;
-      return counts;
-    }, {});
-    return Object.keys(refCurrencyCounts).reduce((a, b) =>
-      refCurrencyCounts[a] > refCurrencyCounts[b] ? a : b, 'EUR'
-    );
-  };
-
-  if (unanimousHoldingsCurrency) {
-    // Priority 1: the currency the displayed values are actually denominated in.
-    portfolioCurrency = unanimousHoldingsCurrency;
-  } else if (activeAccountTab !== 'consolidated') {
-    // Priority 2: the selected account tab's reference currency.
-    const selectedAccount = bankAccounts.find(acc => acc._id === activeAccountTab);
-    if (selectedAccount && selectedAccount.referenceCurrency) {
-      portfolioCurrency = selectedAccount.referenceCurrency;
-    }
-  } else if (viewAsFilter && viewAsFilter.type === 'account') {
-    // Priority 2: the single account picked in the "View as" filter.
-    if (viewAsFilter.data?.referenceCurrency) {
-      portfolioCurrency = viewAsFilter.data.referenceCurrency;
-    } else {
-      portfolioCurrency = mostCommonAccountCurrency() || portfolioCurrency;
-    }
-  } else if (viewAsFilter && (viewAsFilter.type === 'client' || viewAsFilter.type === 'entity')) {
-    // Priority 2: Entity/Client's referenceCurrency, then priority 3.
-    const clientCurrency = viewAsFilter.data?.referenceCurrency || viewAsFilter.data?.profile?.referenceCurrency;
-    portfolioCurrency = clientCurrency || mostCommonAccountCurrency() || portfolioCurrency;
-  } else {
-    // Priority 3: Most common bank account reference currency
-    portfolioCurrency = mostCommonAccountCurrency() || portfolioCurrency;
-  }
-
-  // No view-as filter and no specific account tab → this is the user's own consolidated
-  // view, which should match the home dashboard's Total AUM. Use the logged-in user's
-  // preferred display currency (set in My Profile). With a filter active, the priority
-  // logic above already resolved the correct portfolio currency, so leave it untouched.
-  if (!viewAsFilter && activeAccountTab === 'consolidated' && user?.profile?.preferredCurrency) {
-    portfolioCurrency = user.profile.preferredCurrency;
-  }
+  // NOTE: portfolioCurrency is resolved much earlier (right after displayPositionsRaw),
+  // because position values are converted into the display currency at the source —
+  // see the "Determine portfolio reference currency" block above the position splits.
 
   // Spot rates for FX deal lifecycles: fetch (a) foreign→base for mark-to-market
   // on every open leg and (b) base→portfolioCurrency to express per-row P&L in
