@@ -260,8 +260,8 @@ if (Meteor.isServer) {
 
           if (chartData) {
             // Store chart data in database
-            const { ChartDataCollection } = await import('./chartData.js');
-            await Meteor.callAsync('chartData.upsert', productData._id, chartData);
+            const { upsertChartData } = await import('./chartData.js');
+            await upsertChartData(productData._id, chartData);
             console.log('📊 Chart data stored for product:', productData._id);
 
             // Add chart reference to template results

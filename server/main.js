@@ -29,7 +29,7 @@ import { loginRateLimiter, authRateLimiter, enforceAuthRateLimit } from './authR
 
 import { LinksCollection } from '/imports/api/links';
 import { ProductsCollection } from '/imports/api/products';
-import { ChartDataCollection } from '/imports/api/chartData';
+import { ChartDataCollection, upsertChartData, removeChartData } from '/imports/api/chartData';
 import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
 import { BanksCollection, BankHelpers } from '/imports/api/banks';
 import { BankConnectionsCollection, BankConnectionHelpers } from '/imports/api/bankConnections';
@@ -2787,7 +2787,7 @@ Meteor.methods({
 
       // Save chart data separately if present
       if (chartData) {
-        await Meteor.callAsync('chartData.upsert', productId, chartData);
+        await upsertChartData(productId, chartData);
       }
 
       // Auto-create allocations from PMS holdings if product has ISIN
@@ -2954,7 +2954,7 @@ Meteor.methods({
 
       // Update chart data separately if present
       if (chartData) {
-        await Meteor.callAsync('chartData.upsert', productId, chartData);
+        await upsertChartData(productId, chartData);
       }
 
       // Auto-create allocations from PMS holdings if ISIN was added/changed
@@ -3076,7 +3076,7 @@ Meteor.methods({
       await ProductsCollection.removeAsync(productId);
       
       // Also remove associated chart data
-      await Meteor.callAsync('chartData.remove', productId);
+      await removeChartData(productId);
       
       return true;
     } catch (error) {

@@ -241,7 +241,8 @@ if (Meteor.isServer) {
 
         if (chartData) {
           console.log('📊 Himalaya chart data generated, storing in database');
-          await Meteor.callAsync('chartData.upsert', productData._id, chartData);
+          const { upsertChartData } = await import('./chartData.js');
+          await upsertChartData(productData._id, chartData);
           templateResults.chartData = {
             available: true,
             type: 'himalaya_performance',
@@ -267,7 +268,8 @@ if (Meteor.isServer) {
 
         if (chartData) {
           console.log('📊 Orion chart data generated, storing in database');
-          await Meteor.callAsync('chartData.upsert', productData._id, chartData);
+          const { upsertChartData } = await import('./chartData.js');
+          await upsertChartData(productData._id, chartData);
           templateResults.chartData = {
             available: true,
             type: 'orion_performance',
@@ -293,7 +295,8 @@ if (Meteor.isServer) {
 
         if (chartData) {
           console.log('📊 Phoenix chart data generated, storing in database');
-          await Meteor.callAsync('chartData.upsert', productData._id, chartData);
+          const { upsertChartData } = await import('./chartData.js');
+          await upsertChartData(productData._id, chartData);
           templateResults.chartData = {
             available: true,
             type: 'phoenix_performance',
@@ -319,7 +322,8 @@ if (Meteor.isServer) {
 
         if (chartData) {
           console.log('📊 Shark Note chart data generated, storing in database');
-          await Meteor.callAsync('chartData.upsert', productData._id, chartData);
+          const { upsertChartData } = await import('./chartData.js');
+          await upsertChartData(productData._id, chartData);
           templateResults.chartData = {
             available: true,
             type: 'shark_note_performance',
@@ -345,7 +349,8 @@ if (Meteor.isServer) {
 
         if (chartData) {
           console.log('📊 Participation Note chart data generated, storing in database');
-          await Meteor.callAsync('chartData.upsert', productData._id, chartData);
+          const { upsertChartData } = await import('./chartData.js');
+          await upsertChartData(productData._id, chartData);
           templateResults.chartData = {
             available: true,
             type: 'participation_note_performance',

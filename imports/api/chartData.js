@@ -22,47 +22,67 @@ export const ChartDataCollection = new Mongo.Collection('chartData');
 //   version: Number             // Chart data version for cache invalidation
 // }
 
+/**
+ * Direct server-side writers for the evaluation pipeline.
+ *
+ * These MUST be called as plain functions from server code, never via
+ * Meteor.call: a nested method call inherits the OUTER invocation's
+ * connection, so when an evaluation was triggered from the browser (Run
+ * Evaluation / report refresh), the 'server-only' connection guard on the
+ * method rejected its own pipeline with "This method can only be called
+ * server-side" and the report was stored with CHART_GENERATION_FAILED.
+ */
+export async function upsertChartData(productId, chartData) {
+  check(productId, String);
+  check(chartData, Object);
+
+  const now = new Date();
+  const existingChart = await ChartDataCollection.findOneAsync({ productId });
+
+  if (existingChart) {
+    // Update existing chart data
+    return ChartDataCollection.updateAsync(existingChart._id, {
+      $set: {
+        ...chartData,
+        updatedAt: now,
+        version: (existingChart.version || 0) + 1
+      }
+    });
+  } else {
+    // Insert new chart data
+    return ChartDataCollection.insertAsync({
+      ...chartData,
+      productId,
+      generatedAt: now,
+      updatedAt: now,
+      version: 1
+    });
+  }
+}
+
+export async function removeChartData(productId) {
+  check(productId, String);
+  return ChartDataCollection.removeAsync({ productId });
+}
+
 // Server-side methods for chart data management
 if (Meteor.isServer) {
   Meteor.methods({
     async 'chartData.upsert'(productId, chartData) {
-      // Server-only: chart data is written by the evaluation pipeline.
+      // Server-only: chart data is written by the evaluation pipeline (which
+      // calls upsertChartData directly — see above). The method remains only
+      // to reject any external caller.
       if (this.connection !== null) {
         throw new Meteor.Error('not-authorized', 'This method can only be called server-side');
       }
-      check(productId, String);
-      check(chartData, Object);
-      
-      const now = new Date();
-      const existingChart = await ChartDataCollection.findOneAsync({ productId });
-      
-      if (existingChart) {
-        // Update existing chart data
-        return ChartDataCollection.updateAsync(existingChart._id, {
-          $set: {
-            ...chartData,
-            updatedAt: now,
-            version: (existingChart.version || 0) + 1
-          }
-        });
-      } else {
-        // Insert new chart data
-        return ChartDataCollection.insertAsync({
-          ...chartData,
-          productId,
-          generatedAt: now,
-          updatedAt: now,
-          version: 1
-        });
-      }
+      return upsertChartData(productId, chartData);
     },
-    
+
     'chartData.remove'(productId) {
       if (this.connection !== null) {
         throw new Meteor.Error('not-authorized', 'This method can only be called server-side');
       }
-      check(productId, String);
-      return ChartDataCollection.removeAsync({ productId });
+      return removeChartData(productId);
     },
     
     async 'chartData.getByProduct'(productId) {
