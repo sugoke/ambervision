@@ -359,7 +359,7 @@ export const PhoenixEvaluator = {
     }
   },
 
-  async getPriceAtDate(ticker, targetDate, tradeDate) {
+  async getPriceAtDate(ticker, targetDate, tradeDate, { exactOnly = false } = {}) {
     try {
       const targetDateStr = new Date(targetDate).toISOString().split('T')[0];
       const tradeDateStr = new Date(tradeDate).toISOString().split('T')[0];
@@ -400,6 +400,13 @@ export const PhoenixEvaluator = {
         const price = priceRecord.close || priceRecord.adjustedClose;
         console.log(`✅ Found exact price for ${ticker} at ${targetDateStr}: $${price}`);
         return price;
+      }
+
+      // exactOnly: used for SAME-DAY observations, where falling back to the
+      // previous close would wrongly resolve the observation before the
+      // session has ended. No exact record = fixing not known yet.
+      if (exactOnly) {
+        return null;
       }
 
       // If exact date not found, try to find closest prior date
@@ -608,19 +615,25 @@ export const PhoenixEvaluator = {
       const todayOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
       // Determine if observation has occurred based on DATE, not data availability
-      // An observation has occurred if its date is in the past
-      const isPast = obsDateOnly < todayOnly;
+      // An observation has occurred if its date is in the past. A SAME-DAY
+      // observation is promoted to occurred once an EXACT closing price for the
+      // date exists for every underlying (i.e. the session has ended and the
+      // fixing is known) — previously it stayed "upcoming" until the next day.
+      let isPast = obsDateOnly < todayOnly;
+      const isObservationToday = obsDateOnly.getTime() === todayOnly.getTime();
       let basketLevel = null;
       let hasAllHistoricalData = true;
       const underlyingPerformances = []; // Store {ticker, performance, price} for each underlying
 
-      // For past observations, try to fetch historical data to calculate basket level
-      if (isPast && underlyings.length > 0) {
-        // Try to fetch historical prices from MarketDataCacheCollection
+      // For past (and same-day) observations, try to fetch historical data to calculate basket level
+      if ((isPast || isObservationToday) && underlyings.length > 0) {
+        // Try to fetch historical prices from MarketDataCacheCollection.
+        // Same-day lookups are exact-only: the closest-prior-date fallback
+        // would return YESTERDAY's close and resolve the observation early.
         const performanceData = await Promise.all(
           underlyings.map(async (u) => {
             const fullTicker = u.fullTicker || `${u.ticker}.US`;
-            const obsPrice = await this.getPriceAtDate(fullTicker, obsDate, tradeDate);
+            const obsPrice = await this.getPriceAtDate(fullTicker, obsDate, tradeDate, { exactOnly: isObservationToday });
 
             // Use pre-fetched trade date price for consistent performance calculation
             // This ensures the evaluator uses the same initial price as the chart builder
@@ -636,9 +649,11 @@ export const PhoenixEvaluator = {
               };
             }
 
-            // Missing historical data - log but don't prevent observation from being marked as past
-            console.warn(`⚠️ Missing historical price for ${fullTicker} at ${obsDate.toISOString().split('T')[0]} - data gap (observation still marked as occurred)`);
-            hasAllHistoricalData = false;
+            if (!isObservationToday) {
+              // Missing historical data - log but don't prevent observation from being marked as past
+              console.warn(`⚠️ Missing historical price for ${fullTicker} at ${obsDate.toISOString().split('T')[0]} - data gap (observation still marked as occurred)`);
+              hasAllHistoricalData = false;
+            }
             return null;
           })
         );
@@ -649,6 +664,16 @@ export const PhoenixEvaluator = {
           // Successfully retrieved all data - can calculate basket level
           underlyingPerformances.push(...validPerformances);
           basketLevel = Math.min(...validPerformances.map(p => p.performance));
+          // Same-day observation with a complete set of exact closes: the
+          // session has ended and the fixing is known — treat as occurred.
+          if (isObservationToday) {
+            isPast = true;
+            console.log(`✅ Same-day observation ${i + 1} on ${obsDate.toISOString().split('T')[0]} resolved with today's closes`);
+          }
+        } else if (isObservationToday) {
+          // No exact close for today yet (session open or feed not updated):
+          // the observation legitimately stays upcoming — not a data gap.
+          basketLevel = null;
         } else {
           // Could not retrieve complete data - basket level unknown but observation still occurred
           basketLevel = null;
