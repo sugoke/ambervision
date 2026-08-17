@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, Suspense } from 'react';
 import Login from './Login.jsx';
 import MainContent from './MainContent.jsx';
 import PasswordReset from './PasswordReset.jsx';
@@ -21,12 +21,16 @@ import NotificationCenter from './NotificationCenter.jsx';
 import AmberChat from './AmberChat.jsx';
 import ErrorBoundary from './ErrorBoundary.jsx';
 import LiquidGlassCard from './components/LiquidGlassCard.jsx';
+import PullToRefresh from './components/PullToRefresh.jsx';
 import { ThemeProvider, useTheme } from './ThemeContext.jsx';
 import { ViewAsProvider, useViewAs } from './ViewAsContext.jsx';
 
-// Lazy load MarketTicker to improve initial page load performance
-// This splits MarketTicker into a separate chunk that loads asynchronously
-const MarketTicker = lazy(() => import('./MarketTicker.jsx'));
+// MarketTicker is imported statically: Meteor's dynamic-import evaluates fetched
+// modules with eval(), which the production CSP (script-src without 'unsafe-eval',
+// see server/securityHeaders.js) blocks — the lazy chunk crashed on deploy. Its
+// mounting is already deferred 2s after auth via showMarketTicker, so the initial
+// render cost is unchanged.
+import MarketTicker from './MarketTicker.jsx';
 
 const AppContent = () => {
   const { theme } = useTheme();
@@ -941,6 +945,9 @@ const AppContent = () => {
             currentUser={user}
           />
         )}
+
+        {/* Pull-down-to-refresh gesture (mobile only) */}
+        {user && isMobile && <PullToRefresh />}
 
         {/* Mobile Search Overlay */}
         {user && isMobile && mobileSearchOpen && (

@@ -386,6 +386,9 @@ Meteor.methods({
    * @param {Object} viewAsFilter - Optional filter to view specific client/account
    */
   async 'rmDashboard.getAlerts'(sessionId, viewAsFilter = null) {
+    // Read-only method: unblock so the dashboard's parallel calls don't
+    // serialize on the server (they all arrive on one DDP connection)
+    this.unblock();
     check(sessionId, String);
     check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
       type: String,
@@ -452,19 +455,30 @@ Meteor.methods({
         });
       }
 
-      // 4. Check investor profile breaches
+      // 4. Check investor profile breaches.
+      // Batched (was an N+1: a sorted snapshot findOne + a profile findOne per
+      // client): profiles come in one query, and only profiled clients get a
+      // snapshot lookup — latest-per-user via $top, which unlike $sort+$group
+      // doesn't blow the multiplanner memory limit on large collections.
+      const clientProfiles = await AccountProfilesCollection.find({
+        userId: { $in: clientIds }
+      }).fetchAsync();
+      const profilesByUser = new Map(clientProfiles.map(p => [p.userId, p]));
+      let snapshotsByUser = new Map();
+      if (profilesByUser.size > 0) {
+        const latestSnapshots = await PortfolioSnapshotsCollection.rawCollection().aggregate([
+          { $match: { userId: { $in: [...profilesByUser.keys()] } } },
+          { $group: { _id: '$userId', doc: { $top: { sortBy: { snapshotDate: -1 }, output: '$$ROOT' } } } }
+        ]).toArray();
+        snapshotsByUser = new Map(latestSnapshots.map(d => [d._id, d.doc]));
+      }
+
       for (const client of clients) {
-        // Get latest portfolio snapshot
-        const snapshot = await PortfolioSnapshotsCollection.findOneAsync(
-          { userId: client._id },
-          { sort: { snapshotDate: -1 } }
-        );
-
-        if (!snapshot?.assetClassBreakdown || !snapshot.totalAccountValue) continue;
-
-        // Get account profile limits
-        const profile = await AccountProfilesCollection.findOneAsync({ userId: client._id });
+        const profile = profilesByUser.get(client._id);
         if (!profile) continue;
+
+        const snapshot = snapshotsByUser.get(client._id);
+        if (!snapshot?.assetClassBreakdown || !snapshot.totalAccountValue) continue;
 
         // Aggregate to 4 categories
         const breakdown = aggregateToFourCategories(snapshot.assetClassBreakdown, snapshot.totalAccountValue);
@@ -581,6 +595,7 @@ Meteor.methods({
    * @param {Object} viewAsFilter - Optional filter to view specific client/account
    */
   async 'rmDashboard.getPortfolioSummary'(sessionId, targetCurrency = 'EUR', viewAsFilter = null) {
+    this.unblock();
     check(sessionId, String);
     check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
       type: String,
@@ -723,7 +738,7 @@ Meteor.methods({
             { assetClass: null },
             { assetClass: { $exists: false } }
           ]
-        }).fetchAsync();
+        }, { fields: { marketValue: 1, portfolioCode: 1, bankId: 1, userId: 1 } }).fetchAsync();
 
         totalAUMInEUR = sumHoldingsInEUR(allHoldings);
 
@@ -773,7 +788,9 @@ Meteor.methods({
             $nin: excludedPortfolioCodes
           };
         }
-        const clientHoldings = await PMSHoldingsCollection.find(clientHoldingsQuery).fetchAsync();
+        const clientHoldings = await PMSHoldingsCollection.find(clientHoldingsQuery, {
+          fields: { marketValue: 1, portfolioCode: 1, bankId: 1, userId: 1 }
+        }).fetchAsync();
 
         totalAUMInEUR = sumHoldingsInEUR(clientHoldings);
 
@@ -810,7 +827,9 @@ Meteor.methods({
             $nin: excludedPortfolioCodes
           };
         }
-        const fxForwardHoldings = await PMSHoldingsCollection.find(fxForwardQuery).fetchAsync();
+        const fxForwardHoldings = await PMSHoldingsCollection.find(fxForwardQuery, {
+          fields: { marketValueNoAccruedInterest: 1, marketValue: 1 }
+        }).fetchAsync();
         totalAUMInEUR += fxForwardHoldings.reduce((sum, h) => sum + (h.marketValueNoAccruedInterest || h.marketValue || 0), 0);
       }
 
@@ -1042,6 +1061,7 @@ Meteor.methods({
    * @param {String} targetCurrency - Currency for display (default: 'EUR')
    */
   async 'rmDashboard.getAUMHistory'(sessionId, days = 90, targetCurrency = 'EUR', viewAsFilter = null) {
+    this.unblock();
     check(sessionId, String);
     check(days, Number);
     check(targetCurrency, String);
@@ -1365,6 +1385,7 @@ Meteor.methods({
    * @param {Object} viewAsFilter - Optional filter to view specific client/account
    */
   async 'rmDashboard.getBirthdays'(sessionId, viewAsFilter = null, limit = 5) {
+    this.unblock();
     check(sessionId, String);
     check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
       type: String,
@@ -1521,6 +1542,7 @@ Meteor.methods({
    * @param {Object} viewAsFilter - Optional filter to view specific client/account
    */
   async 'rmDashboard.getWatchlist'(sessionId, viewAsFilter = null) {
+    this.unblock();
     check(sessionId, String);
     check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
       type: String,
@@ -1543,11 +1565,12 @@ Meteor.methods({
 
       const productIds = [...new Set(allocations.map(a => a.productId))];
 
-      // Get all products
+      // Get all products — only the underlyings are used, so don't pull the
+      // full structured-product documents (schedules, rules, chart configs…)
       const products = await ProductsCollection.find({
         _id: { $in: productIds },
         productStatus: { $ne: 'matured' }
-      }).fetchAsync();
+      }, { fields: { underlyings: 1 } }).fetchAsync();
 
       // Extract unique underlyings
       const underlyingMap = new Map();
@@ -1564,10 +1587,14 @@ Meteor.methods({
         });
       });
 
-      // Get prices from cache
+      // Get prices from cache. Only the last two closes are read, so slice the
+      // history array server-side — full histories are years of daily bars and
+      // were the bulk of this method's cost.
       const tickers = Array.from(underlyingMap.keys());
       const prices = await MarketDataCacheCollection.find({
         fullTicker: { $in: tickers }
+      }, {
+        fields: { fullTicker: 1, price: 1, close: 1, lastUpdated: 1, history: { $slice: -2 } }
       }).fetchAsync();
 
       const watchlist = [];
@@ -1613,6 +1640,7 @@ Meteor.methods({
    * @param {Object} viewAsFilter - Optional filter to view specific client/account
    */
   async 'rmDashboard.getUpcomingEvents'(sessionId, limit = 2, viewAsFilter = null) {
+    this.unblock();
     check(sessionId, String);
     check(limit, Number);
     check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
@@ -1700,6 +1728,7 @@ Meteor.methods({
    * @param {Object} viewAsFilter - Optional filter to view specific client/account
    */
   async 'rmDashboard.getRecentActivity'(sessionId, limit = 5, viewAsFilter = null) {
+    this.unblock();
     check(sessionId, String);
     check(limit, Number);
     check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
@@ -1761,6 +1790,7 @@ Meteor.methods({
    * Same quote shown to all users for 24 hours (cached in database)
    */
   async 'rmDashboard.getDailyQuote'(sessionId) {
+    this.unblock();
     check(sessionId, String);
 
     // Validate session (any logged-in user can get the quote)
@@ -1856,6 +1886,7 @@ Meteor.methods({
    * Used by ClientsSection to show warning indicators
    */
   async 'rmDashboard.getClientBreachStatus'(sessionId) {
+    this.unblock();
     check(sessionId, String);
 
     const currentUser = await validateRMSession(sessionId);
@@ -1917,6 +1948,7 @@ Meteor.methods({
    * @param {Object} viewAsFilter - Optional filter to view specific client/account
    */
   async 'rmDashboard.getCashMonitoring'(sessionId, viewAsFilter = null) {
+    this.unblock();
     check(sessionId, String);
     check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
       type: String,
@@ -2032,13 +2064,33 @@ Meteor.methods({
       const highCashAccounts = [];
       const HIGH_CASH_THRESHOLD = 200000; // 200k EUR
 
+      // Batch the per-account lookups (holdings + display names): the previous
+      // per-account queries were an N+1 that alone cost ~1s on the dashboard
+      const accountNumbers = [...new Set(bankAccounts.map(a => a.accountNumber).filter(Boolean))];
+      const allAccountHoldings = accountNumbers.length > 0
+        ? await PMSHoldingsCollection.find({
+            portfolioCode: { $in: accountNumbers },
+            isLatest: true,
+            isActive: { $ne: false }
+          }).fetchAsync()
+        : [];
+      const holdingsByPortfolio = new Map();
+      for (const h of allAccountHoldings) {
+        if (!holdingsByPortfolio.has(h.portfolioCode)) holdingsByPortfolio.set(h.portfolioCode, []);
+        holdingsByPortfolio.get(h.portfolioCode).push(h);
+      }
+      const nameEntityIds = [...new Set(bankAccounts.map(a => a.entityId).filter(Boolean))];
+      const nameUserIds = [...new Set(bankAccounts.filter(a => !a.entityId && a.userId).map(a => a.userId))];
+      const entitiesById = new Map(
+        (await ClientEntitiesCollection.find({ _id: { $in: nameEntityIds } }).fetchAsync()).map(e => [e._id, e])
+      );
+      const usersById = new Map(
+        (await UsersCollection.find({ _id: { $in: nameUserIds } }).fetchAsync()).map(u => [u._id, u])
+      );
+
       for (const account of bankAccounts) {
         // Get holdings for this account
-        const holdings = await PMSHoldingsCollection.find({
-          portfolioCode: account.accountNumber,
-          isLatest: true,
-          isActive: { $ne: false }
-        }).fetchAsync();
+        const holdings = holdingsByPortfolio.get(account.accountNumber) || [];
 
         // Use shared cash calculator for consistent values across the app
         // Pass local convertToEUR function which uses the FOREX pairs Map format
@@ -2051,10 +2103,10 @@ Meteor.methods({
         // Get client info — entity-aware (canonical records may carry entityId, not userId)
         let clientName = 'Unknown';
         if (account.entityId) {
-          const entity = await ClientEntitiesCollection.findOneAsync(account.entityId);
+          const entity = entitiesById.get(account.entityId);
           clientName = entity ? ClientEntityHelpers.getEntityDisplayName(entity) : 'Unknown';
         } else if (account.userId) {
-          const accountUser = await UsersCollection.findOneAsync(account.userId);
+          const accountUser = usersById.get(account.userId);
           clientName = accountUser
             ? `${accountUser.profile?.firstName || ''} ${accountUser.profile?.lastName || ''}`.trim() || accountUser.email
             : 'Unknown';

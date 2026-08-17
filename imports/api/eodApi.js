@@ -1111,6 +1111,9 @@ if (Meteor.isServer) {
 
     // Get multiple prices (for exchange rates and market data)
     async 'eod.getMultiplePrices'(symbols) {
+      // Hits the EOD API live (~1.5s+) — unblock so it never queues behind
+      // (or holds up) the dashboard's other method calls on the same connection
+      this.unblock();
       if (!Array.isArray(symbols) || symbols.length === 0) {
         return { success: false, error: 'Invalid symbols array' };
       }

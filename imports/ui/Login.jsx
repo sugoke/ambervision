@@ -345,7 +345,7 @@ const Login = ({ onUserChange, compact = false }) => {
     padding: '13px 15px',
     border: '1px solid var(--border-color)',
     borderRadius: 'var(--radius-sm)',
-    fontSize: '0.95rem',
+    fontSize: '16px', // ≥16px prevents iOS from zooming the page on input focus
     fontFamily: 'var(--font-sans)',
     boxSizing: 'border-box',
     transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
@@ -365,21 +365,50 @@ const Login = ({ onUserChange, compact = false }) => {
   };
 
   return (
-    <div style={{
+    <div className="login-screen" style={{
       position: 'fixed',
       top: 0,
       left: 0,
-      width: '100vw',
-      height: '100vh',
+      right: 0,
+      bottom: 0,
       display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
       background: 'var(--page-bg)',
-      padding: '20px',
+      // Safe-area padding keeps the card clear of the notch / home indicator,
+      // including the left/right insets when the phone is in landscape
+      padding: 'calc(20px + env(safe-area-inset-top, 0px)) calc(20px + env(safe-area-inset-right, 0px)) calc(20px + env(safe-area-inset-bottom, 0px)) calc(20px + env(safe-area-inset-left, 0px))',
       boxSizing: 'border-box',
+      // Card centers via margin:auto and scrolls (instead of clipping the top)
+      // when taller than the visible viewport — e.g. small phones with keyboard open
+      overflowY: 'auto',
+      WebkitOverflowScrolling: 'touch',
       zIndex: 9999
     }}>
-      <div style={{
+      {/* Compact the card on short viewports (phone landscape) so it fits
+          without scrolling; inline styles need !important to be overridden */}
+      <style>{`
+        @media (max-height: 520px) {
+          .login-card {
+            padding: 20px 24px 18px !important;
+          }
+          .login-card .login-header {
+            margin-bottom: 16px !important;
+          }
+          .login-card .login-logo-row {
+            margin-bottom: 0.75rem !important;
+          }
+          .login-card .login-logo-row img {
+            height: 36px !important;
+          }
+          .login-card h1 {
+            font-size: 1.25rem !important;
+            margin-bottom: 4px !important;
+          }
+          .login-card .login-field {
+            margin-bottom: 12px !important;
+          }
+        }
+      `}</style>
+      <div className="login-card" style={{
         background: 'var(--card-bg)',
         border: '1px solid var(--border-color)',
         borderRadius: 'var(--radius)',
@@ -387,6 +416,7 @@ const Login = ({ onUserChange, compact = false }) => {
         boxShadow: '0 24px 60px -24px var(--shadow)',
         width: '100%',
         maxWidth: '440px',
+        margin: 'auto',
         position: 'relative',
         overflow: 'hidden'
       }}>
@@ -401,8 +431,8 @@ const Login = ({ onUserChange, compact = false }) => {
         }}></div>
 
         {/* Header */}
-        <div style={{ textAlign: 'center', marginBottom: '36px' }}>
-          <div style={{
+        <div className="login-header" style={{ textAlign: 'center', marginBottom: '36px' }}>
+          <div className="login-logo-row" style={{
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -449,7 +479,7 @@ const Login = ({ onUserChange, compact = false }) => {
         </div>
 
         <form onSubmit={handleSubmit} style={{ width: '100%' }}>
-          <div style={{ marginBottom: '22px' }}>
+          <div className="login-field" style={{ marginBottom: '22px' }}>
             <label style={fieldLabelStyle}>
               Email Address
             </label>
@@ -465,7 +495,7 @@ const Login = ({ onUserChange, compact = false }) => {
             />
           </div>
 
-          <div style={{ marginBottom: '22px' }}>
+          <div className="login-field" style={{ marginBottom: '22px' }}>
             <label style={fieldLabelStyle}>
               Password
             </label>
@@ -483,7 +513,7 @@ const Login = ({ onUserChange, compact = false }) => {
 
           {/* Remember Me Checkbox & Forgot Password - Only show for login */}
           {isLogin && (
-            <div style={{
+            <div className="login-field" style={{
               marginBottom: '24px',
               display: 'flex',
               alignItems: 'center',
@@ -644,12 +674,14 @@ const Login = ({ onUserChange, compact = false }) => {
             position: 'fixed',
             top: 0,
             left: 0,
-            width: '100vw',
-            height: '100vh',
+            right: 0,
+            bottom: 0,
             backgroundColor: 'rgba(0, 0, 0, 0.5)',
             display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
+            padding: 'calc(20px + env(safe-area-inset-top, 0px)) 0 calc(20px + env(safe-area-inset-bottom, 0px))',
+            boxSizing: 'border-box',
+            overflowY: 'auto',
+            WebkitOverflowScrolling: 'touch',
             zIndex: 10000
           }}
           onClick={() => {
@@ -668,6 +700,7 @@ const Login = ({ onUserChange, compact = false }) => {
               padding: '32px',
               maxWidth: '400px',
               width: '90%',
+              margin: 'auto',
               boxShadow: '0 24px 60px -24px var(--shadow)',
               position: 'relative',
               overflow: 'hidden'

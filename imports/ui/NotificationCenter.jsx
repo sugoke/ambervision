@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Meteor } from 'meteor/meteor';
 import { useTheme } from './ThemeContext.jsx';
+import { useIsMobile } from './hooks/useIsMobile.js';
 
 /**
  * NotificationCenter Component
@@ -15,6 +17,9 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
   const [recentNotifications, setRecentNotifications] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const dropdownRef = useRef(null);
+  const panelRef = useRef(null);
+  // 769 so the JS breakpoint (< 769 ⇒ ≤ 768) matches the CSS max-width: 768px
+  const isMobile = useIsMobile(769);
 
   // Load unread count and recent notifications
   useEffect(() => {
@@ -58,7 +63,11 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
   // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+      // The panel is portaled to document.body on mobile, so check both the
+      // bell wrapper and the panel itself before treating a tap as "outside"
+      const inBell = dropdownRef.current && dropdownRef.current.contains(event.target);
+      const inPanel = panelRef.current && panelRef.current.contains(event.target);
+      if (!inBell && !inPanel) {
         setIsOpen(false);
       }
     };
@@ -248,9 +257,12 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
         )}
       </button>
 
-      {/* Dropdown Menu */}
-      {isOpen && (
+      {/* Dropdown Menu — portaled to <body> on mobile because the fixed
+          header's backdrop-filter makes it the containing block for
+          position:fixed descendants, which would clip the panel */}
+      {isOpen && (() => { const panel = (
         <div
+          ref={panelRef}
           className="notification-dropdown"
           style={{
             position: 'absolute',
@@ -513,7 +525,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
             </div>
           )}
         </div>
-      )}
+      ); return isMobile ? createPortal(panel, document.body) : panel; })()}
 
       {/* Mobile Responsiveness CSS */}
       <style>{`
@@ -528,13 +540,18 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
             max-width: 100% !important;
             height: 100vh !important;
             height: -webkit-fill-available !important;
+            height: 100dvh !important;
             max-height: 100vh !important;
             max-height: -webkit-fill-available !important;
+            max-height: 100dvh !important;
             border-radius: 0 !important;
             border: none !important;
             z-index: 10000 !important;
             display: flex !important;
             flex-direction: column !important;
+            /* Landscape notch */
+            padding-left: env(safe-area-inset-left, 0px) !important;
+            padding-right: env(safe-area-inset-right, 0px) !important;
           }
 
           /* Show close button on mobile */
@@ -552,26 +569,18 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
             -webkit-overflow-scrolling: touch !important;
           }
 
-          /* Compact header on mobile */
+          /* Compact header on mobile — safe-area padding is baked into the
+             longhand so no later shorthand rule can wipe it out */
           .notification-header {
             padding: 0.75rem 1rem !important;
+            padding-top: calc(0.75rem + env(safe-area-inset-top, 0px)) !important;
             flex-shrink: 0 !important;
           }
 
-          /* Compact footer on mobile */
+          /* Compact footer on mobile — keep above the home indicator */
           .notification-footer {
             flex-shrink: 0 !important;
-          }
-
-          /* iOS safe area support */
-          @supports (padding: max(0px)) {
-            .notification-header {
-              padding-top: max(0.75rem, env(safe-area-inset-top)) !important;
-            }
-
-            .notification-footer {
-              padding-bottom: max(0.75rem, env(safe-area-inset-bottom)) !important;
-            }
+            padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px)) !important;
           }
         }
 
@@ -579,16 +588,7 @@ const NotificationCenter = ({ currentUser, onViewAllClick, onNotificationClick }
         @media (max-width: 480px) {
           .notification-header {
             padding: 0.65rem 0.85rem !important;
-          }
-        }
-
-        /* iOS-specific fixes */
-        @supports (-webkit-touch-callout: none) {
-          @media (max-width: 768px) {
-            .notification-dropdown {
-              height: -webkit-fill-available !important;
-              max-height: -webkit-fill-available !important;
-            }
+            padding-top: calc(0.65rem + env(safe-area-inset-top, 0px)) !important;
           }
         }
       `}</style>

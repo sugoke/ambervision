@@ -75,19 +75,38 @@ const RMDashboard = ({ user, onNavigate }) => {
       setLoading(true);
       setError(null);
 
-      // Load all data in parallel (pass currency to getPortfolioSummary for AUM conversion)
-      // Pass viewAsFilter to methods that support it for proper client filtering
-      const [alerts, summary, birthdays, events, watchlist, activity, cashMonitoring] = await Promise.all([
-        Meteor.callAsync('rmDashboard.getAlerts', sessionId, viewAsFilter),
-        Meteor.callAsync('rmDashboard.getPortfolioSummary', sessionId, currency, viewAsFilter),
-        Meteor.callAsync('rmDashboard.getBirthdays', sessionId, viewAsFilter),
-        Meteor.callAsync('rmDashboard.getUpcomingEvents', sessionId, 2, viewAsFilter),
-        Meteor.callAsync('rmDashboard.getWatchlist', sessionId, viewAsFilter),
-        Meteor.callAsync('rmDashboard.getRecentActivity', sessionId, 5, viewAsFilter),
-        Meteor.callAsync('rmDashboard.getCashMonitoring', sessionId, viewAsFilter)
-      ]);
-
-      setData({ alerts, summary, birthdays, events, watchlist, activity, cashMonitoring });
+      // Fire all calls at once but patch state as EACH one resolves, in priority
+      // order: the AUM summary unblocks the page the moment it lands, and the
+      // less important cards (watchlist, activity…) fill in when ready instead
+      // of holding the whole dashboard hostage to the slowest call. One failing
+      // call only leaves its own card empty.
+      const calls = [
+        ['summary', () => Meteor.callAsync('rmDashboard.getPortfolioSummary', sessionId, currency, viewAsFilter)],
+        ['alerts', () => Meteor.callAsync('rmDashboard.getAlerts', sessionId, viewAsFilter)],
+        ['events', () => Meteor.callAsync('rmDashboard.getUpcomingEvents', sessionId, 2, viewAsFilter)],
+        ['cashMonitoring', () => Meteor.callAsync('rmDashboard.getCashMonitoring', sessionId, viewAsFilter)],
+        ['birthdays', () => Meteor.callAsync('rmDashboard.getBirthdays', sessionId, viewAsFilter)],
+        ['watchlist', () => Meteor.callAsync('rmDashboard.getWatchlist', sessionId, viewAsFilter)],
+        ['activity', () => Meteor.callAsync('rmDashboard.getRecentActivity', sessionId, 5, viewAsFilter)]
+      ];
+      const outcomes = await Promise.all(calls.map(([name, start]) =>
+        start()
+          .then(value => {
+            setData(prev => ({ ...prev, [name]: value }));
+            if (name === 'summary') setLoading(false); // AUM landed — show the page
+            return { ok: true };
+          })
+          .catch(err => {
+            console.error(`[RMDashboard] ${name} failed to load:`, err);
+            setData(prev => ({ ...prev, [name]: null }));
+            return { ok: false, err };
+          })
+      ));
+      // Only surface a page-level error if EVERYTHING failed (e.g. session expired)
+      if (outcomes.every(o => !o.ok)) {
+        const first = outcomes[0].err;
+        setError(first?.reason || first?.message || 'Failed to load dashboard');
+      }
     } catch (err) {
       console.error('[RMDashboard] Error loading data:', err);
       setError(err.reason || err.message || 'Failed to load dashboard');
