@@ -124,6 +124,119 @@ const PhoenixReport = ({ results, productId, product }) => {
             gap: '1rem'
           }}>
             {underlyings.map((underlying, index) => (
+              isMobile ? (
+                /* Mobile: dense position-row card - one glance per underlying */
+                <div key={underlying.id || index} style={{
+                  background: 'var(--bg-tertiary)',
+                  padding: '0.85rem',
+                  borderRadius: '8px',
+                  border: underlying.isWorstPerforming
+                    ? '2px solid var(--loss-color)'
+                    : '1px solid var(--border-color)'
+                }}>
+                  {/* Row 1: logo + ticker/name + performance */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                    <div style={{
+                      width: '34px', height: '34px', borderRadius: '7px', overflow: 'hidden',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      background: 'var(--bg-primary)', border: '1px solid var(--border-color)', flexShrink: 0
+                    }}>
+                      <img
+                        src={`https://financialmodelingprep.com/image-stock/${underlying.ticker}.png`}
+                        alt={underlying.ticker}
+                        style={{ width: '26px', height: '26px', objectFit: 'contain' }}
+                        onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'flex'; }}
+                      />
+                      <div style={{
+                        display: 'none', width: '26px', height: '26px', background: 'var(--accent-color)',
+                        borderRadius: '4px', alignItems: 'center', justifyContent: 'center',
+                        fontSize: '0.7rem', fontWeight: '600', color: 'white'
+                      }}>
+                        {underlying.ticker?.substring(0, 2).toUpperCase()}
+                      </div>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                        <span style={{ fontSize: '0.95rem', fontWeight: '700', fontFamily: 'monospace', color: 'var(--text-primary)' }}>
+                          {underlying.ticker}
+                        </span>
+                        {underlying.hasMemoryAutocallFlag && (
+                          <span style={{ fontSize: '0.8rem', color: 'var(--gain-color)' }}
+                            title={`${tr.flaggedForMemoryAutocall} ${underlying.memoryAutocallFlaggedDateFormatted || 'N/A'}`}>&#128274;</span>
+                        )}
+                        {underlying.isWorstPerforming && (
+                          <span style={{ fontSize: '0.7rem', color: 'var(--loss-color)' }} title={tr.worstPerforming}>&#9888;&#65039;</span>
+                        )}
+                      </div>
+                      <div style={{
+                        fontSize: '0.72rem', color: 'var(--text-muted)', whiteSpace: 'nowrap',
+                        overflow: 'hidden', textOverflow: 'ellipsis'
+                      }}>
+                        {underlying.name}
+                      </div>
+                    </div>
+                    <div style={{
+                      fontSize: '1.15rem', fontWeight: '700', fontFamily: 'monospace', flexShrink: 0,
+                      color: underlying.isPositive ? 'var(--gain-color)' : 'var(--loss-color)'
+                    }}>
+                      {underlying.performanceFormatted}
+                    </div>
+                  </div>
+
+                  {/* Row 2: initial -> current levels + sparkline */}
+                  <div style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    gap: '0.6rem', marginTop: '0.6rem'
+                  }}>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontFamily: 'monospace', minWidth: 0 }}>
+                      <span>{underlying.initialPriceFormatted}</span>
+                      <span style={{ color: 'var(--text-muted)', margin: '0 0.3rem' }}>&#8594;</span>
+                      <span style={{ fontWeight: '700', color: underlying.hasCurrentData ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                        {underlying.currentPriceFormatted}
+                      </span>
+                      {underlying.priceDateFormatted && (
+                        <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
+                          {underlying.priceLevelLabel || tr.currentLevel} &middot; {underlying.priceDateFormatted}
+                        </div>
+                      )}
+                    </div>
+                    {underlying.sparklineData?.hasData && (
+                      /* Fixed width: the sparkline canvas otherwise expands and
+                         pushes the whole card wider than the phone viewport */
+                      <div style={{ flexShrink: 0, width: '110px', overflow: 'hidden' }}>
+                        <PriceSparkline
+                          sparklineData={underlying.sparklineData}
+                          ticker={underlying.ticker}
+                          initialPrice={underlying.initialPrice}
+                          currency={underlying.currency}
+                          isPositive={underlying.isPositive}
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Row 3: barrier chip */}
+                  <div style={{
+                    marginTop: '0.6rem',
+                    padding: '0.35rem 0.6rem',
+                    borderRadius: '999px',
+                    textAlign: 'center',
+                    fontSize: '0.72rem',
+                    fontWeight: '600',
+                    fontFamily: 'monospace',
+                    background: underlying.barrierStatus === 'breached' ? 'rgba(239, 68, 68, 0.12)' :
+                               underlying.barrierStatus === 'near' ? 'rgba(245, 158, 11, 0.12)' : 'rgba(16, 185, 129, 0.12)',
+                    color: underlying.barrierStatus === 'breached' ? 'var(--loss-color)' :
+                           underlying.barrierStatus === 'near' ? 'var(--warning-color)' : 'var(--gain-color)',
+                    border: `1px solid ${
+                      underlying.barrierStatus === 'breached' ? 'rgba(239, 68, 68, 0.3)' :
+                      underlying.barrierStatus === 'near' ? 'rgba(245, 158, 11, 0.3)' : 'rgba(16, 185, 129, 0.3)'
+                    }`
+                  }}>
+                    {tr.barrierDistance}: {underlying.distanceToBarrierFormatted} &middot; {underlying.barrierStatusText}
+                  </div>
+                </div>
+              ) : (
               <div key={underlying.id || index} style={{
                 background: 'var(--bg-tertiary)',
                 padding: '1.25rem',
@@ -402,13 +515,14 @@ const PhoenixReport = ({ results, productId, product }) => {
                   </div>
                 </div>
               </div>
+              )
             ))}
           </div>
         </div>
       )}
 
-      {/* Performance Bar Chart - Hidden on mobile portrait */}
-      {underlyings.length > 0 && !isMobile && (
+      {/* Performance Bar Chart - responsive: compact columns on phones */}
+      {underlyings.length > 0 && (
         <div className="pdf-card pdf-page-break-before" style={{
           background: 'var(--bg-primary)',
           padding: '1.5rem',
@@ -440,7 +554,7 @@ const PhoenixReport = ({ results, productId, product }) => {
 
           <div style={{
             background: 'var(--bg-tertiary)',
-            padding: '1.5rem',
+            padding: isMobile ? '1rem 0.75rem 0.75rem' : '1.5rem',
             borderRadius: '8px',
             position: 'relative'
           }}>
@@ -487,19 +601,20 @@ const PhoenixReport = ({ results, productId, product }) => {
                 return (
                   <div key={index} style={{
                     display: 'grid',
-                    gridTemplateColumns: '140px 1fr 80px',
-                    gap: '1rem',
+                    gridTemplateColumns: isMobile ? '58px 1fr 64px' : '140px 1fr 80px',
+                    gap: isMobile ? '0.5rem' : '1rem',
                     alignItems: 'center'
                   }}>
                     {/* Ticker name */}
                     <div style={{
-                      fontSize: '0.85rem',
+                      fontSize: isMobile ? '0.72rem' : '0.85rem',
                       fontWeight: '600',
                       color: 'var(--text-primary)',
                       display: 'flex',
                       alignItems: 'center',
-                      gap: '0.5rem',
-                      fontFamily: 'monospace'
+                      gap: isMobile ? '0.25rem' : '0.5rem',
+                      fontFamily: 'monospace',
+                      overflow: 'hidden'
                     }}>
                       {underlying.ticker}
                       {underlying.isWorstPerforming && (
@@ -626,7 +741,7 @@ const PhoenixReport = ({ results, productId, product }) => {
 
                     {/* Performance value */}
                     <div style={{
-                      fontSize: '0.9rem',
+                      fontSize: isMobile ? '0.78rem' : '0.9rem',
                       fontWeight: '700',
                       color: underlying.barrierStatus === 'breached'
                         ? 'var(--loss-color)'
@@ -645,13 +760,14 @@ const PhoenixReport = ({ results, productId, product }) => {
 
             {/* Legend */}
             <div style={{
-              marginTop: '2.5rem',
+              marginTop: isMobile ? '2rem' : '2.5rem',
               paddingTop: '1rem',
               borderTop: '1px solid var(--border-color)',
               display: 'flex',
+              flexWrap: 'wrap',
               justifyContent: 'center',
-              gap: '2rem',
-              fontSize: '0.75rem',
+              gap: isMobile ? '0.6rem 1rem' : '2rem',
+              fontSize: isMobile ? '0.68rem' : '0.75rem',
               color: 'var(--text-secondary)'
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -1848,8 +1964,12 @@ const PhoenixReport = ({ results, productId, product }) => {
                             ) : (
                               <span
                                 style={{
-                                  background: 'color-mix(in srgb, var(--text-muted) 18%, transparent)',
-                                  color: '#64748b',
+                                  // On the green redemption row the muted chip is illegible —
+                                  // use a translucent white pill with white text there
+                                  background: isRedemptionRow
+                                    ? 'rgba(255, 255, 255, 0.25)'
+                                    : 'color-mix(in srgb, var(--text-muted) 18%, transparent)',
+                                  color: isRedemptionRow ? '#ffffff' : 'var(--text-muted)',
                                   padding: '0.25rem 0.5rem',
                                   borderRadius: '6px',
                                   fontSize: '0.65rem',
@@ -1912,8 +2032,12 @@ const PhoenixReport = ({ results, productId, product }) => {
                             ) : (
                               <span
                                 style={{
-                                  background: 'color-mix(in srgb, var(--text-muted) 18%, transparent)',
-                                  color: '#64748b',
+                                  // On the green redemption row the muted chip is illegible —
+                                  // use a translucent white pill with white text there
+                                  background: isRedemptionRow
+                                    ? 'rgba(255, 255, 255, 0.25)'
+                                    : 'color-mix(in srgb, var(--text-muted) 18%, transparent)',
+                                  color: isRedemptionRow ? '#ffffff' : 'var(--text-muted)',
                                   padding: '0.25rem 0.5rem',
                                   borderRadius: '6px',
                                   fontSize: '0.65rem',
@@ -2194,7 +2318,7 @@ const PhoenixReport = ({ results, productId, product }) => {
           }}>
             📈 {tr.performanceEvolution}
           </h4>
-          <StructuredProductChart productId={productId} height="450px" />
+          <StructuredProductChart productId={productId} height={isMobile ? '300px' : '450px'} />
         </div>
       )}
 

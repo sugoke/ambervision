@@ -784,6 +784,17 @@ export const PhoenixEvaluator = {
         }
       }
 
+      // At the autocall observation, the period coupon and ALL accumulated
+      // memory coupons are paid as part of the early redemption — matching the
+      // next-observation prediction (100% + coupon + memory). Without this, a
+      // basket sitting between a step-down autocall trigger and a higher
+      // coupon barrier autocalled with an empty coupon column and the memory
+      // bucket stranded.
+      const couponDueAtAutocall = autocalled && !isGuaranteedCoupon && !baseCouponPaid
+        ? (phoenixParams.couponRate || 0)
+        : 0;
+      const effectiveCouponPaid = baseCouponPaid + couponDueAtAutocall;
+
       // Memory coupon logic
       // Add to memory if: basket BELOW coupon barrier, product has memory feature, it's a past observation, and product hasn't been autocalled
       // Note: Memory coupon only applies if NOT guaranteed coupon (guaranteed coupons are always paid, so no need to store in memory)
@@ -807,7 +818,7 @@ export const PhoenixEvaluator = {
       // Memory coupons are released (paid out) whenever the basket returns ABOVE the coupon barrier
       // This happens at ANY observation where a coupon is paid, not just maturity/autocall
       // The accumulated memory gets added to the current coupon payment
-      const isMemoryReleaseEvent = isPast && baseCouponPaid > 0 && totalMemoryCoupons > 0;
+      const isMemoryReleaseEvent = isPast && effectiveCouponPaid > 0 && totalMemoryCoupons > 0;
 
       // For display purposes: Memory column shows ONLY when coupon is stored in memory
       // When memory is released (paid out), it goes to the Coupon column, not Memory column
@@ -816,7 +827,7 @@ export const PhoenixEvaluator = {
 
       // Calculate total coupon payout for this observation
       // When memory coupons are released, include accumulated memory in the coupon paid amount
-      const couponPaid = baseCouponPaid + (isMemoryReleaseEvent ? totalMemoryCoupons : 0);
+      const couponPaid = effectiveCouponPaid + (isMemoryReleaseEvent ? totalMemoryCoupons : 0);
       const couponAmount = couponPaid;
 
       if (couponPaid > 0) {
