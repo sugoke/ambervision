@@ -4,6 +4,8 @@ import UnderlyingNews from '../components/UnderlyingNews.jsx';
 import CopyableISIN from '../components/CopyableISIN.jsx';
 import PriceSparkline from '../components/PriceSparkline.jsx';
 import { getTranslation, t } from '../../utils/reportTranslations';
+import { useIsMobile } from '../hooks/useIsMobile.js';
+import ScheduleCardsMobile from '../components/reports/ScheduleCardsMobile.jsx';
 
 /**
  * Phoenix Autocallable Report Component
@@ -31,33 +33,40 @@ const PhoenixReport = ({ results, productId, product }) => {
   const processingIssues = product?.processingIssues || [];
   const blockingIssues = processingIssues.filter(i => i.severity === 'error' || i.severity === 'warning');
 
-  // Debug: Log prediction data
-  React.useEffect(() => {
-    console.log('[PHOENIX REPORT] Report data:', {
-      productId,
-      hasObsAnalysis: !!results.observationAnalysis,
-      hasPrediction: !!results.observationAnalysis?.nextObservationPrediction,
-      predictionData: results.observationAnalysis?.nextObservationPrediction
-    });
-  }, [results, productId]);
+  // Viewport detection — shared hook (handles resize + orientationchange)
+  const isMobile = useIsMobile();
+  const isBelowDesktop = useIsMobile(1024);
+  const isTablet = !isMobile && isBelowDesktop;
 
-  // Mobile detection
-  const [isMobile, setIsMobile] = React.useState(typeof window !== 'undefined' && window.innerWidth < 768);
-  const [isTablet, setIsTablet] = React.useState(typeof window !== 'undefined' && window.innerWidth >= 768 && window.innerWidth < 1024);
+  // Observation-row states, computed ONCE (they were previously recomputed
+  // inside the row map — O(n²) findIndex/reduce per render)
+  const observations = results.observationAnalysis?.observations || [];
+  const obsRowMeta = React.useMemo(() => {
+    const firstCallIndex = observations.findIndex(o => o.productCalled && o.hasOccurred);
+    const finalIndex = observations.length - 1;
+    const redemptionIndex = firstCallIndex !== -1 ? firstCallIndex :
+      (observations[finalIndex]?.hasOccurred ? finalIndex : -1);
+    const lastOccurredIndex = observations.reduce(
+      (lastIdx, o, idx) => (o.hasOccurred ? idx : lastIdx), -1
+    );
+    return { redemptionIndex, finalIndex, lastOccurredIndex };
+  }, [observations]);
 
-  React.useEffect(() => {
-    const handleResize = () => {
-      const mobile = window.innerWidth < 768;
-      const tablet = window.innerWidth >= 768 && window.innerWidth < 1024;
-      setIsMobile(mobile);
-      setIsTablet(tablet);
-    };
-
-    window.addEventListener('resize', handleResize);
-    handleResize();
-
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
+  // Observation table grid template — shared by the header and every row
+  const obsGridTemplate = React.useMemo(() => {
+    const hasMemoryAutocall = results.observationAnalysis?.hasMemoryAutocall;
+    const hasGuaranteedCoupon = results.observationAnalysis?.hasGuaranteedCoupon;
+    // Base columns: Observation, Payment, Type, Trigger, Autocall, Coupon
+    // Optional: Memory (only if NOT guaranteed coupon), Memory Lock (only if hasMemoryAutocall)
+    if (hasGuaranteedCoupon) {
+      return hasMemoryAutocall
+        ? '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1.3fr'
+        : '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr';
+    }
+    return hasMemoryAutocall
+      ? '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr 1.3fr'
+      : '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr';
+  }, [results.observationAnalysis]);
 
   return (
     <div>
@@ -1542,12 +1551,56 @@ const PhoenixReport = ({ results, productId, product }) => {
             </div>
           )}
 
-          {/* Observation Table - Elegant Design */}
+          {/* Observation schedule — card list on phones (the grid table needs
+              ≥750px), themed grid table on desktop */}
+          {isMobile ? (
+            <ScheduleCardsMobile rows={observations.map((obs, index) => {
+              const isRedemptionRow = index === obsRowMeta.redemptionIndex;
+              const isFutureRow = !obs.hasOccurred;
+              const isFinalObservation = index === obsRowMeta.finalIndex;
+              const isMostRecent = index === obsRowMeta.lastOccurredIndex && obsRowMeta.lastOccurredIndex !== -1;
+
+              const paymentSuffix = obs.couponPaid > 0 && obs.hasOccurred
+                ? (obs.paymentConfirmed ? ` ✓ ${tr.paid}` : (obs.isPastDue ? ` ⚠ ${tr.overdue}` : ` · ${tr.pending}`))
+                : '';
+              const fields = [
+                { label: tr.payment, value: `${obs.paymentDateFormatted}${paymentSuffix}` },
+                { label: tr.trigger, value: obs.autocallLevelFormatted },
+                {
+                  label: tr.autocall,
+                  value: obs.productCalled === null ? `⏳ ${tr.tbd}` : (obs.productCalled ? `✓ ${tr.yes}` : `✗ ${tr.no}`)
+                },
+                { label: tr.coupon, value: obs.couponPaid > 0 ? obs.couponPaidFormatted : '—' }
+              ];
+              if (!results.observationAnalysis.hasGuaranteedCoupon) {
+                fields.push({ label: tr.memory, value: obs.couponInMemory > 0 ? obs.couponInMemoryFormatted : '—' });
+              }
+              if (results.observationAnalysis.hasMemoryAutocall) {
+                const flagged = obs.underlyingFlags?.filter(f => f.isFlagged) || [];
+                fields.push({
+                  label: tr.memoryLock,
+                  value: flagged.length === 0
+                    ? '—'
+                    : (obs.allUnderlyingsFlagged ? `${tr.allFlagged} ✓` : flagged.map(f => `${f.ticker} 🔒`).join('  '))
+                });
+              }
+              return {
+                key: index,
+                title: `${isMostRecent ? '⏰ ' : ''}${obs.observationDateFormatted}`,
+                subtitle: obs.observationType,
+                badge: isRedemptionRow
+                  ? { text: `🎊 ${tr.redeemed}`, background: 'linear-gradient(135deg, #059669 0%, #047857 100%)', color: '#ffffff' }
+                  : null,
+                accent: isRedemptionRow ? 'success' : (isMostRecent ? 'info' : (isFinalObservation ? 'warning' : null)),
+                muted: isFutureRow && !isFinalObservation,
+                fields
+              };
+            })} />
+          ) : (
           <div style={{
-            background: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
+            border: '1px solid var(--border-color)',
             borderRadius: '12px',
-            padding: '1px',
-            boxShadow: '0 10px 40px rgba(51, 65, 85, 0.2)'
+            boxShadow: '0 10px 40px color-mix(in srgb, var(--shadow, rgba(0,0,0,0.15)) 40%, transparent)'
           }}>
             <div style={{
               background: 'var(--bg-secondary)',
@@ -1564,32 +1617,19 @@ const PhoenixReport = ({ results, productId, product }) => {
                 <div style={{
                   minWidth: '750px'
                 }}>
-                  {/* Table Header - Sleek Dark Header */}
+                  {/* Table Header — themed so it reads in both light and dark mode */}
                   <div style={{
                     display: 'grid',
-                    gridTemplateColumns: (() => {
-                      const hasMemoryAutocall = results.observationAnalysis.hasMemoryAutocall;
-                      const hasGuaranteedCoupon = results.observationAnalysis.hasGuaranteedCoupon;
-                      // Base columns: Observation, Payment, Type, Trigger, Autocall, Coupon
-                      // Optional: Memory (only if NOT guaranteed coupon), Memory Lock (only if hasMemoryAutocall)
-                      if (hasGuaranteedCoupon) {
-                        return hasMemoryAutocall
-                          ? '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1.3fr'  // No Memory column, has Memory Lock
-                          : '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr';       // No Memory column, no Memory Lock
-                      }
-                      return hasMemoryAutocall
-                        ? '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr 1.3fr'  // Has Memory column and Memory Lock
-                        : '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr';       // Has Memory column, no Memory Lock
-                    })(),
+                    gridTemplateColumns: obsGridTemplate,
                     gap: '0.75rem',
                     padding: '1.25rem 1.5rem',
-                    background: 'linear-gradient(135deg, #1e293b 0%, #334155 100%)',
-                    borderBottom: '2px solid rgba(148, 163, 184, 0.2)'
+                    background: 'var(--bg-tertiary)',
+                    borderBottom: '2px solid var(--border-color)'
                   }}>
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
-                      color: '#e2e8f0',
+                      color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
                       letterSpacing: '1px'
                     }}>
@@ -1598,7 +1638,7 @@ const PhoenixReport = ({ results, productId, product }) => {
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
-                      color: '#e2e8f0',
+                      color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
                       letterSpacing: '1px'
                     }}>
@@ -1607,7 +1647,7 @@ const PhoenixReport = ({ results, productId, product }) => {
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
-                      color: '#e2e8f0',
+                      color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
                       letterSpacing: '1px'
                     }}>
@@ -1616,7 +1656,7 @@ const PhoenixReport = ({ results, productId, product }) => {
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
-                      color: '#e2e8f0',
+                      color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
                       textAlign: 'center',
                       letterSpacing: '1px'
@@ -1626,7 +1666,7 @@ const PhoenixReport = ({ results, productId, product }) => {
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
-                      color: '#e2e8f0',
+                      color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
                       textAlign: 'center',
                       letterSpacing: '1px'
@@ -1636,7 +1676,7 @@ const PhoenixReport = ({ results, productId, product }) => {
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
-                      color: '#e2e8f0',
+                      color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
                       textAlign: 'center',
                       letterSpacing: '1px'
@@ -1647,7 +1687,7 @@ const PhoenixReport = ({ results, productId, product }) => {
                       <div style={{
                         fontSize: '0.7rem',
                         fontWeight: '700',
-                        color: '#e2e8f0',
+                        color: 'var(--text-secondary)',
                         textTransform: 'uppercase',
                         textAlign: 'center',
                         letterSpacing: '1px'
@@ -1659,7 +1699,7 @@ const PhoenixReport = ({ results, productId, product }) => {
                       <div style={{
                         fontSize: '0.7rem',
                         fontWeight: '700',
-                        color: '#e2e8f0',
+                        color: 'var(--text-secondary)',
                         textTransform: 'uppercase',
                         textAlign: 'center',
                         letterSpacing: '1px'
@@ -1670,50 +1710,28 @@ const PhoenixReport = ({ results, productId, product }) => {
                   </div>
 
                   {/* Table Rows - Enhanced Visual Hierarchy */}
-                  {results.observationAnalysis.observations.map((obs, index) => {
-                    // Find the first redemption date
-                    const firstCallIndex = results.observationAnalysis.observations.findIndex(o => o.productCalled && o.hasOccurred);
-                    const finalIndex = results.observationAnalysis.observations.length - 1;
-
-                    const redemptionIndex = firstCallIndex !== -1 ? firstCallIndex :
-                      (results.observationAnalysis.observations[finalIndex].hasOccurred ? finalIndex : -1);
-
-                    const isRedemptionRow = index === redemptionIndex;
+                  {observations.map((obs, index) => {
+                    // Row states precomputed once in obsRowMeta (was O(n²) here)
+                    const isRedemptionRow = index === obsRowMeta.redemptionIndex;
                     const isFutureRow = !obs.hasOccurred;
-                    const isFinalObservation = index === finalIndex;
-
-                    // Find the last observation that has occurred
-                    const lastOccurredIndex = results.observationAnalysis.observations.reduce((lastIdx, observation, idx) => {
-                      return observation.hasOccurred ? idx : lastIdx;
-                    }, -1);
-                    const isMostRecentObservation = index === lastOccurredIndex && lastOccurredIndex !== -1;
+                    const isFinalObservation = index === obsRowMeta.finalIndex;
+                    const isMostRecentObservation = index === obsRowMeta.lastOccurredIndex && obsRowMeta.lastOccurredIndex !== -1;
 
                     return (
                     <div key={index} style={{
                       display: 'grid',
-                      gridTemplateColumns: (() => {
-                        const hasMemoryAutocall = results.observationAnalysis.hasMemoryAutocall;
-                        const hasGuaranteedCoupon = results.observationAnalysis.hasGuaranteedCoupon;
-                        if (hasGuaranteedCoupon) {
-                          return hasMemoryAutocall
-                            ? '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1.3fr'
-                            : '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr';
-                        }
-                        return hasMemoryAutocall
-                          ? '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr 1.3fr'
-                          : '1.2fr 1.2fr 1.5fr 1fr 1fr 1fr 1fr';
-                      })(),
+                      gridTemplateColumns: obsGridTemplate,
                       alignItems: 'center',
                       gap: '0.75rem',
                       padding: '1rem 1.5rem',
-                      borderBottom: index < results.observationAnalysis.observations.length - 1 ?
-                        '1px solid rgba(148, 163, 184, 0.15)' : 'none',
+                      borderBottom: index < observations.length - 1 ?
+                        '1px solid var(--border-color)' : 'none',
                       background: isRedemptionRow
                         ? 'linear-gradient(135deg, #059669 0%, #047857 100%)'
                         : isMostRecentObservation
                           ? 'linear-gradient(135deg, rgba(59, 130, 246, 0.15) 0%, rgba(96, 165, 250, 0.15) 100%)'
                           : isFutureRow
-                            ? 'rgba(148, 163, 184, 0.05)'
+                            ? 'color-mix(in srgb, var(--text-muted) 6%, transparent)'
                             : 'transparent',
                       borderLeft: isMostRecentObservation
                         ? '4px solid var(--info-color)'
@@ -1830,7 +1848,7 @@ const PhoenixReport = ({ results, productId, product }) => {
                             ) : (
                               <span
                                 style={{
-                                  background: 'rgba(148, 163, 184, 0.2)',
+                                  background: 'color-mix(in srgb, var(--text-muted) 18%, transparent)',
                                   color: '#64748b',
                                   padding: '0.25rem 0.5rem',
                                   borderRadius: '6px',
@@ -1894,7 +1912,7 @@ const PhoenixReport = ({ results, productId, product }) => {
                             ) : (
                               <span
                                 style={{
-                                  background: 'rgba(148, 163, 184, 0.2)',
+                                  background: 'color-mix(in srgb, var(--text-muted) 18%, transparent)',
                                   color: '#64748b',
                                   padding: '0.25rem 0.5rem',
                                   borderRadius: '6px',
@@ -1926,7 +1944,7 @@ const PhoenixReport = ({ results, productId, product }) => {
                             : isFinalObservation
                               ? 'linear-gradient(135deg, #ea580c 0%, #c2410c 100%)'
                               : isFutureRow
-                                ? 'rgba(148, 163, 184, 0.2)'
+                                ? 'color-mix(in srgb, var(--text-muted) 18%, transparent)'
                                 : 'linear-gradient(135deg, #1e293b 0%, #334155 100%)',
                           color: isRedemptionRow || isFinalObservation
                             ? '#ffffff'
@@ -1952,7 +1970,7 @@ const PhoenixReport = ({ results, productId, product }) => {
                         color: isRedemptionRow
                           ? '#ffffff'
                           : !obs.isCallable
-                            ? '#cbd5e1'
+                            ? 'var(--text-muted)'
                             : isFutureRow
                               ? 'var(--neutral-color)'
                               : 'var(--text-primary)',
@@ -2000,7 +2018,7 @@ const PhoenixReport = ({ results, productId, product }) => {
                           </span>
                         ) : (
                           <span style={{
-                            color: isRedemptionRow ? 'rgba(255, 255, 255, 0.7)' : '#cbd5e1',
+                            color: isRedemptionRow ? 'rgba(255, 255, 255, 0.7)' : 'var(--text-muted)',
                             fontSize: '0.8rem',
                             fontWeight: '600'
                           }}>
@@ -2031,7 +2049,7 @@ const PhoenixReport = ({ results, productId, product }) => {
                           </span>
                         ) : (
                           <span style={{
-                            color: isRedemptionRow ? 'rgba(255, 255, 255, 0.5)' : '#e2e8f0',
+                            color: isRedemptionRow ? 'rgba(255, 255, 255, 0.5)' : 'var(--border-color)',
                             fontWeight: '400'
                           }}>
                             —
@@ -2062,7 +2080,7 @@ const PhoenixReport = ({ results, productId, product }) => {
                             </span>
                           ) : (
                             <span style={{
-                              color: isRedemptionRow ? 'rgba(255, 255, 255, 0.5)' : '#e2e8f0',
+                              color: isRedemptionRow ? 'rgba(255, 255, 255, 0.5)' : 'var(--border-color)',
                               fontWeight: '400'
                             }}>
                               —
@@ -2154,6 +2172,7 @@ const PhoenixReport = ({ results, productId, product }) => {
               </div>
             </div>
           </div>
+          )}
         </div>
       )}
 

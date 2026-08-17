@@ -1,6 +1,8 @@
 import React from 'react';
 import StructuredProductChart from '../components/StructuredProductChart.jsx';
 import CopyableISIN from '../components/CopyableISIN.jsx';
+import { useIsMobile } from '../hooks/useIsMobile.js';
+import ScheduleCardsMobile from '../components/reports/ScheduleCardsMobile.jsx';
 
 /**
  * Rate Report Component (CMS Steepener / Target-Redemption certificate)
@@ -11,6 +13,7 @@ import CopyableISIN from '../components/CopyableISIN.jsx';
  * redemption · coupon-accumulation chart · timeline.
  */
 const RateReport = ({ results, productId }) => {
+  const isMobile = useIsMobile();
   const s = results.rateStructure || {};
   const status = results.currentStatus || {};
   const schedule = results.schedule || {};
@@ -108,6 +111,24 @@ const RateReport = ({ results, productId }) => {
       {/* Coupon Schedule */}
       <div style={{ background: 'var(--bg-secondary)', padding: '1.5rem', borderRadius: '6px', marginBottom: '1.5rem' }}>
         <h4 style={{ margin: '0 0 1rem 0', fontSize: '1rem', color: 'var(--text-primary)' }}>🗓️ Coupon Schedule</h4>
+        {isMobile ? (
+          <ScheduleCardsMobile rows={periods.map((p) => {
+            const st = statusBg(p.status);
+            return {
+              key: p.periodIndex,
+              title: `#${p.periodIndex} · ${p.observationDateFormatted || '—'}`,
+              subtitle: `Payment: ${p.paymentDateFormatted || '—'} · ${p.couponType === 'fixed' ? 'Fixed' : 'Floating'}`,
+              badge: { text: st.label, background: st.bg, color: st.color },
+              accent: p.status === 'paid' ? 'success' : (p.status === 'redeemed' || p.status === 'pending_fixing' ? 'warning' : null),
+              muted: p.status === 'upcoming' || p.status === 'cancelled',
+              fields: [
+                { label: 'Rate p.a.', value: p.annualRatePaFormatted },
+                { label: 'Coupon', value: p.periodCouponFormatted },
+                { label: 'Cumulative', value: p.cumulativeCouponFormatted }
+              ]
+            };
+          })} />
+        ) : (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
@@ -147,6 +168,7 @@ const RateReport = ({ results, productId }) => {
             </tbody>
           </table>
         </div>
+        )}
       </div>
 
       {/* Redemption */}

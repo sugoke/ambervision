@@ -26,6 +26,7 @@ import ProductCommentaryCard from './components/ProductCommentaryCard.jsx';
 import PriceSparkline from './components/PriceSparkline.jsx';
 import TermSheetManager from './components/TermSheetManager.jsx';
 import PDFDownloadButton from './components/PDFDownloadButton.jsx';
+import { useIsMobile } from './hooks/useIsMobile.js';
 
 /**
  * Processing Issues Alert Component
@@ -209,9 +210,8 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
   // Cache for product data to prevent "not found" errors during re-renders (e.g., window resize)
   const productCache = useRef(null);
 
-  // Mobile detection
-  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
-  const [isTablet, setIsTablet] = useState(typeof window !== 'undefined' && window.innerWidth >= 768 && window.innerWidth < 1024);
+  // Mobile detection — shared hook (handles resize + orientationchange)
+  const isMobile = useIsMobile();
 
   // PDF mode detection and authentication
   const [pdfAuthState, setPdfAuthState] = useState({ validated: false, error: null });
@@ -223,20 +223,6 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
   const isPDFMode = urlParams?.get('pdf') === 'true';
   const pdfToken = urlParams?.get('pdfToken');
   const pdfUserId = urlParams?.get('userId');
-
-  useEffect(() => {
-    const handleResize = () => {
-      const mobile = window.innerWidth < 768;
-      const tablet = window.innerWidth >= 768 && window.innerWidth < 1024;
-      setIsMobile(mobile);
-      setIsTablet(tablet);
-    };
-
-    window.addEventListener('resize', handleResize);
-    handleResize(); // Call once on mount
-
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
 
   // Validate PDF token if in PDF mode and create temporary session
   useEffect(() => {
@@ -289,11 +275,9 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
   const { product, latestReport, allocations, allocationsSummary, allocationDetails, productPrice, notePriceSparkline, issuerDoc, linkedHoldings, isDataReady } = useTracker(() => {
     // Use state-tracked sessionId to ensure reactivity when it changes (e.g., PDF auth completes)
     const sessionId = currentSessionId;
-    console.log('[TemplateProductReport] useTracker running with sessionId:', sessionId ? `${sessionId.substring(0, 20)}...` : 'null', 'isPDFMode:', isPDFMode, 'pdfAuthValidated:', pdfAuthState.validated);
 
     // In PDF mode, wait for authentication to complete before subscribing
     if (isPDFMode && !pdfAuthState.validated) {
-      console.log('[TemplateProductReport] PDF mode: waiting for auth validation...');
       return {
         product: null,
         latestReport: null,
@@ -349,25 +333,6 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
       { sort: { createdAt: -1 } }
     );
 
-    // DEBUG: Log report query results
-    console.log('[TemplateProductReport] Report query for productId:', productId);
-    console.log('[TemplateProductReport] Report found:', !!reportData);
-    if (reportData) {
-      console.log('[TemplateProductReport] Report details:', {
-        _id: reportData._id,
-        productId: reportData.productId,
-        templateId: reportData.templateId,
-        createdAt: reportData.createdAt
-      });
-    } else {
-      console.log('[TemplateProductReport] No report found. All reports in collection:');
-      const allReports = TemplateReportsCollection.find({}).fetch();
-      console.log('[TemplateProductReport] Total reports in client cache:', allReports.length);
-      allReports.forEach(r => {
-        console.log(`  - Report ${r._id}: productId=${r.productId}, templateId=${r.templateId}`);
-      });
-    }
-    
     const allAllocations = AllocationsCollection.find({ 
       productId, 
       status: 'active' 
@@ -382,10 +347,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
     
     // Calculate allocation summary (role-based)
     let summary = null;
-    console.log('TemplateProductReport: ProductId:', productId, 'AllocationData length:', allocationData.length);
-    console.log('TemplateProductReport: User role:', user?.role, 'UserId:', user?._id);
-    console.log('TemplateProductReport: AllocationData:', allocationData);
-    
+
     if (allocationData.length > 0) {
       const productCurrency = productData?.currency || 'USD';
       
@@ -405,10 +367,8 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
         // Override formatted field to include currency
         totalNominalInvestedFormatted: `${computedSummary.totalNominalInvested.toLocaleString()} ${productCurrency}`
       };
-    } else {
-      console.log('TemplateProductReport: No allocation data found for product:', productId);
     }
-    
+
     // Build detailed allocation information for the collapsible section (pre-formatted)
     let detailsData = null;
     if (allocationData.length > 0 && !summary?.isClientView) {
@@ -444,13 +404,6 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
       });
     }
     
-    console.log('TemplateProductReport: ProductData notional values:', {
-      productNotionalFormatted: productData?.notionalFormatted,
-      reportNotionalFormatted: reportData?.notionalFormatted,
-      productCurrency: productData?.currency,
-      calculatedSummary: summary
-    });
-
     // Cache product data if it exists to prevent "not found" during re-renders
     if (productData) {
       productCache.current = productData;
@@ -598,17 +551,6 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
   const displayProduct = product || productCache.current;
 
   // DEBUG: Log what's happening
-  console.log('[TemplateProductReport DEBUG]', {
-    productId,
-    hasProduct: !!product,
-    hasCache: !!productCache.current,
-    hasDisplayProduct: !!displayProduct,
-    isDataReady,
-    isMobile,
-    isTablet,
-    windowWidth: typeof window !== 'undefined' ? window.innerWidth : 'undefined'
-  });
-
   // Show loading if we have no product data at all (neither current nor cached)
   if (!displayProduct) {
     // In PDF mode, show auth status for debugging
@@ -650,60 +592,31 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
       margin: '0 auto',
       padding: isMobile ? '0.75rem' : '2rem'
     }}>
-      {/* Header */}
+      {/* Header — clean themed surface; text uses theme vars so it stays
+          readable in both light and dark mode (the old artwork + dark overlay
+          broke light theme and cost a multi-MB GIF download) */}
       <div style={{
         marginBottom: '2rem',
-        background: 'var(--bg-secondary)',
+        background: 'linear-gradient(160deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)',
         borderRadius: '12px',
         border: '1px solid var(--border-color)',
         overflow: 'hidden',
         position: 'relative'
       }}>
-        {/* Background Image */}
+        {/* Signature amber rule */}
         <div style={{
           position: 'absolute',
           top: 0,
           left: 0,
           right: 0,
-          bottom: 0,
-          backgroundImage: `url('/images/${(() => {
-            const templateId = latestReport?.templateId || displayProduct?.templateId || 'unknown';
-            switch(templateId) {
-              case 'phoenix_autocallable': return 'phoenix.gif';
-              case 'orion_memory': return 'orion.png';
-              case 'himalaya': return 'himalaya.png';
-              case 'shark_note': return 'shark.gif';
-              case 'participation_note': return 'participation.gif';
-              case 'reverse_convertible': return 'phoenix.gif';
-              case 'reverse_convertible_bond': return 'phoenix.gif';
-              default: return 'phoenix.gif';
-            }
-          })()}')`,
-          backgroundSize: 'cover',
-          backgroundPosition: 'top',
-          opacity: 0.35,
-          pointerEvents: 'none',
-          zIndex: 0
-        }}></div>
-
-        {/* Gradient Overlay for readability */}
-        <div style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.6) 0%, rgba(30, 41, 59, 0.5) 50%, rgba(51, 65, 85, 0.6) 100%)',
-          pointerEvents: 'none',
-          zIndex: 1
+          height: '2px',
+          background: 'linear-gradient(90deg, var(--accent-strong, var(--accent-color)) 0%, color-mix(in srgb, var(--accent-strong, var(--accent-color)) 15%, transparent) 85%)'
         }}></div>
 
         {/* Top Section - Title, Status, Actions */}
         <div style={{
-          padding: '1.5rem',
-          borderBottom: '1px solid var(--border-color)',
-          position: 'relative',
-          zIndex: 2
+          padding: isMobile ? '1rem' : '1.5rem',
+          borderBottom: '1px solid var(--border-color)'
         }}>
           {!isPDFMode && (
             <button
@@ -815,21 +728,22 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
               <div style={{
                 display: 'inline-flex',
                 alignItems: 'center',
-                background: 'rgba(59, 130, 246, 0.1)',
+                background: 'color-mix(in srgb, var(--accent-color) 10%, transparent)',
                 color: 'var(--accent-color)',
                 padding: '4px 10px',
                 borderRadius: '12px',
                 fontSize: '0.75rem',
                 fontWeight: '600',
-                border: '1px solid rgba(59, 130, 246, 0.2)'
+                border: '1px solid color-mix(in srgb, var(--accent-color) 25%, transparent)'
               }}>
                 {getTemplateName(latestReport?.templateId || 'unknown')}
               </div>
             </div>
 
-            {/* Right: Action Buttons */}
+            {/* Right: Action Buttons — one compact left-aligned row under the
+                title on mobile, right-aligned beside it on desktop */}
             {!isPDFMode && (
-              <div className="no-print" style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center', justifyContent: 'flex-end' }}>
+              <div className="no-print" style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center', justifyContent: isMobile ? 'flex-start' : 'flex-end' }}>
           <button
             onClick={handleEvaluateProduct}
             disabled={isEvaluating}
@@ -837,8 +751,8 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
               background: isEvaluating ? 'var(--bg-muted)' : 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
               color: isEvaluating ? 'var(--text-muted)' : 'white',
               border: 'none',
-              width: '44px',
-              height: '44px',
+              width: isMobile ? '38px' : '44px',
+              height: isMobile ? '38px' : '44px',
               padding: '0',
               borderRadius: '8px',
               fontSize: '1.1rem',
@@ -863,8 +777,8 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
               iconOnly={true}
               contentSelector="#product-report-content"
               style={{
-                width: '44px',
-                height: '44px',
+                width: isMobile ? '38px' : '44px',
+                height: isMobile ? '38px' : '44px',
                 padding: '0',
                 minHeight: 'unset'
               }}
@@ -879,8 +793,8 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
                 background: 'linear-gradient(135deg, var(--warning-color) 0%, #d97706 100%)',
                 color: 'white',
                 border: 'none',
-                width: '44px',
-                height: '44px',
+                width: isMobile ? '38px' : '44px',
+                height: isMobile ? '38px' : '44px',
                 padding: '0',
                 borderRadius: '8px',
                 fontSize: '1.1rem',
@@ -904,8 +818,8 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
                 background: 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
                 color: 'white',
                 border: 'none',
-                width: '44px',
-                height: '44px',
+                width: isMobile ? '38px' : '44px',
+                height: isMobile ? '38px' : '44px',
                 padding: '0',
                 borderRadius: '8px',
                 fontSize: '1.1rem',
@@ -938,16 +852,16 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
           gridTemplateColumns: isMobile ? '1fr' : (latestReport?.templateResults?.currentStatus?.productStatus === 'live' ? '1fr auto' : '1fr'),
           gap: '1.5rem',
           padding: isMobile ? '1rem' : '1.5rem',
-          position: 'relative',
-          zIndex: 2,
           alignItems: 'flex-start'
         }}>
           {/* Left Side: Product Info and Timeline */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            {/* Product Info Section */}
+            {/* Product Info Section — wraps on narrow screens so ISIN/Currency/
+                Issuer never overflow into the page's overflow-x clip */}
             <div style={{
               display: 'flex',
-              gap: '2rem',
+              flexWrap: 'wrap',
+              gap: isMobile ? '0.75rem 1.25rem' : '2rem',
               paddingBottom: '1rem'
             }}>
               <div>
@@ -1076,10 +990,10 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
 
             {/* Timeline Section - Grouped Dates */}
             <div style={{
-              background: 'rgba(59, 130, 246, 0.08)',
-              border: '1px solid rgba(59, 130, 246, 0.2)',
+              background: 'color-mix(in srgb, var(--accent-color) 6%, transparent)',
+              border: '1px solid color-mix(in srgb, var(--accent-color) 20%, transparent)',
               borderRadius: '8px',
-              padding: '1.25rem'
+              padding: isMobile ? '1rem' : '1.25rem'
             }}>
               <div style={{
                 fontSize: '0.75rem',

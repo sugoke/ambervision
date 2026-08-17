@@ -3,6 +3,8 @@ import StructuredProductChart from '../components/StructuredProductChart.jsx';
 import UnderlyingNews from '../components/UnderlyingNews.jsx';
 import PriceSparkline from '../components/PriceSparkline.jsx';
 import { getTranslation } from '../../utils/reportTranslations';
+import { useIsMobile } from '../hooks/useIsMobile.js';
+import ScheduleCardsMobile from '../components/reports/ScheduleCardsMobile.jsx';
 
 /**
  * Shark Note Report Component
@@ -18,6 +20,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
   const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
   const lang = urlParams?.get('lang') || 'en';
   const tr = getTranslation(lang);
+  const isMobile = useIsMobile();
   if (!results) {
     return (
       <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
@@ -72,12 +75,23 @@ const SharkNoteReport = ({ results, productId, product }) => {
             📊 {tr.underlyingAssetsPerformance}
           </h4>
 
-          {/* Table with Gradient Border */}
+          {/* Underlyings — card list on phones, themed grid table on desktop */}
+          {isMobile ? (
+            <ScheduleCardsMobile rows={underlyings.map((u, index) => ({
+              key: u.id || index,
+              title: u.ticker,
+              subtitle: u.name || u.ticker,
+              accent: u.isPositive ? 'success' : null,
+              fields: [
+                { label: tr.initialLevel, value: u.initialPriceFormatted || '-' },
+                { label: tr.currentLevel, value: u.currentPriceFormatted || '-' },
+                { label: tr.performance, value: u.performanceFormatted || '-' }
+              ]
+            }))} />
+          ) : (
           <div style={{
-            background: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
-            borderRadius: '12px',
-            padding: '1px',
-            boxShadow: '0 10px 40px rgba(51, 65, 85, 0.2)'
+            border: '1px solid var(--border-color)',
+            borderRadius: '12px'
           }}>
             <div style={{
               background: 'var(--bg-secondary)',
@@ -98,20 +112,20 @@ const SharkNoteReport = ({ results, productId, product }) => {
                     gridTemplateColumns: '2fr 1fr 1fr 1.2fr',
                     gap: '0.75rem',
                     padding: '1.25rem 1.5rem',
-                    background: 'linear-gradient(135deg, #1e293b 0%, #334155 100%)',
-                    borderBottom: '2px solid rgba(148, 163, 184, 0.2)'
+                    background: 'var(--bg-tertiary)',
+                    borderBottom: '2px solid var(--border-color)'
                   }}>
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
-                      color: '#e2e8f0',
+                      color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
                       letterSpacing: '1px'
                     }}>🏢 {tr.asset}</div>
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
-                      color: '#e2e8f0',
+                      color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
                       textAlign: 'center',
                       letterSpacing: '1px'
@@ -119,7 +133,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
-                      color: '#e2e8f0',
+                      color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
                       textAlign: 'center',
                       letterSpacing: '1px'
@@ -127,7 +141,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
                     <div style={{
                       fontSize: '0.7rem',
                       fontWeight: '700',
-                      color: '#e2e8f0',
+                      color: 'var(--text-secondary)',
                       textTransform: 'uppercase',
                       textAlign: 'center',
                       letterSpacing: '1px'
@@ -146,8 +160,8 @@ const SharkNoteReport = ({ results, productId, product }) => {
                           gridTemplateColumns: '2fr 1fr 1fr 1.2fr',
                           gap: '0.75rem',
                           padding: '1.25rem 1.5rem',
-                          background: index % 2 === 0 ? 'var(--bg-secondary)' : 'rgba(148, 163, 184, 0.03)',
-                          borderBottom: !isFinal ? '1px solid rgba(148, 163, 184, 0.1)' : 'none',
+                          background: index % 2 === 0 ? 'var(--bg-secondary)' : 'color-mix(in srgb, var(--text-muted) 4%, transparent)',
+                          borderBottom: !isFinal ? '1px solid var(--border-color)' : 'none',
                           alignItems: 'center',
                           transition: 'all 0.2s ease',
                           cursor: 'default'
@@ -156,7 +170,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
                           e.currentTarget.style.background = 'rgba(99, 102, 241, 0.08)';
                         }}
                         onMouseLeave={(e) => {
-                          e.currentTarget.style.background = index % 2 === 0 ? 'var(--bg-secondary)' : 'rgba(148, 163, 184, 0.03)';
+                          e.currentTarget.style.background = index % 2 === 0 ? 'var(--bg-secondary)' : 'color-mix(in srgb, var(--text-muted) 4%, transparent)';
                         }}
                       >
                         {/* Asset Name */}
@@ -230,6 +244,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
               </div>
             </div>
           </div>
+          )}
 
           {/* Basket Performance Summary */}
           {underlyings.length > 1 && basketPerformance.currentFormatted && (

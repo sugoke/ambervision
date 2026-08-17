@@ -1,14 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { Meteor } from 'meteor/meteor';
+import { useIsMobile } from '../hooks/useIsMobile.js';
 
 /**
  * UnderlyingNews Component
  *
  * Displays latest news articles for a specific underlying asset from EOD API.
- * News is fetched on component mount for better performance during product evaluation.
+ * On desktop the news is fetched on mount; on mobile nothing is fetched until
+ * the user taps "Show news" — reports render one instance per underlying, so
+ * eager fetching costs N API round-trips on every phone page load.
  * Compact, collapsible design that fits well within report templates.
  */
 const UnderlyingNews = ({ ticker }) => {
+  const isMobile = useIsMobile();
+  // On mobile, stay dormant until the user asks for the news
+  const [activated, setActivated] = useState(false);
+  const shouldFetch = !isMobile || activated;
   const [isExpanded, setIsExpanded] = useState(false);
   const [news, setNews] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -26,8 +33,9 @@ const UnderlyingNews = ({ ticker }) => {
     return { symbol: ticker, exchange: null };
   };
 
-  // Fetch news on component mount
+  // Fetch news on mount (desktop) or on demand (mobile)
   useEffect(() => {
+    if (!shouldFetch) return;
     const fetchNews = async () => {
       setIsLoading(true);
       setError(null);
@@ -52,7 +60,32 @@ const UnderlyingNews = ({ ticker }) => {
     };
 
     fetchNews();
-  }, [ticker]);
+  }, [ticker, shouldFetch]);
+
+  // Mobile dormant state: a light tap target instead of N eager API calls
+  if (!shouldFetch) {
+    return (
+      <button
+        onClick={() => { setActivated(true); setIsExpanded(true); }}
+        style={{
+          width: '100%',
+          background: 'var(--bg-tertiary)',
+          borderRadius: '8px',
+          border: '1px solid var(--border-color)',
+          padding: '0.6rem 1rem',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.5rem',
+          cursor: 'pointer',
+          fontSize: '0.85rem',
+          fontWeight: '600',
+          color: 'var(--text-secondary)'
+        }}
+      >
+        📰 Show news for {ticker}
+      </button>
+    );
+  }
 
   // Loading state
   if (isLoading) {

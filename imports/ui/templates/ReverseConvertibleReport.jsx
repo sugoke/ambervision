@@ -534,7 +534,7 @@ const ReverseConvertibleReport = ({ results, productId }) => {
                 return (
                   <div key={index} style={{
                     display: 'grid',
-                    gridTemplateColumns: '140px 1fr 80px',
+                    gridTemplateColumns: 'minmax(80px, 140px) 1fr minmax(56px, 80px)',
                     gap: '1rem',
                     alignItems: 'center'
                   }}>
