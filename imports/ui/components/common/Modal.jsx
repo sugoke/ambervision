@@ -66,10 +66,14 @@ const Modal = ({
 
   if (!isOpen) return null;
 
+  // Every size is capped to the viewport so long forms scroll INSIDE the card
+  // (header and footer pinned) — previously the card grew past the viewport and
+  // only the overlay scrolled, which required pointing at the side gutters
+  // because the content's overscroll containment swallowed wheel events.
   const sizes = {
-    small: { maxWidth: '400px', margin: '10vh auto' },
-    medium: { maxWidth: '600px', margin: '8vh auto' },
-    large: { maxWidth: '800px', margin: '5vh auto' },
+    small: { maxWidth: '400px', margin: '10vh auto', maxHeight: '80vh' },
+    medium: { maxWidth: '600px', margin: '8vh auto', maxHeight: '84vh' },
+    large: { maxWidth: '800px', margin: '5vh auto', maxHeight: '90vh' },
     fullscreen: {
       maxWidth: '95vw',
       maxHeight: '95vh',

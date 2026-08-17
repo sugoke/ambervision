@@ -1350,8 +1350,10 @@ const OrderModal = ({
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'space-between',
-      marginBottom: isMobile ? '16px' : '24px',
-      padding: isMobile ? 0 : '0 16px'
+      // Aligned with the form content below (no extra side padding), with a
+      // little air between the header rule and the step chips
+      margin: isMobile ? '4px 0 20px' : '4px 0 28px',
+      padding: 0
     },
     stepItem: (isActive, isComplete) => ({
       display: 'flex',
@@ -1894,11 +1896,109 @@ const OrderModal = ({
       {/* FX-specific Step 2 */}
       {assetType === ASSET_TYPES.FX ? (
         <>
+          {/* Available cash balances — tap one to use it as the amount */}
+          {isLoadingCash ? (
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '12px' }}>
+              Loading cash balances…
+            </div>
+          ) : cashBalance?.cashPositions?.length > 0 && (
+            <div style={{
+              padding: '12px 14px',
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '8px',
+              marginBottom: '16px'
+            }}>
+              <div style={{
+                fontSize: '11px',
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px',
+                color: 'var(--text-muted)',
+                fontWeight: '600',
+                marginBottom: '8px'
+              }}>
+                Available cash — tap a balance to use it
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                {cashBalance.cashPositions.map((p) => {
+                  const side = p.currency === fxSellCurrency ? 'sell'
+                    : p.currency === fxBuyCurrency ? 'buy' : null;
+                  const usable = side !== null && p.amount > 0;
+                  return (
+                    <button
+                      key={p.currency}
+                      type="button"
+                      disabled={!usable}
+                      onClick={() => {
+                        if (!usable) return;
+                        setFxAmountCurrency(side);
+                        setQuantity(p.amount.toFixed(2));
+                      }}
+                      title={usable
+                        ? `Use the full ${p.currency} balance as the amount`
+                        : (side === null ? 'Not part of this currency pair' : 'No positive balance')}
+                      style={{
+                        padding: '5px 10px',
+                        borderRadius: '6px',
+                        border: `1px solid ${usable ? 'var(--accent-color)' : 'var(--border-color)'}`,
+                        background: usable
+                          ? 'color-mix(in srgb, var(--accent-color) 8%, transparent)'
+                          : 'transparent',
+                        color: p.amount < 0
+                          ? 'var(--loss-color)'
+                          : (usable ? 'var(--text-primary)' : 'var(--text-muted)'),
+                        cursor: usable ? 'pointer' : 'default',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        fontVariantNumeric: 'tabular-nums'
+                      }}
+                    >
+                      {p.currency} {p.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Amount + currency side */}
           <div style={styles.row}>
             <div style={{ flex: 2 }}>
               <div style={styles.formGroup}>
-                <label style={styles.label}>Amount</label>
+                <label style={styles.label}>
+                  Amount
+                  {(() => {
+                    // Full position for FX: the account's entire cash balance in
+                    // the SELL currency (that's the position being converted)
+                    const sellBalance = fxSellCurrency
+                      ? cashBalance?.cashPositions?.find(p => p.currency === fxSellCurrency)
+                      : null;
+                    if (!sellBalance || !(sellBalance.amount > 0)) return null;
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFxAmountCurrency('sell');
+                          setQuantity(sellBalance.amount.toFixed(2));
+                        }}
+                        title={`Sell the full ${fxSellCurrency} balance`}
+                        style={{
+                          marginLeft: '8px',
+                          padding: '3px 10px',
+                          borderRadius: '6px',
+                          border: '1px solid var(--accent-color)',
+                          background: 'color-mix(in srgb, var(--accent-color) 10%, transparent)',
+                          color: 'var(--accent-color)',
+                          cursor: 'pointer',
+                          fontWeight: '600',
+                          fontSize: '12px'
+                        }}
+                      >
+                        Full position
+                      </button>
+                    );
+                  })()}
+                </label>
                 <FormattedNumberInput
                   style={styles.input}
                   value={quantity}
@@ -3097,11 +3197,11 @@ const OrderModal = ({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            padding: '10px 14px',
+            padding: '14px 16px',
             background: isBulkMode ? 'rgba(99, 102, 241, 0.08)' : 'var(--bg-secondary)',
             borderRadius: '8px',
             border: `1px solid ${isBulkMode ? 'rgba(99, 102, 241, 0.3)' : 'var(--border-color)'}`,
-            marginBottom: '16px',
+            marginBottom: '20px',
             cursor: 'pointer',
             transition: 'all 0.15s ease'
           }} onClick={() => {
@@ -3141,7 +3241,7 @@ const OrderModal = ({
         )}
 
         {!isBulkMode ? (
-          <div style={styles.formGroup}>
+          <div style={{ ...styles.formGroup, marginBottom: 0 }}>
             <label style={styles.label}>Client & Account</label>
             <AccountAutocomplete
               value={selectedAccountLabel}
