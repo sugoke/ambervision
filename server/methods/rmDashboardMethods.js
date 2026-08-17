@@ -259,6 +259,45 @@ async function getFilteredClientIds(currentUser, viewAsFilter = null) {
 }
 
 /**
+ * Account-level scope clauses for beneficially-owned (wrapper) accounts.
+ *
+ * Insurance-wrapper accounts (e.g. UTMOST) are legally owned by the wrapper
+ * entity — holdings rows carry the WRAPPER's entityId and a legacy userId that
+ * can span several wrappers with different beneficial owners. The client entity
+ * appears only in the account's beneficialOwnerIds, so an owner-id perimeter
+ * alone matches zero holdings (the "View as: Stanley → EUR 0" bug), and adding
+ * the legacy userId would leak sibling wrapper accounts of OTHER clients.
+ * The only safe join is per account: (bankId + portfolioCode), mirroring the
+ * MCP scope resolver's third match path (server/mcp/scopeHelper.js).
+ *
+ * Returns clauses to OR into a holdings/snapshots owner-$or. Empty for most
+ * perimeters (no beneficially-owned accounts).
+ */
+async function getBeneficialAccountClauses(clientIds) {
+  if (!clientIds || clientIds.length === 0) return [];
+  const accounts = await BankAccountsCollection.find({
+    isActive: true,
+    $or: [
+      { beneficialOwnerIds: { $in: clientIds } },
+      { beneficialOwnerId: { $in: clientIds } }
+    ],
+    // Accounts the perimeter owns directly are already covered by the
+    // entityId/userId clauses
+    entityId: { $nin: clientIds }
+  }, { fields: { bankId: 1, accountNumber: 1 } }).fetchAsync();
+  return accounts
+    .filter(a => a.bankId && a.accountNumber)
+    .map(a => ({
+      bankId: a.bankId,
+      // Anchor to the whole account: base and its sub-accounts (-USD, -1…),
+      // never a neighbouring code sharing the prefix
+      portfolioCode: {
+        $regex: `^${a.accountNumber.split('-')[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(-|$)`
+      }
+    }));
+}
+
+/**
  * Build a map of currency rates from the cache collection
  */
 function buildRatesMap(currencyRates) {
@@ -764,10 +803,13 @@ Meteor.methods({
         // RM sees only their clients' holdings
         // Include whitelisted asset classes + unclassified (null) holdings
         // Must match PMS publication filter: isActive: true, isLatest: true
-        // Exclude CONSOLIDATED and non-investment accounts
+        // Exclude CONSOLIDATED and non-investment accounts.
+        // Beneficially-owned wrapper accounts join by (bankId + portfolioCode) —
+        // their holding rows carry the wrapper's ids, not the client's.
+        const beneficialClauses = await getBeneficialAccountClauses(clientIds);
         const clientHoldingsQuery = {
           $and: [
-            { $or: [{ userId: { $in: clientIds } }, { entityId: { $in: clientIds } }] },
+            { $or: [{ userId: { $in: clientIds } }, { entityId: { $in: clientIds } }, ...beneficialClauses] },
             { userId: { $nin: archivedOwners.userIds } },
             { entityId: { $nin: archivedOwners.entityIds } }
           ],
@@ -808,7 +850,13 @@ Meteor.methods({
           ? { ...archivedHoldingFilter }
           : {
               $and: [
-                { $or: [{ userId: { $in: clientIds } }, { entityId: { $in: clientIds } }] },
+                {
+                  $or: [
+                    { userId: { $in: clientIds } },
+                    { entityId: { $in: clientIds } },
+                    ...(await getBeneficialAccountClauses(clientIds))
+                  ]
+                },
                 { userId: { $nin: archivedOwners.userIds } },
                 { entityId: { $nin: archivedOwners.entityIds } }
               ]
@@ -895,7 +943,13 @@ Meteor.methods({
         if (!adminUnscoped) {
           // Scoped (RM, or admin with a View As filter): only the perimeter's snapshots
           snapshotQuery.$and = [
-            { $or: [{ userId: { $in: clientIds } }, { entityId: { $in: clientIds } }] },
+            {
+              $or: [
+                { userId: { $in: clientIds } },
+                { entityId: { $in: clientIds } },
+                ...(await getBeneficialAccountClauses(clientIds))
+              ]
+            },
             { userId: { $nin: archivedOwners.userIds } },
             { entityId: { $nin: archivedOwners.entityIds } }
           ];
@@ -1135,9 +1189,14 @@ Meteor.methods({
       let rawSnapshots;
 
       if (hasViewFilter) {
-        // View As perimeter (any role): only the selected client/account's snapshots
+        // View As perimeter (any role): only the selected client/account's snapshots.
+        // Beneficially-owned wrapper accounts join by (bankId + portfolioCode).
         const snapshotQuery = {
-          $or: [{ userId: { $in: scopedClientIds } }, { entityId: { $in: scopedClientIds } }],
+          $or: [
+            { userId: { $in: scopedClientIds } },
+            { entityId: { $in: scopedClientIds } },
+            ...(await getBeneficialAccountClauses(scopedClientIds))
+          ],
           snapshotDate: { $gte: startDate, $lte: endDate },
           portfolioCode: { $ne: 'CONSOLIDATED' }
         };
@@ -1286,7 +1345,13 @@ Meteor.methods({
         // chart's final point matches the headline AUM for the same selection
         const scopedQuery = {
           $and: [
-            { $or: [{ userId: { $in: scopedClientIds } }, { entityId: { $in: scopedClientIds } }] },
+            {
+              $or: [
+                { userId: { $in: scopedClientIds } },
+                { entityId: { $in: scopedClientIds } },
+                ...(await getBeneficialAccountClauses(scopedClientIds))
+              ]
+            },
             { $or: assetClassOr }
           ],
           isActive: true,
@@ -1298,7 +1363,9 @@ Meteor.methods({
           scopedQuery.bankId = accountScope.bankId;
           scopedQuery.portfolioCode = { $regex: accountScope.portfolioCodeRegex };
         }
-        const scopedHoldings = await PMSHoldingsCollection.find(scopedQuery).fetchAsync();
+        const scopedHoldings = await PMSHoldingsCollection.find(scopedQuery, {
+          fields: { marketValue: 1 }
+        }).fetchAsync();
         liveAUMInEUR = scopedHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
       } else if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE) {
         const allHoldings = await PMSHoldingsCollection.find({
@@ -1983,10 +2050,13 @@ Meteor.methods({
       } else {
         // Get all accounts for the target owners — targetClientIds mixes legacy
         // userIds and entityIds, and accounts are stamped with one or the other.
+        // Wrapper accounts carry the perimeter only in beneficialOwnerIds.
         bankAccounts = await BankAccountsCollection.find({
           $or: [
             { userId: { $in: targetClientIds } },
-            { entityId: { $in: targetClientIds } }
+            { entityId: { $in: targetClientIds } },
+            { beneficialOwnerIds: { $in: targetClientIds } },
+            { beneficialOwnerId: { $in: targetClientIds } }
           ],
           isActive: true
         }).fetchAsync();
