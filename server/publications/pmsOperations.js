@@ -6,7 +6,7 @@ import { PMSOperationsCollection } from '/imports/api/pmsOperations';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
 import { ClientEntitiesCollection, ClientEntityHelpers } from '/imports/api/clientEntities';
-import { SessionsCollection } from '/imports/api/sessions';
+import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
 import { Meteor } from 'meteor/meteor';
 
 // Debug method to check operations count
@@ -43,11 +43,7 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
     let currentUser = null;
 
     if (sessionId) {
-      const session = await SessionsCollection.findOneAsync({
-        sessionId,
-        isActive: true,
-        expiresAt: { $gt: new Date() }
-      });
+      const session = await SessionHelpers.findByToken(sessionId);
 
       if (session && session.userId) {
         currentUser = await UsersCollection.findOneAsync(session.userId);

@@ -111,6 +111,9 @@ export const ParticipationNoteEvaluator = {
         rebateFormatted: callStatus.rebateFormatted,
         rebateType: callStatus.rebateType,
         rebateCalculationDetails: callStatus.rebateCalculationDetails,
+        // Pre-computed in the evaluator so the report never does call+rebate math.
+        totalReceived: callStatus.totalReceived,
+        totalReceivedFormatted: callStatus.totalReceivedFormatted,
         status: callStatus.isCalled
           ? '✅ Called by Issuer'
           : callStatus.hasCallOption

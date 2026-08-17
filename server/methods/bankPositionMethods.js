@@ -4,8 +4,9 @@ import { BankConnectionsCollection, BankConnectionHelpers } from '../../imports/
 import { BankConnectionLogHelpers } from '../../imports/api/bankConnectionLogs.js';
 import { BanksCollection } from '../../imports/api/banks.js';
 import { BankAccountsCollection } from '../../imports/api/bankAccounts.js';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
+import { isSystemSession } from '../systemAuth.js';
 import { PMSHoldingsHelpers, PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
 import { PMSOperationsHelpers, PMSOperationsCollection } from '../../imports/api/pmsOperations.js';
 import { PortfolioSnapshotHelpers, PortfolioSnapshotsCollection } from '../../imports/api/portfolioSnapshots.js';
@@ -107,8 +108,10 @@ async function getCachedEnrichment(isin, enrichmentCache) {
  * Validate session and ensure user is admin
  */
 async function validateAdminSession(sessionId) {
-  // Allow system-cron bypass for CRON jobs
-  if (sessionId === 'system-cron' || sessionId === 'system') {
+  // Allow trusted in-process (cron) calls via the boot-generated system token.
+  // The old hardcoded 'system-cron'/'system' strings let any client pass them
+  // as a sessionId to gain superadmin — the token cannot be guessed from a browser.
+  if (isSystemSession(sessionId)) {
     return { _id: 'system', username: 'system-cron', role: 'superadmin' };
   }
 
@@ -116,10 +119,7 @@ async function validateAdminSession(sessionId) {
     throw new Meteor.Error('not-authorized', 'Session required');
   }
 
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true
-  });
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) {
     throw new Meteor.Error('not-authorized', 'Invalid session');
@@ -3303,10 +3303,7 @@ Meteor.methods({
     check(userId, Match.Maybe(String));
 
     // Validate session
-    const session = await SessionsCollection.findOneAsync({
-      sessionId,
-      isActive: true
-    });
+    const session = await SessionHelpers.findByToken(sessionId);
 
     if (!session) {
       throw new Meteor.Error('not-authorized', 'Invalid session');
@@ -3482,7 +3479,7 @@ Meteor.methods({
     check(sessionId, String);
 
     // Validate session
-    const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
+    const session = await SessionHelpers.findByToken(sessionId);
     if (!session) {
       throw new Meteor.Error('not-authorized', 'Invalid session');
     }

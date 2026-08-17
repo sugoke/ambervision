@@ -16,6 +16,9 @@ const Login = ({ onUserChange, compact = false }) => {
   const [resetLoading, setResetLoading] = useState(false);
   const [resetSuccess, setResetSuccess] = useState(false);
   const [resetError, setResetError] = useState('');
+  // True while a stored session is being validated on mount — during that
+  // window we hold a blank branded ground instead of flashing the login form.
+  const [checkingSession, setCheckingSession] = useState(() => !!localStorage.getItem('sessionId'));
 
   useEffect(() => {
     // Check for existing session on component mount
@@ -37,12 +40,14 @@ const Login = ({ onUserChange, compact = false }) => {
         localStorage.removeItem('rememberMe');
         localStorage.removeItem('sessionExpiresAt');
         localStorage.removeItem('userEmail');
+        setCheckingSession(false);
         if (onUserChange) onUserChange(null);
         return;
       }
-      
+
       console.log('Restoring session from localStorage...');
       Meteor.call('auth.getCurrentUser', sessionId, (err, user) => {
+        setCheckingSession(false);
         if (!err && user) {
           console.log('✅ Session restored successfully for:', user.email);
           setCurrentUser(user);
@@ -281,15 +286,22 @@ const Login = ({ onUserChange, compact = false }) => {
     }
 
     return (
-      <div style={{ padding: '20px', border: '1px solid #ddd', borderRadius: '5px', margin: '20px 0' }}>
-        <h3>Welcome, {currentUser.email}</h3>
+      <div style={{
+        padding: '20px',
+        border: '1px solid var(--border-color)',
+        borderRadius: 'var(--radius-sm)',
+        margin: '20px 0',
+        background: 'var(--card-bg)',
+        color: 'var(--text-primary)'
+      }}>
+        <h3 style={{ fontFamily: 'var(--font-serif)', fontWeight: 500 }}>Welcome, {currentUser.email}</h3>
         <p><strong>Role:</strong> {currentUser.role}</p>
-        <button onClick={handleLogout} style={{ 
-          padding: '10px 20px', 
-          backgroundColor: '#dc3545', 
-          color: 'white', 
-          border: 'none', 
-          borderRadius: '3px',
+        <button onClick={handleLogout} style={{
+          padding: '10px 20px',
+          backgroundColor: 'var(--danger-color)',
+          color: '#fff',
+          border: 'none',
+          borderRadius: 'var(--radius-sm)',
           cursor: 'pointer'
         }}>
           Logout
@@ -303,6 +315,55 @@ const Login = ({ onUserChange, compact = false }) => {
     return null;
   }
 
+  // Session restore in flight: show only the branded ground, no form flash
+  if (checkingSession) {
+    return (
+      <div style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        width: '100vw',
+        height: '100vh',
+        background: 'var(--page-bg)',
+        zIndex: 9999
+      }} />
+    );
+  }
+
+  const fieldLabelStyle = {
+    display: 'block',
+    marginBottom: '8px',
+    fontSize: '11.5px',
+    fontWeight: 600,
+    letterSpacing: '1.8px',
+    textTransform: 'uppercase',
+    color: 'var(--text-muted)'
+  };
+
+  const fieldInputStyle = {
+    width: '100%',
+    padding: '13px 15px',
+    border: '1px solid var(--border-color)',
+    borderRadius: 'var(--radius-sm)',
+    fontSize: '0.95rem',
+    fontFamily: 'var(--font-sans)',
+    boxSizing: 'border-box',
+    transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
+    backgroundColor: 'var(--bg-primary)',
+    color: 'var(--text-primary)',
+    outline: 'none'
+  };
+
+  const handleFieldFocus = (e) => {
+    e.target.style.borderColor = 'var(--accent-color)';
+    e.target.style.boxShadow = '0 0 0 3px color-mix(in srgb, var(--accent-color) 18%, transparent)';
+  };
+
+  const handleFieldBlur = (e) => {
+    e.target.style.borderColor = 'var(--border-color)';
+    e.target.style.boxShadow = 'none';
+  };
+
   return (
     <div style={{
       position: 'fixed',
@@ -313,48 +374,45 @@ const Login = ({ onUserChange, compact = false }) => {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      background: isDark 
-        ? 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)' 
-        : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      background: 'var(--page-bg)',
       padding: '20px',
       boxSizing: 'border-box',
       zIndex: 9999
     }}>
       <div style={{
-        backgroundColor: isDark ? '#2d2d2d' : 'white',
-        borderRadius: '16px',
-        padding: '40px',
-        boxShadow: isDark 
-          ? '0 20px 40px rgba(0, 0, 0, 0.5)' 
-          : '0 20px 40px rgba(0, 0, 0, 0.15)',
+        background: 'var(--card-bg)',
+        border: '1px solid var(--border-color)',
+        borderRadius: 'var(--radius)',
+        padding: '44px 40px 36px',
+        boxShadow: '0 24px 60px -24px var(--shadow)',
         width: '100%',
         maxWidth: '440px',
         position: 'relative',
         overflow: 'hidden'
       }}>
-        {/* Decorative background */}
+        {/* Signature amber rule */}
         <div style={{
           position: 'absolute',
           top: 0,
           left: 0,
           right: 0,
-          height: '4px',
-          background: 'linear-gradient(90deg, #667eea 0%, #764ba2 100%)'
+          height: '2px',
+          background: 'linear-gradient(90deg, var(--accent-strong) 0%, color-mix(in srgb, var(--accent-strong) 15%, transparent) 85%)'
         }}></div>
 
         {/* Header */}
-        <div style={{ textAlign: 'center', marginBottom: '40px' }}>
+        <div style={{ textAlign: 'center', marginBottom: '36px' }}>
           <div style={{
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            marginBottom: '2rem'
+            marginBottom: '1.75rem'
           }}>
             <img
               src="https://amberlakepartners.com/assets/logos/horizontal_logo2.png"
               alt="Amber Lake Partners"
               style={{
-                height: '60px',
+                height: '56px',
                 width: 'auto',
                 objectFit: 'contain'
               }}
@@ -362,26 +420,28 @@ const Login = ({ onUserChange, compact = false }) => {
                 e.target.style.display = 'none';
                 // Fallback: show text if image fails to load
                 const fallback = document.createElement('div');
+                fallback.style.fontFamily = 'var(--font-serif)';
                 fallback.style.fontSize = '1.5rem';
-                fallback.style.fontWeight = '700';
-                fallback.style.color = isDark ? '#ffffff' : '#1a202c';
+                fallback.style.fontWeight = '500';
+                fallback.style.color = 'var(--text-primary)';
                 fallback.textContent = 'Amber Lake Partners';
                 e.target.parentNode.appendChild(fallback);
               }}
             />
           </div>
           <h1 style={{
-            fontSize: '1.3rem',
-            fontWeight: '700',
-            color: isDark ? '#ffffff' : '#1a202c',
-            marginBottom: '8px',
-            letterSpacing: '-0.025em'
+            fontFamily: 'var(--font-serif)',
+            fontSize: '1.75rem',
+            fontWeight: 500,
+            color: 'var(--text-primary)',
+            margin: '0 0 8px',
+            letterSpacing: '0.2px'
           }}>
-            {isLogin ? 'Welcome Back' : 'Create Account'}
+            {isLogin ? 'Welcome back' : 'Create account'}
           </h1>
           <p style={{
-            color: isDark ? '#b0b0b0' : '#718096',
-            fontSize: '0.95rem',
+            color: 'var(--text-muted)',
+            fontSize: '0.9rem',
             margin: 0
           }}>
             {isLogin ? 'Sign in to your account to continue' : 'Join us to start creating structured products'}
@@ -389,14 +449,8 @@ const Login = ({ onUserChange, compact = false }) => {
         </div>
 
         <form onSubmit={handleSubmit} style={{ width: '100%' }}>
-          <div style={{ marginBottom: '24px' }}>
-            <label style={{
-              display: 'block',
-              marginBottom: '8px',
-              fontSize: '0.875rem',
-              fontWeight: '600',
-              color: isDark ? '#ffffff' : '#374151'
-            }}>
+          <div style={{ marginBottom: '22px' }}>
+            <label style={fieldLabelStyle}>
               Email Address
             </label>
             <input
@@ -405,36 +459,14 @@ const Login = ({ onUserChange, compact = false }) => {
               onChange={(e) => setEmail(e.target.value)}
               required
               placeholder="Enter your email"
-              style={{ 
-                width: '100%', 
-                padding: '14px 16px', 
-                border: '2px solid #e5e7eb', 
-                borderRadius: '8px',
-                fontSize: '1rem',
-                boxSizing: 'border-box',
-                transition: 'all 0.2s ease',
-                backgroundColor: '#ffffff',
-                outline: 'none'
-              }}
-              onFocus={(e) => {
-                e.target.style.borderColor = '#667eea';
-                e.target.style.boxShadow = '0 0 0 3px rgba(102, 126, 234, 0.1)';
-              }}
-              onBlur={(e) => {
-                e.target.style.borderColor = '#e5e7eb';
-                e.target.style.boxShadow = 'none';
-              }}
+              style={fieldInputStyle}
+              onFocus={handleFieldFocus}
+              onBlur={handleFieldBlur}
             />
           </div>
-          
-          <div style={{ marginBottom: '24px' }}>
-            <label style={{
-              display: 'block',
-              marginBottom: '8px',
-              fontSize: '0.875rem',
-              fontWeight: '600',
-              color: isDark ? '#ffffff' : '#374151'
-            }}>
+
+          <div style={{ marginBottom: '22px' }}>
+            <label style={fieldLabelStyle}>
               Password
             </label>
             <input
@@ -443,25 +475,9 @@ const Login = ({ onUserChange, compact = false }) => {
               onChange={(e) => setPassword(e.target.value)}
               required
               placeholder="Enter your password"
-              style={{ 
-                width: '100%', 
-                padding: '14px 16px', 
-                border: '2px solid #e5e7eb', 
-                borderRadius: '8px',
-                fontSize: '1rem',
-                boxSizing: 'border-box',
-                transition: 'all 0.2s ease',
-                backgroundColor: '#ffffff',
-                outline: 'none'
-              }}
-              onFocus={(e) => {
-                e.target.style.borderColor = '#667eea';
-                e.target.style.boxShadow = '0 0 0 3px rgba(102, 126, 234, 0.1)';
-              }}
-              onBlur={(e) => {
-                e.target.style.borderColor = '#e5e7eb';
-                e.target.style.boxShadow = 'none';
-              }}
+              style={fieldInputStyle}
+              onFocus={handleFieldFocus}
+              onBlur={handleFieldBlur}
             />
           </div>
 
@@ -486,7 +502,7 @@ const Login = ({ onUserChange, compact = false }) => {
                   style={{
                     width: '16px',
                     height: '16px',
-                    accentColor: '#667eea',
+                    accentColor: 'var(--accent-color)',
                     cursor: 'pointer'
                   }}
                 />
@@ -494,7 +510,7 @@ const Login = ({ onUserChange, compact = false }) => {
                   htmlFor="rememberMe"
                   style={{
                     fontSize: '0.875rem',
-                    color: isDark ? '#e0e0e0' : '#374151',
+                    color: 'var(--text-secondary)',
                     cursor: 'pointer',
                     userSelect: 'none'
                   }}
@@ -512,17 +528,18 @@ const Login = ({ onUserChange, compact = false }) => {
                 style={{
                   background: 'none',
                   border: 'none',
-                  color: '#667eea',
+                  color: 'var(--accent-color)',
                   fontSize: '0.875rem',
+                  fontWeight: 500,
                   cursor: 'pointer',
                   padding: '4px',
-                  textDecoration: 'underline'
+                  textDecoration: 'none'
                 }}
                 onMouseEnter={(e) => {
-                  e.target.style.color = '#764ba2';
+                  e.target.style.textDecoration = 'underline';
                 }}
                 onMouseLeave={(e) => {
-                  e.target.style.color = '#667eea';
+                  e.target.style.textDecoration = 'none';
                 }}
               >
                 Forgot password?
@@ -531,50 +548,52 @@ const Login = ({ onUserChange, compact = false }) => {
           )}
           
           {error && (
-            <div style={{ 
-              color: '#dc2626', 
-              marginBottom: '24px',
+            <div style={{
+              color: 'var(--danger-color)',
+              marginBottom: '22px',
               padding: '12px 16px',
-              backgroundColor: '#fef2f2',
-              border: '1px solid #fecaca',
-              borderRadius: '8px',
+              backgroundColor: 'color-mix(in srgb, var(--danger-color) 10%, transparent)',
+              border: '1px solid color-mix(in srgb, var(--danger-color) 30%, transparent)',
+              borderRadius: 'var(--radius-sm)',
               fontSize: '0.875rem',
               display: 'flex',
               alignItems: 'center',
               gap: '8px'
             }}>
-              <span style={{ fontSize: '1rem' }}>⚠️</span>
               {error}
             </div>
           )}
 
-          
-          <button type="submit" style={{ 
+
+          <button type="submit" style={{
             width: '100%',
-            padding: '14px 24px', 
-            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-            color: 'white', 
-            border: 'none', 
-            borderRadius: '8px',
+            padding: '14px 24px',
+            background: 'var(--accent-strong)',
+            color: 'var(--accent-contrast)',
+            border: 'none',
+            borderRadius: 'var(--radius-sm)',
             cursor: 'pointer',
-            fontSize: '1rem',
-            fontWeight: '600',
+            fontSize: '0.95rem',
+            fontWeight: 600,
+            letterSpacing: '0.3px',
             marginBottom: '20px',
             transition: 'all 0.2s ease',
-            boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
+            boxShadow: '0 6px 16px -8px color-mix(in srgb, var(--accent-strong) 60%, transparent)'
           }}
           onMouseEnter={(e) => {
             e.target.style.transform = 'translateY(-1px)';
-            e.target.style.boxShadow = '0 6px 12px rgba(0, 0, 0, 0.15)';
+            e.target.style.filter = 'brightness(1.05)';
+            e.target.style.boxShadow = '0 10px 22px -8px color-mix(in srgb, var(--accent-strong) 70%, transparent)';
           }}
           onMouseLeave={(e) => {
             e.target.style.transform = 'translateY(0)';
-            e.target.style.boxShadow = '0 4px 6px rgba(0, 0, 0, 0.1)';
+            e.target.style.filter = 'none';
+            e.target.style.boxShadow = '0 6px 16px -8px color-mix(in srgb, var(--accent-strong) 60%, transparent)';
           }}
           >
             {isLogin ? 'Sign In' : 'Create Account'}
           </button>
-          
+
           <div style={{ textAlign: 'center' }}>
             <button
               type="button"
@@ -585,26 +604,37 @@ const Login = ({ onUserChange, compact = false }) => {
                 setPassword('');
                 setError('');
               }}
-              style={{ 
+              style={{
                 background: 'none',
-                color: '#6b7280',
+                color: 'var(--text-muted)',
                 border: 'none',
                 cursor: 'pointer',
                 fontSize: '0.875rem',
-                textDecoration: 'underline',
+                textDecoration: 'none',
                 padding: '4px 8px'
               }}
               onMouseEnter={(e) => {
-                e.target.style.color = '#667eea';
+                e.target.style.color = 'var(--accent-color)';
+                e.target.style.textDecoration = 'underline';
               }}
               onMouseLeave={(e) => {
-                e.target.style.color = '#6b7280';
+                e.target.style.color = 'var(--text-muted)';
+                e.target.style.textDecoration = 'none';
               }}
             >
               {isLogin ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
             </button>
           </div>
         </form>
+
+        <div style={{ textAlign: 'center', marginTop: '16px' }}>
+          <a
+            href="/#privacy"
+            style={{ fontSize: '12px', color: 'var(--text-muted)', textDecoration: 'none' }}
+          >
+            Privacy policy
+          </a>
+        </div>
       </div>
 
       {/* Forgot Password Modal */}
@@ -632,16 +662,28 @@ const Login = ({ onUserChange, compact = false }) => {
         >
           <div
             style={{
-              backgroundColor: isDark ? '#2d2d2d' : 'white',
-              borderRadius: '12px',
+              background: 'var(--card-bg)',
+              border: '1px solid var(--border-color)',
+              borderRadius: 'var(--radius)',
               padding: '32px',
               maxWidth: '400px',
               width: '90%',
-              boxShadow: '0 20px 40px rgba(0, 0, 0, 0.3)',
-              position: 'relative'
+              boxShadow: '0 24px 60px -24px var(--shadow)',
+              position: 'relative',
+              overflow: 'hidden'
             }}
             onClick={(e) => e.stopPropagation()}
           >
+            {/* Signature amber rule */}
+            <div style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              height: '2px',
+              background: 'linear-gradient(90deg, var(--accent-strong) 0%, color-mix(in srgb, var(--accent-strong) 15%, transparent) 85%)'
+            }}></div>
+
             {/* Close button */}
             <button
               onClick={() => {
@@ -659,7 +701,7 @@ const Login = ({ onUserChange, compact = false }) => {
                 border: 'none',
                 fontSize: '1.5rem',
                 cursor: resetLoading ? 'not-allowed' : 'pointer',
-                color: isDark ? '#b0b0b0' : '#6b7280',
+                color: 'var(--text-muted)',
                 padding: '4px 8px'
               }}
             >
@@ -668,13 +710,14 @@ const Login = ({ onUserChange, compact = false }) => {
 
             {resetSuccess ? (
               <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>✓</div>
+                <div style={{ fontSize: '3rem', marginBottom: '1rem', color: 'var(--success-color)' }}>✓</div>
                 <h3
                   style={{
                     margin: '0 0 1rem 0',
-                    color: isDark ? 'var(--gain-color)' : '#059669',
-                    fontSize: '1.25rem',
-                    fontWeight: '600'
+                    fontFamily: 'var(--font-serif)',
+                    color: 'var(--success-color)',
+                    fontSize: '1.35rem',
+                    fontWeight: 500
                   }}
                 >
                   Check Your Email
@@ -682,7 +725,7 @@ const Login = ({ onUserChange, compact = false }) => {
                 <p
                   style={{
                     margin: 0,
-                    color: isDark ? '#e0e0e0' : '#374151',
+                    color: 'var(--text-secondary)',
                     fontSize: '0.95rem',
                     lineHeight: '1.6'
                   }}
@@ -695,9 +738,11 @@ const Login = ({ onUserChange, compact = false }) => {
                 <h3
                   style={{
                     margin: '0 0 1rem 0',
-                    color: isDark ? '#ffffff' : '#1a202c',
-                    fontSize: '1.25rem',
-                    fontWeight: '600'
+                    fontFamily: 'var(--font-serif)',
+                    color: 'var(--text-primary)',
+                    fontSize: '1.35rem',
+                    fontWeight: 500,
+                    letterSpacing: '0.2px'
                   }}
                 >
                   Reset Password
@@ -705,7 +750,7 @@ const Login = ({ onUserChange, compact = false }) => {
                 <p
                   style={{
                     margin: '0 0 1.5rem 0',
-                    color: isDark ? '#b0b0b0' : '#6b7280',
+                    color: 'var(--text-muted)',
                     fontSize: '0.9rem',
                     lineHeight: '1.5'
                   }}
@@ -715,15 +760,7 @@ const Login = ({ onUserChange, compact = false }) => {
 
                 <form onSubmit={handleForgotPassword}>
                   <div style={{ marginBottom: '20px' }}>
-                    <label
-                      style={{
-                        display: 'block',
-                        marginBottom: '8px',
-                        fontSize: '0.875rem',
-                        fontWeight: '600',
-                        color: isDark ? '#ffffff' : '#374151'
-                      }}
-                    >
+                    <label style={fieldLabelStyle}>
                       Email Address
                     </label>
                     <input
@@ -734,27 +771,24 @@ const Login = ({ onUserChange, compact = false }) => {
                       placeholder="Enter your email"
                       disabled={resetLoading}
                       style={{
-                        width: '100%',
-                        padding: '12px 14px',
-                        border: '2px solid #e5e7eb',
-                        borderRadius: '8px',
-                        fontSize: '1rem',
-                        boxSizing: 'border-box',
-                        backgroundColor: resetLoading ? '#f3f4f6' : '#ffffff',
-                        outline: 'none'
+                        ...fieldInputStyle,
+                        backgroundColor: resetLoading ? 'var(--bg-tertiary)' : 'var(--bg-primary)',
+                        opacity: resetLoading ? 0.7 : 1
                       }}
+                      onFocus={handleFieldFocus}
+                      onBlur={handleFieldBlur}
                     />
                   </div>
 
                   {resetError && (
                     <div
                       style={{
-                        color: '#dc2626',
+                        color: 'var(--danger-color)',
                         marginBottom: '16px',
                         padding: '10px 12px',
-                        backgroundColor: '#fef2f2',
-                        border: '1px solid #fecaca',
-                        borderRadius: '6px',
+                        backgroundColor: 'color-mix(in srgb, var(--danger-color) 10%, transparent)',
+                        border: '1px solid color-mix(in srgb, var(--danger-color) 30%, transparent)',
+                        borderRadius: 'var(--radius-sm)',
                         fontSize: '0.875rem'
                       }}
                     >
@@ -768,15 +802,14 @@ const Login = ({ onUserChange, compact = false }) => {
                     style={{
                       width: '100%',
                       padding: '12px 20px',
-                      background: resetLoading
-                        ? '#9ca3af'
-                        : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                      color: 'white',
+                      background: resetLoading ? 'var(--bg-tertiary)' : 'var(--accent-strong)',
+                      color: resetLoading ? 'var(--text-muted)' : 'var(--accent-contrast)',
                       border: 'none',
-                      borderRadius: '8px',
+                      borderRadius: 'var(--radius-sm)',
                       cursor: resetLoading ? 'not-allowed' : 'pointer',
-                      fontSize: '1rem',
-                      fontWeight: '600',
+                      fontSize: '0.95rem',
+                      fontWeight: 600,
+                      letterSpacing: '0.3px',
                       transition: 'all 0.2s ease'
                     }}
                   >

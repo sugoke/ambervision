@@ -436,7 +436,7 @@ const NewsletterUploader = ({ onClose, user }) => {
               }}>
                 <div style={{
                   height: '100%',
-                  background: 'linear-gradient(90deg, var(--accent-color), #4da6ff)',
+                  background: 'linear-gradient(90deg, var(--accent-color), var(--accent-color))',
                   width: `${uploadProgress}%`,
                   transition: 'width 0.3s ease'
                 }} />
@@ -484,7 +484,7 @@ const NewsletterUploader = ({ onClose, user }) => {
                 padding: '0.75rem',
                 background: isUploading || !title.trim() || !description.trim() || !selectedFile
                   ? 'var(--bg-tertiary)'
-                  : 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+                  : 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
                 border: 'none',
                 borderRadius: '8px',
                 fontSize: '1rem',

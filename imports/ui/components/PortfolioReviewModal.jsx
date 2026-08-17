@@ -103,7 +103,7 @@ const Section = ({ title, icon, children, defaultExpanded = true }) => {
   return (
     <div style={{
       marginBottom: '1rem',
-      border: '1px solid var(--border-color, #e5e7eb)',
+      border: '1px solid var(--border-color, var(--border-color-light))',
       borderRadius: '10px',
       overflow: 'hidden'
     }}>
@@ -449,7 +449,7 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
                           color: 'var(--text-primary)',
                           margin: '0 0 0.5rem',
                           padding: '0.4rem 0',
-                          borderBottom: '1px solid var(--border-color, #e5e7eb)'
+                          borderBottom: '1px solid var(--border-color, var(--border-color-light))'
                         }}>
                           {typeLabels[type] || type} ({positions.length})
                         </h4>
@@ -828,7 +828,7 @@ const PortfolioReviewModal = ({ reviewId, onClose }) => {
                               borderRadius: '6px',
                               fontSize: '0.7rem',
                               fontWeight: '600',
-                              color: '#6b7280'
+                              color: 'var(--text-muted)'
                             }}>
                               {Math.abs(evt.daysUntil)}d ago
                             </div>

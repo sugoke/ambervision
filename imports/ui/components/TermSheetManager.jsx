@@ -217,7 +217,7 @@ const TermSheetManager = ({ product, user, productId }) => {
                 style={{
                   background: 'transparent',
                   border: 'none',
-                  color: '#9ca3af',
+                  color: 'var(--text-muted)',
                   fontSize: '24px',
                   cursor: 'pointer',
                   padding: '0',
@@ -241,7 +241,7 @@ const TermSheetManager = ({ product, user, productId }) => {
                 <div style={{ color: '#d1d5db', fontSize: '14px', marginBottom: '8px' }}>
                   Current: <strong>{product.termSheet.filename}</strong>
                 </div>
-                <div style={{ color: '#9ca3af', fontSize: '12px', marginBottom: '8px' }}>
+                <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginBottom: '8px' }}>
                   Uploaded: {formatDate(product.termSheet.uploadedAt)}
                 </div>
                 <button
@@ -315,7 +315,7 @@ const TermSheetManager = ({ product, user, productId }) => {
                   <div style={{ color: '#d1d5db', marginBottom: '8px' }}>
                     Drag and drop PDF here, or click to browse
                   </div>
-                  <div style={{ color: '#9ca3af', fontSize: '14px' }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: '14px' }}>
                     Maximum file size: 10MB
                   </div>
                   <input

@@ -2139,6 +2139,28 @@ const OrderModal = ({
                         )}
                       </div>
                     )}
+                    {/* Full-position autofill per row (sell mode). Holding quantities are
+                        in units, so hide it when a fund order is entered as nominal. */}
+                    {mode === 'sell'
+                      && !(assetType === ASSET_TYPES.FUND && fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL)
+                      && (() => {
+                        const rowIsin = selectedSecurity?.isin || prefillData?.isin;
+                        const rowHolding = rowIsin
+                          ? (bulkAccountHoldings[cashKey] || []).find(h => h.isin === rowIsin)
+                          : null;
+                        if (!rowHolding?.quantity) return null;
+                        return (
+                          <div style={{ display: 'flex', justifyContent: 'flex-end', fontSize: '11px', marginBottom: '4px' }}>
+                            <span
+                              style={{ color: 'var(--accent-color)', cursor: 'pointer' }}
+                              title="Fill with the full position quantity"
+                              onClick={() => updateBulkOrder(origIdx, 'quantity', String(rowHolding.quantity))}
+                            >
+                              Full position: {rowHolding.quantity.toLocaleString()}
+                            </span>
+                          </div>
+                        );
+                      })()}
                     {/* Per-row file attachment */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px' }}>
                       {rowFile ? (
@@ -2190,6 +2212,29 @@ const OrderModal = ({
                           : 'Quantity'}
                     {mode === 'sell' && selectedHolding?.quantity && ` (Max: ${selectedHolding.quantity.toLocaleString()})`}
                     {mode === 'sell' && !selectedHolding && prefillData?.quantity && ` (Max: ${prefillData.quantity})`}
+                    {(() => {
+                      // Full-position autofill for sell orders. Holding quantities are in
+                      // units, so hide it when a fund order is entered as a nominal amount.
+                      const fullQty = mode === 'sell'
+                        && !(assetType === ASSET_TYPES.FUND && fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL)
+                        && (selectedHolding?.quantity || prefillData?.quantity);
+                      if (!fullQty) return null;
+                      return (
+                        <span
+                          onClick={() => setQuantity(String(fullQty))}
+                          title="Fill with the full position quantity"
+                          style={{
+                            marginLeft: '8px',
+                            color: 'var(--accent-color)',
+                            cursor: 'pointer',
+                            fontWeight: '600',
+                            textDecoration: 'underline'
+                          }}
+                        >
+                          Full position
+                        </span>
+                      );
+                    })()}
                   </label>
                   {assetType === ASSET_TYPES.FUND && (
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '8px' }}>

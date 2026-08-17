@@ -51,7 +51,7 @@ export const AmberConversationsCollection = new Mongo.Collection('amberConversat
 
 // Server-side indexes and methods
 if (Meteor.isServer) {
-  const { SessionsCollection } = require('./sessions');
+  const { SessionsCollection, SessionHelpers } = require('./sessions');
   const { UsersCollection } = require('./users');
 
   // Create indexes for efficient queries
@@ -67,11 +67,7 @@ if (Meteor.isServer) {
     check(limit, Number);
 
     // Validate session
-    const session = await SessionsCollection.findOneAsync({
-      sessionId: authSessionId,
-      isActive: true,
-      expiresAt: { $gt: new Date() }
-    });
+    const session = await SessionHelpers.findByToken(authSessionId);
 
     if (!session || !session.userId) {
       return this.ready();
@@ -92,11 +88,7 @@ if (Meteor.isServer) {
     check(authSessionId, String);
 
     // Validate session
-    const session = await SessionsCollection.findOneAsync({
-      sessionId: authSessionId,
-      isActive: true,
-      expiresAt: { $gt: new Date() }
-    });
+    const session = await SessionHelpers.findByToken(authSessionId);
 
     if (!session || !session.userId) {
       return this.ready();

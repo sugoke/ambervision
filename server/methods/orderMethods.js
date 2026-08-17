@@ -3,7 +3,7 @@ import { check, Match } from 'meteor/check';
 import fs from 'fs';
 import path from 'path';
 import { Random } from 'meteor/random';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { issueDocumentToken } from '../documentAccess.js';
 import { generatePDFFromHTML } from '../helpers/pdfHelper.js';
 import { UsersCollection, UserHelpers } from '../../imports/api/users.js';
@@ -13,8 +13,9 @@ import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
 import { ProductsCollection } from '../../imports/api/products.js';
 import { PMSOperationsCollection } from '../../imports/api/pmsOperations.js';
 import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, FX_SUBTYPES, TERM_DEPOSIT_TENORS, EXECUTION_TYPE_LABELS, OrderHelpers, OrderFormatters } from '../../imports/api/orders.js';
+import { AuditLog } from '/imports/api/auditLog';
 import { OrderCountersCollection, OrderCounterHelpers } from '../../imports/api/orderCounters.js';
-import { EmailService } from '../../imports/api/emailService.js';
+import { EmailService, EMAIL, emailShell, emailKvTable, emailParagraph, emailButton } from '../../imports/api/emailService.js';
 import { AccountProfilesCollection, aggregateToFourCategories, getBreakdownKeyForAssetType, mapOrderAssetTypeToProfileCategory, getProfileName } from '../../imports/api/accountProfiles.js';
 import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetadata.js';
 import { IssuersCollection } from '../../imports/api/issuers.js';
@@ -89,10 +90,7 @@ async function validateSession(sessionId) {
     throw new Meteor.Error('not-authorized', 'Session required');
   }
 
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true
-  });
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) {
     throw new Meteor.Error('not-authorized', 'Invalid or expired session');
@@ -853,53 +851,24 @@ Meteor.methods({
             : null;
           const orderBookUrl = Meteor.absoluteUrl('#order-book');
           const subject = `[Pending Validation] ${orderReference} — ${order.securityName || ''}`.trim();
-          const html = `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-              <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white; padding: 18px 24px; border-radius: 8px 8px 0 0;">
-                <h1 style="margin: 0; font-size: 20px;">Order Pending Validation</h1>
-                <p style="margin: 6px 0 0 0; opacity: 0.95;">${orderReference}</p>
-              </div>
-              <div style="padding: 24px; background: #f8fafc; border-radius: 0 0 8px 8px;">
-                <p style="margin: 0 0 16px 0; color: #374151;">
-                  ${userDisplayName} just created an order that requires four-eyes validation. Please review it in the Orders blotter.
-                </p>
-                <div style="margin: 0 0 20px 0;">
-                  <a href="${orderBookUrl}" style="display: inline-block; background: #0ea5e9; color: white; padding: 10px 18px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 13px;">Open Order Book →</a>
-                </div>
-                <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); font-size: 13px;">
-                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280; width: 140px;">Direction</td>
-                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; text-transform: uppercase; color: ${order.orderType === 'buy' ? '#166534' : '#991b1b'};">${OrderFormatters.orderDirectionLabel(order)}</td></tr>
-                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">${order.assetType === 'term_deposit' || order.assetType === 'fx' ? 'Description' : 'Security'}</td>
-                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb;">${order.securityName || ''}</td></tr>
-                  ${order.assetType === 'term_deposit' || order.assetType === 'fx' ? '' : `
-                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">ISIN</td>
-                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-family: monospace;">${order.isin || ''}</td></tr>`}
-                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">${quantityLabel}</td>
-                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #0ea5e9;">${OrderFormatters.formatQuantity(order.quantity)}</td></tr>
-                  ${priceDisplay ? `
-                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">Price</td>
-                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb;">${priceDisplay}</td></tr>
-                  ` : ''}
-                  ${order.estimatedValue ? `
-                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">Estimated Value</td>
-                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb;">${OrderFormatters.formatWithCurrency(order.estimatedValue, order.currency)}</td></tr>
-                  ` : ''}
-                  ${order.broker ? `
-                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">Broker</td>
-                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb;">${order.broker}</td></tr>
-                  ` : ''}
-                  <tr><td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #6b7280;">Client</td>
-                      <td style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb;">${order.clientName || ''}</td></tr>
-                  <tr><td style="padding: 10px 14px; font-weight: 600; color: #6b7280;">Account</td>
-                      <td style="padding: 10px 14px;">${accountLabel}</td></tr>
-                </table>
-                <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #e5e7eb; color: #374151; font-size: 13px;">
-                  Best regards,<br/>
-                  <strong>${userDisplayName}</strong>
-                </div>
-              </div>
-            </div>
-          `;
+          const pendingRows = [
+            ['Direction', String(OrderFormatters.orderDirectionLabel(order)).toUpperCase(), order.orderType === 'buy' ? EMAIL.success : EMAIL.danger],
+            [order.assetType === 'term_deposit' || order.assetType === 'fx' ? 'Description' : 'Security', order.securityName || ''],
+            ...(order.assetType === 'term_deposit' || order.assetType === 'fx' ? [] : [['ISIN', `<span style="font-family: Consolas, 'Courier New', monospace;">${order.isin || ''}</span>`]]),
+            [quantityLabel, OrderFormatters.formatQuantity(order.quantity), EMAIL.amberText],
+            ...(priceDisplay ? [['Price', priceDisplay]] : []),
+            ...(order.estimatedValue ? [['Estimated Value', OrderFormatters.formatWithCurrency(order.estimatedValue, order.currency)]] : []),
+            ...(order.broker ? [['Broker', order.broker]] : []),
+            ['Client', order.clientName || ''],
+            ['Account', accountLabel]
+          ];
+          const html = emailShell({
+            title: 'Order Pending Validation',
+            subtitle: orderReference,
+            bodyHtml: `${emailParagraph(`${userDisplayName} just created an order that requires four-eyes validation. Please review it in the Orders blotter.`)}${emailKvTable(pendingRows)}${emailButton(orderBookUrl, 'Open Order Book →')}`,
+            signatureName: userDisplayName,
+            footerNote: 'This is an automated order notification. Please do not reply to this message.'
+          });
           const text = `
 Order Pending Validation: ${orderReference}
 
@@ -2396,12 +2365,16 @@ ${userDisplayName}
       issuer = await IssuersCollection.findOneAsync(order.issuerId);
     }
     const issuerContactHtml = (issuer && (issuer.contactName || issuer.contactEmail || issuer.contactPhone)) ? `
-          <div style="margin-top: 20px; padding: 16px 20px; background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-            <div style="font-size: 12px; font-weight: bold; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px;">Issuer Contact &mdash; ${issuer.name}</div>
-            ${issuer.contactName ? `<div style="font-size: 14px; color: #111827;">${issuer.contactName}</div>` : ''}
-            ${issuer.contactEmail ? `<div style="font-size: 13px; color: #374151;">${issuer.contactEmail}</div>` : ''}
-            ${issuer.contactPhone ? `<div style="font-size: 13px; color: #374151;">${issuer.contactPhone}</div>` : ''}
-          </div>` : '';
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin: 20px 0 0;">
+                <tr>
+                  <td style="padding: 16px 20px; background-color: ${EMAIL.paper}; border: 1px solid ${EMAIL.hairline}; border-left: 3px solid ${EMAIL.amber}; border-radius: 8px;">
+                    <div style="font-size: 11px; font-weight: 600; color: ${EMAIL.muted}; text-transform: uppercase; letter-spacing: 1.4px; margin-bottom: 8px;">Issuer Contact &mdash; ${issuer.name}</div>
+                    ${issuer.contactName ? `<div style="font-size: 14px; color: ${EMAIL.ink};">${issuer.contactName}</div>` : ''}
+                    ${issuer.contactEmail ? `<div style="font-size: 13px; color: ${EMAIL.body};">${issuer.contactEmail}</div>` : ''}
+                    ${issuer.contactPhone ? `<div style="font-size: 13px; color: ${EMAIL.body};">${issuer.contactPhone}</div>` : ''}
+                  </td>
+                </tr>
+              </table>` : '';
     const issuerContactText = (issuer && (issuer.contactName || issuer.contactEmail || issuer.contactPhone))
       ? `\nIssuer Contact (${issuer.name}):\n${issuer.contactName ? issuer.contactName + '\n' : ''}${issuer.contactEmail ? issuer.contactEmail + '\n' : ''}${issuer.contactPhone ? issuer.contactPhone + '\n' : ''}`
       : '';
@@ -2417,82 +2390,33 @@ ${userDisplayName}
           : OrderFormatters.formatWithCurrency(order.limitPrice, order.currency))
       : null;
 
-    const emailHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <div style="background: linear-gradient(135deg, #1A2B40 0%, #2D4A6A 100%); color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
-          <h1 style="margin: 0; font-size: 22px;">Order Confirmation</h1>
-          <p style="margin: 10px 0 0 0; opacity: 0.9;">${order.orderReference}</p>
-        </div>
-        <div style="padding: 30px; background: #f8fafc; border-radius: 0 0 8px 8px;">
-          <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-            <tr>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280; width: 140px;">Order Type</td>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb;">
-                <span style="background: ${order.orderType === 'buy' ? '#dcfce7' : '#fee2e2'}; color: ${order.orderType === 'buy' ? '#166534' : '#991b1b'}; padding: 4px 12px; border-radius: 4px; font-weight: 600; text-transform: uppercase;">${OrderFormatters.orderDirectionLabel(order)}</span>
-              </td>
-            </tr>
-            <tr>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">${order.assetType === 'term_deposit' || order.assetType === 'fx' ? 'Description' : 'Security'}</td>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: 500;">${order.securityName}</td>
-            </tr>
-            ${order.assetType === 'term_deposit' || order.assetType === 'fx' ? '' : `
-            <tr>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">ISIN</td>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-family: monospace;">${order.isin}</td>
-            </tr>`}
-            <tr>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">${quantityLabel}</td>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #0ea5e9;">${OrderFormatters.formatQuantity(order.quantity)}</td>
-            </tr>
-            ${isStructuredProduct ? (priceCellHtml ? `
-            <tr>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">Price</td>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb;">${priceCellHtml}</td>
-            </tr>
-            ` : '') : order.assetType === 'term_deposit' ? '' : `
-            <tr>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">Price Type</td>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb;">${order.priceType === 'market' ? 'Market' : 'Limit'}</td>
-            </tr>
-            ${order.priceType === 'limit' && priceCellHtml ? `
-            <tr>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">Limit Price</td>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb;">${priceCellHtml}</td>
-            </tr>
-            ` : ''}
-            ${order.validityType ? `
-            <tr>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">Validity</td>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb;">${order.validityType === 'gtc' ? 'Good Till Canceled' : order.validityType === 'gtd' ? `Good Till ${order.validityDate ? OrderFormatters.formatDate(order.validityDate) : 'Date'}` : 'Day Order'}</td>
-            </tr>
-            ` : ''}
-            `}
-            ${order.broker ? `
-            <tr>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">Broker</td>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb;">${order.broker}</td>
-            </tr>
-            ` : ''}
-            <tr>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #6b7280;">Client</td>
-              <td style="padding: 15px; border-bottom: 1px solid #e5e7eb;">${clientName}</td>
-            </tr>
-            <tr>
-              <td style="padding: 15px; font-weight: bold; color: #6b7280;">Account</td>
-              <td style="padding: 15px;">${bankAccount?.accountNumber || order.portfolioCode || 'N/A'}</td>
-            </tr>
-          </table>
-          ${issuerContactHtml}
-          <p style="margin-top: 20px; color: #6b7280; font-size: 13px; text-align: center;">
-            Please find the full order confirmation attached as PDF.
-          </p>
-          <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #e5e7eb; color: #374151; font-size: 13px;">
-            Best regards,<br/>
-            <strong>${userDisplayName}</strong>
-          </div>
-        </div>
-      </div>
-    `;
+    const isTdOrFx = order.assetType === 'term_deposit' || order.assetType === 'fx';
+    const confirmationRows = [
+      ['Order Type', `<span style="display: inline-block; padding: 4px 12px; border-radius: 12px; background-color: ${order.orderType === 'buy' ? '#EAF3EE' : '#F9EDEB'}; color: ${order.orderType === 'buy' ? EMAIL.success : EMAIL.danger}; font-weight: 600; text-transform: uppercase; font-size: 12px;">${OrderFormatters.orderDirectionLabel(order)}</span>`],
+      [isTdOrFx ? 'Description' : 'Security', order.securityName],
+      ...(isTdOrFx ? [] : [['ISIN', `<span style="font-family: Consolas, 'Courier New', monospace;">${order.isin}</span>`]]),
+      [quantityLabel, OrderFormatters.formatQuantity(order.quantity), EMAIL.amberText],
+      ...(isStructuredProduct
+        ? (priceCellHtml ? [['Price', priceCellHtml]] : [])
+        : order.assetType === 'term_deposit' ? []
+        : [
+            ['Price Type', order.priceType === 'market' ? 'Market' : 'Limit'],
+            ...(order.priceType === 'limit' && priceCellHtml ? [['Limit Price', priceCellHtml]] : []),
+            ...(order.validityType ? [['Validity', order.validityType === 'gtc' ? 'Good Till Canceled' : order.validityType === 'gtd' ? `Good Till ${order.validityDate ? OrderFormatters.formatDate(order.validityDate) : 'Date'}` : 'Day Order']] : [])
+          ]),
+      ...(order.broker ? [['Broker', order.broker]] : []),
+      ['Client', clientName],
+      ['Account', bankAccount?.accountNumber || order.portfolioCode || 'N/A']
+    ];
+
+    const emailHtml = emailShell({
+      title: 'Order Confirmation',
+      subtitle: order.orderReference,
+      bodyHtml: `${emailKvTable(confirmationRows)}${issuerContactHtml}
+              <p style="margin: 20px 0 0; color: ${EMAIL.muted}; font-size: 13px; text-align: center;">Please find the full order confirmation attached as PDF.</p>`,
+      signatureName: userDisplayName,
+      footerNote: 'This order confirmation was sent via Ambervision by Amber Lake Partners.'
+    });
 
     const emailText = `
 Order Confirmation: ${order.orderReference}
@@ -2731,6 +2655,15 @@ ${userDisplayName}
       throw new Meteor.Error('not-authorized', 'You do not have order validation permission');
     }
 
+    // GDPR accountability: order validation is a four-eyes control decision.
+    const auditValidation = (outcome) => AuditLog.record({
+      actorUserId: userId,
+      actorRole: user.role,
+      action: outcome,
+      targetType: 'order',
+      targetId: orderId
+    });
+
     const order = await OrdersCollection.findOneAsync(orderId);
     if (!order) {
       throw new Meteor.Error('not-found', 'Order not found');
@@ -2822,6 +2755,7 @@ ${userDisplayName}
     }
 
     console.log(`[ORDERS] Validated order ${order.orderReference} by ${userDisplayName} (${userId})`);
+    await auditValidation('order.validated');
 
     // Generate PDF and prepare email data for Outlook
     let pdfData = null;
@@ -2935,49 +2869,10 @@ ${userDisplayName}
     return { success: true, orderId, newStatus: ORDER_STATUSES.TRANSMITTED };
   },
 
-  /**
-   * Write .eml file to temp and open it with the OS default email client
-   */
-  async 'orders.openEmlFile'({ emlBase64, fileName, sessionId }) {
-    check(emlBase64, String);
-    check(fileName, String);
-    check(sessionId, String);
-
-    await validateSession(sessionId);
-
-    const os = require('os');
-    const { exec } = require('child_process');
-    const tempDir = os.tmpdir();
-    const filePath = path.join(tempDir, fileName);
-
-    // Decode and write the .eml file
-    const emlContent = decodeURIComponent(escape(atob(emlBase64)));
-    fs.writeFileSync(filePath, emlContent, 'utf8');
-
-    console.log(`[ORDERS] Opening .eml file: ${filePath}`);
-
-    // Open with OS default handler (Outlook on Windows)
-    const platform = process.platform;
-    let command;
-    if (platform === 'win32') {
-      command = `start "" "${filePath}"`;
-    } else if (platform === 'darwin') {
-      command = `open "${filePath}"`;
-    } else {
-      command = `xdg-open "${filePath}"`;
-    }
-
-    return new Promise((resolve) => {
-      exec(command, (error) => {
-        if (error) {
-          console.error('[ORDERS] Error opening .eml file:', error);
-          resolve({ success: false, error: error.message });
-        } else {
-          resolve({ success: true, filePath });
-        }
-      });
-    });
-  },
+  // NOTE: 'orders.openEmlFile' was removed. It wrote a client-supplied filename
+  // into a shell `exec` command and an unchecked `path.join`, allowing command
+  // injection / arbitrary file write on the server. It had no client caller
+  // (the .eml flow builds and downloads the file client-side).
 
   /**
    * Reject an order validation (move from PENDING_VALIDATION → REJECTED)
@@ -3019,6 +2914,13 @@ ${userDisplayName}
     });
 
     console.log(`[ORDERS] Rejected order ${order.orderReference} by ${userDisplayName} (${userId}) - Reason: ${reason || 'N/A'}`);
+    await AuditLog.record({
+      actorUserId: userId,
+      actorRole: user.role,
+      action: 'order.rejected',
+      targetType: 'order',
+      targetId: orderId
+    });
 
     // Notify the creator that their order was rejected
     try {
@@ -4265,9 +4167,12 @@ Meteor.methods({
       order.limitPrice ? `Limit Price: ${order.limitPrice}` : null,
       order.stopPrice ? `Stop Price: ${order.stopPrice}` : null,
       order.estimatedValue ? `Estimated Value: ${order.estimatedValue} ${order.currency}` : null,
-      `Client: ${clientName}`,
+      // GDPR data minimisation: the LLM does not need the client's identity —
+      // the authorized-sender check is deterministic (buildAuthorizedEmailCheck)
+      // and identity fields are rendered locally. Account number is masked.
+      `Client: [the client]`,
       `Bank: ${bank?.name || 'Unknown'}`,
-      `Account: ${order.portfolioCode || 'N/A'}`,
+      `Account: ${order.portfolioCode ? `***${String(order.portfolioCode).slice(-3)}` : 'N/A'}`,
       order.settlementCurrency ? `Settlement Currency: ${order.settlementCurrency}` : null,
       order.broker ? `Broker: ${order.broker}` : null,
       order.notes ? `Notes: ${order.notes}` : null,
@@ -4329,8 +4234,8 @@ TERM SHEET ISIN CHECK (structured product order):
 ORDER ENTERED IN SYSTEM:
 ${orderSummary}
 
-CLIENT EMAIL/INSTRUCTION (full thread, may include quoted text below the reply${isStructuredProduct ? '; PDF attachments such as the term sheet are also included as "--- PDF: ..." sections' : ''}):
-${emailContent.substring(0, 12000)}
+CLIENT EMAIL/INSTRUCTION (full thread, may include quoted text below the reply${isStructuredProduct ? '; PDF attachments such as the term sheet are also included as "--- PDF: ..." sections' : ''}; email addresses are redacted as [email] — the sender-authorization check is done separately, do not comment on redacted addresses):
+${emailContent.substring(0, 12000).replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[email]')}
 
 Analyze and respond with a JSON object (no markdown, just raw JSON):
 {

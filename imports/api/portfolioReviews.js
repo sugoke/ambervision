@@ -1,6 +1,8 @@
 import { Mongo } from 'meteor/mongo';
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
+import { SessionHelpers } from './sessions.js';
+import { UsersCollection } from './users.js';
 
 /**
  * Portfolio Reviews Collection
@@ -79,6 +81,41 @@ if (Meteor.isServer) {
   // Import the generator (only on server)
   const { generatePortfolioReview } = require('./portfolioReviewGenerator');
 
+  // Portfolio reviews are staff meeting-prep artifacts (client holdings/PII).
+  // These methods previously accepted any string as sessionId/pdfToken without
+  // validating it — closing that requires a real staff session or a valid PDF token.
+  const REVIEW_STAFF_ROLES = ['admin', 'superadmin', 'compliance', 'rm', 'assistant'];
+
+  async function requireReviewStaff(sessionId) {
+    const session = await SessionHelpers.validateSession(sessionId);
+    if (!session || !session.userId) {
+      throw new Meteor.Error('not-authorized', 'Invalid or expired session');
+    }
+    const user = await UsersCollection.findOneAsync(session.userId);
+    if (!user || !REVIEW_STAFF_ROLES.includes(user.role)) {
+      throw new Meteor.Error('not-authorized', 'Staff access required');
+    }
+    return user;
+  }
+
+  async function validateReviewPdfToken(userId, pdfToken) {
+    if (!userId || !pdfToken) {
+      throw new Meteor.Error('invalid-params', 'Missing userId or pdfToken');
+    }
+    const user = await UsersCollection.findOneAsync({
+      _id: userId,
+      'services.pdfAccess.token': pdfToken
+    });
+    if (!user) {
+      throw new Meteor.Error('unauthorized', 'Invalid or expired PDF token');
+    }
+    const expiresAt = user.services?.pdfAccess?.expiresAt;
+    if (expiresAt && new Date(expiresAt) < new Date()) {
+      throw new Meteor.Error('token-expired', 'PDF token has expired');
+    }
+    return user;
+  }
+
   Meteor.methods({
     /**
      * Start generating a portfolio review in the background.
@@ -89,6 +126,8 @@ if (Meteor.isServer) {
       check(accountFilter, String);
       check(viewAsFilter, Match.Maybe(Object));
       check(language, String);
+
+      const currentUser = await requireReviewStaff(sessionId);
 
       console.log('[PortfolioReview] Starting generation, account:', accountFilter, 'language:', language);
 
@@ -101,7 +140,7 @@ if (Meteor.isServer) {
         status: 'generating',
         generatedAt: new Date(),
         completedAt: null,
-        generatedBy: this.userId,
+        generatedBy: currentUser._id,
         processingTimeMs: null,
         progress: {
           currentStep: 'initializing',
@@ -129,7 +168,7 @@ if (Meteor.isServer) {
       this.unblock();
 
       // Run generation in background
-      generatePortfolioReview(reviewId, accountFilter, viewAsFilter, language, this.userId)
+      generatePortfolioReview(reviewId, accountFilter, viewAsFilter, language, currentUser._id)
         .then(() => {
           console.log('[PortfolioReview] Background generation completed for:', reviewId);
         })
@@ -159,6 +198,8 @@ if (Meteor.isServer) {
       check(reviewId, String);
       check(sessionId, String);
 
+      await requireReviewStaff(sessionId);
+
       const review = await PortfolioReviewsCollection.findOneAsync(reviewId);
       if (!review) {
         throw new Meteor.Error('not-found', 'Portfolio review not found');
@@ -174,6 +215,9 @@ if (Meteor.isServer) {
       check(reviewId, String);
       check(userId, String);
       check(pdfToken, String);
+
+      // Validate the short-lived PDF token (previously the token was ignored).
+      await validateReviewPdfToken(userId, pdfToken);
 
       const review = await PortfolioReviewsCollection.findOneAsync(reviewId);
       if (!review) {
@@ -191,6 +235,8 @@ if (Meteor.isServer) {
       check(viewAsFilter, Match.Maybe(Object));
       check(accountFilter, Match.Maybe(String));
       check(limit, Number);
+
+      await requireReviewStaff(sessionId);
 
       const query = {};
 
@@ -230,9 +276,17 @@ if (Meteor.isServer) {
       check(reviewId, String);
       check(sessionId, String);
 
+      const user = await requireReviewStaff(sessionId);
+
       const review = await PortfolioReviewsCollection.findOneAsync(reviewId);
       if (!review) {
         throw new Meteor.Error('not-found', 'Review not found');
+      }
+
+      // Only the review's author or an admin/compliance user may delete it.
+      const canDeleteAny = ['admin', 'superadmin', 'compliance'].includes(user.role);
+      if (!canDeleteAny && review.generatedBy && review.generatedBy !== user._id) {
+        throw new Meteor.Error('not-authorized', 'You can only delete reviews you generated');
       }
 
       await PortfolioReviewsCollection.removeAsync(reviewId);
@@ -245,6 +299,8 @@ if (Meteor.isServer) {
     async 'portfolioReview.cancel'(reviewId, sessionId) {
       check(reviewId, String);
       check(sessionId, String);
+
+      await requireReviewStaff(sessionId);
 
       const review = await PortfolioReviewsCollection.findOneAsync(reviewId);
       if (!review) {

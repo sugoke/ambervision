@@ -308,10 +308,10 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
     }
 
     const productHandle = Meteor.subscribe('products.single', productId, sessionId);
-    const reportsHandle = Meteor.subscribe('templateReports.forProduct', productId);
+    const reportsHandle = Meteor.subscribe('templateReports.forProduct', productId, sessionId);
     const allocationsHandle = Meteor.subscribe('productAllocations', productId, sessionId);
-    const usersHandle = Meteor.subscribe('customUsers');
-    const bankAccountsHandle = Meteor.subscribe('allBankAccounts');
+    const usersHandle = Meteor.subscribe('customUsers', sessionId);
+    const bankAccountsHandle = Meteor.subscribe('allBankAccounts', sessionId);
     const banksHandle = Meteor.subscribe('banks');
     const issuersHandle = Meteor.subscribe('issuers');
 
@@ -834,7 +834,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
             onClick={handleEvaluateProduct}
             disabled={isEvaluating}
             style={{
-              background: isEvaluating ? 'var(--bg-muted)' : 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+              background: isEvaluating ? 'var(--bg-muted)' : 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
               color: isEvaluating ? 'var(--text-muted)' : 'white',
               border: 'none',
               width: '44px',
@@ -1774,7 +1774,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
             onClick={handleEvaluateProduct}
             disabled={isEvaluating}
             style={{
-              background: 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+              background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
               color: 'white',
               border: 'none',
               padding: '14px 28px',

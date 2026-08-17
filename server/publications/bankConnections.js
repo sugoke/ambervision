@@ -2,7 +2,7 @@ import { Meteor } from 'meteor/meteor';
 import { BankConnectionsCollection } from '../../imports/api/bankConnections.js';
 import { BankConnectionLogsCollection } from '../../imports/api/bankConnectionLogs.js';
 import { CronJobLogsCollection } from '../../imports/api/cronJobLogs.js';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
 
 /**
@@ -15,10 +15,7 @@ Meteor.publish('bankConnections', async function (sessionId) {
   }
 
   // Find active session
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true
-  });
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) {
     console.log('[bankConnections] No active session found');
@@ -41,8 +38,11 @@ Meteor.publish('bankConnections', async function (sessionId) {
 
   console.log(`[bankConnections] Publishing to admin user: ${user.username}`);
 
-  // Return active connections
-  return BankConnectionsCollection.find({ isActive: true });
+  // Return active connections WITHOUT credential fields. SFTP passwords and
+  // private-key paths must never reach the browser, even for admins.
+  return BankConnectionsCollection.find({ isActive: true }, {
+    fields: { password: 0, privateKeyPath: 0 }
+  });
 });
 
 /**
@@ -54,10 +54,7 @@ Meteor.publish('bankConnectionLogs', async function (sessionId, connectionId = n
   }
 
   // Find active session
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true
-  });
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) {
     return this.ready();
@@ -98,10 +95,7 @@ Meteor.publish('bankFileSyncLogs', async function (sessionId, limit = 10) {
   }
 
   // Find active session
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true
-  });
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) {
     return this.ready();

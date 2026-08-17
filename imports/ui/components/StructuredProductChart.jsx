@@ -18,7 +18,7 @@ const StructuredProductChart = ({ productId, height = '400px' }) => {
 
   // Subscribe to chart data for this product
   const { chartData, isReady } = useTracker(() => {
-    const handle = Meteor.subscribe('chartData.byProduct', productId);
+    const handle = Meteor.subscribe('chartData.byProduct', productId, localStorage.getItem('sessionId'));
     const data = ChartDataCollection.findOne({ productId });
 
     console.log('📊 Chart subscription status:', {
@@ -43,7 +43,7 @@ const StructuredProductChart = ({ productId, height = '400px' }) => {
           // Load Chart.js from CDN
           await new Promise((resolve, reject) => {
             const script = document.createElement('script');
-            script.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js';
+            script.src = '/vendor/chartjs/chart.umd.js';
             script.onload = resolve;
             script.onerror = reject;
             document.head.appendChild(script);
@@ -52,7 +52,7 @@ const StructuredProductChart = ({ productId, height = '400px' }) => {
           // Load Chart.js annotation plugin
           await new Promise((resolve, reject) => {
             const script = document.createElement('script');
-            script.src = 'https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js';
+            script.src = '/vendor/chartjs/chartjs-adapter-date-fns.bundle.min.js';
             script.onload = resolve;
             script.onerror = reject;
             document.head.appendChild(script);
@@ -61,7 +61,7 @@ const StructuredProductChart = ({ productId, height = '400px' }) => {
           // Load annotation plugin
           await new Promise((resolve, reject) => {
             const script = document.createElement('script');
-            script.src = 'https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js';
+            script.src = '/vendor/chartjs/chartjs-plugin-annotation.min.js';
             script.onload = resolve;
             script.onerror = reject;
             document.head.appendChild(script);

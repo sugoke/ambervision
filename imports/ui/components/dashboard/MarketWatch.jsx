@@ -35,6 +35,13 @@ const formatChange = (change) => {
   return `${sign}${n.toFixed(2)}%`;
 };
 
+const getCloseLabel = (q) => {
+  if (!q || isSameUtcDay(q.timestamp)) return null;
+  const ts = typeof q.timestamp === 'number' ? q.timestamp * 1000 : Date.parse(q.timestamp);
+  if (!Number.isFinite(ts)) return 'CLOSE';
+  return `CLOSE ${new Date(ts).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}`;
+};
+
 const isSameUtcDay = (timestamp) => {
   if (!timestamp) return false;
   const ts = typeof timestamp === 'number' ? timestamp * 1000 : Date.parse(timestamp);
@@ -48,10 +55,11 @@ const isSameUtcDay = (timestamp) => {
 
 const styles = {
   card: {
-    backgroundColor: 'var(--bg-secondary)',
-    borderRadius: '12px',
-    padding: '20px',
+    background: 'var(--card-bg, var(--bg-secondary))',
+    borderRadius: 'var(--radius, 14px)',
+    padding: '22px',
     border: '1px solid var(--border-color)',
+    boxShadow: 'var(--card-shadow)',
     height: '100%',
     display: 'flex',
     flexDirection: 'column'
@@ -63,9 +71,11 @@ const styles = {
     marginBottom: '16px'
   },
   title: {
-    fontSize: '16px',
+    fontSize: '11.5px',
     fontWeight: '600',
-    color: 'var(--text-primary)'
+    letterSpacing: '1.8px',
+    textTransform: 'uppercase',
+    color: 'var(--text-muted)'
   },
   subtitle: {
     fontSize: '12px',
@@ -75,115 +85,110 @@ const styles = {
     alignItems: 'center',
     gap: '6px'
   },
-  tableContainer: {
+  body: {
     flex: 1,
     minHeight: 0,
     overflow: 'auto'
   },
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse',
-    fontSize: '13px'
+  idxGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, 1fr)',
+    gap: '1px',
+    background: 'var(--border-color)',
+    border: '1px solid var(--border-color)',
+    borderRadius: '9px',
+    overflow: 'hidden'
   },
-  th: {
-    textAlign: 'left',
-    padding: '8px 12px',
+  idxCell: {
+    background: 'var(--bg-tertiary)',
+    padding: '14px'
+  },
+  idxName: {
     fontSize: '11px',
-    fontWeight: '600',
     color: 'var(--text-muted)',
-    textTransform: 'uppercase',
     letterSpacing: '0.5px',
-    borderBottom: '1px solid var(--border-color)',
-    position: 'sticky',
-    top: 0,
-    backgroundColor: 'var(--bg-secondary)'
-  },
-  thRight: {
-    textAlign: 'right',
-    padding: '8px 12px',
-    fontSize: '11px',
-    fontWeight: '600',
-    color: 'var(--text-muted)',
     textTransform: 'uppercase',
-    letterSpacing: '0.5px',
-    borderBottom: '1px solid var(--border-color)',
-    position: 'sticky',
-    top: 0,
-    backgroundColor: 'var(--bg-secondary)'
-  },
-  tr: {
-    transition: 'background-color 0.15s'
-  },
-  td: {
-    padding: '10px 12px',
-    borderBottom: '1px solid var(--border-color)',
-    color: 'var(--text-primary)'
-  },
-  tdRight: {
-    padding: '10px 12px',
-    borderBottom: '1px solid var(--border-color)',
-    textAlign: 'right'
-  },
-  tickerCell: {
     display: 'flex',
-    alignItems: 'center',
-    gap: '10px'
-  },
-  logo: {
-    width: '28px',
-    height: '28px',
-    borderRadius: '6px',
-    backgroundColor: 'var(--bg-primary)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: '10px',
-    fontWeight: '700',
-    color: 'var(--text-muted)',
-    overflow: 'hidden',
-    flexShrink: 0
-  },
-  tickerInfo: {
-    minWidth: 0
-  },
-  symbol: {
-    fontSize: '13px',
-    fontWeight: '600',
-    color: 'var(--text-primary)'
-  },
-  tickerCode: {
-    fontSize: '11px',
-    color: 'var(--text-muted)',
-    marginTop: '1px'
-  },
-  price: {
-    fontSize: '13px',
-    color: 'var(--text-primary)',
-    fontWeight: '500'
-  },
-  priceWrap: {
-    display: 'inline-flex',
     alignItems: 'center',
     gap: '6px',
-    justifyContent: 'flex-end'
+    minWidth: 0
   },
+  idxNameText: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  },
+  idxValue: {
+    fontFamily: 'var(--font-serif)',
+    fontSize: '22px',
+    fontWeight: '500',
+    color: 'var(--text-primary)',
+    marginTop: '3px',
+    fontVariantNumeric: 'tabular-nums'
+  },
+  idxChange: (isPositive, isNeutral) => ({
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: '12px',
+    marginTop: '2px',
+    color: isNeutral ? 'var(--text-muted)' : isPositive ? 'var(--gain-color)' : 'var(--loss-color)'
+  }),
+  wl: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+    marginTop: '14px'
+  },
+  wlRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    padding: '9px 6px',
+    borderRadius: '8px',
+    transition: 'background-color 0.15s'
+  },
+  wlTicker: {
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: '13px',
+    fontWeight: '600',
+    letterSpacing: '0.5px',
+    width: '64px',
+    flex: 'none',
+    color: 'var(--text-primary)'
+  },
+  wlName: {
+    fontSize: '12.5px',
+    color: 'var(--text-muted)',
+    flex: 1,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  },
+  wlPrice: {
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: '13px',
+    color: 'var(--text-primary)',
+    fontVariantNumeric: 'tabular-nums'
+  },
+  wlChange: (isPositive, isNeutral) => ({
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: '12.5px',
+    width: '66px',
+    textAlign: 'right',
+    color: isNeutral ? 'var(--text-muted)' : isPositive ? 'var(--gain-color)' : 'var(--loss-color)'
+  }),
   closeTag: {
     fontSize: '9px',
     fontWeight: '700',
     color: 'var(--text-muted)',
-    background: 'var(--bg-tertiary)',
+    background: 'var(--bg-secondary)',
     border: '1px solid var(--border-color)',
     borderRadius: '4px',
     padding: '1px 5px',
     textTransform: 'uppercase',
     letterSpacing: '0.5px',
-    lineHeight: 1
+    lineHeight: 1,
+    flex: 'none'
   },
-  change: (isPositive, isNeutral) => ({
-    fontSize: '13px',
-    fontWeight: '600',
-    color: isNeutral ? 'var(--text-muted)' : isPositive ? 'var(--gain-color)' : 'var(--loss-color)'
-  }),
   statusDot: (isLive) => ({
     width: '7px',
     height: '7px',
@@ -254,76 +259,60 @@ const MarketWatch = () => {
         </span>
       </div>
 
-      <div style={styles.tableContainer}>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              <th style={styles.th}>Security</th>
-              <th style={styles.thRight}>Price</th>
-              <th style={styles.thRight}>Daily</th>
-            </tr>
-          </thead>
-          <tbody>
-            {INSTRUMENTS.map((inst) => {
-              const q = quotes[inst.symbol];
-              const price = q ? toNumber(q.close ?? q.price) : null;
-              const changePct = q ? toNumber(q.changePercent) : null;
-              const isNeutral = changePct == null;
-              const isPositive = !isNeutral && changePct >= 0;
-              const isLive = q && isSameUtcDay(q.timestamp);
-              const closeLabel = !isLive && q
-                ? (() => {
-                    const ts = typeof q.timestamp === 'number'
-                      ? q.timestamp * 1000
-                      : Date.parse(q.timestamp);
-                    if (!Number.isFinite(ts)) return 'CLOSE';
-                    return `CLOSE ${new Date(ts).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}`;
-                  })()
-                : null;
+      <div style={styles.body}>
+        {/* Index grid — big serif values, like the Morning Desk proposal */}
+        <div style={styles.idxGrid}>
+          {INSTRUMENTS.slice(0, 4).map((inst) => {
+            const q = quotes[inst.symbol];
+            const price = q ? toNumber(q.close ?? q.price) : null;
+            const changePct = q ? toNumber(q.changePercent) : null;
+            const isNeutral = changePct == null;
+            const isPositive = !isNeutral && changePct >= 0;
+            const closeLabel = getCloseLabel(q);
 
-              return (
-                <tr
-                  key={inst.symbol}
-                  style={styles.tr}
-                  onMouseOver={(e) => {
-                    e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)';
-                  }}
-                  onMouseOut={(e) => {
-                    e.currentTarget.style.backgroundColor = 'transparent';
-                  }}
-                >
-                  <td style={styles.td}>
-                    <div style={styles.tickerCell}>
-                      <div style={styles.logo}>{inst.code.slice(0, 3)}</div>
-                      <div style={styles.tickerInfo}>
-                        <div style={styles.symbol}>{inst.name}</div>
-                        <div style={styles.tickerCode}>{inst.code}</div>
-                      </div>
-                    </div>
-                  </td>
-                  <td style={styles.tdRight}>
-                    <span style={styles.priceWrap}>
-                      {closeLabel && (
-                        <span
-                          style={styles.closeTag}
-                          title="Market closed — last closing price"
-                        >
-                          {closeLabel}
-                        </span>
-                      )}
-                      <span style={styles.price}>{formatPrice(price, inst.digits)}</span>
+            return (
+              <div key={inst.symbol} style={styles.idxCell}>
+                <div style={styles.idxName}>
+                  <span style={styles.idxNameText}>{inst.name}</span>
+                  {closeLabel && (
+                    <span style={styles.closeTag} title="Market closed — last closing price">
+                      {closeLabel}
                     </span>
-                  </td>
-                  <td style={styles.tdRight}>
-                    <span style={styles.change(isPositive, isNeutral)}>
-                      {formatChange(changePct)}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                  )}
+                </div>
+                <div style={styles.idxValue}>{formatPrice(price, inst.digits)}</div>
+                <div style={styles.idxChange(isPositive, isNeutral)}>{formatChange(changePct)}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Compact watchlist rows for FX / commodities */}
+        <div style={styles.wl}>
+          {INSTRUMENTS.slice(4).map((inst) => {
+            const q = quotes[inst.symbol];
+            const price = q ? toNumber(q.close ?? q.price) : null;
+            const changePct = q ? toNumber(q.changePercent) : null;
+            const isNeutral = changePct == null;
+            const isPositive = !isNeutral && changePct >= 0;
+            const closeLabel = getCloseLabel(q);
+
+            return (
+              <div
+                key={inst.symbol}
+                style={styles.wlRow}
+                title={closeLabel ? `Market closed — last closing price (${closeLabel})` : undefined}
+                onMouseOver={(e) => { e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'; }}
+                onMouseOut={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+              >
+                <span style={styles.wlTicker}>{inst.code}</span>
+                <span style={styles.wlName}>{inst.name}</span>
+                <span style={styles.wlPrice}>{formatPrice(price, inst.digits)}</span>
+                <span style={styles.wlChange(isPositive, isNeutral)}>{formatChange(changePct)}</span>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

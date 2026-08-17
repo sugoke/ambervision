@@ -47,7 +47,7 @@ export const BankConnectionHelpers = {
       host,
       port,
       username,
-      password, // Will be encrypted in production
+      password, // Encrypted at rest by the caller (server/helpers/credentialCrypto.js)
       privateKeyPath, // Path to SSH private key on server
       remotePath, // Default directory on remote server
 

@@ -244,7 +244,7 @@ const BondPriceQuery = ({ isDark }) => {
             cursor: searching ? 'not-allowed' : 'pointer',
             background: searching
               ? '#9ca3af'
-              : 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+              : 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
             color: 'white',
             transition: 'all 0.2s ease',
             boxShadow: searching ? 'none' : '0 2px 8px rgba(0, 123, 255, 0.3)',

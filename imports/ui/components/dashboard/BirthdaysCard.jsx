@@ -1,12 +1,19 @@
 import React from 'react';
 
+const getInitials = (name) => {
+  if (!name) return '?';
+  const parts = name.trim().split(/\s+/);
+  return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+};
+
 const BirthdaysCard = ({ birthdays, onBirthdayClick }) => {
   const styles = {
     card: {
-      backgroundColor: 'var(--bg-secondary)',
-      borderRadius: '12px',
-      padding: '20px',
+      background: 'var(--card-bg, var(--bg-secondary))',
+      borderRadius: 'var(--radius, 14px)',
+      padding: '22px',
       border: '1px solid var(--border-color)',
+      boxShadow: 'var(--card-shadow)',
       height: '100%',
       display: 'flex',
       flexDirection: 'column'
@@ -18,9 +25,11 @@ const BirthdaysCard = ({ birthdays, onBirthdayClick }) => {
       marginBottom: '16px'
     },
     title: {
-      fontSize: '16px',
+      fontSize: '11.5px',
       fontWeight: '600',
-      color: 'var(--text-primary)'
+      letterSpacing: '1.8px',
+      textTransform: 'uppercase',
+      color: 'var(--text-muted)'
     },
     list: {
       display: 'flex',
@@ -34,28 +43,28 @@ const BirthdaysCard = ({ birthdays, onBirthdayClick }) => {
       display: 'flex',
       alignItems: 'center',
       gap: '12px',
-      padding: '10px 12px',
+      padding: '10px 6px',
       borderRadius: '8px',
-      backgroundColor: isToday ? 'rgba(245, 158, 11, 0.15)' : 'var(--bg-tertiary)',
-      border: isToday ? '1px solid rgba(245, 158, 11, 0.3)' : '1px solid transparent'
+      backgroundColor: isToday ? 'rgba(224, 161, 56, 0.10)' : 'transparent'
     }),
-    avatar: (isToday) => ({
-      width: '36px',
-      height: '36px',
+    avatar: {
+      width: '34px',
+      height: '34px',
       borderRadius: '50%',
-      backgroundColor: isToday ? 'rgba(245, 158, 11, 0.3)' : 'var(--bg-primary)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontSize: isToday ? '18px' : '14px',
-      color: isToday ? 'var(--warning-color)' : 'var(--text-muted)'
-    }),
+      flex: 'none',
+      display: 'grid',
+      placeItems: 'center',
+      fontSize: '12px',
+      fontWeight: '600',
+      color: '#0E1014',
+      background: 'radial-gradient(circle at 35% 30%, #F2C46B, #E0A138)'
+    },
     content: {
       flex: 1,
       minWidth: 0
     },
     name: {
-      fontSize: '13px',
+      fontSize: '13.5px',
       fontWeight: '500',
       color: 'var(--text-primary)',
       overflow: 'hidden',
@@ -63,17 +72,18 @@ const BirthdaysCard = ({ birthdays, onBirthdayClick }) => {
       whiteSpace: 'nowrap'
     },
     relation: {
-      fontSize: '11px',
+      fontSize: '11.5px',
       color: 'var(--text-muted)',
-      marginTop: '2px'
+      marginTop: '1px'
     },
     dateTag: (isToday) => ({
+      marginLeft: 'auto',
+      fontFamily: "'JetBrains Mono', monospace",
       fontSize: '11px',
-      padding: '3px 8px',
-      borderRadius: '10px',
-      backgroundColor: isToday ? 'var(--warning-color)' : 'var(--bg-primary)',
-      color: isToday ? '#fff' : 'var(--text-muted)',
-      fontWeight: isToday ? '600' : '400'
+      letterSpacing: '0.3px',
+      color: isToday ? 'var(--warning-color)' : 'var(--text-muted)',
+      fontWeight: isToday ? '600' : '400',
+      whiteSpace: 'nowrap'
     }),
     emptyState: {
       display: 'flex',
@@ -125,15 +135,10 @@ const BirthdaysCard = ({ birthdays, onBirthdayClick }) => {
               key={idx}
               style={styles.birthdayItem(birthday.isToday)}
             >
-              <div style={styles.avatar(birthday.isToday)}>
-                {birthday.isToday ? (
-                  <span>&#127874;</span>
-                ) : (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                    <circle cx="12" cy="7" r="4" />
-                  </svg>
-                )}
+              <div style={styles.avatar}>
+                {birthday.isToday
+                  ? <span style={{ fontSize: '15px' }}>&#127874;</span>
+                  : getInitials(birthday.name)}
               </div>
               <div style={styles.content}>
                 <div style={styles.name}>{birthday.name}</div>

@@ -4,7 +4,7 @@ import { SecuritiesMetadataCollection, SecuritiesMetadataHelpers } from '../../i
 import { PMSHoldingsCollection, PMSHoldingsHelpers } from '../../imports/api/pmsHoldings.js';
 import { EODApiHelpers } from '../../imports/api/eodApi.js';
 import { computeCumulativeSplitFactor } from '../../imports/api/splitAdjustment.js';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
 import { ISINClassifierHelpers } from '../../imports/api/isinClassifier.js';
 import { ProductsCollection } from '../../imports/api/products.js';
@@ -22,10 +22,7 @@ async function validateAdminSession(sessionId, allowedRoles = ['admin', 'superad
     throw new Meteor.Error('not-authorized', 'Session required');
   }
 
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true
-  });
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) {
     throw new Meteor.Error('not-authorized', 'Invalid session');
@@ -1278,10 +1275,7 @@ Meteor.methods({
     check(sessionId, String);
 
     // Validate session (not admin-only, but must be authenticated)
-    const session = await SessionsCollection.findOneAsync({
-      sessionId,
-      isActive: true
-    });
+    const session = await SessionHelpers.findByToken(sessionId);
 
     if (!session) {
       throw new Meteor.Error('not-authorized', 'Invalid session');

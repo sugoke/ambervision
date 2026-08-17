@@ -301,7 +301,7 @@ const PriceUploadManager = ({ user }) => {
             <button
               onClick={resetUpload}
               style={{
-                background: 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+                background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
                 color: 'white',
                 border: 'none',
                 padding: '12px 24px',

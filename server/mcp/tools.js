@@ -308,7 +308,9 @@ export function registerTools(mcpServer, user) {
       const scope = await resolveMcpScope(user);
       // Exclude archived (closed) relationships — their holdings are hidden
       // everywhere, so they should not appear in the entity list either.
-      const query = { isActive: true, status: { $ne: 'archived' } };
+      // isDemo: the fictional demo client is app-only (View As); assistants and
+      // external MCP clients must never list it.
+      const query = { isActive: true, status: { $ne: 'archived' }, isDemo: { $ne: true } };
       if (!scope.isAdmin) {
         if (scope.entityIds.length === 0) return textResult({ items: [], total: 0, hasMore: false });
         query._id = { $in: scope.entityIds };

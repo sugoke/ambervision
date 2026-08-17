@@ -5,20 +5,9 @@ import React, { useState, useEffect } from 'react';
  * Accessible at /#landing without authentication
  */
 const LandingPage = () => {
-  // Load Counter.dev analytics script
-  useEffect(() => {
-    const script = document.createElement('script');
-    script.src = 'https://cdn.counter.dev/script.js';
-    script.setAttribute('data-id', '6eab4d24-5529-4548-b0aa-738a003e0169');
-    script.setAttribute('data-utcoffset', '2');
-    script.async = true;
-    document.body.appendChild(script);
+// GDPR: third-party analytics (counter.dev) removed — no consent mechanism existed
+  // and visitor IPs were sent to an external processor on every page load.
 
-    return () => {
-      // Cleanup on unmount
-      document.body.removeChild(script);
-    };
-  }, []);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -26,6 +15,7 @@ const LandingPage = () => {
     phone: '',
     countryCode: '+1' // Default to US
   });
+  const [consentGiven, setConsentGiven] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStatus, setSubmitStatus] = useState(null);
   const [emailError, setEmailError] = useState(null);
@@ -88,6 +78,13 @@ const LandingPage = () => {
       return;
     }
 
+    // GDPR: consent is the lawful basis for storing prospect contact details.
+    if (!consentGiven) {
+      setSubmitStatus({ type: 'error', message: 'Please accept the privacy policy so we can store your contact details.' });
+      setIsSubmitting(false);
+      return;
+    }
+
     try {
       // Format phone with country code
       const formattedPhone = formData.phone
@@ -99,7 +96,8 @@ const LandingPage = () => {
         Meteor.call('landing.submitContactForm', {
           name: formData.name,
           email: formData.email || null,
-          phone: formattedPhone
+          phone: formattedPhone,
+          consent: { given: true, at: new Date(), textVersion: 'privacy-2026-08' }
         }, (error, result) => {
           if (error) reject(error);
           else resolve(result);
@@ -226,6 +224,20 @@ const LandingPage = () => {
             </p>
           )}
 
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '0.8rem', opacity: 0.9, cursor: 'pointer', textAlign: 'left', margin: '10px 0 0' }}>
+            <input
+              type="checkbox"
+              checked={consentGiven}
+              onChange={(e) => setConsentGiven(e.target.checked)}
+              required
+              style={{ marginTop: '2px' }}
+            />
+            <span>
+              I agree that Amber Lake Partners stores my contact details to get back to me, as described in the{' '}
+              <a href="/#privacy" target="_blank" rel="noopener noreferrer" style={{ color: '#DD772A' }}>privacy policy</a>.
+            </span>
+          </label>
+
           <div style={styles.privacyNote}>
             <i className="fas fa-shield-alt" style={{ marginRight: '8px', color: '#DD772A' }}></i>
             Your privacy matters. We will never share your information with third parties or contact you unnecessarily.
@@ -262,13 +274,11 @@ const LandingPage = () => {
       {/* Load Font Awesome */}
       <link
         rel="stylesheet"
-        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+        href="/vendor/fontawesome/css/all.min.css"
       />
       {/* Load Poppins font */}
-      <link rel="preconnect" href="https://fonts.googleapis.com" />
-      <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
       <link
-        href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap"
+        href="/fonts/poppins.css"
         rel="stylesheet"
       />
     </div>
@@ -428,7 +438,7 @@ const styles = {
     background: 'rgba(255, 255, 255, 0.05)',
     borderRadius: '6px',
     fontSize: '0.75rem',
-    color: '#9CA3AF',
+    color: 'var(--text-muted)',
     textAlign: 'center',
     lineHeight: 1.5,
   },

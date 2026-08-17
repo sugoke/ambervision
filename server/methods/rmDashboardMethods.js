@@ -2,7 +2,7 @@ import { Meteor } from 'meteor/meteor';
 import { Mongo } from 'meteor/mongo';
 import { check, Match } from 'meteor/check';
 import { HTTP } from 'meteor/http';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection, USER_ROLES, UserHelpers } from '../../imports/api/users.js';
 import { ProductsCollection } from '../../imports/api/products.js';
 import { AllocationsCollection } from '../../imports/api/allocations.js';
@@ -18,7 +18,7 @@ import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetada
 import { CurrencyRateCacheCollection, CurrencyCache } from '../../imports/api/currencyCache.js';
 import { calculateCashForHoldings } from '../../imports/api/helpers/cashCalculator.js';
 import { DashboardMetricsHelpers } from '../../imports/api/dashboardMetrics.js';
-import { ClientEntitiesCollection, ClientEntityHelpers } from '../../imports/api/clientEntities.js';
+import { ClientEntitiesCollection, ClientEntityHelpers, ENTITY_STATUSES } from '../../imports/api/clientEntities.js';
 import { UserEntityAccessHelpers } from '../../imports/api/userEntityAccess.js';
 import { getFilteredEntityIds, buildEntityOrUserFilter } from '../../imports/utils/entityResolver.js';
 import { INVESTMENT_QUOTES } from '../quotesData.js';
@@ -47,10 +47,12 @@ Meteor.startup(async () => {
  * (data filtering is handled in individual methods based on role)
  */
 async function validateRMSession(sessionId) {
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true
-  });
+  // SECURITY: string-only — a selector object like {$gt:""} would otherwise match
+  // the first live session (NoSQL auth-bypass). Fail closed.
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
+    throw new Meteor.Error('not-authorized', 'Invalid session');
+  }
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) {
     throw new Meteor.Error('not-authorized', 'Invalid session');
@@ -120,24 +122,73 @@ async function getAssignedClients(currentUser) {
  * @param {Object} viewAsFilter - Optional filter {type: 'client'|'account', id: String}
  * @returns {Array<String>} Array of client IDs to filter by
  */
+/**
+ * Resolve the OWNER ids of the dashboard's data perimeter: a mixed array of legacy
+ * userIds and entityIds. Both `allocations.clientId` and the owner stamps on
+ * PMSHoldings hold either kind, so consumers match with `{ $in: ids }` (allocations)
+ * or `$or: [{ userId: { $in } }, { entityId: { $in } }]` (holdings).
+ *
+ * View As support — the picker returns ENTITIES since the entity migration, and this
+ * resolver's missing 'entity' branch used to fall through to "all assigned clients":
+ * the dashboard silently showed the firm-wide picture while the user believed they
+ * were scoped to one client.
+ *
+ * The fictional demo entity is allowed ONLY via an explicit entity selection (that is
+ * its purpose); it never enters unscoped lists. Archived clients never appear at all.
+ */
 async function getFilteredClientIds(currentUser, viewAsFilter = null) {
   const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
   const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
   const isCompliance = currentUser.role === USER_ROLES.COMPLIANCE;
   const isClient = currentUser.role === USER_ROLES.CLIENT;
 
-  // Client always sees only themselves
+  // Client sees themselves plus any entities they hold access grants for
   if (isClient) {
-    return [currentUser._id];
+    const { UserEntityAccessHelpers } = await import('/imports/api/userEntityAccess.js');
+    const grantedIds = await UserEntityAccessHelpers.getEntityIdsForUser(currentUser._id);
+    if (grantedIds.length === 0) return [currentUser._id];
+    const liveEntities = await ClientEntitiesCollection.find(
+      { _id: { $in: grantedIds }, status: { $ne: ENTITY_STATUSES.ARCHIVED }, isDemo: { $ne: true } },
+      { fields: { _id: 1 } }
+    ).fetchAsync();
+    return [currentUser._id, ...liveEntities.map(e => e._id)];
   }
 
   // Archived (closed-relationship) clients are excluded everywhere — including
   // explicit viewAs drill-down. Resolve the archived legacy userIds once.
   const { userIds: archivedUserIds } = await ClientEntityHelpers.getArchivedOwnerIds();
 
-  // If viewAsFilter is active, filter to specific client
+  // RM access test shared by the entity branches below
+  const rmHasEntityAccess = (entity) => {
+    const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
+    return (entity.assignedUserIds || []).some(id => rmIds.includes(id))
+      || rmIds.includes(entity.relationshipManagerId);
+  };
+
+  // If viewAsFilter is active, narrow to that perimeter
   if (viewAsFilter && (isAdmin || isRM || isCompliance)) {
-    if (viewAsFilter.type === 'client') {
+    if (viewAsFilter.type === 'entity') {
+      const entity = await ClientEntitiesCollection.findOneAsync(viewAsFilter.id);
+      if (!entity || ClientEntityHelpers.isEntityArchived(entity)) return [];
+      if (isRM && !rmHasEntityAccess(entity)) {
+        console.warn(`[getFilteredClientIds] RM/Assistant ${currentUser._id} attempted to access unauthorized entity ${viewAsFilter.id}`);
+        return [];
+      }
+      // Pre-migration data (allocations, holdings) references the LEGACY userId, and
+      // migratedFromUserId is absent on most entities. The durable link is the entity's
+      // bank accounts, which carry both stamps on migrated accounts — collect every
+      // linked legacy userId so the perimeter covers old and new records alike.
+      const ids = [entity._id];
+      if (entity.migratedFromUserId) ids.push(entity.migratedFromUserId);
+      const linkedAccounts = await BankAccountsCollection.find(
+        { entityId: entity._id, userId: { $exists: true, $ne: null } },
+        { fields: { userId: 1 } }
+      ).fetchAsync();
+      for (const a of linkedAccounts) {
+        if (a.userId && !ids.includes(a.userId) && !archivedUserIds.includes(a.userId)) ids.push(a.userId);
+      }
+      return ids;
+    } else if (viewAsFilter.type === 'client') {
       // For RMs/Assistants, verify they have access to this client
       if (isRM) {
         const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
@@ -153,31 +204,58 @@ async function getFilteredClientIds(currentUser, viewAsFilter = null) {
       if (archivedUserIds.includes(viewAsFilter.id)) return [];
       return [viewAsFilter.id];
     } else if (viewAsFilter.type === 'account') {
-      // Get the client who owns this account
+      // The account's owner is its entity (post-migration) or its legacy user
       const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-      if (bankAccount) {
-        // For RMs/Assistants, verify they have access to this client
-        if (isRM) {
-          const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
-          const targetClient = await UsersCollection.findOneAsync({
-            _id: bankAccount.userId,
-            relationshipManagerId: { $in: rmIds }
-          });
-          if (!targetClient) {
-            console.warn(`[getFilteredClientIds] RM/Assistant ${currentUser._id} attempted to access unauthorized account ${viewAsFilter.id}`);
-            return [];
-          }
+      if (!bankAccount) return [];
+      if (bankAccount.entityId) {
+        const entity = await ClientEntitiesCollection.findOneAsync(bankAccount.entityId);
+        if (!entity || ClientEntityHelpers.isEntityArchived(entity)) return [];
+        if (isRM && !rmHasEntityAccess(entity)) {
+          console.warn(`[getFilteredClientIds] RM/Assistant ${currentUser._id} attempted to access unauthorized account ${viewAsFilter.id}`);
+          return [];
         }
-        if (archivedUserIds.includes(bankAccount.userId)) return [];
-        return [bankAccount.userId];
+        const ids = [entity._id];
+        if (entity.migratedFromUserId) ids.push(entity.migratedFromUserId);
+        if (bankAccount.userId && !ids.includes(bankAccount.userId) && !archivedUserIds.includes(bankAccount.userId)) {
+          ids.push(bankAccount.userId);
+        }
+        return ids;
       }
-      return [];
+      // Legacy user-owned account
+      if (isRM) {
+        const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
+        const targetClient = await UsersCollection.findOneAsync({
+          _id: bankAccount.userId,
+          relationshipManagerId: { $in: rmIds }
+        });
+        if (!targetClient) {
+          console.warn(`[getFilteredClientIds] RM/Assistant ${currentUser._id} attempted to access unauthorized account ${viewAsFilter.id}`);
+          return [];
+        }
+      }
+      if (archivedUserIds.includes(bankAccount.userId)) return [];
+      return bankAccount.userId ? [bankAccount.userId] : [];
     }
   }
 
-  // No filter - get all assigned clients
+  // No filter — the full perimeter: assigned client users PLUS live entities.
+  // Entity-only clients (post-migration) have no userId, so without the entity ids
+  // their allocations and holdings were invisible to every dashboard aggregate.
   const clients = await getAssignedClients(currentUser);
-  return clients.map(c => c._id);
+  const entityQuery = {
+    isActive: true,
+    status: { $ne: ENTITY_STATUSES.ARCHIVED },
+    isDemo: { $ne: true }
+  };
+  if (isRM) {
+    const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
+    entityQuery.$or = [
+      { assignedUserIds: { $in: rmIds } },
+      { relationshipManagerId: { $in: rmIds } }
+    ];
+  }
+  const entities = await ClientEntitiesCollection.find(entityQuery, { fields: { _id: 1 } }).fetchAsync();
+  return [...clients.map(c => c._id), ...entities.map(e => e._id)];
 }
 
 /**
@@ -453,7 +531,7 @@ Meteor.methods({
 
       // 6. Count unknown/unlinked structured products
       const unknownProducts = await PMSHoldingsCollection.find({
-        userId: { $in: clientIds },
+        $and: [{ $or: [{ userId: { $in: clientIds } }, { entityId: { $in: clientIds } }] }],
         isLatest: true,
         linkedProductId: { $exists: false },
         assetClass: { $in: ['structured_product', 'Structured Products'] }
@@ -514,6 +592,24 @@ Meteor.methods({
     // Determine target client(s) based on viewAsFilter
     const clientIds = await getFilteredClientIds(currentUser, viewAsFilter);
 
+    // When View As targets a single ACCOUNT, the owner perimeter from
+    // getFilteredClientIds silently widens the total to ALL of the client's
+    // accounts. Restrict holdings to the selected account's bankId +
+    // portfolioCode, mirroring server/publications/pmsHoldings.js, so the
+    // dashboard total matches the PMS total for the same selection.
+    let accountScope = null;
+    if (viewAsFilter?.type === 'account' && clientIds.length > 0) {
+      const scopedAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
+      if (scopedAccount?.accountNumber && scopedAccount.bankId) {
+        const baseAccountNumber = scopedAccount.accountNumber.split('-')[0]
+          .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        accountScope = {
+          bankId: scopedAccount.bankId,
+          portfolioCodeRegex: `^${baseAccountNumber}(-|$)`
+        };
+      }
+    }
+
     // For admin/superadmin requesting EUR without viewAsFilter, check pre-computed cache first
     const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
     if (isAdmin && targetCurrency === 'EUR' && !viewAsFilter) {
@@ -552,7 +648,15 @@ Meteor.methods({
       const ratesMap = buildRatesMap(currencyRates);
 
       // Exclude assets of archived (closed-relationship) clients from AUM.
+      // The excluded-owner list also carries the fictional demo client; when the View As
+      // perimeter IS that owner (explicit selection — the demo's whole purpose), it must
+      // not be re-excluded. getFilteredClientIds never returns archived ids, so removing
+      // perimeter ids here only ever readmits the demo.
       const archivedOwners = await ClientEntityHelpers.getArchivedOwnerIds();
+      if (viewAsFilter) {
+        archivedOwners.entityIds = archivedOwners.entityIds.filter(id => !clientIds.includes(id));
+        archivedOwners.userIds = archivedOwners.userIds.filter(id => !clientIds.includes(id));
+      }
       const archivedHoldingFilter = {
         entityId: { $nin: archivedOwners.entityIds },
         userId: { $nin: archivedOwners.userIds }
@@ -601,8 +705,10 @@ Meteor.methods({
       // Track current portfolios for later comparison with snapshots
       const currentPortfolioKeys = new Set();
 
-      if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN) {
-        // Admin sees all holdings - sum market value from latest PMSHoldings
+      if ((currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN) && !viewAsFilter) {
+        // Unscoped admin sees all holdings - sum market value from latest PMSHoldings.
+        // With a View As filter this branch must NOT run: fall through to the
+        // perimeter-scoped query below like everyone else.
         // Include whitelisted asset classes + unclassified (null) holdings
         // Must match PMS publication filter: isActive: true, isLatest: true
         // Exclude CONSOLIDATED to avoid double-counting
@@ -644,9 +750,12 @@ Meteor.methods({
         // Include whitelisted asset classes + unclassified (null) holdings
         // Must match PMS publication filter: isActive: true, isLatest: true
         // Exclude CONSOLIDATED and non-investment accounts
-        const clientHoldings = await PMSHoldingsCollection.find({
-          userId: { $in: clientIds, $nin: archivedOwners.userIds },
-          entityId: { $nin: archivedOwners.entityIds },
+        const clientHoldingsQuery = {
+          $and: [
+            { $or: [{ userId: { $in: clientIds } }, { entityId: { $in: clientIds } }] },
+            { userId: { $nin: archivedOwners.userIds } },
+            { entityId: { $nin: archivedOwners.entityIds } }
+          ],
           isActive: true,
           isLatest: true,
           marketValue: { $exists: true, $gt: 0 },
@@ -656,7 +765,15 @@ Meteor.methods({
             { assetClass: null },
             { assetClass: { $exists: false } }
           ]
-        }).fetchAsync();
+        };
+        if (accountScope) {
+          clientHoldingsQuery.bankId = accountScope.bankId;
+          clientHoldingsQuery.portfolioCode = {
+            $regex: accountScope.portfolioCodeRegex,
+            $nin: excludedPortfolioCodes
+          };
+        }
+        const clientHoldings = await PMSHoldingsCollection.find(clientHoldingsQuery).fetchAsync();
 
         totalAUMInEUR = sumHoldingsInEUR(clientHoldings);
 
@@ -670,16 +787,30 @@ Meteor.methods({
       // FX forwards: include at NET mark-to-market (matches PMS Total Portfolio Value).
       // Summed separately because negative legs must NOT be excluded by marketValue > 0.
       if (isAdmin || clientIds.length > 0) {
-        const fxForwardScope = isAdmin
+        const fxForwardScope = (isAdmin && !viewAsFilter)
           ? { ...archivedHoldingFilter }
-          : { userId: { $in: clientIds, $nin: archivedOwners.userIds }, entityId: { $nin: archivedOwners.entityIds } };
-        const fxForwardHoldings = await PMSHoldingsCollection.find({
+          : {
+              $and: [
+                { $or: [{ userId: { $in: clientIds } }, { entityId: { $in: clientIds } }] },
+                { userId: { $nin: archivedOwners.userIds } },
+                { entityId: { $nin: archivedOwners.entityIds } }
+              ]
+            };
+        const fxForwardQuery = {
           isActive: true,
           isLatest: true,
           assetClass: 'fx_forward',
           portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
           ...fxForwardScope
-        }).fetchAsync();
+        };
+        if (accountScope) {
+          fxForwardQuery.bankId = accountScope.bankId;
+          fxForwardQuery.portfolioCode = {
+            $regex: accountScope.portfolioCodeRegex,
+            $nin: excludedPortfolioCodes
+          };
+        }
+        const fxForwardHoldings = await PMSHoldingsCollection.find(fxForwardQuery).fetchAsync();
         totalAUMInEUR += fxForwardHoldings.reduce((sum, h) => sum + (h.marketValueNoAccruedInterest || h.marketValue || 0), 0);
       }
 
@@ -741,12 +872,18 @@ Meteor.methods({
         // Exclude CONSOLIDATED snapshots to avoid double-counting
         let snapshotQuery = { snapshotDate: yesterday, portfolioCode: { $ne: 'CONSOLIDATED' } };
 
-        if (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN) {
-          // RM sees only their clients' snapshots
-          snapshotQuery.userId = { $in: clientIds, $nin: archivedOwners.userIds };
-        } else if (archivedOwners.userIds.length > 0) {
-          // Admin/Superadmin: exclude archived clients' snapshots from comparison
+        const adminUnscoped = (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN) && !viewAsFilter;
+        if (!adminUnscoped) {
+          // Scoped (RM, or admin with a View As filter): only the perimeter's snapshots
+          snapshotQuery.$and = [
+            { $or: [{ userId: { $in: clientIds } }, { entityId: { $in: clientIds } }] },
+            { userId: { $nin: archivedOwners.userIds } },
+            { entityId: { $nin: archivedOwners.entityIds } }
+          ];
+        } else {
+          // Unscoped admin: everything except archived (and demo, via getArchivedOwnerIds)
           snapshotQuery.userId = { $nin: archivedOwners.userIds };
+          snapshotQuery.entityId = { $nin: archivedOwners.entityIds };
         }
 
         // Get yesterday's aggregated AUM from snapshots (EXACT date match only - no fallback to old dates)
@@ -799,8 +936,11 @@ Meteor.methods({
               }).fetchAsync();
             } else {
               matchedCurrentHoldings = await PMSHoldingsCollection.find({
-                userId: { $in: clientIds, $nin: archivedOwners.userIds },
-                entityId: { $nin: archivedOwners.entityIds },
+                $and: [
+                  { $or: [{ userId: { $in: clientIds } }, { entityId: { $in: clientIds } }] },
+                  { userId: { $nin: archivedOwners.userIds } },
+                  { entityId: { $nin: archivedOwners.entityIds } }
+                ],
                 isActive: true,
                 isLatest: true,
                 marketValue: { $exists: true, $gt: 0 },
@@ -901,16 +1041,45 @@ Meteor.methods({
    * @param {Number} days - Number of days of history (default: 90)
    * @param {String} targetCurrency - Currency for display (default: 'EUR')
    */
-  async 'rmDashboard.getAUMHistory'(sessionId, days = 90, targetCurrency = 'EUR') {
+  async 'rmDashboard.getAUMHistory'(sessionId, days = 90, targetCurrency = 'EUR', viewAsFilter = null) {
     check(sessionId, String);
     check(days, Number);
     check(targetCurrency, String);
+    check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
+      type: String,
+      id: String
+    }), null, undefined));
 
     const currentUser = await validateRMSession(sessionId);
 
-    // For admin/superadmin requesting WTD (<=7 days) in EUR, check pre-computed cache first
+    // Resolve the View As perimeter. Like getPortfolioSummary, an account-level
+    // filter must ALSO restrict by bankId + portfolioCode — the owner ids alone
+    // would widen the chart to all of the client's accounts.
+    const hasViewFilter = !!viewAsFilter;
+    let scopedClientIds = null;
+    let accountScope = null;
+    if (hasViewFilter) {
+      scopedClientIds = await getFilteredClientIds(currentUser, viewAsFilter);
+      if (scopedClientIds.length === 0) {
+        return { hasData: false, labels: [], values: [], snapshots: [] };
+      }
+      if (viewAsFilter.type === 'account') {
+        const scopedAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
+        if (scopedAccount?.accountNumber && scopedAccount.bankId) {
+          const baseAccountNumber = scopedAccount.accountNumber.split('-')[0]
+            .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          accountScope = {
+            bankId: scopedAccount.bankId,
+            portfolioCodeRegex: `^${baseAccountNumber}(-|$)`
+          };
+        }
+      }
+    }
+
+    // For admin/superadmin requesting WTD (<=7 days) in EUR without a View As
+    // filter, check pre-computed cache first (the cache is global-perimeter only)
     const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
-    if (isAdmin && days <= 7 && targetCurrency === 'EUR') {
+    if (isAdmin && days <= 7 && targetCurrency === 'EUR' && !hasViewFilter) {
       const cached = await DashboardMetricsHelpers.getMetrics('global', 'aum_summary');
       if (cached?.wtdHistory && cached.wtdHistory.length > 0) {
         console.log('[RM Dashboard] Using pre-computed WTD history from cache');
@@ -945,7 +1114,21 @@ Meteor.methods({
       // For RM: only their clients' portfolios
       let rawSnapshots;
 
-      if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE) {
+      if (hasViewFilter) {
+        // View As perimeter (any role): only the selected client/account's snapshots
+        const snapshotQuery = {
+          $or: [{ userId: { $in: scopedClientIds } }, { entityId: { $in: scopedClientIds } }],
+          snapshotDate: { $gte: startDate, $lte: endDate },
+          portfolioCode: { $ne: 'CONSOLIDATED' }
+        };
+        if (accountScope) {
+          snapshotQuery.bankId = accountScope.bankId;
+          snapshotQuery.portfolioCode = { $regex: accountScope.portfolioCodeRegex };
+        }
+        rawSnapshots = await PortfolioSnapshotsCollection.find(snapshotQuery, {
+          sort: { snapshotDate: 1 }
+        }).fetchAsync();
+      } else if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE) {
         // Admin/Compliance sees all portfolios - aggregate by date
         // Exclude CONSOLIDATED snapshots to avoid double-counting, and exclude
         // archived (closed-relationship) clients so the AUM history line matches the
@@ -974,7 +1157,7 @@ Meteor.methods({
 
         // Exclude CONSOLIDATED snapshots to avoid double-counting
         rawSnapshots = await PortfolioSnapshotsCollection.find({
-          userId: { $in: clientIds },
+          $or: [{ userId: { $in: clientIds } }, { entityId: { $in: clientIds } }],
           snapshotDate: { $gte: startDate, $lte: endDate },
           portfolioCode: { $ne: 'CONSOLIDATED' }
         }, {
@@ -1021,9 +1204,24 @@ Meteor.methods({
       // Count current live portfolios for a more accurate reference
       let livePortfolioCount = 0;
       try {
-        const liveQuery = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE
-          ? { isActive: true, isLatest: true, portfolioCode: { $ne: 'CONSOLIDATED' } }
-          : { userId: { $in: (await getAssignedClients(currentUser)).map(c => c._id) }, isActive: true, isLatest: true, portfolioCode: { $ne: 'CONSOLIDATED' } };
+        let liveQuery;
+        if (hasViewFilter) {
+          // Scope the coverage reference to the View As perimeter — the global
+          // portfolio count would make minThreshold reject every scoped day.
+          liveQuery = {
+            $or: [{ userId: { $in: scopedClientIds } }, { entityId: { $in: scopedClientIds } }],
+            isActive: true,
+            isLatest: true,
+            portfolioCode: accountScope
+              ? { $regex: accountScope.portfolioCodeRegex }
+              : { $ne: 'CONSOLIDATED' }
+          };
+          if (accountScope) liveQuery.bankId = accountScope.bankId;
+        } else {
+          liveQuery = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE
+            ? { isActive: true, isLatest: true, portfolioCode: { $ne: 'CONSOLIDATED' } }
+            : { userId: { $in: (await getAssignedClients(currentUser)).map(c => c._id) }, isActive: true, isLatest: true, portfolioCode: { $ne: 'CONSOLIDATED' } };
+        }
         const liveHoldings = await PMSHoldingsCollection.find(liveQuery, { fields: { portfolioCode: 1, bankId: 1 } }).fetchAsync();
         const liveKeys = new Set(liveHoldings.map(h => `${h.portfolioCode}|${h.bankId}`));
         livePortfolioCount = liveKeys.size;
@@ -1041,38 +1239,74 @@ Meteor.methods({
       const aumAssetClasses = [
         'cash', 'equity', 'fixed_income', 'structured_product',
         'time_deposit', 'monetary_products', 'commodities',
-        'private_equity', 'private_debt', 'etf', 'fund'
+        'private_equity', 'private_debt', 'etf', 'fund',
+        'other' // included so the final point matches getPortfolioSummary / PMS total
       ];
 
+      const assetClassOr = [
+        { assetClass: { $in: aumAssetClasses } },
+        { assetClass: null },
+        { assetClass: { $exists: false } }
+      ];
+
+      // The live "today" point must apply the SAME exclusions as the headline AUM
+      // (getPortfolioSummary): archived/demo owners and non-investment accounts.
+      // Without them the chart's final point jumps above the displayed AUM
+      // (e.g. the fictional demo client's €30M inflating the line).
+      const liveArchivedOwners = await ClientEntityHelpers.getArchivedOwnerIds();
+      const liveNonInvestmentAccounts = await BankAccountsCollection.find(
+        { comment: { $in: ['Credit line', 'Credit Card', 'Credit account', 'Spending'] } },
+        { fields: { accountNumber: 1 } }
+      ).fetchAsync();
+      const liveExcludedPortfolioCodes = liveNonInvestmentAccounts.map(a => a.accountNumber);
+
       let liveAUMInEUR = 0;
-      if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE) {
+      if (hasViewFilter) {
+        // View As perimeter (any role): mirror getPortfolioSummary's scoping so the
+        // chart's final point matches the headline AUM for the same selection
+        const scopedQuery = {
+          $and: [
+            { $or: [{ userId: { $in: scopedClientIds } }, { entityId: { $in: scopedClientIds } }] },
+            { $or: assetClassOr }
+          ],
+          isActive: true,
+          isLatest: true,
+          marketValue: { $exists: true, $gt: 0 },
+          portfolioCode: { $ne: 'CONSOLIDATED' }
+        };
+        if (accountScope) {
+          scopedQuery.bankId = accountScope.bankId;
+          scopedQuery.portfolioCode = { $regex: accountScope.portfolioCodeRegex };
+        }
+        const scopedHoldings = await PMSHoldingsCollection.find(scopedQuery).fetchAsync();
+        liveAUMInEUR = scopedHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+      } else if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE) {
         const allHoldings = await PMSHoldingsCollection.find({
           isActive: true,
           isLatest: true,
           marketValue: { $exists: true, $gt: 0 },
-          portfolioCode: { $ne: 'CONSOLIDATED' },
-          $or: [
-            { assetClass: { $in: aumAssetClasses } },
-            { assetClass: null },
-            { assetClass: { $exists: false } }
-          ]
+          portfolioCode: { $ne: 'CONSOLIDATED', $nin: liveExcludedPortfolioCodes },
+          userId: { $nin: liveArchivedOwners.userIds },
+          entityId: { $nin: liveArchivedOwners.entityIds },
+          $or: assetClassOr
         }).fetchAsync();
         liveAUMInEUR = allHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
       } else {
-        const clients = await getAssignedClients(currentUser);
-        const clientIds = clients.map(c => c._id);
+        const clientIds = await getFilteredClientIds(currentUser);
         if (clientIds.length > 0) {
+          // NOTE: $and is required — two $or keys in one object literal would
+          // silently drop the client-perimeter clause (last key wins)
           const clientHoldings = await PMSHoldingsCollection.find({
-            userId: { $in: clientIds },
+            $and: [
+              { $or: [{ userId: { $in: clientIds } }, { entityId: { $in: clientIds } }] },
+              { $or: assetClassOr }
+            ],
             isActive: true,
             isLatest: true,
             marketValue: { $exists: true, $gt: 0 },
-            portfolioCode: { $ne: 'CONSOLIDATED' },
-            $or: [
-              { assetClass: { $in: aumAssetClasses } },
-              { assetClass: null },
-              { assetClass: { $exists: false } }
-            ]
+            portfolioCode: { $ne: 'CONSOLIDATED', $nin: liveExcludedPortfolioCodes },
+            userId: { $nin: liveArchivedOwners.userIds },
+            entityId: { $nin: liveArchivedOwners.entityIds }
           }).fetchAsync();
           liveAUMInEUR = clientHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
         }
@@ -1141,9 +1375,18 @@ Meteor.methods({
     const currentUser = await validateRMSession(sessionId);
     const clientIds = await getFilteredClientIds(currentUser, viewAsFilter);
 
-    // Get full client objects for birthday data
+    // Get full client objects for birthday data. clientIds mixes legacy userIds and
+    // entityIds; entities carry the same profile.birthday / familyMembers shape, and
+    // most clients are entity-only now, so read both sources. Entities whose legacy
+    // user is ALSO in the perimeter would duplicate — the seen-set below dedupes.
     const clients = clientIds.length > 0
       ? await UsersCollection.find({ _id: { $in: clientIds } }).fetchAsync()
+      : [];
+    const entityClients = clientIds.length > 0
+      ? await ClientEntitiesCollection.find(
+          { _id: { $in: clientIds }, type: 'physical_person' },
+          { fields: { profile: 1 } }
+        ).fetchAsync()
       : [];
 
     const today = new Date();
@@ -1221,10 +1464,54 @@ Meteor.methods({
       });
     });
 
-    // Sort by date (soonest first)
-    birthdays.sort((a, b) => a.date - b.date);
+    // Entity profiles: same birthday shape as user profiles.
+    entityClients.forEach(entity => {
+      if (entity.profile?.birthday) {
+        const nextBday = getNextBirthday(entity.profile.birthday);
+        const isToday = nextBday.toDateString() === today.toDateString();
+        birthdays.push({
+          name: `${entity.profile.firstName || ''} ${entity.profile.lastName || ''}`.trim() || 'Client',
+          date: nextBday,
+          dateFormatted: nextBday.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
+          daysUntil: formatDaysUntil(nextBday),
+          isClient: true,
+          isToday,
+          clientId: entity._id,
+          entityId: entity._id
+        });
+      }
+      (entity.profile?.familyMembers || []).forEach(member => {
+        if (member.birthday) {
+          const nextBday = getNextBirthday(member.birthday);
+          const isToday = nextBday.toDateString() === today.toDateString();
+          birthdays.push({
+            name: member.name,
+            relationship: member.relationship,
+            clientName: `${entity.profile?.firstName || ''} ${entity.profile?.lastName || ''}`.trim(),
+            date: nextBday,
+            dateFormatted: nextBday.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
+            daysUntil: formatDaysUntil(nextBday),
+            isClient: false,
+            isToday,
+            clientId: entity._id,
+            entityId: entity._id
+          });
+        }
+      });
+    });
 
-    return birthdays.slice(0, limit);
+    // Sort by date (soonest first); dedupe the same person appearing via both their
+    // legacy user record and their entity record (name + date identifies them).
+    birthdays.sort((a, b) => a.date - b.date);
+    const seen = new Set();
+    const unique = birthdays.filter(b => {
+      const key = `${b.name}|${b.date.toDateString()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    return unique.slice(0, limit);
   },
 
   /**
@@ -1343,7 +1630,9 @@ Meteor.methods({
     try {
       // Exclude allocations of archived (closed-relationship) clients so their products'
       // observation events don't surface on the dashboard.
-      const archivedAllocExclusion = await ClientEntityHelpers.archivedAllocationsSelector();
+      const archivedAllocExclusion = await ClientEntityHelpers.hiddenAllocationsSelector({
+        exceptEntityId: await ClientEntityHelpers.resolveScopedEntityId(viewAsFilter)
+      });
 
       // Get all allocations for clients
       const allocations = await AllocationsCollection.find({
@@ -1424,7 +1713,9 @@ Meteor.methods({
     try {
       // Exclude allocations of archived (closed-relationship) clients so their products'
       // notifications don't surface in recent activity.
-      const archivedAllocExclusion = await ClientEntityHelpers.archivedAllocationsSelector();
+      const archivedAllocExclusion = await ClientEntityHelpers.hiddenAllocationsSelector({
+        exceptEntityId: await ClientEntityHelpers.resolveScopedEntityId(viewAsFilter)
+      });
 
       // Get allocations to find relevant products for these clients
       const allocations = await AllocationsCollection.find({
@@ -1473,10 +1764,7 @@ Meteor.methods({
     check(sessionId, String);
 
     // Validate session (any logged-in user can get the quote)
-    const session = await SessionsCollection.findOneAsync({
-      sessionId,
-      isActive: true
-    });
+    const session = await SessionHelpers.findByToken(sessionId);
 
     if (!session) {
       throw new Meteor.Error('not-authorized', 'Invalid session');
@@ -1639,47 +1927,12 @@ Meteor.methods({
     const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
     const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER;
 
-    // Determine target client(s) based on viewAsFilter
-    let targetClientIds = [];
-
-    if (viewAsFilter && (isAdmin || isRM)) {
-      // Apply viewAsFilter - show only the selected client's data
-      if (viewAsFilter.type === 'client') {
-        // For RMs, verify they have access to this client
-        if (isRM) {
-          const targetClient = await UsersCollection.findOneAsync({
-            _id: viewAsFilter.id,
-            relationshipManagerId: currentUser._id
-          });
-          if (!targetClient) {
-            console.warn(`[CashMonitoring] RM ${currentUser._id} attempted to access unauthorized client ${viewAsFilter.id}`);
-            return { negativeCashAccounts: [], highCashAccounts: [] };
-          }
-        }
-        targetClientIds = [viewAsFilter.id];
-      } else if (viewAsFilter.type === 'account') {
-        // Get the client who owns this account
-        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-        if (bankAccount) {
-          // For RMs, verify they have access to this client
-          if (isRM) {
-            const targetClient = await UsersCollection.findOneAsync({
-              _id: bankAccount.userId,
-              relationshipManagerId: currentUser._id
-            });
-            if (!targetClient) {
-              console.warn(`[CashMonitoring] RM ${currentUser._id} attempted to access unauthorized account ${viewAsFilter.id}`);
-              return { negativeCashAccounts: [], highCashAccounts: [] };
-            }
-          }
-          targetClientIds = [bankAccount.userId];
-        }
-      }
-    } else {
-      // No filter - get all assigned clients (or all for admins)
-      const clients = await getAssignedClients(currentUser);
-      targetClientIds = clients.map(c => c._id);
-    }
+    // One perimeter resolver for the whole dashboard: handles entity / client /
+    // account View As (including entity-only clients with no legacy userId) plus
+    // RM access checks and archived/demo exclusion. This method used to carry its
+    // own copy that lacked the 'entity' branch, so an entity selection silently
+    // fell back to the full book.
+    const targetClientIds = await getFilteredClientIds(currentUser, viewAsFilter);
 
     if (targetClientIds.length === 0) {
       return { negativeCashAccounts: [], highCashAccounts: [] };
@@ -1696,9 +1949,13 @@ Meteor.methods({
           isActive: true
         }).fetchAsync();
       } else {
-        // Get all accounts for the target client(s)
+        // Get all accounts for the target owners — targetClientIds mixes legacy
+        // userIds and entityIds, and accounts are stamped with one or the other.
         bankAccounts = await BankAccountsCollection.find({
-          userId: { $in: targetClientIds },
+          $or: [
+            { userId: { $in: targetClientIds } },
+            { entityId: { $in: targetClientIds } }
+          ],
           isActive: true
         }).fetchAsync();
       }

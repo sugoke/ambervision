@@ -83,10 +83,11 @@ const RecentActivityCard = ({ activities, onActivityClick }) => {
 
   const styles = {
     card: {
-      backgroundColor: 'var(--bg-secondary)',
-      borderRadius: '12px',
-      padding: '20px',
+      background: 'var(--card-bg, var(--bg-secondary))',
+      borderRadius: 'var(--radius, 14px)',
+      padding: '22px',
       border: '1px solid var(--border-color)',
+      boxShadow: 'var(--card-shadow)',
       height: '100%',
       display: 'flex',
       flexDirection: 'column'
@@ -98,9 +99,11 @@ const RecentActivityCard = ({ activities, onActivityClick }) => {
       marginBottom: '16px'
     },
     title: {
-      fontSize: '16px',
+      fontSize: '11.5px',
       fontWeight: '600',
-      color: 'var(--text-primary)'
+      letterSpacing: '1.8px',
+      textTransform: 'uppercase',
+      color: 'var(--text-muted)'
     },
     list: {
       display: 'flex',

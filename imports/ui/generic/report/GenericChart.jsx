@@ -17,14 +17,14 @@ const GenericChart = ({ chartConfig, height = '420px' }) => {
         if (typeof window !== 'undefined' && !window.Chart) {
           await new Promise((resolve, reject) => {
             const script = document.createElement('script');
-            script.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js';
+            script.src = '/vendor/chartjs/chart.umd.js';
             script.onload = resolve;
             script.onerror = reject;
             document.head.appendChild(script);
           });
           await new Promise((resolve, reject) => {
             const script = document.createElement('script');
-            script.src = 'https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js';
+            script.src = '/vendor/chartjs/chartjs-plugin-annotation.min.js';
             script.onload = resolve;
             script.onerror = reject;
             document.head.appendChild(script);

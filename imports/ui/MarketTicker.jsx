@@ -137,13 +137,14 @@ const TickerLogo = ({ symbol, name, type }) => {
         src={logoUrl}
         alt={name}
         style={{
-          width: '24px',
-          height: '24px',
-          borderRadius: '4px',
+          width: '22px',
+          height: '22px',
+          borderRadius: '6px',
           marginRight: '8px',
           objectFit: 'contain',
-          backgroundColor: 'rgba(255,255,255,0.1)',
-          border: '1px solid rgba(255,255,255,0.1)'
+          padding: '1px',
+          backgroundColor: 'var(--bg-tertiary)',
+          border: '1px solid var(--border-color)'
         }}
         onError={(e) => {
           // Replace with emoji fallback on error
@@ -164,8 +165,8 @@ const TickerLogo = ({ symbol, name, type }) => {
 };
 
 // Fixed scroll speed in pixels per second (lower value = longer duration = slower scroll)
-// 10px/sec is a comfortable reading speed for ticker ribbons
-const SCROLL_SPEED_PX_PER_SEC = 10;
+// 5px/sec is a relaxed reading speed for ticker ribbons
+const SCROLL_SPEED_PX_PER_SEC = 5;
 
 const MarketTicker = () => {
   // Ref to measure content width for dynamic animation duration
@@ -245,8 +246,8 @@ const MarketTicker = () => {
           const totalDistance = contentWidth / 2;
           const duration = totalDistance / SCROLL_SPEED_PX_PER_SEC;
 
-          // Minimum 90 seconds for comfortable reading, cap at 600 seconds
-          animationDurationRef.current = Math.min(Math.max(duration, 90), 600);
+          // Minimum 180 seconds for comfortable reading, cap at 1200 seconds
+          animationDurationRef.current = Math.min(Math.max(duration, 180), 1200);
 
           // Set CSS custom property for animation duration
           if (contentRef.current) {
@@ -397,14 +398,28 @@ const MarketTicker = () => {
         .ticker-item {
           display: inline-flex;
           align-items: center;
-          margin-right: 2.5rem;
-          padding: 0 1rem;
+          margin-right: 0;
+          padding: 0 24px;
           white-space: nowrap;
           flex-shrink: 0;
           min-width: max-content;
           height: 100%;
-          gap: 0;
+          gap: 10px;
+          border-right: 1px solid var(--border-color-light);
         }
+
+        /* Edge fades so entries dissolve into the strip instead of clipping */
+        .ticker-container::before,
+        .ticker-container::after {
+          content: "";
+          position: absolute;
+          top: 0; bottom: 0;
+          width: 60px;
+          z-index: 2;
+          pointer-events: none;
+        }
+        .ticker-container::before { left: 0;  background: linear-gradient(90deg, var(--bg-primary), transparent); }
+        .ticker-container::after  { right: 0; background: linear-gradient(270deg, var(--bg-primary), transparent); }
 
         .ticker-toggle-btn {
           position: absolute;
@@ -423,7 +438,7 @@ const MarketTicker = () => {
           align-items: center;
           gap: 4px;
           transition: all 0.2s ease;
-          opacity: 0;
+          opacity: 0.65;
         }
 
         .ticker-wrapper:hover .ticker-toggle-btn {
@@ -451,7 +466,12 @@ const MarketTicker = () => {
         style={{
           overflow: 'hidden',
           height: '50px',
-          position: 'relative'
+          position: 'relative',
+          // Ribbon, not card: flat strip fused to the header with a single hairline below.
+          background: 'linear-gradient(180deg, var(--bg-secondary), var(--bg-primary))',
+          border: 'none',
+          borderBottom: '1px solid var(--border-color)',
+          boxShadow: 'none'
         }}
         className="ticker-wrapper"
       >
@@ -481,7 +501,7 @@ const MarketTicker = () => {
                   <span style={{
                     fontSize: '0.7rem',
                     color: 'var(--text-secondary)',
-                    fontFamily: 'monospace',
+                    fontFamily: 'var(--font-mono)',
                     lineHeight: '1.2'
                   }}>
                     {item.symbol}
@@ -491,12 +511,12 @@ const MarketTicker = () => {
                   color: 'var(--text-primary)',
                   marginRight: '8px',
                   fontSize: '0.875rem',
-                  fontFamily: 'monospace'
+                  fontFamily: 'var(--font-mono)'
                 }}>
                   {formatPriceWithCurrency(item.price, item.type, item.loading, item.currency, item.fallback)}
                 </span>
                 <span style={{
-                  color: item.changePercent >= 0 ? 'var(--positive-color)' : '#FF9800',
+                  color: item.changePercent >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                   fontSize: '0.8rem',
                   fontWeight: '500'
                 }}>
@@ -504,7 +524,7 @@ const MarketTicker = () => {
                 </span>
                 {item.source === 'binance' && (
                   <span style={{
-                    color: 'var(--positive-color)',
+                    color: 'var(--gain-color)',
                     marginLeft: '4px',
                     fontSize: '0.7rem',
                     title: 'Live from Binance'
@@ -514,7 +534,7 @@ const MarketTicker = () => {
                 )}
                 {item.source === 'coingecko' && (
                   <span style={{
-                    color: 'var(--positive-color)',
+                    color: 'var(--gain-color)',
                     marginLeft: '4px',
                     fontSize: '0.7rem',
                     title: 'Live from CoinGecko'
@@ -541,7 +561,7 @@ const MarketTicker = () => {
                   <span style={{
                     fontSize: '0.7rem',
                     color: 'var(--text-secondary)',
-                    fontFamily: 'monospace',
+                    fontFamily: 'var(--font-mono)',
                     lineHeight: '1.2'
                   }}>
                     {item.symbol}
@@ -551,12 +571,12 @@ const MarketTicker = () => {
                   color: 'var(--text-primary)',
                   marginRight: '8px',
                   fontSize: '0.875rem',
-                  fontFamily: 'monospace'
+                  fontFamily: 'var(--font-mono)'
                 }}>
                   {formatPriceWithCurrency(item.price, item.type, item.loading, item.currency, item.fallback)}
                 </span>
                 <span style={{
-                  color: item.changePercent >= 0 ? 'var(--positive-color)' : '#FF9800',
+                  color: item.changePercent >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                   fontSize: '0.8rem',
                   fontWeight: '500'
                 }}>
@@ -564,7 +584,7 @@ const MarketTicker = () => {
                 </span>
                 {item.source === 'binance' && (
                   <span style={{
-                    color: 'var(--positive-color)',
+                    color: 'var(--gain-color)',
                     marginLeft: '4px',
                     fontSize: '0.7rem',
                     title: 'Live from Binance'
@@ -574,7 +594,7 @@ const MarketTicker = () => {
                 )}
                 {item.source === 'coingecko' && (
                   <span style={{
-                    color: 'var(--positive-color)',
+                    color: 'var(--gain-color)',
                     marginLeft: '4px',
                     fontSize: '0.7rem',
                     title: 'Live from CoinGecko'

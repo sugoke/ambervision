@@ -2644,7 +2644,7 @@ const OrderBook = ({ user }) => {
                       borderRadius: '12px',
                       fontSize: '12px',
                       fontWeight: '600',
-                      background: `${color}20`,
+                      background: `color-mix(in srgb, ${color} 13%, transparent)`,
                       color
                     }}>
                       {label} {booking.confidence === 'exact_match' ? '(exact match)' : booking.confidence === 'close_match' ? '(close match)' : ''}

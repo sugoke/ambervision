@@ -75,6 +75,9 @@ public/fichier_central/
 # Termsheet PDFs (bank documents — sensitive)
 public/termsheets/
 
+# Private termsheet store (moved out of public/ by the GDPR migration)
+.termsheets/
+
 # One-off scripts kept locally
 _parse_excel.js
 

@@ -1,6 +1,55 @@
 import React, { useState, useEffect } from 'react';
 
 /**
+ * Safe arithmetic evaluator (no eval / Function). Accepts only numbers and the
+ * operators + - * / ( ) and Math.min/Math.max/Math.abs — enough for payoff formulas,
+ * and incapable of executing arbitrary JavaScript. Tokenises, then evaluates with a
+ * shunting-yard to RPN pass. Throws on any unexpected token.
+ */
+function evaluateArithmetic(expr) {
+  const s = String(expr).replace(/Math\.(min|max|abs)/g, '$1');
+  const tokens = s.match(/(\d+\.?\d*|\.\d+|[()+\-*/,]|min|max|abs)/g);
+  if (!tokens || tokens.join('') !== s.replace(/\s+/g, '')) {
+    throw new Error('Invalid characters in expression');
+  }
+  const prec = { '+': 1, '-': 1, '*': 2, '/': 2 };
+  const fns = {
+    min: (a, b) => Math.min(a, b),
+    max: (a, b) => Math.max(a, b),
+    abs: (a) => Math.abs(a)
+  };
+  const out = [];
+  const ops = [];
+  const apply = (op) => {
+    if (op in fns) {
+      const f = fns[op];
+      const args = f.length === 1 ? [out.pop()] : [out.pop(), out.pop()].reverse();
+      out.push(f(...args));
+    } else {
+      const b = out.pop(); const a = out.pop();
+      out.push(op === '+' ? a + b : op === '-' ? a - b : op === '*' ? a * b : a / b);
+    }
+  };
+  for (const t of tokens) {
+    if (/^(\d|\.)/.test(t)) out.push(parseFloat(t));
+    else if (t in fns) ops.push(t);
+    else if (t === ',') { while (ops.length && ops[ops.length - 1] !== '(') apply(ops.pop()); }
+    else if (t in prec) {
+      while (ops.length && (ops[ops.length - 1] in prec) && prec[ops[ops.length - 1]] >= prec[t]) apply(ops.pop());
+      ops.push(t);
+    } else if (t === '(') ops.push(t);
+    else if (t === ')') {
+      while (ops.length && ops[ops.length - 1] !== '(') apply(ops.pop());
+      if (ops.pop() !== '(') throw new Error('Mismatched parentheses');
+      if (ops.length && (ops[ops.length - 1] in fns)) apply(ops.pop());
+    }
+  }
+  while (ops.length) { const op = ops.pop(); if (op === '(') throw new Error('Mismatched parentheses'); apply(op); }
+  if (out.length !== 1) throw new Error('Malformed expression');
+  return out[0];
+}
+
+/**
  * FormulaCalculatorView - Widget for displaying and calculating mathematical formulas
  * in structured products with complex payoffs
  */
@@ -58,21 +107,24 @@ export const FormulaCalculatorView = ({ product, evaluationResults, report }) =>
     if (!selectedFormula) return;
 
     try {
-      // Create a safe evaluation context with variable values
       const context = {};
       Object.entries(variables).forEach(([name, info]) => {
-        context[name] = info.value;
+        context[name] = Number(info.value) || 0;
       });
 
-      // Simple formula parser (in production, use a proper expression parser)
-      let expression = selectedFormula.expression;
-      Object.entries(context).forEach(([name, value]) => {
-        expression = expression.replace(new RegExp(name, 'g'), value);
-      });
+      // SECURITY: never eval() a stored formula — a product author could plant JS that
+      // runs in a viewer's browser (stored XSS). Substitute variables with a properly
+      // escaped, boundary-anchored regex, then evaluate arithmetic only via a safe parser.
+      let expression = String(selectedFormula.expression || '');
+      Object.entries(context)
+        .sort((a, b) => b[0].length - a[0].length) // longest names first
+        .forEach(([name, value]) => {
+          const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          expression = expression.replace(new RegExp(`\\b${escaped}\\b`, 'g'), `(${value})`);
+        });
 
-      // WARNING: This is for demo only - never use eval in production
-      const result = eval(expression);
-      setFormulaResult(result);
+      const result = evaluateArithmetic(expression);
+      setFormulaResult(Number.isFinite(result) ? result : 'Error in calculation');
     } catch (error) {
       console.error('Formula calculation error:', error);
       setFormulaResult('Error in calculation');

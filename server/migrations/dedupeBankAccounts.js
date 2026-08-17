@@ -39,7 +39,7 @@ import { ClientEntitiesCollection } from '/imports/api/clientEntities';
 import { AllocationsCollection } from '/imports/api/allocations';
 import { EquityHoldingsCollection } from '/imports/api/equityHoldings';
 import { UsersCollection, USER_ROLES } from '/imports/api/users';
-import { SessionsCollection } from '/imports/api/sessions';
+import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
 
 const CARRY_FORWARD_FIELDS = ['authorizedOverdraft', 'comment', 'accountType', 'accountStructure'];
 const BACKUP_COLLECTION = 'bankAccounts_dedupeBackup';
@@ -173,7 +173,7 @@ async function deleteLegacy() {
 }
 
 async function requireSuperadmin(sessionId) {
-  const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
+  const session = await SessionHelpers.findByToken(sessionId);
   if (!session) throw new Meteor.Error('not-authorized', 'Invalid session');
   const user = await UsersCollection.findOneAsync(session.userId);
   if (!user || user.role !== USER_ROLES.SUPERADMIN) {

@@ -107,7 +107,7 @@ const RMDashboard = ({ user, onNavigate }) => {
       try {
         await Meteor.callAsync('users.updateProfile', user._id, {
           profile: { ...(user.profile || {}), preferredCurrency: newCurrency }
-        });
+        }, localStorage.getItem('sessionId'));
         // Keep the in-memory user object consistent for the rest of this session.
         if (user.profile) user.profile.preferredCurrency = newCurrency;
         else user.profile = { preferredCurrency: newCurrency };
@@ -191,10 +191,17 @@ const RMDashboard = ({ user, onNavigate }) => {
       marginBottom: '24px'
     },
     greeting: {
-      fontSize: '28px',
-      fontWeight: '600',
+      fontFamily: 'var(--font-serif)',
+      fontSize: 'clamp(26px, 4vw, 38px)',
+      fontWeight: '500',
+      lineHeight: 1.05,
+      letterSpacing: '0.2px',
       color: 'var(--text-primary)',
-      marginBottom: '4px'
+      marginBottom: '7px'
+    },
+    greetingName: {
+      fontStyle: 'italic',
+      color: 'var(--accent-color)'
     },
     subtitle: {
       fontSize: '14px',
@@ -205,13 +212,14 @@ const RMDashboard = ({ user, onNavigate }) => {
       gap: '8px'
     },
     quoteText: {
-      fontSize: '14px',
+      fontFamily: 'var(--font-serif)',
+      fontSize: '18px',
       fontStyle: 'italic',
-      color: 'var(--warning-color)'
+      color: 'var(--accent-strong)'
     },
     quoteAuthor: {
-      fontSize: '14px',
-      color: '#d97706'
+      fontSize: '15px',
+      color: 'var(--text-muted)'
     },
     grid: {
       display: 'grid',
@@ -284,7 +292,7 @@ const RMDashboard = ({ user, onNavigate }) => {
     return (
       <div style={styles.container}>
         <div style={styles.header}>
-          <h1 style={styles.greeting}>Hello, {firstName}</h1>
+          <h1 style={styles.greeting}>{getGreeting()}, <em style={styles.greetingName}>{firstName}</em>.</h1>
           <p style={styles.subtitle}>{todayFormatted}</p>
         </div>
         <div style={styles.loadingOverlay}>
@@ -298,7 +306,7 @@ const RMDashboard = ({ user, onNavigate }) => {
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <h1 style={styles.greeting}>Hello, {firstName}</h1>
+        <h1 style={styles.greeting}>{getGreeting()}, <em style={styles.greetingName}>{firstName}</em>.</h1>
         <p style={styles.subtitle}>
           <span>{todayFormatted}</span>
           {dailyQuote && (
@@ -320,54 +328,78 @@ const RMDashboard = ({ user, onNavigate }) => {
         </div>
       )}
 
-      <div style={styles.grid}>
-        <PortfolioSummaryCard
-          summary={data.summary}
-          selectedCurrency={dashboardCurrency}
-          userCurrency={user?.profile?.preferredCurrency || user?.referenceCurrency}
-          onCurrencyChange={handleCurrencyChange}
-          hideClientsCount={isClient}
-        />
+      {/* Morning-Desk layout (dashboard proposal): the AUM statement leads with the
+          triage of things needing attention beside it; calendar, cash and trend share
+          the second band; markets and people the third; the activity ledger closes. */}
+      <div className="av-grid">
+        <div className="av-col-7">
+          <PortfolioSummaryCard
+            summary={data.summary}
+            selectedCurrency={dashboardCurrency}
+            userCurrency={user?.profile?.preferredCurrency || user?.referenceCurrency}
+            onCurrencyChange={handleCurrencyChange}
+            hideClientsCount={isClient}
+            alertsCount={data.alerts?.length || 0}
+            nextEvent={data.events?.[0] || null}
+          />
+        </div>
 
-        <AUMMiniChart
-          sessionId={localStorage.getItem('sessionId')}
-          currency={dashboardCurrency}
-        />
+        <div className="av-col-5">
+          <AlertsCard
+            alerts={data.alerts}
+            onAlertClick={handleAlertClick}
+          />
+        </div>
 
-        <UpcomingEventsCard
-          events={data.events}
-          onEventClick={handleEventClick}
-        />
+        <div className="av-col-4">
+          <UpcomingEventsCard
+            events={data.events}
+            onEventClick={handleEventClick}
+          />
+        </div>
 
-        <AlertsCard
-          alerts={data.alerts}
-          onAlertClick={handleAlertClick}
-        />
+        <div className="av-col-4">
+          <CashMonitoringCard
+            cashData={data.cashMonitoring}
+            onAccountClick={handleCashAccountClick}
+          />
+        </div>
 
-        <CashMonitoringCard
-          cashData={data.cashMonitoring}
-          onAccountClick={handleCashAccountClick}
-        />
+        <div className="av-col-4">
+          <AUMMiniChart
+            sessionId={localStorage.getItem('sessionId')}
+            viewAsFilter={viewAsFilter}
+            currency={dashboardCurrency}
+          />
+        </div>
+
+        <div className="av-col-4">
+          <MarketWatchlistCard
+            watchlist={data.watchlist}
+            onTickerClick={handleTickerClick}
+          />
+        </div>
+
+        <div className="av-col-4">
+          <MarketWatch />
+        </div>
 
         {/* Hide Birthdays card for clients - only show for RMs/Admins */}
         {!isClient && (
-          <BirthdaysCard
-            birthdays={data.birthdays}
-            onBirthdayClick={handleBirthdayClick}
-          />
+          <div className="av-col-4">
+            <BirthdaysCard
+              birthdays={data.birthdays}
+              onBirthdayClick={handleBirthdayClick}
+            />
+          </div>
         )}
 
-        <MarketWatchlistCard
-          watchlist={data.watchlist}
-          onTickerClick={handleTickerClick}
-        />
-
-        <MarketWatch />
-
-        <RecentActivityCard
-          activities={data.activity}
-          onActivityClick={handleActivityClick}
-        />
+        <div className="av-col-12">
+          <RecentActivityCard
+            activities={data.activity}
+            onActivityClick={handleActivityClick}
+          />
+        </div>
       </div>
     </div>
   );

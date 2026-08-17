@@ -42,7 +42,9 @@ function resolveOutputDir() {
   if (projectRoot.includes('.meteor')) {
     projectRoot = projectRoot.split('.meteor')[0].replace(/[\\/]$/, '');
   }
-  return path.join(projectRoot, 'public', 'meetingReports');
+  // SECURITY/GDPR: meeting reports contain client PII — never write them under
+  // public/ (served unauthenticated, and touching it triggers the dev watcher).
+  return path.join(projectRoot, '.fichier_central', 'meetingReports');
 }
 
 // ---------- HTML rendering ---------------------------------------------------

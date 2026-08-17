@@ -100,7 +100,7 @@ export const RangeAccrualCard = ({ report, product, featureManifest }) => {
             marginBottom: '0.5rem',
             fontSize: '0.875rem'
           }}>
-            <span style={{ color: '#9ca3af' }}>Range Boundaries</span>
+            <span style={{ color: 'var(--text-muted)' }}>Range Boundaries</span>
             <span style={{ 
               color: 'var(--lg-text)',
               fontWeight: '600'
@@ -183,7 +183,7 @@ export const RangeAccrualCard = ({ report, product, featureManifest }) => {
             </div>
             <div style={{
               fontSize: '0.75rem',
-              color: '#9ca3af'
+              color: 'var(--text-muted)'
             }}>
               Days In Range
             </div>
@@ -206,7 +206,7 @@ export const RangeAccrualCard = ({ report, product, featureManifest }) => {
             </div>
             <div style={{
               fontSize: '0.75rem',
-              color: '#9ca3af'
+              color: 'var(--text-muted)'
             }}>
               Total Days
             </div>
@@ -221,7 +221,7 @@ export const RangeAccrualCard = ({ report, product, featureManifest }) => {
             marginBottom: '0.5rem',
             fontSize: '0.875rem'
           }}>
-            <span style={{ color: '#9ca3af' }}>Accrual Rate</span>
+            <span style={{ color: 'var(--text-muted)' }}>Accrual Rate</span>
             <span style={{ 
               color: '#fb923c',
               fontWeight: '600'
@@ -259,7 +259,7 @@ export const RangeAccrualCard = ({ report, product, featureManifest }) => {
             }}>
               <div style={{
                 fontSize: '0.75rem',
-                color: '#9ca3af',
+                color: 'var(--text-muted)',
                 marginBottom: '0.25rem'
               }}>
                 Current Streak
@@ -282,7 +282,7 @@ export const RangeAccrualCard = ({ report, product, featureManifest }) => {
           }}>
             <div style={{
               fontSize: '0.75rem',
-              color: '#9ca3af',
+              color: 'var(--text-muted)',
               marginBottom: '0.25rem'
             }}>
               Longest Streak
@@ -305,7 +305,7 @@ export const RangeAccrualCard = ({ report, product, featureManifest }) => {
             background: 'rgba(255, 255, 255, 0.03)',
             borderRadius: '6px',
             fontSize: '0.75rem',
-            color: '#9ca3af',
+            color: 'var(--text-muted)',
             textAlign: 'center'
           }}>
             {accrualFeatures.accrualFrequency === 'daily' && 'Daily Range Accrual'}

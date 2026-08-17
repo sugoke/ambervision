@@ -7,7 +7,7 @@ const CURRENCIES = [
   { code: 'GBP', symbol: '£', locale: 'en-GB', icon: '£' }
 ];
 
-const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, userCurrency, hideClientsCount = false }) => {
+const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, userCurrency, hideClientsCount = false, alertsCount = 0, nextEvent = null }) => {
   // Use selectedCurrency prop if provided, otherwise fall back to localStorage, then user's referenceCurrency
   const [localCurrency, setLocalCurrency] = useState(() => {
     return localStorage.getItem('dashboardCurrency') || userCurrency || 'EUR';
@@ -62,7 +62,11 @@ const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, use
   const variationIsPositive = summary?.aumChange >= 0;
   const variationColor = variationIsPositive ? 'var(--gain-color)' : 'var(--loss-color)';
 
-  // Build stats array - conditionally exclude Clients count for client users
+  // Secondary tiles. Deliberately NOT the old Clients/Live/Autocalled/Matured
+  // counts — static inventory numbers that never changed day to day. These three
+  // answer the morning questions instead: what moved, what needs me, what's next.
+  // All are scoped to the active View As perimeter by the dashboard methods.
+  const dayChangeIsPositive = (summary?.aumChange ?? 0) >= 0;
   const stats = [
     {
       label: 'Total AUM',
@@ -77,45 +81,39 @@ const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, use
         color: variationColor
       } : null
     },
-    // Only show Clients stat for RMs/Admins, not for client users
-    ...(!hideClientsCount ? [{
-      label: 'Clients',
-      value: summary?.clientCount || 0,
-      icon: (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-          <circle cx="9" cy="7" r="4" />
-          <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-          <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-        </svg>
-      ),
-      color: 'var(--info-color)'
-    }] : []),
     {
-      label: 'Live',
-      value: summary?.liveProducts || 0,
+      label: 'Day P&L',
+      value: hasVariation
+        ? `${dayChangeIsPositive ? '+' : ''}${formatCurrency(summary?.aumChange, true)}`
+        : '—',
+      sub: hasVariation && summary?.aumChangePercent != null
+        ? `${dayChangeIsPositive ? '+' : ''}${summary.aumChangePercent.toFixed(2)}% vs yesterday`
+        : 'no comparison snapshot',
       icon: (
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <circle cx="12" cy="12" r="10" />
-          <polyline points="12 6 12 12 16 14" />
+          <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
+          <polyline points="17 6 23 6 23 12" />
         </svg>
       ),
-      color: 'var(--gain-color)'
+      color: hasVariation ? (dayChangeIsPositive ? 'var(--gain-color)' : 'var(--loss-color)') : 'var(--neutral-color)'
     },
     {
-      label: 'Autocalled',
-      value: summary?.autocalledProducts || 0,
+      label: 'Active alerts',
+      value: alertsCount,
+      sub: alertsCount === 0 ? 'nothing needs attention' : 'needs attention',
       icon: (
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-          <polyline points="22 4 12 14.01 9 11.01" />
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+          <line x1="12" y1="9" x2="12" y2="13" />
+          <line x1="12" y1="17" x2="12.01" y2="17" />
         </svg>
       ),
-      color: '#8b5cf6'
+      color: alertsCount > 0 ? 'var(--warning-color)' : 'var(--gain-color)'
     },
     {
-      label: 'Matured',
-      value: summary?.maturedProducts || 0,
+      label: 'Next observation',
+      value: nextEvent ? nextEvent.daysLeftText : '—',
+      sub: nextEvent ? nextEvent.productTitle : 'none scheduled',
       icon: (
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
@@ -124,16 +122,17 @@ const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, use
           <line x1="3" y1="10" x2="21" y2="10" />
         </svg>
       ),
-      color: '#6b7280'
+      color: 'var(--info-color)'
     }
   ];
 
   const styles = {
     card: {
-      backgroundColor: 'var(--bg-secondary)',
-      borderRadius: '12px',
-      padding: '20px',
+      background: 'var(--card-bg, var(--bg-secondary))',
+      borderRadius: 'var(--radius, 14px)',
+      padding: '22px',
       border: '1px solid var(--border-color)',
+      boxShadow: 'var(--card-shadow)',
       height: '100%'
     },
     header: {
@@ -143,9 +142,11 @@ const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, use
       marginBottom: '16px'
     },
     title: {
-      fontSize: '16px',
+      fontSize: '11.5px',
       fontWeight: '600',
-      color: 'var(--text-primary)',
+      letterSpacing: '1.8px',
+      textTransform: 'uppercase',
+      color: 'var(--text-muted)',
       flex: 1
     },
     currencySelector: {
@@ -199,26 +200,42 @@ const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, use
       padding: fullWidth ? '16px' : '12px',
       display: 'flex',
       alignItems: 'center',
-      gap: '12px'
+      gap: '12px',
+      minWidth: 0 // allow the flex row to shrink so children can ellipsize, not overflow
     }),
     iconWrapper: (color) => ({
       width: '36px',
       height: '36px',
       borderRadius: '8px',
-      backgroundColor: `${color}20`,
+      backgroundColor: `color-mix(in srgb, ${color} 13%, transparent)`,
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      color: color
+      color: color,
+      flexShrink: 0 // keep the icon square when the row is tight
     }),
     statContent: {
       display: 'flex',
-      flexDirection: 'column'
+      flexDirection: 'column',
+      minWidth: 0, // critical: lets nowrap value/sub text ellipsize within the cell
+      flex: 1
     },
+    // The AUM figure is the statement of the whole dashboard — serif display voice,
+    // like the proposal's hero value. Secondary stats keep the serif at a smaller size.
     statValue: (fullWidth) => ({
-      fontSize: fullWidth ? '22px' : '18px',
-      fontWeight: '600',
-      color: 'var(--text-primary)'
+      fontFamily: 'var(--font-serif)',
+      // Lower clamp floor so the AUM figure scales down on phones instead of overflowing.
+      fontSize: fullWidth ? 'clamp(22px, 6vw, 42px)' : 'clamp(17px, 5vw, 22px)',
+      fontWeight: '500',
+      letterSpacing: fullWidth ? '-0.5px' : '0',
+      lineHeight: 1.05,
+      fontVariantNumeric: 'tabular-nums',
+      color: 'var(--text-primary)',
+      // Ellipsize rather than spill out of the cell.
+      maxWidth: '100%',
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap'
     }),
     statLabel: {
       fontSize: '12px',
@@ -229,6 +246,13 @@ const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, use
 
   return (
     <div style={styles.card}>
+      {/* Collapse the 2-col stat grid to a single column on phones so the tiles
+          (and the AUM figure) never get squeezed into overflowing cells. */}
+      <style>{`
+        @media (max-width: 600px) {
+          .ps-summary-grid { grid-template-columns: 1fr !important; }
+        }
+      `}</style>
       <div style={styles.header}>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
@@ -277,15 +301,30 @@ const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, use
         </div>
       </div>
 
-      <div style={styles.grid}>
+      <div style={styles.grid} className="ps-summary-grid">
         {stats.map((stat, idx) => (
           <div key={idx} style={styles.statCard(stat.fullWidth, stat.color)}>
             <div style={styles.iconWrapper(stat.color)}>
               {stat.icon}
             </div>
             <div style={styles.statContent}>
-              <span style={styles.statValue(stat.fullWidth)}>{stat.value}</span>
+              <span style={{
+                ...styles.statValue(stat.fullWidth),
+                // Day P&L reads pos/neg at a glance, like the proposal's chips
+                ...(stat.label === 'Day P&L' ? { color: stat.color } : {})
+              }}>{stat.value}</span>
               <span style={styles.statLabel}>{stat.label}</span>
+              {stat.sub && (
+                <span style={{
+                  fontSize: '11px',
+                  color: 'var(--text-muted)',
+                  marginTop: '2px',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  maxWidth: '100%'
+                }}>{stat.sub}</span>
+              )}
               {/* Day-over-day variation for AUM */}
               {stat.variation && (
                 <div style={{
@@ -293,7 +332,8 @@ const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, use
                   alignItems: 'center',
                   gap: '6px',
                   marginTop: '4px',
-                  fontSize: '12px'
+                  fontSize: '12px',
+                  flexWrap: 'wrap' // vs-yesterday detail wraps under on narrow cards
                 }}>
                   <span style={{
                     color: stat.variation.color,

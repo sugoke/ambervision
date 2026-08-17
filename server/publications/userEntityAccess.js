@@ -5,7 +5,7 @@ import { Meteor } from 'meteor/meteor';
 import { check } from 'meteor/check';
 import { UserEntityAccessCollection } from '/imports/api/userEntityAccess';
 import { UsersCollection, USER_ROLES } from '/imports/api/users';
-import { SessionsCollection } from '/imports/api/sessions';
+import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
 
 // Publish access records:
 // - Superadmin/Admin: all active records (for managing access)
@@ -16,11 +16,7 @@ Meteor.publish('userEntityAccess', async function (sessionId) {
   try {
     check(sessionId, String);
 
-    const session = await SessionsCollection.findOneAsync({
-      sessionId,
-      isActive: true,
-      expiresAt: { $gt: new Date() }
-    });
+    const session = await SessionHelpers.findByToken(sessionId);
 
     if (!session || !session.userId) return this.ready();
 

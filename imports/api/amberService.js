@@ -206,7 +206,9 @@ Prefer the most specific tool for the question. For multi-step questions, chain 
           const toolResults = [];
           for (const block of response.data.content) {
             if (block.type !== 'tool_use') continue;
-            console.log(`[Amber] Tool call: ${block.name}`, block.input);
+            // GDPR: log tool name + argument keys only — values can carry entity ids,
+            // account filters and search strings.
+            console.log(`[Amber] Tool call: ${block.name} (args: ${Object.keys(block.input || {}).join(', ') || 'none'})`);
             const { result, isError } = await executeTool(block.name, block.input);
             toolResults.push({
               type: 'tool_result',

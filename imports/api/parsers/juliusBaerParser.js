@@ -589,7 +589,11 @@ export const JuliusBaerParser = {
       // Build a map of the position's currency to its exchange rate
       bankFxRates: (() => {
         const positionCurrency = row.POS_PRICE_CCY_ISO || row.INSTR_REF_CCY_ISO || row.POS_CCY_ISO;
-        const exchangeRate = this.parseNumber(row.PTF_POS_CCY_EXCH) || this.parseNumber(row.COST_EXCH_RATE);
+        // Use ONLY the current position exchange rate. Do NOT fall back to
+        // COST_EXCH_RATE — that is the historical purchase-time rate, and because
+        // bank rates win over EOD rates in the merge, injecting a stale rate would
+        // corrupt today's cash valuation. Missing current rate → {} → live EOD rate.
+        const exchangeRate = this.parseNumber(row.PTF_POS_CCY_EXCH);
         if (positionCurrency && exchangeRate && positionCurrency !== (row.PTF_CCY_ISO || 'EUR')) {
           return { [positionCurrency]: exchangeRate };
         }

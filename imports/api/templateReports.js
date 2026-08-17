@@ -132,10 +132,14 @@ if (Meteor.isServer) {
   };
 
   // Publications
-  Meteor.publish('templateReports.forProduct', function(productId) {
+  Meteor.publish('templateReports.forProduct', async function(productId, sessionId) {
     check(productId, String);
+    check(sessionId, Match.Maybe(String));
 
-    console.log(`[templateReports publication] Subscribed to reports for product: ${productId}`);
+    // SECURITY: was published to any DDP connection. Require a real session or a
+    // valid PDF-render token (the report PDF flow passes pdf-temp-<token>).
+    const { isAuthorizedReportViewer } = await import('../../server/helpers/reportViewerAuth.js');
+    if (!(await isAuthorizedReportViewer(sessionId))) return this.ready();
 
     return TemplateReportsCollection.find(
       { productId },
@@ -438,7 +442,13 @@ if (Meteor.isServer) {
         // 2. Generate new report
         // For system-triggered evaluations, use a system session
         let sessionId;
-        if (triggeredBy === 'system-cron' || triggeredBy === 'system' || triggeredBy === 'batch-process') {
+        // The system-session path (mints a superadmin session) is only reachable
+        // for trusted in-process calls (cron/batch), where this.connection is null.
+        // A client passing triggeredBy='system-cron' has a non-null connection and
+        // falls through to the manual branch, where its sessionId is validated.
+        const isSystemTriggered = this.connection === null
+          && (triggeredBy === 'system-cron' || triggeredBy === 'system' || triggeredBy === 'batch-process');
+        if (isSystemTriggered) {
           // Find or create a system user session
           const systemUser = await UsersCollection.findOneAsync({ role: 'superadmin' });
           if (!systemUser) {
@@ -447,29 +457,17 @@ if (Meteor.isServer) {
 
           console.log(`[templateReports.generate] Found superadmin user: ${systemUser.email}`);
 
-          // Check for existing valid session
-          const { SessionsCollection } = await import('./sessions.js');
-          const existingSession = await SessionsCollection.findOneAsync({
-            userId: systemUser._id,
-            isActive: true,
-            expiresAt: { $gt: new Date() }
-          });
-
-          if (existingSession) {
-            // FIXED: Use sessionId field, not _id
-            sessionId = existingSession.sessionId;
-            console.log(`[templateReports.generate] Reusing existing session: ${sessionId}`);
-          } else {
-            // FIXED: Use SessionHelpers.createSession to create proper session with all required fields
-            const sessionData = await SessionHelpers.createSession(
-              systemUser._id,
-              true, // rememberMe = true for long-lived system session
-              'cron-job', // userAgent
-              'system' // ipAddress
-            );
-            sessionId = sessionData.sessionId;
-            console.log(`[templateReports.generate] Created new system session: ${sessionId}`);
-          }
+          // Always mint a fresh system session. Session tokens are stored HASHED at
+          // rest, so an existing session's raw token cannot be recovered from the DB
+          // to reuse — createSession returns the raw token we need here.
+          const sessionData = await SessionHelpers.createSession(
+            systemUser._id,
+            true, // rememberMe = true for long-lived system session
+            'cron-job', // userAgent
+            'system' // ipAddress
+          );
+          sessionId = sessionData.sessionId;
+          console.log('[templateReports.generate] Created new system session');
         } else {
           // For manual triggers, triggeredBy should be a sessionId
           sessionId = triggeredBy;

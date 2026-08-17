@@ -18,6 +18,7 @@ import { ClientEntityHelpers } from '/imports/api/clientEntities.js';
 import { BanksCollection } from '/imports/api/banks.js';
 import { UsersCollection, USER_ROLES } from '/imports/api/users.js';
 import { DashboardMetricsHelpers } from '/imports/api/dashboardMetrics.js';
+import { SYSTEM_CRON_TOKEN } from '../systemAuth.js';
 import { yieldToEventLoop } from '/imports/utils/asyncHelpers.js';
 import { ManualPriceTrackersCollection, ManualPriceTrackerHelpers } from '/imports/api/manualPriceTrackers.js';
 import { BankAccountsCollection } from '/imports/api/bankAccounts.js';
@@ -108,7 +109,8 @@ let cronJobs = {
   bankFileSync: null,
   cmbFileSync: null,  // CMB-specific sync (runs later due to late file uploads)
   priceTrackerScrape: null,  // Manual price tracker scrape for securities without EOD coverage
-  settlementCheck: null      // Daily settlement reconciliation for executed orders
+  settlementCheck: null,     // Daily settlement reconciliation for executed orders
+  dataRetention: null        // GDPR retention: purge expired logs, leads, sessions, old bank files
 };
 
 // Store next run times for the dashboard
@@ -152,6 +154,12 @@ let scheduleInfo = {
   settlementCheck: {
     name: 'settlementCheck',
     schedule: '30 9 * * 1-5', // 09:30 CET Mon-Fri (after all bank file syncs)
+    lastFinishedAt: null,
+    nextScheduledRun: null
+  },
+  dataRetention: {
+    name: 'dataRetention',
+    schedule: '0 2 * * *', // 02:00 CET daily — GDPR retention sweeps
     lastFinishedAt: null,
     nextScheduledRun: null
   }
@@ -491,7 +499,7 @@ async function productRevaluationJob(options = {}) {
 
               if (emailResult.success) {
                 recipientsSucceeded++;
-                console.log(`[CRON] Daily summary email sent to ${recipientEmail} (${recipientNotifications.length} alert(s))`);
+                console.log(`[CRON] Daily summary email sent to a recipient (${recipientNotifications.length} alert(s))`);
                 recipientNotifications.forEach(n => sentNotificationIds.add(n._id));
               } else {
                 recipientsFailed++;
@@ -781,7 +789,7 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
         // Step 1: Check for new files (downloads for SFTP, detects unprocessed for local)
         const downloadResult = await Meteor.callAsync(
           'bankConnections.downloadAllFiles',
-          { connectionId: connection._id, sessionId: 'system-cron' }
+          { connectionId: connection._id, sessionId: SYSTEM_CRON_TOKEN }
         );
 
         if (downloadResult.success) {
@@ -797,7 +805,7 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
         // This ensures historical dates are processed before today's date
         const { missingDates } = await Meteor.callAsync('bankPositions.getMissingDates', {
           connectionId: connection._id,
-          sessionId: 'system-cron'
+          sessionId: SYSTEM_CRON_TOKEN
         });
 
         if (missingDates.length > 0) {
@@ -806,7 +814,7 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
           // Process ALL missing dates with no limit - chronological order (oldest first)
           const catchupResult = await Meteor.callAsync('bankPositions.processMissingDates', {
             connectionId: connection._id,
-            sessionId: 'system-cron',
+            sessionId: SYSTEM_CRON_TOKEN,
             maxDates: 999  // No practical limit - process all
           });
 
@@ -827,7 +835,7 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
         // Note: bankPositions.processLatest handles BOTH positions and operations
         const processResult = await Meteor.callAsync(
           'bankPositions.processLatest',
-          { connectionId: connection._id, sessionId: 'system-cron', forceReprocess }
+          { connectionId: connection._id, sessionId: SYSTEM_CRON_TOKEN, forceReprocess }
         );
 
         if (processResult.success) {
@@ -875,7 +883,7 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
         try {
           const snapshotResult = await Meteor.callAsync('bankPositions.regenerateMissingSnapshots', {
             connectionId: connection._id,
-            sessionId: 'system-cron',
+            sessionId: SYSTEM_CRON_TOKEN,
             maxDates: 999  // No practical limit - regenerate all missing
           });
 
@@ -1018,7 +1026,7 @@ async function cmbFileSyncJob(triggerSource = 'cron') {
       // Step 1: Download files from CMB SFTP
       const downloadResult = await Meteor.callAsync(
         'bankConnections.downloadAllFiles',
-        { connectionId: cmbConnection._id, sessionId: 'system-cron' }
+        { connectionId: cmbConnection._id, sessionId: SYSTEM_CRON_TOKEN }
       );
 
       if (downloadResult.success) {
@@ -1032,14 +1040,14 @@ async function cmbFileSyncJob(triggerSource = 'cron') {
       // Step 2: Process any missing dates
       const { missingDates } = await Meteor.callAsync('bankPositions.getMissingDates', {
         connectionId: cmbConnection._id,
-        sessionId: 'system-cron'
+        sessionId: SYSTEM_CRON_TOKEN
       });
 
       if (missingDates.length > 0) {
         console.log(`[CRON-CMB] Processing ${missingDates.length} unprocessed dates...`);
         await Meteor.callAsync('bankPositions.processMissingDates', {
           connectionId: cmbConnection._id,
-          sessionId: 'system-cron',
+          sessionId: SYSTEM_CRON_TOKEN,
           maxDates: 999
         });
       }
@@ -1047,7 +1055,7 @@ async function cmbFileSyncJob(triggerSource = 'cron') {
       // Step 3: Process latest files
       const processResult = await Meteor.callAsync(
         'bankPositions.processLatest',
-        { connectionId: cmbConnection._id, sessionId: 'system-cron' }
+        { connectionId: cmbConnection._id, sessionId: SYSTEM_CRON_TOKEN }
       );
 
       if (processResult.success) {
@@ -1632,6 +1640,88 @@ async function settlementCheckJob(triggerSource = 'cron') {
 }
 
 /**
+ * JOB 8: Data Retention (GDPR Art. 5(1)(e))
+ * Runs daily at 02:00 CET. Purges data past its retention period. Retention
+ * days are configurable via Meteor.settings.private.RETENTION; every sweep is
+ * age-based and idempotent.
+ */
+async function dataRetentionJob(triggerSource = 'cron') {
+  const logId = await CronJobLogHelpers.startJob('dataRetention', triggerSource);
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const cfg = Meteor.settings?.private?.RETENTION || {};
+    const days = {
+      cronJobLogs: cfg.cronJobLogsDays ?? 90,
+      bankConnectionLogs: cfg.bankConnectionLogsDays ?? 90,
+      chartData: cfg.chartDataDays ?? 30,
+      landingLeads: cfg.landingLeadsDays ?? 365,
+      bankFiles: cfg.bankFilesDays ?? 730
+    };
+    const results = {};
+
+    // 1. Cron job logs
+    const { CronJobLogHelpers: LogHelpers } = require('../../imports/api/cronJobLogs.js');
+    results.cronJobLogs = (await LogHelpers.cleanupOldLogs(days.cronJobLogs)).removed;
+
+    // 2. Bank connection logs
+    const { BankConnectionLogHelpers: ConnLogHelpers } = require('../../imports/api/bankConnectionLogs.js');
+    results.bankConnectionLogs = await ConnLogHelpers.cleanupOldLogs(days.bankConnectionLogs);
+
+    // 3. Stale chart data (regenerated on every evaluation)
+    const { ChartDataCollection } = require('../../imports/api/chartData.js');
+    results.chartData = await ChartDataCollection.removeAsync({
+      generatedAt: { $lt: new Date(Date.now() - days.chartData * 24 * 60 * 60 * 1000) }
+    });
+
+    // 4. Expired/inactive sessions (the hourly sweep only removes expired ones)
+    const { SessionHelpers: Sessions } = require('../../imports/api/sessions.js');
+    results.sessions = await Sessions.cleanupExpiredSessions();
+
+    // 5. Marketing leads past retention (GDPR: no lawful basis for indefinite storage)
+    const { LandingLeadsCollection } = require('../../imports/api/landingLeads.js');
+    results.landingLeads = await LandingLeadsCollection.removeAsync({
+      createdAt: { $lt: new Date(Date.now() - days.landingLeads * 24 * 60 * 60 * 1000) }
+    });
+
+    // 6. Raw bank files older than the retention window (they contain IBANs and
+    //    full position data; the parsed rows in pmsHoldings/pmsOperations are the
+    //    retained financial record). Age is judged by file mtime.
+    const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
+    results.bankFiles = 0;
+    if (fs.existsSync(bankfilesRoot)) {
+      const cutoff = Date.now() - days.bankFiles * 24 * 60 * 60 * 1000;
+      const walk = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const p = path.join(dir, entry.name);
+          try {
+            if (entry.isDirectory()) {
+              walk(p);
+            } else if (fs.statSync(p).mtimeMs < cutoff) {
+              fs.unlinkSync(p);
+              results.bankFiles++;
+            }
+          } catch (e) { /* best effort per file */ }
+        }
+      };
+      walk(bankfilesRoot);
+    }
+
+    const summary = Object.entries(results).map(([k, v]) => `${k}: ${v}`).join(', ');
+    console.log(`[RETENTION] Purged — ${summary}`);
+    await CronJobLogHelpers.completeJob(logId, { ...results, summary });
+    scheduleInfo.dataRetention.lastFinishedAt = new Date();
+    scheduleInfo.dataRetention.nextScheduledRun = getNextRunTime(scheduleInfo.dataRetention.schedule);
+    return results;
+  } catch (error) {
+    console.error('[RETENTION] Job failed:', error);
+    await CronJobLogHelpers.failJob(logId, error);
+    scheduleInfo.dataRetention.lastFinishedAt = new Date();
+    throw error;
+  }
+}
+
+/**
  * JOB 6: Price Tracker Scrape
  * Runs daily at 09:15 CET Mon-Fri
  * Scrapes all active manually-tracked securities and records prices
@@ -1846,6 +1936,21 @@ export async function initializeCronJobs() {
 
   console.log('✓ Settlement Check scheduled for 09:30 CET Mon-Fri');
 
+  // Data Retention — 02:00 CET daily
+  cronJobs.dataRetention = cron.schedule(scheduleInfo.dataRetention.schedule, Meteor.bindEnvironment(async () => {
+    console.log('[CRON] Data Retention CRON trigger fired at:', new Date().toISOString());
+    try {
+      await dataRetentionJob();
+    } catch (error) {
+      console.error('[CRON] Data Retention job error:', error);
+    }
+  }), {
+    scheduled: true,
+    timezone: "Europe/Paris"
+  });
+
+  console.log('✓ Data Retention scheduled for 02:00 CET daily');
+
   console.log('✓ Cron jobs initialized and started');
   console.log('✓ All jobs configured for Europe/Zurich timezone (CET/CEST)');
 }
@@ -1868,7 +1973,7 @@ if (Meteor.isServer) {
         throw new Meteor.Error('access-denied', 'Superadmin privileges required');
       }
 
-      console.log(`[MANUAL] Market Data Refresh triggered by ${currentUser.email}`);
+      console.log(`[MANUAL] Market Data Refresh triggered by user ${currentUser._id}`);
 
       try {
         const result = await marketDataRefreshJob();
@@ -1891,7 +1996,7 @@ if (Meteor.isServer) {
         throw new Meteor.Error('access-denied', 'Superadmin privileges required');
       }
 
-      console.log(`[MANUAL] Product Re-evaluation triggered by ${currentUser.email}`);
+      console.log(`[MANUAL] Product Re-evaluation triggered by user ${currentUser._id}`);
 
       try {
         // Bypass weekend check for manual triggers - superadmin explicitly wants to run it
@@ -1914,7 +2019,7 @@ if (Meteor.isServer) {
         throw new Meteor.Error('access-denied', 'Superadmin privileges required');
       }
 
-      console.log(`[MANUAL] Market Ticker Update triggered by ${currentUser.email}`);
+      console.log(`[MANUAL] Market Ticker Update triggered by user ${currentUser._id}`);
 
       try {
         const result = await updateMarketTickerPrices();
@@ -1944,7 +2049,7 @@ if (Meteor.isServer) {
         throw new Meteor.Error('access-denied', 'Superadmin privileges required');
       }
 
-      console.log(`[MANUAL] Bank File Sync triggered by ${currentUser.email}${forceReprocess ? ' (FORCE REPROCESS)' : ''}`);
+      console.log(`[MANUAL] Bank File Sync triggered by user ${currentUser._id}${forceReprocess ? ' (FORCE REPROCESS)' : ''}`);
 
       try {
         const result = await bankFileSyncJob('manual', { forceReprocess });
@@ -1968,7 +2073,7 @@ if (Meteor.isServer) {
         throw new Meteor.Error('access-denied', 'Superadmin privileges required');
       }
 
-      console.log(`[MANUAL] Dashboard Metrics computation triggered by ${currentUser.email}`);
+      console.log(`[MANUAL] Dashboard Metrics computation triggered by user ${currentUser._id}`);
 
       try {
         const result = await computeDashboardMetrics();
@@ -1990,7 +2095,7 @@ if (Meteor.isServer) {
         throw new Meteor.Error('access-denied', 'Admin privileges required');
       }
 
-      console.log(`[MANUAL] Price Tracker Scrape triggered by ${currentUser.email}`);
+      console.log(`[MANUAL] Price Tracker Scrape triggered by user ${currentUser._id}`);
 
       try {
         const result = await priceTrackerScrapeJob();
@@ -2012,10 +2117,32 @@ if (Meteor.isServer) {
         throw new Meteor.Error('access-denied', 'Admin privileges required');
       }
 
-      console.log(`[MANUAL] Settlement Check triggered by ${currentUser.email}`);
+      console.log(`[MANUAL] Settlement Check triggered by user ${currentUser._id}`);
 
       try {
         const result = await settlementCheckJob('manual');
+        return { success: true, result };
+      } catch (error) {
+        throw new Meteor.Error('job-execution-failed', error.message);
+      }
+    },
+
+    /**
+     * Manually trigger the GDPR data-retention sweep
+     */
+    async 'cronJobs.triggerDataRetention'(sessionId) {
+      check(sessionId, String);
+      this.unblock();
+
+      const currentUser = await Meteor.callAsync('auth.getCurrentUser', sessionId);
+      if (!currentUser || currentUser.role !== 'superadmin') {
+        throw new Meteor.Error('access-denied', 'Superadmin privileges required');
+      }
+
+      console.log(`[MANUAL] Data Retention triggered by user ${currentUser._id}`);
+
+      try {
+        const result = await dataRetentionJob('manual');
         return { success: true, result };
       } catch (error) {
         throw new Meteor.Error('job-execution-failed', error.message);

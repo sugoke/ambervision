@@ -65,7 +65,7 @@ const ServerLogsViewer = ({ sessionId }) => {
       case 'warn':
         return { color: 'var(--warning-color)', fontWeight: 500 };
       default:
-        return { color: '#9ca3af' };
+        return { color: 'var(--text-muted)' };
     }
   };
 

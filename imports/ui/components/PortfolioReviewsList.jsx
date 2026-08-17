@@ -147,7 +147,7 @@ const PortfolioReviewsList = ({ viewAsFilter, accountFilter, onOpenReview, onGen
         );
       default:
         return (
-          <span style={{ ...base, background: '#f3f4f6', color: '#6b7280' }}>
+          <span style={{ ...base, background: 'var(--bg-tertiary)', color: 'var(--text-muted)' }}>
             {status}
           </span>
         );

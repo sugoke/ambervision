@@ -7,7 +7,7 @@ import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
 import { AllocationsCollection } from '../../imports/api/allocations.js';
 import { PortfolioSnapshotsCollection } from '../../imports/api/portfolioSnapshots.js';
 import { ProductsCollection } from '../../imports/api/products.js';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
 
 /**
@@ -92,9 +92,10 @@ const STRUCTURED_LINES = [
 ];
 
 async function validateSuperadminSession(sessionId) {
-  if (!sessionId) throw new Meteor.Error('not-authorized', 'Session required');
+  // SECURITY: string-only — reject selector-object injection.
+  if (typeof sessionId !== 'string' || sessionId.length === 0) throw new Meteor.Error('not-authorized', 'Session required');
 
-  const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
+  const session = await SessionHelpers.findByToken(sessionId);
   if (!session) throw new Meteor.Error('not-authorized', 'Invalid session');
 
   const user = await UsersCollection.findOneAsync(session.userId);

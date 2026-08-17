@@ -15,6 +15,7 @@ import { Meteor } from 'meteor/meteor';
 import { Mongo } from 'meteor/mongo';
 import { Random } from 'meteor/random';
 import crypto from 'crypto';
+import { AuditLog } from '/imports/api/auditLog';
 
 export const DocumentAccessTokensCollection = new Mongo.Collection('documentAccessTokens');
 
@@ -63,6 +64,15 @@ export async function consumeDocumentToken(rawToken, requestedPath) {
   if (!record) return null;
   if (record.path !== requestedPath) return null;
   if (record.expiresAt && new Date(record.expiresAt).getTime() < Date.now()) return null;
+
+  // GDPR accountability: every actual document serve is auditable. The path
+  // identifies the file; the userId is who minted the token.
+  await AuditLog.record({
+    actorUserId: record.userId || null,
+    action: 'document.download',
+    targetType: 'file',
+    targetId: record.path
+  });
 
   return { userId: record.userId || null };
 }

@@ -348,7 +348,7 @@ const PasswordReset = ({ token, onComplete }) => {
               style={{
                 width: '100%',
                 padding: '14px 16px',
-                border: '2px solid #e5e7eb',
+                border: '2px solid var(--border-color-light)',
                 borderRadius: '8px',
                 fontSize: '1rem',
                 boxSizing: 'border-box',
@@ -394,7 +394,7 @@ const PasswordReset = ({ token, onComplete }) => {
               style={{
                 width: '100%',
                 padding: '14px 16px',
-                border: '2px solid #e5e7eb',
+                border: '2px solid var(--border-color-light)',
                 borderRadius: '8px',
                 fontSize: '1rem',
                 boxSizing: 'border-box',
@@ -474,7 +474,7 @@ const PasswordReset = ({ token, onComplete }) => {
               }}
               style={{
                 background: 'none',
-                color: '#6b7280',
+                color: 'var(--text-muted)',
                 border: 'none',
                 cursor: 'pointer',
                 fontSize: '0.875rem',

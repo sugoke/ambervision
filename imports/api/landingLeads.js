@@ -33,6 +33,8 @@ export const LandingLeadHelpers = {
       phone: leadData.phone || null,
       source: leadData.source || 'landing-page',
       status: LEAD_STATUS.NEW,
+      // GDPR: record of the consent this storage rests on
+      consent: leadData.consent || null,
       notes: [],
       createdAt: now,
       updatedAt: now,
@@ -46,7 +48,7 @@ export const LandingLeadHelpers = {
     };
 
     const leadId = await LandingLeadsCollection.insertAsync(lead);
-    console.log(`[LandingLeads] Created new lead: ${leadId} - ${lead.name}`);
+    console.log(`[LandingLeads] Created new lead: ${leadId}`);
 
     return { leadId, ...lead };
   },

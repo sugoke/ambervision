@@ -379,13 +379,22 @@ export const SGMonacoParser = {
    *
    * @param {number} rawValue - Raw price value
    * @param {boolean} isCash - Whether this is a cash position
-   * @returns {number} Normalized price (1.0 = 100%)
+   * @param {boolean} isPercentagePrice - Whether the instrument is percentage-priced
+   *   (bonds/structured products). When false (ETFs/stocks priced absolutely),
+   *   the raw price is kept as-is instead of being divided by 100.
+   * @returns {number} Normalized price (1.0 = 100% for percentage instruments)
    */
-  normalizePrice(rawValue, isCash) {
+  normalizePrice(rawValue, isCash, isPercentagePrice = true) {
     if (!rawValue && rawValue !== 0) return null;
 
     // Cash always 1.0
     if (isCash) return 1.0;
+
+    // Absolute-priced instruments (ETFs, stocks) keep their raw price.
+    // Without this, an absolute cost price like 87.82 was wrongly stored as 0.8782.
+    if (isPercentagePrice === false) {
+      return rawValue;
+    }
 
     // SG stores percentage prices as whole numbers (98.01 = 98.01%)
     // Normalize to decimal (0.9801 = 98.01%)
@@ -532,8 +541,11 @@ export const SGMonacoParser = {
       return null;
     }
 
-    // Normalize cost price to decimal format
-    const normalizedCostPrice = this.normalizePrice(costPrice, isCash);
+    // Normalize cost price to decimal format. Use the same percentage/absolute
+    // signal as the market price (from the price file) so absolute-priced ETFs/
+    // stocks are not divided by 100. Default to percentage when no price data.
+    const costIsPercentagePriced = priceData ? (priceData.isPercentage !== false) : true;
+    const normalizedCostPrice = this.normalizePrice(costPrice, isCash, costIsPercentagePriced);
 
     // Get market price from price file (INS_CUR_PRI)
     // Price file values are already in correct format:
@@ -585,10 +597,14 @@ export const SGMonacoParser = {
     // Generate unique key
     const uniqueKey = this.generateUniqueKey(portfolioCode, isin, internalCode, instrumentCurrency);
 
-    // Build bank FX rates for this holding (use instrument currency from price file)
+    // Build bank FX rates for this holding (use instrument currency from price file).
+    // SG's CUR_XRATE is in MULTIPLY format (EUR = amount × rate), but bankFxRates
+    // must be stored in DIVIDE format (EUR = amount / rate) per the cash-calculator
+    // contract. Store the inverse so cash conversions match the bank statement
+    // instead of being wrong by a factor of rate² (~36% for USD).
     const holdingFxRates = {};
     if (instrumentCurrency && instrumentCurrency !== 'EUR' && fxRates[instrumentCurrency]) {
-      holdingFxRates[instrumentCurrency] = fxRates[instrumentCurrency];
+      holdingFxRates[instrumentCurrency] = 1 / fxRates[instrumentCurrency];
     }
 
     return {

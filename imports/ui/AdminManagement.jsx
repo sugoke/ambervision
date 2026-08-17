@@ -49,7 +49,7 @@ const UserAccessesPanel = ({ currentUser }) => {
       [USER_ROLES.CLIENT]: { label: 'Client', color: '#059669' },
       [USER_ROLES.INTRODUCER]: { label: 'Introducer', color: '#ec4899' },
     };
-    return map[role] || { label: role, color: '#6b7280' };
+    return map[role] || { label: role, color: 'var(--text-muted)' };
   };
 
   const filteredUsers = users

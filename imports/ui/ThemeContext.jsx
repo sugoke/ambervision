@@ -54,58 +54,75 @@ export const ThemeProvider = ({ children }) => {
     
     // Update CSS custom properties for immediate effect (as fallback).
     //
-    // Every colour used as TEXT is chosen to clear WCAG AA (4.5:1) against the surfaces of
-    // its own theme — checked against the lightest AND darkest surface in that theme, not
-    // just the primary background. The light palette previously used the Bootstrap 4
-    // defaults, which fail badly on white: success #28a745 was 3.13:1 and accent #007bff
-    // 3.98:1, i.e. unreadable at normal text sizes. The status tokens below exist because
-    // the same green/red/amber cannot serve both themes: a green that reads on near-black
-    // is washed out on near-white, and vice versa.
+    // "Ambervision" design system — extracted from the approved desktop proposals
+    // (dashboard-proposal.html / pms-proposal.html for dark, pms-redesign.html for light).
+    // Dark is a warm near-black "ink" desk with amber as the single signature accent;
+    // light is a warm-paper "statement" look with the same amber anchoring.
+    //
+    // Every colour used as TEXT clears WCAG AA (4.5:1) against every surface of its own
+    // theme (bg-primary, bg-secondary AND bg-tertiary). The proposals' raw light values
+    // (#B8841F amber 2.82:1, #BE4436 red 4.41:1 on the deepest paper) fail AA, so text
+    // tokens are darkened versions of the same hues; the raw bright values live in
+    // --accent-strong for non-text uses (rules, glyphs, washes, fills).
     if (theme === 'dark') {
-      root.style.setProperty('--bg-primary', '#1a1a1a');
-      root.style.setProperty('--bg-primary-rgb', '26, 26, 26');
-      root.style.setProperty('--bg-secondary', '#2d2d2d');
-      root.style.setProperty('--bg-tertiary', '#3a3a3a');
-      root.style.setProperty('--text-primary', '#ffffff');
-      root.style.setProperty('--text-secondary', '#e0e0e0');
-      root.style.setProperty('--text-muted', '#b0b0b0');
-      root.style.setProperty('--border-color', '#4a4a4a');
-      root.style.setProperty('--border-color-light', '#3a3a3a');
-      root.style.setProperty('--accent-color', '#4da6ff');
-      root.style.setProperty('--success-color', '#4caf50');
-      root.style.setProperty('--danger-color', '#f44336');
-      root.style.setProperty('--shadow', 'rgba(255,255,255,0.1)');
+      root.style.setProperty('--bg-primary', '#0E1014');        // ink — page ground
+      root.style.setProperty('--bg-primary-rgb', '14, 16, 20');
+      root.style.setProperty('--bg-secondary', '#171A21');      // panel — cards, modals
+      root.style.setProperty('--bg-tertiary', '#1E222B');       // panel-2 — hover, insets
+      root.style.setProperty('--text-primary', '#F5F1E8');      // warm off-white "paper"
+      root.style.setProperty('--text-secondary', '#C9CDD5');
+      root.style.setProperty('--text-muted', '#8B909C');        // 4.98:1 worst-case
+      root.style.setProperty('--border-color', '#2A2F3A');      // hairline
+      root.style.setProperty('--border-color-light', '#21252E');
+      root.style.setProperty('--accent-color', '#E0A138');      // signature amber, 7.07:1
+      root.style.setProperty('--success-color', '#57B891');
+      root.style.setProperty('--danger-color', '#D9776B');
+      root.style.setProperty('--shadow', 'rgba(0,0,0,0.45)');
 
-      // Semantic status tokens — the values the app has always used on dark.
-      root.style.setProperty('--gain-color', '#10b981');
-      root.style.setProperty('--loss-color', '#ef4444');
-      root.style.setProperty('--warning-color', '#f59e0b');
-      root.style.setProperty('--info-color', '#3b82f6');
-      root.style.setProperty('--neutral-color', '#94a3b8');
+      // Status tokens — desaturated ledger tones from the proposal, all AA on panels.
+      root.style.setProperty('--gain-color', '#57B891');
+      root.style.setProperty('--loss-color', '#D9776B');
+      root.style.setProperty('--warning-color', '#E0A138');
+      root.style.setProperty('--info-color', '#7FB0DE');
+      root.style.setProperty('--neutral-color', '#8B909C');
+
+      // Design-system extensions (non-text accents + card recipe).
+      root.style.setProperty('--accent-strong', '#F2C46B');     // amber-hi: glyphs, rules
+      root.style.setProperty('--accent-contrast', '#0E1014');   // text on amber fills
+      root.style.setProperty('--card-bg', 'linear-gradient(180deg, #171A21, #14171D)');
+      root.style.setProperty('--card-shadow', '0 1px 2px rgba(0,0,0,0.3)');
+      root.style.setProperty('--page-bg',
+        'radial-gradient(1200px 600px at 78% -8%, rgba(224,161,56,.10), transparent 60%),' +
+        'radial-gradient(900px 500px at 0% 100%, rgba(87,184,145,.05), transparent 55%), #0E1014');
     } else {
-      root.style.setProperty('--bg-primary', 'rgba(255, 255, 255, 0.9)'); // Semi-transparent for background image
+      root.style.setProperty('--bg-primary', '#FFFFFF');        // card ground
       root.style.setProperty('--bg-primary-rgb', '255, 255, 255');
-      root.style.setProperty('--bg-secondary', 'rgba(248, 249, 250, 0.9)'); // Semi-transparent
-      root.style.setProperty('--bg-tertiary', 'rgba(233, 236, 239, 0.9)'); // Semi-transparent
-      root.style.setProperty('--text-primary', '#212529');
-      root.style.setProperty('--text-secondary', '#495057');
-      // 4.69:1 on white but only 3.95:1 on --bg-tertiary, where it is routinely used.
-      root.style.setProperty('--text-muted', '#5c656d');
-      // Panel edges were 1.30:1 — effectively invisible, so cards bled into each other.
-      root.style.setProperty('--border-color', '#c7ced5');
-      root.style.setProperty('--border-color-light', '#dde1e5');
-      root.style.setProperty('--accent-color', '#0b5ed7');
-      root.style.setProperty('--success-color', '#047857');
-      root.style.setProperty('--danger-color', '#b91c1c');
-      root.style.setProperty('--shadow', 'rgba(0,0,0,0.1)');
+      root.style.setProperty('--bg-secondary', '#FBF9F3');      // card-soft warm panels
+      root.style.setProperty('--bg-tertiary', '#F1EDE2');       // deep paper insets
+      root.style.setProperty('--text-primary', '#1C1F26');      // ink
+      root.style.setProperty('--text-secondary', '#3D424D');    // body
+      root.style.setProperty('--text-muted', '#666C78');        // 4.51:1 worst-case
+      root.style.setProperty('--border-color', '#D8D2C2');      // hair-strong
+      root.style.setProperty('--border-color-light', '#E7E2D6'); // hair
+      root.style.setProperty('--accent-color', '#8A5F0B');      // amber-deep, 4.82:1 as text
+      root.style.setProperty('--success-color', '#14724F');
+      root.style.setProperty('--danger-color', '#B03C2F');
+      root.style.setProperty('--shadow', 'rgba(28,31,38,0.12)');
 
-      // Darker equivalents of the dark-theme status colours: same meaning, legible on
-      // white. Verified >= 4.5:1 on both #ffffff and the tertiary surface #e9ecef.
-      root.style.setProperty('--gain-color', '#047857');
-      root.style.setProperty('--loss-color', '#b91c1c');
-      root.style.setProperty('--warning-color', '#b45309');
-      root.style.setProperty('--info-color', '#1d4ed8');
-      root.style.setProperty('--neutral-color', '#5c656d');
+      // Status tokens — proposal hues darkened just enough to clear AA on all surfaces.
+      root.style.setProperty('--gain-color', '#14724F');
+      root.style.setProperty('--loss-color', '#B03C2F');
+      root.style.setProperty('--warning-color', '#A34A08');
+      root.style.setProperty('--info-color', '#2B669D');
+      root.style.setProperty('--neutral-color', '#666C78');
+
+      // Design-system extensions.
+      root.style.setProperty('--accent-strong', '#B8841F');     // ledger amber: rules, fills
+      root.style.setProperty('--accent-contrast', '#FFFFFF');
+      root.style.setProperty('--card-bg', '#FFFFFF');
+      root.style.setProperty('--card-shadow', '0 1px 2px rgba(28,31,38,.04), 0 8px 24px -18px rgba(28,31,38,.18)');
+      root.style.setProperty('--page-bg',
+        'radial-gradient(900px 400px at 90% -6%, rgba(184,132,31,.07), transparent 60%), #F7F4EC');
     }
   }, [theme]);
 

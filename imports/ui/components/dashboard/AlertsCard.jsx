@@ -100,10 +100,11 @@ const AlertsCard = ({ alerts, onAlertClick }) => {
 
   const styles = {
     card: {
-      backgroundColor: 'var(--bg-secondary)',
-      borderRadius: '12px',
-      padding: '20px',
+      background: 'var(--card-bg, var(--bg-secondary))',
+      borderRadius: 'var(--radius, 14px)',
+      padding: '22px',
       border: '1px solid var(--border-color)',
+      boxShadow: 'var(--card-shadow)',
       height: '100%',
       display: 'flex',
       flexDirection: 'column'
@@ -115,9 +116,11 @@ const AlertsCard = ({ alerts, onAlertClick }) => {
       marginBottom: '16px'
     },
     title: {
-      fontSize: '16px',
+      fontSize: '11.5px',
       fontWeight: '600',
-      color: 'var(--text-primary)',
+      letterSpacing: '1.8px',
+      textTransform: 'uppercase',
+      color: 'var(--text-muted)',
       display: 'flex',
       alignItems: 'center',
       gap: '8px'
@@ -206,7 +209,7 @@ const AlertsCard = ({ alerts, onAlertClick }) => {
             <line x1="12" y1="9" x2="12" y2="13" />
             <line x1="12" y1="17" x2="12.01" y2="17" />
           </svg>
-          Alerts
+          Needs attention today
         </span>
         {alerts?.length > 0 && (
           <span style={styles.badge}>{alerts.length}</span>

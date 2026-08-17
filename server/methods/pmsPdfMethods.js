@@ -41,6 +41,9 @@ async function validatePdfToken(userId, pdfToken) {
   return user;
 }
 
+// GDPR accountability
+const { AuditLog } = require('/imports/api/auditLog');
+
 Meteor.methods({
   /**
    * Get PMS holdings for PDF generation
@@ -57,7 +60,14 @@ Meteor.methods({
 
     // Validate PDF token
     const currentUser = await validatePdfToken(userId, pdfToken);
-    console.log('[PMS_PDF] Token validated for user:', currentUser.emails?.[0]?.address);
+
+    await AuditLog.record({
+      actorUserId: currentUser._id,
+      actorRole: currentUser.role,
+      action: 'export.pdf',
+      targetType: 'pmsReport',
+      targetId: viewAsFilter ? `${viewAsFilter.type}:${viewAsFilter.id}` : 'all'
+    });
 
     // Build query filter based on role
     let queryFilter = { isActive: true, isLatest: true };

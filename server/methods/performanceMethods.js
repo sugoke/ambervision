@@ -1,6 +1,6 @@
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
 import { PortfolioSnapshotHelpers, filterSnapshotsByBankStartDate } from '../../imports/api/portfolioSnapshots.js';
 import { getAssetClassLabel, getGranularCategoryLabel } from '../../imports/api/securitiesMetadata.js';
@@ -15,10 +15,7 @@ async function validateSession(sessionId) {
     throw new Meteor.Error('not-authorized', 'Session required');
   }
 
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true
-  });
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) {
     throw new Meteor.Error('not-authorized', 'Invalid session');

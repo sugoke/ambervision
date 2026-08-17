@@ -1,17 +1,149 @@
 @import 'structured-product.css';
 @import 'pdf-styles.css';
 
+/* ==========================================================================
+   Ambervision design system — base tokens
+   ThemeContext.jsx overrides these per theme at runtime; this :root block is
+   the DARK default so the very first paint (before React mounts) already has
+   the right ground, fonts and hairlines instead of a flash of unstyled page.
+   ========================================================================== */
+:root {
+  --font-serif: 'Newsreader', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --bg-primary: #0E1014;
+  --bg-primary-rgb: 14, 16, 20;
+  --bg-secondary: #171A21;
+  --bg-tertiary: #1E222B;
+  --text-primary: #F5F1E8;
+  --text-secondary: #C9CDD5;
+  --text-muted: #8B909C;
+  --border-color: #2A2F3A;
+  --border-color-light: #21252E;
+  --accent-color: #E0A138;
+  --accent-strong: #F2C46B;
+  --accent-contrast: #0E1014;
+  --success-color: #57B891;
+  --danger-color: #D9776B;
+  --gain-color: #57B891;
+  --loss-color: #D9776B;
+  --warning-color: #E0A138;
+  --info-color: #7FB0DE;
+  --neutral-color: #8B909C;
+  --shadow: rgba(0, 0, 0, 0.45);
+  --card-bg: linear-gradient(180deg, #171A21, #14171D);
+  --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --page-bg: radial-gradient(1200px 600px at 78% -8%, rgba(224,161,56,.10), transparent 60%),
+             radial-gradient(900px 500px at 0% 100%, rgba(87,184,145,.05), transparent 55%),
+             #0E1014;
+  --radius: 14px;
+  --radius-sm: 9px;
+}
+
 html, body {
   margin: 0;
   padding: 0;
-  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', sans-serif;
+  font-family: var(--font-sans);
   box-sizing: border-box;
-  background-color: var(--bg-secondary); /* Use secondary background for better iOS web app appearance */
+  background-color: var(--bg-primary);
   color: var(--text-primary);
-  transition: all 0.3s ease;
+  font-size: 15px;
+  line-height: 1.5;
+  letter-spacing: 0.1px;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color 0.3s ease, color 0.3s ease;
   overflow-x: hidden;
   width: 100%;
   max-width: 100vw;
+}
+
+/* --------------------------------------------------------------------------
+   Design-system utilities shared by screens
+   -------------------------------------------------------------------------- */
+/* Tabular figures for any number that sits in a column */
+.tnum { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+
+/* Serif display voice: greetings, hero values, card titles that carry weight */
+.av-serif { font-family: var(--font-serif); font-weight: 500; letter-spacing: 0.2px; }
+
+/* Eyebrow card header: tiny uppercase label preceded by a short amber rule */
+.av-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 0 16px;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 1.8px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.av-eyebrow::before {
+  content: "";
+  width: 16px;
+  height: 1px;
+  background: var(--accent-strong);
+  flex: none;
+}
+.av-eyebrow .cnt {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  text-transform: none;
+  font-size: 11px;
+}
+
+/* Hero statement value (AUM, portfolio total): serif, tight, amber currency glyph */
+.av-hero-value {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  letter-spacing: -0.5px;
+  line-height: 1.05;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.av-hero-value .cur {
+  color: var(--accent-color);
+  font-size: 0.52em;
+  vertical-align: top;
+  margin-right: 0.14em;
+  letter-spacing: 1px;
+}
+
+/* Pos/neg chips (soft wash + strong figure) */
+.av-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-weight: 600;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.av-chip.pos { background: color-mix(in srgb, var(--gain-color) 13%, transparent); color: var(--gain-color); }
+.av-chip.neg { background: color-mix(in srgb, var(--loss-color) 13%, transparent); color: var(--loss-color); }
+
+/* Morning-Desk editorial grid: 12 columns with proposal spans, collapsing to
+   6/6 on narrow desktops and a single column on phones. */
+.av-grid { display: grid; gap: 16px; grid-template-columns: repeat(12, 1fr); align-items: stretch; }
+.av-col-3  { grid-column: span 3; }
+.av-col-4  { grid-column: span 4; }
+.av-col-5  { grid-column: span 5; }
+.av-col-6  { grid-column: span 6; }
+.av-col-7  { grid-column: span 7; }
+.av-col-8  { grid-column: span 8; }
+.av-col-12 { grid-column: span 12; }
+.av-grid > div > * { height: 100%; }
+@media (max-width: 1100px) {
+  .av-col-3, .av-col-4, .av-col-5, .av-col-6, .av-col-7, .av-col-8 { grid-column: span 6; }
+}
+@media (max-width: 700px) {
+  .av-col-3, .av-col-4, .av-col-5, .av-col-6, .av-col-7, .av-col-8 { grid-column: span 12; }
 }
 
 #root, #react-target {

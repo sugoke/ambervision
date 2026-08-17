@@ -48,8 +48,8 @@ const UserManagement = ({ user: currentUser }) => {
 
   // Memoize subscriptions to prevent re-initialization
   const subscriptions = useMemo(() => ({
-    users: Meteor.subscribe('customUsers'),
-    bankAccounts: Meteor.subscribe('allBankAccounts'),
+    users: Meteor.subscribe('customUsers', localStorage.getItem('sessionId')),
+    bankAccounts: Meteor.subscribe('allBankAccounts', localStorage.getItem('sessionId')),
     banks: Meteor.subscribe('banks')
   }), []);
 
@@ -132,7 +132,7 @@ const UserManagement = ({ user: currentUser }) => {
   const handleDeleteUser = async (userId) => {
     const confirmed = await showConfirm('Are you sure you want to delete this user?');
     if (confirmed) {
-      Meteor.call('users.remove', userId, (err) => {
+      Meteor.call('users.remove', userId, localStorage.getItem('sessionId'), (err) => {
         if (err) {
           setError(err.reason);
         } else {
@@ -170,7 +170,7 @@ const UserManagement = ({ user: currentUser }) => {
       email: editingUser.email,
       profile: editingUser.profile,
       relationshipManagerId: editingUser.relationshipManagerId
-    }, (err) => {
+    }, localStorage.getItem('sessionId'), (err) => {
       if (err) {
         console.error('UserManagement: Error saving user profile:', err);
         setError(err.reason);
@@ -1367,7 +1367,7 @@ const UserManagement = ({ user: currentUser }) => {
                             // Directly update the client's RM
                             Meteor.call('users.updateProfile', client._id, {
                               relationshipManagerId: e.target.value
-                            }, (err) => {
+                            }, localStorage.getItem('sessionId'), (err) => {
                               if (err) {
                                 setError(err.reason);
                               } else {

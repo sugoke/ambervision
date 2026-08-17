@@ -1,9 +1,37 @@
 import { Meteor } from 'meteor/meteor';
 import { check } from 'meteor/check';
 import { ManualPriceTrackersCollection, ManualPriceTrackerHelpers } from '../../imports/api/manualPriceTrackers.js';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
 import { scrapePrice } from '../../imports/api/priceScraperService.js';
+
+/**
+ * SSRF guard for tracker URLs: the server fetches these URLs, so reject anything
+ * that isn't a plain https:// URL to a public host. Blocks localhost, link-local,
+ * cloud-metadata and RFC-1918 private ranges. (Hostnames that resolve to internal
+ * IPs are still possible — a full fix would re-check the resolved address.)
+ */
+function assertSafeTrackerUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (e) {
+    throw new Meteor.Error('invalid-url', 'Invalid tracker URL');
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Meteor.Error('invalid-url', 'Only https:// tracker URLs are allowed');
+  }
+  const host = parsed.hostname.toLowerCase();
+  const blocked =
+    host === 'localhost' || host === '0.0.0.0' || host === '::1' ||
+    host.endsWith('.local') || host === '169.254.169.254' ||
+    /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) ||
+    /^169\.254\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+    host.startsWith('fd') || host.startsWith('fe80');
+  if (blocked) {
+    throw new Meteor.Error('invalid-url', 'Tracker URL host is not allowed');
+  }
+}
 
 /**
  * Validate session and ensure user is admin
@@ -13,10 +41,7 @@ async function validateAdminSession(sessionId) {
     throw new Meteor.Error('not-authorized', 'Session required');
   }
 
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true
-  });
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) {
     throw new Meteor.Error('not-authorized', 'Invalid session');
@@ -47,6 +72,7 @@ Meteor.methods({
     check(sessionId, String);
 
     await validateAdminSession(sessionId);
+    assertSafeTrackerUrl(url);
 
     console.log(`[PRICE_TRACKER] Adding tracker: ${name} (${isin})`);
 
@@ -67,6 +93,7 @@ Meteor.methods({
     check(sessionId, String);
 
     await validateAdminSession(sessionId);
+    if (typeof url === 'string' && url) assertSafeTrackerUrl(url);
 
     console.log(`[PRICE_TRACKER] Updating tracker: ${id}`);
 

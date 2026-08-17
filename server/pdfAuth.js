@@ -1,5 +1,6 @@
 import { Meteor } from 'meteor/meteor';
 import { WebApp } from 'meteor/webapp';
+import { check } from 'meteor/check';
 import { UsersCollection } from '../imports/api/users.js';
 
 /**
@@ -107,6 +108,10 @@ WebApp.connectHandlers.use(async (req, res, next) => {
 // Helper method to validate PDF token on client
 Meteor.methods({
   async 'pdf.validateToken'(userId, pdfToken) {
+    // SECURITY: check args — unchecked, {$ne:null} would let a caller probe for any
+    // user currently holding a PDF capability token.
+    check(userId, String);
+    check(pdfToken, String);
     // This is called from client-side to validate before rendering
     const user = await UsersCollection.findOneAsync({
       _id: userId,

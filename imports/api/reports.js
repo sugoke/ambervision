@@ -1,6 +1,6 @@
 import { Mongo } from 'meteor/mongo';
 import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
+import { check, Match } from 'meteor/check';
 import { MarketDataCacheCollection, MarketDataHelpers } from './marketDataCache';
 import { ProductsCollection } from './products';
 import { HimalayaEvaluator } from './evaluators/himalayaEvaluator';
@@ -78,9 +78,14 @@ export const ReportsCollection = new Mongo.Collection('reports');
 // Server-side publications and methods
 if (Meteor.isServer) {
   // Publish reports for a specific product
-  Meteor.publish('reports.forProduct', function(productId) {
+  Meteor.publish('reports.forProduct', async function(productId, sessionId) {
     check(productId, String);
-    
+    check(sessionId, Match.Maybe(String));
+
+    // SECURITY: require a real session or a valid PDF-render token.
+    const { isAuthorizedReportViewer } = await import('../../server/helpers/reportViewerAuth.js');
+    if (!(await isAuthorizedReportViewer(sessionId))) return this.ready();
+
     return ReportsCollection.find({ productId }, {
       sort: { createdAt: -1 },
       limit: 100 // Limit to most recent 100 reports
@@ -88,10 +93,15 @@ if (Meteor.isServer) {
   });
 
   // Publish reports by date range
-  Meteor.publish('reports.byDateRange', function(fromDate, toDate) {
+  Meteor.publish('reports.byDateRange', async function(fromDate, toDate, sessionId) {
     check(fromDate, Date);
     check(toDate, Date);
-    
+    check(sessionId, Match.Maybe(String));
+
+    // SECURITY: require a real session or a valid PDF-render token.
+    const { isAuthorizedReportViewer } = await import('../../server/helpers/reportViewerAuth.js');
+    if (!(await isAuthorizedReportViewer(sessionId))) return this.ready();
+
     return ReportsCollection.find({
       evaluationDate: {
         $gte: fromDate,
@@ -120,8 +130,12 @@ if (Meteor.isServer) {
      * Automatically removes old reports for the same product to keep only the latest
      */
     async 'reports.create'(reportData) {
+      // Server-only: reports are written by the evaluation pipeline, not clients.
+      if (this.connection !== null) {
+        throw new Meteor.Error('not-authorized', 'This method can only be called server-side');
+      }
       check(reportData, Object);
-      
+
       const report = {
         ...reportData,
         createdAt: new Date(),
@@ -171,6 +185,9 @@ if (Meteor.isServer) {
      * Delete old reports (cleanup)
      */
     async 'reports.cleanup'(olderThanDays = 90) {
+      if (this.connection !== null) {
+        throw new Meteor.Error('not-authorized', 'This method can only be called server-side');
+      }
       check(olderThanDays, Number);
       
       const cutoffDate = new Date();
@@ -187,9 +204,12 @@ if (Meteor.isServer) {
      * Create template-based report (temporary fallback method)
      */
     async 'reports.createTemplate'(productData, sessionId) {
+      // Server-only: drives the full evaluation/report pipeline.
+      if (this.connection !== null) {
+        throw new Meteor.Error('not-authorized', 'This method can only be called server-side');
+      }
       check(productData, Object);
-      
-      
+
       // Basic session validation (simplified) - temporarily relaxed for testing
       if (!sessionId) {
         sessionId = 'test-session-fallback';
@@ -1754,9 +1774,7 @@ if (Meteor.isServer) {
 
     console.log('✅ Observation prices populated for Himalaya');
   };
-
-  /**
-   * Extract Phoenix parameters from payoff structure
+} // end if (Meteor.isServer) — server-only methods & price helpers
 
 /**
  * Helper to transform rule engine result to report format
@@ -2920,6 +2938,4 @@ function generateFallbackData(tradeDate, maturityDate, today, ticker) {
   });
 
   return performanceData;
-}
-
 }

@@ -57,7 +57,14 @@ export async function resolveMcpScope(user, { entityId = null } = {}) {
         { assignedUserIds: { $in: rmIds } },
         { relationshipManagerId: { $in: rmIds } }
       ],
-      isActive: true
+      isActive: true,
+      // Archiving does NOT clear isActive, so without this an archived client's
+      // NAME still enters the scope (list_entities, Amber's prompt entity list)
+      // even though its data is blocked by the holdings/allocations exclusions.
+      // Same for the fictional demo client, which must only ever appear via an
+      // explicit View As selection in the app — never in an assistant's scope.
+      status: { $ne: 'archived' },
+      isDemo: { $ne: true }
     }, { fields: { _id: 1, migratedFromUserId: 1 } }).fetchAsync();
     allowedEntityIds = entities.map(e => e._id);
     const legacyClients = await UsersCollection.find(
@@ -74,7 +81,17 @@ export async function resolveMcpScope(user, { entityId = null } = {}) {
       const resolved = await resolveEntityId(user._id);
       if (resolved) entityIds.push(resolved);
     }
-    allowedEntityIds = entityIds;
+    // Access grants can outlive an entity's lifecycle: drop archived (and demo)
+    // entities here so their names never enter a client's scope or prompt.
+    if (entityIds.length > 0) {
+      const live = await ClientEntitiesCollection.find(
+        { _id: { $in: entityIds }, status: { $ne: 'archived' }, isDemo: { $ne: true } },
+        { fields: { _id: 1 } }
+      ).fetchAsync();
+      allowedEntityIds = live.map(e => e._id);
+    } else {
+      allowedEntityIds = entityIds;
+    }
     allowedUserIds = [user._id];
   } else if (isAdmin) {
     // Admin with entityId filter — narrowed below
@@ -212,18 +229,33 @@ function escapeRegex(s) {
 }
 
 /** Scope filter for PMSHoldings */
+// PMSHoldings and PortfolioSnapshots store every position/series TWICE: once per
+// account and once as a per-user "CONSOLIDATED" roll-up copy (portfolioCode:
+// 'CONSOLIDATED'), kept for the app's consolidated tab. The per-account rows are the
+// source of truth; any aggregate that reads both counts the same money twice. The
+// roll-ups also carry entityId/userId, so entity-scoped queries double just like
+// admin ones. Every MCP consumer (external clients AND the in-process Amber chat)
+// must therefore see only per-account rows — a tool that filters to one explicit
+// account overrides portfolioCode at the top level, which composes safely with this.
+const EXCLUDE_CONSOLIDATED = { portfolioCode: { $ne: 'CONSOLIDATED' } };
+
+/** Scope filter for PMSHoldings */
 export async function buildHoldingScopeFilter(scope) {
   const base = await buildEntityOrAccountMatchFilter(scope, PMSHoldingsCollection);
   // Archived (closed-relationship) clients' holdings are hidden everywhere, including
-  // admin "see all" and explicit drill-down. Snapshots intentionally keep history, so
-  // this exclusion lives only here, not in buildSnapshotScopeFilter.
+  // admin "see all" and explicit drill-down.
   const exclusion = await ClientEntityHelpers.archivedHoldingsSelector();
-  return exclusion.$nor ? { $and: [base, exclusion] } : base;
+  const clauses = [base, EXCLUDE_CONSOLIDATED];
+  if (exclusion.$nor) clauses.push(exclusion);
+  return { $and: clauses };
 }
 
-/** Scope filter for PortfolioSnapshots */
+/** Scope filter for PortfolioSnapshots.
+ *  Archived clients intentionally stay IN snapshot history (it must reflect what was
+ *  true at the time) — only the double-counting roll-ups are excluded. */
 export async function buildSnapshotScopeFilter(scope) {
-  return buildEntityOrAccountMatchFilter(scope, PortfolioSnapshotsCollection);
+  const base = await buildEntityOrAccountMatchFilter(scope, PortfolioSnapshotsCollection);
+  return { $and: [base, EXCLUDE_CONSOLIDATED] };
 }
 
 /**

@@ -29,26 +29,29 @@ const ActionButton = ({
   style = {},
   ...props
 }) => {
+  // Filled variants use --accent-contrast for their label: the dark theme's fills are
+  // light-mid ledger tones (ink text reads best), the light theme's fills are deep
+  // tones (white reads best) — and that is exactly the mapping the token carries.
   const variants = {
     primary: {
       background: 'var(--accent-color)',
-      color: 'white',
-      border: 'none'
+      color: 'var(--accent-contrast, #fff)',
+      border: '1px solid var(--accent-color)'
     },
     secondary: {
-      background: 'transparent',
+      background: 'var(--bg-secondary)',
       color: 'var(--text-primary)',
       border: '1px solid var(--border-color)'
     },
     danger: {
       background: 'var(--danger-color)',
-      color: 'white',
-      border: 'none'
+      color: 'var(--accent-contrast, #fff)',
+      border: '1px solid var(--danger-color)'
     },
     success: {
       background: 'var(--success-color)',
-      color: 'white',
-      border: 'none'
+      color: 'var(--accent-contrast, #fff)',
+      border: '1px solid var(--success-color)'
     }
   };
 
@@ -106,7 +109,9 @@ const ActionButton = ({
           e.currentTarget.style.opacity = '0.9';
           e.currentTarget.style.transform = 'translateY(-1px)';
         } else if (!isDisabled && variant === 'secondary') {
-          e.currentTarget.style.backgroundColor = 'var(--bg-secondary)';
+          // Proposal hover: the hairline and label warm to amber.
+          e.currentTarget.style.borderColor = 'var(--accent-color)';
+          e.currentTarget.style.color = 'var(--accent-color)';
         }
       }}
       onMouseLeave={(e) => {
@@ -114,7 +119,8 @@ const ActionButton = ({
           e.currentTarget.style.opacity = '1';
           e.currentTarget.style.transform = 'translateY(0)';
           if (variant === 'secondary') {
-            e.currentTarget.style.backgroundColor = 'transparent';
+            e.currentTarget.style.borderColor = 'var(--border-color)';
+            e.currentTarget.style.color = 'var(--text-primary)';
           }
         }
       }}

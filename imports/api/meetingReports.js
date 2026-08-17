@@ -179,7 +179,7 @@ NUMBERS — KEEP IT SIMPLE AND NATURAL:
 9. This applies ONLY to market/macro context. Facts that come from the client or the RM's notes — amounts, account numbers, dates, product names, explicit percentages the client stated — must be kept exactly as written. Never round or alter the client's own figures.
 
 ENRICHMENT (proposition section only):
-10. You may use the web_search tool when the notes mention specific assets (e.g. "or", "gold", "Microsoft", "EUR/USD"), themes (e.g. "AI", "energy transition", "rate cuts"), or recent events — only to understand the current direction and context, NOT to harvest precise statistics. Turn what you find into simple, natural French prose (see rule 8). Do not output URL lists, footnotes, price tables or citation tags — weave the takeaway into the sentence.
+10. When the notes mention specific assets (e.g. "or", "gold", "Microsoft", "EUR/USD") or themes (e.g. "AI", "energy transition", "rate cuts"), you may add brief qualitative market context from your own knowledge — general direction and drivers only, phrased cautiously and without precise statistics (see rule 8). Do not output URL lists, footnotes, price tables or citation tags.
 
 WHAT YOU MUST NEVER DO:
 11. Never invent what the client said, did, decided, asked or felt. Only the RM's notes are authoritative for that. If the notes are silent on a point, leave it out.
@@ -204,8 +204,11 @@ export const MeetingReportHelpers = {
     if (!apiKey) throw new Meteor.Error('anthropic-config-error', 'ANTHROPIC_API_KEY not configured');
     if (!rawNotes || !rawNotes.trim()) throw new Meteor.Error('invalid-input', 'rawNotes required');
 
+    // GDPR data minimisation: the client's name is never sent to the LLM — the
+    // polished sections refer to "le client" and the report layout renders the
+    // name from clientNameSnapshot locally.
     const userMessage = [
-      `Client: ${clientNameSnapshot || 'Unknown'}`,
+      'Client: [le client]',
       meetingDate ? `Date: ${meetingDate}` : null,
       meetingType ? `Type: ${meetingType === MEETING_TYPES.CALL ? 'Call' : 'In-person meeting'}` : null,
       location ? `Lieu / Location: ${location}` : null,
@@ -228,14 +231,11 @@ export const MeetingReportHelpers = {
           // more tokens than Sonnet 4 — max_tokens caps thinking + text combined.
           max_tokens: 16000,
           system: SYSTEM_PROMPT,
-          messages: [{ role: 'user', content: userMessage }],
-          tools: [{
-            type: 'web_search_20260209',
-            name: 'web_search',
-            max_uses: 4
-          }]
+          messages: [{ role: 'user', content: userMessage }]
+          // GDPR: no web_search tool here — raw meeting notes are unpredictable
+          // free text and fragments of them must not reach a search backend.
         },
-        timeout: 180000 // 3 min — web search adds latency
+        timeout: 180000
       });
     } catch (err) {
       const status = err.response?.statusCode;

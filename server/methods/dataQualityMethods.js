@@ -1,7 +1,7 @@
 import { Meteor } from 'meteor/meteor';
 import { ProductsCollection } from '../../imports/api/products.js';
 import { MarketDataCacheCollection } from '../../imports/api/marketDataCache.js';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
 import { CurrencyNormalization } from '../../imports/utils/currencyNormalization.js';
 
@@ -15,11 +15,12 @@ import { CurrencyNormalization } from '../../imports/utils/currencyNormalization
  */
 
 async function validateSuperadminSession(sessionId) {
-  if (!sessionId) {
+  // SECURITY: string-only — reject selector-object injection.
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
     throw new Meteor.Error('not-authorized', 'Session required');
   }
 
-  const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
+  const session = await SessionHelpers.findByToken(sessionId);
   if (!session) {
     throw new Meteor.Error('not-authorized', 'Invalid session');
   }

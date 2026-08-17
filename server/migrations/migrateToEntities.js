@@ -24,7 +24,7 @@
 import { Meteor } from 'meteor/meteor';
 import { check } from 'meteor/check';
 import { Random } from 'meteor/random';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection, USER_ROLES } from '../../imports/api/users.js';
 import { ClientEntitiesCollection, ENTITY_TYPES, ENTITY_STATUSES } from '../../imports/api/clientEntities.js';
 import { UserEntityAccessCollection, ACCESS_LEVELS } from '../../imports/api/userEntityAccess.js';
@@ -439,7 +439,7 @@ Meteor.methods({
     check(sessionId, String);
 
     // Only superadmin can run migrations
-    const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
+    const session = await SessionHelpers.findByToken(sessionId);
     if (!session) throw new Meteor.Error('not-authorized', 'Invalid session');
 
     const user = await UsersCollection.findOneAsync(session.userId);
@@ -453,7 +453,7 @@ Meteor.methods({
   async 'migration.verifyEntities'(sessionId) {
     check(sessionId, String);
 
-    const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
+    const session = await SessionHelpers.findByToken(sessionId);
     if (!session) throw new Meteor.Error('not-authorized', 'Invalid session');
 
     const user = await UsersCollection.findOneAsync(session.userId);
@@ -467,7 +467,7 @@ Meteor.methods({
   async 'migration.migrateStatus'(sessionId) {
     check(sessionId, String);
 
-    const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
+    const session = await SessionHelpers.findByToken(sessionId);
     if (!session) throw new Meteor.Error('not-authorized', 'Invalid session');
 
     const user = await UsersCollection.findOneAsync(session.userId);
@@ -481,7 +481,7 @@ Meteor.methods({
   async 'migration.rollbackEntities'(sessionId) {
     check(sessionId, String);
 
-    const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
+    const session = await SessionHelpers.findByToken(sessionId);
     if (!session) throw new Meteor.Error('not-authorized', 'Invalid session');
 
     const user = await UsersCollection.findOneAsync(session.userId);

@@ -1,5 +1,34 @@
 import { Meteor } from 'meteor/meteor';
 
+/**
+ * SSRF host guard, applied at FETCH time (not just registration). Rejects non-https
+ * URLs and hosts that resolve — by literal string — to loopback, link-local,
+ * cloud-metadata, or RFC-1918 private ranges. Exported so the tracker methods and the
+ * fetcher share one definition, and re-applied to every redirect hop below.
+ */
+export function assertSafeFetchUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (e) {
+    throw new Meteor.Error('invalid-url', 'Invalid URL');
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Meteor.Error('invalid-url', 'Only https:// URLs are allowed');
+  }
+  const host = parsed.hostname.toLowerCase();
+  const blocked =
+    host === 'localhost' || host === '0.0.0.0' || host === '::1' ||
+    host.endsWith('.local') || host === '169.254.169.254' ||
+    /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) ||
+    /^169\.254\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+    host.startsWith('fd') || host.startsWith('fe80');
+  if (blocked) {
+    throw new Meteor.Error('invalid-url', 'URL host is not allowed');
+  }
+  return parsed;
+}
+
 const ANTHROPIC_API_KEY = Meteor.settings.private?.ANTHROPIC_API_KEY;
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_MODEL = 'claude-haiku-4-5-20251001';
@@ -64,15 +93,32 @@ async function fetchPage(url) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
 
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9'
-      },
-      redirect: 'follow',
-      signal: controller.signal
-    });
+    // SECURITY: validate the initial host AND every redirect hop. A public host could
+    // otherwise 30x-redirect the server to an internal address (SSRF). We handle
+    // redirects manually (max 5) so each Location is re-checked against the block list.
+    let currentUrl = assertSafeFetchUrl(url).toString();
+    let response;
+    for (let hop = 0; hop < 6; hop++) {
+      response = await fetch(currentUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9'
+        },
+        redirect: 'manual',
+        signal: controller.signal
+      });
+
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get('location');
+        if (!location) break;
+        if (hop === 5) throw new Error('Too many redirects');
+        // Re-validate the resolved redirect target before following it.
+        currentUrl = assertSafeFetchUrl(new URL(location, currentUrl).toString()).toString();
+        continue;
+      }
+      break;
+    }
 
     clearTimeout(timeout);
 

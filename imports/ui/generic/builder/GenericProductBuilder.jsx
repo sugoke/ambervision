@@ -58,7 +58,7 @@ const GenericProductBuilder = ({ sessionId, productId, onBack, onEvaluated }) =>
 
   const { product, isReady } = useTracker(() => {
     if (!productId) return { product: null, isReady: true };
-    const handle = Meteor.subscribe('genericProducts.byId', productId);
+    const handle = Meteor.subscribe('genericProducts.byId', productId, localStorage.getItem('sessionId'));
     return { product: GenericProductsCollection.findOne(productId), isReady: handle.ready() };
   }, [productId]);
 

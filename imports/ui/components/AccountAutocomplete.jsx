@@ -163,7 +163,7 @@ export default function AccountAutocomplete({ onSelect, value = '', placeholder 
                     <span style={{ fontWeight: '500' }}>{account.bankName || ''}</span>
                     <span style={{ marginLeft: '6px', color: 'var(--text-secondary)' }}>{account.accountNumber || ''}</span>
                     {account.name && account.name !== entityName && <span style={{ marginLeft: '6px', color: 'var(--text-muted)', fontSize: '12px' }}>({account.name})</span>}
-                    <span style={{ marginLeft: '8px', fontSize: '11px', padding: '1px 5px', borderRadius: '3px', background: 'rgba(79,166,255,0.1)', color: '#4da6ff' }}>{account.referenceCurrency || ''}</span>
+                    <span style={{ marginLeft: '8px', fontSize: '11px', padding: '1px 5px', borderRadius: '3px', background: 'rgba(79,166,255,0.1)', color: 'var(--accent-color)' }}>{account.referenceCurrency || ''}</span>
                     {account.ownerName && <span style={{ marginLeft: '6px', fontSize: '11px', color: 'var(--warning-color)' }}>via {account.ownerName}</span>}
                   </div>
                 ))}

@@ -6,7 +6,7 @@ import { BanksCollection } from '/imports/api/banks';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
 import { ClientEntitiesCollection } from '/imports/api/clientEntities';
-import { SessionsCollection } from '/imports/api/sessions';
+import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
 
 // Publish banks for bank selection
 Meteor.publish("banks", function () {
@@ -23,11 +23,12 @@ Meteor.publish("banksManagement", function () {
 Meteor.publish("userBankAccounts", async function (sessionId, viewAsFilter = null) {
   const self = this;
 
-  if (!sessionId) {
+  // SECURITY: string-only sessionId — a selector object would match a live session.
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
     return this.ready();
   }
 
-  const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
+  const session = await SessionHelpers.findByToken(sessionId);
   if (!session || !session.userId) {
     return this.ready();
   }
@@ -167,7 +168,7 @@ Meteor.publish("bankAccounts", async function () {
     return this.ready();
   }
 
-  const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
+  const session = await SessionHelpers.findByToken(sessionId);
   if (!session || !session.userId) {
     return this.ready();
   }

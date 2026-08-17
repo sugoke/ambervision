@@ -46,7 +46,7 @@ const AlertCenter = ({ user }) => {
   // Event type configurations
   const getAlertConfig = (eventType) => {
     const config = alertTypes.find(t => t.value === eventType);
-    return config || { icon: '📢', color: '#6b7280', priority: 'info' };
+    return config || { icon: '📢', color: 'var(--text-muted)', priority: 'info' };
   };
 
   // Load alerts on mount and when filters change

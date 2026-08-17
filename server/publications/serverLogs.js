@@ -1,6 +1,6 @@
 import { Meteor } from 'meteor/meteor';
 import { ServerLogsCollection } from '../../imports/api/serverLogs.js';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
 
 /**
@@ -8,15 +8,13 @@ import { UsersCollection } from '../../imports/api/users.js';
  * Real-time updates via Meteor's oplog tailing
  */
 Meteor.publish('serverLogs', async function (sessionId, limit = 1000) {
-  if (!sessionId) {
+  // SECURITY: string-only — reject a selector object that could match a live admin session.
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
     return this.ready();
   }
 
   // Find active session
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true
-  });
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) {
     return this.ready();

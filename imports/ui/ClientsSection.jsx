@@ -41,7 +41,7 @@ const S = {
   badge: (color, bg) => ({
     display: 'inline-flex', alignItems: 'center', padding: '2px 8px', borderRadius: '6px',
     fontSize: '0.68rem', fontWeight: '600', letterSpacing: '0.03em',
-    color, background: bg || `${color}14`, whiteSpace: 'nowrap'
+    color, background: bg || `color-mix(in srgb, ${color} 8%, transparent)`, whiteSpace: 'nowrap'
   }),
   th: {
     padding: '11px 16px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: '600',
@@ -85,7 +85,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
 
   const { entities, allBankAccounts, banks, entityIdsWithAccounts, accessRecords, isEntitiesLoading } = useTracker(() => {
     const isEntitiesReady = entitySubscription.ready();
-    Meteor.subscribe('allBankAccounts');
+    Meteor.subscribe('allBankAccounts', localStorage.getItem('sessionId'));
     Meteor.subscribe('banks');
 
     // Query all client entities
@@ -148,7 +148,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
       case ENTITY_TYPES.COMPANY:
         return { label: 'Company', icon: '\ud83c\udfe2', color: '#6366f1', bg: 'rgba(99, 102, 241, 0.1)' };
       default:
-        return { label: 'Unknown', icon: '\u2753', color: '#6b7280', bg: 'rgba(107, 114, 128, 0.1)' };
+        return { label: 'Unknown', icon: '\u2753', color: 'var(--text-muted)', bg: 'rgba(107, 114, 128, 0.1)' };
     }
   };
 
@@ -470,7 +470,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
           {[
             { id: 'active', label: 'Active', color: 'var(--gain-color)', count: entityStatusCounts.active },
             { id: 'prospect', label: 'Prospects', color: 'var(--warning-color)', count: entityStatusCounts.prospect },
-            { id: 'archived', label: 'Archived', color: '#6b7280', count: entityStatusCounts.archived }
+            { id: 'archived', label: 'Archived', color: 'var(--text-muted)', count: entityStatusCounts.archived }
           ].map(s => {
             const active = entityStatusFilter === s.id;
             return (
@@ -900,7 +900,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                             <td style={{ ...S.td, color: 'var(--text-primary)' }}>{bank?.name || '-'}</td>
                             <td style={{ ...S.td, color: 'var(--text-secondary)', fontFamily: "'Roboto Mono', monospace", fontSize: '0.82rem', letterSpacing: '0.03em' }}>{acc.accountNumber}</td>
                             <td style={{ ...S.td, textAlign: 'center' }}>
-                              <span style={S.badge('#4da6ff', 'rgba(79, 166, 255, 0.1)')}>{acc.referenceCurrency}</span>
+                              <span style={S.badge('var(--accent-color)', 'rgba(79, 166, 255, 0.1)')}>{acc.referenceCurrency}</span>
                             </td>
                             <td style={{ ...S.td, color: 'var(--text-secondary)', fontSize: '0.82rem' }}>{acc.comment || acc.accountType}</td>
                             <td style={{ ...S.td, color: ubos.length > 0 ? 'var(--text-primary)' : 'var(--text-muted)', fontSize: '0.82rem' }}>{ubos.length > 0 ? ubos.map(u => getEntitySortName(u)).join(', ') : '-'}</td>

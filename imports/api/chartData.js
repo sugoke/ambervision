@@ -1,5 +1,5 @@
 import { Mongo } from 'meteor/mongo';
-import { check } from 'meteor/check';
+import { check, Match } from 'meteor/check';
 
 export const ChartDataCollection = new Mongo.Collection('chartData');
 
@@ -26,6 +26,10 @@ export const ChartDataCollection = new Mongo.Collection('chartData');
 if (Meteor.isServer) {
   Meteor.methods({
     async 'chartData.upsert'(productId, chartData) {
+      // Server-only: chart data is written by the evaluation pipeline.
+      if (this.connection !== null) {
+        throw new Meteor.Error('not-authorized', 'This method can only be called server-side');
+      }
       check(productId, String);
       check(chartData, Object);
       
@@ -54,6 +58,9 @@ if (Meteor.isServer) {
     },
     
     'chartData.remove'(productId) {
+      if (this.connection !== null) {
+        throw new Meteor.Error('not-authorized', 'This method can only be called server-side');
+      }
       check(productId, String);
       return ChartDataCollection.removeAsync({ productId });
     },
@@ -95,13 +102,24 @@ if (Meteor.isServer) {
   });
   
   // Publications
-  Meteor.publish('chartData.byProduct', function(productId) {
+  Meteor.publish('chartData.byProduct', async function(productId, sessionId) {
     check(productId, String);
+    check(sessionId, Match.Maybe(String));
+
+    // SECURITY: require a real session or a valid PDF-render token.
+    const { isAuthorizedReportViewer } = await import('../../server/helpers/reportViewerAuth.js');
+    if (!(await isAuthorizedReportViewer(sessionId))) return this.ready();
+
     return ChartDataCollection.find({ productId });
   });
-  
-  Meteor.publish('chartData.recent', function(limit = 50) {
+
+  Meteor.publish('chartData.recent', async function(limit = 50, sessionId) {
     check(limit, Number);
+    check(sessionId, Match.Maybe(String));
+
+    const { isAuthorizedReportViewer } = await import('../../server/helpers/reportViewerAuth.js');
+    if (!(await isAuthorizedReportViewer(sessionId))) return this.ready();
+
     return ChartDataCollection.find({}, {
       sort: { updatedAt: -1 },
       limit: limit

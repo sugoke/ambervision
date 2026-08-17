@@ -146,7 +146,7 @@ export const DataFreshnessWarning = ({ banks, hasStaleData, hasErrors }) => {
         <div style={{ fontWeight: '600', color: hasErrors ? '#dc2626' : '#d97706', fontSize: '14px' }}>
           {hasErrors ? 'Data Sync Issues' : 'Stale Data Warning'}
         </div>
-        <div style={{ fontSize: '13px', color: '#6b7280', marginTop: '2px' }}>
+        <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginTop: '2px' }}>
           {message}
         </div>
       </div>
@@ -195,7 +195,7 @@ export const DataFreshnessPanel = ({
 
   if (loading) {
     return (
-      <div style={{ padding: '8px', color: '#6b7280', fontSize: '13px' }}>
+      <div style={{ padding: '8px', color: 'var(--text-muted)', fontSize: '13px' }}>
         Loading data status...
       </div>
     );

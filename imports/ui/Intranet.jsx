@@ -125,7 +125,7 @@ const EmailTester = ({ isDark }) => {
             cursor: sending ? 'not-allowed' : 'pointer',
             background: sending
               ? '#9ca3af'
-              : 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+              : 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
             color: 'white',
             transition: 'all 0.2s ease',
             boxShadow: sending ? 'none' : '0 2px 8px rgba(0, 123, 255, 0.3)',
@@ -672,7 +672,7 @@ const Intranet = ({ user }) => {
         }}>
           <div style={{
             fontSize: '2.5rem',
-            background: 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+            background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
             backgroundClip: 'text'
@@ -684,7 +684,7 @@ const Intranet = ({ user }) => {
             fontSize: '2rem',
             fontWeight: '700',
             color: 'var(--text-primary)',
-            background: 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+            background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
             backgroundClip: 'text'
@@ -730,7 +730,7 @@ const Intranet = ({ user }) => {
               cursor: app.disabled ? 'not-allowed' : 'pointer',
               transition: 'all 0.2s ease',
               background: activeApp === app.id
-                ? 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)'
+                ? 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)'
                 : 'transparent',
               color: activeApp === app.id
                 ? 'white'

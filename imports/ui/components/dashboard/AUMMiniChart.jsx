@@ -10,6 +10,7 @@ import {
   Tooltip
 } from 'chart.js';
 import { Line } from 'react-chartjs-2';
+import { resolveChartColor } from '/imports/utils/chartColors.js';
 
 // Register Chart.js components
 ChartJS.register(
@@ -40,12 +41,14 @@ const AUMMiniChart = ({ sessionId, viewAsFilter, currency = 'EUR', isMobile = fa
         // Use WTD (Week to Date) - last 7 days for more accurate recent data
         const wtdDays = 7;
 
-        // Use rmDashboard.getAUMHistory for consistent AUM data
+        // Use rmDashboard.getAUMHistory for consistent AUM data,
+        // scoped to the active View As selection
         Meteor.call(
           'rmDashboard.getAUMHistory',
           sessionId,
           wtdDays,
           currency,
+          viewAsFilter || null,
           (err, result) => {
             setLoading(false);
             if (err) {
@@ -69,7 +72,8 @@ const AUMMiniChart = ({ sessionId, viewAsFilter, currency = 'EUR', isMobile = fa
               labels: formattedLabels,
               datasets: [{
                 data: result.values,
-                borderColor: 'var(--gain-color)',
+                // Canvas cannot resolve CSS variables — resolve to computed value
+                borderColor: resolveChartColor('var(--gain-color)'),
                 backgroundColor: (context) => {
                   const ctx = context.chart.ctx;
                   const gradient = ctx.createLinearGradient(0, 0, 0, context.chart.height);

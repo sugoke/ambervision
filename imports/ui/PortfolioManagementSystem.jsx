@@ -37,6 +37,7 @@ import { checkDataFreshness } from '/imports/api/helpers/dataFreshness.js';
 import HoldingPriceChart from './components/HoldingPriceChart.jsx';
 import PositionCardMobile from './components/pms/PositionCardMobile.jsx';
 import { getCurrencySymbol, getCurrencyFlag, formatCurrency, formatPrice } from './components/pms/pmsFormatters.js';
+import { resolveChartColor, resolveChartColors } from '/imports/utils/chartColors.js';
 import CashBalanceCardsMobile from './components/pms/CashBalanceCardsMobile.jsx';
 import * as XLSX from 'xlsx';
 
@@ -2736,19 +2737,24 @@ const PortfolioManagementSystem = ({ user }) => {
         marginBottom: '1rem'
       }}>
         <span style={{
-          fontSize: isMobile ? '0.9375rem' : '1.125rem',
-          color: 'var(--text-secondary)',
-          display: isMobile ? 'block' : 'inline',
-          marginBottom: isMobile ? '0.25rem' : 0
+          display: 'block',
+          fontSize: '11.5px',
+          letterSpacing: '2px',
+          textTransform: 'uppercase',
+          color: 'var(--text-muted)',
+          marginBottom: '6px'
         }}>
-          Total Portfolio Value:{isMobile ? '' : ' '}
+          Total portfolio value · {portfolioCurrency}
         </span>
         <span style={{
-          fontSize: isMobile ? '1.75rem' : '1.5rem',
-          fontWeight: '700',
+          display: 'block',
+          fontFamily: 'var(--font-serif)',
+          fontSize: isMobile ? 'clamp(30px, 9vw, 40px)' : 'clamp(38px, 5vw, 54px)',
+          fontWeight: '500',
+          letterSpacing: '-0.5px',
+          lineHeight: 1.05,
           color: 'var(--text-primary)',
           fontVariantNumeric: 'tabular-nums',
-          display: isMobile ? 'block' : 'inline',
           whiteSpace: 'nowrap'
         }}>
           {formatCurrency(totalPortfolioValue, portfolioCurrency)}
@@ -2757,11 +2763,7 @@ const PortfolioManagementSystem = ({ user }) => {
 
       {/* Cash Table */}
       {Object.keys(cashByCurrency).length > 0 && (
-        <LiquidGlassCard style={{
-          background: theme === 'light' ? '#6b7280' : '#0f172a',
-          backdropFilter: 'none',
-          marginBottom: '2rem'
-        }}>
+        <LiquidGlassCard style={{ marginBottom: '2rem' }}>
           <div style={{ padding: isMobile ? '1rem' : '1.5rem' }}>
             <h3 style={{
               margin: isMobile ? '0 0 1rem 0' : '0 0 1.5rem 0',
@@ -2910,9 +2912,7 @@ const PortfolioManagementSystem = ({ user }) => {
                   ))}
                   <tr style={{
                     borderTop: '2px solid var(--border-color)',
-                    background: theme === 'light'
-                      ? 'linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(59, 130, 246, 0.04) 100%)'
-                      : 'linear-gradient(135deg, rgba(59, 130, 246, 0.15) 0%, rgba(59, 130, 246, 0.08) 100%)'
+                    background: 'color-mix(in srgb, var(--accent-color) 10%, transparent)'
                   }}>
                     <td style={{
                       padding: '1rem',
@@ -2955,9 +2955,7 @@ const PortfolioManagementSystem = ({ user }) => {
       {/* FX Forwards Table */}
       {Object.keys(fxForwardsByCurrency).length > 0 && (
         <LiquidGlassCard style={{
-          background: theme === 'light' ? '#6b7280' : '#0f172a',
-          backdropFilter: 'none',
-          marginTop: '1rem'
+                    marginTop: '1rem'
         }}>
           <div style={{ padding: '1.5rem' }}>
             <h3 style={{
@@ -3319,7 +3317,7 @@ const PortfolioManagementSystem = ({ user }) => {
                     const status = lifecycle?.status || (unenriched ? 'unenriched' : 'open');
                     const rollCount = lifecycle ? lifecycle.legs.filter(l => l.role === 'roll-open').length : 0;
                     const statusBadge = (() => {
-                      if (status === 'closed') return { label: 'Closed', color: '#6b7280', bg: 'rgba(107, 114, 128, 0.15)' };
+                      if (status === 'closed') return { label: 'Closed', color: 'var(--text-muted)', bg: 'rgba(107, 114, 128, 0.15)' };
                       if (status === 'rolled') return { label: `Rolled (${rollCount})`, color: '#0ea5e9', bg: 'rgba(14, 165, 233, 0.15)' };
                       if (status === 'unenriched') return { label: 'Unenriched', color: 'var(--warning-color)', bg: 'rgba(245, 158, 11, 0.15)' };
                       return { label: 'Open', color: 'var(--gain-color)', bg: 'rgba(16, 185, 129, 0.15)' };
@@ -4524,7 +4522,7 @@ const PortfolioManagementSystem = ({ user }) => {
     <div style={{ padding: '1.5rem' }}>
       <LiquidGlassCard style={{
         background: theme === 'light'
-          ? '#6b7280'
+          ? '#ffffff'
           : '#0f172a',
         backdropFilter: 'none'
       }}>
@@ -4710,8 +4708,6 @@ const PortfolioManagementSystem = ({ user }) => {
           const period = twrData?.periods?.[key];
           return (
             <LiquidGlassCard key={key} style={{
-              background: theme === 'light' ? '#6b7280' : '#0f172a',
-              backdropFilter: 'none'
             }}>
               <div style={{ padding: '1rem' }}>
                 <div style={{
@@ -4746,8 +4742,6 @@ const PortfolioManagementSystem = ({ user }) => {
 
       {/* TWR Performance Chart */}
       <LiquidGlassCard style={{
-        background: theme === 'light' ? '#6b7280' : '#0f172a',
-        backdropFilter: 'none'
       }}>
         <div style={{ padding: '1rem' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginBottom: '1rem' }}>
@@ -4913,8 +4907,6 @@ const PortfolioManagementSystem = ({ user }) => {
       {/* Portfolio Value Over Time (Absolute) */}
       <LiquidGlassCard style={{
         marginTop: '1rem',
-        background: theme === 'light' ? '#6b7280' : '#0f172a',
-        backdropFilter: 'none'
       }}>
         <div style={{ padding: '1rem' }}>
           <h3 style={{
@@ -5024,8 +5016,6 @@ const PortfolioManagementSystem = ({ user }) => {
       {/* Asset Allocation */}
       <LiquidGlassCard style={{
         marginTop: '1rem',
-        background: theme === 'light' ? '#6b7280' : '#0f172a',
-        backdropFilter: 'none'
       }}>
         <div style={{ padding: '1rem' }}>
           <h3 style={{
@@ -5054,7 +5044,8 @@ const PortfolioManagementSystem = ({ user }) => {
                       labels: assetAllocation.assetClasses.map(ac => ac.name),
                       datasets: [{
                         data: assetAllocation.assetClasses.map(ac => ac.value),
-                        backgroundColor: [
+                        // Canvas cannot resolve CSS variables — resolve to computed values
+                        backgroundColor: resolveChartColors([
                           'var(--gain-color)', // Green - Structured Products
                           'var(--info-color)', // Blue - Equities
                           'var(--warning-color)', // Orange - Direct Bonds
@@ -5062,7 +5053,7 @@ const PortfolioManagementSystem = ({ user }) => {
                           '#ec4899', // Pink - Other
                           '#06b6d4', // Cyan - Additional
                           '#f97316'  // Red-Orange - Additional
-                        ],
+                        ]),
                         borderColor: theme === 'light' ? '#ffffff' : '#111827',
                         borderWidth: 2
                       }]
@@ -5164,8 +5155,6 @@ const PortfolioManagementSystem = ({ user }) => {
       {structuredProductHierarchy.hasData && (
         <LiquidGlassCard style={{
           marginTop: '1rem',
-          background: theme === 'light' ? '#6b7280' : '#0f172a',
-          backdropFilter: 'none'
         }}>
           <div style={{ padding: '1rem' }}>
             <h3 style={{
@@ -5264,8 +5253,6 @@ const PortfolioManagementSystem = ({ user }) => {
       {/* Currency Allocation */}
       <LiquidGlassCard style={{
         marginTop: '1rem',
-        background: theme === 'light' ? '#6b7280' : '#0f172a',
-        backdropFilter: 'none'
       }}>
         <div style={{ padding: '1rem' }}>
           <h3 style={{
@@ -5311,7 +5298,8 @@ const PortfolioManagementSystem = ({ user }) => {
                             'DKK': '#db2777'   // Pink-Red
                           };
                           const defaultColors = ['#64748b', '#475569', 'var(--neutral-color)', '#6b7280', '#4b5563'];
-                          return currencyColors[c.name] || defaultColors[idx % defaultColors.length];
+                          // Canvas cannot resolve CSS variables — resolve to computed values
+                          return resolveChartColor(currencyColors[c.name] || defaultColors[idx % defaultColors.length]);
                         }),
                         borderColor: theme === 'light' ? '#ffffff' : '#111827',
                         borderWidth: 2
@@ -5430,8 +5418,6 @@ const PortfolioManagementSystem = ({ user }) => {
       {issuerAllocation && issuerAllocation.hasData && (
         <LiquidGlassCard style={{
           marginTop: '1rem',
-          background: theme === 'light' ? '#6b7280' : '#0f172a',
-          backdropFilter: 'none'
         }}>
           <div style={{ padding: '1rem' }}>
             <h3 style={{
@@ -5473,7 +5459,8 @@ const PortfolioManagementSystem = ({ user }) => {
                         labels: issuerAllocation.issuers.map(i => i.name),
                         datasets: [{
                           data: issuerAllocation.issuers.map(i => i.value),
-                          backgroundColor: issuerAllocation.issuers.map(i => colorFor(i.name)),
+                          // Canvas cannot resolve CSS variables — resolve to computed values
+                          backgroundColor: issuerAllocation.issuers.map(i => resolveChartColor(colorFor(i.name))),
                           borderColor: theme === 'light' ? '#ffffff' : '#111827',
                           borderWidth: 2
                         }]
@@ -5564,8 +5551,6 @@ const PortfolioManagementSystem = ({ user }) => {
       {/* TWR Performance Summary Table */}
       <LiquidGlassCard style={{
         marginTop: '1rem',
-        background: theme === 'light' ? '#6b7280' : '#0f172a',
-        backdropFilter: 'none'
       }}>
         <div style={{ padding: '1rem' }}>
           <h3 style={{
@@ -6163,19 +6148,43 @@ const PortfolioManagementSystem = ({ user }) => {
 
             {/* ── Band 1: identity + as-of date ─────────────────────── */}
             <div style={bandStyle(true)}>
-              <h1 style={{
-                margin: 0,
-                fontSize: isMobile ? '1.375rem' : '1.75rem',
-                fontWeight: '700',
-                color: 'var(--text-primary)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                lineHeight: '1.2'
-              }}>
-                <span style={{ fontSize: isMobile ? '1.375rem' : '1.75rem' }}>💼</span>
-                {isMobile ? 'PMS' : 'Portfolio Management System'}
-              </h1>
+              <div style={{ minWidth: 0 }}>
+                <h1 style={{
+                  margin: 0,
+                  fontFamily: 'var(--font-serif)',
+                  fontSize: isMobile ? '1.5rem' : '1.875rem',
+                  fontWeight: '500',
+                  letterSpacing: '0.2px',
+                  color: 'var(--text-primary)',
+                  lineHeight: '1.15',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis'
+                }}>
+                  {viewAsFilter?.label || (isMobile ? 'Portfolio' : 'Portfolio Management')}
+                </h1>
+                <div style={{
+                  marginTop: '4px',
+                  fontSize: '0.8125rem',
+                  color: 'var(--text-muted)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '7px',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden'
+                }}>
+                  <span style={{
+                    width: '7px', height: '7px', borderRadius: '50%', flex: 'none',
+                    background: 'var(--gain-color)',
+                    boxShadow: '0 0 0 3px color-mix(in srgb, var(--gain-color) 18%, transparent)'
+                  }} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {selectedDate
+                      ? `Snapshot of ${new Date(selectedDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`
+                      : 'Prices as of latest bank files'}
+                  </span>
+                </div>
+              </div>
 
               {/* On a phone the date picker is dead weight at the top of the
                   screen - it is "Latest (Today)" almost always. Show it only
@@ -6310,26 +6319,27 @@ const PortfolioManagementSystem = ({ user }) => {
                             style={{
                               // Full-width rows on a phone: a bigger, easier target
                               flex: isMobile ? '1 1 100%' : '0 0 auto',
-                              padding: isMobile ? '0.625rem 0.75rem' : '0.5rem 0.75rem',
+                              padding: isMobile ? '0.625rem 0.875rem' : '0.5625rem 0.875rem',
+                              // Proposal account chips: quiet panel, amber hairline + amber
+                              // label when selected — the amber IS the selection signal.
                               background: isActive
-                                ? 'linear-gradient(135deg, #1e3a5f 0%, #2d4a6f 100%)'
-                                : 'var(--bg-primary)',
-                              color: isActive ? 'white' : 'var(--text-secondary)',
-                              border: `1px solid ${isActive ? 'transparent' : 'var(--border-color)'}`,
-                              borderRadius: '8px',
+                                ? 'color-mix(in srgb, var(--accent-color) 10%, var(--bg-secondary))'
+                                : 'var(--bg-secondary)',
+                              color: isActive ? 'var(--accent-color)' : 'var(--text-secondary)',
+                              border: `1px solid ${isActive ? 'var(--accent-color)' : 'var(--border-color)'}`,
+                              borderRadius: '10px',
                               cursor: 'pointer',
                               fontWeight: '600',
                               fontSize: '0.8125rem',
-                              transition: 'all 0.2s ease',
+                              transition: 'all 0.16s ease',
                               display: 'flex',
                               flexDirection: 'column',
                               alignItems: 'flex-start',
                               gap: '0.1rem',
-                              textAlign: 'left',
-                              boxShadow: isActive ? '0 2px 6px rgba(30, 58, 95, 0.3)' : 'none'
+                              textAlign: 'left'
                             }}
                             onMouseEnter={(e) => {
-                              if (!isActive) e.currentTarget.style.borderColor = 'var(--info-color)';
+                              if (!isActive) e.currentTarget.style.borderColor = 'var(--text-muted)';
                             }}
                             onMouseLeave={(e) => {
                               if (!isActive) e.currentTarget.style.borderColor = 'var(--border-color)';
@@ -6419,13 +6429,14 @@ const PortfolioManagementSystem = ({ user }) => {
                     }}
                     style={{
                       padding: '0.5rem 0.875rem',
-                      background: 'linear-gradient(135deg, #1e3a5f 0%, #2d4a6f 100%)',
-                      borderRadius: '8px',
+                      background: 'var(--bg-secondary)',
+                      color: 'var(--text-primary)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '9px',
                       fontSize: '0.8125rem',
                       fontWeight: '600',
                       width: isMobile ? '100%' : 'auto',
-                      justifyContent: 'center',
-                      boxShadow: '0 2px 8px rgba(30, 58, 95, 0.25)'
+                      justifyContent: 'center'
                     }}
                   />
                 </div>
@@ -6441,11 +6452,11 @@ const PortfolioManagementSystem = ({ user }) => {
                     style={{
                       padding: '0.5rem 0.875rem',
                       background: reviewGenerating
-                        ? 'linear-gradient(135deg, #6b7280 0%, #9ca3af 100%)'
-                        : 'linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '8px',
+                        ? 'var(--bg-tertiary)'
+                        : 'var(--accent-color)',
+                      color: reviewGenerating ? 'var(--text-muted)' : 'var(--accent-contrast)',
+                      border: '1px solid var(--accent-color)',
+                      borderRadius: '9px',
                       fontSize: '0.8125rem',
                       fontWeight: '600',
                       cursor: reviewGenerating ? 'not-allowed' : 'pointer',
@@ -6454,7 +6465,6 @@ const PortfolioManagementSystem = ({ user }) => {
                       justifyContent: 'center',
                       gap: '0.35rem',
                       width: isMobile ? '100%' : 'auto',
-                      boxShadow: '0 2px 8px rgba(79, 70, 229, 0.25)',
                       transition: 'all 0.2s',
                       whiteSpace: 'nowrap'
                     }}
@@ -6751,34 +6761,36 @@ const PortfolioManagementSystem = ({ user }) => {
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
               style={{
-                padding: '0.6rem 1rem',
-                background: activeTab === tab.id
-                  ? 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)'
-                  : 'transparent',
-                color: activeTab === tab.id ? 'white' : 'var(--text-secondary)',
+                // Proposal view-tab: quiet label with a 2px amber underline when
+                // active — the amber is the signal, not a filled block.
+                padding: '0.7rem 1rem',
+                background: 'transparent',
+                color: activeTab === tab.id ? 'var(--text-primary)' : 'var(--text-muted)',
                 border: 'none',
-                borderRadius: '8px',
+                borderBottom: activeTab === tab.id
+                  ? '2px solid var(--accent-color)'
+                  : '2px solid transparent',
+                borderRadius: 0,
                 cursor: 'pointer',
                 fontWeight: '600',
                 fontSize: '0.85rem',
-                transition: 'all 0.2s ease',
+                letterSpacing: '0.2px',
+                transition: 'color 0.16s ease, border-color 0.16s ease',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '0.4rem',
                 flex: '1 1 auto',
                 minWidth: 'fit-content',
-                boxShadow: activeTab === tab.id ? '0 2px 8px rgba(0, 123, 255, 0.3)' : 'none'
+                justifyContent: 'center'
               }}
               onMouseEnter={(e) => {
                 if (activeTab !== tab.id) {
-                  e.target.style.background = 'var(--bg-tertiary)';
-                  e.target.style.color = 'var(--text-primary)';
+                  e.currentTarget.style.color = 'var(--text-primary)';
                 }
               }}
               onMouseLeave={(e) => {
                 if (activeTab !== tab.id) {
-                  e.target.style.background = 'transparent';
-                  e.target.style.color = 'var(--text-secondary)';
+                  e.currentTarget.style.color = 'var(--text-muted)';
                 }
               }}
             >

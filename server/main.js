@@ -19,11 +19,13 @@ import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { Random } from 'meteor/random';
 import { authorizeDocumentRequest } from './documentAccess.js';
+import './securityHeaders.js'; // register baseline security response headers
 import { WebApp } from 'meteor/webapp';
 import { MongoInternals } from 'meteor/mongo';
 
 // Server log capture - must be early to capture all logs
 import './logCapture';
+import { loginRateLimiter, authRateLimiter, enforceAuthRateLimit } from './authRateLimit.js';
 
 import { LinksCollection } from '/imports/api/links';
 import { ProductsCollection } from '/imports/api/products';
@@ -90,6 +92,10 @@ import './migrations/syncProductsToSecuritiesMetadata';
 import './migrations/migrateToEntities';
 import './migrations/dedupeBankAccounts';
 import { resetTermsheetWithoutEvidence } from './migrations/resetTermsheetWithoutEvidence';
+import { movePublicDocumentsPrivate } from './migrations/movePublicDocumentsPrivate';
+import { AuditLog } from '/imports/api/auditLog';
+import { migrateLegacyPasswordHashes } from './migrations/migrateLegacyPasswordHashes';
+import { encryptStoredCredentials } from './migrations/encryptStoredCredentials';
 // import './migrations/fixNullAssetClass';  // One-time migration - already run
 import './methods/securitiesMethods';
 import './methods/performanceMethods';
@@ -107,6 +113,7 @@ import './methods/clientEntityMethods';
 import './methods/mcpTokenMethods';
 import './methods/dataQualityMethods';
 import './methods/demoClientMethods';
+import './methods/gdprMethods';
 import './methods/oauthMethods';
 import '/imports/api/meetingReports'; // Client meeting reports — collection + methods
 import './publications/meetingReports';
@@ -133,6 +140,42 @@ const SHOULD_SEED = (
 );
 
 // Collections are imported and initialized normally
+
+// Shared guard: require a validated admin/superadmin session (bank management).
+async function requireBankAdmin(sessionId) {
+  check(sessionId, String);
+  const session = await SessionHelpers.validateSession(sessionId);
+  const caller = session && session.userId ? await UsersCollection.findOneAsync(session.userId) : null;
+  if (!caller || (caller.role !== USER_ROLES.ADMIN && caller.role !== USER_ROLES.SUPERADMIN)) {
+    throw new Meteor.Error('access-denied', 'Only admins can manage banks');
+  }
+  return caller;
+}
+
+async function requireSuperadminSession(sessionId) {
+  check(sessionId, String);
+  const session = await SessionHelpers.validateSession(sessionId);
+  const caller = session && session.userId ? await UsersCollection.findOneAsync(session.userId) : null;
+  if (!caller || caller.role !== USER_ROLES.SUPERADMIN) {
+    throw new Meteor.Error('access-denied', 'Superadmin access required');
+  }
+  return caller;
+}
+
+// Shared password policy for a financial platform: min 8 chars with at least one
+// letter and one digit. Applied on every password-set path (register / reset / admin reset).
+function assertPasswordPolicy(password) {
+  if (typeof password !== 'string' || password.length < 8) {
+    throw new Meteor.Error('weak-password', 'Password must be at least 8 characters long');
+  }
+  if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
+    throw new Meteor.Error('weak-password', 'Password must contain at least one letter and one number');
+  }
+}
+
+// A valid scrypt hash used only to equalize login timing when the email is unknown,
+// so the wrong-password and no-such-user paths take the same time (anti-enumeration).
+const DUMMY_PASSWORD_HASH = UserHelpers.hashPassword('nonexistent-account-timing-equalizer');
 
 async function insertLink({ title, url }) {
   await LinksCollection.insertAsync({ title, url, createdAt: new Date() });
@@ -297,17 +340,42 @@ Meteor.startup(async () => {
     console.error('❌ Error resetting termsheet statuses without evidence:', error);
   }
 
-  // Ensure admin user exists
+  // GDPR/security: move any client documents still under public/ (served
+  // unauthenticated) into the private storage trees.
+  try {
+    await movePublicDocumentsPrivate();
+  } catch (error) {
+    console.error('❌ Error moving public documents to private storage:', error);
+  }
+
+  // SECURITY: convert any remaining reversible legacy password hashes to scrypt.
+  try {
+    await migrateLegacyPasswordHashes();
+  } catch (error) {
+    console.error('❌ Error migrating legacy password hashes:', error);
+  }
+
+  // SECURITY: encrypt stored SFTP passwords at rest.
+  try {
+    await encryptStoredCredentials();
+  } catch (error) {
+    console.error('❌ Error encrypting stored credentials:', error);
+  }
+
+  // Ensure admin user exists (dev seeding only — SECURITY: never create
+  // known-credential accounts outside explicit seeding, and never with a
+  // hardcoded password).
+  if (SHOULD_SEED) {
   console.log('👤 Checking for admin user...');
   try {
     const adminEmail = 'admin@example.com';
     const existingAdmin = await UsersCollection.findOneAsync({ username: adminEmail });
 
     if (!existingAdmin) {
-      // Create admin user
+      const generatedPassword = require('crypto').randomBytes(12).toString('base64url');
       const adminUser = {
         username: adminEmail,
-        password: UserHelpers.hashPassword('admin123'),
+        password: UserHelpers.hashPassword(generatedPassword),
         role: USER_ROLES.SUPERADMIN,
         profile: {
           firstName: 'Admin',
@@ -321,7 +389,7 @@ Meteor.startup(async () => {
       const result = await UsersCollection.insertAsync(adminUser);
       console.log('✅ Admin user created successfully!');
       console.log('   Email: admin@example.com');
-      console.log('   Password: admin123');
+      console.log(`   Password (shown once, dev seed): ${generatedPassword}`);
       console.log('   Role: superadmin');
       console.log(`   User ID: ${result}`);
     } else {
@@ -331,6 +399,7 @@ Meteor.startup(async () => {
     }
   } catch (error) {
     console.error('❌ Error checking/creating admin user:', error);
+  }
   }
 
   // Initialize cron jobs for nightly operations
@@ -370,19 +439,8 @@ Meteor.startup(async () => {
 
 
   // Publish users for admin management
-  Meteor.publish("customUsers", function () {
-    // For now, publish all users (in production, add proper access control)
-    return UsersCollection.find({}, {
-      fields: {
-        email: 1,
-        username: 1,
-        role: 1,
-        profile: 1,
-        createdAt: 1,
-        canValidateOrders: 1
-      }
-    });
-  });
+  // REMOVED DUPLICATE - see server/publications/users.js for the session-validated,
+  // staff-gated implementation.
 
   // Publish templates for all users
   Meteor.publish("templates", async function () {
@@ -484,7 +542,7 @@ Meteor.startup(async () => {
       return this.ready();
     }
 
-    const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
+    const session = await SessionHelpers.findByToken(sessionId);
     if (!session || !session.userId) {
       return this.ready();
     }
@@ -513,7 +571,7 @@ Meteor.startup(async () => {
       return this.ready();
     }
 
-    const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
+    const session = await SessionHelpers.findByToken(sessionId);
     if (!session || !session.userId) {
       return this.ready();
     }
@@ -543,10 +601,12 @@ Meteor.startup(async () => {
     try {
       const existingClients = await UsersCollection.find({ role: USER_ROLES.CLIENT }).countAsync();
       if (existingClients === 0) {
+        const sampleClientPassword = require('crypto').randomBytes(12).toString('base64url');
+        console.log(`[SEEDING] Sample client password (shown once): ${sampleClientPassword}`);
         const client1Id = await UsersCollection.insertAsync({
           email: 'client1@example.com',
           username: 'client1',
-          password: UserHelpers.hashPassword('client123'),
+          password: UserHelpers.hashPassword(sampleClientPassword),
           role: USER_ROLES.CLIENT,
           profile: { firstName: 'John', lastName: 'Smith', createdAt: new Date(), updatedAt: new Date() },
           createdAt: new Date()
@@ -554,7 +614,7 @@ Meteor.startup(async () => {
         const client2Id = await UsersCollection.insertAsync({
           email: 'client2@example.com',
           username: 'client2',
-          password: UserHelpers.hashPassword('client123'),
+          password: UserHelpers.hashPassword(sampleClientPassword),
           role: USER_ROLES.CLIENT,
           profile: { firstName: 'Jane', lastName: 'Doe', createdAt: new Date(), updatedAt: new Date() },
           createdAt: new Date()
@@ -562,7 +622,7 @@ Meteor.startup(async () => {
         const client3Id = await UsersCollection.insertAsync({
           email: 'client3@example.com',
           username: 'client3',
-          password: UserHelpers.hashPassword('client123'),
+          password: UserHelpers.hashPassword(sampleClientPassword),
           role: USER_ROLES.CLIENT,
           profile: { firstName: 'Michael', lastName: 'Johnson', createdAt: new Date(), updatedAt: new Date() },
           createdAt: new Date()
@@ -1118,6 +1178,10 @@ Meteor.methods({
 
   // Method to clear all built-in templates from database
   async 'templates.clearBuiltIn'() {
+    // Server-only: wipes built-in templates. Was unauthenticated.
+    if (this.connection !== null) {
+      throw new Meteor.Error('not-authorized', 'This method can only be called server-side');
+    }
     console.log('Clearing all built-in templates from database');
     
     try {
@@ -1210,6 +1274,10 @@ Meteor.methods({
 
   // Force clear all templates method
   async 'templates.forceDeleteAll'() {
+    // Server-only: wipes ALL templates. Was unauthenticated.
+    if (this.connection !== null) {
+      throw new Meteor.Error('not-authorized', 'This method can only be called server-side');
+    }
     console.log('Force deleting ALL templates from database');
     
     try {
@@ -1259,16 +1327,77 @@ Meteor.methods({
   },
 
   async 'auth.login'({ email, password, rememberMe = false }) {
+    // Throttle login attempts per client IP (brute-force protection).
+    enforceAuthRateLimit(this, loginRateLimiter);
+
+    // Validate input types. Without this, a client could pass email as a Mongo
+    // operator object (e.g. { $gt: "" }) and select an arbitrary user.
+    check(email, String);
+    check(password, String);
+
     // Find user by email
     const user = await UsersCollection.findOneAsync({ email });
-    
-    if (!user) {
-      throw new Meteor.Error('user-not-found', 'User not found');
+
+    // Per-account lockout (defense-in-depth on top of the per-IP limiter): after
+    // ACCOUNT_LOCK_THRESHOLD consecutive failures, refuse further attempts for
+    // ACCOUNT_LOCK_MS regardless of source IP, so distributed/rotated-IP credential
+    // stuffing against one victim is bounded. The generic error keeps the account's
+    // existence and lock state from leaking.
+    const ACCOUNT_LOCK_THRESHOLD = 10;
+    const ACCOUNT_LOCK_MS = 15 * 60 * 1000;
+    const now = new Date();
+    if (user && user.lockedUntil && user.lockedUntil > now) {
+      throw new Meteor.Error('invalid-credentials', 'Invalid email or password');
     }
 
-    // Verify password
-    if (!UserHelpers.verifyPassword(password, user.password)) {
-      throw new Meteor.Error('invalid-password', 'Invalid password');
+    // Use one generic error for both "no such user" and "wrong password" so the
+    // response cannot be used to enumerate which emails have accounts.
+    // SECURITY: when the user does not exist, still run a password verification against
+    // a dummy hash so the response time matches the wrong-password path — otherwise the
+    // faster "no scrypt" branch is a timing oracle for account enumeration.
+    const passwordOk = user
+      ? UserHelpers.verifyPassword(password, user.password)
+      : (UserHelpers.verifyPassword(password, DUMMY_PASSWORD_HASH), false);
+    if (!user || !passwordOk) {
+      if (user) {
+        const failed = (user.failedLoginCount || 0) + 1;
+        const update = { failedLoginCount: failed };
+        if (failed >= ACCOUNT_LOCK_THRESHOLD) {
+          update.lockedUntil = new Date(Date.now() + ACCOUNT_LOCK_MS);
+          update.failedLoginCount = 0; // reset counter; lock window now governs
+        }
+        await UsersCollection.updateAsync(user._id, { $set: update });
+      }
+      await AuditLog.record({
+        actorUserId: user?._id || null,
+        action: 'auth.loginFailed',
+        meta: { accountExists: !!user }
+      });
+      throw new Meteor.Error('invalid-credentials', 'Invalid email or password');
+    }
+
+    // Successful auth — clear any failure counter / lock.
+    if (user.failedLoginCount || user.lockedUntil) {
+      await UsersCollection.updateAsync(user._id, {
+        $unset: { failedLoginCount: '', lockedUntil: '' }
+      });
+    }
+
+    await AuditLog.record({
+      actorUserId: user._id,
+      actorRole: user.role,
+      action: 'auth.login'
+    });
+
+    // Transparently upgrade legacy (base64) password hashes to scrypt on login.
+    if (UserHelpers.needsRehash(user.password)) {
+      try {
+        await UsersCollection.updateAsync(user._id, {
+          $set: { password: UserHelpers.hashPassword(password) }
+        });
+      } catch (rehashErr) {
+        console.error('[auth.login] Password rehash failed:', rehashErr.message);
+      }
     }
 
     // Get client info for session tracking
@@ -1357,16 +1486,20 @@ Meteor.methods({
     
     // Get all active sessions for the user
     const sessions = await SessionHelpers.getUserSessions(currentSession.userId);
-    
-    // Return sanitized session info
+
+    // The stored sessionId is a hash; compare against the current session's _id.
+    const currentSessionDocId = currentSession._id;
+
+    // Return sanitized session info. SECURITY: never return the raw session token
+    // (bearer credential); expose a stable non-secret id for the UI instead.
     return sessions.map(session => ({
-      sessionId: session.sessionId,
+      id: session._id,
       createdAt: session.createdAt,
       lastUsed: session.lastUsed,
       rememberMe: session.rememberMe,
       userAgent: session.userAgent,
       ipAddress: session.ipAddress,
-      isCurrentSession: session.sessionId === sessionId
+      isCurrentSession: session._id === currentSessionDocId
     }));
   },
 
@@ -1410,6 +1543,7 @@ Meteor.methods({
    * Always returns success to prevent email enumeration attacks
    */
   async 'auth.requestPasswordReset'(email) {
+    enforceAuthRateLimit(this, authRateLimiter);
     check(email, String);
 
     try {
@@ -1426,14 +1560,14 @@ Meteor.methods({
         // Send reset email
         try {
           await EmailService.sendPasswordResetEmail(normalizedEmail, token, user.profile?.firstName);
-          console.log(`Password reset email sent to ${normalizedEmail}`);
+          console.log(`Password reset email sent for user ${user._id}`);
         } catch (emailError) {
           console.error('Failed to send password reset email:', emailError);
           // Don't throw error to prevent email enumeration
           // But log it for debugging
         }
       } else {
-        console.log(`Password reset requested for non-existent email: ${normalizedEmail}`);
+        console.log('Password reset requested for a non-existent account');
         // Don't reveal that user doesn't exist
       }
 
@@ -1488,6 +1622,7 @@ Meteor.methods({
    * Reset password using valid token
    */
   async 'auth.resetPassword'(token, newPassword) {
+    enforceAuthRateLimit(this, authRateLimiter);
     check(token, String);
     check(newPassword, String);
 
@@ -1499,10 +1634,8 @@ Meteor.methods({
         throw new Meteor.Error('invalid-token', 'Invalid or expired reset token');
       }
 
-      // Validate password strength (basic validation)
-      if (newPassword.length < 6) {
-        throw new Meteor.Error('weak-password', 'Password must be at least 6 characters long');
-      }
+      // Validate password strength
+      assertPasswordPolicy(newPassword);
 
       // Get user
       const user = await UsersCollection.findOneAsync(tokenData.userId);
@@ -1526,7 +1659,7 @@ Meteor.methods({
       // Invalidate any other unused reset tokens for this user
       await PasswordResetHelpers.invalidateUserTokens(tokenData.userId);
 
-      console.log(`Password successfully reset for user ${tokenData.userId} (${tokenData.email})`);
+      console.log(`Password successfully reset for user ${tokenData.userId}`);
 
       // Send confirmation email (optional, don't throw if it fails)
       try {
@@ -1559,6 +1692,9 @@ Meteor.methods({
     check(profile, Object);
     check(sessionId, Match.Optional(String));
 
+    // Enforce the shared password policy (registration previously had none).
+    assertPasswordPolicy(password);
+
     // 1. Authenticate the caller (if sessionId is provided)
     if (sessionId) {
       const currentUser = await Meteor.callAsync('auth.getCurrentUser', sessionId);
@@ -1577,7 +1713,14 @@ Meteor.methods({
         throw new Meteor.Error('access-denied', 'Only superadmins can create other superadmins');
       }
 
-      console.log(`User creation requested by ${currentUser.email} (${currentUser.role}) - Creating ${role} user: ${email}`);
+      console.log(`User creation requested by ${currentUser._id} (${currentUser.role}) - creating a ${role} user`);
+    } else {
+      // Anonymous self-registration may ONLY create a plain client account.
+      // Previously the entire authorization block was skipped when sessionId was
+      // omitted, so a direct DDP call could self-provision a superadmin.
+      if (role !== USER_ROLES.CLIENT) {
+        throw new Meteor.Error('access-denied', 'Self-registration can only create client accounts');
+      }
     }
 
     // Check if user already exists
@@ -1610,19 +1753,24 @@ Meteor.methods({
   },
 
   async 'users.ensureSuperAdmin'() {
+    // Server-only seeding. A client DDP call has a non-null connection and is
+    // rejected, so this can no longer be used as an anonymous backdoor to
+    // (re)create admin@example.com with a known default password.
+    if (this.connection !== null) {
+      throw new Meteor.Error('access-denied', 'This method can only be called server-side');
+    }
+
     // Check if superadmin exists
-    const existingSuperAdmin = await UsersCollection.findOneAsync({ 
+    const existingSuperAdmin = await UsersCollection.findOneAsync({
       email: 'admin@example.com'
     });
     
     if (existingSuperAdmin) {
       // Update existing user to superadmin if needed
       if (existingSuperAdmin.role !== USER_ROLES.SUPERADMIN) {
+        // SECURITY: promote the role only — never reset the password to a known value.
         await UsersCollection.updateAsync(existingSuperAdmin._id, {
-          $set: { 
-            role: USER_ROLES.SUPERADMIN,
-            password: UserHelpers.hashPassword('admin123')
-          }
+          $set: { role: USER_ROLES.SUPERADMIN }
         });
         // console.log('Updated admin@example.com to superadmin role');
         return 'updated';
@@ -1630,23 +1778,31 @@ Meteor.methods({
       return 'exists';
     } else {
       // Create new superadmin
+      const seedPassword = require('crypto').randomBytes(12).toString('base64url');
       const superadminId = await UsersCollection.insertAsync({
         email: 'admin@example.com',
-        password: UserHelpers.hashPassword('admin123'),
+        password: UserHelpers.hashPassword(seedPassword),
         role: USER_ROLES.SUPERADMIN,
         createdAt: new Date()
       });
+      console.log(`Created superadmin admin@example.com — password (shown once): ${seedPassword}`);
       // console.log('Created new superadmin:', superadminId);
       return 'created';
     }
   },
 
   async 'users.ensureDemoAccounts'() {
+    // Server-only seeding (see users.ensureSuperAdmin). Reject client calls so it
+    // cannot be used to force known-credential accounts into existence.
+    if (this.connection !== null) {
+      throw new Meteor.Error('access-denied', 'This method can only be called server-side');
+    }
+
     // Ensure both demo accounts exist
     const demoAccounts = [
       {
         email: 'admin@example.com',
-        password: 'admin123',
+        password: require('crypto').randomBytes(12).toString('base64url'),
         role: USER_ROLES.SUPERADMIN,
         profile: {
           firstName: 'Admin',
@@ -1656,7 +1812,7 @@ Meteor.methods({
       },
       {
         email: 'client@example.com',
-        password: 'client123',
+        password: require('crypto').randomBytes(12).toString('base64url'),
         role: USER_ROLES.CLIENT,
         profile: {
           firstName: 'Client',
@@ -1673,12 +1829,12 @@ Meteor.methods({
       });
       
       if (existingUser) {
-        // Update existing user if needed
+        // Update existing user if needed. SECURITY: never touch the password of
+        // an existing account during seeding.
         if (existingUser.role !== account.role || !existingUser.profile) {
           await UsersCollection.updateAsync(existingUser._id, {
-            $set: { 
+            $set: {
               role: account.role,
-              password: UserHelpers.hashPassword(account.password),
               profile: {
                 ...account.profile,
                 createdAt: existingUser.profile?.createdAt || new Date(),
@@ -1703,6 +1859,7 @@ Meteor.methods({
           },
           createdAt: new Date()
         });
+        console.log(`[SEEDING] Created ${account.email} — password (shown once): ${account.password}`);
         results.push({ email: account.email, status: 'created' });
       }
     }
@@ -1710,37 +1867,13 @@ Meteor.methods({
     return results;
   },
 
-  async 'users.checkRole'({ email }) {
-    const user = await UsersCollection.findOneAsync({ email });
-    return user ? { email: user.email, role: user.role } : null;
-  },
+  // NOTE: 'users.checkRole' was removed. It was unauthenticated, did not check() its
+  // argument (NoSQL injection / user enumeration via {email:{$regex:...}}), and had no
+  // callers anywhere in the codebase.
 
-  async 'users.forceAdminRole'({ email }) {
-    // Direct method to force update admin role
-    const user = await UsersCollection.findOneAsync({ email });
-    if (!user) {
-      throw new Meteor.Error('user-not-found', 'User not found');
-    }
-
-    // Update database
-    await UsersCollection.updateAsync(user._id, {
-      $set: { 
-        role: USER_ROLES.SUPERADMIN,
-        password: UserHelpers.hashPassword('admin123')
-      }
-    });
-
-    // Update all existing sessions for this user
-    for (const [sessionId, sessionData] of userSessions.entries()) {
-      if (sessionData.email === email) {
-        sessionData.role = USER_ROLES.SUPERADMIN;
-        // console.log(`Updated session ${sessionId} role to superadmin`);
-      }
-    }
-
-    // console.log(`Forced update: ${email} is now superadmin`);
-    return 'User role updated to superadmin and sessions refreshed';
-  },
+  // NOTE: 'users.forceAdminRole' was removed. It was unauthenticated and would
+  // promote any email to superadmin (and reset its password to a known default).
+  // Use the superadmin-gated 'users.updateRole' below instead.
 
   async 'users.updateRole'(userId, newRole, sessionId) {
     check(userId, String);
@@ -1774,7 +1907,7 @@ Meteor.methods({
       throw new Meteor.Error('invalid-operation', 'Cannot change your own role');
     }
 
-    console.log(`[users.updateRole] Superadmin ${currentUser.email} changing role of ${targetUser.email} from ${targetUser.role} to ${newRole}`);
+    console.log(`[users.updateRole] Superadmin ${currentUser._id} changing role of user ${targetUser._id} from ${targetUser.role} to ${newRole}`);
 
     // Update the user's role
     return await UsersCollection.updateAsync(userId, {
@@ -1811,14 +1944,31 @@ Meteor.methods({
       throw new Meteor.Error('invalid-operation', 'Only staff users can be granted validation permission');
     }
 
-    console.log(`[users.updateCanValidateOrders] Superadmin ${currentUser.email} setting canValidateOrders=${canValidate} for ${targetUser.email}`);
+    console.log(`[users.updateCanValidateOrders] Superadmin ${currentUser._id} setting canValidateOrders=${canValidate} for user ${targetUser._id}`);
 
     return await UsersCollection.updateAsync(userId, {
       $set: { canValidateOrders: canValidate }
     });
   },
 
-  async 'users.remove'(userId) {
+  async 'users.remove'(userId, sessionId) {
+    check(userId, String);
+    check(sessionId, String);
+
+    // Require a valid admin/superadmin session (was previously unauthenticated).
+    const session = await SessionHelpers.validateSession(sessionId);
+    if (!session || !session.userId) {
+      throw new Meteor.Error('unauthorized', 'Invalid or expired session');
+    }
+    const currentUser = await UsersCollection.findOneAsync(session.userId);
+    if (!currentUser || (currentUser.role !== USER_ROLES.SUPERADMIN && currentUser.role !== USER_ROLES.ADMIN)) {
+      throw new Meteor.Error('access-denied', 'Only admins can remove users');
+    }
+    // Only a superadmin may remove another superadmin.
+    const target = await UsersCollection.findOneAsync(userId);
+    if (target && target.role === USER_ROLES.SUPERADMIN && currentUser.role !== USER_ROLES.SUPERADMIN) {
+      throw new Meteor.Error('access-denied', 'Only superadmins can remove superadmin accounts');
+    }
     return await UsersCollection.removeAsync(userId);
   },
 
@@ -1849,10 +1999,8 @@ Meteor.methods({
       throw new Meteor.Error('unauthorized', 'Admins cannot reset superadmin passwords');
     }
 
-    // Validate password strength
-    if (!newPassword || newPassword.length < 6) {
-      throw new Meteor.Error('weak-password', 'Password must be at least 6 characters long');
-    }
+    // Validate password strength (shared policy)
+    assertPasswordPolicy(newPassword);
 
     try {
       // Update password
@@ -1867,7 +2015,7 @@ Meteor.methods({
 
       // Log action for audit trail
       const adminType = currentUser.role === USER_ROLES.SUPERADMIN ? 'Superadmin' : 'Admin';
-      console.log(`[ADMIN PASSWORD RESET] ${adminType} ${currentUser.email} (${session.userId}) reset password for user ${targetUser.email} (${userId})`);
+      console.log(`[ADMIN PASSWORD RESET] ${adminType} ${session.userId} reset password for user ${userId}`);
 
       return {
         success: true,
@@ -1879,9 +2027,34 @@ Meteor.methods({
     }
   },
 
-  async 'users.updateProfile'(userId, userData) {
+  async 'users.updateProfile'(userId, userData, sessionId) {
+    check(userId, String);
+    check(userData, Object);
+    check(sessionId, String);
+
+    // Authorize: caller must be staff, or the user updating their own profile.
+    // Previously this method had no authentication at all.
+    const session = await SessionHelpers.validateSession(sessionId);
+    const caller = session && session.userId ? await UsersCollection.findOneAsync(session.userId) : null;
+    if (!caller) {
+      throw new Meteor.Error('unauthorized', 'Invalid or expired session');
+    }
+    const PROFILE_STAFF_ROLES = [
+      USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.COMPLIANCE,
+      USER_ROLES.RELATIONSHIP_MANAGER, USER_ROLES.ASSISTANT
+    ];
+    const isStaff = PROFILE_STAFF_ROLES.includes(caller.role);
+    const isSelf = caller._id === userId;
+    if (!isStaff && !isSelf) {
+      throw new Meteor.Error('access-denied', 'Not authorized to update this profile');
+    }
+    // Only staff may (re)assign a relationship manager.
+    if (!isStaff && Object.prototype.hasOwnProperty.call(userData, 'relationshipManagerId')) {
+      throw new Meteor.Error('access-denied', 'Only staff can change the relationship manager');
+    }
+
     console.log('Server: users.updateProfile called with:', { userId, userData });
-    
+
     // Validate that the user exists
     const user = await UsersCollection.findOneAsync(userId);
     if (!user) {
@@ -1938,7 +2111,7 @@ Meteor.methods({
         }
 
         updateData.relationshipManagerId = userData.relationshipManagerId;
-        console.log('Server: Assigning client to RM:', rmUser.email, `(${rmUser.role})`);
+        console.log('Server: Assigning client to RM:', rmUser._id, `(${rmUser.role})`);
       } else {
         // Explicitly unassign the RM
         updateData.relationshipManagerId = null;
@@ -2009,7 +2182,7 @@ Meteor.methods({
       throw new Meteor.Error('invalid-operation', 'KYC risk scores can only be set for clients');
     }
 
-    console.log(`[users.updateRiskScore] ${currentUser.role} ${currentUser.email} updating risk score for ${targetUser.email}`);
+    console.log(`[users.updateRiskScore] ${currentUser.role} ${currentUser._id} updating risk score for user ${targetUser._id}`);
     console.log(`  Client Prospect: ${riskScoreData.clientProspect.totalScore} pts (${riskScoreData.clientProspect.riskLevel})`);
     console.log(`  Beneficial Owner: ${riskScoreData.beneficialOwner.totalScore} pts (${riskScoreData.beneficialOwner.riskLevel})`);
     console.log(`  Business Relationship: ${riskScoreData.businessRelationship.totalScore} pts (${riskScoreData.businessRelationship.riskLevel})`);
@@ -2027,16 +2200,21 @@ Meteor.methods({
   },
 
   // Bank management methods
-  async 'banks.add'({ name, city, country, countryCode, deskEmail }) {
-    return await BankHelpers.addBank(name, city, country, countryCode, this.userId || 'system', deskEmail);
+  async 'banks.add'({ name, city, country, countryCode, deskEmail, sessionId }) {
+    const caller = await requireBankAdmin(sessionId);
+    return await BankHelpers.addBank(name, city, country, countryCode, caller._id, deskEmail);
   },
 
-  async 'banks.update'(bankId, updates) {
-    return await BankHelpers.updateBank(bankId, updates, this.userId || 'system');
+  async 'banks.update'(bankId, updates, sessionId) {
+    check(bankId, String);
+    const caller = await requireBankAdmin(sessionId);
+    return await BankHelpers.updateBank(bankId, updates, caller._id);
   },
 
-  async 'banks.deactivate'(bankId) {
-    return await BankHelpers.deactivateBank(bankId, this.userId || 'system');
+  async 'banks.deactivate'(bankId, sessionId) {
+    check(bankId, String);
+    const caller = await requireBankAdmin(sessionId);
+    return await BankHelpers.deactivateBank(bankId, caller._id);
   },
 
   // Bank account management methods
@@ -2051,7 +2229,7 @@ Meteor.methods({
 
     try {
       const user = await validateSessionAndGetUser(sessionId);
-      console.log('Server: User validated successfully:', { userId: user._id, username: user.username });
+      console.log('Server: User validated successfully:', { userId: user._id, role: user.role });
       const result = await BankAccountHelpers.addBankAccount(user._id, bankId, accountNumber, referenceCurrency, 'personal', 'direct', null, authorizedOverdraft);
       console.log('Server: Account added successfully:', result);
       return result;
@@ -2070,7 +2248,7 @@ Meteor.methods({
     check(accountStructure, String);
     check(sessionId, String);
 
-    console.log('Server: bankAccounts.create called with:', { userId, bankId, accountNumber, referenceCurrency, accountType, accountStructure, lifeInsuranceCompany, authorizedOverdraft, comment });
+    console.log('Server: bankAccounts.create called with:', { userId, bankId, referenceCurrency, accountType, accountStructure });
 
     // Validate session and get current user
     const currentUser = await validateSessionAndGetUser(sessionId);
@@ -2977,7 +3155,7 @@ Meteor.methods({
       }
 
       if (includeDebug) {
-        console.log('[SERVER] User authenticated:', user.email, 'Role:', user.role);
+        console.log('[SERVER] User authenticated:', user._id, 'Role:', user.role);
       }
     }
 
@@ -4502,11 +4680,11 @@ Meteor.methods({
           // Get the bank account owner
           const bankAccount = await BankAccountsCollection.findOneAsync(bankAccountId);
           if (bankAccount) {
-            console.log(`Batch update: Processing account ${bankAccount.accountNumber} (${bankAccount.referenceCurrency}) with ${accountHoldings.length} holdings`);
+            console.log(`Batch update: Processing account ${bankAccount._id} (${bankAccount.referenceCurrency}) with ${accountHoldings.length} holdings`);
             await EquityHoldingsHelpers.updatePrices(bankAccountId, bankAccount.userId, priceData);
             updatedAccounts++;
             updatedHoldings += accountHoldings.length;
-            console.log(`Batch update: Completed account ${bankAccount.accountNumber}`);
+            console.log(`Batch update: Completed account ${bankAccount._id}`);
           }
         } catch (error) {
           console.error(`Error updating prices for account ${bankAccountId}:`, error);
@@ -4980,7 +5158,7 @@ Meteor.methods({
             to: newCurrency
           });
           
-          console.log(`Updated account ${account.accountNumber}: ${account.referenceCurrency} → ${newCurrency}`);
+          console.log(`Updated account ${account._id}: ${account.referenceCurrency} → ${newCurrency}`);
         }
       }
 
@@ -5026,7 +5204,7 @@ Meteor.methods({
         await Meteor.callAsync('auth.getCurrentUser', sessionId) : 
         (this.userId ? await UsersCollection.findOneAsync(this.userId) : null);
       
-      console.log('Server: Current user for test data creation:', currentUser ? { id: currentUser._id, username: currentUser.username, role: currentUser.role } : 'none');
+      console.log('Server: Current user for test data creation:', currentUser ? { id: currentUser._id, role: currentUser.role } : 'none');
       
       if (!currentUser || (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN)) {
         throw new Meteor.Error('not-authorized', 'Only administrators can create test data');
@@ -5118,7 +5296,7 @@ Meteor.methods({
         throw new Meteor.Error('not-authorized', 'User not authenticated');
       }
       
-      console.log('Server: Creating bank account for user:', { id: currentUser._id, username: currentUser.username, role: currentUser.role });
+      console.log('Server: Creating bank account for user:', { id: currentUser._id, role: currentUser.role });
       
       // Check if user already has a bank account
       const existingAccount = await BankAccountsCollection.findOneAsync({ userId: currentUser._id, isActive: true });
@@ -5168,7 +5346,7 @@ Meteor.methods({
         throw new Meteor.Error('not-authorized', 'User not authenticated');
       }
       
-      console.log('Server: Debug bank accounts for user:', currentUser.username, currentUser.role);
+      console.log('Server: Debug bank accounts for user:', currentUser._id, currentUser.role);
       
       // Get all bank accounts
       const allBankAccounts = await BankAccountsCollection.find({}).fetchAsync();
@@ -5197,72 +5375,17 @@ Meteor.methods({
   },
 
   // Temporary method to create admin session for debugging
-  async 'auth.createAdminSession'() {
-    try {
-      // Find admin user
-      const adminUser = await UsersCollection.findOneAsync({ role: 'superadmin' });
-      if (!adminUser) {
-        throw new Meteor.Error('no-admin', 'No admin user found');
-      }
-
-      // Create a new session
-      const session = await SessionHelpers.createSession(
-        adminUser._id,
-        true, // rememberMe
-        'AdminDebugSession',
-        '127.0.0.1'
-      );
-
-      console.log('Created admin session:', session.sessionId);
-      return {
-        sessionId: session.sessionId,
-        userId: adminUser._id,
-        email: adminUser.email,
-        role: adminUser.role
-      };
-
-    } catch (error) {
-      console.error('Error creating admin session:', error);
-      throw error;
-    }
-  },
-
-  // Simple admin login for debugging
-  async 'auth.adminQuickLogin'() {
-    try {
-      // Login as admin with default password
-      const result = await Meteor.callAsync('auth.login', {
-        email: 'admin@example.com',
-        password: 'admin123',
-        rememberMe: true
-      });
-      
-      console.log('Admin logged in successfully');
-      return result;
-    } catch (error) {
-      console.error('Admin login failed:', error);
-      // If login fails, try creating the admin user first
-      if (error.error === 'user-not-found') {
-        console.log('Creating admin user...');
-        await Meteor.callAsync('users.create', {
-          email: 'admin@example.com',
-          password: 'admin123',
-          role: 'superadmin'
-        });
-        
-        // Try login again
-        return await Meteor.callAsync('auth.login', {
-          email: 'admin@example.com',
-          password: 'admin123',
-          rememberMe: true
-        });
-      }
-      throw error;
-    }
-  },
+  // NOTE: 'auth.createAdminSession' and 'auth.adminQuickLogin' were removed.
+  // They were unauthenticated debug methods that minted a superadmin session /
+  // logged in with default credentials for any anonymous caller — a full auth bypass.
 
   // Debug method to check database state and connection
-  async 'debug.checkDatabaseState'() {
+  async 'debug.checkDatabaseState'(sessionId) {
+    // SECURITY: superadmin-only. This method previously ran unauthenticated and
+    // logged every session token, email, role and account number — a token-leak
+    // + PII disclosure to any anonymous DDP caller.
+    check(sessionId, String);
+    await requireSuperadminSession(sessionId);
     // First, log database connection info
     const mongoUrl = process.env.MONGO_URL || 'default local MongoDB';
     console.log('\n=== CURRENT DATABASE CONNECTION ===');
@@ -5304,21 +5427,10 @@ Meteor.methods({
       quantity: h.quantity
     })));
     
+    // SECURITY: never log session tokens or user PII (captured into serverLogs).
     console.log('\nTotal sessions:', sessions.length);
-    console.log('Sessions:', sessions.map(s => ({
-      sessionId: s.sessionId,
-      userId: s.userId,
-      isActive: s.isActive,
-      createdAt: s.createdAt
-    })));
-    
     console.log('\nTotal users:', users.length);
-    console.log('Users:', users.map(u => ({
-      id: u._id,
-      email: u.email,
-      role: u.role
-    })));
-    
+
     return {
       bankAccountsCount: bankAccounts.length,
       holdingsCount: equityHoldings.length,
@@ -5328,55 +5440,26 @@ Meteor.methods({
   },
 
   // Check current session validity
+  // SECURITY: superadmin-only. Previously unauthenticated and — on a miss — dumped
+  // every valid session token to the log; and returned a live token + email/role to
+  // any anonymous caller (account takeover). Now gated and self-scoped.
   async 'debug.checkSession'(sessionId) {
-    console.log('\n=== SESSION CHECK ===');
-    console.log('Checking session:', sessionId);
-    
-    const session = await SessionsCollection.findOneAsync({ sessionId });
+    check(sessionId, String);
+    await requireSuperadminSession(sessionId);
+
+    // Only ever report on the caller's OWN session — never enumerate others.
+    const session = await SessionHelpers.validateSession(sessionId);
     if (!session) {
-      console.log('❌ Session NOT FOUND in database');
-      
-      // Show valid sessions
-      const validSessions = await SessionsCollection.find({}).fetchAsync();
-      console.log('Valid sessions:', validSessions.map(s => s.sessionId));
-      
       return { valid: false, message: 'Session not found' };
     }
-    
-    console.log('✅ Session found');
-    console.log('User ID:', session.userId);
-    console.log('Active:', session.isActive);
-    console.log('Created:', session.createdAt);
-    
-    // Check user
     const user = await UsersCollection.findOneAsync(session.userId);
     if (!user) {
-      console.log('❌ User NOT FOUND for session');
       return { valid: false, message: 'User not found' };
     }
-    
-    console.log('✅ User found:', user.email, user.role);
-    
-    // Check admin bank account
-    const adminAccount = await BankAccountsCollection.findOneAsync({
-      userId: user._id,
-      isActive: true
-    });
-    
-    if (adminAccount) {
-      console.log('✅ User has bank account:', adminAccount.accountNumber);
-    } else {
-      console.log('❌ User has NO bank accounts');
-    }
-    
     return {
       valid: true,
-      sessionId: session.sessionId,
       userId: user._id,
-      email: user.email,
-      role: user.role,
-      hasBankAccount: !!adminAccount,
-      bankAccountId: adminAccount?._id
+      role: user.role
     };
   }
 });
@@ -5409,7 +5492,7 @@ Meteor.methods({
       
       for (const holding of allAlcoaHoldings) {
         const account = await BankAccountsCollection.findOneAsync({ _id: holding.bankAccountId });
-        console.log(`- Account ${account?.accountNumber} (${account?.referenceCurrency}): ${holding.currentValue} ${account?.referenceCurrency}`);
+        console.log(`- Account ${account?._id} (${account?.referenceCurrency}): ${holding.currentValue} ${account?.referenceCurrency}`);
       }
       
       // Find EUR bank account
@@ -5422,7 +5505,7 @@ Meteor.methods({
         return { error: 'No EUR account found' };
       }
       
-      console.log(`\n✅ Found EUR account: ${eurAccount.accountNumber} (${eurAccount.referenceCurrency})`);
+      console.log(`\n✅ Found EUR account: ${eurAccount._id} (${eurAccount.referenceCurrency})`);
       
       // Find Alcoa holdings in EUR account
       const alcoaHoldings = await EquityHoldingsCollection.find({
@@ -5518,8 +5601,11 @@ Meteor.methods({
 
   // Find EUR accounts with USD holdings and force conversion
   async 'debug.fixEURAccountConversion'(sessionId = null) {
+    if (this.connection !== null) {
+      throw new Meteor.Error('not-authorized', 'This debug method can only be called server-side');
+    }
     check(sessionId, Match.Optional(String));
-    
+
     console.log('\n🔧 FIXING EUR ACCOUNT USD CONVERSION ISSUE');
     console.log('=========================================');
     
@@ -5543,7 +5629,7 @@ Meteor.methods({
       const results = [];
       
       for (const account of eurAccounts) {
-        console.log(`\n📊 Checking account ${account.accountNumber}:`);
+        console.log(`\n📊 Checking account ${account._id}:`);
         
         // Find USD holdings in this EUR account
         const usdHoldings = await EquityHoldingsCollection.find({
@@ -5615,8 +5701,11 @@ Meteor.methods({
 
   // Force currency conversion for Alcoa holding
   async 'debug.forceAlcoaConversion'(sessionId) {
+    if (this.connection !== null) {
+      throw new Meteor.Error('not-authorized', 'This debug method can only be called server-side');
+    }
     check(sessionId, Match.Optional(String));
-    
+
     console.log('\n🔧 FORCING ALCOA CURRENCY CONVERSION');
     console.log('====================================');
     
@@ -5639,7 +5728,7 @@ Meteor.methods({
         return { success: false, error: 'No EUR account found' };
       }
       
-      console.log(`✅ Found EUR account: ${eurAccount.accountNumber}`);
+      console.log(`✅ Found EUR account: ${eurAccount._id}`);
       
       // Get the Alcoa holding
       const alcoaHolding = await EquityHoldingsCollection.findOneAsync({
@@ -5703,8 +5792,11 @@ Meteor.methods({
 
   // Direct database fix for EUR/USD currency issue
   async 'debug.fixCurrencyDataIssue'(sessionId = null) {
+    if (this.connection !== null) {
+      throw new Meteor.Error('not-authorized', 'This debug method can only be called server-side');
+    }
     check(sessionId, Match.Optional(String));
-    
+
     console.log('\n🔧 DIRECT DATABASE FIX FOR CURRENCY ISSUE');
     console.log('==========================================');
     
@@ -5728,7 +5820,7 @@ Meteor.methods({
       const fixes = [];
       
       for (const account of eurAccounts) {
-        console.log(`\n📊 Analyzing account ${account.accountNumber}:`);
+        console.log(`\n📊 Analyzing account ${account._id}:`);
         
         // Get ALL holdings for this EUR account
         const allHoldings = await EquityHoldingsCollection.find({
@@ -5839,7 +5931,7 @@ Meteor.methods({
     const allAccounts = await db.collection('bankAccounts').find({}).toArray();
     console.log(`Found ${allAccounts.length} total accounts:`);
     allAccounts.forEach(acc => {
-      console.log(`  - ${acc.accountNumber} (${acc.referenceCurrency}) - ID: ${acc._id}`);
+      console.log(`  - ${acc._id} (${acc.referenceCurrency}) - ID: ${acc._id}`);
     });
     
     // 2. Find ALL Alcoa holdings across all accounts
@@ -5916,7 +6008,7 @@ Meteor.methods({
       return { error: 'No EUR account found' };
     }
     
-    console.log(`📋 EUR Account: ${eurAccount.accountNumber} (ID: ${eurAccount._id})`);
+    console.log(`📋 EUR Account: ${eurAccount._id} (ID: ${eurAccount._id})`);
     console.log(`   Reference Currency: ${eurAccount.referenceCurrency}`);
     
     // 2. Find ALL holdings in EUR account
@@ -6092,8 +6184,11 @@ Meteor.methods({
 
   // Targeted fix for Alcoa EUR conversion issue
   async 'debug.fixAlcoaEURConversion'() {
+    if (this.connection !== null) {
+      throw new Meteor.Error('not-authorized', 'This debug method can only be called server-side');
+    }
     const db = MongoInternals.defaultRemoteCollectionDriver().mongo.db;
-    
+
     console.log('\n🎯 TARGETED ALCOA EUR FIX');
     console.log('========================');
     
@@ -6108,7 +6203,7 @@ Meteor.methods({
       return { error: 'EUR account 72112407 not found' };
     }
     
-    console.log(`✅ Found EUR account: ${eurAccount.accountNumber} (ID: ${eurAccount._id})`);
+    console.log(`✅ Found EUR account: ${eurAccount._id} (ID: ${eurAccount._id})`);
     
     // 2. Find Alcoa holding in this EUR account
     const alcoaHolding = await db.collection('equityHoldings').findOne({
@@ -6180,8 +6275,11 @@ Meteor.methods({
 
   // Direct fix for the currency conversion issue
   async 'debug.directCurrencyFix'() {
+    if (this.connection !== null) {
+      throw new Meteor.Error('not-authorized', 'This debug method can only be called server-side');
+    }
     const db = MongoInternals.defaultRemoteCollectionDriver().mongo.db;
-    
+
     console.log('\n🔧 DIRECT CURRENCY FIX');
     console.log('====================');
     
@@ -6191,7 +6289,7 @@ Meteor.methods({
       return { error: 'No EUR account found' };
     }
     
-    console.log(`Found EUR account: ${eurAccount.accountNumber} (${eurAccount._id})`);
+    console.log(`Found EUR account: ${eurAccount._id} (${eurAccount._id})`);
     
     // 2. Get EUR/USD rate
     await CurrencyCache.refreshCurrencyRates(['EURUSD.FOREX']);
@@ -6283,7 +6381,7 @@ Meteor.methods({
           currentValue: { $gte: 8354, $lte: 8355 }
         }).fetchAsync();
         
-        console.log(`Account ${account.accountNumber}: Found ${holdings.length} problematic holdings`);
+        console.log(`Account ${account._id}: Found ${holdings.length} problematic holdings`);
         
         for (const holding of holdings) {
           const originalValue = holding.currentValue;
@@ -6341,22 +6439,22 @@ Meteor.methods({
 // that supports sessionId-based auth and viewAsFilter for all roles including CLIENTs
 
 // Simple publication for admin management - return all bank accounts like customUsers does
-Meteor.publish('allBankAccounts', function () {
-  console.log('allBankAccounts publication: Called with this.userId:', this.userId);
-  
-  try {
-    // Return all active bank accounts for admin management (like customUsers publication)
-    const cursor = BankAccountsCollection.find({ isActive: true }, {
-      sort: { createdAt: -1 }
-    });
-    
-    console.log('allBankAccounts publication: Returning all active bank accounts');
-    return cursor;
-    
-  } catch (error) {
-    console.error('allBankAccounts publication error:', error);
-    return this.ready();
-  }
+Meteor.publish('allBankAccounts', async function (sessionId) {
+  // Staff-only. Previously returned every client's bank accounts (account numbers,
+  // owners, RM assignments) to ANY connected client with no auth.
+  if (!sessionId) return this.ready();
+
+  const session = await SessionHelpers.validateSession(sessionId);
+  if (!session || !session.userId) return this.ready();
+
+  const currentUser = await UsersCollection.findOneAsync(session.userId);
+  const STAFF_ROLES = [
+    USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.COMPLIANCE,
+    USER_ROLES.RELATIONSHIP_MANAGER, USER_ROLES.ASSISTANT
+  ];
+  if (!currentUser || !STAFF_ROLES.includes(currentUser.role)) return this.ready();
+
+  return BankAccountsCollection.find({ isActive: true }, { sort: { createdAt: -1 } });
 });
 
 Meteor.publish('equityHoldings', async function (bankAccountId, sessionId = null) {
@@ -6750,7 +6848,8 @@ WebApp.connectHandlers.use('/meetingReports', async (req, res, next) => {
     if (projectRoot.includes('.meteor')) {
       projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
     }
-    baseDir = path.join(projectRoot, 'public', 'meetingReports');
+    // Matches meetingReportPdfHelper.js — private tree, never public/.
+    baseDir = path.join(projectRoot, '.fichier_central', 'meetingReports');
   }
 
   try {
@@ -6792,13 +6891,22 @@ WebApp.connectHandlers.use('/fichier_central', async (req, res, next) => {
   // Strip the query string before splitting into path parts.
   const urlParts = req.url.split('?')[0].split('/').filter(p => p);
 
-  // If we're in development (no FICHIER_CENTRAL_PATH), let Meteor serve from public/
-  if (!process.env.FICHIER_CENTRAL_PATH) {
-    return next();
-  }
+  // SECURITY/GDPR: these are KYC/PII documents. The token gate applies in EVERY
+  // environment — there is no dev bypass. In dev (no FICHIER_CENTRAL_PATH) files
+  // live in the non-served .fichier_central tree, matching clientDocumentMethods.js.
+  const fichierCentralBase = (() => {
+    if (process.env.FICHIER_CENTRAL_PATH) return process.env.FICHIER_CENTRAL_PATH;
+    let projectRoot = process.cwd();
+    if (projectRoot.includes('.meteor')) {
+      projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
+    }
+    return path.join(projectRoot, '.fichier_central');
+  })();
 
   if (urlParts.length !== 2) {
-    return next();
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not found');
+    return;
   }
 
   // These are KYC/PII documents — require a valid, single-use capability token
@@ -6813,12 +6921,12 @@ WebApp.connectHandlers.use('/fichier_central', async (req, res, next) => {
   const [userId, filename] = urlParts.map(decodeURIComponent);
 
   try {
-    // Construct file path from FICHIER_CENTRAL_PATH
-    const filePath = path.join(process.env.FICHIER_CENTRAL_PATH, userId, filename);
+    const filePath = path.join(fichierCentralBase, userId, filename);
 
     // Security: Prevent directory traversal
     const normalizedPath = path.normalize(filePath);
-    if (!normalizedPath.startsWith(process.env.FICHIER_CENTRAL_PATH)) {
+    const normalizedBase = path.normalize(fichierCentralBase);
+    if (normalizedPath !== normalizedBase && !normalizedPath.startsWith(normalizedBase + path.sep)) {
       console.error('Security: Attempted directory traversal:', req.url);
       res.writeHead(403, { 'Content-Type': 'text/plain' });
       res.end('Forbidden');
@@ -6856,7 +6964,7 @@ WebApp.connectHandlers.use('/fichier_central', async (req, res, next) => {
     });
 
     res.end(fileBuffer);
-    console.log(`Served client document: ${userId}/${filename} (${stat.size} bytes)`);
+    console.log(`Served client document for subject ${userId} (${stat.size} bytes)`);
 
   } catch (error) {
     console.error('Error serving client document:', error);

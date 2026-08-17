@@ -66,7 +66,7 @@ const UserProfileForm = ({ user, onProfileUpdate, compact = false }) => {
 
     // Server merges under the `profile` key (users.updateProfile reads userData.profile),
     // so the payload must be wrapped — sending flat fields was a silent no-op.
-    Meteor.call('users.updateProfile', user._id, { profile: profileData }, (err) => {
+    Meteor.call('users.updateProfile', user._id, { profile: profileData }, localStorage.getItem('sessionId'), (err) => {
       setIsLoading(false);
       if (err) {
         setError(err.reason || 'Failed to update profile');
@@ -139,7 +139,7 @@ const UserProfileForm = ({ user, onProfileUpdate, compact = false }) => {
         <button
           onClick={() => setIsEditing(true)}
           style={{
-            background: 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+            background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
             color: 'white',
             border: 'none',
             padding: '12px 24px',
@@ -418,7 +418,7 @@ const UserProfileForm = ({ user, onProfileUpdate, compact = false }) => {
               disabled={isLoading}
               style={{
                 padding: '12px 24px',
-                background: isLoading ? 'var(--text-muted)' : 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+                background: isLoading ? 'var(--text-muted)' : 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
                 color: 'white',
                 border: 'none',
                 borderRadius: '8px',

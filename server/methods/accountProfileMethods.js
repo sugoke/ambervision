@@ -1,7 +1,7 @@
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { AccountProfilesCollection } from '../../imports/api/accountProfiles.js';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection, USER_ROLES } from '../../imports/api/users.js';
 import { BankAccountsCollection } from '../../imports/api/bankAccounts.js';
 
@@ -25,10 +25,7 @@ Meteor.methods({
     check(sessionId, String);
 
     // Validate session
-    const session = await SessionsCollection.findOneAsync({
-      sessionId,
-      isActive: true
-    });
+    const session = await SessionHelpers.findByToken(sessionId);
 
     if (!session) {
       throw new Meteor.Error('not-authorized', 'Invalid session');
@@ -110,10 +107,7 @@ Meteor.methods({
     check(sessionId, String);
 
     // Validate session
-    const session = await SessionsCollection.findOneAsync({
-      sessionId,
-      isActive: true
-    });
+    const session = await SessionHelpers.findByToken(sessionId);
 
     if (!session) {
       throw new Meteor.Error('not-authorized', 'Invalid session');

@@ -11,7 +11,7 @@ const GenericProductList = ({ sessionId, onNew, onEdit, onReport }) => {
   const [exampleIdx, setExampleIdx] = useState('');
 
   const { products, isReady } = useTracker(() => {
-    const handle = Meteor.subscribe('genericProducts.list');
+    const handle = Meteor.subscribe('genericProducts.list', localStorage.getItem('sessionId'));
     return {
       products: GenericProductsCollection.find({}, { sort: { lastUpdated: -1 } }).fetch(),
       isReady: handle.ready()

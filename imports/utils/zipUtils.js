@@ -64,6 +64,16 @@ export function extractZipFile(zipPath, outputDir, options = {}) {
       }
     }
 
+    // Zip Slip guard: a malicious entry name (e.g. "../../etc/x") can resolve
+    // outside outputDir. Reject any path that escapes the extraction directory.
+    const resolvedBase = path.resolve(outputDir);
+    const resolvedOut = path.resolve(outputPath);
+    if (resolvedOut !== resolvedBase && !resolvedOut.startsWith(resolvedBase + path.sep)) {
+      skippedEntries.push({ name: entryName, reason: 'path-traversal' });
+      console.warn(`${LOG_PREFIX} Skipped entry escaping output dir: ${entryName}`);
+      return;
+    }
+
     // Extract the file
     const content = entry.getData();
     fs.writeFileSync(outputPath, content);

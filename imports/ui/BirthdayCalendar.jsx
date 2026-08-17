@@ -26,7 +26,7 @@ const BirthdayCalendar = () => {
   // Get current user and all users with birthdays
   const { currentUser, usersWithBirthdays, isLoading } = useTracker(() => {
     const sessionId = localStorage.getItem('sessionId');
-    const usersSub = Meteor.subscribe('customUsers');
+    const usersSub = Meteor.subscribe('customUsers', sessionId);
     
     // Note: We'll get the current user via Meteor method call in useEffect
     // This is just for subscribing to the users data
@@ -838,7 +838,7 @@ const BirthdayCalendar = () => {
           <div style={{
             fontSize: isMobile ? '1.1rem' : '1.3rem',
             fontWeight: '700',
-            color: '#6b7280',
+            color: 'var(--text-muted)',
             marginBottom: isMobile ? '0' : '0.5rem',
             order: isMobile ? 2 : 1
           }}>

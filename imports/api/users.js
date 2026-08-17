@@ -156,13 +156,41 @@ export const UserHelpers = {
     }
   },
 
-  // Simple password hashing (for demo purposes - use proper hashing in production)
+  // Password hashing: scrypt with a per-user random salt (server-only).
+  // Stored format: "scrypt$<saltHex>$<derivedKeyHex>".
+  // The legacy reversible base64 scheme is no longer accepted at login; a startup
+  // migration (migrateLegacyPasswordHashes in server/main.js) converts any
+  // remaining legacy hashes to scrypt, so only scrypt hashes exist in the DB.
   hashPassword(password) {
-    return btoa(password + 'salt123'); // Simple base64 encoding with salt
+    const crypto = require('crypto');
+    const salt = crypto.randomBytes(16).toString('hex');
+    const derived = crypto.scryptSync(String(password), salt, 64).toString('hex');
+    return `scrypt$${salt}$${derived}`;
   },
 
   verifyPassword(password, hashedPassword) {
-    return this.hashPassword(password) === hashedPassword;
+    if (typeof hashedPassword !== 'string' || hashedPassword.length === 0) {
+      return false;
+    }
+
+    if (hashedPassword.startsWith('scrypt$')) {
+      const crypto = require('crypto');
+      const [, salt, expectedHex] = hashedPassword.split('$');
+      if (!salt || !expectedHex) return false;
+      const derived = crypto.scryptSync(String(password), salt, 64);
+      const expected = Buffer.from(expectedHex, 'hex');
+      // Constant-time compare; guard against length mismatch (timingSafeEqual throws).
+      return expected.length === derived.length && crypto.timingSafeEqual(expected, derived);
+    }
+
+    // SECURITY: non-scrypt hashes are never accepted. Legacy reversible base64
+    // hashes are converted by the startup migration; anything else is invalid.
+    return false;
+  },
+
+  // True when a stored hash is in the legacy format and should be upgraded to scrypt.
+  needsRehash(hashedPassword) {
+    return typeof hashedPassword !== 'string' || !hashedPassword.startsWith('scrypt$');
   },
 
   // Check if user has order validation permission (four-eyes principle)

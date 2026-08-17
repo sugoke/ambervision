@@ -6,7 +6,7 @@ import { EquityHoldingsCollection } from '/imports/api/equityHoldings';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { UsersCollection, USER_ROLES } from '/imports/api/users';
 import { ClientEntitiesCollection, ClientEntityHelpers } from '/imports/api/clientEntities';
-import { SessionsCollection } from '/imports/api/sessions';
+import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
 import { Meteor } from 'meteor/meteor';
 
 Meteor.publish('equityHoldings', async function (sessionId = null, viewAsFilter = null) {
@@ -29,11 +29,7 @@ Meteor.publish('equityHoldings', async function (sessionId = null, viewAsFilter 
 
     if (sessionId) {
       // Query SessionsCollection with async method
-      const session = await SessionsCollection.findOneAsync({
-        sessionId,
-        isActive: true,
-        expiresAt: { $gt: new Date() }
-      });
+      const session = await SessionHelpers.findByToken(sessionId);
 
       console.log('[EQUITY PUB] Session found:', !!session, session ? `userId: ${session.userId}` : 'null');
 

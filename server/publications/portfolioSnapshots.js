@@ -1,7 +1,7 @@
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { PortfolioSnapshotsCollection } from '../../imports/api/portfolioSnapshots.js';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection, USER_ROLES } from '../../imports/api/users.js';
 import { BankAccountsCollection } from '../../imports/api/bankAccounts.js';
 import { ClientEntitiesCollection } from '../../imports/api/clientEntities.js';
@@ -23,10 +23,7 @@ Meteor.publish('portfolioSnapshots', async function(sessionId, filters = {}, vie
     return this.ready();
   }
 
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true
-  });
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) {
     console.log('[portfolioSnapshots] Invalid session');

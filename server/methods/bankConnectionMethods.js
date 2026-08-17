@@ -1,10 +1,12 @@
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { BankConnectionsCollection, BankConnectionHelpers } from '../../imports/api/bankConnections.js';
+import { encryptSecret, decryptSecret } from '../helpers/credentialCrypto.js';
 import { BankConnectionLogHelpers } from '../../imports/api/bankConnectionLogs.js';
 import { BanksCollection } from '../../imports/api/banks.js';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
+import { isSystemSession } from '../systemAuth.js';
 import { SFTPService } from '../../imports/api/sftpService.js';
 import { isSGZipFile, extractSGZipFile, findNewSGZipFiles } from '../../imports/utils/zipUtils.js';
 import { decryptAllGpgFiles, isGpgAvailable } from '../../imports/utils/gpgUtils.js';
@@ -38,8 +40,10 @@ function getLatestFileModificationDate(folderPath) {
  * Validate session and ensure user is admin
  */
 async function validateAdminSession(sessionId) {
-  // Allow system-cron bypass for CRON jobs
-  if (sessionId === 'system-cron' || sessionId === 'system') {
+  // Allow trusted in-process (cron) calls via the boot-generated system token.
+  // The old hardcoded 'system-cron'/'system' strings let any client pass them
+  // as a sessionId to gain superadmin — the token cannot be guessed from a browser.
+  if (isSystemSession(sessionId)) {
     return { _id: 'system', username: 'system-cron', role: 'superadmin' };
   }
 
@@ -47,10 +51,7 @@ async function validateAdminSession(sessionId) {
     throw new Meteor.Error('not-authorized', 'Session required');
   }
 
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true
-  });
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) {
     throw new Meteor.Error('not-authorized', 'Invalid session');
@@ -91,6 +92,12 @@ Meteor.methods({
       check(privateKeyPath, Match.OneOf(String, null, undefined));
     } else if (connectionType === 'local') {
       check(localFolderName, String);
+      // SECURITY: this value is later joined into a filesystem path (scan/read/reprocess).
+      // Reject path separators and traversal so it can only ever name a single folder
+      // inside the bankfiles root, never escape it (defense in depth; admin-only method).
+      if (!/^[A-Za-z0-9 ._-]{1,128}$/.test(localFolderName) || localFolderName.includes('..')) {
+        throw new Meteor.Error('invalid-folder', 'Folder name may only contain letters, numbers, spaces, dots, hyphens and underscores');
+      }
     } else {
       throw new Meteor.Error('invalid-type', `Invalid connection type: ${connectionType}`);
     }
@@ -113,7 +120,7 @@ Meteor.methods({
       host: connectionType === 'sftp' ? host : null,
       port: connectionType === 'sftp' ? (port || 22) : 22,
       username: connectionType === 'sftp' ? username : null,
-      password: connectionType === 'sftp' ? password : null,
+      password: connectionType === 'sftp' ? encryptSecret(password) : null,
       privateKeyPath: connectionType === 'sftp' ? privateKeyPath : null,
       remotePath: connectionType === 'sftp' ? (remotePath || '/') : '/',
       // Local folder field (null for sftp type)
@@ -154,7 +161,10 @@ Meteor.methods({
       throw new Meteor.Error('not-found', 'Connection not found');
     }
 
-    // Update connection
+    // Update connection (encrypt any credential fields at rest)
+    if (typeof updates.password === 'string' && updates.password.length > 0) {
+      updates.password = encryptSecret(updates.password);
+    }
     await BankConnectionHelpers.updateConnection(connectionId, updates, user._id);
 
     // Log the update
@@ -243,7 +253,7 @@ Meteor.methods({
           host: connection.host,
           port: connection.port,
           username: connection.username,
-          password: connection.password,
+          password: decryptSecret(connection.password),
           privateKeyPath: connection.privateKeyPath,
           timeout: 30000
         });
@@ -355,7 +365,7 @@ Meteor.methods({
           host: connection.host,
           port: connection.port,
           username: connection.username,
-          password: connection.password,
+          password: decryptSecret(connection.password),
           privateKeyPath: connection.privateKeyPath,
           timeout: 30000
         }, remotePath || connection.remotePath);
@@ -483,7 +493,7 @@ Meteor.methods({
         host: connection.host,
         port: connection.port || 22,
         username: connection.username,
-        password: connection.password,
+        password: decryptSecret(connection.password),
         privateKeyPath: connection.privateKeyPath
       }, filePath);
 
@@ -867,7 +877,7 @@ Meteor.methods({
             host: connection.host,
             port: connection.port || 22,
             username: connection.username,
-            password: connection.password,
+            password: decryptSecret(connection.password),
             privateKeyPath: connection.privateKeyPath
           },
           connection.remotePath || '/',
@@ -899,7 +909,7 @@ Meteor.methods({
           host: connection.host,
           port: connection.port || 22,
           username: connection.username,
-          password: connection.password,
+          password: decryptSecret(connection.password),
           privateKeyPath: connection.privateKeyPath
         }, connection.remotePath || '/');
 
@@ -933,7 +943,7 @@ Meteor.methods({
                   host: connection.host,
                   port: connection.port || 22,
                   username: connection.username,
-                  password: connection.password,
+                  password: decryptSecret(connection.password),
                   privateKeyPath: connection.privateKeyPath
                 }, remoteFilePath, localFilePath);
 

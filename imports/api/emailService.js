@@ -4,6 +4,152 @@ import { Meteor } from 'meteor/meteor';
 let cachedToken = null;
 let tokenExpiry = null;
 
+// ---------------------------------------------------------------------------
+// Ambervision email design system
+// Email-safe rendition of the app's design language: table layout, inline
+// styles, fixed hex colors (no CSS vars / color-mix in email clients).
+// Light "paper" ground mirroring the light theme tokens, ink masthead with
+// the signature amber rule, Georgia standing in for the Newsreader serif.
+// ---------------------------------------------------------------------------
+export const EMAIL = {
+  paper: '#F7F4EC',
+  card: '#FFFFFF',
+  hairline: '#E2DCCB',
+  ink: '#1C1F26',
+  body: '#3A404C',
+  muted: '#666C78',
+  headerBg: '#14171D',
+  headerText: '#F5F1E8',
+  headerMuted: '#8B909C',
+  amber: '#E0A138',      // rules/glyphs on dark grounds
+  amberFill: '#B8841F',  // buttons and fills (white text)
+  amberText: '#8A5F0B',  // amber used as text on paper (AA-safe)
+  success: '#14724F', successWash: '#EAF3EE',
+  danger: '#B03C2F',  dangerWash: '#F9EDEB',
+  warning: '#8A5F0B', warningWash: '#F7EFDD',
+  info: '#2B5E8C',    infoWash: '#EBF2F8',
+  footerBg: '#F3EFE4',
+  serif: "Georgia, 'Times New Roman', serif",
+  sans: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+};
+
+export const EMAIL_TONES = {
+  success: { color: EMAIL.success, wash: EMAIL.successWash },
+  danger: { color: EMAIL.danger, wash: EMAIL.dangerWash },
+  warning: { color: EMAIL.warning, wash: EMAIL.warningWash },
+  info: { color: EMAIL.info, wash: EMAIL.infoWash }
+};
+
+export const emailGreeting = (userName) => `
+              <p style="margin: 0 0 18px; color: ${EMAIL.body}; font-size: 15px; line-height: 1.65;">Hello${userName ? ` ${userName}` : ''},</p>`;
+
+export const emailParagraph = (html) => `
+              <p style="margin: 0 0 18px; color: ${EMAIL.body}; font-size: 15px; line-height: 1.65;">${html}</p>`;
+
+export const emailMutedNote = (html) => `
+              <p style="margin: 0; color: ${EMAIL.muted}; font-size: 13px; line-height: 1.6;">${html}</p>`;
+
+export const emailProductCard = (product) => `
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin: 20px 0;">
+                <tr>
+                  <td style="padding: 18px 20px; background-color: ${EMAIL.paper}; border: 1px solid ${EMAIL.hairline}; border-left: 3px solid ${EMAIL.amber}; border-radius: 8px;">
+                    <p style="margin: 0 0 6px; color: ${EMAIL.ink}; font-family: ${EMAIL.serif}; font-size: 17px;">${product.title || product.productName}</p>
+                    <p style="margin: 0; color: ${EMAIL.muted}; font-size: 11px; font-weight: 600; letter-spacing: 1.4px; text-transform: uppercase;">ISIN&nbsp;&nbsp;${product.isin || 'N/A'}</p>
+                  </td>
+                </tr>
+              </table>`;
+
+// rows: array of [label, value, optionalValueColor]
+export const emailKvTable = (rows) => `
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin: 20px 0; border-collapse: collapse;">${rows.map(([label, value, valueColor]) => `
+                <tr>
+                  <td style="padding: 10px 0; border-bottom: 1px solid ${EMAIL.hairline}; color: ${EMAIL.muted}; font-size: 13px;">${label}</td>
+                  <td align="right" style="padding: 10px 0; border-bottom: 1px solid ${EMAIL.hairline}; color: ${valueColor || EMAIL.ink}; font-size: 14px; font-weight: 600;">${value}</td>
+                </tr>`).join('')}
+              </table>`;
+
+export const emailNotice = (tone, title, text = '') => {
+  const t = EMAIL_TONES[tone] || EMAIL_TONES.info;
+  return `
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin: 20px 0;">
+                <tr>
+                  <td style="padding: 14px 18px; background-color: ${t.wash}; border-left: 3px solid ${t.color}; border-radius: 6px;">
+                    <p style="margin: 0; color: ${t.color}; font-size: 13.5px; line-height: 1.6;"><strong>${title}</strong>${text ? `<br>${text}` : ''}</p>
+                  </td>
+                </tr>
+              </table>`;
+};
+
+export const emailButton = (url, label) => `
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td align="center" style="padding: 22px 0 8px;">
+                    <a href="${url}" style="display: inline-block; padding: 13px 34px; background-color: ${EMAIL.amberFill}; color: #ffffff; text-decoration: none; font-size: 14px; font-weight: 600; letter-spacing: 0.4px; border-radius: 8px;">${label}</a>
+                  </td>
+                </tr>
+              </table>`;
+
+/**
+ * Full email document: paper ground, white card, amber rule, ink masthead
+ * with eyebrow + serif title, content cell, optional extra full-width
+ * sections (already wrapped in <tr>), and the standard footer.
+ */
+export const emailShell = ({
+  title,
+  subtitle = '',
+  headerExtraHtml = '',
+  width = 600,
+  bodyHtml,
+  sectionsHtml = '',
+  footerNote = 'This is an automated email. Please do not reply to this message.',
+  signatureName = 'Amber Lake Partners Team'
+}) => `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light">
+  <title>${title}</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: ${EMAIL.sans}; background-color: ${EMAIL.paper};">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: ${EMAIL.paper}; padding: 36px 16px;">
+    <tr>
+      <td align="center">
+        <table width="${width}" cellpadding="0" cellspacing="0" style="background-color: ${EMAIL.card}; border: 1px solid ${EMAIL.hairline}; border-radius: 12px; overflow: hidden;">
+          <!-- Signature amber rule -->
+          <tr>
+            <td height="3" style="background-color: ${EMAIL.amber}; font-size: 0; line-height: 0;">&nbsp;</td>
+          </tr>
+          <!-- Masthead -->
+          <tr>
+            <td style="background-color: ${EMAIL.headerBg}; padding: 32px 40px 28px; text-align: center;">
+              <p style="margin: 0 0 12px; color: ${EMAIL.headerMuted}; font-size: 11px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase;">Amber Lake Partners</p>
+              <h1 style="margin: 0; color: ${EMAIL.headerText}; font-family: ${EMAIL.serif}; font-size: 26px; font-weight: 500; letter-spacing: 0.3px;">${title}</h1>
+              ${subtitle ? `<p style="margin: 10px 0 0; color: ${EMAIL.headerMuted}; font-size: 13px;">${subtitle}</p>` : ''}${headerExtraHtml}
+            </td>
+          </tr>
+          <!-- Content -->
+          <tr>
+            <td style="padding: 34px 40px 26px;">
+${bodyHtml}
+            </td>
+          </tr>
+${sectionsHtml}
+          <!-- Footer -->
+          <tr>
+            <td style="padding: 26px 40px; background-color: ${EMAIL.footerBg}; border-top: 1px solid ${EMAIL.hairline}; text-align: center;">
+              <p style="margin: 0 0 8px; color: ${EMAIL.muted}; font-size: 13px;">Best regards,<br><strong style="color: ${EMAIL.ink};">${signatureName}</strong></p>
+              <p style="margin: 0; color: ${EMAIL.muted}; font-size: 11px; letter-spacing: 0.3px;">${footerNote}</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
 /**
  * Email Service using SendPulse SMTP API
  * Handles sending transactional emails like password resets
@@ -196,94 +342,22 @@ export const EmailService = {
       // Create recipient
       const recipients = [{ email, name: userName || email }];
 
-      // Build HTML email content
-      const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Reset Your Password</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #1a1a1a;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #1a1a1a; padding: 20px;">
-    <tr>
-      <td align="center">
-        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #2d2d2d; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-          <!-- Header -->
-          <tr>
-            <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 40px 30px; border-radius: 8px 8px 0 0; text-align: center;">
-              <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 700;">Reset Your Password</h1>
-            </td>
-          </tr>
-
-          <!-- Content -->
-          <tr>
-            <td style="padding: 40px;">
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                Hello${userName ? ` ${userName}` : ''},
-              </p>
-
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                You recently requested to reset your password for your <strong>Amber Lake Partners</strong> account.
-              </p>
-
-              <p style="margin: 0 0 30px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                Click the button below to reset your password:
-              </p>
-
-              <!-- Reset Button -->
-              <table width="100%" cellpadding="0" cellspacing="0">
+      const htmlContent = emailShell({
+        title: 'Reset Your Password',
+        bodyHtml: `${emailGreeting(userName)}${emailParagraph(
+          'You recently requested to reset your password for your <strong>Amber Lake Partners</strong> account.'
+        )}${emailParagraph('Click the button below to reset your password:')}${emailButton(resetUrl, 'Reset Password')}
+              <p style="margin: 20px 0 10px; color: ${EMAIL.muted}; font-size: 13px; line-height: 1.6;">Or copy and paste this URL into your browser:</p>
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin: 0 0 8px;">
                 <tr>
-                  <td align="center" style="padding: 0 0 30px;">
-                    <a href="${resetUrl}" style="display: inline-block; padding: 16px 40px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; font-size: 16px; font-weight: 600; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-                      Reset Password
-                    </a>
+                  <td style="padding: 12px 14px; background-color: ${EMAIL.paper}; border: 1px solid ${EMAIL.hairline}; border-radius: 6px; word-break: break-all;">
+                    <a href="${resetUrl}" style="color: ${EMAIL.amberText}; text-decoration: none; font-size: 13px;">${resetUrl}</a>
                   </td>
                 </tr>
-              </table>
-
-              <p style="margin: 0 0 20px; color: #b0b0b0; font-size: 14px; line-height: 1.6;">
-                Or copy and paste this URL into your browser:
-              </p>
-
-              <p style="margin: 0 0 30px; padding: 12px; background-color: #3a3a3a; border: 1px solid #4a4a4a; border-radius: 4px; word-break: break-all;">
-                <a href="${resetUrl}" style="color: #667eea; text-decoration: none; font-size: 14px;">
-                  ${resetUrl}
-                </a>
-              </p>
-
-              <div style="margin: 30px 0; padding: 16px; background-color: #3d3520; border-left: 4px solid #ffc107; border-radius: 4px;">
-                <p style="margin: 0; color: #ffc107; font-size: 14px; line-height: 1.6;">
-                  <strong>⚠️ Security Notice:</strong> This link will expire in 1 hour for your security.
-                </p>
-              </div>
-
-              <p style="margin: 0 0 10px; color: #b0b0b0; font-size: 14px; line-height: 1.6;">
-                If you didn't request this password reset, please ignore this email. Your password will remain unchanged.
-              </p>
-            </td>
-          </tr>
-
-          <!-- Footer -->
-          <tr>
-            <td style="padding: 30px 40px; background-color: #3a3a3a; border-radius: 0 0 8px 8px; border-top: 1px solid #4a4a4a;">
-              <p style="margin: 0 0 10px; color: #b0b0b0; font-size: 13px; text-align: center;">
-                Best regards,<br>
-                <strong>Amber Lake Partners Team</strong>
-              </p>
-              <p style="margin: 0; color: #808080; font-size: 12px; text-align: center;">
-                This is an automated email. Please do not reply to this message.
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-      `;
+              </table>${emailNotice('warning', 'Security Notice:', 'This link will expire in 1 hour for your security.')}${emailMutedNote(
+          "If you didn't request this password reset, please ignore this email. Your password will remain unchanged."
+        )}`
+      });
 
       // Plain text version
       const textContent = `
@@ -346,62 +420,14 @@ This is an automated email. Please do not reply to this message.
     try {
       const recipients = [{ email, name: userName || email }];
 
-      const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Password Changed Successfully</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #1a1a1a;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #1a1a1a; padding: 20px;">
-    <tr>
-      <td align="center">
-        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #2d2d2d; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-          <tr>
-            <td style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 40px; border-radius: 8px 8px 0 0; text-align: center;">
-              <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 700;">✓ Password Changed</h1>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 40px;">
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                Hello${userName ? ` ${userName}` : ''},
-              </p>
-
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                This is a confirmation that your password for your <strong>Amber Lake Partners</strong> account has been successfully changed.
-              </p>
-
-              <div style="margin: 30px 0; padding: 16px; background-color: #1a3d2e; border-left: 4px solid #10b981; border-radius: 4px;">
-                <p style="margin: 0; color: #10b981; font-size: 14px; line-height: 1.6;">
-                  <strong>✓ All Set!</strong> Your password has been updated and all active sessions have been logged out for security.
-                </p>
-              </div>
-
-              <p style="margin: 0; color: #b0b0b0; font-size: 14px; line-height: 1.6;">
-                If you didn't make this change, please contact our support team immediately.
-              </p>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 30px 40px; background-color: #3a3a3a; border-radius: 0 0 8px 8px; border-top: 1px solid #4a4a4a;">
-              <p style="margin: 0; color: #b0b0b0; font-size: 13px; text-align: center;">
-                Best regards,<br>
-                <strong>Amber Lake Partners Team</strong>
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-      `;
+      const htmlContent = emailShell({
+        title: 'Password Changed',
+        bodyHtml: `${emailGreeting(userName)}${emailParagraph(
+          'This is a confirmation that your password for your <strong>Amber Lake Partners</strong> account has been successfully changed.'
+        )}${emailNotice('success', '✓ All Set!', 'Your password has been updated and all active sessions have been logged out for security.')}${emailMutedNote(
+          "If you didn't make this change, please contact our support team immediately."
+        )}`
+      });
 
       const textContent = `
 Password Changed Successfully
@@ -465,81 +491,16 @@ Amber Lake Partners Team
         ? `Observation ${event.data.observationIndex}/${event.data.totalObservations}`
         : 'Recent observation';
 
-      const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Coupon Payment</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #1a1a1a;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #1a1a1a; padding: 20px;">
-    <tr>
-      <td align="center">
-        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #2d2d2d; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-          <tr>
-            <td style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 40px; border-radius: 8px 8px 0 0; text-align: center;">
-              <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 700;">💰 Coupon Payment</h1>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 40px;">
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                Hello${userName ? ` ${userName}` : ''},
-              </p>
-
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                A coupon payment of <strong style="color: #10b981;">${couponRate}</strong> has occurred for:
-              </p>
-
-              <div style="margin: 20px 0; padding: 20px; background-color: #3a3a3a; border-left: 4px solid #10b981; border-radius: 4px;">
-                <p style="margin: 0 0 10px; color: #e0e0e0; font-size: 16px; font-weight: 600;">${product.title || product.productName}</p>
-                <p style="margin: 0; color: #b0b0b0; font-size: 14px;">ISIN: ${product.isin || 'N/A'}</p>
-              </div>
-
-              <table width="100%" cellpadding="8" style="margin: 20px 0; border-collapse: collapse;">
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Coupon Rate:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0; font-weight: 600;">${couponRate}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Observation:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0;">${observationDate}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Basket Level:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0;">${event.data.basketLevelFormatted}</td>
-                </tr>
-              </table>
-
-              <table width="100%" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td align="center" style="padding: 20px 0;">
-                    <a href="${productUrl}" style="display: inline-block; padding: 14px 32px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: #ffffff; text-decoration: none; font-size: 16px; font-weight: 600; border-radius: 8px;">
-                      View Product Details
-                    </a>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 30px 40px; background-color: #3a3a3a; border-radius: 0 0 8px 8px; border-top: 1px solid #4a4a4a;">
-              <p style="margin: 0; color: #b0b0b0; font-size: 13px; text-align: center;">
-                Best regards,<br>
-                <strong>Amber Lake Partners Team</strong>
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`;
+      const htmlContent = emailShell({
+        title: 'Coupon Payment',
+        bodyHtml: `${emailGreeting(userName)}${emailParagraph(
+          `A coupon payment of <strong style="color: ${EMAIL.success};">${couponRate}</strong> has occurred for:`
+        )}${emailProductCard(product)}${emailKvTable([
+          ['Coupon Rate', couponRate, EMAIL.success],
+          ['Observation', observationDate],
+          ['Basket Level', event.data.basketLevelFormatted]
+        ])}${emailButton(productUrl, 'View Product Details')}`
+      });
 
       const textContent = `
 Coupon Payment
@@ -590,92 +551,17 @@ Amber Lake Partners Team
 
       const productUrl = `${config.appUrl}/#products/${product._id}`;
 
-      const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Autocall Triggered</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #1a1a1a;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #1a1a1a; padding: 20px;">
-    <tr>
-      <td align="center">
-        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #2d2d2d; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-          <tr>
-            <td style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); padding: 40px; border-radius: 8px 8px 0 0; text-align: center;">
-              <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 700;">🎯 Autocall Triggered</h1>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 40px;">
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                Hello${userName ? ` ${userName}` : ''},
-              </p>
-
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                The following product has <strong style="color: #3b82f6;">autocalled early</strong>:
-              </p>
-
-              <div style="margin: 20px 0; padding: 20px; background-color: #1a2a3d; border-left: 4px solid #3b82f6; border-radius: 4px;">
-                <p style="margin: 0 0 10px; color: #e0e0e0; font-size: 16px; font-weight: 600;">${product.title || product.productName}</p>
-                <p style="margin: 0; color: #b0b0b0; font-size: 14px;">ISIN: ${product.isin || 'N/A'}</p>
-              </div>
-
-              <table width="100%" cellpadding="8" style="margin: 20px 0; border-collapse: collapse;">
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Basket Level:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0; font-weight: 600;">${event.data.basketLevelFormatted}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Autocall Level:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0;">${event.data.autocallLevelFormatted}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Coupon Paid:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0;">${event.data.couponPaidFormatted}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Redemption Date:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0;">${event.data.redemptionDate}</td>
-                </tr>
-              </table>
-
-              <div style="margin: 20px 0; padding: 16px; background-color: #1a3d2e; border-left: 4px solid #10b981; border-radius: 4px;">
-                <p style="margin: 0; color: #10b981; font-size: 14px; line-height: 1.6;">
-                  <strong>✓ Early Redemption</strong><br>
-                  The product will be redeemed early as the autocall condition has been met.
-                </p>
-              </div>
-
-              <table width="100%" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td align="center" style="padding: 20px 0;">
-                    <a href="${productUrl}" style="display: inline-block; padding: 14px 32px; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: #ffffff; text-decoration: none; font-size: 16px; font-weight: 600; border-radius: 8px;">
-                      View Product Details
-                    </a>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 30px 40px; background-color: #3a3a3a; border-radius: 0 0 8px 8px; border-top: 1px solid #4a4a4a;">
-              <p style="margin: 0; color: #b0b0b0; font-size: 13px; text-align: center;">
-                Best regards,<br>
-                <strong>Amber Lake Partners Team</strong>
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`;
+      const htmlContent = emailShell({
+        title: 'Autocall Triggered',
+        bodyHtml: `${emailGreeting(userName)}${emailParagraph(
+          `The following product has <strong style="color: ${EMAIL.amberText};">autocalled early</strong>:`
+        )}${emailProductCard(product)}${emailKvTable([
+          ['Basket Level', event.data.basketLevelFormatted],
+          ['Autocall Level', event.data.autocallLevelFormatted],
+          ['Coupon Paid', event.data.couponPaidFormatted],
+          ['Redemption Date', event.data.redemptionDate]
+        ])}${emailNotice('success', '✓ Early Redemption', 'The product will be redeemed early as the autocall condition has been met.')}${emailButton(productUrl, 'View Product Details')}`
+      });
 
       const textContent = `
 Autocall Triggered
@@ -729,92 +615,17 @@ Amber Lake Partners Team
 
       const productUrl = `${config.appUrl}/#products/${product._id}`;
 
-      const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Barrier Breach Alert</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #1a1a1a;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #1a1a1a; padding: 20px;">
-    <tr>
-      <td align="center">
-        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #2d2d2d; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-          <tr>
-            <td style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 40px; border-radius: 8px 8px 0 0; text-align: center;">
-              <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 700;">⚠️ Barrier Breach Alert</h1>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 40px;">
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                Hello${userName ? ` ${userName}` : ''},
-              </p>
-
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                A protection barrier breach has been detected:
-              </p>
-
-              <div style="margin: 20px 0; padding: 20px; background-color: #3d1a1a; border-left: 4px solid #ef4444; border-radius: 4px;">
-                <p style="margin: 0 0 10px; color: #e0e0e0; font-size: 16px; font-weight: 600;">${product.title || product.productName}</p>
-                <p style="margin: 0; color: #b0b0b0; font-size: 14px;">ISIN: ${product.isin || 'N/A'}</p>
-              </div>
-
-              <table width="100%" cellpadding="8" style="margin: 20px 0; border-collapse: collapse;">
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Underlying:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0; font-weight: 600;">${event.data.underlyingTicker}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Performance:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0; color: #ef4444;">${event.data.performanceFormatted}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Distance to Barrier:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0;">${event.data.distanceToBarrierFormatted}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Current Price:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0;">${event.data.currentPriceFormatted}</td>
-                </tr>
-              </table>
-
-              <div style="margin: 20px 0; padding: 16px; background-color: #3d3520; border-left: 4px solid #ffc107; border-radius: 4px;">
-                <p style="margin: 0; color: #ffc107; font-size: 14px; line-height: 1.6;">
-                  <strong>⚠️ Attention Required</strong><br>
-                  The underlying asset has fallen below the protection barrier. Capital protection is no longer guaranteed.
-                </p>
-              </div>
-
-              <table width="100%" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td align="center" style="padding: 20px 0;">
-                    <a href="${productUrl}" style="display: inline-block; padding: 14px 32px; background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); color: #ffffff; text-decoration: none; font-size: 16px; font-weight: 600; border-radius: 8px;">
-                      View Product Details
-                    </a>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 30px 40px; background-color: #3a3a3a; border-radius: 0 0 8px 8px; border-top: 1px solid #4a4a4a;">
-              <p style="margin: 0; color: #b0b0b0; font-size: 13px; text-align: center;">
-                Best regards,<br>
-                <strong>Amber Lake Partners Team</strong>
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`;
+      const htmlContent = emailShell({
+        title: 'Barrier Breach Alert',
+        bodyHtml: `${emailGreeting(userName)}${emailParagraph(
+          'A protection barrier breach has been detected:'
+        )}${emailProductCard(product)}${emailKvTable([
+          ['Underlying', event.data.underlyingTicker],
+          ['Performance', event.data.performanceFormatted, EMAIL.danger],
+          ['Distance to Barrier', event.data.distanceToBarrierFormatted],
+          ['Current Price', event.data.currentPriceFormatted]
+        ])}${emailNotice('danger', '⚠️ Attention Required', 'The underlying asset has fallen below the protection barrier. Capital protection is no longer guaranteed.')}${emailButton(productUrl, 'View Product Details')}`
+      });
 
       const textContent = `
 Barrier Breach Alert
@@ -868,88 +679,16 @@ Amber Lake Partners Team
 
       const productUrl = `${config.appUrl}/#products/${product._id}`;
 
-      const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Near Barrier Warning</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #1a1a1a;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #1a1a1a; padding: 20px;">
-    <tr>
-      <td align="center">
-        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #2d2d2d; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-          <tr>
-            <td style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 40px; border-radius: 8px 8px 0 0; text-align: center;">
-              <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 700;">⚠️ Near Barrier Warning</h1>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 40px;">
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                Hello${userName ? ` ${userName}` : ''},
-              </p>
-
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                An underlying asset is approaching the protection barrier:
-              </p>
-
-              <div style="margin: 20px 0; padding: 20px; background-color: #fffbeb; border-left: 4px solid #f59e0b; border-radius: 4px;">
-                <p style="margin: 0 0 10px; color: #e0e0e0; font-size: 16px; font-weight: 600;">${product.title || product.productName}</p>
-                <p style="margin: 0; color: #b0b0b0; font-size: 14px;">ISIN: ${product.isin || 'N/A'}</p>
-              </div>
-
-              <table width="100%" cellpadding="8" style="margin: 20px 0; border-collapse: collapse;">
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Underlying:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0; font-weight: 600;">${event.data.underlyingTicker}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Performance:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0;">${event.data.performanceFormatted}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Distance to Barrier:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0;">${event.data.distanceToBarrierFormatted}</td>
-                </tr>
-              </table>
-
-              <div style="margin: 20px 0; padding: 16px; background-color: #3d3520; border-left: 4px solid #ffc107; border-radius: 4px;">
-                <p style="margin: 0; color: #ffc107; font-size: 14px; line-height: 1.6;">
-                  <strong>⚠️ Monitor Closely</strong><br>
-                  The underlying is within 10% of the protection barrier. Please monitor the situation closely.
-                </p>
-              </div>
-
-              <table width="100%" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td align="center" style="padding: 20px 0;">
-                    <a href="${productUrl}" style="display: inline-block; padding: 14px 32px; background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: #ffffff; text-decoration: none; font-size: 16px; font-weight: 600; border-radius: 8px;">
-                      View Product Details
-                    </a>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 30px 40px; background-color: #3a3a3a; border-radius: 0 0 8px 8px; border-top: 1px solid #4a4a4a;">
-              <p style="margin: 0; color: #b0b0b0; font-size: 13px; text-align: center;">
-                Best regards,<br>
-                <strong>Amber Lake Partners Team</strong>
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`;
+      const htmlContent = emailShell({
+        title: 'Near Barrier Warning',
+        bodyHtml: `${emailGreeting(userName)}${emailParagraph(
+          'An underlying asset is approaching the protection barrier:'
+        )}${emailProductCard(product)}${emailKvTable([
+          ['Underlying', event.data.underlyingTicker],
+          ['Performance', event.data.performanceFormatted],
+          ['Distance to Barrier', event.data.distanceToBarrierFormatted, EMAIL.amberText]
+        ])}${emailNotice('warning', '⚠️ Monitor Closely', 'The underlying is within 10% of the protection barrier. Please monitor the situation closely.')}${emailButton(productUrl, 'View Product Details')}`
+      });
 
       const textContent = `
 Near Barrier Warning
@@ -1002,88 +741,16 @@ Amber Lake Partners Team
 
       const productUrl = `${config.appUrl}/#products/${product._id}`;
 
-      const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Final Observation</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #1a1a1a;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #1a1a1a; padding: 20px;">
-    <tr>
-      <td align="center">
-        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #2d2d2d; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-          <tr>
-            <td style="background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%); padding: 40px; border-radius: 8px 8px 0 0; text-align: center;">
-              <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 700;">📊 Final Observation</h1>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 40px;">
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                Hello${userName ? ` ${userName}` : ''},
-              </p>
-
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                The final observation has occurred for:
-              </p>
-
-              <div style="margin: 20px 0; padding: 20px; background-color: #2a1a3d; border-left: 4px solid #8b5cf6; border-radius: 4px;">
-                <p style="margin: 0 0 10px; color: #e0e0e0; font-size: 16px; font-weight: 600;">${product.title || product.productName}</p>
-                <p style="margin: 0; color: #b0b0b0; font-size: 14px;">ISIN: ${product.isin || 'N/A'}</p>
-              </div>
-
-              <table width="100%" cellpadding="8" style="margin: 20px 0; border-collapse: collapse;">
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Basket Level:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0; font-weight: 600;">${event.data.basketLevelFormatted}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Coupon Paid:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0;">${event.data.couponPaidFormatted}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Total Coupons Earned:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0; color: #10b981;">${event.data.totalCouponsEarnedFormatted}</td>
-                </tr>
-              </table>
-
-              <div style="margin: 20px 0; padding: 16px; background-color: #1a2a3d; border-left: 4px solid #3b82f6; border-radius: 4px;">
-                <p style="margin: 0; color: #60a5fa; font-size: 14px; line-height: 1.6;">
-                  <strong>ℹ️ Maturity Approaching</strong><br>
-                  The product will mature shortly. Final settlement details will be provided.
-                </p>
-              </div>
-
-              <table width="100%" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td align="center" style="padding: 20px 0;">
-                    <a href="${productUrl}" style="display: inline-block; padding: 14px 32px; background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%); color: #ffffff; text-decoration: none; font-size: 16px; font-weight: 600; border-radius: 8px;">
-                      View Product Details
-                    </a>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 30px 40px; background-color: #3a3a3a; border-radius: 0 0 8px 8px; border-top: 1px solid #4a4a4a;">
-              <p style="margin: 0; color: #b0b0b0; font-size: 13px; text-align: center;">
-                Best regards,<br>
-                <strong>Amber Lake Partners Team</strong>
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`;
+      const htmlContent = emailShell({
+        title: 'Final Observation',
+        bodyHtml: `${emailGreeting(userName)}${emailParagraph(
+          'The final observation has occurred for:'
+        )}${emailProductCard(product)}${emailKvTable([
+          ['Basket Level', event.data.basketLevelFormatted],
+          ['Coupon Paid', event.data.couponPaidFormatted],
+          ['Total Coupons Earned', event.data.totalCouponsEarnedFormatted, EMAIL.success]
+        ])}${emailNotice('info', 'ℹ️ Maturity Approaching', 'The product will mature shortly. Final settlement details will be provided.')}${emailButton(productUrl, 'View Product Details')}`
+      });
 
       const textContent = `
 Final Observation
@@ -1136,73 +803,12 @@ Amber Lake Partners Team
 
       const productUrl = `${config.appUrl}/#products/${product._id}`;
 
-      const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Product Matured</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #1a1a1a;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #1a1a1a; padding: 20px;">
-    <tr>
-      <td align="center">
-        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #2d2d2d; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-          <tr>
-            <td style="background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); padding: 40px; border-radius: 8px 8px 0 0; text-align: center;">
-              <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 700;">✓ Product Matured</h1>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 40px;">
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                Hello${userName ? ` ${userName}` : ''},
-              </p>
-
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                The following product has reached maturity and has been redeemed:
-              </p>
-
-              <div style="margin: 20px 0; padding: 20px; background-color: #eef2ff; border-left: 4px solid #6366f1; border-radius: 4px;">
-                <p style="margin: 0 0 10px; color: #e0e0e0; font-size: 16px; font-weight: 600;">${product.title || product.productName}</p>
-                <p style="margin: 0; color: #b0b0b0; font-size: 14px;">ISIN: ${product.isin || 'N/A'}</p>
-              </div>
-
-              <div style="margin: 20px 0; padding: 16px; background-color: #1a3d2e; border-left: 4px solid #10b981; border-radius: 4px;">
-                <p style="margin: 0; color: #10b981; font-size: 14px; line-height: 1.6;">
-                  <strong>✓ Settlement Complete</strong><br>
-                  Final redemption proceeds have been calculated and will be settled according to the product terms.
-                </p>
-              </div>
-
-              <table width="100%" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td align="center" style="padding: 20px 0;">
-                    <a href="${productUrl}" style="display: inline-block; padding: 14px 32px; background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); color: #ffffff; text-decoration: none; font-size: 16px; font-weight: 600; border-radius: 8px;">
-                      View Product Details
-                    </a>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 30px 40px; background-color: #3a3a3a; border-radius: 0 0 8px 8px; border-top: 1px solid #4a4a4a;">
-              <p style="margin: 0; color: #b0b0b0; font-size: 13px; text-align: center;">
-                Best regards,<br>
-                <strong>Amber Lake Partners Team</strong>
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`;
+      const htmlContent = emailShell({
+        title: 'Product Matured',
+        bodyHtml: `${emailGreeting(userName)}${emailParagraph(
+          'The following product has reached maturity and has been redeemed:'
+        )}${emailProductCard(product)}${emailNotice('success', '✓ Settlement Complete', 'Final redemption proceeds have been calculated and will be settled according to the product terms.')}${emailButton(productUrl, 'View Product Details')}`
+      });
 
       const textContent = `
 Product Matured
@@ -1251,88 +857,16 @@ Amber Lake Partners Team
 
       const productUrl = `${config.appUrl}/#products/${product._id}`;
 
-      const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Memory Coupon Added</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #1a1a1a;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #1a1a1a; padding: 20px;">
-    <tr>
-      <td align="center">
-        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #2d2d2d; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-          <tr>
-            <td style="background: linear-gradient(135deg, #a855f7 0%, #9333ea 100%); padding: 40px; border-radius: 8px 8px 0 0; text-align: center;">
-              <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 700;">💾 Memory Coupon Added</h1>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 40px;">
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                Hello${userName ? ` ${userName}` : ''},
-              </p>
-
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                A coupon has been added to memory for future payment:
-              </p>
-
-              <div style="margin: 20px 0; padding: 20px; background-color: #faf5ff; border-left: 4px solid #a855f7; border-radius: 4px;">
-                <p style="margin: 0 0 10px; color: #e0e0e0; font-size: 16px; font-weight: 600;">${product.title || product.productName}</p>
-                <p style="margin: 0; color: #b0b0b0; font-size: 14px;">ISIN: ${product.isin || 'N/A'}</p>
-              </div>
-
-              <table width="100%" cellpadding="8" style="margin: 20px 0; border-collapse: collapse;">
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Coupon Added:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0; font-weight: 600;">${event.data.couponRateFormatted}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Total in Memory:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0; color: #a855f7;">${event.data.totalMemoryCouponsFormatted}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Basket Level:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0;">${event.data.basketLevelFormatted}</td>
-                </tr>
-              </table>
-
-              <div style="margin: 20px 0; padding: 16px; background-color: #1a2a3d; border-left: 4px solid #3b82f6; border-radius: 4px;">
-                <p style="margin: 0; color: #60a5fa; font-size: 14px; line-height: 1.6;">
-                  <strong>ℹ️ Memory Coupon</strong><br>
-                  Coupons in memory will be paid when the product meets coupon payment conditions or at maturity.
-                </p>
-              </div>
-
-              <table width="100%" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td align="center" style="padding: 20px 0;">
-                    <a href="${productUrl}" style="display: inline-block; padding: 14px 32px; background: linear-gradient(135deg, #a855f7 0%, #9333ea 100%); color: #ffffff; text-decoration: none; font-size: 16px; font-weight: 600; border-radius: 8px;">
-                      View Product Details
-                    </a>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 30px 40px; background-color: #3a3a3a; border-radius: 0 0 8px 8px; border-top: 1px solid #4a4a4a;">
-              <p style="margin: 0; color: #b0b0b0; font-size: 13px; text-align: center;">
-                Best regards,<br>
-                <strong>Amber Lake Partners Team</strong>
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`;
+      const htmlContent = emailShell({
+        title: 'Memory Coupon Added',
+        bodyHtml: `${emailGreeting(userName)}${emailParagraph(
+          'A coupon has been added to memory for future payment:'
+        )}${emailProductCard(product)}${emailKvTable([
+          ['Coupon Added', event.data.couponRateFormatted],
+          ['Total in Memory', event.data.totalMemoryCouponsFormatted, EMAIL.amberText],
+          ['Basket Level', event.data.basketLevelFormatted]
+        ])}${emailNotice('info', 'ℹ️ Memory Coupon', 'Coupons in memory will be paid when the product meets coupon payment conditions or at maturity.')}${emailButton(productUrl, 'View Product Details')}`
+      });
 
       const textContent = `
 Memory Coupon Added
@@ -1385,88 +919,16 @@ Amber Lake Partners Team
 
       const productUrl = `${config.appUrl}/#products/${product._id}`;
 
-      const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Barrier Recovered</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #1a1a1a;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #1a1a1a; padding: 20px;">
-    <tr>
-      <td align="center">
-        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #2d2d2d; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-          <tr>
-            <td style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 40px; border-radius: 8px 8px 0 0; text-align: center;">
-              <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 700;">✓ Barrier Recovered</h1>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 40px;">
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                Hello${userName ? ` ${userName}` : ''},
-              </p>
-
-              <p style="margin: 0 0 20px; color: #e0e0e0; font-size: 16px; line-height: 1.6;">
-                Good news! An underlying has recovered above the protection barrier:
-              </p>
-
-              <div style="margin: 20px 0; padding: 20px; background-color: #1a3d2e; border-left: 4px solid #10b981; border-radius: 4px;">
-                <p style="margin: 0 0 10px; color: #e0e0e0; font-size: 16px; font-weight: 600;">${product.title || product.productName}</p>
-                <p style="margin: 0; color: #b0b0b0; font-size: 14px;">ISIN: ${product.isin || 'N/A'}</p>
-              </div>
-
-              <table width="100%" cellpadding="8" style="margin: 20px 0; border-collapse: collapse;">
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Underlying:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0; font-weight: 600;">${event.data.underlyingTicker}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Performance:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0; color: #10b981;">${event.data.performanceFormatted}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #b0b0b0;">Distance to Barrier:</td>
-                  <td style="padding: 8px; border-bottom: 1px solid #4a4a4a; color: #e0e0e0;">${event.data.distanceToBarrierFormatted}</td>
-                </tr>
-              </table>
-
-              <div style="margin: 20px 0; padding: 16px; background-color: #1a3d2e; border-left: 4px solid #10b981; border-radius: 4px;">
-                <p style="margin: 0; color: #10b981; font-size: 14px; line-height: 1.6;">
-                  <strong>✓ Capital Protection Restored</strong><br>
-                  The underlying has recovered above the protection barrier. Capital protection is now active.
-                </p>
-              </div>
-
-              <table width="100%" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td align="center" style="padding: 20px 0;">
-                    <a href="${productUrl}" style="display: inline-block; padding: 14px 32px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: #ffffff; text-decoration: none; font-size: 16px; font-weight: 600; border-radius: 8px;">
-                      View Product Details
-                    </a>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding: 30px 40px; background-color: #3a3a3a; border-radius: 0 0 8px 8px; border-top: 1px solid #4a4a4a;">
-              <p style="margin: 0; color: #b0b0b0; font-size: 13px; text-align: center;">
-                Best regards,<br>
-                <strong>Amber Lake Partners Team</strong>
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`;
+      const htmlContent = emailShell({
+        title: 'Barrier Recovered',
+        bodyHtml: `${emailGreeting(userName)}${emailParagraph(
+          'Good news! An underlying has recovered above the protection barrier:'
+        )}${emailProductCard(product)}${emailKvTable([
+          ['Underlying', event.data.underlyingTicker],
+          ['Performance', event.data.performanceFormatted, EMAIL.success],
+          ['Distance to Barrier', event.data.distanceToBarrierFormatted]
+        ])}${emailNotice('success', '✓ Capital Protection Restored', 'The underlying has recovered above the protection barrier. Capital protection is now active.')}${emailButton(productUrl, 'View Product Details')}`
+      });
 
       const textContent = `
 Barrier Recovered
@@ -1551,19 +1013,19 @@ Amber Lake Partners Team
         day: 'numeric'
       });
 
-      // Helper function to get event icon and color (dark mode)
+      // Helper function to get event icon and semantic color
       const getEventStyle = (eventType) => {
         const styles = {
-          'coupon_paid': { icon: '💰', color: '#10b981', bgColor: '#1a3d2e', borderColor: '#10b981' },
-          'autocall_triggered': { icon: '🎯', color: '#60a5fa', bgColor: '#1a2a3d', borderColor: '#3b82f6' },
-          'barrier_breached': { icon: '⚠️', color: '#f87171', bgColor: '#3d1a1a', borderColor: '#ef4444' },
-          'barrier_near': { icon: '⚠️', color: '#fbbf24', bgColor: '#3d3520', borderColor: '#f59e0b' },
-          'final_observation': { icon: '📊', color: '#a78bfa', bgColor: '#2a1a3d', borderColor: '#8b5cf6' },
-          'product_matured': { icon: '✓', color: '#818cf8', bgColor: '#1a1a3d', borderColor: '#6366f1' },
-          'memory_coupon_added': { icon: '💾', color: '#c084fc', bgColor: '#2a1a3d', borderColor: '#a855f7' },
-          'barrier_recovered': { icon: '✓', color: '#10b981', bgColor: '#1a3d2e', borderColor: '#10b981' }
+          'coupon_paid': { icon: '💰', color: EMAIL.success },
+          'autocall_triggered': { icon: '🎯', color: EMAIL.info },
+          'barrier_breached': { icon: '⚠️', color: EMAIL.danger },
+          'barrier_near': { icon: '⚠️', color: EMAIL.warning },
+          'final_observation': { icon: '📊', color: EMAIL.info },
+          'product_matured': { icon: '✓', color: EMAIL.success },
+          'memory_coupon_added': { icon: '💾', color: EMAIL.info },
+          'barrier_recovered': { icon: '✓', color: EMAIL.success }
         };
-        return styles[eventType] || { icon: '📢', color: '#9ca3af', bgColor: '#2d2d2d', borderColor: '#6b7280' };
+        return styles[eventType] || { icon: '📢', color: EMAIL.muted };
       };
 
       // Helper function to format currency
@@ -1596,27 +1058,23 @@ Amber Lake Partners Team
 
           eventsListHtml += `
             <tr>
-              <td style="padding: 12px 0; border-bottom: 1px solid #4a4a4a;">
-                <div style="display: flex; align-items: flex-start;">
-                  <span style="font-size: 20px; margin-right: 12px;">${style.icon}</span>
-                  <div style="flex: 1;">
-                    <div style="font-weight: 600; color: ${style.color}; margin-bottom: 4px;">${eventName}</div>
-                    <div style="color: #9ca3af; font-size: 14px; line-height: 1.5;">${notif.summary}</div>
-                  </div>
-                </div>
+              <td width="34" valign="top" style="padding: 12px 0; border-bottom: 1px solid ${EMAIL.hairline}; font-size: 18px;">${style.icon}</td>
+              <td style="padding: 12px 0; border-bottom: 1px solid ${EMAIL.hairline};">
+                <div style="font-weight: 600; color: ${style.color}; font-size: 14px; margin-bottom: 4px;">${eventName}</div>
+                <div style="color: ${EMAIL.muted}; font-size: 13.5px; line-height: 1.5;">${notif.summary}</div>
               </td>
             </tr>
           `;
         });
 
         eventCardsHtml += `
-          <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 24px; background-color: #2d2d2d; border-radius: 8px; border: 1px solid #4a4a4a; overflow: hidden;">
+          <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 22px; border: 1px solid ${EMAIL.hairline}; border-radius: 10px; overflow: hidden;">
             <!-- Product Header -->
             <tr>
-              <td style="padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
-                <h2 style="margin: 0 0 8px; color: #ffffff; font-size: 18px; font-weight: 600;">${productName}</h2>
-                <p style="margin: 0 0 4px; color: #a5b4fc; font-size: 14px;">ISIN: ${productIsin}</p>
-                <p style="margin: 0; color: #a5b4fc; font-size: 14px;">
+              <td style="padding: 18px 20px; background-color: ${EMAIL.headerBg}; border-bottom: 2px solid ${EMAIL.amber};">
+                <h2 style="margin: 0 0 6px; color: ${EMAIL.headerText}; font-family: ${EMAIL.serif}; font-size: 17px; font-weight: 500;">${productName}</h2>
+                <p style="margin: 0 0 4px; color: ${EMAIL.headerMuted}; font-size: 11px; font-weight: 600; letter-spacing: 1.4px; text-transform: uppercase;">ISIN&nbsp;&nbsp;${productIsin}</p>
+                <p style="margin: 0; color: ${EMAIL.headerMuted}; font-size: 13px;">
                   ${formatCurrency(totalInvested, currency)} invested · ${clientCount} client${clientCount !== 1 ? 's' : ''}
                 </p>
               </td>
@@ -1633,8 +1091,8 @@ Amber Lake Partners Team
 
             <!-- View Button -->
             <tr>
-              <td style="padding: 20px;" align="center">
-                <a href="${productUrl}" style="display: inline-block; padding: 12px 24px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; font-size: 14px; font-weight: 600; border-radius: 6px;">
+              <td style="padding: 18px 20px;" align="center">
+                <a href="${productUrl}" style="display: inline-block; padding: 11px 24px; background-color: ${EMAIL.amberFill}; color: #ffffff; text-decoration: none; font-size: 13px; font-weight: 600; letter-spacing: 0.4px; border-radius: 7px;">
                   View Product Report →
                 </a>
               </td>
@@ -1643,80 +1101,32 @@ Amber Lake Partners Team
         `;
       }
 
-      const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Daily Product Notifications</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #1a1a1a;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #1a1a1a; padding: 40px 20px;">
-    <tr>
-      <td align="center">
-        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #2d2d2d; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.07); overflow: hidden;">
-          <!-- Header -->
-          <tr>
-            <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 40px 32px; text-align: center;">
-              <h1 style="margin: 0 0 8px; color: #ffffff; font-size: 28px; font-weight: 700;">Daily Product Notifications</h1>
-              <p style="margin: 0; color: #a5b4fc; font-size: 16px;">${today}</p>
-            </td>
-          </tr>
-
-          <!-- Summary Banner -->
-          <tr>
-            <td style="padding: 24px 40px; background: linear-gradient(to right, #2a1a3d, #1a2a3d); border-bottom: 1px solid #4a4a4a;">
-              <table width="100%" cellpadding="0" cellspacing="0">
+      const htmlContent = emailShell({
+        title: 'Daily Product Notifications',
+        subtitle: today,
+        bodyHtml: `
+              <!-- Summary stats -->
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin: 0 0 24px;">
                 <tr>
-                  <td align="center" style="padding: 8px;">
-                    <div style="font-size: 32px; font-weight: 700; color: #4c1d95; margin-bottom: 4px;">${eventCount}</div>
-                    <div style="font-size: 13px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px;">Event${eventCount !== 1 ? 's' : ''}</div>
+                  <td align="center" width="50%" style="padding: 16px; background-color: ${EMAIL.paper}; border: 1px solid ${EMAIL.hairline}; border-radius: 10px;">
+                    <div style="font-family: ${EMAIL.serif}; font-size: 30px; color: ${EMAIL.ink};">${eventCount}</div>
+                    <div style="font-size: 11px; font-weight: 600; color: ${EMAIL.muted}; text-transform: uppercase; letter-spacing: 1.4px; margin-top: 4px;">Event${eventCount !== 1 ? 's' : ''}</div>
                   </td>
-                  <td align="center" style="padding: 8px;">
-                    <div style="font-size: 32px; font-weight: 700; color: #60a5fa; margin-bottom: 4px;">${productCount}</div>
-                    <div style="font-size: 13px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px;">Product${productCount !== 1 ? 's' : ''}</div>
+                  <td width="12"></td>
+                  <td align="center" width="50%" style="padding: 16px; background-color: ${EMAIL.paper}; border: 1px solid ${EMAIL.hairline}; border-radius: 10px;">
+                    <div style="font-family: ${EMAIL.serif}; font-size: 30px; color: ${EMAIL.ink};">${productCount}</div>
+                    <div style="font-size: 11px; font-weight: 600; color: ${EMAIL.muted}; text-transform: uppercase; letter-spacing: 1.4px; margin-top: 4px;">Product${productCount !== 1 ? 's' : ''}</div>
                   </td>
                 </tr>
               </table>
-            </td>
-          </tr>
 
-          <!-- Content -->
-          <tr>
-            <td style="padding: 32px 40px;">
-              <p style="margin: 0 0 24px; color: #c0c0c0; font-size: 15px; line-height: 1.6;">
+              <p style="margin: 0 0 24px; color: ${EMAIL.body}; font-size: 14.5px; line-height: 1.65;">
                 Here's your daily summary of structured product notifications. Review the events below and click through to view detailed product reports.
               </p>
 
-              ${eventCardsHtml}
-
-              <div style="margin-top: 24px; padding: 16px; background-color: #3a3a3a; border-left: 4px solid #667eea; border-radius: 4px;">
-                <p style="margin: 0; color: #4b5563; font-size: 14px; line-height: 1.5;">
-                  <strong>📊 Need Help?</strong> For questions about these notifications or product performance, please contact your relationship manager.
-                </p>
-              </div>
-            </td>
-          </tr>
-
-          <!-- Footer -->
-          <tr>
-            <td style="padding: 32px 40px; background-color: #3a3a3a; border-top: 1px solid #4a4a4a;">
-              <p style="margin: 0 0 8px; color: #9ca3af; font-size: 14px; text-align: center;">
-                <strong>Amber Lake Partners</strong>
-              </p>
-              <p style="margin: 0; color: #9ca3af; font-size: 12px; text-align: center;">
-                This is an automated daily digest. Please do not reply to this email.
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-      `;
+              ${eventCardsHtml}${emailNotice('info', '📊 Need Help?', 'For questions about these notifications or product performance, please contact your relationship manager.')}`,
+        footerNote: 'This is an automated daily digest. Please do not reply to this email.'
+      });
 
       // Build plain text version
       let textContent = `
@@ -1821,34 +1231,31 @@ This is an automated daily digest. Please do not reply to this email.
         fileDetails = []
       } = syncResults;
 
-      // Status colors and icons - now considers stale data
+      // Status - considers both errors and stale data
       const hasErrors = connectionsFailed > 0 || errors.length > 0;
       const hasStaleData = connectionsWithStaleData > 0;
-      const allFresh = !hasErrors && !hasStaleData && connectionsSucceeded === connectionsProcessed;
 
-      let statusColor, statusIcon, statusText, headerGradient;
+      let statusTone, statusIcon, statusText;
       if (hasErrors) {
-        statusColor = '#ef4444';  // Red
+        statusTone = 'danger';
         statusIcon = '⚠️';
         statusText = 'Completed with Errors';
-        headerGradient = 'linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)';
       } else if (hasStaleData) {
-        statusColor = '#f59e0b';  // Orange
+        statusTone = 'warning';
         statusIcon = '⚠️';
         statusText = `${connectionsSucceeded}/${connectionsProcessed} Fresh Data`;
-        headerGradient = 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)';
       } else {
-        statusColor = '#10b981';  // Green
+        statusTone = 'success';
         statusIcon = '✓';
         statusText = 'All Data Fresh';
-        headerGradient = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
       }
+      const statusColor = EMAIL_TONES[statusTone].color;
 
       // Build connection details rows
       let connectionRowsHtml = '';
       fileDetails.forEach(detail => {
-        const statusIcon = detail.success ? '✓' : '✗';
-        const statusColor = detail.success ? '#10b981' : '#ef4444';
+        const rowIcon = detail.success ? '✓' : '✗';
+        const rowIconColor = detail.success ? EMAIL.success : EMAIL.danger;
         // Show files for SFTP (downloaded) or local (deposited) connections
         // For local, show skipped files if no new files (to show what's available)
         const hasNewFiles = detail.downloadedFiles?.length > 0;
@@ -1867,38 +1274,38 @@ This is an automated daily digest. Please do not reply to this email.
         let freshnessIcon, freshnessColor, freshnessText;
         if (!detail.success) {
           freshnessIcon = '❌';
-          freshnessColor = '#ef4444';
+          freshnessColor = EMAIL.danger;
           freshnessText = 'Error';
         } else if (freshness.status === 'fresh') {
           freshnessIcon = '🟢';
-          freshnessColor = '#10b981';
+          freshnessColor = EMAIL.success;
           freshnessText = freshness.formattedDate || 'Fresh';
         } else if (freshness.status === 'stale') {
           freshnessIcon = '🟡';
-          freshnessColor = '#eab308';
+          freshnessColor = EMAIL.warning;
           freshnessText = `${freshness.formattedDate} (1 day old)`;
         } else if (freshness.status === 'old') {
           freshnessIcon = '🟠';
-          freshnessColor = '#f59e0b';
+          freshnessColor = EMAIL.warning;
           freshnessText = `${freshness.formattedDate} (${freshness.businessDaysOld} days old)`;
         } else {
           freshnessIcon = '⚪';
-          freshnessColor = '#6b7280';
+          freshnessColor = EMAIL.muted;
           freshnessText = 'No data';
         }
 
         connectionRowsHtml += `
-          <tr class="table-row">
-            <td class="table-cell" style="padding: 12px 16px; border-bottom: 1px solid #4a4a4a;">
-              <span style="color: ${statusColor}; font-weight: 600; margin-right: 8px;">${statusIcon}</span>
-              <strong class="text-primary" style="color: #e0e0e0;">${detail.connectionName}</strong>
-              <span class="text-muted" style="color: #9ca3af; font-size: 13px; margin-left: 8px;">(${detail.connectionType})</span>
+          <tr>
+            <td style="padding: 12px 16px; border-bottom: 1px solid ${EMAIL.hairline};">
+              <span style="color: ${rowIconColor}; font-weight: 600; margin-right: 8px;">${rowIcon}</span>
+              <strong style="color: ${EMAIL.ink};">${detail.connectionName}</strong>
+              <span style="color: ${EMAIL.muted}; font-size: 13px; margin-left: 8px;">(${detail.connectionType})</span>
             </td>
-            <td class="table-cell" style="padding: 12px 16px; border-bottom: 1px solid #4a4a4a; text-align: center; color: #c0c0c0;">${detail.positionsProcessed || 0}</td>
-            <td class="table-cell" style="padding: 12px 16px; border-bottom: 1px solid #4a4a4a; text-align: center; color: ${freshnessColor}; font-size: 13px;">
+            <td style="padding: 12px 16px; border-bottom: 1px solid ${EMAIL.hairline}; text-align: center; color: ${EMAIL.body};">${detail.positionsProcessed || 0}</td>
+            <td style="padding: 12px 16px; border-bottom: 1px solid ${EMAIL.hairline}; text-align: center; color: ${freshnessColor}; font-size: 13px;">
               ${freshnessIcon} ${freshnessText}
             </td>
-            <td class="table-cell" style="padding: 12px 16px; border-bottom: 1px solid #4a4a4a; color: ${detail.success ? '#6b7280' : '#ef4444'}; font-size: 13px;">${filesText}</td>
+            <td style="padding: 12px 16px; border-bottom: 1px solid ${EMAIL.hairline}; color: ${detail.success ? EMAIL.muted : EMAIL.danger}; font-size: 13px;">${filesText}</td>
           </tr>
         `;
       });
@@ -1907,29 +1314,30 @@ This is an automated daily digest. Please do not reply to this email.
       let notificationsHtml = '';
       if (notifications.length > 0) {
         const notificationItems = notifications.map(notif => {
-          const typeColors = {
-            'unauthorized_overdraft': { bg: '#fef2f2', darkBg: '#451a1a', border: '#ef4444', icon: '💰', text: 'Negative Cash' },
-            'allocation_breach': { bg: '#fef3c7', darkBg: '#451a03', border: '#f59e0b', icon: '⚠️', text: 'Allocation Breach' },
-            'unknown_structured_product': { bg: '#dbeafe', darkBg: '#1e3a5f', border: '#3b82f6', icon: '❓', text: 'Unknown Product' },
-            'auto_allocation_created': { bg: '#d1fae5', darkBg: '#14532d', border: '#10b981', icon: '✓', text: 'Auto-Allocation' },
-            'price_override': { bg: '#ede9fe', darkBg: '#2e1065', border: '#8b5cf6', icon: '📊', text: 'Price Update' }
+          const typeTones = {
+            'unauthorized_overdraft': { tone: 'danger', icon: '💰', text: 'Negative Cash' },
+            'allocation_breach': { tone: 'warning', icon: '⚠️', text: 'Allocation Breach' },
+            'unknown_structured_product': { tone: 'info', icon: '❓', text: 'Unknown Product' },
+            'auto_allocation_created': { tone: 'success', icon: '✓', text: 'Auto-Allocation' },
+            'price_override': { tone: 'info', icon: '📊', text: 'Price Update' }
           };
-          const style = typeColors[notif.eventType] || { bg: '#f3f4f6', darkBg: '#374151', border: '#6b7280', icon: '📢', text: notif.eventType };
+          const mapped = typeTones[notif.eventType] || { tone: 'info', icon: '📢', text: notif.eventType };
+          const t = EMAIL_TONES[mapped.tone];
 
           return `
-            <div class="notification-item" style="margin-bottom: 12px; padding: 12px 16px; background-color: ${style.darkBg}; border-left: 4px solid ${style.border}; border-radius: 4px;">
-              <div class="text-primary" style="font-weight: 600; color: #c0c0c0; margin-bottom: 4px;">
-                ${style.icon} ${style.text}
+            <div style="margin-bottom: 12px; padding: 12px 16px; background-color: ${t.wash}; border-left: 3px solid ${t.color}; border-radius: 6px;">
+              <div style="font-weight: 600; color: ${t.color}; font-size: 14px; margin-bottom: 4px;">
+                ${mapped.icon} ${mapped.text}
               </div>
-              <div class="text-secondary" style="color: #9ca3af; font-size: 14px;">${notif.message || notif.summary || ''}</div>
+              <div style="color: ${EMAIL.body}; font-size: 13.5px;">${notif.message || notif.summary || ''}</div>
             </div>
           `;
         }).join('');
 
         notificationsHtml = `
           <tr>
-            <td class="notification-section" style="padding: 24px 40px; background-color: #3a3a3a; border-top: 1px solid #4a4a4a;">
-              <h2 class="text-primary" style="margin: 0 0 16px; font-size: 18px; font-weight: 600; color: #e0e0e0;">
+            <td style="padding: 24px 40px; background-color: ${EMAIL.paper}; border-top: 1px solid ${EMAIL.hairline};">
+              <h2 style="margin: 0 0 16px; font-family: ${EMAIL.serif}; font-size: 18px; font-weight: 500; color: ${EMAIL.ink};">
                 Notifications Generated (${notifications.length})
               </h2>
               ${notificationItems}
@@ -1942,16 +1350,16 @@ This is an automated daily digest. Please do not reply to this email.
       let errorsHtml = '';
       if (errors.length > 0) {
         const errorItems = errors.map(err => `
-          <div class="error-item" style="margin-bottom: 8px; padding: 12px 16px; background-color: #3d1a1a; border-left: 4px solid #ef4444; border-radius: 4px;">
-            <strong style="color: #991b1b;">${err.connectionName || 'Unknown'}</strong>
-            <div style="color: #7f1d1d; font-size: 14px; margin-top: 4px;">${err.error}</div>
+          <div style="margin-bottom: 8px; padding: 12px 16px; background-color: ${EMAIL.card}; border: 1px solid ${EMAIL.hairline}; border-left: 3px solid ${EMAIL.danger}; border-radius: 6px;">
+            <strong style="color: ${EMAIL.danger};">${err.connectionName || 'Unknown'}</strong>
+            <div style="color: ${EMAIL.body}; font-size: 13.5px; margin-top: 4px;">${err.error}</div>
           </div>
         `).join('');
 
         errorsHtml = `
           <tr>
-            <td class="error-section" style="padding: 24px 40px; background-color: #3d1a1a;">
-              <h2 style="margin: 0 0 16px; font-size: 18px; font-weight: 600; color: #991b1b;">
+            <td style="padding: 24px 40px; background-color: ${EMAIL.dangerWash}; border-top: 1px solid ${EMAIL.hairline};">
+              <h2 style="margin: 0 0 16px; font-family: ${EMAIL.serif}; font-size: 18px; font-weight: 500; color: ${EMAIL.danger};">
                 ⚠️ Errors (${errors.length})
               </h2>
               ${errorItems}
@@ -1960,171 +1368,58 @@ This is an automated daily digest. Please do not reply to this email.
         `;
       }
 
-      const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="color-scheme" content="light dark">
-  <meta name="supported-color-schemes" content="light dark">
-  <title>Bank Sync Report</title>
-  <style>
-    :root {
-      color-scheme: light dark;
-      supported-color-schemes: light dark;
-    }
-
-    /* Dark mode styles */
-    @media (prefers-color-scheme: dark) {
-      .email-body {
-        background-color: #e0e0e0 !important;
-      }
-      .email-container {
-        background-color: #2d2d2d !important;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3) !important;
-      }
-      .content-section {
-        background-color: #2d2d2d !important;
-        border-color: #4a4a4a !important;
-      }
-      .stat-card {
-        background-color: #3a3a3a !important;
-      }
-      .text-primary {
-        color: #e0e0e0 !important;
-      }
-      .text-secondary {
-        color: #b0b0b0 !important;
-      }
-      .text-muted {
-        color: #9ca3af !important;
-      }
-      .table-header {
-        background-color: #3a3a3a !important;
-        border-color: #4a4a4a !important;
-      }
-      .table-row {
-        border-color: #4a4a4a !important;
-      }
-      .table-cell {
-        border-color: #4a4a4a !important;
-        color: #d0d0d0 !important;
-      }
-      .footer-section {
-        background-color: #3a3a3a !important;
-        border-color: #4a4a4a !important;
-      }
-      .notification-section {
-        background-color: #3a3a3a !important;
-        border-color: #4a4a4a !important;
-      }
-      .notification-item {
-        background-color: #3a3a3a !important;
-      }
-      .error-section {
-        background-color: #451a1a !important;
-      }
-      .error-item {
-        background-color: #7f1d1d !important;
-      }
-      .details-table {
-        border-color: #c0c0c0 !important;
-      }
-    }
-  </style>
-</head>
-<body class="email-body" style="margin: 0; padding: 0; font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #1a1a1a;">
-  <table width="100%" cellpadding="0" cellspacing="0" class="email-body" style="background-color: #1a1a1a; padding: 40px 20px;">
-    <tr>
-      <td align="center">
-        <table width="700" cellpadding="0" cellspacing="0" class="email-container" style="background-color: #2d2d2d; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.07); overflow: hidden;">
-
-          <!-- Header -->
-          <tr>
-            <td style="background: ${headerGradient}; padding: 40px 40px 32px; text-align: center;">
-              <h1 style="margin: 0 0 8px; color: #ffffff; font-size: 28px; font-weight: 700;">
-                ${statusIcon} Bank Sync ${statusText}
-              </h1>
-              <p style="margin: 0 0 4px; color: #a5b4fc; font-size: 16px;">${today}</p>
-              <p style="margin: 0; color: #a5b4fc; font-size: 14px;">
-                Triggered: ${triggerSource === 'cron' ? 'Automatic (Cron)' : 'Manual'} at ${time}
-              </p>
-            </td>
-          </tr>
-
-          <!-- Summary Stats -->
-          <tr>
-            <td class="content-section" style="padding: 32px 40px; border-bottom: 1px solid #4a4a4a; background-color: #2d2d2d;">
-              <table width="100%" cellpadding="0" cellspacing="0">
+      const htmlContent = emailShell({
+        title: 'Bank Sync Report',
+        subtitle: `${today} · Triggered: ${triggerSource === 'cron' ? 'Automatic (Cron)' : 'Manual'} at ${time}`,
+        headerExtraHtml: `
+              <div style="margin-top: 14px;"><span style="display: inline-block; padding: 6px 16px; border-radius: 20px; background-color: ${statusColor}; color: #ffffff; font-size: 12.5px; font-weight: 600; letter-spacing: 0.3px;">${statusIcon} ${statusText}</span></div>`,
+        width: 700,
+        bodyHtml: `
+              <!-- Summary Stats -->
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin: 0 0 28px;">
                 <tr>
-                  <td align="center" class="stat-card" style="padding: 16px; background-color: #3a3a3a; border-radius: 8px; margin-right: 12px;">
-                    <div style="font-size: 36px; font-weight: 700; color: ${connectionsFailed === 0 ? '#10b981' : '#ef4444'};">
+                  <td align="center" style="padding: 16px 8px; background-color: ${EMAIL.paper}; border: 1px solid ${EMAIL.hairline}; border-radius: 10px;">
+                    <div style="font-family: ${EMAIL.serif}; font-size: 28px; color: ${connectionsFailed === 0 ? EMAIL.success : EMAIL.danger};">
                       ${connectionsProcessed - connectionsFailed}/${connectionsProcessed}
                     </div>
-                    <div class="text-muted" style="font-size: 13px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;">Connected</div>
+                    <div style="font-size: 11px; font-weight: 600; color: ${EMAIL.muted}; text-transform: uppercase; letter-spacing: 1.2px; margin-top: 4px;">Connected</div>
                   </td>
                   <td width="12"></td>
-                  <td align="center" class="stat-card" style="padding: 16px; background-color: #3a3a3a; border-radius: 8px;">
-                    <div style="font-size: 36px; font-weight: 700; color: #3b82f6;">${filesDownloaded}</div>
-                    <div class="text-muted" style="font-size: 13px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;">New Files</div>
+                  <td align="center" style="padding: 16px 8px; background-color: ${EMAIL.paper}; border: 1px solid ${EMAIL.hairline}; border-radius: 10px;">
+                    <div style="font-family: ${EMAIL.serif}; font-size: 28px; color: ${EMAIL.ink};">${filesDownloaded}</div>
+                    <div style="font-size: 11px; font-weight: 600; color: ${EMAIL.muted}; text-transform: uppercase; letter-spacing: 1.2px; margin-top: 4px;">New Files</div>
                   </td>
                   <td width="12"></td>
-                  <td align="center" class="stat-card" style="padding: 16px; background-color: #3a3a3a; border-radius: 8px;">
-                    <div style="font-size: 36px; font-weight: 700; color: #8b5cf6;">${positionsProcessed}</div>
-                    <div class="text-muted" style="font-size: 13px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;">Positions</div>
+                  <td align="center" style="padding: 16px 8px; background-color: ${EMAIL.paper}; border: 1px solid ${EMAIL.hairline}; border-radius: 10px;">
+                    <div style="font-family: ${EMAIL.serif}; font-size: 28px; color: ${EMAIL.ink};">${positionsProcessed}</div>
+                    <div style="font-size: 11px; font-weight: 600; color: ${EMAIL.muted}; text-transform: uppercase; letter-spacing: 1.2px; margin-top: 4px;">Positions</div>
                   </td>
                   <td width="12"></td>
-                  <td align="center" class="stat-card" style="padding: 16px; background-color: #3a3a3a; border-radius: 8px;">
-                    <div style="font-size: 36px; font-weight: 700; color: ${connectionsSucceeded === connectionsProcessed ? '#10b981' : (connectionsSucceeded > 0 ? '#f59e0b' : '#ef4444')};">${connectionsSucceeded}/${connectionsProcessed}</div>
-                    <div class="text-muted" style="font-size: 13px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;">Data Fresh</div>
+                  <td align="center" style="padding: 16px 8px; background-color: ${EMAIL.paper}; border: 1px solid ${EMAIL.hairline}; border-radius: 10px;">
+                    <div style="font-family: ${EMAIL.serif}; font-size: 28px; color: ${connectionsSucceeded === connectionsProcessed ? EMAIL.success : (connectionsSucceeded > 0 ? EMAIL.warning : EMAIL.danger)};">${connectionsSucceeded}/${connectionsProcessed}</div>
+                    <div style="font-size: 11px; font-weight: 600; color: ${EMAIL.muted}; text-transform: uppercase; letter-spacing: 1.2px; margin-top: 4px;">Data Fresh</div>
                   </td>
                 </tr>
               </table>
-            </td>
-          </tr>
 
-          <!-- Connection Details -->
-          <tr>
-            <td class="content-section" style="padding: 24px 40px; background-color: #2d2d2d;">
-              <h2 class="text-primary" style="margin: 0 0 16px; font-size: 18px; font-weight: 600; color: #e0e0e0;">Connection Details</h2>
-              <table width="100%" cellpadding="0" cellspacing="0" class="details-table" style="border: 1px solid #4a4a4a; border-radius: 8px; overflow: hidden;">
+              <!-- Connection Details -->
+              <h2 style="margin: 0 0 16px; font-family: ${EMAIL.serif}; font-size: 18px; font-weight: 500; color: ${EMAIL.ink};">Connection Details</h2>
+              <table width="100%" cellpadding="0" cellspacing="0" style="border: 1px solid ${EMAIL.hairline}; border-radius: 8px; overflow: hidden;">
                 <thead>
-                  <tr class="table-header" style="background-color: #3a3a3a;">
-                    <th class="table-cell" style="padding: 12px 16px; text-align: left; font-size: 13px; font-weight: 600; color: #c0c0c0; border-bottom: 1px solid #4a4a4a;">Connection</th>
-                    <th class="table-cell" style="padding: 12px 16px; text-align: center; font-size: 13px; font-weight: 600; color: #c0c0c0; border-bottom: 1px solid #4a4a4a;">Positions</th>
-                    <th class="table-cell" style="padding: 12px 16px; text-align: center; font-size: 13px; font-weight: 600; color: #c0c0c0; border-bottom: 1px solid #4a4a4a;">Data Freshness</th>
-                    <th class="table-cell" style="padding: 12px 16px; text-align: left; font-size: 13px; font-weight: 600; color: #c0c0c0; border-bottom: 1px solid #4a4a4a;">Files</th>
+                  <tr style="background-color: ${EMAIL.paper};">
+                    <th style="padding: 12px 16px; text-align: left; font-size: 11px; font-weight: 600; letter-spacing: 1.2px; text-transform: uppercase; color: ${EMAIL.muted}; border-bottom: 1px solid ${EMAIL.hairline};">Connection</th>
+                    <th style="padding: 12px 16px; text-align: center; font-size: 11px; font-weight: 600; letter-spacing: 1.2px; text-transform: uppercase; color: ${EMAIL.muted}; border-bottom: 1px solid ${EMAIL.hairline};">Positions</th>
+                    <th style="padding: 12px 16px; text-align: center; font-size: 11px; font-weight: 600; letter-spacing: 1.2px; text-transform: uppercase; color: ${EMAIL.muted}; border-bottom: 1px solid ${EMAIL.hairline};">Data Freshness</th>
+                    <th style="padding: 12px 16px; text-align: left; font-size: 11px; font-weight: 600; letter-spacing: 1.2px; text-transform: uppercase; color: ${EMAIL.muted}; border-bottom: 1px solid ${EMAIL.hairline};">Files</th>
                   </tr>
                 </thead>
                 <tbody>
-                  ${connectionRowsHtml || '<tr><td colspan="4" class="table-cell text-muted" style="padding: 24px; text-align: center; color: #9ca3af;">No connections processed</td></tr>'}
+                  ${connectionRowsHtml || `<tr><td colspan="4" style="padding: 24px; text-align: center; color: ${EMAIL.muted};">No connections processed</td></tr>`}
                 </tbody>
-              </table>
-            </td>
-          </tr>
-
-          ${notificationsHtml}
-          ${errorsHtml}
-
-          <!-- Footer -->
-          <tr>
-            <td class="footer-section" style="padding: 32px 40px; background-color: #3a3a3a; border-top: 1px solid #4a4a4a;">
-              <p class="text-secondary" style="margin: 0 0 8px; color: #9ca3af; font-size: 14px; text-align: center;">
-                <strong>Ambervision</strong> - Amber Lake Partners
-              </p>
-              <p class="text-muted" style="margin: 0; color: #9ca3af; font-size: 12px; text-align: center;">
-                This is an automated bank sync report. Please do not reply to this email.
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-      `;
+              </table>`,
+        sectionsHtml: `${notificationsHtml}${errorsHtml}`,
+        footerNote: 'This is an automated bank sync report. Please do not reply to this email.'
+      });
 
       // Build plain text version
       let textContent = `

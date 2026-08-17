@@ -34,7 +34,7 @@ const UserInfoDisplay = ({ user }) => {
       case 'admin':
         return { bg: '#fd7e14', text: 'white' };
       case 'client':
-        return { bg: '#007bff', text: 'white' };
+        return { bg: 'var(--accent-color)', text: 'white' };
       default:
         return { bg: '#6c757d', text: 'white' };
     }
@@ -64,7 +64,7 @@ const UserInfoDisplay = ({ user }) => {
             width: '60px',
             height: '60px',
             borderRadius: '50%',
-            background: 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+            background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',

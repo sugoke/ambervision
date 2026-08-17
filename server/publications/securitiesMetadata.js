@@ -1,7 +1,7 @@
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetadata.js';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
 
 /**
@@ -17,10 +17,7 @@ Meteor.publish('securitiesMetadata', async function(sessionId, filters = {}) {
     return this.ready();
   }
 
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true
-  });
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) {
     console.log('[securitiesMetadata] Invalid session');

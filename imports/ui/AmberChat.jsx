@@ -138,6 +138,7 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
   const [error, setError] = useState(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
+  const panelRef = useRef(null);
 
   // Get current user ID from prop
   const currentUserId = currentUser?._id || currentUser?.id;
@@ -188,6 +189,41 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
       document.body.style.overflow = '';
       document.body.style.position = '';
       document.body.style.width = '';
+    };
+  }, [isOpen]);
+
+  // Pin the panel to the visual viewport so the input stays above the iOS
+  // keyboard. On iOS the keyboard shrinks only the visual viewport — fixed
+  // elements don't move — so we resize/reposition the panel to match it.
+  // setProperty('important') is required to beat the !important heights in
+  // the stylesheet below.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!isOpen || !vv) return;
+
+    const update = () => {
+      const panel = panelRef.current;
+      if (!panel) return;
+      panel.style.setProperty('height', `${vv.height}px`, 'important');
+      panel.style.setProperty('min-height', '0', 'important');
+      panel.style.setProperty('top', `${vv.offsetTop}px`, 'important');
+      // Keep the latest message visible above the keyboard
+      messagesEndRef.current?.scrollIntoView({ block: 'end' });
+    };
+
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    update();
+
+    return () => {
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
+      const panel = panelRef.current;
+      if (panel) {
+        panel.style.removeProperty('height');
+        panel.style.removeProperty('min-height');
+        panel.style.removeProperty('top');
+      }
     };
   }, [isOpen]);
 
@@ -247,7 +283,7 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
   const messages = conversation?.messages || [];
 
   return (
-    <div className="amber-chat-panel" style={{
+    <div ref={panelRef} className="amber-chat-panel" style={{
       position: 'fixed',
       top: 0,
       right: 0,
@@ -662,12 +698,14 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
             /* Use viewport height with fallback */
             height: 100vh !important;
             height: -webkit-fill-available !important;
+            height: 100dvh !important;
             min-height: -webkit-fill-available !important;
           }
 
-          /* Compact header on mobile */
+          /* Compact header on mobile — keep buttons below the iOS status bar */
           .amber-chat-header {
             padding: 0.75rem 1rem !important;
+            padding-top: calc(0.75rem + env(safe-area-inset-top, 0px)) !important;
           }
 
           .amber-chat-avatar {
@@ -691,9 +729,16 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
             -webkit-overflow-scrolling: touch !important;
           }
 
-          /* Compact input area on mobile */
+          /* Compact input area on mobile — keep above the home indicator */
           .amber-chat-input {
             padding: 0.75rem !important;
+            padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px)) !important;
+          }
+
+          /* iOS zooms into inputs with font-size < 16px, breaking the layout
+             and hiding what you type — force 16px on mobile */
+          .amber-chat-input textarea {
+            font-size: 16px !important;
           }
         }
 
@@ -701,6 +746,7 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
         @media (max-width: 480px) {
           .amber-chat-header {
             padding: 0.65rem 0.85rem !important;
+            padding-top: calc(0.65rem + env(safe-area-inset-top, 0px)) !important;
           }
 
           .amber-chat-messages {
@@ -709,6 +755,7 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
 
           .amber-chat-input {
             padding: 0.65rem !important;
+            padding-bottom: calc(0.65rem + env(safe-area-inset-bottom, 0px)) !important;
           }
         }
 
@@ -717,6 +764,12 @@ const AmberChat = ({ isOpen, onClose, currentUser }) => {
           .amber-chat-panel {
             height: -webkit-fill-available !important;
             min-height: -webkit-fill-available !important;
+          }
+          @supports (height: 100dvh) {
+            .amber-chat-panel {
+              height: 100dvh !important;
+              min-height: 100dvh !important;
+            }
           }
         }
       `}</style>

@@ -160,7 +160,7 @@ export const ProductForm = () => {
           style={{
             width: '100%',
             padding: '12px 24px',
-            background: 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+            background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
             color: 'white',
             border: 'none',
             borderRadius: '8px',

@@ -153,13 +153,16 @@ export const EDRMonacoParser = {
   mapCurrency(deviseCode) {
     const code = String(deviseCode).trim();
 
+    // ISO 4217 numeric → alpha (plus EDR internal '0'/'1' = EUR). Standard codes,
+    // not guesses — previously unmapped codes like ILS(376)/SEK(752)/DKK(208) were
+    // silently coerced to EUR, mis-currencying those positions.
     const currencyMap = {
-      '0': 'EUR',
-      '1': 'EUR',
-      '840': 'USD',
-      '756': 'CHF',
-      '826': 'GBP',
-      '392': 'JPY'
+      '0': 'EUR', '1': 'EUR',
+      '978': 'EUR', '840': 'USD', '756': 'CHF', '826': 'GBP', '392': 'JPY',
+      '376': 'ILS', '752': 'SEK', '208': 'DKK', '578': 'NOK', '124': 'CAD',
+      '036': 'AUD', '554': 'NZD', '344': 'HKD', '702': 'SGD', '156': 'CNY',
+      '484': 'MXN', '710': 'ZAR', '985': 'PLN', '203': 'CZK', '348': 'HUF',
+      '784': 'AED', '682': 'SAR', '356': 'INR', '410': 'KRW', '764': 'THB'
     };
 
     // If it's already an ISO code (3 letters), return as-is
@@ -167,7 +170,14 @@ export const EDRMonacoParser = {
       return code.toUpperCase();
     }
 
-    return currencyMap[code] || 'EUR';
+    if (currencyMap[code]) {
+      return currencyMap[code];
+    }
+
+    // Unknown code: warn rather than silently assuming EUR (which would be a wrong
+    // conversion). Return EUR as a last resort but surface it in logs for follow-up.
+    console.warn(`[EDR_PARSER] Unknown currency code "${code}" — defaulting to EUR; add it to the ISO map if this is wrong`);
+    return 'EUR';
   },
 
   /**
@@ -248,23 +258,16 @@ export const EDRMonacoParser = {
   normalizePrice(rawValue, securityType) {
     if (!rawValue && rawValue !== 0) return null;
 
-    // For equities and ETFs, price is absolute (share price)
-    if (securityType === SECURITY_TYPES.EQUITY || securityType === SECURITY_TYPES.ETF) {
-      return rawValue;
-    }
-
-    // For cash positions, no price normalization needed
-    if (securityType === SECURITY_TYPES.CASH) {
-      return rawValue;
-    }
-
-    // For bonds, structured products, certificates - price is in percentage format
-    // Values >= 10 are assumed to be percentages (e.g., 92.86 = 92.86%)
-    if (rawValue >= 10) {
+    // Only percentage-quoted instruments (bonds, structured products, certificates,
+    // term deposits — see isPercentagePrice) are stored as percentages (92.86 = 92.86%).
+    // Everything else — equities, ETFs, funds, cash, and any unmapped/UNKNOWN type —
+    // is an absolute price and must NOT be divided. Previously any non-equity/ETF/cash
+    // type with value >= 10 was divided by 100, so an unmapped fund NAV of 250 was
+    // wrongly stored as 2.50.
+    if (this.isPercentagePrice(null, securityType) && rawValue >= 10) {
       return rawValue / 100;
     }
 
-    // Small values might already be in decimal format
     return rawValue;
   },
 

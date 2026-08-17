@@ -4,7 +4,7 @@ import { EJSON } from 'meteor/ejson';
 import puppeteer from 'puppeteer';
 import fs from 'fs';
 import path from 'path';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
 
 /**
@@ -24,10 +24,7 @@ async function validateSession(sessionId) {
     throw new Meteor.Error('not-authorized', 'Session required');
   }
 
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true
-  });
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) {
     throw new Meteor.Error('not-authorized', 'Invalid or expired session');

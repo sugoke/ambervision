@@ -307,7 +307,7 @@ const HimalayaReport = ({ results, productId, product }) => {
                   {selection.status === 'pending' && (
                     <span style={{
                       fontSize: '0.7rem',
-                      color: '#6b7280',
+                      color: 'var(--text-muted)',
                       fontWeight: '600',
                       textTransform: 'uppercase',
                       letterSpacing: '0.5px'

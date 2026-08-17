@@ -1,5 +1,6 @@
 import React from 'react';
 import { Doughnut } from 'react-chartjs-2';
+import { resolveChartColor } from '/imports/utils/chartColors.js';
 
 /**
  * NestedDoughnutChart - Displays hierarchical data as concentric doughnut rings
@@ -25,14 +26,17 @@ const NestedDoughnutChart = ({
   };
 
   // Get color with opacity for Level 2
+  // Canvas cannot resolve CSS variables — resolve to computed hex before appending alpha
   const getLevel2Color = (parentKey, protectionType) => {
-    const baseColor = level1Colors[parentKey] || '#64748b';
+    const baseColor = resolveChartColor(level1Colors[parentKey] || '#64748b');
     const shadeMap = {
       'capital_guaranteed_100': 'ff',         // 100% opacity
       'capital_guaranteed_partial': 'b3',     // 70% opacity
       'capital_protected_conditional': '80',  // 50% opacity
       'other_protection': '4d'                // 30% opacity
     };
+    // Alpha suffix only works on 6-digit hex; fall back to the opaque color otherwise
+    if (!/^#[0-9a-fA-F]{6}$/.test(baseColor)) return baseColor;
     const opacity = shadeMap[protectionType] || '80';
     return `${baseColor}${opacity}`;
   };
@@ -44,7 +48,7 @@ const NestedDoughnutChart = ({
       // Inner ring - Level 1 (Underlying Types)
       {
         data: level1Data.map(d => d.value),
-        backgroundColor: level1Data.map(d => level1Colors[d.key] || '#64748b'),
+        backgroundColor: level1Data.map(d => resolveChartColor(level1Colors[d.key] || '#64748b')),
         borderColor: theme === 'light' ? '#ffffff' : '#111827',
         borderWidth: 2,
         weight: 0.6  // Inner ring weight

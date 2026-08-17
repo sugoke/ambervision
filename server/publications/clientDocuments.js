@@ -5,7 +5,12 @@
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { ClientDocumentsCollection } from '/imports/api/clientDocuments.js';
-import { SessionsCollection } from '/imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '/imports/api/sessions.js';
+import { UsersCollection } from '/imports/api/users.js';
+
+// Client documents are KYC/PII: a bare valid session is not enough — the caller
+// must be the client themselves or a staff member (mirrors clientDocuments.getDownloadUrl).
+const STAFF_ROLES = ['admin', 'superadmin', 'compliance', 'rm', 'assistant'];
 
 /**
  * Publish documents for a specific client
@@ -18,23 +23,33 @@ Meteor.publish('clientDocuments', async function (userId, sessionId) {
   console.log('[clientDocuments pub] ====== SUBSCRIPTION CALLED ======');
   console.log('[clientDocuments pub] userId:', userId, 'sessionId:', sessionId?.substring(0, 8) + '...');
 
-  // Quick validation
-  if (!sessionId || !userId) {
-    console.log('[clientDocuments pub] Missing params, returning ready()');
+  // Quick validation. SECURITY: string-only sessionId — a selector object would match
+  // a live session and, combined with staff role, leak KYC documents.
+  if (typeof sessionId !== 'string' || sessionId.length === 0 || typeof userId !== 'string' || userId.length === 0) {
+    console.log('[clientDocuments pub] Missing/invalid params, returning ready()');
     return this.ready();
   }
 
   // Async session validation for Meteor 3.x
-  const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
+  const session = await SessionHelpers.findByToken(sessionId);
   if (!session) {
     console.log('[clientDocuments pub] No valid session found');
     return this.ready();
   }
-  console.log('[clientDocuments pub] Session valid for user:', session.userId);
 
-  // Return documents cursor for the specified user
-  const docCount = await ClientDocumentsCollection.find({ userId }).countAsync();
-  console.log('[clientDocuments pub] Returning', docCount, 'documents for userId:', userId);
+  // Authorize: the requested userId must be the caller themselves, or the caller
+  // must be staff. Previously any valid session could read ANY user's documents
+  // by passing an arbitrary userId (IDOR on KYC/identity documents).
+  const currentUser = await UsersCollection.findOneAsync(session.userId);
+  if (!currentUser) {
+    return this.ready();
+  }
+  const isSelf = currentUser._id === userId;
+  const isStaff = STAFF_ROLES.includes(currentUser.role);
+  if (!isSelf && !isStaff) {
+    console.log('[clientDocuments pub] Not authorized for userId:', userId);
+    return this.ready();
+  }
 
   return ClientDocumentsCollection.find({ userId });
 });

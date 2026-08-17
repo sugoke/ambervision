@@ -1,16 +1,15 @@
 import React from 'react';
 
 /**
- * LiquidGlassCard Component
+ * LiquidGlassCard — the app's primary card surface.
  *
- * A reusable card component that applies a liquid glass effect with:
- * - Blurred backdrop with distortion
- * - Semi-transparent white tint
- * - Glossy shine on edges
- * - Smooth hover animations
+ * Historically a "liquid glass" effect (backdrop blur + SVG distortion + white
+ * tint). Rebuilt for the Ambervision design system: a calm panel with a hairline
+ * border — dark theme gets the ink→panel gradient, light theme a white card with
+ * a soft paper shadow. Both come from theme tokens (--card-bg / --card-shadow),
+ * so this one component restyles every screen that wraps itself in it.
  *
- * Based on the original liquid glass effect from:
- * https://codepen.io/lassiterda/pen/vEOpqMa
+ * The name and prop API are kept so the 13 consuming screens need no changes.
  */
 const LiquidGlassCard = ({
   children,
@@ -21,7 +20,7 @@ const LiquidGlassCard = ({
   onMouseLeave,
   onTouchStart,
   onTouchEnd,
-  borderRadius = '10px',
+  borderRadius = 'var(--radius, 14px)',
   ...props
 }) => {
   return (
@@ -30,10 +29,11 @@ const LiquidGlassCard = ({
       style={{
         position: 'relative',
         display: 'flex',
-        fontWeight: '600',
         overflow: 'hidden',
-        boxShadow: '0 6px 6px rgba(0, 0, 0, 0.2), 0 0 20px rgba(0, 0, 0, 0.1)',
-        transition: 'all 0.4s cubic-bezier(0.175, 0.885, 0.32, 2.2)',
+        background: 'var(--card-bg, var(--bg-secondary))',
+        border: '1px solid var(--border-color)',
+        boxShadow: 'var(--card-shadow, 0 1px 2px rgba(0,0,0,0.2))',
+        transition: 'border-color 0.16s ease, box-shadow 0.16s ease',
         borderRadius: borderRadius,
         ...style
       }}
@@ -44,52 +44,10 @@ const LiquidGlassCard = ({
       onTouchEnd={onTouchEnd}
       {...props}
     >
-      {/* Layer 0: Glass distortion effect with blur */}
-      <div
-        className="liquidGlass-effect"
-        style={{
-          position: 'absolute',
-          zIndex: 0,
-          inset: 0,
-          backdropFilter: 'blur(3px)',
-          WebkitBackdropFilter: 'blur(3px)',
-          filter: 'url(#glass-distortion)',
-          overflow: 'hidden',
-          borderRadius: borderRadius
-        }}
-      />
-
-      {/* Layer 1: Semi-transparent white tint */}
-      <div
-        className="liquidGlass-tint"
-        style={{
-          zIndex: 1,
-          position: 'absolute',
-          inset: 0,
-          background: 'rgba(255, 255, 255, 0.10)',
-          borderRadius: borderRadius
-        }}
-      />
-
-      {/* Layer 2: Glossy shine effect */}
-      <div
-        className="liquidGlass-shine"
-        style={{
-          position: 'absolute',
-          inset: 0,
-          zIndex: 2,
-          overflow: 'hidden',
-          boxShadow: 'inset 2px 2px 1px 0 rgba(255, 255, 255, 0.3), inset -1px -1px 1px 1px rgba(255, 255, 255, 0.3)',
-          borderRadius: borderRadius,
-          pointerEvents: 'none'
-        }}
-      />
-
-      {/* Layer 3: Content */}
       <div
         className="liquidGlass-text"
         style={{
-          zIndex: 3,
+          zIndex: 1,
           width: '100%',
           borderRadius: borderRadius
         }}

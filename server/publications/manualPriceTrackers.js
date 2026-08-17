@@ -1,6 +1,6 @@
 import { Meteor } from 'meteor/meteor';
 import { ManualPriceTrackersCollection } from '../../imports/api/manualPriceTrackers.js';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
 
 Meteor.publish('manualPriceTrackers', async function (sessionId) {
@@ -9,10 +9,7 @@ Meteor.publish('manualPriceTrackers', async function (sessionId) {
   }
 
   try {
-    const session = await SessionsCollection.findOneAsync({
-      sessionId,
-      isActive: true
-    });
+    const session = await SessionHelpers.findByToken(sessionId);
 
     if (!session) {
       return this.ready();

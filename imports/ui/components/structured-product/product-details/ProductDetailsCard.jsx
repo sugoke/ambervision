@@ -339,7 +339,7 @@ const ProductDetailsCard = ({ productDetails, onUpdateProductDetails, onRegenera
         {showIsinValidation && (
           <div style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}>
             {isCheckingIsin && (
-              <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <div style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⏳</span>
                 Checking ISIN...
               </div>
@@ -359,7 +359,7 @@ const ProductDetailsCard = ({ productDetails, onUpdateProductDetails, onRegenera
                   <span style={{ fontWeight: '500' }}>ISIN already exists in database</span>
                 </div>
                 {isinUniqueness.conflict && (
-                  <div style={{ marginLeft: '1.75rem', color: '#6b7280', fontSize: '0.8rem' }}>
+                  <div style={{ marginLeft: '1.75rem', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
                     Product: <strong style={{ color: 'var(--loss-color)' }}>{isinUniqueness.conflict.title}</strong>
                     {isinUniqueness.conflict.createdAt && (
                       <> (created {new Date(isinUniqueness.conflict.createdAt).toLocaleDateString()})</>

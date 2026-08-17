@@ -2,7 +2,7 @@ import { Meteor } from 'meteor/meteor';
 import { Mongo } from 'meteor/mongo';
 import { check } from 'meteor/check';
 import { UsersCollection } from './users';
-import { SessionsCollection } from './sessions';
+import { SessionsCollection, SessionHelpers } from './sessions';
 
 export const NewslettersCollection = new Mongo.Collection('newsletters');
 
@@ -14,13 +14,26 @@ if (Meteor.isServer) {
     NewslettersCollection.createIndex({ visibleToRoles: 1 });
   });
 
-  // Publish newsletters to all authenticated clients
-  // Simple publication - all users can see all newsletters
-  Meteor.publish('newsletters', function() {
-    console.log('[Newsletter Pub] Publishing newsletters');
+  // Publish newsletters to authenticated users, honouring each newsletter's
+  // visibleToRoles restriction. SECURITY: previously unauthenticated and returned
+  // every newsletter to any connection, ignoring visibleToRoles entirely.
+  Meteor.publish('newsletters', async function(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) return this.ready();
 
-    // Return all newsletters sorted by upload date
-    return NewslettersCollection.find({}, {
+    const session = await SessionHelpers.findByToken(sessionId);
+    if (!session || !session.userId) return this.ready();
+    const user = await UsersCollection.findOneAsync(session.userId);
+    if (!user) return this.ready();
+
+    // A newsletter is visible if it has no role restriction, an empty restriction,
+    // or explicitly lists this user's role.
+    return NewslettersCollection.find({
+      $or: [
+        { visibleToRoles: { $exists: false } },
+        { visibleToRoles: { $size: 0 } },
+        { visibleToRoles: user.role }
+      ]
+    }, {
       sort: { uploadedAt: -1 }
     });
   });
@@ -45,11 +58,7 @@ Meteor.methods({
     check(sessionId, String);
 
     // Validate session
-    const session = await SessionsCollection.findOneAsync({
-      sessionId: sessionId,
-      isActive: true,
-      expiresAt: { $gt: new Date() }
-    });
+    const session = await SessionHelpers.findByToken(sessionId);
 
     if (!session) {
       throw new Meteor.Error('not-authorized', 'You must be logged in to upload newsletters');
@@ -139,11 +148,7 @@ Meteor.methods({
     check(sessionId, String);
 
     // Validate session
-    const session = await SessionsCollection.findOneAsync({
-      sessionId: sessionId,
-      isActive: true,
-      expiresAt: { $gt: new Date() }
-    });
+    const session = await SessionHelpers.findByToken(sessionId);
 
     if (!session) {
       throw new Meteor.Error('not-authorized', 'You must be logged in to delete newsletters');

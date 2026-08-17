@@ -121,7 +121,7 @@ function ListView({ reports, isLoading, t, onOpen, onNew, onDelete, onDownload }
           onClick={onNew}
           style={{
             padding: '10px 18px',
-            background: 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+            background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
             color: 'white',
             border: 'none',
             borderRadius: 8,
@@ -373,7 +373,7 @@ function Editor({ initial, t, onCancel, onSaved }) {
           disabled={isGenerating || !rawNotes.trim()}
           style={{
             padding: '10px 18px',
-            background: isGenerating ? '#9ca3af' : 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+            background: isGenerating ? '#9ca3af' : 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
             color: 'white',
             border: 'none',
             borderRadius: 6,

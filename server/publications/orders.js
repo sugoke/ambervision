@@ -5,7 +5,7 @@ import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { OrdersCollection, ORDER_STATUSES } from '/imports/api/orders';
 import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
-import { SessionsCollection } from '/imports/api/sessions';
+import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
 
 /**
  * Validate session and get user
@@ -15,10 +15,7 @@ import { SessionsCollection } from '/imports/api/sessions';
 async function validateSessionAndGetUser(sessionId) {
   if (!sessionId) return null;
 
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true
-  });
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) return null;
 

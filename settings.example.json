@@ -34,6 +34,9 @@
     "_comment_telekurs": "Shared secret for the Telekurs.xlsx price-push endpoint (POST /api/telekurs/quotes). The Excel VBA macro sends this in the X-API-Key header. Use any long random string.",
     "TELEKURS_API_KEY": "your_random_telekurs_secret_here",
 
+    "_comment_credentials_key": "At-rest AES-256-GCM encryption key for stored third-party credentials (e.g. bank SFTP passwords). Any long random string (32+ hex chars recommended). WARNING: changing it orphans already-encrypted values.",
+    "CREDENTIALS_ENCRYPTION_KEY": "your_long_random_encryption_key_here",
+
     "_comment_cbonds": "CBonds API configuration for bond price queries",
     "CBONDS_API_LOGIN": "your_cbonds_login_here",
     "CBONDS_API_PASSWORD": "your_cbonds_password_here",
@@ -56,6 +59,15 @@
 
     "_comment_seeding": "Control demo data seeding on startup",
     "seedDemoData": false,
+
+    "_comment_retention": "GDPR data-retention windows in days (dataRetention cron, 02:00 CET daily). Defaults shown.",
+    "RETENTION": {
+      "cronJobLogsDays": 90,
+      "bankConnectionLogsDays": 90,
+      "chartDataDays": 30,
+      "landingLeadsDays": 365,
+      "bankFilesDays": 730
+    },
 
     "_comment_cron": "Cron job configuration",
     "PRODUCT_EVAL_CONCURRENCY": 3,

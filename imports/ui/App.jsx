@@ -5,6 +5,7 @@ import PasswordReset from './PasswordReset.jsx';
 import OAuthConsent from './OAuthConsent.jsx';
 import PrintableProductReport from './PrintableProductReport.jsx';
 import LandingPage from './LandingPage.jsx';
+import PrivacyPolicy from './PrivacyPolicy.jsx';
 import InfinePage from './InfinePage.jsx';
 import PhoenixReportPDF from './templates/PhoenixReportPDF.jsx';
 import OrionReportPDF from './templates/OrionReportPDF.jsx';
@@ -366,13 +367,7 @@ const AppContent = () => {
             maxHeight: '-webkit-fill-available',
             zIndex: -1,
             overflow: 'hidden',
-            backgroundImage: theme === 'light'
-              ? 'url(/images/daymode.jpg)'
-              : 'none',
-            backgroundSize: 'cover',
-            backgroundPosition: 'center center',
-            backgroundRepeat: 'no-repeat',
-            backgroundColor: theme === 'light' ? '#f8f9fa' : '#2a2a2a',
+            background: 'var(--page-bg)',
             willChange: 'transform',
             transform: 'translateZ(0)',
             WebkitTransform: 'translateZ(0)',
@@ -388,13 +383,7 @@ const AppContent = () => {
             left: '-10%',
             width: '120%',
             height: '120%',
-            backgroundImage: theme === 'light'
-              ? 'url(/images/daymode.jpg)'
-              : 'none',
-            backgroundColor: theme === 'light' ? 'transparent' : '#2a2a2a',
-            backgroundSize: 'cover',
-            backgroundPosition: 'center center',
-            backgroundRepeat: 'no-repeat',
+            background: 'var(--page-bg)',
             transform: 'translateZ(0)',
             WebkitTransform: 'translateZ(0)'
           }} />
@@ -513,36 +502,23 @@ const AppContent = () => {
             }
           }
 
-          /* Day mode background image - only applies when not in dark mode */
-          html[data-theme="light"] body {
-            background-color: #f8f9fa !important;
-            background-image: url('/images/daymode.jpg') !important;
-            background-size: cover;
-            background-position: center;
-            background-attachment: fixed;
-            background-repeat: no-repeat;
-          }
-
-          /* Alternative selector for light mode */
+          /* Light "statement" ground: warm paper with a faint amber radial */
+          html[data-theme="light"] body,
           body:not(.dark-mode) {
-            background-color: #f8f9fa !important;
-            background-image: url('/images/daymode.jpg') !important;
-            background-size: cover;
-            background-position: center;
+            background:
+              radial-gradient(900px 400px at 90% -6%, rgba(184,132,31,.07), transparent 60%),
+              #F7F4EC !important;
             background-attachment: fixed;
-            background-repeat: no-repeat;
           }
 
-          /* Dark mode background - solid dark gray */
-          html[data-theme="dark"] body {
-            background-color: #2a2a2a !important;
-            background-image: none !important;
-          }
-
-          /* Alternative selector for dark mode */
+          /* Dark "ink" ground: warm near-black with amber/teal radial glow */
+          html[data-theme="dark"] body,
           body.dark-mode {
-            background-color: #2a2a2a !important;
-            background-image: none !important;
+            background:
+              radial-gradient(1200px 600px at 78% -8%, rgba(224,161,56,.10), transparent 60%),
+              radial-gradient(900px 500px at 0% 100%, rgba(87,184,145,.05), transparent 55%),
+              #0E1014 !important;
+            background-attachment: fixed;
           }
         `}</style>
         {/* Fixed Top Section - Header + Market Ticker */}
@@ -583,7 +559,7 @@ const AppContent = () => {
                       borderRadius: '50%',
                       border: 'none',
                       background: isMenuOpen
-                        ? 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)'
+                        ? 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)'
                         : 'linear-gradient(135deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%)',
                       color: isMenuOpen ? 'white' : 'var(--text-primary)',
                       fontSize: '1.2rem',
@@ -819,7 +795,7 @@ const AppContent = () => {
         }} />}
 
         {/* Loading state during authentication check - Exclude PDF modes as they handle their own loading */}
-        {isAuthLoading && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-twinwin' && currentSection !== 'pdf-rate' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'infine' && (
+        {isAuthLoading && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-twinwin' && currentSection !== 'pdf-rate' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'privacy' && currentSection !== 'infine' && (
           <div style={{
             display: 'flex',
             justifyContent: 'center',
@@ -888,6 +864,10 @@ const AppContent = () => {
           <LandingPage />
         )}
 
+        {currentSection === 'privacy' && (
+          <PrivacyPolicy />
+        )}
+
         {/* Infine Loan Calculator - Public page, no authentication required */}
         {currentSection === 'infine' && (
           <InfinePage />
@@ -911,7 +891,7 @@ const AppContent = () => {
         )}
 
         {/* Login Form Section - Only show when not logged in, not loading, not on reset password page, and not in PDF mode */}
-        {!user && !isAuthLoading && currentSection !== 'reset-password' && currentSection !== 'oauth-consent' && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-twinwin' && currentSection !== 'pdf-rate' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'infine' && (
+        {!user && !isAuthLoading && currentSection !== 'reset-password' && currentSection !== 'oauth-consent' && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-twinwin' && currentSection !== 'pdf-rate' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'privacy' && currentSection !== 'infine' && (
           <section style={{
             padding: '0 1rem',
             background: theme === 'light' ? 'transparent' : 'transparent'
@@ -931,7 +911,7 @@ const AppContent = () => {
 
 
         {/* Main Content - Protected (or PDF mode) */}
-        {(user || isPDFMode) && currentSection !== 'reset-password' && currentSection !== 'oauth-consent' && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'infine' && <MainContent user={user} currentSection={currentSection} setCurrentSection={handleSectionChange} onComponentLibraryStateChange={setIsComponentLibraryOpen} currentRoute={currentRoute} isMenuOpen={isMenuOpen} setIsMenuOpen={setIsMenuOpen} isSettingsOpen={isSettingsOpen} setIsSettingsOpen={setIsSettingsOpen} isMobile={isMobile} />}
+        {(user || isPDFMode) && currentSection !== 'reset-password' && currentSection !== 'oauth-consent' && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'privacy' && currentSection !== 'infine' && <MainContent user={user} currentSection={currentSection} setCurrentSection={handleSectionChange} onComponentLibraryStateChange={setIsComponentLibraryOpen} currentRoute={currentRoute} isMenuOpen={isMenuOpen} setIsMenuOpen={setIsMenuOpen} isSettingsOpen={isSettingsOpen} setIsSettingsOpen={setIsSettingsOpen} isMobile={isMobile} />}
 
         {/* Spacer to prevent content from being hidden behind fixed bottom bar - Hide on mobile */}
         {user && !isMobile && <div style={{ height: '40px' }} />}

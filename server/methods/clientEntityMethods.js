@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { ClientEntitiesCollection, ClientEntityHelpers, ENTITY_TYPES, ENTITY_STATUSES, STAKEHOLDER_ROLES } from '../../imports/api/clientEntities.js';
 import { UserEntityAccessCollection, UserEntityAccessHelpers, ACCESS_LEVELS } from '../../imports/api/userEntityAccess.js';
-import { SessionsCollection } from '../../imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection, USER_ROLES } from '../../imports/api/users.js';
 import { BankAccountsCollection, BankAccountHelpers } from '../../imports/api/bankAccounts.js';
 
@@ -17,16 +17,14 @@ const getEntitiesDocsBasePath = () => {
   if (projectRoot.includes('.meteor')) {
     projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
   }
-  return path.join(projectRoot, 'public', 'fichier_central', 'entities');
+  // SECURITY/GDPR: never fall back to public/ (served unauthenticated) — use
+  // the non-served .fichier_central tree, matching clientDocumentMethods.js.
+  return path.join(projectRoot, '.fichier_central', 'entities');
 };
 
 // Helper: validate session and return current user
 async function validateSession(sessionId) {
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true,
-    expiresAt: { $gt: new Date() }
-  });
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) {
     throw new Meteor.Error('not-authorized', 'Invalid session');

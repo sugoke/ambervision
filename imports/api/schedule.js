@@ -1,6 +1,6 @@
 import { Mongo } from 'meteor/mongo';
 import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
+import { check, Match } from 'meteor/check';
 
 /**
  * Schedule Collection
@@ -44,19 +44,28 @@ export const ScheduleCollection = new Mongo.Collection('schedule');
 // Server-side publications and methods
 if (Meteor.isServer) {
   // Publish schedule for a specific product
-  Meteor.publish('schedule.forProduct', function(productId) {
+  Meteor.publish('schedule.forProduct', async function(productId, sessionId) {
     check(productId, String);
-    
+    check(sessionId, Match.Maybe(String));
+
+    // SECURITY: require a real session or a valid PDF-render token.
+    const { isAuthorizedReportViewer } = await import('../../server/helpers/reportViewerAuth.js');
+    if (!(await isAuthorizedReportViewer(sessionId))) return this.ready();
+
     return ScheduleCollection.find({ productId }, {
       sort: { 'events.date': 1 }
     });
   });
 
   // Publish schedules by date range
-  Meteor.publish('schedule.byDateRange', function(fromDate, toDate) {
+  Meteor.publish('schedule.byDateRange', async function(fromDate, toDate, sessionId) {
     check(fromDate, Date);
     check(toDate, Date);
-    
+    check(sessionId, Match.Maybe(String));
+
+    const { isAuthorizedReportViewer } = await import('../../server/helpers/reportViewerAuth.js');
+    if (!(await isAuthorizedReportViewer(sessionId))) return this.ready();
+
     return ScheduleCollection.find({
       'events.date': {
         $gte: fromDate,
@@ -86,6 +95,10 @@ if (Meteor.isServer) {
      * Create or update schedule for a product
      */
     async 'schedule.createOrUpdate'(scheduleData) {
+      // Server-only: schedules are written by the evaluation pipeline.
+      if (this.connection !== null) {
+        throw new Meteor.Error('not-authorized', 'This method can only be called server-side');
+      }
       check(scheduleData, Object);
       
       const schedule = {
@@ -141,6 +154,9 @@ if (Meteor.isServer) {
      * Delete schedule for a product
      */
     async 'schedule.delete'(productId) {
+      if (this.connection !== null) {
+        throw new Meteor.Error('not-authorized', 'This method can only be called server-side');
+      }
       check(productId, String);
       
       const result = await ScheduleCollection.removeAsync({ productId });

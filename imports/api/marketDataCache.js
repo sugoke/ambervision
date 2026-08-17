@@ -679,8 +679,10 @@ if (Meteor.isServer) {
       check(sessionId, Match.OneOf(String, null, undefined));
       this.unblock();
 
-      // Check if this is a server-side system call (from cron jobs)
-      const isSystemCall = sessionId === 'system-cron' || sessionId === 'system';
+      // Check if this is a trusted in-process system call (from cron jobs).
+      // Server-originated Meteor calls have this.connection === null; a client
+      // DDP call always has a connection, so it cannot pose as a system call.
+      const isSystemCall = this.connection === null;
 
       // Get current user with session-based authentication (skip for system calls)
       let currentUser = null;

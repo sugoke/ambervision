@@ -10,7 +10,7 @@ import { check, Match } from 'meteor/check';
 import fs from 'fs';
 import path from 'path';
 import { ClientDocumentsCollection, DOCUMENT_TYPES } from '/imports/api/clientDocuments.js';
-import { SessionsCollection } from '/imports/api/sessions.js';
+import { SessionsCollection, SessionHelpers } from '/imports/api/sessions.js';
 import { UsersCollection } from '/imports/api/users.js';
 import { issueDocumentToken } from '../documentAccess.js';
 
@@ -18,14 +18,13 @@ import { issueDocumentToken } from '../documentAccess.js';
  * Validate session and get user
  */
 async function validateSession(sessionId) {
-  if (!sessionId) {
+  // SECURITY: string-only — reject selector objects ({$gt:""}) that would otherwise
+  // match the first live session (NoSQL auth-bypass).
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
     throw new Meteor.Error('not-authorized', 'Session required');
   }
 
-  const session = await SessionsCollection.findOneAsync({
-    sessionId,
-    isActive: true
-  });
+  const session = await SessionHelpers.findByToken(sessionId);
 
   if (!session) {
     throw new Meteor.Error('not-authorized', 'Invalid session');
@@ -41,22 +40,58 @@ async function validateSession(sessionId) {
 }
 
 // Base path for document storage
+// SECURITY/GDPR: never fall back to public/ — Meteor serves it unauthenticated,
+// which would expose passport scans and KYC files. The dev fallback is the
+// non-served .fichier_central directory at the project root.
 const getDocumentsBasePath = () => {
   if (process.env.FICHIER_CENTRAL_PATH) {
     return process.env.FICHIER_CENTRAL_PATH;
   }
-  // Development fallback - use project's public directory
   let projectRoot = process.cwd();
   if (projectRoot.includes('.meteor')) {
     projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
   }
-  return path.join(projectRoot, 'public', 'fichier_central');
+  return path.join(projectRoot, '.fichier_central');
 };
+
+// SECURITY: a document "subject" id is used as a directory name and must never be
+// able to escape the storage root. Meteor/entity ids are alphanumeric; reject anything
+// else (path separators, '..', dots, whitespace) before it reaches the filesystem.
+const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const assertSafeSubjectId = (userId) => {
+  if (typeof userId !== 'string' || !SAFE_ID.test(userId)) {
+    throw new Meteor.Error('invalid-argument', 'Invalid document subject id');
+  }
+};
+
+// Client documents are KYC/PII. Only the subject themselves or a staff member may
+// read or mutate them — a bare valid session is not sufficient (matches getDownloadUrl).
+const STAFF_ROLES = ['admin', 'superadmin', 'compliance', 'rm', 'assistant'];
+const authorizeDocumentSubject = (user, subjectUserId) => {
+  const isSelf = user._id === subjectUserId;
+  const isStaff = STAFF_ROLES.includes(user.role);
+  if (!isSelf && !isStaff) {
+    throw new Meteor.Error('not-authorized', 'Not authorized for this client\'s documents');
+  }
+};
+
+// Only these document types may be stored, matched by extension AND mime.
+const ALLOWED_EXTENSIONS = new Set(['.pdf', '.jpg', '.jpeg', '.png', '.webp', '.heic', '.gif', '.tif', '.tiff']);
+const ALLOWED_MIME_PREFIXES = ['image/', 'application/pdf'];
+const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024; // 25 MB
 
 // Ensure user directory exists
 const ensureUserDirectory = (userId) => {
+  assertSafeSubjectId(userId);
   const basePath = getDocumentsBasePath();
   const userDir = path.join(basePath, userId);
+
+  // Defence in depth: confirm the resolved directory is still inside the root.
+  const resolvedBase = path.resolve(basePath);
+  const resolvedDir = path.resolve(userDir);
+  if (resolvedDir !== resolvedBase && !resolvedDir.startsWith(resolvedBase + path.sep)) {
+    throw new Meteor.Error('invalid-argument', 'Resolved path escapes storage root');
+  }
 
   if (!fs.existsSync(basePath)) {
     fs.mkdirSync(basePath, { recursive: true });
@@ -99,9 +134,30 @@ Meteor.methods({
     // Verify caller is logged in via session
     const currentUser = await validateSession(sessionId);
 
+    // SECURITY: subject id must be a safe token, and the caller must be the subject
+    // or staff — this is KYC/PII and was previously writable by any logged-in user
+    // with an arbitrary (traversal-capable) userId.
+    assertSafeSubjectId(userId);
+    authorizeDocumentSubject(currentUser, userId);
+
+    // SECURITY: restrict stored file type (extension + mime) and size. The extension
+    // is derived ONLY from an allowlist, never trusted from the client filename, so a
+    // caller cannot plant a served .html/.js payload in the dev static path.
+    const rawExt = (path.extname(fileName) || '').toLowerCase();
+    if (!ALLOWED_EXTENSIONS.has(rawExt)) {
+      throw new Meteor.Error('invalid-argument', `Unsupported file type: ${rawExt || '(none)'}`);
+    }
+    if (!ALLOWED_MIME_PREFIXES.some(p => mimeType.startsWith(p))) {
+      throw new Meteor.Error('invalid-argument', `Unsupported MIME type: ${mimeType}`);
+    }
+    const buffer = Buffer.from(base64Data, 'base64');
+    if (buffer.length === 0 || buffer.length > MAX_DOCUMENT_BYTES) {
+      throw new Meteor.Error('invalid-argument', 'File is empty or exceeds the 25 MB limit');
+    }
+
     // Generate unique stored filename
     const timestamp = Date.now();
-    const ext = path.extname(fileName) || '.pdf';
+    const ext = rawExt;
     const familySuffix = familyMemberIndex !== null && familyMemberIndex !== undefined ? `_fm${familyMemberIndex}` : '';
     const storedFileName = `${documentType}${familySuffix}_${timestamp}${ext}`;
 
@@ -119,9 +175,8 @@ Meteor.methods({
     // Several files are allowed per document type, so we simply add a new record
     // for each upload (the timestamped storedFileName keeps files distinct).
 
-    // Save new file
+    // Save new file (buffer validated above)
     try {
-      const buffer = Buffer.from(base64Data, 'base64');
       fs.writeFileSync(filePath, buffer);
       console.log(`Document saved: ${filePath} (${buffer.length} bytes)`);
     } catch (error) {
@@ -150,7 +205,7 @@ Meteor.methods({
       storedFileName,
       filePath,
       mimeType,
-      fileSize: Buffer.from(base64Data, 'base64').length,
+      fileSize: buffer.length,
       uploadedAt: new Date(),
       uploadedBy: currentUser._id,
       expirationDate: parsedExpirationDate,
@@ -172,12 +227,13 @@ Meteor.methods({
     check(documentId, String);
     check(sessionId, String);
 
-    await validateSession(sessionId);
+    const currentUser = await validateSession(sessionId);
 
     const doc = await ClientDocumentsCollection.findOneAsync(documentId);
     if (!doc) {
       throw new Meteor.Error('not-found', 'Document not found');
     }
+    authorizeDocumentSubject(currentUser, doc.userId);
 
     console.log(`🗑️ Deleting client document: ${doc.documentType} for user ${doc.userId}`);
 
@@ -208,12 +264,13 @@ Meteor.methods({
     check(expirationDate, Match.OneOf(Date, String, null));
     check(sessionId, String);
 
-    await validateSession(sessionId);
+    const currentUser = await validateSession(sessionId);
 
     const doc = await ClientDocumentsCollection.findOneAsync(documentId);
     if (!doc) {
       throw new Meteor.Error('not-found', 'Document not found');
     }
+    authorizeDocumentSubject(currentUser, doc.userId);
 
     // Parse date if string
     let parsedDate = null;
@@ -246,12 +303,13 @@ Meteor.methods({
     });
     check(sessionId, String);
 
-    await validateSession(sessionId);
+    const currentUser = await validateSession(sessionId);
 
     const doc = await ClientDocumentsCollection.findOneAsync(documentId);
     if (!doc) {
       throw new Meteor.Error('not-found', 'Document not found');
     }
+    authorizeDocumentSubject(currentUser, doc.userId);
 
     const updateFields = {};
 

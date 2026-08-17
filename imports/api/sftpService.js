@@ -38,7 +38,7 @@ export const SFTPService = {
 
       conn.on('ready', () => {
         connected = true;
-        console.log(`[SFTP] Connected to ${host}:${port} as ${username}`);
+        console.log(`[SFTP] Connected to remote host on port ${port}`);
 
         // Try to start SFTP session
         conn.sftp((err, sftp) => {

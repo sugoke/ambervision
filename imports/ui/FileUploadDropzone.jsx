@@ -273,7 +273,7 @@ const FileUploadDropzone = ({
           style={{
             background: disabled || isProcessing 
               ? 'var(--text-muted)' 
-              : 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+              : 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
             color: 'white',
             border: 'none',
             padding: '12px 24px',

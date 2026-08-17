@@ -179,8 +179,8 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
             height: '50px',
             borderRadius: '25px',
             border: 'none',
-            background: 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
-            color: 'white',
+            background: 'radial-gradient(circle at 32% 28%, var(--accent-strong), var(--accent-color) 45%, color-mix(in srgb, var(--accent-color) 60%, #000) 100%)',
+            color: 'var(--accent-contrast)',
             fontSize: '1rem',
             cursor: 'pointer',
             zIndex: 1001,
@@ -211,6 +211,9 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
           right: isOpen ? '0' : '-300px',
           width: '300px',
           height: '100vh',
+          // Clamp to the dynamic viewport on iOS so the footer isn't pushed
+          // behind Safari's bottom toolbar (ignored where dvh is unsupported)
+          maxHeight: '100dvh',
           background: 'linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%)',
           borderLeft: '1px solid var(--border-color)',
           boxShadow: isOpen ? '-4px 0 20px rgba(0, 0, 0, 0.15)' : 'none',
@@ -221,9 +224,9 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
           overflow: 'hidden'
         }}
       >
-        {/* Menu Header */}
+        {/* Menu Header — top padding clears the iOS notch/status bar (viewport-fit=cover) */}
         <div style={{
-          padding: '1.5rem 1rem 0.75rem',
+          padding: 'calc(1.5rem + env(safe-area-inset-top, 0px)) 1rem 0.75rem',
           borderBottom: '2px solid var(--border-color)',
           background: 'linear-gradient(135deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%)'
         }}>
@@ -238,24 +241,16 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
               width: '32px',
               height: '32px',
               borderRadius: '8px',
-              background: 'linear-gradient(135deg, #FF8A00 0%, #FFA500 100%)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '1rem',
-              boxShadow: '0 2px 8px rgba(255, 138, 0, 0.3)'
-            }}>
-              🔮
-            </div>
+              background: 'radial-gradient(circle at 32% 28%, var(--accent-strong), var(--accent-color) 45%, color-mix(in srgb, var(--accent-color) 60%, #000) 100%)',
+              boxShadow: '0 0 0 1px rgba(255,255,255,0.08) inset, 0 6px 16px -6px var(--accent-color)'
+            }} />
             <h2 style={{
               margin: 0,
-              fontSize: '1.2rem',
-              fontWeight: '700',
-              color: 'var(--text-primary)',
-              background: 'linear-gradient(135deg, #FF8A00 0%, #FFA500 100%)',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
-              backgroundClip: 'text'
+              fontSize: '1.25rem',
+              fontWeight: '600',
+              fontFamily: 'var(--font-serif)',
+              letterSpacing: '0.2px',
+              color: 'var(--accent-strong)'
             }}>
               Ambervision
             </h2>
@@ -343,14 +338,14 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
                 transition: 'all 0.2s ease',
                 border: '1px solid transparent',
                 background: currentSection === item.id
-                  ? 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)'
+                  ? 'linear-gradient(135deg, color-mix(in srgb, var(--accent-color) 18%, transparent), color-mix(in srgb, var(--accent-color) 5%, transparent))'
                   : 'var(--bg-primary)',
-                color: currentSection === item.id ? 'white' : 'var(--text-primary)'
+                color: currentSection === item.id ? 'var(--accent-color)' : 'var(--text-primary)'
               }}
               onMouseEnter={(e) => {
                 if (currentSection !== item.id) {
                   e.currentTarget.style.background = 'var(--bg-secondary)';
-                  e.currentTarget.style.borderColor = 'rgba(0, 123, 255, 0.2)';
+                  e.currentTarget.style.borderColor = 'var(--border-color)';
                   e.currentTarget.style.transform = 'translateX(-2px)';
                   e.currentTarget.style.boxShadow = '0 2px 8px rgba(0, 123, 255, 0.15)';
                 }
@@ -387,9 +382,9 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
           ))}
         </div>
 
-        {/* Menu Footer */}
+        {/* Menu Footer — bottom padding clears the iOS home indicator */}
         <div style={{
-          padding: '0.75rem 1rem',
+          padding: '0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom, 0px))',
           borderTop: '1px solid var(--border-color)',
           background: 'var(--bg-tertiary)',
           fontSize: '0.75rem',

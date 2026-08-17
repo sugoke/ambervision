@@ -157,7 +157,7 @@ export default function ManualPriceTracker({ user }) {
       return { color: 'var(--loss-color)', label: 'Error' };
     }
     if (!tracker.lastScrapedAt) {
-      return { color: '#6b7280', label: 'Never scraped' };
+      return { color: 'var(--text-muted)', label: 'Never scraped' };
     }
     const hoursSince = (Date.now() - new Date(tracker.lastScrapedAt).getTime()) / (1000 * 60 * 60);
     if (hoursSince < 24) {

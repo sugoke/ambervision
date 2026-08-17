@@ -1,44 +1,71 @@
 /* CSS Variables for theming */
+/* Ambervision palette. CRITICAL: ThemeContext puts .dark-mode on <body>, so any token
+   defined here under .dark-mode SHADOWS the documentElement's inline tokens for the whole
+   app. These blocks must therefore carry the SAME values as ThemeContext.jsx — a stale
+   value here silently overrides the theme (that is exactly how the old blue accent
+   survived the redesign for a while). */
 :root {
-  --bg-primary: #ffffff;
+  --bg-primary: #FFFFFF;
   --bg-primary-rgb: 255, 255, 255;
-  --bg-secondary: #f8f9fa;
-  --bg-tertiary: #e9ecef;
-  --text-primary: #212529;
-  --text-secondary: #495057;
-  --text-muted: #6c757d;
-  --border-color: #dee2e6;
-  --border-color-light: #e9ecef;
-  --accent-color: #007bff;
-  --success-color: #28a745;
-  --positive-color: #2196F3;
-  --danger-color: #dc3545;
-  --shadow: rgba(0,0,0,0.1);
+  --bg-secondary: #FBF9F3;
+  --bg-tertiary: #F1EDE2;
+  --text-primary: #1C1F26;
+  --text-secondary: #3D424D;
+  --text-muted: #666C78;
+  --border-color: #D8D2C2;
+  --border-color-light: #E7E2D6;
+  --accent-color: #8A5F0B;
+  --accent-strong: #B8841F;
+  --accent-contrast: #FFFFFF;
+  --success-color: #14724F;
+  --positive-color: #14724F;
+  --danger-color: #B03C2F;
+  --gain-color: #14724F;
+  --loss-color: #B03C2F;
+  --warning-color: #A34A08;
+  --info-color: #2B669D;
+  --neutral-color: #666C78;
+  --shadow: rgba(28,31,38,0.12);
+  --card-bg: #FFFFFF;
+  --card-shadow: 0 1px 2px rgba(28,31,38,.04), 0 8px 24px -18px rgba(28,31,38,.18);
+  --page-bg: radial-gradient(900px 400px at 90% -6%, rgba(184,132,31,.07), transparent 60%), #F7F4EC;
 }
 
 [data-theme="dark"],
 .dark-mode {
-  --bg-primary: #1a1a1a;
-  --bg-primary-rgb: 26, 26, 26;
-  --bg-secondary: #2d2d2d;
-  --bg-tertiary: #3a3a3a;
-  --text-primary: #ffffff;
-  --text-secondary: #e0e0e0;
-  --text-muted: #b0b0b0;
-  --border-color: #4a4a4a;
-  --border-color-light: #3a3a3a;
-  --accent-color: #4da6ff;
-  --success-color: #4caf50;
-  --positive-color: #64b5f6;
-  --danger-color: #f44336;
-  --shadow: rgba(255,255,255,0.1);
+  --bg-primary: #0E1014;
+  --bg-primary-rgb: 14, 16, 20;
+  --bg-secondary: #171A21;
+  --bg-tertiary: #1E222B;
+  --text-primary: #F5F1E8;
+  --text-secondary: #C9CDD5;
+  --text-muted: #8B909C;
+  --border-color: #2A2F3A;
+  --border-color-light: #21252E;
+  --accent-color: #E0A138;
+  --accent-strong: #F2C46B;
+  --accent-contrast: #0E1014;
+  --success-color: #57B891;
+  --positive-color: #57B891;
+  --danger-color: #D9776B;
+  --gain-color: #57B891;
+  --loss-color: #D9776B;
+  --warning-color: #E0A138;
+  --info-color: #7FB0DE;
+  --neutral-color: #8B909C;
+  --shadow: rgba(0,0,0,0.45);
+  --card-bg: linear-gradient(180deg, #171A21, #14171D);
+  --card-shadow: 0 1px 2px rgba(0,0,0,0.3);
+  --page-bg: radial-gradient(1200px 600px at 78% -8%, rgba(224,161,56,.10), transparent 60%),
+             radial-gradient(900px 500px at 0% 100%, rgba(87,184,145,.05), transparent 55%),
+             #0E1014;
 }
 
 .structured-product-interface {
   display: flex;
   min-height: 100vh;
   height: 100vh; /* Fixed height for proper scrolling */
-  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+  font-family: var(--font-sans);
   background-color: var(--bg-primary);
   color: var(--text-primary);
   transition: all 0.3s ease;
@@ -71,7 +98,7 @@
 }
 
 .sidebar::-webkit-scrollbar-thumb {
-  background: linear-gradient(45deg, var(--accent-color), #4da6ff);
+  background: linear-gradient(45deg, var(--accent-color), var(--accent-strong));
   border-radius: 10px;
   border: 2px solid var(--bg-tertiary);
   box-shadow: inset 0 0 3px rgba(0, 0, 0, 0.1);
@@ -79,14 +106,14 @@
 }
 
 .sidebar::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(45deg, #0056b3, var(--accent-color));
+  background: linear-gradient(45deg, var(--accent-color), var(--accent-color));
   border: 2px solid var(--bg-secondary);
   box-shadow: inset 0 0 5px rgba(0, 0, 0, 0.2);
   transform: scale(1.1);
 }
 
 .sidebar::-webkit-scrollbar-thumb:active {
-  background: linear-gradient(45deg, #004085, #0056b3);
+  background: linear-gradient(45deg, #004085, var(--accent-color));
   box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.3);
 }
 
@@ -109,14 +136,14 @@
 
 [data-theme="dark"] .sidebar::-webkit-scrollbar-thumb,
 .dark-mode .sidebar::-webkit-scrollbar-thumb {
-  background: linear-gradient(45deg, var(--accent-color), #6bb6ff);
+  background: linear-gradient(45deg, var(--accent-color), var(--accent-strong));
   border: 2px solid var(--bg-primary);
   box-shadow: inset 0 0 3px rgba(255, 255, 255, 0.1);
 }
 
 [data-theme="dark"] .sidebar::-webkit-scrollbar-thumb:hover,
 .dark-mode .sidebar::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(45deg, #6bb6ff, #87ceeb);
+  background: linear-gradient(45deg, var(--accent-strong), #87ceeb);
   border: 2px solid var(--bg-secondary);
   box-shadow: inset 0 0 5px rgba(255, 255, 255, 0.2);
 }
@@ -162,7 +189,7 @@
 
 /* Add glow effect on hover for extra beauty */
 .sidebar::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(45deg, #0056b3, var(--accent-color));
+  background: linear-gradient(45deg, var(--accent-color), var(--accent-color));
   border: 2px solid var(--bg-secondary);
   box-shadow: 
     inset 0 0 5px rgba(0, 0, 0, 0.2),
@@ -172,7 +199,7 @@
 
 [data-theme="dark"] .sidebar::-webkit-scrollbar-thumb:hover,
 .dark-mode .sidebar::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(45deg, #6bb6ff, #87ceeb);
+  background: linear-gradient(45deg, var(--accent-strong), #87ceeb);
   border: 2px solid var(--bg-secondary);
   box-shadow: 
     inset 0 0 5px rgba(255, 255, 255, 0.2),
@@ -1156,7 +1183,7 @@
 }
 
 .drop-zone.drop-over {
-  border-color: #007bff;
+  border-color: var(--accent-color);
   background-color: #e3f2fd;
 }
 
@@ -1193,7 +1220,7 @@
   top: 0;
   bottom: 0;
   width: 2px;
-  background-color: #007bff;
+  background-color: var(--accent-color);
   opacity: 0.3;
 }
 
@@ -1213,7 +1240,7 @@
 
 .logic-line:hover {
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-  border-color: #007bff;
+  border-color: var(--accent-color);
 }
 
 .line-number {
@@ -1222,7 +1249,7 @@
   justify-content: center;
   width: 30px;
   height: 30px;
-  background-color: #007bff;
+  background-color: var(--accent-color);
   color: white;
   border-radius: 50%;
   font-size: 0.8rem;
@@ -1252,7 +1279,7 @@
   transform: translateY(-50%);
   width: 0;
   height: 0;
-  border-left: 5px solid #007bff;
+  border-left: 5px solid var(--accent-color);
   border-top: 5px solid transparent;
   border-bottom: 5px solid transparent;
   opacity: 0;
@@ -1282,7 +1309,7 @@
 }
 
 .dropped-item.logic-card {
-  border-color: #007bff;
+  border-color: var(--accent-color);
   background-color: #f8f9fa;
   min-width: 400px;
   padding: 12px;
@@ -1402,7 +1429,7 @@
 }
 
 .dropped-item.drop-hover {
-  border-color: #007bff;
+  border-color: var(--accent-color);
   background-color: #e3f2fd;
   transform: translateY(-2px);
   box-shadow: 0 6px 12px rgba(0, 123, 255, 0.3);
@@ -1444,7 +1471,7 @@
 .dropped-item .value {
   margin-left: auto;
   font-weight: bold;
-  color: #007bff;
+  color: var(--accent-color);
 }
 
 .editable-value {
@@ -2244,7 +2271,7 @@
   bottom: 2px;
   left: 2px;
   width: calc(50% - 2px);
-  background: linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%);
+  background: linear-gradient(135deg, var(--accent-color) 0%, var(--accent-strong) 100%);
   border-radius: 4px;
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   z-index: 0;
@@ -2618,7 +2645,7 @@
 }
 
 .underlying-table-body::-webkit-scrollbar-thumb:hover {
-  background: #4da6ff;
+  background: var(--accent-strong);
 }
 
 .underlying-list {
@@ -2649,7 +2676,7 @@
 }
 
 .underlying-list::-webkit-scrollbar-thumb:hover {
-  background: #4da6ff;
+  background: var(--accent-strong);
 }
 
 .underlying-item {
@@ -2917,7 +2944,7 @@
 }
 
 .normalize-weights-btn {
-  background: linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%);
+  background: linear-gradient(135deg, var(--accent-color) 0%, var(--accent-strong) 100%);
   color: white;
   border: none;
   padding: 12px 24px;
@@ -2968,7 +2995,7 @@
 }
 
 .product-save-btn {
-  background: linear-gradient(135deg, #007bff 0%, #0056b3 100%);
+  background: var(--accent-color);
   color: white;
   border: none;
   padding: 15px 30px;
@@ -2988,7 +3015,7 @@
 .product-save-btn:hover:not(:disabled) {
   transform: translateY(-3px);
   box-shadow: 0 6px 20px rgba(0, 123, 255, 0.4);
-  background: linear-gradient(135deg, #0056b3 0%, #007bff 100%);
+  background: var(--accent-color);
 }
 
 .product-save-btn:disabled {
@@ -3001,7 +3028,7 @@
 .normalize-weights-btn:hover:not(:disabled) {
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(0, 123, 255, 0.4);
-  background: linear-gradient(135deg, #4da6ff 0%, var(--accent-color) 100%);
+  background: linear-gradient(135deg, var(--accent-strong) 0%, var(--accent-color) 100%);
 }
 
 .normalize-weights-btn:disabled {
@@ -3423,7 +3450,7 @@
 
 .date-value-chip:hover {
   background-color: #e9ecef;
-  border-color: #007bff;
+  border-color: var(--accent-color);
 }
 
 .dark-mode .date-value-chip {

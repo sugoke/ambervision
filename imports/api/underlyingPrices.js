@@ -56,6 +56,12 @@ if (Meteor.isServer) {
   // Server methods for data management
   Meteor.methods({
     'underlyingPrices.insert': async function(priceData) {
+      // Server-only: these prices drive all product evaluations, so a client must
+      // not be able to insert/overwrite them. Server-originated calls (cron, the
+      // price fetch pipeline) have this.connection === null.
+      if (this.connection !== null) {
+        throw new Meteor.Error('not-authorized', 'This method can only be called server-side');
+      }
       check(priceData, {
         ticker: String,
         date: Date,
@@ -92,6 +98,9 @@ if (Meteor.isServer) {
     },
 
     'underlyingPrices.insertBatch': async function(pricesArray) {
+      if (this.connection !== null) {
+        throw new Meteor.Error('not-authorized', 'This method can only be called server-side');
+      }
       check(pricesArray, [Object]);
 
       const results = [];
@@ -270,6 +279,9 @@ if (Meteor.isServer) {
     },
 
     'underlyingPrices.cleanup': function(daysToKeep = 365) {
+      if (this.connection !== null) {
+        throw new Meteor.Error('not-authorized', 'This method can only be called server-side');
+      }
       check(daysToKeep, Number);
 
       const cutoffDate = new Date();

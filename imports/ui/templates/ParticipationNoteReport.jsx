@@ -296,7 +296,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
                 fontWeight: '700',
                 color: '#34d399'
               }}>
-                {issuerCall.totalReceivedFormatted || `${((issuerCall.callPrice || 100) + (issuerCall.rebate || 0)).toFixed(2)}%`}
+                {issuerCall.totalReceivedFormatted}
               </div>
             </div>
           </div>
@@ -1388,12 +1388,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
                 color: 'var(--warning-color)',
                 fontFamily: 'monospace'
               }}>
-                {(() => {
-                  const callPrice = issuerCall.callPrice || 100;
-                  const rebate = issuerCall.rebate || 0;
-                  const total = callPrice + rebate;
-                  return `${total.toFixed(2)}%`;
-                })()}
+                {issuerCall.totalReceivedFormatted}
               </div>
             </div>
           ) : (
@@ -1531,11 +1526,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
                   fontSize: '0.85rem',
                   color: 'var(--text-secondary)'
                 }}>
-                  Remaining observation dates are cancelled. Total received: {(() => {
-                    const callPrice = issuerCall.callPrice || 100;
-                    const rebate = issuerCall.rebate || 0;
-                    return `${(callPrice + rebate).toFixed(2)}%`;
-                  })()}
+                  Remaining observation dates are cancelled. Total received: {issuerCall.totalReceivedFormatted}
                 </div>
               </div>
             </div>

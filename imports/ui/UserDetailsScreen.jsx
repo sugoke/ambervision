@@ -306,10 +306,15 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
 
   // Subscribe to data
   const { user, entity, allEntities, linkedEntities, linkedUsers, bankAccounts, beneficiaryAccounts, relationshipManagers, introducers, banks, accountProfiles, portfolioSnapshots, isLoading } = useTracker(() => {
-    const userHandle = Meteor.subscribe('customUsers');
+    const userHandle = Meteor.subscribe('customUsers', sessionId);
     const banksHandle = Meteor.subscribe('banks');
-    const bankAccountsHandle = Meteor.subscribe('allBankAccounts');
+    const bankAccountsHandle = Meteor.subscribe('allBankAccounts', sessionId);
     const entityHandle = Meteor.subscribe('clientEntities', sessionId);
+    // The list publication omits the KYC block (data minimisation) — the detail
+    // screen needs the full document for the entity being viewed.
+    if (entityId) {
+      Meteor.subscribe('clientEntities.details', sessionId, entityId);
+    }
     if (userId || entityId) {
       Meteor.subscribe('accountProfiles', sessionId, userId, entityId);
       if (userId) {
@@ -1197,7 +1202,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
       case 'high':
         return { label: 'Risque Eleve', labelEn: 'High Risk', color: 'var(--loss-color)', emoji: '🔴', reviewPeriod: '1 year' };
       default:
-        return { label: 'Non evalue', labelEn: 'Not Assessed', color: '#6b7280', emoji: '⚪', reviewPeriod: '-' };
+        return { label: 'Non evalue', labelEn: 'Not Assessed', color: 'var(--text-muted)', emoji: '⚪', reviewPeriod: '-' };
     }
   };
 
@@ -1866,7 +1871,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                         await Meteor.callAsync('clientEntities.deactivate', entityId, sessionId);
                       }
                       if (hasUser && userId) {
-                        await Meteor.callAsync('users.remove', userId);
+                        await Meteor.callAsync('users.remove', userId, sessionId);
                       }
                       if (onBack) onBack();
                     } catch (err) {
@@ -1972,7 +1977,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   categoryCounts[category] = (categoryCounts[category] || 0) + 1;
                 });
                 return Object.entries(categoryCounts).map(([cat, count]) => (
-                  <div key={cat} style={{ fontSize: '13px', color: '#4da6ff', fontWeight: '600', lineHeight: '1.6' }}>
+                  <div key={cat} style={{ fontSize: '13px', color: 'var(--accent-color)', fontWeight: '600', lineHeight: '1.6' }}>
                     {count} {cat}
                   </div>
                 ));
@@ -2118,7 +2123,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                               await Meteor.callAsync('clientEntities.deactivate', entityId, sessionId);
                             }
                             if (hasUser && userId) {
-                              await Meteor.callAsync('users.remove', userId);
+                              await Meteor.callAsync('users.remove', userId, sessionId);
                             }
                             if (onBack) onBack();
                           } catch (err) {
@@ -3167,7 +3172,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                           padding: '4px 10px',
                           borderRadius: '6px',
                           background: isDarkMode ? 'rgba(79, 166, 255, 0.15)' : 'rgba(59, 130, 246, 0.15)',
-                          color: '#4da6ff',
+                          color: 'var(--accent-color)',
                           fontSize: '0.75rem',
                           fontWeight: '600',
                           flexShrink: 0
@@ -3476,7 +3481,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                               <td style={{ padding: '10px 14px', color: 'var(--text-primary)', fontSize: '0.85rem' }}>{account.name || fullName}</td>
                               <td style={{ padding: '10px 14px', fontFamily: "'Roboto Mono', monospace", fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{account.accountNumber}</td>
                               <td style={{ padding: '10px 14px', textAlign: 'center' }}>
-                                <span style={{ padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: '600', background: 'rgba(79, 166, 255, 0.1)', color: '#4da6ff' }}>{account.referenceCurrency}</span>
+                                <span style={{ padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: '600', background: 'rgba(79, 166, 255, 0.1)', color: 'var(--accent-color)' }}>{account.referenceCurrency}</span>
                               </td>
                               <td style={{ padding: '10px 14px', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{account.comment || account.accountType}</td>
                               {entity?.isInsurance && <td style={{ padding: '10px 14px', fontSize: '0.82rem', color: ubos.length > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{ubos.length > 0 ? ubos.map(u => ClientEntityHelpers.getEntityDisplayName(u)).join(', ') : '-'}</td>}
@@ -3664,7 +3669,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px 24px' }}>
                                             <div>
                                               <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Currency</div>
-                                              <div style={{ fontSize: '0.85rem', fontWeight: '600', color: '#4da6ff' }}>{account.referenceCurrency}</div>
+                                              <div style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--accent-color)' }}>{account.referenceCurrency}</div>
                                             </div>
                                             <div>
                                               <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Description</div>
@@ -5274,7 +5279,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                     padding: '2px 8px',
                                     borderRadius: '6px',
                                     background: isDarkMode ? 'rgba(79, 166, 255, 0.15)' : 'rgba(59, 130, 246, 0.15)',
-                                    color: '#4da6ff',
+                                    color: 'var(--accent-color)',
                                     fontSize: '12px',
                                     fontWeight: '600'
                                   }}>

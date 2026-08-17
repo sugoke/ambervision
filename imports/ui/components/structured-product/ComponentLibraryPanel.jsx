@@ -89,7 +89,7 @@ const ComponentLibraryPanel = ({
             width: '32px',
             height: '32px',
             borderRadius: '8px',
-            background: `${colors.accent}20`,
+            background: `color-mix(in srgb, ${colors.accent} 13%, transparent)`,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -131,7 +131,7 @@ const ComponentLibraryPanel = ({
               style={{
                 padding: `${spacing[1]} ${spacing[3]}`,
                 border: `1px solid ${activeCategory === category.id ? colors.accent : colors.border}`,
-                background: activeCategory === category.id ? `${colors.accent}10` : 'transparent',
+                background: activeCategory === category.id ? `color-mix(in srgb, ${colors.accent} 6%, transparent)` : 'transparent',
                 color: activeCategory === category.id ? colors.accent : colors.secondary,
                 borderRadius: borderRadius.md,
                 fontSize: '0.8rem',
@@ -210,8 +210,8 @@ const ComponentLibraryPanel = ({
       <div style={{
         marginTop: spacing[4],
         padding: spacing[3],
-        background: `${colors.info}10`,
-        border: `1px solid ${colors.info}30`,
+        background: `color-mix(in srgb, ${colors.info} 6%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${colors.info} 19%, transparent)`,
         borderRadius: borderRadius.md,
         fontSize: '0.8rem',
         color: colors.secondary,
@@ -248,7 +248,7 @@ const ComponentCard = ({ component, onDragStart }) => {
         gap: spacing[3],
         padding: spacing[3],
         marginBottom: spacing[2],
-        background: isDragging ? `${colors.accent}10` : colors.bgPrimary,
+        background: isDragging ? `color-mix(in srgb, ${colors.accent} 6%, transparent)` : colors.bgPrimary,
         border: `1px solid ${isDragging ? colors.accent : colors.border}`,
         borderRadius: borderRadius.md,
         cursor: 'grab',
@@ -257,8 +257,8 @@ const ComponentCard = ({ component, onDragStart }) => {
       }}
       onMouseEnter={(e) => {
         if (!isDragging) {
-          e.currentTarget.style.background = `${colors.accent}05`;
-          e.currentTarget.style.borderColor = `${colors.accent}50`;
+          e.currentTarget.style.background = `color-mix(in srgb, ${colors.accent} 2%, transparent)`;
+          e.currentTarget.style.borderColor = `color-mix(in srgb, ${colors.accent} 31%, transparent)`;
           e.currentTarget.style.transform = 'translateY(-1px)';
         }
       }}
@@ -275,7 +275,7 @@ const ComponentCard = ({ component, onDragStart }) => {
         width: '36px',
         height: '36px',
         borderRadius: borderRadius.md,
-        background: `${colors.accent}15`,
+        background: `color-mix(in srgb, ${colors.accent} 8%, transparent)`,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',

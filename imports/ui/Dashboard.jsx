@@ -1059,7 +1059,7 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
           <button
             onClick={onCreateProduct}
             style={{
-              background: 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+              background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
               color: 'white',
               border: 'none',
               padding: '0',
@@ -1510,7 +1510,7 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
           <div style={{
             fontSize: isMobile ? '1.8rem' : '2.5rem',
             fontWeight: '700',
-            color: '#6b7280',
+            color: 'var(--text-muted)',
             lineHeight: '1'
           }}>
             {products.filter(p => getStandardizedProductStatus(p) === 'matured').length}
@@ -1563,7 +1563,7 @@ const Dashboard = ({ user, onCreateProduct, onEditProduct, onViewReport, onDelet
             <button
               onClick={onCreateProduct}
               style={{
-                background: 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+                background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
                 color: 'white',
                 border: 'none',
                 padding: '14px 28px',

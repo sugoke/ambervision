@@ -6,7 +6,7 @@ import { PMSHoldingsCollection } from '/imports/api/pmsHoldings';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
 import { ClientEntitiesCollection, ClientEntityHelpers } from '/imports/api/clientEntities';
-import { SessionsCollection } from '/imports/api/sessions';
+import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
 import { resolveEntityId } from '/imports/utils/entityResolver';
 import { Meteor } from 'meteor/meteor';
 
@@ -131,11 +131,7 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
     let currentUser = null;
 
     if (sessionId) {
-      const session = await SessionsCollection.findOneAsync({
-        sessionId,
-        isActive: true,
-        expiresAt: { $gt: new Date() }
-      });
+      const session = await SessionHelpers.findByToken(sessionId);
 
       if (session && session.userId) {
         currentUser = await UsersCollection.findOneAsync(session.userId);
@@ -480,11 +476,7 @@ Meteor.publish('pmsHoldings.snapshotDates', async function (sessionId = null, vi
     let currentUser = null;
 
     if (sessionId) {
-      const session = await SessionsCollection.findOneAsync({
-        sessionId,
-        isActive: true,
-        expiresAt: { $gt: new Date() }
-      });
+      const session = await SessionHelpers.findByToken(sessionId);
 
       if (session && session.userId) {
         currentUser = await UsersCollection.findOneAsync(session.userId);
@@ -593,11 +585,7 @@ Meteor.publish('pmsHoldings.byProduct', async function(isin, sessionId = null) {
     let currentUser = null;
 
     if (sessionId) {
-      const session = await SessionsCollection.findOneAsync({
-        sessionId,
-        isActive: true,
-        expiresAt: { $gt: new Date() }
-      });
+      const session = await SessionHelpers.findByToken(sessionId);
       if (session && session.userId) {
         currentUser = await UsersCollection.findOneAsync(session.userId);
       }

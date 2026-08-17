@@ -102,7 +102,7 @@ export const MemoryTrackerCard = ({ report, product, featureManifest }) => {
           </div>
           <div style={{
             fontSize: '0.875rem',
-            color: '#9ca3af'
+            color: 'var(--text-muted)'
           }}>
             Accumulated Period{accumulatedPeriods !== 1 ? 's' : ''}
           </div>
@@ -123,7 +123,7 @@ export const MemoryTrackerCard = ({ report, product, featureManifest }) => {
           }}>
             <div style={{
               fontSize: '0.75rem',
-              color: '#9ca3af',
+              color: 'var(--text-muted)',
               marginBottom: '0.25rem'
             }}>
               Total Paid
@@ -145,7 +145,7 @@ export const MemoryTrackerCard = ({ report, product, featureManifest }) => {
           }}>
             <div style={{
               fontSize: '0.75rem',
-              color: '#9ca3af',
+              color: 'var(--text-muted)',
               marginBottom: '0.25rem'
             }}>
               Total Missed
@@ -176,14 +176,14 @@ export const MemoryTrackerCard = ({ report, product, featureManifest }) => {
               <div>
                 <div style={{
                   fontSize: '0.75rem',
-                  color: '#9ca3af',
+                  color: 'var(--text-muted)',
                   marginBottom: '0.25rem'
                 }}>
                   Potential Payout
                 </div>
                 <div style={{
                   fontSize: '0.875rem',
-                  color: '#9ca3af'
+                  color: 'var(--text-muted)'
                 }}>
                   If triggered next observation
                 </div>
@@ -206,7 +206,7 @@ export const MemoryTrackerCard = ({ report, product, featureManifest }) => {
           background: 'rgba(255, 255, 255, 0.03)',
           borderRadius: '6px',
           fontSize: '0.75rem',
-          color: '#9ca3af',
+          color: 'var(--text-muted)',
           textAlign: 'center'
         }}>
           {memoryFeatures.hasPhoenixMemory && 'Phoenix Memory with Step-Down Autocall'}

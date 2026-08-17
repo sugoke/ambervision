@@ -169,7 +169,8 @@ const BankManagement = React.memo(({ user }) => {
       city: newBank.city.trim(),
       country: newBank.country.trim(),
       countryCode: newBank.countryCode.trim(),
-      deskEmail: newBank.deskEmail.trim() || null
+      deskEmail: newBank.deskEmail.trim() || null,
+      sessionId: localStorage.getItem('sessionId')
     }, (err) => {
       setIsLoading(false);
       if (err) {
@@ -184,7 +185,7 @@ const BankManagement = React.memo(({ user }) => {
   const handleDeactivateBank = async (bankId) => {
     const confirmed = await showConfirm('Are you sure you want to remove this bank?');
     if (confirmed) {
-      Meteor.call('banks.deactivate', bankId, (err) => {
+      Meteor.call('banks.deactivate', bankId, localStorage.getItem('sessionId'), (err) => {
         if (err) {
           setError(err.reason || 'Failed to remove bank');
         } else {
@@ -213,7 +214,7 @@ const BankManagement = React.memo(({ user }) => {
       ccEmails
     };
 
-    Meteor.call('banks.update', editingBank._id, updates, (err) => {
+    Meteor.call('banks.update', editingBank._id, updates, localStorage.getItem('sessionId'), (err) => {
       if (err) {
         setError(err.reason || 'Failed to update bank');
       } else {

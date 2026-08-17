@@ -1,6 +1,6 @@
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
-import { EmailService } from '../../imports/api/emailService.js';
+import { EmailService, EMAIL, emailShell, emailKvTable, emailNotice } from '../../imports/api/emailService.js';
 import { LandingLeadsCollection, LandingLeadHelpers, LEAD_STATUS } from '../../imports/api/landingLeads.js';
 
 /**
@@ -11,14 +11,20 @@ Meteor.methods({
    * Handle landing page contact form submission
    * Stores the lead in the database and sends email notification via SendPulse
    */
-  async 'landing.submitContactForm'({ name, email, phone }) {
+  async 'landing.submitContactForm'({ name, email, phone, consent }) {
     check(name, String);
     check(email, Match.Maybe(String));
     check(phone, Match.Maybe(String));
+    check(consent, Match.Maybe(Object));
 
     // Validate that at least email or phone is provided
     if (!email && !phone) {
       throw new Meteor.Error('invalid-input', 'Please provide either an email or phone number');
+    }
+
+    // GDPR: storing prospect contact details rests on consent — refuse without it.
+    if (!consent || consent.given !== true) {
+      throw new Meteor.Error('consent-required', 'Please accept the privacy policy so we can store your contact details');
     }
 
     // Validate name is not empty
@@ -26,7 +32,7 @@ Meteor.methods({
       throw new Meteor.Error('invalid-input', 'Please provide your name');
     }
 
-    console.log(`[LANDING] New contact form submission: ${name}, ${email || 'no email'}, ${phone || 'no phone'}`);
+    console.log(`[LANDING] New contact form submission received (email: ${email ? 'yes' : 'no'}, phone: ${phone ? 'yes' : 'no'})`);
 
     try {
       // Step 1: Store the lead in the database
@@ -35,65 +41,37 @@ Meteor.methods({
         email: email ? email.trim() : null,
         phone: phone ? phone.trim() : null,
         source: 'landing-page-us-citizens',
-        landingPage: '/#landing'
+        landingPage: '/#landing',
+        consent: {
+          given: true,
+          at: new Date(),
+          textVersion: String(consent.textVersion || 'privacy-2026-08')
+        }
       });
 
       console.log(`[LANDING] Lead stored in database with ID: ${lead.leadId}`);
 
       // Step 2: Send email notification via SendPulse
       try {
-        const emailHtml = `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <div style="background: #1A2B40; color: white; padding: 20px; text-align: center;">
-              <h1 style="margin: 0; font-size: 24px;">🎯 New Lead from Landing Page</h1>
-            </div>
-            <div style="padding: 30px; background: #f5f5f5;">
-              <h2 style="color: #1A2B40; margin-top: 0;">Contact Details</h2>
-              <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden;">
-                <tr>
-                  <td style="padding: 15px; border-bottom: 1px solid #eee; font-weight: bold; width: 120px; color: #666;">Name</td>
-                  <td style="padding: 15px; border-bottom: 1px solid #eee; color: #333;">${name}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 15px; border-bottom: 1px solid #eee; font-weight: bold; color: #666;">Email</td>
-                  <td style="padding: 15px; border-bottom: 1px solid #eee;">
-                    ${email ? `<a href="mailto:${email}" style="color: #DD772A;">${email}</a>` : '<span style="color: #999;">Not provided</span>'}
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding: 15px; border-bottom: 1px solid #eee; font-weight: bold; color: #666;">Phone</td>
-                  <td style="padding: 15px; border-bottom: 1px solid #eee;">
-                    ${phone ? `<a href="tel:${phone}" style="color: #DD772A;">${phone}</a>` : '<span style="color: #999;">Not provided</span>'}
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding: 15px; font-weight: bold; color: #666;">Submitted</td>
-                  <td style="padding: 15px; color: #333;">${new Date().toLocaleString('en-GB', {
-                    timeZone: 'Europe/Paris',
-                    weekday: 'long',
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit'
-                  })}</td>
-                </tr>
-              </table>
-
-              <div style="margin-top: 20px; padding: 15px; background: #e8f4f8; border-radius: 8px; border-left: 4px solid #DD772A;">
-                <p style="margin: 0; color: #1A2B40; font-size: 14px;">
-                  <strong>Lead ID:</strong> ${lead.leadId}<br>
-                  <strong>Source:</strong> US Citizens Landing Page (/#landing)
-                </p>
-              </div>
-            </div>
-            <div style="background: #DD772A; color: white; padding: 15px; text-align: center;">
-              <p style="margin: 0; font-size: 14px;">
-                Reply to this lead as soon as possible for best conversion rates!
-              </p>
-            </div>
-          </div>
-        `;
+        const emailHtml = emailShell({
+          title: 'New Lead',
+          subtitle: 'US Citizens Landing Page',
+          bodyHtml: `${emailKvTable([
+            ['Name', name],
+            ['Email', email ? `<a href="mailto:${email}" style="color: ${EMAIL.amberText}; text-decoration: none;">${email}</a>` : `<span style="color: ${EMAIL.muted}; font-weight: 400;">Not provided</span>`],
+            ['Phone', phone ? `<a href="tel:${phone}" style="color: ${EMAIL.amberText}; text-decoration: none;">${phone}</a>` : `<span style="color: ${EMAIL.muted}; font-weight: 400;">Not provided</span>`],
+            ['Submitted', new Date().toLocaleString('en-GB', {
+              timeZone: 'Europe/Paris',
+              weekday: 'long',
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit'
+            })]
+          ])}${emailNotice('info', 'Lead Details', `<strong>Lead ID:</strong> ${lead.leadId}<br><strong>Source:</strong> US Citizens Landing Page (/#landing)`)}${emailNotice('warning', '⏱ Follow up promptly', 'Reply to this lead as soon as possible for best conversion rates!')}`,
+          footerNote: 'This is an automated lead notification from the landing page.'
+        });
 
         const emailText = `
 New Lead from Landing Page
@@ -148,10 +126,10 @@ Reply to this lead as soon as possible for best conversion rates!
     check(limit, Match.Maybe(Number));
 
     // Validate admin session
-    const { SessionsCollection } = await import('../../imports/api/sessions.js');
+    const { SessionHelpers } = await import('../../imports/api/sessions.js');
     const { UsersCollection } = await import('../../imports/api/users.js');
 
-    const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
+    const session = await SessionHelpers.findByToken(sessionId);
     if (!session) {
       throw new Meteor.Error('not-authorized', 'Invalid session');
     }
@@ -180,10 +158,10 @@ Reply to this lead as soon as possible for best conversion rates!
     check(note, Match.Maybe(String));
 
     // Validate admin session
-    const { SessionsCollection } = await import('../../imports/api/sessions.js');
+    const { SessionHelpers } = await import('../../imports/api/sessions.js');
     const { UsersCollection } = await import('../../imports/api/users.js');
 
-    const session = await SessionsCollection.findOneAsync({ sessionId, isActive: true });
+    const session = await SessionHelpers.findByToken(sessionId);
     if (!session) {
       throw new Meteor.Error('not-authorized', 'Invalid session');
     }

@@ -11,7 +11,7 @@ const MarketNews = ({ user }) => {
 
   // Subscribe to newsletters
   const { newsletters, isLoading } = useTracker(() => {
-    const handle = Meteor.subscribe('newsletters');
+    const handle = Meteor.subscribe('newsletters', localStorage.getItem('sessionId'));
     return {
       newsletters: NewslettersCollection.find({}, { sort: { uploadedAt: -1 } }).fetch(),
       isLoading: !handle.ready()
@@ -123,7 +123,7 @@ const MarketNews = ({ user }) => {
             onClick={() => setShowUploadModal(true)}
             style={{
               padding: '0.75rem 1.5rem',
-              background: 'linear-gradient(135deg, var(--accent-color) 0%, #4da6ff 100%)',
+              background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color) 100%)',
               color: 'white',
               border: 'none',
               borderRadius: '8px',
