@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Meteor } from 'meteor/meteor';
 import { USER_ROLES } from '../../api/users';
+import { openDocumentWindow } from '../utils/openDocument.js';
 
 const TermSheetManager = ({ product, user, productId }) => {
   const [showModal, setShowModal] = useState(false);
@@ -98,14 +99,17 @@ const TermSheetManager = ({ product, user, productId }) => {
     setDragActive(false);
   };
 
-  // The /termsheets endpoint now requires a single-use capability token, so
-  // mint a signed URL via the server before opening.
+  // The /termsheets endpoint requires a capability token, so a signed URL is
+  // minted via the server. openDocumentWindow opens the tab synchronously
+  // inside the click gesture — window.open after the await was silently
+  // blocked by mobile popup blockers.
   const openTermSheet = async () => {
     if (!hasTermSheet) return;
     try {
       const sessionId = localStorage.getItem('sessionId');
-      const url = await Meteor.callAsync('products.getTermSheetUrl', productId, sessionId);
-      window.open(url, '_blank');
+      await openDocumentWindow(() =>
+        Meteor.callAsync('products.getTermSheetUrl', productId, sessionId)
+      );
     } catch (error) {
       console.error('Failed to open term sheet:', error);
     }
@@ -238,7 +242,15 @@ const TermSheetManager = ({ product, user, productId }) => {
                   marginBottom: '16px',
                 }}
               >
-                <div style={{ color: '#d1d5db', fontSize: '14px', marginBottom: '8px' }}>
+                <div style={{
+                  color: '#d1d5db',
+                  fontSize: '14px',
+                  marginBottom: '8px',
+                  // Bank filenames are long unbroken strings — without this they
+                  // force the card wider than a phone screen
+                  wordBreak: 'break-word',
+                  overflowWrap: 'anywhere'
+                }}>
                   Current: <strong>{product.termSheet.filename}</strong>
                 </div>
                 <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginBottom: '8px' }}>

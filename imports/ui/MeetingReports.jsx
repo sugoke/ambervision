@@ -4,6 +4,7 @@ import { useTracker } from 'meteor/react-meteor-data';
 import AccountAutocomplete from './components/AccountAutocomplete.jsx';
 import { useTheme } from './ThemeContext.jsx';
 import { MeetingReportsCollection } from '/imports/api/meetingReports';
+import { openDocumentWindow } from './utils/openDocument.js';
 
 const MEETING_TYPES = { IN_PERSON: 'in_person', CALL: 'call' };
 const SATISFACTION = {
@@ -307,11 +308,16 @@ function Editor({ initial, t, onCancel, onSaved }) {
     setIsSaving(true);
     try {
       const sessionId = localStorage.getItem('sessionId');
-      const saved = await Meteor.callAsync('meetingReports.saveDraft', sessionId, buildSavePayload());
-      const id = saved._id;
-      setMeetingReportId(id);
-      const finalized = await Meteor.callAsync('meetingReports.finalize', sessionId, id);
-      if (finalized.url) window.open(finalized.url, '_blank');
+      // The whole save+finalize chain runs INSIDE openDocumentWindow so the tab
+      // is opened synchronously within the click gesture — window.open after
+      // the awaits is silently blocked by mobile popup blockers
+      await openDocumentWindow(async () => {
+        const saved = await Meteor.callAsync('meetingReports.saveDraft', sessionId, buildSavePayload());
+        const id = saved._id;
+        setMeetingReportId(id);
+        const finalized = await Meteor.callAsync('meetingReports.finalize', sessionId, id);
+        return finalized.url || null;
+      });
       onSaved && onSaved();
     } catch (err) {
       setError(err.reason || err.message || 'Finalize failed');
@@ -492,8 +498,11 @@ export default function MeetingReports({ user }) {
   const handleDownload = useCallback(async (id) => {
     try {
       const sessionId = localStorage.getItem('sessionId');
-      const res = await Meteor.callAsync('meetingReports.generatePdf', sessionId, id);
-      if (res.url) window.open(res.url, '_blank');
+      // Tab opened synchronously inside the click gesture (mobile popup blockers)
+      await openDocumentWindow(async () => {
+        const res = await Meteor.callAsync('meetingReports.generatePdf', sessionId, id);
+        return res.url;
+      });
     } catch (err) {
       alert(err.reason || err.message || 'PDF generation failed');
     }

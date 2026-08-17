@@ -14,6 +14,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useSubscribe, useFind } from 'meteor/react-meteor-data';
 import LiquidGlassCard from './LiquidGlassCard.jsx';
+import { openDocumentWindow } from '../utils/openDocument.js';
 import {
   ClientDocumentsCollection,
   DOCUMENT_TYPES,
@@ -105,8 +106,11 @@ const DocumentFileRow = ({ document, config, onUploadComplete }) => {
   const handleView = async () => {
     try {
       const sessionId = localStorage.getItem('sessionId');
-      const url = await Meteor.callAsync('clientDocuments.getDownloadUrl', document._id, sessionId);
-      window.open(url, '_blank');
+      // Tab opened synchronously inside the click gesture — window.open after
+      // the await is silently blocked by mobile popup blockers
+      await openDocumentWindow(() =>
+        Meteor.callAsync('clientDocuments.getDownloadUrl', document._id, sessionId)
+      );
     } catch (error) {
       console.error('View error:', error);
       alert('Failed to open document: ' + error.message);
