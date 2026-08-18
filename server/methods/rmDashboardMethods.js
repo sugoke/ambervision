@@ -19,6 +19,7 @@ import { CurrencyRateCacheCollection, CurrencyCache } from '../../imports/api/cu
 import { calculateCashForHoldings } from '../../imports/api/helpers/cashCalculator.js';
 import { DashboardMetricsHelpers } from '../../imports/api/dashboardMetrics.js';
 import { ClientEntitiesCollection, ClientEntityHelpers, ENTITY_STATUSES } from '../../imports/api/clientEntities.js';
+import { aggregateSnapshotsByDay } from '../helpers/currencyHelpers.js';
 import { UserEntityAccessHelpers } from '../../imports/api/userEntityAccess.js';
 import { getFilteredEntityIds, buildEntityOrUserFilter } from '../../imports/utils/entityResolver.js';
 import { INVESTMENT_QUOTES } from '../quotesData.js';
@@ -745,14 +746,40 @@ Meteor.methods({
         'other'  // Unclassified instruments (included so AUM matches PMS total)
       ];
 
-      // Helper to sum holdings in EUR
-      // Note: marketValue field is already in portfolio currency (EUR) from bank parsers
-      // The 'currency' field represents the security's trading currency, not marketValue's currency
+      // Latest valuation date across the holdings actually summed — when the
+      // banks' files for today haven't arrived yet, the "day change" is really
+      // "no new valuation", and the UI must say so instead of implying a flat day.
+      let valuationDate = null;
+      // Per-portfolio valuation date. Banks deliver on different lags (CMB is
+      // T-1, Julius Baer same-day) — the "previous" snapshot for the day-change
+      // comparison must be chosen relative to EACH portfolio's own current data
+      // date, not one calendar day before today. Otherwise a portfolio whose
+      // bank is a day behind gets compared against a snapshot of ITSELF
+      // (today's holdings are dated yesterday, and "yesterday's snapshot" is
+      // that same date) and permanently shows a flat 0.00% day change.
+      const portfolioValuationDates = new Map();
+      const trackValuationDate = (holdings) => {
+        for (const h of holdings) {
+          if (!h.snapshotDate) continue;
+          if (!valuationDate || h.snapshotDate > valuationDate) {
+            valuationDate = h.snapshotDate;
+          }
+          const key = `${h.portfolioCode || 'unknown'}|${h.bankId || 'unknown'}`;
+          const existing = portfolioValuationDates.get(key);
+          if (!existing || h.snapshotDate > existing) {
+            portfolioValuationDates.set(key, h.snapshotDate);
+          }
+        }
+      };
+
+      // Helper to sum holdings in EUR.
+      // marketValue is stored in the PORTFOLIO's reference currency
+      // (holdings.portfolioCurrency) — usually EUR, but USD-referenced accounts
+      // exist. Convert per holding; portfolioCurrency missing/EUR is a no-op.
+      // (The 'currency' field is the security's trading currency — irrelevant here.)
       const sumHoldingsInEUR = (holdings) => {
         return holdings.reduce((sum, h) => {
-          // marketValue is already in EUR (PTF_MKT_VAL from bank files)
-          // Do NOT convert - that would double-convert non-EUR securities
-          return sum + (h.marketValue || 0);
+          return sum + convertToEUR(h.marketValue || 0, h.portfolioCurrency || 'EUR', ratesMap);
         }, 0);
       };
 
@@ -777,9 +804,10 @@ Meteor.methods({
             { assetClass: null },
             { assetClass: { $exists: false } }
           ]
-        }, { fields: { marketValue: 1, portfolioCode: 1, bankId: 1, userId: 1 } }).fetchAsync();
+        }, { fields: { marketValue: 1, portfolioCode: 1, bankId: 1, userId: 1, portfolioCurrency: 1, snapshotDate: 1 } }).fetchAsync();
 
         totalAUMInEUR = sumHoldingsInEUR(allHoldings);
+        trackValuationDate(allHoldings);
 
         // Debug: Log holdings breakdown by portfolio/user
         const holdingsByPortfolio = {};
@@ -831,10 +859,11 @@ Meteor.methods({
           };
         }
         const clientHoldings = await PMSHoldingsCollection.find(clientHoldingsQuery, {
-          fields: { marketValue: 1, portfolioCode: 1, bankId: 1, userId: 1 }
+          fields: { marketValue: 1, portfolioCode: 1, bankId: 1, userId: 1, portfolioCurrency: 1, snapshotDate: 1 }
         }).fetchAsync();
 
         totalAUMInEUR = sumHoldingsInEUR(clientHoldings);
+        trackValuationDate(clientHoldings);
 
         // Track current portfolios
         clientHoldings.forEach(h => {
@@ -876,9 +905,10 @@ Meteor.methods({
           };
         }
         const fxForwardHoldings = await PMSHoldingsCollection.find(fxForwardQuery, {
-          fields: { marketValueNoAccruedInterest: 1, marketValue: 1 }
+          fields: { marketValueNoAccruedInterest: 1, marketValue: 1, portfolioCurrency: 1 }
         }).fetchAsync();
-        totalAUMInEUR += fxForwardHoldings.reduce((sum, h) => sum + (h.marketValueNoAccruedInterest || h.marketValue || 0), 0);
+        totalAUMInEUR += fxForwardHoldings.reduce((sum, h) =>
+          sum + convertToEUR(h.marketValueNoAccruedInterest || h.marketValue || 0, h.portfolioCurrency || 'EUR', ratesMap), 0);
       }
 
       // Convert EUR total to target currency
@@ -928,16 +958,32 @@ Meteor.methods({
       console.log('[RM Dashboard] Current AUM (EUR):', totalAUMInEUR.toLocaleString('en-US', { maximumFractionDigits: 2 }));
 
       try {
-        // Get yesterday's date (normalized to midnight UTC)
-        const yesterday = new Date();
-        yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-        yesterday.setUTCHours(0, 0, 0, 0);
+        if (portfolioValuationDates.size === 0) {
+          console.log('[RM Dashboard] No portfolio valuation dates tracked; skipping day-change comparison');
+        } else {
+        // Look up each portfolio's "previous" snapshot relative to ITS OWN
+        // valuation date (not a single calendar day before today). Banks lag
+        // by different amounts — comparing every portfolio to a fixed
+        // "yesterday" meant a portfolio whose bank is a day behind (e.g. CMB)
+        // was compared to a snapshot of the SAME date as its current holdings,
+        // producing a permanent 0.00% "change" that was really "no comparison
+        // was possible". Fetch a window of candidate snapshots once, then in
+        // JS pick, per portfolio, the latest one strictly before its own date.
+        const ownDates = [...portfolioValuationDates.values()];
+        const earliestOwnDate = new Date(Math.min(...ownDates.map(d => d.getTime())));
+        const latestOwnDate = new Date(Math.max(...ownDates.map(d => d.getTime())));
+        // 10 calendar days comfortably covers weekends + a public holiday
+        const lookbackStart = new Date(earliestOwnDate);
+        lookbackStart.setUTCDate(lookbackStart.getUTCDate() - 10);
 
-        console.log('[RM Dashboard] Yesterday date (UTC):', yesterday.toISOString());
+        console.log('[RM Dashboard] Previous-snapshot lookback window (UTC):', lookbackStart.toISOString(), '..', latestOwnDate.toISOString());
 
         // For admin/superadmin, aggregate all portfolios; for RM, aggregate their clients only
         // Exclude CONSOLIDATED snapshots to avoid double-counting
-        let snapshotQuery = { snapshotDate: yesterday, portfolioCode: { $ne: 'CONSOLIDATED' } };
+        let snapshotQuery = {
+          snapshotDate: { $gte: lookbackStart, $lt: latestOwnDate },
+          portfolioCode: { $ne: 'CONSOLIDATED' }
+        };
 
         const adminUnscoped = (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN) && !viewAsFilter;
         if (!adminUnscoped) {
@@ -959,37 +1005,41 @@ Meteor.methods({
           snapshotQuery.entityId = { $nin: archivedOwners.entityIds };
         }
 
-        // Get yesterday's aggregated AUM from snapshots (EXACT date match only - no fallback to old dates)
         // Filter: totalAccountValue > 0 to match current AUM logic (excludes liability/loan accounts)
         snapshotQuery.totalAccountValue = { $gt: 0 };
-        const yesterdaySnapshots = await PortfolioSnapshotsCollection.find(snapshotQuery).fetchAsync();
+        const candidateSnapshots = await PortfolioSnapshotsCollection.find(snapshotQuery).fetchAsync();
 
-        console.log('[RM Dashboard] Snapshots found for yesterday (positive values only):', yesterdaySnapshots.length);
+        console.log('[RM Dashboard] Candidate snapshots in lookback window (positive values only):', candidateSnapshots.length);
 
-        if (yesterdaySnapshots.length > 0) {
-          // Build set of portfolios that have yesterday's snapshots
-          const snapshotPortfolioKeys = new Set(
-            yesterdaySnapshots.map(s => `${s.portfolioCode}|${s.bankId}`)
-          );
+        // Per portfolio key, keep only the latest snapshot strictly BEFORE
+        // that portfolio's own current valuation date.
+        const previousSnapshotByKey = new Map();
+        for (const s of candidateSnapshots) {
+          const key = `${s.portfolioCode}|${s.bankId}`;
+          const ownDate = portfolioValuationDates.get(key);
+          if (!ownDate || !(s.snapshotDate < ownDate)) continue;
+          const existing = previousSnapshotByKey.get(key);
+          if (!existing || s.snapshotDate > existing.snapshotDate) {
+            previousSnapshotByKey.set(key, s);
+          }
+        }
 
-          // Find which portfolios exist in BOTH current holdings AND yesterday's snapshots
-          const matchedPortfolioKeys = [...currentPortfolioKeys].filter(key => snapshotPortfolioKeys.has(key));
-          const missingFromSnapshots = [...currentPortfolioKeys].filter(key => !snapshotPortfolioKeys.has(key));
+        if (previousSnapshotByKey.size > 0) {
+          // Find which portfolios exist in BOTH current holdings AND have a previous snapshot
+          const matchedPortfolioKeys = [...currentPortfolioKeys].filter(key => previousSnapshotByKey.has(key));
+          const missingFromSnapshots = [...currentPortfolioKeys].filter(key => !previousSnapshotByKey.has(key));
 
           if (missingFromSnapshots.length > 0) {
-            console.log(`[RM Dashboard] ${missingFromSnapshots.length} portfolio(s) excluded from comparison (no yesterday snapshot):`);
+            console.log(`[RM Dashboard] ${missingFromSnapshots.length} portfolio(s) excluded from comparison (no prior snapshot in window):`);
             missingFromSnapshots.forEach(key => console.log(`[RM Dashboard]   - ${key}`));
           }
 
           if (matchedPortfolioKeys.length > 0) {
-            // Filter yesterday's snapshots to only matched portfolios
-            const matchedSnapshots = yesterdaySnapshots.filter(s => {
-              const key = `${s.portfolioCode}|${s.bankId}`;
-              return matchedPortfolioKeys.includes(key);
-            });
-
-            // Calculate previous AUM from matched snapshots only
-            previousAUM = matchedSnapshots.reduce((sum, s) => sum + (s.totalAccountValue || 0), 0);
+            // Calculate previous AUM from each portfolio's own previous snapshot
+            previousAUM = matchedPortfolioKeys.reduce((sum, key) => {
+              const s = previousSnapshotByKey.get(key);
+              return sum + convertToEUR(s.totalAccountValue || 0, s.portfolioCurrency || 'EUR', ratesMap);
+            }, 0);
 
             // Calculate current AUM for ONLY the matched portfolios (apples-to-apples comparison)
             // We need to re-sum current holdings for matched portfolios only
@@ -1032,7 +1082,7 @@ Meteor.methods({
                 const key = `${h.portfolioCode || 'unknown'}|${h.bankId || 'unknown'}`;
                 return matchedPortfolioKeys.includes(key);
               })
-              .reduce((sum, h) => sum + (h.marketValue || 0), 0);
+              .reduce((sum, h) => sum + convertToEUR(h.marketValue || 0, h.portfolioCurrency || 'EUR', ratesMap), 0);
 
             console.log(`[RM Dashboard] Matched portfolios: ${matchedPortfolioKeys.length}`);
             console.log(`[RM Dashboard] Previous AUM (matched, EUR): ${previousAUM.toLocaleString('en-US', { maximumFractionDigits: 2 })}`);
@@ -1052,11 +1102,12 @@ Meteor.methods({
             console.log('[RM Dashboard] AUM Change:', aumChange.toLocaleString('en-US', { maximumFractionDigits: 2 }), targetCurrency);
             console.log('[RM Dashboard] AUM Change %:', aumChangePercent.toFixed(2) + '%');
           } else {
-            console.log('[RM Dashboard] No matching portfolios between current holdings and yesterday snapshots');
+            console.log('[RM Dashboard] No matching portfolios between current holdings and their prior snapshots');
             previousAUM = null;
           }
         } else {
-          console.log('[RM Dashboard] No snapshots found for yesterday');
+          console.log('[RM Dashboard] No prior snapshots found in lookback window');
+        }
         }
       } catch (snapshotError) {
         console.warn('[RM Dashboard] Could not calculate AUM variation:', snapshotError.message);
@@ -1083,11 +1134,17 @@ Meteor.methods({
         }
       }
 
+      const todayKeyForValuation = new Date().toISOString().split('T')[0];
+      const valuationIsStale = !!valuationDate
+        && valuationDate.toISOString().split('T')[0] < todayKeyForValuation;
+
       return {
         totalAUM,
         aumChange,
         aumChangePercent,
         previousAUM,
+        valuationDate,
+        valuationIsStale,
         comparisonDateLabel,  // 'yesterday' or specific date like '2026-01-20'
         clientCount,
         liveProducts: statusCounts.live,
@@ -1251,33 +1308,9 @@ Meteor.methods({
         return { hasData: false, labels: [], values: [], snapshots: [] };
       }
 
-      // Aggregate snapshots by date (sum all portfolios for each day)
-      // Skip weekends - banks don't report on weekends, so incomplete data causes chart dips
-      const dateMap = new Map();
-
-      for (const snapshot of snapshots) {
-        const dayOfWeek = snapshot.snapshotDate.getDay();
-        if (dayOfWeek === 0 || dayOfWeek === 6) continue; // Skip Saturday/Sunday
-
-        const dateKey = snapshot.snapshotDate.toISOString().split('T')[0];
-
-        if (!dateMap.has(dateKey)) {
-          dateMap.set(dateKey, {
-            date: snapshot.snapshotDate,
-            totalAccountValue: 0,
-            portfolioCount: 0
-          });
-        }
-
-        const entry = dateMap.get(dateKey);
-        entry.totalAccountValue += (snapshot.totalAccountValue || 0);
-        entry.portfolioCount += 1;
-      }
-
-      // Filter out days with incomplete portfolio coverage
-      // (e.g., not all banks synced yet — causes artificial AUM dips)
-      // Use both max-in-window and today's live count as reference to catch partial syncs
-      const allEntries = Array.from(dateMap.values());
+      // Aggregate snapshots into EUR per weekday, filling interior gaps (a bank
+      // file missing for one day must not carve a fake dip into the curve).
+      const allEntries = aggregateSnapshotsByDay(snapshots, ratesMap);
       const maxInWindow = Math.max(...allEntries.map(e => e.portfolioCount));
 
       // Count current live portfolios for a more accurate reference
@@ -1364,9 +1397,9 @@ Meteor.methods({
           scopedQuery.portfolioCode = { $regex: accountScope.portfolioCodeRegex };
         }
         const scopedHoldings = await PMSHoldingsCollection.find(scopedQuery, {
-          fields: { marketValue: 1 }
+          fields: { marketValue: 1, portfolioCurrency: 1 }
         }).fetchAsync();
-        liveAUMInEUR = scopedHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+        liveAUMInEUR = scopedHoldings.reduce((sum, h) => sum + convertToEUR(h.marketValue || 0, h.portfolioCurrency || 'EUR', ratesMap), 0);
       } else if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE) {
         const allHoldings = await PMSHoldingsCollection.find({
           isActive: true,
@@ -1377,7 +1410,7 @@ Meteor.methods({
           entityId: { $nin: liveArchivedOwners.entityIds },
           $or: assetClassOr
         }).fetchAsync();
-        liveAUMInEUR = allHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+        liveAUMInEUR = allHoldings.reduce((sum, h) => sum + convertToEUR(h.marketValue || 0, h.portfolioCurrency || 'EUR', ratesMap), 0);
       } else {
         const clientIds = await getFilteredClientIds(currentUser);
         if (clientIds.length > 0) {
@@ -1395,7 +1428,7 @@ Meteor.methods({
             userId: { $nin: liveArchivedOwners.userIds },
             entityId: { $nin: liveArchivedOwners.entityIds }
           }).fetchAsync();
-          liveAUMInEUR = clientHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+          liveAUMInEUR = clientHoldings.reduce((sum, h) => sum + convertToEUR(h.marketValue || 0, h.portfolioCurrency || 'EUR', ratesMap), 0);
         }
       }
 
@@ -1691,7 +1724,64 @@ Meteor.methods({
       // Sort by absolute change (most volatile first)
       watchlist.sort((a, b) => Math.abs(b.changePercent) - Math.abs(a.changePercent));
 
-      return watchlist.slice(0, 10); // Return top 10
+      if (watchlist.length > 0) {
+        return watchlist.slice(0, 10);
+      }
+
+      // Fallback: no structured-product underlyings to track (e.g. a client
+      // holding only direct equities/ETFs, no allocations). The card is
+      // labelled "from client holdings", so fall back to the client's own
+      // largest direct holdings instead of a misleadingly empty list.
+      // Day change is computed from the BANK's own reported price history
+      // (previous day's marketPrice for the same position via uniqueKey) —
+      // not an external ticker lookup: pmsHoldings.ticker on these rows is
+      // the bank's internal instrument code, not a tradable market symbol.
+      const beneficialClauses = await getBeneficialAccountClauses(clientIds);
+      const directHoldings = await PMSHoldingsCollection.find({
+        $or: [{ userId: { $in: clientIds } }, { entityId: { $in: clientIds } }, ...beneficialClauses],
+        isActive: true,
+        isLatest: true,
+        assetClass: { $in: ['equity', 'etf'] },
+        marketValue: { $exists: true, $gt: 0 },
+        portfolioCode: { $ne: 'CONSOLIDATED' }
+      }, {
+        sort: { marketValue: -1 },
+        limit: 10,
+        fields: { securityName: 1, isin: 1, marketPrice: 1, currency: 1, priceDate: 1, uniqueKey: 1, snapshotDate: 1 }
+      }).fetchAsync();
+
+      if (directHoldings.length === 0) return [];
+
+      const previousByUniqueKey = new Map();
+      await Promise.all(directHoldings.map(async (h) => {
+        if (!h.uniqueKey) return;
+        const prev = await PMSHoldingsCollection.findOneAsync(
+          { uniqueKey: h.uniqueKey, isLatest: false },
+          { sort: { snapshotDate: -1 }, fields: { marketPrice: 1, snapshotDate: 1 } }
+        );
+        if (prev) previousByUniqueKey.set(h.uniqueKey, prev);
+      }));
+
+      const holdingsWatchlist = directHoldings.map(h => {
+        const prev = previousByUniqueKey.get(h.uniqueKey);
+        const currentPrice = h.marketPrice ?? null;
+        const previousPrice = prev?.marketPrice ?? null;
+        const changePercent = (currentPrice && previousPrice)
+          ? ((currentPrice - previousPrice) / previousPrice) * 100
+          : 0;
+        return {
+          symbol: h.isin || h.securityName,
+          fullTicker: h.isin || h.securityName,
+          name: h.securityName,
+          price: currentPrice,
+          changePercent,
+          lastUpdated: h.priceDate || h.snapshotDate,
+          currency: h.currency
+        };
+      });
+
+      holdingsWatchlist.sort((a, b) => Math.abs(b.changePercent) - Math.abs(a.changePercent));
+      return holdingsWatchlist.slice(0, 10);
 
     } catch (error) {
       console.error('[RM Dashboard] Error getting watchlist:', error);

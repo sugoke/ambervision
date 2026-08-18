@@ -23,6 +23,8 @@ import { yieldToEventLoop } from '/imports/utils/asyncHelpers.js';
 import { ManualPriceTrackersCollection, ManualPriceTrackerHelpers } from '/imports/api/manualPriceTrackers.js';
 import { BankAccountsCollection } from '/imports/api/bankAccounts.js';
 import { scrapePrice } from '/imports/api/priceScraperService.js';
+import { convertToEUR, buildEURRatesMap, aggregateSnapshotsByDay } from '../helpers/currencyHelpers.js';
+import { refreshReferenceCurrencyOverrides } from '../helpers/referenceCurrencyOverrides.js';
 
 /**
  * Cron Jobs Configuration
@@ -734,6 +736,9 @@ async function createConsolidatedHoldings() {
  * For Local connections: Skips download (files already uploaded by bank), processes directly
  */
 async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
+  // Keep the CMB reference-currency overrides fresh before parsing
+  await refreshReferenceCurrencyOverrides();
+
   const { forceReprocess = false } = options;
 
   // Note: No weekend check - bank files may arrive any day
@@ -977,6 +982,9 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
  * Only processes the CMB connection, skips all others.
  */
 async function cmbFileSyncJob(triggerSource = 'cron') {
+  // Keep the CMB reference-currency overrides fresh before parsing
+  await refreshReferenceCurrencyOverrides();
+
   const logId = await CronJobLogHelpers.startJob('cmbFileSync', triggerSource);
   console.log(`[CRON] CMB File Sync started (triggered by: ${triggerSource})`);
 
@@ -1363,6 +1371,10 @@ async function computeDashboardMetrics() {
     // Exclude archived (closed-relationship) clients from AUM aggregation
     const archivedOwners = await ClientEntityHelpers.getArchivedOwnerIds();
 
+    // marketValue / totalAccountValue are stored in each portfolio's reference
+    // currency — convert to EUR when summing across portfolios.
+    const ratesMap = await buildEURRatesMap();
+
     // Step 1: Calculate current total AUM from latest holdings (exclude CONSOLIDATED and non-investment accounts)
     const allHoldings = await PMSHoldingsCollection.find({
       isActive: true,
@@ -1378,7 +1390,7 @@ async function computeDashboardMetrics() {
       ]
     }).fetchAsync();
 
-    const baseAUMInEUR = allHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+    const baseAUMInEUR = allHoldings.reduce((sum, h) => sum + convertToEUR(h.marketValue || 0, h.portfolioCurrency || 'EUR', ratesMap), 0);
 
     // FX forwards: include at NET mark-to-market (matches PMS Total Portfolio Value).
     // Summed separately because negative legs must NOT be excluded by marketValue > 0.
@@ -1390,51 +1402,73 @@ async function computeDashboardMetrics() {
       entityId: { $nin: archivedOwners.entityIds },
       userId: { $nin: archivedOwners.userIds }
     }).fetchAsync();
-    const fxForwardAUMInEUR = fxForwardHoldings.reduce((sum, h) => sum + (h.marketValueNoAccruedInterest || h.marketValue || 0), 0);
+    const fxForwardAUMInEUR = fxForwardHoldings.reduce((sum, h) => sum + convertToEUR(h.marketValueNoAccruedInterest || h.marketValue || 0, h.portfolioCurrency || 'EUR', ratesMap), 0);
 
     const totalAUMInEUR = baseAUMInEUR + fxForwardAUMInEUR;
 
-    // Track current portfolios for comparison
+    // Track current portfolios for comparison, along with EACH portfolio's own
+    // valuation date. Banks deliver on different lags (CMB is T-1, Julius Baer
+    // same-day) — the "previous" snapshot must be chosen relative to every
+    // portfolio's own current data date. Comparing everything to a single
+    // fixed "yesterday" (calendar day before the cron run) meant portfolios
+    // whose bank is a day behind got compared to a snapshot of the SAME date
+    // as their current holdings, producing a permanent 0.00% change.
     const currentPortfolioKeys = new Set();
+    const portfolioValuationDates = new Map();
     allHoldings.forEach(h => {
       const key = `${h.portfolioCode || 'unknown'}|${h.bankId || 'unknown'}`;
       currentPortfolioKeys.add(key);
+      if (h.snapshotDate) {
+        const existing = portfolioValuationDates.get(key);
+        if (!existing || h.snapshotDate > existing) {
+          portfolioValuationDates.set(key, h.snapshotDate);
+        }
+      }
     });
 
     console.log(`[CRON] Dashboard metrics - Current AUM: ${totalAUMInEUR.toLocaleString('en-US', { maximumFractionDigits: 0 })} EUR`);
 
-    // Step 2: Calculate day-over-day change from yesterday's snapshots
+    // Step 2: Calculate day-over-day change from each portfolio's own previous snapshot
     let previousDayAUM = null;
     let aumChange = 0;
     let aumChangePercent = 0;
 
-    const yesterday = new Date();
-    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-    yesterday.setUTCHours(0, 0, 0, 0);
+    if (portfolioValuationDates.size > 0) {
+      const ownDates = [...portfolioValuationDates.values()];
+      const earliestOwnDate = new Date(Math.min(...ownDates.map(d => d.getTime())));
+      const latestOwnDate = new Date(Math.max(...ownDates.map(d => d.getTime())));
+      // 10 calendar days comfortably covers weekends + a public holiday
+      const lookbackStart = new Date(earliestOwnDate);
+      lookbackStart.setUTCDate(lookbackStart.getUTCDate() - 10);
 
-    const yesterdaySnapshots = await PortfolioSnapshotsCollection.find({
-      snapshotDate: yesterday,
-      totalAccountValue: { $gt: 0 },
-      portfolioCode: { $ne: 'CONSOLIDATED' },
-      userId: { $nin: archivedOwners.userIds }
-    }).fetchAsync();
+      const candidateSnapshots = await PortfolioSnapshotsCollection.find({
+        snapshotDate: { $gte: lookbackStart, $lt: latestOwnDate },
+        totalAccountValue: { $gt: 0 },
+        portfolioCode: { $ne: 'CONSOLIDATED' },
+        userId: { $nin: archivedOwners.userIds }
+      }).fetchAsync();
 
-    if (yesterdaySnapshots.length > 0) {
-      // Build set of portfolios that have yesterday's snapshots
-      const snapshotPortfolioKeys = new Set(
-        yesterdaySnapshots.map(s => `${s.portfolioCode}|${s.bankId}`)
-      );
+      // Per portfolio key, keep only the latest snapshot strictly BEFORE that
+      // portfolio's own current valuation date.
+      const previousSnapshotByKey = new Map();
+      for (const s of candidateSnapshots) {
+        const key = `${s.portfolioCode}|${s.bankId}`;
+        const ownDate = portfolioValuationDates.get(key);
+        if (!ownDate || !(s.snapshotDate < ownDate)) continue;
+        const existing = previousSnapshotByKey.get(key);
+        if (!existing || s.snapshotDate > existing.snapshotDate) {
+          previousSnapshotByKey.set(key, s);
+        }
+      }
 
-      // Find portfolios that exist in BOTH current holdings AND yesterday's snapshots
-      const matchedPortfolioKeys = [...currentPortfolioKeys].filter(key => snapshotPortfolioKeys.has(key));
+      const matchedPortfolioKeys = [...currentPortfolioKeys].filter(key => previousSnapshotByKey.has(key));
 
       if (matchedPortfolioKeys.length > 0) {
-        // Calculate previous AUM from matched snapshots
-        const matchedSnapshots = yesterdaySnapshots.filter(s => {
-          const key = `${s.portfolioCode}|${s.bankId}`;
-          return matchedPortfolioKeys.includes(key);
-        });
-        previousDayAUM = matchedSnapshots.reduce((sum, s) => sum + (s.totalAccountValue || 0), 0);
+        // Calculate previous AUM from each portfolio's own previous snapshot
+        previousDayAUM = matchedPortfolioKeys.reduce((sum, key) => {
+          const s = previousSnapshotByKey.get(key);
+          return sum + convertToEUR(s.totalAccountValue || 0, s.portfolioCurrency || 'EUR', ratesMap);
+        }, 0);
 
         // Calculate current AUM for matched portfolios only (apples-to-apples)
         const matchedCurrentAUM = allHoldings
@@ -1442,7 +1476,7 @@ async function computeDashboardMetrics() {
             const key = `${h.portfolioCode || 'unknown'}|${h.bankId || 'unknown'}`;
             return matchedPortfolioKeys.includes(key);
           })
-          .reduce((sum, h) => sum + (h.marketValue || 0), 0);
+          .reduce((sum, h) => sum + convertToEUR(h.marketValue || 0, h.portfolioCurrency || 'EUR', ratesMap), 0);
 
         aumChange = matchedCurrentAUM - previousDayAUM;
         aumChangePercent = previousDayAUM > 0 ? (aumChange / previousDayAUM) * 100 : 0;
@@ -1463,30 +1497,15 @@ async function computeDashboardMetrics() {
     const wtdSnapshots = await PortfolioSnapshotsCollection.find({
       snapshotDate: { $gte: startDate, $lte: endDate },
       portfolioCode: { $ne: 'CONSOLIDATED' },
-      userId: { $nin: archivedOwners.userIds }
+      userId: { $nin: archivedOwners.userIds },
+      entityId: { $nin: archivedOwners.entityIds }
     }, {
       sort: { snapshotDate: 1 }
     }).fetchAsync();
 
-    // Aggregate snapshots by date (skip weekends - incomplete data causes chart dips)
-    const dateMap = new Map();
-    for (const snapshot of wtdSnapshots) {
-      const dayOfWeek = snapshot.snapshotDate.getDay();
-      if (dayOfWeek === 0 || dayOfWeek === 6) continue; // Skip Saturday/Sunday
-
-      const dateKey = snapshot.snapshotDate.toISOString().split('T')[0];
-      if (!dateMap.has(dateKey)) {
-        dateMap.set(dateKey, { date: snapshot.snapshotDate, totalAccountValue: 0, portfolioCount: 0 });
-      }
-      const entry = dateMap.get(dateKey);
-      entry.totalAccountValue += (snapshot.totalAccountValue || 0);
-      entry.portfolioCount += 1;
-    }
-
-    // Filter out days with incomplete portfolio coverage, then sort
-    // Use current known portfolio count as the reference (not max from window,
-    // which could itself be incomplete)
-    const allEntries = Array.from(dateMap.values());
+    // Aggregate snapshots into EUR per weekday, filling interior gaps (a bank
+    // file missing for one day must not carve a fake dip into the curve).
+    const allEntries = aggregateSnapshotsByDay(wtdSnapshots, ratesMap);
     const referencePortfolioCount = Math.max(currentPortfolioKeys.size, ...allEntries.map(e => e.portfolioCount));
     const minThreshold = Math.floor(referencePortfolioCount * 0.8);
 
@@ -1799,6 +1818,16 @@ async function priceTrackerScrapeJob() {
 }
 
 export async function initializeCronJobs() {
+  // Dev and production share the same database — two servers running the cron
+  // suite means duplicate syncs, digests and metrics runs (observed: two
+  // identical cmbFileSync logs at the same second). Opt OUT via settings so a
+  // production deploy whose settings lack the flag keeps its crons running
+  // (fail-safe: missing flag = enabled).
+  if (Meteor.settings.private?.CRON_DISABLED === true) {
+    console.log('⏸  Cron jobs DISABLED via settings (private.CRON_DISABLED) — manual triggers still work');
+    return;
+  }
+
   console.log('Initializing cron jobs...');
 
   // Restore lastFinishedAt from database logs (survives server restarts)
