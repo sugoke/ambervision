@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Meteor } from 'meteor/meteor';
 import { USER_ROLES } from '/imports/api/users';
 import { useTheme } from './ThemeContext.jsx';
@@ -315,9 +316,12 @@ const Login = ({ onUserChange, compact = false }) => {
     return null;
   }
 
-  // Session restore in flight: show only the branded ground, no form flash
+  // Session restore in flight: show only the branded ground, no form flash.
+  // Portaled to <body>: the App wraps this component in a backdrop-filter div
+  // (light theme), which would otherwise become the containing block for
+  // position:fixed and trap the overlay in a 60px-tall strip.
   if (checkingSession) {
-    return (
+    return createPortal(
       <div style={{
         position: 'fixed',
         top: 0,
@@ -326,7 +330,8 @@ const Login = ({ onUserChange, compact = false }) => {
         height: '100vh',
         background: 'var(--page-bg)',
         zIndex: 9999
-      }} />
+      }} />,
+      document.body
     );
   }
 
@@ -364,7 +369,9 @@ const Login = ({ onUserChange, compact = false }) => {
     e.target.style.boxShadow = 'none';
   };
 
-  return (
+  // Portaled to <body> — see the checkingSession note above (backdrop-filter
+  // ancestor would otherwise trap this fixed overlay)
+  return createPortal(
     <div className="login-screen" style={{
       position: 'fixed',
       top: 0,
@@ -854,7 +861,8 @@ const Login = ({ onUserChange, compact = false }) => {
           </div>
         </div>
       )}
-    </div>
+    </div>,
+    document.body
   );
 };
 
