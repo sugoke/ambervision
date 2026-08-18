@@ -159,13 +159,20 @@ const MarketWatchlistCard = ({ watchlist, onTickerClick }) => {
     }
   };
 
-  const getTickerInitials = (symbol) => {
-    if (!symbol) return '?';
-    return symbol.slice(0, 2).toUpperCase();
+  const getTickerInitials = (label) => {
+    if (!label) return '?';
+    const words = label.trim().split(/\s+/);
+    if (words.length > 1) return (words[0][0] + words[1][0]).toUpperCase();
+    return label.slice(0, 2).toUpperCase();
   };
 
+  // Direct-holdings fallback rows (no structured-product allocations to
+  // track) use the ISIN as `symbol`/`fullTicker` — never a real EOD ticker,
+  // so skip the logo fetch (an ISIN has no exchange suffix to key off).
+  const hasEodTicker = (fullTicker) => !!fullTicker && fullTicker.includes('.');
+
   const getLogoUrl = (fullTicker) => {
-    if (!fullTicker) return null;
+    if (!hasEodTicker(fullTicker)) return null;
     const symbol = fullTicker.split('.')[0].toLowerCase();
     return `https://eodhistoricaldata.com/img/logos/US/${symbol}.png`;
   };
@@ -213,24 +220,33 @@ const MarketWatchlistCard = ({ watchlist, onTickerClick }) => {
                   <td style={styles.td}>
                     <div style={styles.tickerCell}>
                       <div style={styles.logo}>
-                        <img
-                          src={getLogoUrl(ticker.fullTicker)}
-                          alt={ticker.symbol}
-                          style={styles.logoImg}
-                          onError={(e) => {
-                            e.target.style.display = 'none';
-                            e.target.parentElement.textContent = getTickerInitials(ticker.symbol);
-                          }}
-                        />
+                        {hasEodTicker(ticker.fullTicker) ? (
+                          <img
+                            src={getLogoUrl(ticker.fullTicker)}
+                            alt={ticker.symbol}
+                            style={styles.logoImg}
+                            onError={(e) => {
+                              e.target.style.display = 'none';
+                              e.target.parentElement.textContent = getTickerInitials(ticker.name || ticker.symbol);
+                            }}
+                          />
+                        ) : (
+                          getTickerInitials(ticker.name || ticker.symbol)
+                        )}
                       </div>
                       <div style={styles.tickerInfo}>
                         <div style={styles.symbol}>{ticker.name || ticker.symbol}</div>
-                        <div style={styles.tickerCode}>{ticker.symbol}</div>
+                        <div style={styles.tickerCode}>
+                          {hasEodTicker(ticker.fullTicker) ? ticker.symbol : (ticker.currency || '')}
+                        </div>
                       </div>
                     </div>
                   </td>
                   <td style={styles.tdRight}>
-                    <span style={styles.price}>{formatPrice(ticker.price)}</span>
+                    <span style={styles.price}>
+                      {ticker.currency && !hasEodTicker(ticker.fullTicker) ? `${ticker.currency} ` : ''}
+                      {formatPrice(ticker.price)}
+                    </span>
                   </td>
                   <td style={styles.tdRight}>
                     <span style={styles.change(ticker.changePercent >= 0)}>
