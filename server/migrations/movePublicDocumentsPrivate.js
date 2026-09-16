@@ -1,5 +1,11 @@
 import fs from 'fs';
 import path from 'path';
+import {
+  resolveProjectRoot,
+  getFichierCentralDir,
+  getMeetingReportsDir,
+  getTermsheetsDir
+} from '/imports/api/documentStorage.js';
 
 /**
  * GDPR/security migration: earlier versions wrote client documents, order email
@@ -13,14 +19,6 @@ import path from 'path';
  * the copy live code paths use); the public source is moved into a quarantine
  * folder inside the private tree instead of being overwritten or left exposed.
  */
-
-const resolveProjectRoot = () => {
-  let projectRoot = process.cwd();
-  if (projectRoot.includes('.meteor')) {
-    projectRoot = projectRoot.split('.meteor')[0].replace(/[\\/]$/, '');
-  }
-  return projectRoot;
-};
 
 const moveFile = (src, dest, quarantineDir, relPath, stats) => {
   if (fs.existsSync(dest)) {
@@ -67,12 +65,9 @@ export async function movePublicDocumentsPrivate() {
   const publicDir = path.join(projectRoot, 'public');
   if (!fs.existsSync(publicDir)) return; // production container has no source public/
 
-  const fichierCentralBase = process.env.FICHIER_CENTRAL_PATH
-    || path.join(projectRoot, '.fichier_central');
-  const meetingReportsBase = process.env.MEETING_REPORTS_PATH
-    || path.join(fichierCentralBase, 'meetingReports');
-  const termsheetsBase = process.env.TERMSHEETS_PATH
-    || path.join(projectRoot, '.termsheets');
+  const fichierCentralBase = getFichierCentralDir();
+  const meetingReportsBase = getMeetingReportsDir();
+  const termsheetsBase = getTermsheetsDir();
 
   const jobs = [
     [path.join(publicDir, 'fichier_central'), fichierCentralBase],

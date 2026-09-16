@@ -20,20 +20,51 @@ import {
   DOCUMENT_TYPES,
   DOCUMENT_TYPE_CONFIG,
   ClientDocumentHelpers,
-  getDocumentsByCategory
+  getDocumentsByCategory,
+  isOptionalDocumentType
 } from '/imports/api/clientDocuments.js';
 
 // Document types shown in the Documents tab (KYC files live in the KYC tab).
-const DOCUMENT_TAB_TYPES = [
+// Corporate documents (trade register, UBO register, articles, signatory powers)
+// only apply to companies, so they are appended for company entities only —
+// otherwise every individual would show four permanently missing documents.
+const getDocumentTabTypes = (isCompany) => [
   ...getDocumentsByCategory('compliance'),
-  ...getDocumentsByCategory('amberlake')
+  ...getDocumentsByCategory('amberlake'),
+  ...getDocumentsByCategory('bank'),
+  ...(isCompany ? getDocumentsByCategory('corporate') : [])
 ];
+
+// Types that count towards the "N missing" badge — catch-all buckets don't.
+const getExpectedDocumentTypes = (isCompany) =>
+  getDocumentTabTypes(isCompany).filter(type => !isOptionalDocumentType(type));
 
 const IMAGE_PDF_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/gif'];
 const WORD_TYPES = [
   'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 ];
+
+// Windows browsers report an empty (or generic) file.type for .doc/.docx when the
+// registry association is missing, so the extension is the fallback source of
+// truth. The server pairs extension against MIME, so the two must agree.
+const MIME_BY_EXTENSION = {
+  '.pdf': 'application/pdf',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+};
+
+const resolveMimeType = (file) => {
+  const known = Object.values(MIME_BY_EXTENSION);
+  if (file.type && known.includes(file.type)) return file.type;
+  const dot = file.name.lastIndexOf('.');
+  const ext = dot >= 0 ? file.name.slice(dot).toLowerCase() : '';
+  return MIME_BY_EXTENSION[ext] || file.type || '';
+};
 
 // Resolve the accepted file types for a given document config.
 const getAcceptConfig = (config) => {
@@ -92,6 +123,10 @@ const smallLabel = {
   fontWeight: '500',
   minWidth: '60px'
 };
+
+// Date labels are per type ("Statement date", "Signed on", "Extract date"...),
+// so they need more room than the fixed "Number:" / "Expires:" labels.
+const dateFieldLabel = { ...smallLabel, minWidth: '96px' };
 
 // One uploaded file for a document type
 const DocumentFileRow = ({ document, config, onUploadComplete }) => {
@@ -179,7 +214,9 @@ const DocumentFileRow = ({ document, config, onUploadComplete }) => {
             <StatusBadge document={document} />
           </div>
           <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
-            {ClientDocumentHelpers.formatFileSize(document.fileSize)} • Uploaded {new Date(document.uploadedAt).toLocaleDateString()}
+            {ClientDocumentHelpers.formatFileSize(document.fileSize)}
+            {document.issuanceDate && ` • ${config.dateLabel || 'Document date'} ${new Date(document.issuanceDate).toLocaleDateString()}`}
+            {' • '}Uploaded {new Date(document.uploadedAt).toLocaleDateString()}
           </div>
         </div>
         <div style={{ display: 'flex', gap: '6px', marginLeft: '10px' }}>
@@ -188,22 +225,27 @@ const DocumentFileRow = ({ document, config, onUploadComplete }) => {
         </div>
       </div>
 
-      {config.requiresExpiration && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', paddingTop: '8px', marginTop: '8px', borderTop: '1px solid var(--border-color)' }}>
+      {/* Every document carries its own date (see DOCUMENT_TYPE_CONFIG.dateLabel):
+          it is what age / staleness is measured from. Number and expiry stay
+          limited to the types that actually have them. */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', paddingTop: '8px', marginTop: '8px', borderTop: '1px solid var(--border-color)' }}>
+        {config.requiresExpiration && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <label style={smallLabel}>Number:</label>
             <input type="text" value={documentNumber} onChange={handleDocumentNumberChange} placeholder="ID/Passport number" style={{ ...smallInput, flex: 1 }} />
           </div>
+        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <label style={dateFieldLabel}>{config.dateLabel || 'Document date'}:</label>
+          <input type="date" value={issuanceDate} onChange={handleIssuanceDateChange} style={smallInput} />
+        </div>
+        {config.requiresExpiration && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <label style={smallLabel}>Issued:</label>
-            <input type="date" value={issuanceDate} onChange={handleIssuanceDateChange} style={smallInput} />
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <label style={smallLabel}>Expires:</label>
+            <label style={dateFieldLabel}>Expires:</label>
             <input type="date" value={expirationDate} onChange={handleExpirationChange} style={smallInput} />
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 };
@@ -223,7 +265,8 @@ const AddDocumentDropzone = ({ documentType, config, userId, familyMemberIndex, 
   const handleFile = useCallback(async (file) => {
     if (!file) return;
 
-    if (!mimeTypes.includes(file.type)) {
+    const mimeType = resolveMimeType(file);
+    if (!mimeTypes.includes(mimeType)) {
       alert(`Please upload a ${help} file`);
       return;
     }
@@ -242,7 +285,7 @@ const AddDocumentDropzone = ({ documentType, config, userId, familyMemberIndex, 
         documentType,
         fileName: file.name,
         base64Data,
-        mimeType: file.type,
+        mimeType,
         expirationDate: expirationDate ? new Date(expirationDate) : null,
         documentNumber: documentNumber || null,
         issuanceDate: issuanceDate ? new Date(issuanceDate) : null,
@@ -312,22 +355,27 @@ const AddDocumentDropzone = ({ documentType, config, userId, familyMemberIndex, 
             {isDragOver ? '📥 Drop file here' : `➕ Add file (${help})`}
           </span>
 
-          {config.requiresExpiration && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', paddingTop: '8px', borderTop: '1px solid var(--border-color)', width: '100%' }} onClick={(e) => e.stopPropagation()}>
+          {/* The document's own date is captured for every type at upload time;
+              number and expiry only for the types that carry them. Clicks are
+              stopped so filling these fields does not reopen the file picker. */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', paddingTop: '8px', borderTop: '1px solid var(--border-color)', width: '100%' }} onClick={(e) => e.stopPropagation()}>
+            {config.requiresExpiration && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
                 <label style={{ ...smallLabel, fontSize: '0.75rem' }}>Number:</label>
                 <input type="text" value={documentNumber} onChange={(e) => setDocumentNumber(e.target.value)} placeholder="ID/Passport #" style={{ ...smallInput, fontSize: '0.75rem', width: '120px' }} />
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
-                <label style={{ ...smallLabel, fontSize: '0.75rem' }}>Issued:</label>
-                <input type="date" value={issuanceDate} onChange={(e) => setIssuanceDate(e.target.value)} style={{ ...smallInput, fontSize: '0.75rem' }} />
-              </div>
+            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
+              <label style={{ ...smallLabel, fontSize: '0.75rem' }}>{config.dateLabel || 'Document date'}:</label>
+              <input type="date" value={issuanceDate} onChange={(e) => setIssuanceDate(e.target.value)} style={{ ...smallInput, fontSize: '0.75rem' }} />
+            </div>
+            {config.requiresExpiration && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
                 <label style={{ ...smallLabel, fontSize: '0.75rem' }}>Expires:</label>
                 <input type="date" value={expirationDate} onChange={(e) => setExpirationDate(e.target.value)} style={{ ...smallInput, fontSize: '0.75rem' }} />
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       )}
 
@@ -353,6 +401,12 @@ export const DocumentTypeSection = ({ documentType, documents, userId, familyMem
         )}
       </div>
 
+      {config.hint && (
+        <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginBottom: '6px' }}>
+          {config.hint}
+        </div>
+      )}
+
       {documents.map(doc => (
         <DocumentFileRow key={doc._id} document={doc} config={config} onUploadComplete={onUploadComplete} />
       ))}
@@ -377,7 +431,8 @@ const PersonDocuments = ({
   documents,
   isCollapsed,
   onToggleCollapse,
-  onUploadComplete
+  onUploadComplete,
+  isCompany = false
 }) => {
   // Get all documents of a type for this person
   const getDocuments = (docType) => documents.filter(d =>
@@ -388,15 +443,16 @@ const PersonDocuments = ({
   );
 
   // Warnings across all files shown in this tab
-  const hasWarnings = DOCUMENT_TAB_TYPES.some(docType =>
+  const hasWarnings = getDocumentTabTypes(isCompany).some(docType =>
     getDocuments(docType).some(doc => {
       const status = ClientDocumentHelpers.getDocumentStatus(doc);
       return ['expired', 'warning', 'stale'].includes(status.status);
     })
   );
 
-  // Count types with no file uploaded
-  const missingCount = DOCUMENT_TAB_TYPES.filter(type => getDocuments(type).length === 0).length;
+  // Count expected types with no file uploaded
+  const missingCount = getExpectedDocumentTypes(isCompany)
+    .filter(type => getDocuments(type).length === 0).length;
 
   const renderCategory = (title, category) => (
     <div style={{ marginBottom: '16px' }}>
@@ -446,14 +502,16 @@ const PersonDocuments = ({
       {!isCollapsed && (
         <div style={{ padding: '12px 16px' }}>
           {renderCategory('📋 Compliance Documents', 'compliance')}
+          {isCompany && renderCategory('🏢 Corporate Documents', 'corporate')}
           {renderCategory('🏛️ Amberlake Partners Pack', 'amberlake')}
+          {renderCategory('🏦 Bank Documents', 'bank')}
         </div>
       )}
     </div>
   );
 };
 
-const ClientDocumentManager = ({ userId, familyMembers = [] }) => {
+const ClientDocumentManager = ({ userId, familyMembers = [], isCompany = false }) => {
   const sessionId = localStorage.getItem('sessionId');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const isLoading = useSubscribe('clientDocuments', userId, sessionId);
@@ -472,7 +530,9 @@ const ClientDocumentManager = ({ userId, familyMembers = [] }) => {
     let missing = 0;
 
     const countFor = (familyMemberIndex) => {
-      DOCUMENT_TAB_TYPES.forEach(docType => {
+      // Family members are always individuals, even under a company entity.
+      const types = getDocumentTabTypes(isCompany && familyMemberIndex === null);
+      types.forEach(docType => {
         const docs = documents.filter(d =>
           d.documentType === docType &&
           (familyMemberIndex === null
@@ -480,7 +540,7 @@ const ClientDocumentManager = ({ userId, familyMembers = [] }) => {
             : d.familyMemberIndex === familyMemberIndex)
         );
         if (docs.length === 0) {
-          missing++;
+          if (!isOptionalDocumentType(docType)) missing++;
         } else if (docs.some(doc => ['expired', 'warning', 'stale'].includes(ClientDocumentHelpers.getDocumentStatus(doc).status))) {
           warnings++;
         }
@@ -521,10 +581,11 @@ const ClientDocumentManager = ({ userId, familyMembers = [] }) => {
       {!isLoading() && (
         <div>
           <PersonDocuments
-            personName="Main Client"
-            personIcon="👤"
+            personName={isCompany ? 'Company' : 'Main Client'}
+            personIcon={isCompany ? '🏢' : '👤'}
             userId={userId}
             familyMemberIndex={null}
+            isCompany={isCompany}
             documents={documents}
             isCollapsed={collapsedState['main']}
             onToggleCollapse={() => toggleCollapse('main')}
@@ -554,13 +615,17 @@ const ClientDocumentManager = ({ userId, familyMembers = [] }) => {
  * KYC Document Manager — a lightweight uploader for KYC files (PDF/Word),
  * rendered inside the KYC tab. Reuses the same storage as client documents.
  */
-export const KycDocumentManager = ({ userId }) => {
+/**
+ * Uploader for ONE document type, rendered inline in a tab rather than in the
+ * Documents grid. Used for the KYC files and the periodic review file.
+ */
+export const SingleTypeDocumentManager = ({ userId, documentType, title, bordered = true }) => {
   const sessionId = localStorage.getItem('sessionId');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const isLoading = useSubscribe('clientDocuments', userId, sessionId);
   const documents = useFind(
-    () => ClientDocumentsCollection.find({ userId, documentType: DOCUMENT_TYPES.KYC_FILE }),
-    [userId, refreshTrigger]
+    () => ClientDocumentsCollection.find({ userId, documentType }),
+    [userId, documentType, refreshTrigger]
   );
 
   const handleUploadComplete = useCallback(() => setRefreshTrigger(prev => prev + 1), []);
@@ -568,15 +633,18 @@ export const KycDocumentManager = ({ userId }) => {
   if (!userId) return null;
 
   return (
-    <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid var(--border-color)' }}>
+    <div style={{
+      marginTop: '20px',
+      ...(bordered ? { paddingTop: '16px', borderTop: '1px solid var(--border-color)' } : {})
+    }}>
       <div style={{ fontSize: '0.78rem', fontWeight: '700', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '10px' }}>
-        📎 KYC Files
+        {title}
       </div>
       {isLoading() ? (
         <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Loading files...</div>
       ) : (
         <DocumentTypeSection
-          documentType={DOCUMENT_TYPES.KYC_FILE}
+          documentType={documentType}
           documents={documents.filter(d => d.familyMemberIndex === null || d.familyMemberIndex === undefined)}
           userId={userId}
           familyMemberIndex={null}
@@ -586,5 +654,178 @@ export const KycDocumentManager = ({ userId }) => {
     </div>
   );
 };
+
+/**
+ * One-image slot (client photo, specimen signature) for the Entity Profile tab.
+ *
+ * Drag-and-drop or click to upload; a new image replaces the previous one. The
+ * file is stored through the ordinary client-documents pipeline (disk storage,
+ * token-gated download), so the profile document never carries image bytes.
+ */
+const IMAGE_ONLY_TYPES = ['image/jpeg', 'image/png', 'image/gif'];
+const MAX_IDENTITY_IMAGE_BYTES = 5 * 1024 * 1024;
+
+export const IdentityImageSlot = ({ userId, documentType, label, aspectRatio = '1 / 1', canEdit = true }) => {
+  const sessionId = localStorage.getItem('sessionId');
+  const isLoading = useSubscribe('clientDocuments', userId, sessionId);
+  const documents = useFind(
+    () => ClientDocumentsCollection.find({ userId, documentType }, { sort: { uploadedAt: -1 } }),
+    [userId, documentType]
+  );
+  const current = documents[0] || null;
+
+  const [imageUrl, setImageUrl] = useState(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [isBusy, setIsBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const inputRef = useRef(null);
+
+  // Download URLs are short-lived tokens, so mint one per displayed document
+  // (and again if the image fails to load once the token has expired).
+  const loadUrl = useCallback(async () => {
+    if (!current) { setImageUrl(null); return; }
+    try {
+      const url = await Meteor.callAsync('clientDocuments.getDownloadUrl', current._id, sessionId);
+      setImageUrl(url);
+    } catch (err) {
+      console.error('[IdentityImageSlot] Could not get image URL:', err);
+      setImageUrl(null);
+    }
+  }, [current?._id, sessionId]);
+
+  useEffect(() => { loadUrl(); }, [loadUrl]);
+
+  const handleFile = useCallback(async (file) => {
+    if (!file || !canEdit) return;
+    setError(null);
+    const mimeType = resolveMimeType(file);
+    if (!IMAGE_ONLY_TYPES.includes(mimeType)) {
+      setError('Please drop a JPG, PNG or GIF image');
+      return;
+    }
+    if (file.size > MAX_IDENTITY_IMAGE_BYTES) {
+      setError('Image must be smaller than 5 MB');
+      return;
+    }
+    setIsBusy(true);
+    try {
+      const base64Data = await fileToBase64(file);
+      const previous = documents.map(d => d._id);
+      await Meteor.callAsync('clientDocuments.upload', {
+        userId,
+        familyMemberIndex: null,
+        documentType,
+        fileName: file.name,
+        base64Data,
+        mimeType,
+        expirationDate: null,
+        documentNumber: null,
+        issuanceDate: new Date(),
+        sessionId
+      });
+      // One image per slot: the new upload supersedes whatever was there.
+      await Promise.all(previous.map(id => Meteor.callAsync('clientDocuments.delete', id, sessionId)));
+    } catch (err) {
+      console.error('[IdentityImageSlot] Upload error:', err);
+      setError(err.reason || err.message || 'Upload failed');
+    } finally {
+      setIsBusy(false);
+    }
+  }, [userId, documentType, documents, sessionId, canEdit]);
+
+  const handleRemove = useCallback(async () => {
+    if (!current || !canEdit) return;
+    setIsBusy(true);
+    setError(null);
+    try {
+      await Meteor.callAsync('clientDocuments.delete', current._id, sessionId);
+    } catch (err) {
+      console.error('[IdentityImageSlot] Delete error:', err);
+      setError(err.reason || err.message || 'Could not remove image');
+    } finally {
+      setIsBusy(false);
+    }
+  }, [current?._id, sessionId, canEdit]);
+
+  const onDrop = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    setIsDragOver(false);
+    const file = e.dataTransfer?.files?.[0];
+    if (file) handleFile(file);
+  };
+
+  const zoneStyle = {
+    position: 'relative',
+    width: '100%',
+    aspectRatio,
+    borderRadius: '10px',
+    border: isDragOver ? '2px dashed var(--accent-color)' : (current ? '1px solid var(--border-color)' : '2px dashed var(--border-color)'),
+    background: isDragOver ? 'rgba(59, 130, 246, 0.08)' : 'var(--bg-secondary)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    overflow: 'hidden',
+    cursor: canEdit && !isBusy ? 'pointer' : 'default',
+    transition: 'border-color 0.15s ease, background 0.15s ease',
+    boxSizing: 'border-box'
+  };
+
+  return (
+    <div>
+      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' }}>
+        {label}
+      </label>
+      <div
+        style={zoneStyle}
+        onClick={() => { if (canEdit && !isBusy) inputRef.current?.click(); }}
+        onDragOver={(e) => { if (!canEdit) return; e.preventDefault(); e.stopPropagation(); setIsDragOver(true); }}
+        onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setIsDragOver(false); }}
+        onDrop={canEdit ? onDrop : undefined}
+        title={canEdit ? (current ? 'Drop or click to replace' : 'Drop or click to upload') : undefined}
+      >
+        {isLoading() || isBusy ? (
+          <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>{isBusy ? 'Uploading…' : 'Loading…'}</span>
+        ) : current && imageUrl ? (
+          <img
+            src={imageUrl}
+            alt={label}
+            onError={loadUrl}
+            style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', background: 'white' }}
+          />
+        ) : (
+          <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.78rem', padding: '12px' }}>
+            <div style={{ fontSize: '1.4rem', marginBottom: '4px' }}>{documentType === DOCUMENT_TYPES.CLIENT_SIGNATURE ? '✒️' : '📷'}</div>
+            {canEdit ? <>Drop an image here<br />or click to choose</> : 'No image'}
+          </div>
+        )}
+        {current && canEdit && !isBusy && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); handleRemove(); }}
+            title="Remove image"
+            style={{ position: 'absolute', top: '6px', right: '6px', width: '24px', height: '24px', borderRadius: '50%', border: 'none', background: 'rgba(17, 24, 39, 0.7)', color: 'white', cursor: 'pointer', fontSize: '0.8rem', lineHeight: '24px', padding: 0 }}
+          >
+            ✕
+          </button>
+        )}
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".jpg,.jpeg,.png,.gif"
+          style={{ display: 'none' }}
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ''; }}
+        />
+      </div>
+      {current && (
+        <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+          {current.fileName} · uploaded {current.uploadedAt ? new Date(current.uploadedAt).toLocaleDateString() : ''}
+        </div>
+      )}
+      {error && <div style={{ fontSize: '0.72rem', color: 'var(--loss-color)', marginTop: '4px' }}>{error}</div>}
+    </div>
+  );
+};
+
+export const KycDocumentManager = ({ userId }) => (
+  <SingleTypeDocumentManager userId={userId} documentType={DOCUMENT_TYPES.KYC_FILE} title="📎 KYC Files" />
+);
 
 export default ClientDocumentManager;

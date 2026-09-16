@@ -432,8 +432,13 @@ export const CFMParser = {
       row[c.ISIN]
     );
 
-    // Calculate market value
-    const marketValue = quantity && rawMarketPrice ? quantity * rawMarketPrice : null;
+    // Calculate market value from the NORMALIZED price. For percentage-quoted
+    // instruments (price type 1: bonds, structured notes) the raw price is in
+    // percent of nominal (100 = par), so quantity × raw price is 100× too large
+    // — on 2026-09-15 four CFM notes of 100k nominal each came out at 10M and
+    // inflated the firm AUM by 39.6M. Absolute prices are unchanged by
+    // normalizePrice(), so equities/funds are unaffected.
+    const marketValue = quantity && normalizedMarketPrice ? quantity * normalizedMarketPrice : null;
 
     // Calculate cost basis from quantity × cost price
     // NOTE: PURCHASE_VALUE (column 10) contains market value, not purchase value!

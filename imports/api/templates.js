@@ -201,58 +201,48 @@ export const BUILT_IN_TEMPLATES = [
     _id: "orion_memory",
     name: "Orion",
     icon: "⭐",
-    category: "memory",
-    description: "Memory coupon structure with quarterly observations and protection",
+    category: "capital_protection",
+    description: "Lookback rainbow note — each underlying capped at a rebate once it touches the upper barrier, redemption at maturity on the basket average with a capital guarantee (no coupon)",
     isBuiltIn: true,
-    createdAt: new Date(), 
+    createdAt: new Date(),
     updatedAt: new Date(),
     droppedItems: [
-      // Timing
+      // Timing: Orion is observed continuously over the life (start + final date only)
       {
         id: "observation_1",
         type: "observation",
-        column: "quarterly",
+        column: "continuous",
         row: 1,
-        value: "Quarterly Observations",
+        value: "Continuous Lookback (start to final)",
         sortOrder: 1
       },
-      // Memory coupon logic
+      // Lookback cap: touching the upper barrier locks the underlying at the rebate
       {
         id: "barrier_1",
-        type: "barrier", 
+        type: "barrier",
         column: "life",
         row: 2,
-        value: "65% Coupon Barrier",
-        barrier_type: "coupon",
-        barrier_level: 65,
+        value: "100% Upper Barrier (Cap)",
+        barrier_type: "upper",
+        barrier_level: 100,
         sortOrder: 2
       },
       {
         id: "action_1",
         type: "action",
-        column: "life", 
+        column: "life",
         row: 2,
-        value: "Memory Coupon: 2.5%",
+        value: "Lock performance at rebate if touched",
         sortOrder: 3
       },
-      // Maturity protection
+      // Maturity: basket average of considered performances, floored by the guarantee
       {
-        id: "barrier_2",
-        type: "barrier",
-        column: "maturity",
-        row: 3,
-        value: "65% Protection Barrier", 
-        barrier_type: "protection",
-        barrier_level: 65,
-        sortOrder: 4
-      },
-      {
-        id: "action_2", 
+        id: "action_2",
         type: "action",
         column: "maturity",
         row: 3,
-        value: "100% + All Memory Coupons",
-        sortOrder: 5
+        value: "100% + average considered performance, floored at capital guarantee",
+        sortOrder: 4
       }
     ]
   },

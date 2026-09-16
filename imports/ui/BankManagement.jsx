@@ -1,9 +1,34 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useFind, useSubscribe, useTracker } from 'meteor/react-meteor-data';
 import { BanksCollection } from '/imports/api/banks';
+import { ASSET_TYPES, OrderFormatters } from '/imports/api/orders';
 import { Meteor } from 'meteor/meteor';
 import Dialog from './Dialog.jsx';
 import { useDialog } from './useDialog.js';
+
+// "a@x.com, b@y.com" -> ['a@x.com', 'b@y.com']
+const splitEmails = (text) => (text || '').split(',').map(e => e.trim()).filter(e => e);
+
+const ASSET_TYPE_OPTIONS = Object.values(ASSET_TYPES).map(value => ({
+  value,
+  label: OrderFormatters.getAssetTypeLabel(value)
+}));
+const assetTypeLabels = (types) => (types || []).map(t => OrderFormatters.getAssetTypeLabel(t)).join(', ');
+
+// Edit-form shape of a bank's desks (cc kept as free text while typing)
+const desksForEditing = (bank) => (bank.desks || []).map(d => ({
+  ...d,
+  ccEmails: undefined,
+  ccEmailsText: (d.ccEmails || []).join(', ')
+}));
+
+const newDeskRow = () => ({
+  key: `new_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+  label: '',
+  email: '',
+  ccEmailsText: '',
+  assetTypes: []
+});
 
 const BankManagement = React.memo(({ user }) => {
   const [newBank, setNewBank] = useState({
@@ -200,10 +225,28 @@ const BankManagement = React.memo(({ user }) => {
     setError('');
     setSuccess('');
 
-    const ccEmails = (editingBank.ccEmailsText || '')
-      .split(',')
-      .map(e => e.trim())
-      .filter(e => e);
+    const ccEmails = splitEmails(editingBank.ccEmailsText);
+
+    // Per-asset-class desks. Blank rows are dropped server-side; here we only
+    // pre-check the one mistake the chips can't fully prevent — an asset type
+    // claimed twice — so the admin gets an immediate, readable message.
+    const desks = (editingBank.desks || []).map(({ ccEmailsText, ...d }) => ({
+      key: d.key,
+      label: (d.label || '').trim(),
+      email: (d.email || '').trim(),
+      ccEmails: splitEmails(ccEmailsText),
+      assetTypes: d.assetTypes || []
+    }));
+    const claimed = new Map();
+    for (const desk of desks) {
+      for (const type of desk.assetTypes) {
+        if (claimed.has(type)) {
+          setError(`${OrderFormatters.getAssetTypeLabel(type)} is assigned to both "${claimed.get(type)}" and "${desk.label || 'an unnamed desk'}"`);
+          return;
+        }
+        claimed.set(type, desk.label || 'an unnamed desk');
+      }
+    }
 
     const updates = {
       name: editingBank.name.trim(),
@@ -211,7 +254,8 @@ const BankManagement = React.memo(({ user }) => {
       country: editingBank.country.trim(),
       countryCode: editingBank.countryCode.trim(),
       deskEmail: editingBank.deskEmail?.trim() || null,
-      ccEmails
+      ccEmails,
+      desks
     };
 
     Meteor.call('banks.update', editingBank._id, updates, localStorage.getItem('sessionId'), (err) => {
@@ -643,7 +687,7 @@ const BankManagement = React.memo(({ user }) => {
                     textTransform: 'uppercase',
                     letterSpacing: '0.75px'
                   }}>
-                    Desk Email
+                    Order Emails
                   </th>
                   <th style={{
                     padding: '14px 16px',
@@ -748,9 +792,29 @@ const BankManagement = React.memo(({ user }) => {
                             </div>
                           )}
                         </div>
+                      ) : bank.desks?.length > 0 ? (
+                        <span style={{ fontStyle: 'italic', fontSize: '0.8rem' }}>default: none</span>
                       ) : (
                         <span style={{ fontStyle: 'italic' }}>—</span>
                       )}
+                      {/* Asset-class desks: orders of these types bypass the default address */}
+                      {(bank.desks || []).map(desk => (
+                        <div
+                          key={desk.key || desk.email}
+                          style={{ fontSize: '0.8rem', marginTop: '4px', color: 'var(--text-secondary)' }}
+                          title={`${desk.label}: ${assetTypeLabels(desk.assetTypes)}`}
+                        >
+                          <span style={{ fontWeight: '600' }}>{desk.label}</span>
+                          {' → '}
+                          <a
+                            href={`mailto:${desk.email}${desk.ccEmails?.length ? '?cc=' + desk.ccEmails.join(',') : ''}`}
+                            style={{ color: 'var(--accent-color)', textDecoration: 'none' }}
+                          >
+                            {desk.email}
+                          </a>
+                          <span style={{ color: 'var(--text-muted)' }}> ({assetTypeLabels(desk.assetTypes)})</span>
+                        </div>
+                      ))}
                     </td>
                     <td style={{
                       padding: '14px 16px',
@@ -758,7 +822,12 @@ const BankManagement = React.memo(({ user }) => {
                     }}>
                       <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
                         <button
-                          onClick={() => setEditingBank({ ...bank, deskEmail: bank.deskEmail || '', ccEmailsText: (bank.ccEmails || []).join(', ') })}
+                          onClick={() => setEditingBank({
+                            ...bank,
+                            deskEmail: bank.deskEmail || '',
+                            ccEmailsText: (bank.ccEmails || []).join(', '),
+                            desks: desksForEditing(bank)
+                          })}
                           style={{
                             padding: '6px 12px',
                             background: 'transparent',
@@ -836,8 +905,10 @@ const BankManagement = React.memo(({ user }) => {
               border: '1px solid var(--border-color)',
               borderRadius: '12px',
               padding: '1.5rem',
-              width: '450px',
-              maxWidth: '90vw'
+              width: '560px',
+              maxWidth: '90vw',
+              maxHeight: '90vh',
+              overflowY: 'auto'
             }}
           >
             <h3 style={{
@@ -848,6 +919,20 @@ const BankManagement = React.memo(({ user }) => {
             }}>
               Edit Bank — {editingBank.name}
             </h3>
+
+            {error && (
+              <div style={{
+                marginBottom: '1rem',
+                padding: '10px 14px',
+                borderRadius: '8px',
+                fontSize: '0.85rem',
+                background: 'rgba(220, 53, 69, 0.1)',
+                border: '1px solid rgba(220, 53, 69, 0.3)',
+                color: '#dc3545'
+              }}>
+                {error}
+              </div>
+            )}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div>
@@ -1010,6 +1095,154 @@ const BankManagement = React.memo(({ user }) => {
                 }}>
                   Separate multiple emails with commas
                 </span>
+              </div>
+
+              {/* Order desks by asset class */}
+              <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label style={{
+                    fontSize: '0.85rem',
+                    fontWeight: '600',
+                    color: 'var(--text-primary)'
+                  }}>
+                    Order desks by asset class:
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setEditingBank({ ...editingBank, desks: [...(editingBank.desks || []), newDeskRow()] })}
+                    style={{
+                      padding: '4px 10px',
+                      background: 'transparent',
+                      color: 'var(--accent-color)',
+                      border: '1px solid var(--accent-color)',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '0.8rem',
+                      fontWeight: '500'
+                    }}
+                  >
+                    + Add desk
+                  </button>
+                </div>
+                <span style={{
+                  fontSize: '0.75rem',
+                  color: 'var(--text-muted)',
+                  display: 'block',
+                  marginBottom: (editingBank.desks || []).length ? '10px' : 0
+                }}>
+                  Orders whose asset type matches a desk are emailed to that desk; everything else goes to the Desk Email above.
+                </span>
+
+                {(editingBank.desks || []).map((desk, deskIndex) => {
+                  const updateDesk = (changes) => setEditingBank({
+                    ...editingBank,
+                    desks: editingBank.desks.map((d, i) => (i === deskIndex ? { ...d, ...changes } : d))
+                  });
+                  const removeDesk = () => setEditingBank({
+                    ...editingBank,
+                    desks: editingBank.desks.filter((_, i) => i !== deskIndex)
+                  });
+                  // Asset types already taken by another desk can't be picked here
+                  const claimedElsewhere = new Map();
+                  editingBank.desks.forEach((d, i) => {
+                    if (i !== deskIndex) (d.assetTypes || []).forEach(t => claimedElsewhere.set(t, d.label || 'another desk'));
+                  });
+                  const fieldStyle = {
+                    width: '100%',
+                    padding: '8px 12px',
+                    border: '2px solid var(--border-color)',
+                    borderRadius: '8px',
+                    fontSize: '0.9rem',
+                    boxSizing: 'border-box',
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-primary)'
+                  };
+                  return (
+                    <div
+                      key={desk.key}
+                      style={{
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '10px',
+                        padding: '12px',
+                        marginBottom: '10px',
+                        background: 'var(--bg-primary)'
+                      }}
+                    >
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr auto', gap: '8px', alignItems: 'center', marginBottom: '8px' }}>
+                        <input
+                          type="text"
+                          value={desk.label}
+                          placeholder="Desk name (e.g. FX desk)"
+                          onChange={(e) => updateDesk({ label: e.target.value })}
+                          style={fieldStyle}
+                        />
+                        <input
+                          type="email"
+                          value={desk.email}
+                          placeholder="desk@bank.com"
+                          onChange={(e) => updateDesk({ email: e.target.value })}
+                          style={fieldStyle}
+                        />
+                        <button
+                          type="button"
+                          onClick={removeDesk}
+                          title="Remove desk"
+                          style={{
+                            padding: '6px 10px',
+                            background: 'transparent',
+                            color: '#dc3545',
+                            border: '1px solid #dc3545',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontSize: '0.8rem'
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        value={desk.ccEmailsText}
+                        placeholder="CC for this desk (optional, comma-separated)"
+                        onChange={(e) => updateDesk({ ccEmailsText: e.target.value })}
+                        style={{ ...fieldStyle, marginBottom: '8px' }}
+                      />
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {ASSET_TYPE_OPTIONS.map(opt => {
+                          const selected = (desk.assetTypes || []).includes(opt.value);
+                          const takenBy = claimedElsewhere.get(opt.value);
+                          const disabled = !!takenBy && !selected;
+                          return (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              disabled={disabled}
+                              title={disabled ? `Already handled by ${takenBy}` : ''}
+                              onClick={() => updateDesk({
+                                assetTypes: selected
+                                  ? desk.assetTypes.filter(t => t !== opt.value)
+                                  : [...(desk.assetTypes || []), opt.value]
+                              })}
+                              style={{
+                                padding: '4px 10px',
+                                borderRadius: '14px',
+                                fontSize: '0.78rem',
+                                fontWeight: '500',
+                                cursor: disabled ? 'not-allowed' : 'pointer',
+                                border: `1px solid ${selected ? 'var(--accent-color)' : 'var(--border-color)'}`,
+                                background: selected ? 'var(--accent-color)' : 'transparent',
+                                color: selected ? 'white' : 'var(--text-secondary)',
+                                opacity: disabled ? 0.4 : 1
+                              }}
+                            >
+                              {opt.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 

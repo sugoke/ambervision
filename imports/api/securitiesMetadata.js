@@ -147,7 +147,11 @@ export function getGranularCategoryLabel(categoryKey) {
       'capital_guaranteed_partial': 'Partially Guaranteed',
       'capital_protected_conditional': 'Conditionally Guaranteed',
       'other_protection': 'Other Protection',
-      'other': 'Unclassified'
+      'other': 'Unclassified',
+      // Short forms emitted by buildCategoryKey() in assetClassification.js
+      'barrier_protected': 'Conditionally Guaranteed',
+      'capital_guaranteed': '100% Capital Guaranteed',
+      'partial_guarantee': 'Partially Guaranteed'
     };
 
     // Extract underlying and protection from key: "structured_product_{underlying}_{protection}"

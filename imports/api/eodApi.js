@@ -5,6 +5,11 @@ import { HTTP } from 'meteor/http';
 const EOD_API_TOKEN = Meteor.settings.private?.EOD_API_TOKEN || '5c265eab2c9066.19444326';
 const EOD_BASE_URL = 'https://eodhistoricaldata.com/api';
 
+// Option chains are end-of-day data and heavy (thousands of contracts), so
+// they are held in memory for a while rather than refetched on every pick.
+const OPTIONS_CHAIN_CACHE = new Map();
+const OPTIONS_CHAIN_TTL_MS = 30 * 60 * 1000;
+
 // Popular indices data with common aliases (from EOD INDX exchange)
 const POPULAR_INDICES = [
   // US Indices
@@ -924,6 +929,129 @@ export const EODApiHelpers = {
       fallbacks: logoSources.slice(1),
       all: logoSources
     };
+  },
+
+  // ---------------------------------------------------------------------------
+  // Listed options
+  //
+  // EOD's options coverage is US listings only, served by the legacy
+  // /api/options/{SYMBOL}.US endpoint (the newer Unicorn Bay marketplace API is
+  // a separate add-on we don't have). The data is end-of-day: one snapshot per
+  // trading day, Greeks included. Good enough to pick a contract and show an
+  // indicative premium; not a live quote.
+  //
+  // Everything option-related goes through these two helpers so the endpoint
+  // can be swapped in one place if EOD retires the legacy route.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The EOD symbol whose option chain to load for an underlying, or null when
+   * the underlying has no US listing (then there is no chain to load).
+   *
+   * The securities search often returns a non-US listing first for a US name
+   * (Apple comes back as 0R2V.LSE). Options trade against the US line, so when
+   * the ticker isn't a .US one we look the ISIN up and take the US listing.
+   */
+  async resolveUsOptionsSymbol({ ticker, isin } = {}) {
+    if (ticker && /\.US$/i.test(ticker)) return ticker.toUpperCase();
+    if (!isin || !/^[A-Z]{2}[A-Z0-9]{9}[0-9]$/i.test(isin)) return null;
+    try {
+      const response = await HTTP.get(`${EOD_BASE_URL}/search/${encodeURIComponent(isin)}`, {
+        params: { api_token: EOD_API_TOKEN, limit: 20, fmt: 'json' }
+      });
+      const rows = Array.isArray(response.data) ? response.data : [];
+      const us = rows.find(r => r.Exchange === 'US' && String(r.ISIN || '').toUpperCase() === isin.toUpperCase())
+        || rows.find(r => r.Exchange === 'US');
+      return us ? `${us.Code}.US` : null;
+    } catch (err) {
+      console.warn('[EOD] resolveUsOptionsSymbol failed:', err.message);
+      return null;
+    }
+  },
+
+  /**
+   * The option chain for a US symbol, normalised and trimmed for the order
+   * entry screen. Cached for 30 minutes: the feed changes once a day and an
+   * AAPL chain is ~3,000 contracts, so refetching per keystroke would be waste.
+   *
+   * Returns { available: false, reason } when EOD has no chain for the symbol.
+   */
+  async getOptionsChain(symbol) {
+    if (!symbol) return { available: false, reason: 'No symbol' };
+    const key = symbol.toUpperCase();
+    const cached = OPTIONS_CHAIN_CACHE.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.chain;
+
+    let response;
+    try {
+      response = await HTTP.get(`${EOD_BASE_URL}/options/${key}`, {
+        params: { api_token: EOD_API_TOKEN, fmt: 'json' },
+        timeout: 40000
+      });
+    } catch (err) {
+      console.warn(`[EOD] options chain for ${key} failed:`, err.message);
+      return { available: false, reason: 'Option feed unavailable' };
+    }
+
+    const raw = response.data || {};
+    const expirations = Array.isArray(raw.data) ? raw.data : [];
+    if (expirations.length === 0) {
+      const chain = { available: false, symbol: key, reason: 'No listed options on this underlying (EOD covers US listings only)' };
+      OPTIONS_CHAIN_CACHE.set(key, { chain, expiresAt: Date.now() + OPTIONS_CHAIN_TTL_MS });
+      return chain;
+    }
+
+    const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
+    const normaliseContract = (c) => {
+      const bid = num(c.bid);
+      const ask = num(c.ask);
+      const last = num(c.lastPrice);
+      // Mid when both sides are quoted; otherwise the last print. A zero last
+      // on a contract that never traded is not a price.
+      const mid = bid != null && ask != null && (bid > 0 || ask > 0) ? (bid + ask) / 2 : (last > 0 ? last : null);
+      return {
+        contractName: c.contractName,
+        type: c.type,
+        strike: num(c.strike),
+        expirationDate: c.expirationDate,
+        currency: c.currency || 'USD',
+        // EOD flags the standard 100-share lot as "REGULAR"; anything else is
+        // an adjusted contract and the size must be checked by hand.
+        contractSize: c.contractSize === 'REGULAR' ? 100 : null,
+        contractSizeLabel: c.contractSize || null,
+        inTheMoney: String(c.inTheMoney).toUpperCase() === 'TRUE',
+        bid, ask, last, mid,
+        volume: num(c.volume),
+        openInterest: num(c.openInterest),
+        impliedVolatility: num(c.impliedVolatility),
+        delta: num(c.delta),
+        gamma: num(c.gamma),
+        theta: num(c.theta),
+        vega: num(c.vega),
+        lastTradeDateTime: c.lastTradeDateTime || null,
+        updatedAt: c.updatedAt || null
+      };
+    };
+
+    const chain = {
+      available: true,
+      symbol: key,
+      underlyingCode: raw.code || key.split('.')[0],
+      underlyingLastPrice: num(raw.lastTradePrice),
+      underlyingAsOf: raw.lastTradeDate || null,
+      fetchedAt: new Date(),
+      expirations: expirations.map(e => ({
+        expirationDate: e.expirationDate,
+        impliedVolatility: num(e.impliedVolatility),
+        putCallOpenInterestRatio: num(e.putCallOpenInterestRatio),
+        optionsCount: num(e.optionsCount),
+        calls: (e.options?.CALL || []).map(normaliseContract).sort((a, b) => a.strike - b.strike),
+        puts: (e.options?.PUT || []).map(normaliseContract).sort((a, b) => a.strike - b.strike)
+      }))
+    };
+
+    OPTIONS_CHAIN_CACHE.set(key, { chain, expiresAt: Date.now() + OPTIONS_CHAIN_TTL_MS });
+    return chain;
   }
 };
 

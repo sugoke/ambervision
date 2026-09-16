@@ -52,6 +52,11 @@ export const OrionChartBuilder = {
           strikePrice
         );
 
+        // Nothing real to plot for this underlying — skip it entirely
+        if (!performanceData || performanceData.length === 0) {
+          continue;
+        }
+
         // Check if barrier was hit and find first hit date
         let crossingDate = null;
         if (underlying.hitUpperBarrier && performanceData && performanceData.length > 0) {
@@ -392,7 +397,7 @@ export const OrionChartBuilder = {
       }
 
       if (!cacheDoc || !cacheDoc.history || cacheDoc.history.length === 0) {
-        return this.generateSyntheticData(tradeDate, maturityDate, today);
+        return []; // no fabricated data — missing series stays absent
       }
 
       let history = cacheDoc.history.filter(record => {
@@ -401,7 +406,7 @@ export const OrionChartBuilder = {
       });
 
       if (history.length === 0) {
-        return this.generateSyntheticData(tradeDate, maturityDate, today);
+        return []; // no fabricated data — missing series stays absent
       }
 
       // Use strike price as initial reference (matches table calculation)
@@ -421,41 +426,35 @@ export const OrionChartBuilder = {
         ticker
       );
 
-      return history.map(record => ({
+      const rebased = history.map(record => ({
         x: new Date(record.date).toISOString().split('T')[0],
         y: ((record.adjustedClose || record.close) / initialPrice) * 100
       }));
 
+      // Sanity guard: the earliest rebased point must sit near 100% of the
+      // strike. If it doesn't, the resolved price series does not belong to
+      // this underlying (e.g. an exchange-fallback picked an LSE pence line
+      // for a USD ADR strike) — drop the series rather than plot garbage.
+      const firstY = rebased[0]?.y;
+      if (typeof firstY === 'number' && (firstY < 40 || firstY > 250)) {
+        console.warn(`[chartBuilder] Dropping ${ticker}: rebased start ${firstY.toFixed(1)}% is inconsistent with the strike (wrong instrument or scale)`);
+        return [];
+      }
+
+      return rebased;
+
     } catch (error) {
       console.error(`❌ Error fetching price data for ${ticker}:`, error);
-      return this.generateSyntheticData(tradeDate, maturityDate, today);
+      return []; // no fabricated data — missing series stays absent
     }
   },
 
   /**
    * Generate synthetic performance data as fallback
    */
-  generateSyntheticData(tradeDate, maturityDate, today) {
-    const labels = [];
-    const currentDate = new Date(tradeDate);
-
-    while (currentDate <= maturityDate) {
-      labels.push(currentDate.toISOString().split('T')[0]);
-      currentDate.setDate(currentDate.getDate() + 1);
-    }
-
-    const todayIndex = Math.floor((today - tradeDate) / (24 * 60 * 60 * 1000));
-
-    return labels.map((date, index) => {
-      if (index === 0) {
-        return { x: date, y: 100 };
-      } else if (index <= todayIndex) {
-        const baseProgress = (36.9 * index) / Math.max(todayIndex, 1);
-        const volatility = Math.sin(index * 0.1) * 5;
-        return { x: date, y: 100 + baseProgress + volatility };
-      } else {
-        return null;
-      }
-    }).filter(point => point !== null);
+  // generateSyntheticData was removed: it fabricated a fake price path,
+  // which violates the "never fake data" rule. Missing series are omitted.
+  generateSyntheticData() {
+    return [];
   }
 };

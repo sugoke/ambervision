@@ -243,6 +243,11 @@ function trackWrittenSnapshot(writtenSnapshots, position, writtenUniqueKey) {
   }
 }
 
+// How far back pms.getDayVariation looks for a portfolio's previous valuation.
+// Wide enough to step over a long bank holiday, narrow enough to keep the
+// aggregation on an index.
+const DAY_VARIATION_LOOKBACK_DAYS = 30;
+
 Meteor.methods({
   /**
    * Backfill CFM FX-forward holdings with their forward value date by joining
@@ -1016,6 +1021,22 @@ Meteor.methods({
         // Don't fail the import
       }
 
+      // LINK NEW POSITIONS TO PRODUCTS: a structured product is normally booked
+      // days before the bank reports the position, and auto-allocation only ran
+      // at product-creation time — so those positions never got an allocation and
+      // the product dashboard showed a dash instead of the size. Sweeping here
+      // links whatever this file just brought in.
+      try {
+        const { AllocationHelpers } = await import('../../imports/api/allocations.js');
+        const linked = await AllocationHelpers.linkUnlinkedHoldings();
+        if (linked.allocationsCreated > 0) {
+          console.log(`[BANK_POSITIONS] Linked ${linked.allocationsCreated} new position(s) to ${linked.productsLinked} product(s)`);
+        }
+      } catch (linkError) {
+        // Never fail an import over linking - the positions themselves are saved
+        console.error(`[BANK_POSITIONS] Product linking failed: ${linkError.message}`);
+      }
+
       // CFM FX-FORWARD VALUE DATES: join fx_forward holdings to FX_TRADE operations
       // by portfolioCode + |amount| so the Value Date column populates. No-op for
       // banks that don't produce fx_forward holdings.
@@ -1423,6 +1444,12 @@ Meteor.methods({
                 eventType: 'allocation_breach'
               });
             }
+          } else {
+            // Back within the profile's limits - clear any standing breach alert
+            // so a corrected (or reclassified) allocation doesn't keep warning.
+            await NotificationHelpers.resolveUserNotifications('allocation_breach', {
+              bankAccountId: bankAccount._id
+            });
           }
         }
       } catch (breachCheckError) {
@@ -2184,6 +2211,8 @@ Meteor.methods({
       }
 
       // Parse files for the specific date using the new method
+      const { refreshReferenceCurrencyOverrides } = await import('../helpers/referenceCurrencyOverrides.js');
+      await refreshReferenceCurrencyOverrides();
       const parseResult = BankPositionParser.parseFilesForDate(bankFolderPath, dateToProcess, {
         bankId: connection.bankId,
         bankName: bank.name,
@@ -2859,6 +2888,10 @@ Meteor.methods({
                 eventType: 'allocation_breach'
               });
             }
+          } else {
+            await NotificationHelpers.resolveUserNotifications('allocation_breach', {
+              bankAccountId: testBankAccount._id
+            });
           }
         }
       } catch (breachCheckError) {
@@ -3298,6 +3331,213 @@ Meteor.methods({
    * Get data freshness status for all banks for a user or across all users (admin)
    * Returns freshness info per bank connection showing if data is current or stale
    */
+  /**
+   * One-day variation of the displayed portfolio total, in currency.
+   *
+   * "One day" is the previous date the BANK actually reported for each portfolio,
+   * not calendar yesterday — so on a Monday it naturally compares against Friday,
+   * and it steps over holidays and days a bank didn't deliver.
+   *
+   * Comparison is per portfolio and apples-to-apples: each portfolio is measured
+   * against ITS OWN previous valuation, and a portfolio with no prior valuation
+   * is left out of BOTH sides. Summing the whole perimeter across two dates
+   * instead would read a bank whose file simply hasn't landed yet as a crash —
+   * the same trap the RM dashboard's Day P&L had to solve.
+   *
+   * The client passes the exact (bankId, portfolioCode) pairs it is displaying and
+   * the currency it displays them in, so the comparison covers what is on screen.
+   */
+  async 'pms.getDayVariation'({ sessionId, portfolioKeys, currency, asOfDate = null }) {
+    check(sessionId, String);
+    check(currency, String);
+    check(asOfDate, Match.Maybe(Date));
+    check(portfolioKeys, [{ bankId: String, portfolioCode: String }]);
+
+    // The PMS page fires several methods at once; without this they queue behind
+    // this one and the whole screen waits on a decorative figure.
+    this.unblock();
+
+    const session = await SessionHelpers.findByToken(sessionId);
+    if (!session?.userId) throw new Meteor.Error('not-authorized', 'Invalid session');
+    const currentUser = await UsersCollection.findOneAsync(session.userId);
+    if (!currentUser) throw new Meteor.Error('not-authorized', 'User not found');
+
+    // CONSOLIDATED rows are roll-up copies of the per-account rows; counting them
+    // alongside their sources would double every position.
+    const keys = portfolioKeys.filter(k => k.portfolioCode && k.portfolioCode !== 'CONSOLIDATED');
+    if (keys.length === 0) return null;
+
+    // SECURITY: the caller names the portfolios, so confirm they may see them.
+    // Staff see every book; a client only the accounts they hold.
+    const STAFF_ROLES = ['superadmin', 'admin', 'compliance', 'rm', 'assistant', 'staff'];
+    if (!STAFF_ROLES.includes(currentUser.role)) {
+      const { accountHolderSelector } = await import('/imports/api/bankAccounts.js');
+      const owned = await BankAccountsCollection.find({
+        ...accountHolderSelector([currentUser._id]),
+        isActive: true
+      }, { fields: { bankId: 1, accountNumber: 1 } }).fetchAsync();
+      const allowed = new Set(owned.map(a => `${a.bankId}|${a.accountNumber}`));
+      if (keys.some(k => !allowed.has(`${k.bankId}|${k.portfolioCode}`))) {
+        throw new Meteor.Error('not-authorized', 'Not authorized for these portfolios');
+      }
+    }
+
+    const { CurrencyRateCacheCollection } = await import('/imports/api/currencyCache.js');
+    const rateCache = new Map();
+    /** Rate to express `from` in the display currency, or null when unknown. */
+    const rateTo = async (from) => {
+      if (!from || from === currency) return 1;
+      if (rateCache.has(from)) return rateCache.get(from);
+      let rate = null;
+      const direct = await CurrencyRateCacheCollection.findOneAsync({ pair: `${from}${currency}.FOREX` });
+      if (direct?.rate) rate = direct.rate;
+      else {
+        const inverse = await CurrencyRateCacheCollection.findOneAsync({ pair: `${currency}${from}.FOREX` });
+        if (inverse?.rate) rate = 1 / inverse.rate;
+      }
+      rateCache.set(from, rate);
+      return rate;
+    };
+
+    // ONE aggregation for the whole perimeter. Querying per portfolio needed
+    // three round trips each and took ~1.4s for a single account, so the
+    // consolidated view never finished loading.
+    //
+    // Totals are summed per (portfolio, date, currency) on the headline's own
+    // basis: net cash, debit balances included (a purchase booked before its
+    // value date shows as negative cash; credit-line accounts are excluded at
+    // account level, not by flooring). Flooring cash at zero here while the
+    // snapshots net it produced a fake +26.67% day on a 1.5M account. Sorting
+    // happens in JS on this already-small grouped output rather than in the
+    // pipeline, which keeps it clear of Mongo's sort memory limit.
+    //
+    // The match is shaped for the portfolioCode + snapshotDate index: an $or over
+    // {bankId, portfolioCode} pairs across ALL history scanned the collection and
+    // never returned. Filtering by portfolioCode within a bounded window and
+    // re-checking bankId in JS below is the same result, indexed.
+    const requested = new Set(keys.map(k => `${k.bankId}|${k.portfolioCode}`));
+    const codes = [...new Set(keys.map(k => k.portfolioCode))];
+    // Only the two most recent valuations matter. A portfolio not valued within
+    // this window has no meaningful one-day move to report anyway.
+    const windowStart = new Date(asOfDate || Date.now());
+    windowStart.setDate(windowStart.getDate() - DAY_VARIATION_LOOKBACK_DAYS);
+
+    const grouped = await PMSHoldingsCollection.rawCollection().aggregate([
+      {
+        $match: {
+          portfolioCode: { $in: codes },
+          snapshotDate: {
+            $gte: windowStart,
+            ...(asOfDate ? { $lte: asOfDate } : {})
+          },
+          // A position must count on the days it was actually held. The
+          // sold-position cleanup retroactively flags isActive:false on EVERY
+          // historical record of a position that later left the bank file, so a
+          // plain `isActive: true` erases it from the earlier side of the
+          // comparison and invents a gain — two autocalls worth EUR 1,025,000
+          // showed up as a fake +2.55% day.
+          //
+          // `soldAt` is the date it was found missing, so a record counts while
+          // that date is still in the future. Rows deactivated for data-quality
+          // reasons (stale uniqueKey duplicates, merges) carry no soldAt and stay
+          // excluded, which keeps the duplicate protection intact.
+          $expr: {
+            $or: [
+              { $eq: ['$isActive', true] },
+              { $gt: [{ $ifNull: ['$soldAt', null] }, '$snapshotDate'] }
+            ]
+          }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            bankId: '$bankId',
+            portfolioCode: '$portfolioCode',
+            date: '$snapshotDate',
+            ccy: '$portfolioCurrency'
+          },
+          total: {
+            $sum: {
+              $ifNull: ['$marketValue', 0]
+            }
+          }
+        }
+      }
+    ]).toArray();
+
+    // portfolio -> date(ms) -> [{ ccy, total }]
+    const byPortfolio = new Map();
+    for (const row of grouped) {
+      if (!row._id?.date) continue;
+      const pKey = `${row._id.bankId}|${row._id.portfolioCode}`;
+      // Two banks can reuse a portfolio code, so the bankId pairing is checked here.
+      if (!requested.has(pKey)) continue;
+      const dateMs = new Date(row._id.date).getTime();
+      if (!byPortfolio.has(pKey)) byPortfolio.set(pKey, new Map());
+      const dates = byPortfolio.get(pKey);
+      if (!dates.has(dateMs)) dates.set(dateMs, []);
+      dates.get(dateMs).push({ ccy: row._id.ccy, total: row.total || 0 });
+    }
+
+    let currentTotal = 0;
+    let previousTotal = 0;
+    let compared = 0;
+    let currentDate = null;
+    let previousDate = null;
+    let unpricedCurrency = false;
+
+    const convertBucket = async (bucket) => {
+      let sum = 0;
+      for (const part of bucket) {
+        const rate = await rateTo(part.ccy);
+        if (rate === null) { unpricedCurrency = true; return null; }
+        sum += part.total * rate;
+      }
+      return sum;
+    };
+
+    for (const [, dates] of byPortfolio) {
+      const sortedMs = [...dates.keys()].sort((a, b) => b - a);
+      if (sortedMs.length < 2) continue;
+
+      const ownMs = sortedMs[0];
+      const priorMs = sortedMs[1];
+
+      const nowValue = await convertBucket(dates.get(ownMs));
+      const thenValue = await convertBucket(dates.get(priorMs));
+      if (nowValue === null || thenValue === null) continue;
+
+      currentTotal += nowValue;
+      previousTotal += thenValue;
+      compared++;
+      if (currentDate === null || ownMs > currentDate) currentDate = ownMs;
+      if (previousDate === null || priorMs > previousDate) previousDate = priorMs;
+    }
+
+    currentDate = currentDate === null ? null : new Date(currentDate);
+    previousDate = previousDate === null ? null : new Date(previousDate);
+
+    if (compared === 0 || !previousTotal) return null;
+
+    const change = currentTotal - previousTotal;
+
+    return {
+      currency,
+      currentDate,
+      previousDate,
+      currentTotal,
+      previousTotal,
+      change,
+      changePercent: (change / previousTotal) * 100,
+      // The caller shows a caveat when only part of the perimeter could be
+      // compared (a bank whose file for the current date hasn't landed yet).
+      comparedPortfolios: compared,
+      totalPortfolios: keys.length,
+      unpricedCurrency
+    };
+  },
+
   async 'pms.getDataFreshness'({ sessionId, userId }) {
     check(sessionId, String);
     check(userId, Match.Maybe(String));
@@ -3503,6 +3743,16 @@ Meteor.methods({
       const firstPrice = priceValues[0];
       const lastPrice = priceValues[priceValues.length - 1];
 
+      // Is this series stored as a decimal fraction of par (1.0146) or as percent
+      // (101.46)? Judge it on the median, not on the first row: a handful of
+      // legacy rows in the other scale would otherwise flip the verdict for the
+      // whole series and rescale every point by 100. The median only moves if
+      // most of the series really is in that scale.
+      const sortedPrices = [...priceValues].filter(v => typeof v === 'number' && v > 0).sort((a, b) => a - b);
+      const medianPrice = sortedPrices.length
+        ? sortedPrices[Math.floor(sortedPrices.length / 2)]
+        : firstPrice;
+
       return {
         hasData: true,
         source: 'productPrices',
@@ -3517,7 +3767,7 @@ Meteor.methods({
         isPositive: lastPrice >= firstPrice,
         firstPrice,
         lastPrice,
-        isPercentagePrice: firstPrice <= 2 // heuristic: values <= 2 are likely decimal percentages
+        isPercentagePrice: medianPrice <= 2 // values <= 2 are decimal percentages of par
       };
     }
 

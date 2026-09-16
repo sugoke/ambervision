@@ -613,6 +613,27 @@ Meteor.methods({
   },
 
   /**
+   * Link EVERY product to the bank positions reporting its ISIN, in one pass.
+   *
+   * Same work the bank-file import does on its own, exposed so the desk can
+   * force a reconciliation without waiting for the next file. Idempotent.
+   */
+  async 'allocations.linkAllUnlinkedHoldings'() {
+    if (!this.userId) {
+      throw new Meteor.Error('not-authorized', 'You must be logged in');
+    }
+
+    const user = await UsersCollection.findOneAsync(this.userId);
+    if (!user || (user.role !== USER_ROLES.ADMIN && user.role !== USER_ROLES.SUPERADMIN)) {
+      throw new Meteor.Error('not-authorized', 'Only administrators can trigger auto-allocation');
+    }
+
+    const result = await AllocationHelpers.linkUnlinkedHoldings();
+    console.log(`[MANUAL AUTO-ALLOC] Sweep by ${user.email}: ${result.allocationsCreated} allocation(s) across ${result.productsLinked} product(s)`);
+    return { success: true, ...result };
+  },
+
+  /**
    * Get linking suggestions for a holding
    * Finds potential products and allocations that could be linked
    */

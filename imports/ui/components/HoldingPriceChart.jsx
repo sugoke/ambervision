@@ -29,8 +29,18 @@ ChartJS.register(
  * Supports both:
  * - Structured products/bonds (prices stored by ISIN in ProductPricesCollection, often as decimal %)
  * - Equities (prices stored by fullTicker in MarketDataCacheCollection)
+ *
+ * @param {string} priceUnit - 'percent' when the caller knows the instrument is
+ *   quoted as a percentage of par, whatever scale the stored rows use. Scale and
+ *   unit are two different things: the server's isPercentagePrice flag says the
+ *   rows are decimal (1.0146) and must be multiplied by 100, while this prop says
+ *   the axis and tooltip belong in % rather than in a currency. Structured-product
+ *   rows are usually already stored in percent (101.46), so without this they were
+ *   labelled as a currency amount. Omit it to keep the previous behaviour.
+ * @param {string} iconColor - overrides the trigger icon's stroke, for placing the
+ *   icon on a coloured surface.
  */
-const HoldingPriceChart = ({ isin, securityName, sessionId }) => {
+const HoldingPriceChart = ({ isin, securityName, sessionId, priceUnit = null, iconColor = null }) => {
   const [showModal, setShowModal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [priceData, setPriceData] = useState(null);
@@ -70,12 +80,14 @@ const HoldingPriceChart = ({ isin, securityName, sessionId }) => {
     const { prices, isPositive, currency, firstPrice, isPercentagePrice } = priceData;
     const lineColor = isPositive ? 'var(--gain-color)' : 'var(--loss-color)';
 
-    // For percentage prices (structured products), display as % (multiply by 100)
+    // Scale: only decimal-stored rows get multiplied by 100.
+    // Unit: shown as % when the rows are decimal percentages or the caller said so.
     const displayPrices = isPercentagePrice
       ? prices.map(p => ({ ...p, displayPrice: p.price * 100 }))
       : prices.map(p => ({ ...p, displayPrice: p.price }));
 
     const displayFirstPrice = isPercentagePrice ? firstPrice * 100 : firstPrice;
+    const showAsPercent = isPercentagePrice || priceUnit === 'percent';
 
     const chartData = {
       labels: displayPrices.map(p => p.date),
@@ -128,7 +140,7 @@ const HoldingPriceChart = ({ isin, securityName, sessionId }) => {
             },
             label: (context) => {
               const val = context.raw;
-              if (isPercentagePrice) {
+              if (showAsPercent) {
                 return ` ${val.toFixed(2)}%`;
               }
               return ` ${currency || ''} ${val.toLocaleString('en-US', {
@@ -149,7 +161,7 @@ const HoldingPriceChart = ({ isin, securityName, sessionId }) => {
               borderDash: [5, 5],
               label: {
                 display: true,
-                content: isPercentagePrice
+                content: showAsPercent
                   ? `Start: ${displayFirstPrice.toFixed(2)}%`
                   : `Start: ${displayFirstPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
                 position: 'start',
@@ -187,7 +199,7 @@ const HoldingPriceChart = ({ isin, securityName, sessionId }) => {
             color: 'rgba(148, 163, 184, 0.8)',
             font: { size: 10 },
             maxTicksLimit: 6,
-            callback: isPercentagePrice
+            callback: showAsPercent
               ? (value) => `${value.toFixed(1)}%`
               : undefined
           }
@@ -217,6 +229,9 @@ const HoldingPriceChart = ({ isin, securityName, sessionId }) => {
     if (priceData.isPercentagePrice) {
       return `${(priceData.lastPrice * 100).toFixed(2)}%`;
     }
+    if (priceUnit === 'percent') {
+      return `${priceData.lastPrice?.toFixed(2)}%`;
+    }
     return `${priceData.currency} ${priceData.lastPrice?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   })() : null;
 
@@ -242,14 +257,14 @@ const HoldingPriceChart = ({ isin, securityName, sessionId }) => {
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ display: 'block' }}>
           <polyline
             points="1,10 4,7 7,9 10,4 13,6"
-            stroke="#6366f1"
+            stroke={iconColor || '#6366f1'}
             strokeWidth="1.5"
             strokeLinecap="round"
             strokeLinejoin="round"
             fill="none"
           />
-          <line x1="1" y1="13" x2="13" y2="13" stroke="var(--neutral-color)" strokeWidth="0.75" />
-          <line x1="1" y1="1" x2="1" y2="13" stroke="var(--neutral-color)" strokeWidth="0.75" />
+          <line x1="1" y1="13" x2="13" y2="13" stroke={iconColor || 'var(--neutral-color)'} strokeOpacity={iconColor ? 0.6 : 1} strokeWidth="0.75" />
+          <line x1="1" y1="1" x2="1" y2="13" stroke={iconColor || 'var(--neutral-color)'} strokeOpacity={iconColor ? 0.6 : 1} strokeWidth="0.75" />
         </svg>
       </span>
 

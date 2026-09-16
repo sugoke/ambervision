@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import LiquidGlassCard from './components/LiquidGlassCard.jsx';
@@ -8,11 +8,13 @@ import OrderModal from './components/OrderModal.jsx';
 import ValidationBlotter from './components/ValidationBlotter.jsx';
 import { useTheme } from './ThemeContext.jsx';
 import * as XLSX from 'xlsx';
-import { OrdersCollection, ORDER_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, TERMSHEET_TRACE_TYPES, ASSET_TYPES, PRICE_TYPES, TERMSHEET_STATUSES, OrderFormatters, OrderHelpers, getOrderHealthCheck } from '/imports/api/orders';
+import { OrdersCollection, ORDER_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, TERMSHEET_TRACE_TYPES, ASSET_TYPES, PRICE_TYPES, TERMSHEET_STATUSES, OrderFormatters, OrderHelpers, getOrderHealthCheck, HEALTH_FILTER_ANY, getTraceCompleteness, isTerminalOrderStatus, EXECUTION_TYPES, EXECUTION_TYPE_LABELS } from '/imports/api/orders';
 import { BanksCollection } from '/imports/api/banks';
+import { IssuersCollection } from '/imports/api/issuers';
 import { UsersCollection } from '/imports/api/users';
 import FormattedNumberInput from './components/FormattedNumberInput.jsx';
 import { useIsMobile } from './hooks/useIsMobile.js';
+import { useOrderEmailDelivery } from './hooks/useOrderEmailDelivery.js';
 
 /**
  * OrderBook - Main component for managing orders
@@ -150,6 +152,8 @@ const OrderBook = ({ user }) => {
   const { theme } = useTheme();
   const isMobile = useIsMobile();
   const getSessionId = () => localStorage.getItem('sessionId');
+  // Desktop gets the .eml draft; phones save the PDF and open a prefilled Outlook draft (see the hook).
+  const { deliverOrderEmail, orderEmailSheet } = useOrderEmailDelivery();
 
   // State
   const [orders, setOrders] = useState([]);
@@ -165,6 +169,9 @@ const OrderBook = ({ user }) => {
   const [clientFilter, setClientFilter] = useState('all');
   const [validatorFilter, setValidatorFilter] = useState('all');
   const [missingTermsheetFilter, setMissingTermsheetFilter] = useState(false);
+  // Health-check filter chosen from the summary bar: null (off),
+  // HEALTH_FILTER_ANY (every incomplete order) or one missing-item name.
+  const [healthFilter, setHealthFilter] = useState(null);
   const [validators, setValidators] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [dateFrom, setDateFrom] = useState('');
@@ -180,6 +187,8 @@ const OrderBook = ({ user }) => {
   const [detailModalOpen, setDetailModalOpen] = useState(false);
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [rejectModalOpen, setRejectModalOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
   const [executeModalOpen, setExecuteModalOpen] = useState(false);
   const [newOrderModalOpen, setNewOrderModalOpen] = useState(false);
   // Bumped each time the modal closes so the next open gets a fresh OrderModal
@@ -242,18 +251,47 @@ const OrderBook = ({ user }) => {
   // Clients for new order modal
   const [clients, setClients] = useState([]);
 
-  // Subscribe to banks for filter dropdown
-  const { banks } = useTracker(() => {
+  // Subscribe to banks for filter dropdown, and to issuers so structured-product
+  // orders created before issuer coordinates were snapshotted can still resolve them.
+  const { banks, issuers } = useTracker(() => {
     Meteor.subscribe('banks');
+    Meteor.subscribe('issuers');
     return {
-      banks: BanksCollection.find({ isActive: true }).fetch()
+      banks: BanksCollection.find({ isActive: true }).fetch(),
+      issuers: IssuersCollection.find().fetch()
     };
   }, []);
+
+  /**
+   * Issuer coordinates for an order: the snapshot stored on the order at creation
+   * wins; the live issuer record is the fallback for older orders.
+   */
+  const getIssuerCoordinates = (order) => {
+    if (!order) return null;
+    const snap = order.issuerContact;
+    if (snap && (snap.name || snap.email || snap.phone)) {
+      return {
+        issuerName: order.issuerName || order.broker || '',
+        name: snap.name || null,
+        email: snap.email || null,
+        phone: snap.phone || null
+      };
+    }
+    if (!order.issuerId) return null;
+    const iss = issuers.find(i => i._id === order.issuerId);
+    if (!iss) return null;
+    return {
+      issuerName: iss.name || '',
+      name: iss.contactName || null,
+      email: iss.contactEmail || null,
+      phone: iss.contactPhone || null
+    };
+  };
 
   // Load orders on filter changes
   useEffect(() => {
     loadOrders();
-  }, [statusFilter, bankFilter, clientFilter, validatorFilter, missingTermsheetFilter, searchQuery, dateFrom, dateTo, currentPage, sortField, sortOrder]);
+  }, [statusFilter, bankFilter, clientFilter, validatorFilter, missingTermsheetFilter, healthFilter, searchQuery, dateFrom, dateTo, currentPage, sortField, sortOrder]);
 
   // Load clients for new order modal
   useEffect(() => {
@@ -304,6 +342,9 @@ const OrderBook = ({ user }) => {
     if (missingTermsheetFilter) {
       filters.missingTermsheet = true;
     }
+    if (healthFilter) {
+      filters.healthMissing = healthFilter;
+    }
     if (searchQuery) {
       filters.search = searchQuery;
     }
@@ -316,6 +357,35 @@ const OrderBook = ({ user }) => {
 
     return filters;
   };
+
+  // Live overlay for the loaded page. orders.list is a one-shot method call, so
+  // a trace attached from the detail modal in another tab, by a colleague, or
+  // by any other client left the "Traces" badge stale until the next reload
+  // (2026-00137 showed 3/4 with four traces on file). Subscribe to just the
+  // visible ids and merge the reactive trace fields over the loaded rows.
+  const liveOrderIdsKey = orders.map(o => o._id).join(',');
+  const liveById = useTracker(() => {
+    const ids = liveOrderIdsKey ? liveOrderIdsKey.split(',') : [];
+    if (ids.length === 0) return {};
+    const sessionId = getSessionId();
+    if (!sessionId) return {};
+    Meteor.subscribe('orders.liveTraces', sessionId, ids);
+    const map = {};
+    OrdersCollection.find(
+      { _id: { $in: ids } },
+      { fields: { emailTraces: 1, clientOrderDeferred: 1 } }
+    ).forEach(doc => { map[doc._id] = doc; });
+    return map;
+  }, [liveOrderIdsKey]);
+  const displayOrders = useMemo(() => orders.map(o => {
+    const live = liveById[o._id];
+    if (!live || !Array.isArray(live.emailTraces)) return o;
+    return {
+      ...o,
+      emailTraces: live.emailTraces,
+      clientOrderDeferred: live.clientOrderDeferred ?? o.clientOrderDeferred
+    };
+  }), [orders, liveById]);
 
   const loadOrders = async () => {
     setIsLoading(true);
@@ -338,9 +408,15 @@ const OrderBook = ({ user }) => {
       // stored under different bank-provided names. When a canonical name has
       // been set in Securities Base it is propagated to `displayName`; prefer it
       // so the whole order book (rows, detail panels, export) reads consistently.
-      const loadedOrders = (result.orders || []).map(order => (
-        order.displayName ? { ...order, securityName: order.displayName } : order
-      ));
+      // For structured products we manage, the Ambervision product title
+      // (orders.list attaches `productTitle` by ISIN) wins over both: the desk
+      // types a short label like "Ph+", the product record has the real name.
+      // The typed label is kept as `orderSecurityName` for the row tooltip.
+      const loadedOrders = (result.orders || []).map(order => {
+        const name = order.productTitle || order.displayName || order.securityName;
+        if (!name || name === order.securityName) return order;
+        return { ...order, securityName: name, orderSecurityName: order.securityName };
+      });
       setOrders(loadedOrders);
       setTotalOrders(result.total || 0);
 
@@ -412,8 +488,7 @@ const OrderBook = ({ user }) => {
 
       const data = exportOrders.map(order => {
         const health = getOrderHealthCheck(order);
-        const traceCount = (order.emailTraces || []).length;
-        const maxTraces = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 4 : 3;
+        const traceCompleteness = getTraceCompleteness(order);
 
         return {
         'Reference': order.orderReference || '',
@@ -431,6 +506,16 @@ const OrderBook = ({ user }) => {
         'Asset': order.assetTypeLabel || '',
         'Currency': order.currency || '',
         'Quantity': order.quantity || '',
+        'Unit': order.quantityUnitLabel || '',
+        'Underlying': order.optionUnderlyingFormatted || '',
+        'Underlying ISIN': order.optionUnderlyingIsin || '',
+        'C/P': order.optionTypeLabel || '',
+        'Strike': order.optionStrikeFormatted || '',
+        'Expiry': order.optionExpiryFormatted || '',
+        'Multiplier': order.optionContractSizeFormatted || '',
+        'Covered': order.coverageCheckFormatted
+          ? (order.coverageCheckFormatted.isCovered ? 'Yes' : 'No')
+          : '',
         'Price Type': order.priceTypeLabel || '',
         'Limit Price': order.limitPrice || '',
         'Stop Loss': order.stopLossPrice || '',
@@ -439,7 +524,7 @@ const OrderBook = ({ user }) => {
         'Broker': order.broker || '',
         'Settl. Ccy': order.settlementCurrency || '',
         'Termsheet': order.termsheetLabel || '',
-        'Traces': `${traceCount}/${maxTraces}`,
+        'Traces': traceCompleteness.label,
         'Health': health.max > 0 ? health.label : '-',
         'Missing': health.missing.join(', '),
         'Validated By': order.validatedByName || '',
@@ -632,74 +717,26 @@ const OrderBook = ({ user }) => {
     }
   };
 
-  // Build .eml file with PDF (and optional termsheet) attached — opens as draft in Outlook
-  const buildEmlFile = (emailData, pdfBase64, pdfFilename, termsheet) => {
-    const boundary = '----=_NextPart_' + Date.now().toString(36);
-    const extraAttachments = [];
-    if (termsheet?.content && termsheet?.name) {
-      extraAttachments.push({
-        name: termsheet.name,
-        content: termsheet.content,
-        contentType: termsheet.contentType || 'application/octet-stream'
-      });
-    }
-    const lines = [
-      `To: ${emailData.to}`,
-      emailData.cc ? `Cc: ${emailData.cc}` : null,
-      `Subject: ${emailData.subject || ''}`,
-      'X-Unsent: 1',
-      'MIME-Version: 1.0',
-      `Content-Type: multipart/mixed; boundary="${boundary}"`,
-      '',
-      `--${boundary}`,
-      'Content-Type: text/plain; charset="utf-8"',
-      'Content-Transfer-Encoding: quoted-printable',
-      '',
-      emailData.body || '',
-      '',
-      `--${boundary}`,
-      `Content-Type: application/pdf; name="${pdfFilename}"`,
-      'Content-Transfer-Encoding: base64',
-      `Content-Disposition: attachment; filename="${pdfFilename}"`,
-      '',
-      ...pdfBase64.match(/.{1,76}/g),
-      ''
-    ];
-    extraAttachments.forEach(att => {
-      lines.push(
-        `--${boundary}`,
-        `Content-Type: ${att.contentType}; name="${att.name}"`,
-        'Content-Transfer-Encoding: base64',
-        `Content-Disposition: attachment; filename="${att.name}"`,
-        '',
-        ...att.content.match(/.{1,76}/g),
-        ''
-      );
-    });
-    lines.push(`--${boundary}--`);
-    return lines.filter(l => l !== null).join('\r\n');
-  };
-
   const handleSendEmail = async (order) => {
     setLoadingEmail(order._id);
     try {
       const sessionId = getSessionId();
 
-      // Get PDF + email data from server, open mailto: for Outlook and download PDF
+      // Get PDF + email data from server
       const result = await Meteor.callAsync('orders.prepareEmail', { orderId: order._id, sessionId });
 
-      // Download .eml with PDF (and termsheet if present) attached — opens as Outlook draft with everything prefilled
+      // Desktop: .eml with PDF (and termsheet if present) attached, opens as a prefilled Outlook draft.
+      // Phone: PDF saved to Files + Outlook compose deep link, since iOS cannot open a .eml as a draft.
       if (result.success && result.pdfData && result.emailData) {
-        const pdfFilename = `${result.orderReference || order.orderReference || 'order'}.pdf`;
-        const emlContent = buildEmlFile(result.emailData, result.pdfData, pdfFilename, result.termsheet);
-        const blob = new Blob([emlContent], { type: 'message/rfc822' });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = `${result.orderReference || order.orderReference || 'order'}.eml`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(link.href);
+        if (!result.emailData.to) {
+          alert(`No desk email is configured at ${result.emailData.bankName || 'this bank'} for ${order.assetTypeLabel || result.emailData.assetType || 'this asset type'} orders. The draft will open with an empty recipient — add the address in Bank Management.`);
+        }
+        deliverOrderEmail({
+          orderReference: result.orderReference || order.orderReference,
+          emailData: result.emailData,
+          pdfData: result.pdfData,
+          termsheet: result.termsheet
+        });
       }
     } catch (err) {
       console.error('Error preparing email:', err);
@@ -1220,6 +1257,31 @@ const OrderBook = ({ user }) => {
     }
   };
 
+  const handleReject = async () => {
+    if (!selectedOrder || !rejectReason.trim()) return;
+
+    setIsActioning(true);
+    setActionError(null);
+
+    try {
+      const sessionId = getSessionId();
+      await Meteor.callAsync('orders.rejectValidation', {
+        orderId: selectedOrder.order._id,
+        reason: rejectReason.trim(),
+        sessionId
+      });
+
+      setRejectModalOpen(false);
+      setRejectReason('');
+      setSelectedOrder(null);
+      loadOrders();
+    } catch (err) {
+      setActionError(err.reason || err.message);
+    } finally {
+      setIsActioning(false);
+    }
+  };
+
   // Styles
   const styles = {
     container: {
@@ -1361,31 +1423,42 @@ const OrderBook = ({ user }) => {
       padding: '3rem',
       color: 'var(--text-secondary)'
     },
+    // Order-detail modal. Rows carry a hairline on TOP (not bottom) so the first
+    // row's line doubles as the separator under the section title and the last
+    // row doesn't leave a stray divider before the next section's eyebrow.
     detailSection: {
-      marginBottom: '20px'
+      marginBottom: '24px'
     },
     detailTitle: {
-      fontSize: '14px',
+      fontSize: '11px',
       fontWeight: '600',
-      color: 'var(--text-primary)',
-      marginBottom: '12px',
-      borderBottom: '1px solid var(--border-color)',
-      paddingBottom: '8px'
+      letterSpacing: '0.06em',
+      textTransform: 'uppercase',
+      color: 'var(--text-muted)',
+      marginBottom: '2px',
+      paddingBottom: '6px'
     },
     detailRow: {
       display: 'flex',
       justifyContent: 'space-between',
-      padding: '8px 0',
-      borderBottom: '1px solid var(--border-color)'
+      alignItems: 'baseline',
+      gap: '16px',
+      padding: '7px 0',
+      borderTop: '1px solid var(--border-color)'
     },
     detailLabel: {
       color: 'var(--text-secondary)',
-      fontSize: '13px'
+      fontSize: '13px',
+      flexShrink: 0,
+      whiteSpace: 'nowrap'
     },
     detailValue: {
       fontWeight: '500',
       color: 'var(--text-primary)',
-      fontSize: '13px'
+      fontSize: '13px',
+      textAlign: 'right',
+      minWidth: 0,
+      overflowWrap: 'anywhere'
     }
   };
 
@@ -1408,16 +1481,16 @@ const OrderBook = ({ user }) => {
    */
   const renderOrderCard = (order) => {
     const statusColor = order.effectiveStatusColor || OrderFormatters.getStatusColor(order.status);
-    const validTraceTypes = new Set(Object.values(EMAIL_TRACE_TYPES));
-    const traces = order.emailTraces || [];
-    const traceCount = traces.filter(t => validTraceTypes.has(t.traceType) && !TERMSHEET_TRACE_TYPES.has(t.traceType)).length;
-    const maxTraces = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 4 : 3;
-    const traceColor = traceCount === maxTraces ? 'var(--gain-color)' : traceCount > 0 ? 'var(--warning-color)' : 'var(--text-muted)';
+    const traceCompleteness = getTraceCompleteness(order);
+    const traceColor = traceCompleteness.color;
+    // Options store the placeholder ISIN 'OPT'; show the contract instead.
     const secondaryId = order.assetType === ASSET_TYPES.FX
       ? (order.fxPairFormatted || 'FX')
       : order.assetType === ASSET_TYPES.TERM_DEPOSIT
         ? (order.depositTenorLabel || 'TD')
-        : order.isin;
+        : order.assetType === ASSET_TYPES.OPTION
+          ? (order.optionContractDescription || 'Option')
+          : order.isin;
 
     return (
       <div
@@ -1476,6 +1549,7 @@ const OrderBook = ({ user }) => {
           <div>
             <span style={{ color: 'var(--text-muted)' }}>Qty </span>
             <span style={{ color: 'var(--text-primary)', fontWeight: '500' }}>{order.quantityFormatted}</span>
+            {order.quantityUnitLabel ? <span style={{ color: 'var(--text-muted)' }}> {order.quantityUnitLabel}</span> : null}
             {order.currency && <span style={{ color: 'var(--text-muted)' }}> {order.currency}</span>}
           </div>
           <div style={{ textAlign: 'right', color: 'var(--text-secondary)' }}>
@@ -1507,7 +1581,7 @@ const OrderBook = ({ user }) => {
             fontSize: '10px', fontWeight: '600', color: traceColor,
             padding: '2px 7px', borderRadius: '10px', background: `color-mix(in srgb, ${traceColor} 15%, transparent)`
           }}>
-            Traces {traceCount}/{maxTraces}
+            Traces {traceCompleteness.label}
           </span>
           {order.tradeMode === 'block' && (
             <span style={{
@@ -1539,6 +1613,7 @@ const OrderBook = ({ user }) => {
 
   return (
     <div style={styles.container}>
+      {orderEmailSheet}
       <LiquidGlassCard>
         <div style={{ padding: '1.5rem' }}>
           {/* Header */}
@@ -1641,14 +1716,10 @@ const OrderBook = ({ user }) => {
               >
                 <option value="all">All Clients</option>
                 {clients
-                  .sort((a, b) => {
-                    const nameA = `${a.profile?.lastName || ''} ${a.profile?.firstName || ''}`.trim().toLowerCase();
-                    const nameB = `${b.profile?.lastName || ''} ${b.profile?.firstName || ''}`.trim().toLowerCase();
-                    return nameA.localeCompare(nameB);
-                  })
+                  .sort((a, b) => (a.displayName || '').toLowerCase().localeCompare((b.displayName || '').toLowerCase()))
                   .map(c => (
                     <option key={c._id} value={c._id}>
-                      {`${c.profile?.firstName || ''} ${c.profile?.lastName || ''}`.trim() || c.username}
+                      {c.displayName}
                     </option>
                   ))
                 }
@@ -1724,8 +1795,12 @@ const OrderBook = ({ user }) => {
           {/* Health Check Summary — desktop only. It is a back-office triage aid: on a
               phone the badges wrap into several rows and push the orders themselves off
               the first screen, and the per-order state is already on each card. */}
-          {!isMobile && !isLoading && orders.length > 0 && (() => {
-            const healthStats = orders.reduce((acc, o) => {
+          {!isMobile && !isLoading && (orders.length > 0 || healthFilter) && (() => {
+            const toggleHealthFilter = (value) => {
+              setHealthFilter(prev => (prev === value ? null : value));
+              setCurrentPage(1);
+            };
+            const healthStats = displayOrders.reduce((acc, o) => {
               const h = getOrderHealthCheck(o);
               if (h.max > 0 && h.score < h.max) {
                 acc.incomplete++;
@@ -1740,9 +1815,18 @@ const OrderBook = ({ user }) => {
               .sort((a, b) => b[1] - a[1])
               .slice(0, 5);
 
-            const isAllGood = healthStats.incomplete === 0;
+            // With a filter on, every row shown is incomplete by construction, so
+            // the bar stays in its warning colour even when the page is empty.
+            const isAllGood = healthStats.incomplete === 0 && !healthFilter;
             const trackable = healthStats.complete + healthStats.incomplete;
             const barColor = isAllGood ? 'var(--gain-color)' : 'var(--warning-color)';
+            const chipStyle = (active) => ({
+              padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600',
+              background: active ? barColor : `color-mix(in srgb, ${barColor} 18%, transparent)`,
+              color: active ? 'white' : barColor,
+              border: `1px solid color-mix(in srgb, ${barColor} ${active ? '100%' : '30%'}, transparent)`,
+              cursor: 'pointer', fontFamily: 'inherit', lineHeight: 'inherit'
+            });
 
             return (
               <div style={{
@@ -1761,21 +1845,48 @@ const OrderBook = ({ user }) => {
                 }}>
                   {healthStats.complete}/{trackable}
                 </span>
-                <span style={{ fontWeight: '600', color: barColor, fontSize: '12px' }}>
-                  {isAllGood
-                    ? 'All orders complete'
-                    : `${healthStats.incomplete} order${healthStats.incomplete !== 1 ? 's' : ''} missing items`
-                  }
-                </span>
-                {topMissing.map(([name, count]) => (
-                  <span key={name} style={{
-                    padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600',
-                    background: `color-mix(in srgb, ${barColor} 18%, transparent)`, color: barColor,
-                    border: `1px solid color-mix(in srgb, ${barColor} 30%, transparent)`
-                  }}>
-                    {name}: {count}
-                  </span>
-                ))}
+                {isAllGood ? (
+                  <span style={{ fontWeight: '600', color: barColor, fontSize: '12px' }}>All orders complete</span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => toggleHealthFilter(HEALTH_FILTER_ANY)}
+                    title={healthFilter === HEALTH_FILTER_ANY ? 'Showing incomplete orders only - click to show all' : 'Show only orders with missing items'}
+                    style={{
+                      ...chipStyle(healthFilter === HEALTH_FILTER_ANY),
+                      fontSize: '12px', padding: '2px 8px',
+                      background: healthFilter === HEALTH_FILTER_ANY ? barColor : 'transparent',
+                      border: healthFilter === HEALTH_FILTER_ANY ? `1px solid ${barColor}` : '1px solid transparent'
+                    }}
+                  >
+                    {healthFilter && healthFilter !== HEALTH_FILTER_ANY && healthStats.incomplete === 0
+                      ? `No orders missing "${healthFilter}"`
+                      : `${healthStats.incomplete} order${healthStats.incomplete !== 1 ? 's' : ''} missing items`}
+                  </button>
+                )}
+                {topMissing.map(([name, count]) => {
+                  const active = healthFilter === name;
+                  return (
+                    <button
+                      key={name}
+                      type="button"
+                      onClick={() => toggleHealthFilter(name)}
+                      title={active ? `Showing orders missing "${name}" - click to show all` : `Show only orders missing "${name}"`}
+                      style={chipStyle(active)}
+                    >
+                      {name}: {count}
+                    </button>
+                  );
+                })}
+                {healthFilter && (
+                  <button
+                    type="button"
+                    onClick={() => { setHealthFilter(null); setCurrentPage(1); }}
+                    style={{ ...chipStyle(false), marginLeft: 'auto', background: 'transparent' }}
+                  >
+                    Clear filter
+                  </button>
+                )}
               </div>
             );
           })()}
@@ -1803,12 +1914,23 @@ const OrderBook = ({ user }) => {
                   </ActionButton>
                 </div>
               )}
+              {healthFilter && (
+                <div style={{ marginTop: '1rem' }}>
+                  <ActionButton
+                    variant="secondary"
+                    size="small"
+                    onClick={() => { setHealthFilter(null); setCurrentPage(1); }}
+                  >
+                    Clear missing-items filter
+                  </ActionButton>
+                </div>
+              )}
             </div>
           ) : (
             <>
               {isMobile ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  {orders.map(renderOrderCard)}
+                  {displayOrders.map(renderOrderCard)}
                 </div>
               ) : (
               <div style={{ overflowX: 'auto' }}>
@@ -1851,7 +1973,7 @@ const OrderBook = ({ user }) => {
                     </tr>
                   </thead>
                   <tbody>
-                    {orders.map((order, idx) => {
+                    {displayOrders.map((order, idx) => {
                       const rowBg = idx % 2 === 0 ? 'var(--bg-primary)' : 'var(--bg-secondary)';
                       return (
                       <tr
@@ -1958,10 +2080,16 @@ const OrderBook = ({ user }) => {
                           </span>
                         </td>
                         <td style={styles.td}>
-                          <div title={order.securityName} style={{ fontWeight: '500', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>{order.securityName}</div>
+                          <div
+                            title={order.orderSecurityName && order.orderSecurityName !== order.securityName
+                              ? `${order.securityName}\nEntered on the order as “${order.orderSecurityName}”`
+                              : order.securityName}
+                            style={{ fontWeight: '500', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}
+                          >{order.securityName}</div>
                           <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
                             {order.assetType === ASSET_TYPES.FX ? (order.fxPairFormatted || 'FX') :
                              order.assetType === ASSET_TYPES.TERM_DEPOSIT ? (order.depositTenorLabel || 'TD') :
+                             order.assetType === ASSET_TYPES.OPTION ? (order.optionContractDescription || 'Option') :
                              order.isin}
                           </div>
                         </td>
@@ -1973,7 +2101,10 @@ const OrderBook = ({ user }) => {
                         <td style={styles.td}>
                           <span style={{ fontSize: '12px' }}>{order.currency || ''}</span>
                         </td>
-                        <td style={styles.td}>{order.quantityFormatted}</td>
+                        <td style={styles.td}>
+                          {order.quantityFormatted}
+                          {order.quantityUnitLabel ? <span style={{ color: 'var(--text-muted)' }}> {order.quantityUnitLabel}</span> : null}
+                        </td>
                         <td style={styles.td} onClick={(e) => e.stopPropagation()}>
                           <InlineExecPriceCell
                             order={order}
@@ -2023,13 +2154,13 @@ const OrderBook = ({ user }) => {
                         </td>
                         <td style={styles.td}>
                           {(() => {
-                            const validTypes = new Set(Object.values(EMAIL_TRACE_TYPES));
                             const traces = order.emailTraces || [];
-                            const traceCount = traces.filter(t => validTypes.has(t.traceType) && !TERMSHEET_TRACE_TYPES.has(t.traceType)).length;
-                            const maxTraces = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 4 : 3;
-                            const color = traceCount === maxTraces ? 'var(--gain-color)' : traceCount > 0 ? 'var(--warning-color)' : 'var(--text-muted)';
+                            const traceCompleteness = getTraceCompleteness(order);
+                            const color = traceCompleteness.color;
                             const hasClientOrderTrace = traces.some(t => t.traceType === EMAIL_TRACE_TYPES.CLIENT_ORDER);
-                            const showDeferred = order.clientOrderDeferred && !hasClientOrderTrace;
+                            // A terminal order (cancelled/rejected) is never waiting on a
+                            // deferred client order — it will never be attached.
+                            const showDeferred = order.clientOrderDeferred && !hasClientOrderTrace && !traceCompleteness.isTerminal;
                             return (
                               <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                                 <span style={{
@@ -2040,7 +2171,7 @@ const OrderBook = ({ user }) => {
                                   borderRadius: '10px',
                                   background: `color-mix(in srgb, ${color} 15%, transparent)`
                                 }}>
-                                  {traceCount}/{maxTraces}
+                                  {traceCompleteness.label}
                                 </span>
                                 {showDeferred && (
                                   <span
@@ -2175,6 +2306,19 @@ const OrderBook = ({ user }) => {
                     </ActionButton>
                   );
                 })()}
+                {selectedOrder.order.status === ORDER_STATUSES.PENDING && (
+                  <ActionButton
+                    variant="danger"
+                    size={detailBtnSize}
+                    onClick={() => {
+                      setDetailModalOpen(false);
+                      setRejectReason('');
+                      setRejectModalOpen(true);
+                    }}
+                  >
+                    Reject
+                  </ActionButton>
+                )}
                 {(selectedOrder.order.status === ORDER_STATUSES.PENDING || selectedOrder.order.status === ORDER_STATUSES.PENDING_VALIDATION) && (
                   <ActionButton
                     variant="danger"
@@ -2197,11 +2341,11 @@ const OrderBook = ({ user }) => {
       >
         {selectedOrder && (
           <div>
-            <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px' }}>
               <span style={styles.orderTypeBadge(selectedOrder.order.orderType)}>
                 {selectedOrder.order.orderType?.toUpperCase()}
               </span>
-              <span style={{ ...styles.statusBadge(selectedOrder.order.status), marginLeft: '8px' }}>
+              <span style={styles.statusBadge(selectedOrder.order.status)}>
                 {selectedOrder.order.statusLabel}
               </span>
             </div>
@@ -2230,6 +2374,31 @@ const OrderBook = ({ user }) => {
                   <span style={styles.detailValue}>{selectedOrder.order.broker}</span>
                 </div>
               )}
+              {(() => {
+                const coords = getIssuerCoordinates(selectedOrder.order);
+                if (!coords) return null;
+                const hasContact = coords.name || coords.email || coords.phone;
+                return (
+                  <div style={styles.detailRow}>
+                    <span style={styles.detailLabel}>Issuer Contact</span>
+                    <span style={{ ...styles.detailValue, textAlign: 'right' }}>
+                      {hasContact ? (
+                        <>
+                          {coords.name && <div>{coords.name}</div>}
+                          {coords.email && (
+                            <div><a href={`mailto:${coords.email}`} style={{ color: 'var(--accent-color)', textDecoration: 'none' }}>{coords.email}</a></div>
+                          )}
+                          {coords.phone && (
+                            <div><a href={`tel:${coords.phone.replace(/\s/g, '')}`} style={{ color: 'var(--accent-color)', textDecoration: 'none' }}>{coords.phone}</a></div>
+                          )}
+                        </>
+                      ) : (
+                        <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontWeight: '400' }}>None on file</span>
+                      )}
+                    </span>
+                  </div>
+                );
+              })()}
               {selectedOrder.order.underlyings && (
                 <div style={styles.detailRow}>
                   <span style={styles.detailLabel}>Underlyings</span>
@@ -2326,6 +2495,98 @@ const OrderBook = ({ user }) => {
                   )}
                 </>
               )}
+              {/* Listed option contract. Each row is driven by its own field, not
+                  by assetType: reclassifyByIsin can retype an order 'option'
+                  with no contract details behind it. */}
+              {selectedOrder.order.assetType === ASSET_TYPES.OPTION && (
+                <>
+                  {selectedOrder.order.optionUnderlyingFormatted && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Underlying</span>
+                      <span style={styles.detailValue}>
+                        {selectedOrder.order.optionUnderlyingFormatted}
+                        {selectedOrder.order.optionUnderlyingIsin ? ` (${selectedOrder.order.optionUnderlyingIsin})` : ''}
+                      </span>
+                    </div>
+                  )}
+                  {selectedOrder.order.optionTypeLabel && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Call / Put</span>
+                      <span style={styles.detailValue}>{selectedOrder.order.optionTypeLabel}</span>
+                    </div>
+                  )}
+                  {selectedOrder.order.optionStrikeFormatted && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Strike</span>
+                      <span style={styles.detailValue}>{selectedOrder.order.optionStrikeFormatted}</span>
+                    </div>
+                  )}
+                  {selectedOrder.order.optionExpiryFormatted && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Expiry</span>
+                      <span style={styles.detailValue}>{selectedOrder.order.optionExpiryFormatted}</span>
+                    </div>
+                  )}
+                  {selectedOrder.order.optionContractSizeFormatted && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Contract Size</span>
+                      <span style={styles.detailValue}>
+                        {selectedOrder.order.optionContractSizeFormatted} shares
+                        {selectedOrder.order.optionShareEquivalentFormatted
+                          ? ` (${selectedOrder.order.optionShareEquivalentFormatted} in total)`
+                          : ''}
+                      </span>
+                    </div>
+                  )}
+                  {selectedOrder.order.optionExchangeFormatted && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Exchange</span>
+                      <span style={styles.detailValue}>{selectedOrder.order.optionExchangeFormatted}</span>
+                    </div>
+                  )}
+                  {selectedOrder.order.optionContractSymbol && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Contract Symbol</span>
+                      <span style={{ ...styles.detailValue, fontFamily: 'monospace' }}>{selectedOrder.order.optionContractSymbol}</span>
+                    </div>
+                  )}
+                  {selectedOrder.order.optionQuoteAtEntryFormatted && (
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Reference Premium</span>
+                      <span style={styles.detailValue}>
+                        {selectedOrder.order.optionQuoteAtEntryFormatted.bidAskFormatted || selectedOrder.order.optionQuoteAtEntryFormatted.last || '—'}
+                        {selectedOrder.order.optionQuoteAtEntryFormatted.impliedVolatilityFormatted ? ` · IV ${selectedOrder.order.optionQuoteAtEntryFormatted.impliedVolatilityFormatted}` : ''}
+                        {selectedOrder.order.optionQuoteAtEntryFormatted.updatedAt ? ` · EOD ${selectedOrder.order.optionQuoteAtEntryFormatted.updatedAt}` : ''}
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
+              {/* Cover as it stood when the order was entered. This is the audit
+                  record, not a live number - the validator's blotter recomputes. */}
+              {selectedOrder.order.coverageCheckFormatted && (
+                <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Cover at entry</span>
+                  <span style={{
+                    ...styles.detailValue,
+                    fontWeight: '600',
+                    color: selectedOrder.order.coverageCheckFormatted.isCovered ? 'var(--gain-color)' : 'var(--warning-color)'
+                  }}>
+                    {selectedOrder.order.coverageCheckFormatted.isCovered
+                      ? `Covered — ${selectedOrder.order.coverageCheckFormatted.heldSharesFormatted} held`
+                      : `Uncovered — short by ${selectedOrder.order.coverageCheckFormatted.shortfallSharesFormatted}`}
+                    {selectedOrder.order.coverageCheckFormatted.holdingsAsOfFormatted
+                      ? ` (positions as of ${selectedOrder.order.coverageCheckFormatted.holdingsAsOfFormatted})`
+                      : ''}
+                  </span>
+                </div>
+              )}
+              {selectedOrder.order.coverageCheckFormatted?.justification && (
+                <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Reason given</span>
+                  <span style={styles.detailValue}>{selectedOrder.order.coverageCheckFormatted.justification}</span>
+                </div>
+              )}
               {selectedOrder.order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT && selectedOrder.order.orderType === 'buy' && (
                 <div style={styles.detailRow}>
                   <span style={styles.detailLabel}>Termsheet</span>
@@ -2388,8 +2649,25 @@ const OrderBook = ({ user }) => {
             <div style={styles.detailSection}>
               <div style={styles.detailTitle}>Order Details</div>
               <div style={styles.detailRow}>
-                <span style={styles.detailLabel}>Quantity</span>
-                <span style={styles.detailValue}>{selectedOrder.order.quantityFormatted}</span>
+                <span style={styles.detailLabel}>
+                  {selectedOrder.order.quantityUnitLabel === 'contracts' ? 'Contracts' : 'Quantity'}
+                </span>
+                <span style={styles.detailValue}>
+                  {selectedOrder.order.quantityFormatted}
+                  {selectedOrder.order.optionShareEquivalentFormatted
+                    ? ` (${selectedOrder.order.optionShareEquivalentFormatted} shares)`
+                    : ''}
+                </span>
+              </div>
+              <div style={styles.detailRow}>
+                <span style={styles.detailLabel}>Execution</span>
+                <span style={{
+                  ...styles.detailValue,
+                  fontWeight: selectedOrder.order.executionType === EXECUTION_TYPES.PRE_EXECUTED ? '700' : undefined,
+                  color: selectedOrder.order.executionType === EXECUTION_TYPES.PRE_EXECUTED ? 'var(--warning-color)' : undefined
+                }}>
+                  {EXECUTION_TYPE_LABELS[selectedOrder.order.executionType] || EXECUTION_TYPE_LABELS[EXECUTION_TYPES.TO_EXECUTE]}
+                </span>
               </div>
               <div style={styles.detailRow}>
                 <span style={styles.detailLabel}>Price Type</span>
@@ -2495,7 +2773,7 @@ const OrderBook = ({ user }) => {
               </div>
             )}
             {selectedOrder.order.canForceSettle && (
-              <div style={{ marginBottom: '16px' }}>
+              <div style={{ marginTop: '-8px', marginBottom: '24px' }}>
                 <button
                   onClick={() => setForceSettleOrder({ _id: selectedOrder.order._id, orderReference: selectedOrder.order.orderReference, securityName: selectedOrder.order.securityName })}
                   style={{ padding: '8px 16px', background: 'rgba(99, 102, 241, 0.1)', border: '1px solid rgba(99, 102, 241, 0.3)', borderRadius: '6px', color: '#6366f1', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
@@ -2623,7 +2901,7 @@ const OrderBook = ({ user }) => {
                   return (
                     <div style={styles.detailSection}>
                       <div style={styles.detailTitle}>PMS Booking</div>
-                      <div style={{ padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '13px', color: 'var(--text-muted)', textAlign: 'center' }}>
+                      <div style={{ padding: '12px', background: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: '6px', fontSize: '13px', color: 'var(--text-muted)', textAlign: 'center' }}>
                         No matching operation found in PMS
                       </div>
                     </div>
@@ -2724,15 +3002,17 @@ const OrderBook = ({ user }) => {
               );
             })()}
 
-            {/* Traces Section — a rejected order never proceeds, so we don't ask for
-                any evidence. We still surface traces captured before rejection (read-only),
-                but hide the section entirely when there are none. */}
+            {/* Traces Section — a terminal order (rejected / cancelled) never proceeds,
+                so we don't ask for any evidence: an incomplete trace set is the normal
+                end state (the trade is typically re-entered on a fresh order). We still
+                surface traces captured before it died (read-only), but hide the section
+                entirely when there are none. */}
             {(() => {
             // Trace management (drag & drop uploads, phone logs) is desktop-only.
             if (isMobile) return null;
-            const isRejected = selectedOrder.order.status === ORDER_STATUSES.REJECTED;
+            const isTerminal = isTerminalOrderStatus(selectedOrder.order.status);
             const existingTraces = selectedOrder.order.emailTraces || [];
-            if (isRejected && existingTraces.length === 0) return null;
+            if (isTerminal && existingTraces.length === 0) return null;
             return (
             <div style={styles.detailSection}>
               <div style={styles.detailTitle}>Traces</div>
@@ -2745,9 +3025,9 @@ const OrderBook = ({ user }) => {
                     // Legacy split tiles — replaced by the unified TERMSHEET tile.
                     if (traceType === EMAIL_TRACE_TYPES.TERMSHEET_SENT) return false;
                     if (traceType === EMAIL_TRACE_TYPES.TERMSHEET_SIGNED) return false;
-                    // Rejected orders: only show tiles for traces already captured — never
+                    // Terminal orders: only show tiles for traces already captured — never
                     // render an empty dropzone prompting for evidence on a dead order.
-                    if (isRejected) return existingTraces.some(t => t.traceType === traceType);
+                    if (isTerminal) return existingTraces.some(t => t.traceType === traceType);
                     // Termsheet tiles only apply to buy structured products.
                     if (TERMSHEET_TRACE_TYPES.has(traceType)) return needsTermsheet;
                     if (traceType === EMAIL_TRACE_TYPES.ORDER_TO_ISSUER) return isStructuredProduct;
@@ -3296,6 +3576,76 @@ const OrderBook = ({ user }) => {
           <p style={{ fontSize: '12px', color: 'var(--danger-color)' }}>
             This action cannot be undone.
           </p>
+        </div>
+        {actionError && (
+          <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: 'var(--loss-color)', fontSize: '13px' }}>
+            {actionError}
+          </div>
+        )}
+      </Modal>
+
+      {/* Reject Order Modal — undoes a validated order before it's transmitted to the bank.
+          Distinct from Delete: this is audited (orders.rejectValidation) and requires a reason,
+          so the mistake is on record and the creator has to re-enter a fresh order rather than
+          having this one silently patched or wiped. */}
+      <Modal
+        isOpen={rejectModalOpen}
+        onClose={() => {
+          setRejectModalOpen(false);
+          setActionError(null);
+        }}
+        title="Reject Order"
+        size="small"
+        footer={
+          <>
+            <ActionButton
+              variant="secondary"
+              onClick={() => setRejectModalOpen(false)}
+              disabled={isActioning}
+            >
+              Cancel
+            </ActionButton>
+            <ActionButton
+              variant="danger"
+              onClick={handleReject}
+              loading={isActioning}
+              disabled={!rejectReason.trim()}
+            >
+              Reject Order
+            </ActionButton>
+          </>
+        }
+      >
+        <div style={{ padding: '0.5rem 0' }}>
+          <p style={{ marginBottom: '16px', color: 'var(--text-secondary)' }}>
+            This order was already validated. Rejecting it now moves it to Rejected — it will not
+            be sent to the bank. The creator will need to re-enter a new order; a reason is
+            required for the audit trail.
+          </p>
+          {selectedOrder && (
+            <div style={{ padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', marginBottom: '16px' }}>
+              <div style={{ fontWeight: '600', fontFamily: 'monospace' }}>{selectedOrder.order.orderReference}</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                {selectedOrder.order.orderType?.toUpperCase()} - {selectedOrder.order.securityName}
+              </div>
+            </div>
+          )}
+          <textarea
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            placeholder="Enter rejection reason..."
+            rows={3}
+            style={{
+              width: '100%',
+              padding: '8px',
+              borderRadius: '6px',
+              border: '1px solid var(--border-color)',
+              background: 'var(--bg-primary)',
+              color: 'var(--text-primary)',
+              fontSize: '13px',
+              resize: 'vertical'
+            }}
+          />
         </div>
         {actionError && (
           <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: 'var(--loss-color)', fontSize: '13px' }}>

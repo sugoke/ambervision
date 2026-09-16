@@ -158,6 +158,48 @@ Meteor.publish('orders.single', async function(sessionId, orderId) {
 });
 
 /**
+ * Live trace / status fields for a set of order ids already on screen.
+ *
+ * The order book loads its page through the orders.list METHOD (one-shot), so
+ * a trace attached from the detail modal in another tab, by a colleague, or by
+ * any other client left the "Traces" badge stale until the page was reloaded
+ * (2026-00137 showed 3/4 with four traces on file). Subscribing to just the
+ * visible ids keeps those badges reactive without publishing whole orders.
+ */
+Meteor.publish('orders.liveTraces', async function(sessionId, orderIds) {
+  check(sessionId, Match.Maybe(String));
+  check(orderIds, [String]);
+
+  const user = await validateSessionAndGetUser(sessionId);
+  if (!user) {
+    return this.ready();
+  }
+
+  const ids = [...new Set(orderIds)].slice(0, 500);
+  if (ids.length === 0) {
+    return this.ready();
+  }
+
+  const query = { _id: { $in: ids } };
+  if (user.role === USER_ROLES.CLIENT) {
+    // Clients only ever see their own orders
+    query.clientId = user._id;
+  }
+
+  const pub = this;
+  const cursor = OrdersCollection.find(query, {
+    fields: { emailTraces: 1, status: 1, termsheetStatus: 1, clientOrderDeferred: 1, updatedAt: 1 }
+  });
+  const handle = cursor.observeChanges({
+    added(id, fields) { pub.added('orders', id, fields); },
+    changed(id, fields) { pub.changed('orders', id, fields); },
+    removed(id) { pub.removed('orders', id); }
+  });
+  this.ready();
+  this.onStop(() => handle.stop());
+});
+
+/**
  * Pending orders count publication (for dashboard badge)
  */
 Meteor.publish('orders.pendingCount', async function(sessionId) {
@@ -220,8 +262,9 @@ Meteor.publish('orders.bulkGroup', async function(sessionId, bulkOrderGroupId) {
     return this.ready();
   }
 
-  // Only RMs, Assistants, and Admins can view bulk groups
-  if (!['rm', 'assistant', 'admin', 'superadmin'].includes(user.role)) {
+  // Staff who can create or validate orders see the whole bulk group. Compliance
+  // validates in the four-eyes blotter, so it needs the group too.
+  if (!['rm', 'assistant', 'admin', 'superadmin', 'compliance', 'staff'].includes(user.role)) {
     return this.ready();
   }
 

@@ -433,7 +433,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
         <div style={{...styles.section, pageBreakBefore: 'always'}}>
           <h2 style={styles.sectionTitle}>
             📊 {tr.performanceOverview}
-            {orionParams.lowerBarrier && (
+            {orionParams.hasLowerBarrier && (
               <span style={{
                 fontSize: '0.75rem',
                 background: 'linear-gradient(135deg, #1e3a5f 0%, #3b5998 100%)',
@@ -443,7 +443,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
                 fontWeight: 500,
                 marginLeft: '0.75rem'
               }}>
-                {tr.protectionAt} {orionParams.lowerBarrier}%
+                {tr.protectionAt} {orionParams.lowerBarrierFormatted}
               </span>
             )}
           </h2>
@@ -461,9 +461,14 @@ const OrionReportPDF = ({ productId: propProductId }) => {
             }}>
               {underlyings.map((underlying, index) => {
                 const performance = underlying.performance || 0;
-                const protectionBarrierLevel = orionParams.lowerBarrier || 70;
-                const protectionBarrierPerformance = protectionBarrierLevel - 100;
-                const minScale = Math.min(-50, protectionBarrierPerformance - 10);
+                // No barrier => no barrier marker, and the scale is driven by the
+                // performances alone rather than by an invented level.
+                const protectionBarrierPerformance = orionParams.hasLowerBarrier
+                  ? orionParams.lowerBarrier - 100
+                  : null;
+                const minScale = protectionBarrierPerformance != null
+                  ? Math.min(-50, protectionBarrierPerformance - 10)
+                  : -50;
                 const maxPerformance = Math.max(...underlyings.map(u => u.performance || 0));
                 const maxScale = Math.max(100, maxPerformance + 10);
                 const totalRange = maxScale - minScale;
@@ -520,7 +525,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
                         zIndex: 1
                       }} />
 
-                      {orionParams.lowerBarrier && (
+                      {orionParams.hasLowerBarrier && (
                         <div style={{
                           position: 'absolute',
                           left: `${(protectionBarrierPerformance - minScale) / totalRange * 100}%`,
@@ -655,14 +660,14 @@ const OrionReportPDF = ({ productId: propProductId }) => {
                 }} />
                 <span>{tr.negativePerformance}</span>
               </div>
-              {orionParams.lowerBarrier && (
+              {orionParams.hasLowerBarrier && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                   <div style={{
                     width: '3px',
                     height: '14px',
                     background: '#1d4ed8'
                   }} />
-                  <span>{tr.protectionBarrier} ({orionParams.lowerBarrier}%)</span>
+                  <span>{tr.protectionBarrier} ({orionParams.lowerBarrierFormatted})</span>
                 </div>
               )}
             </div>
@@ -703,20 +708,23 @@ const OrionReportPDF = ({ productId: propProductId }) => {
             </tr>
             <tr>
               <td style={styles.td}>{tr.lowerBarrierProtection}</td>
-              <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>{orionParams.lowerBarrier || '-'}%</td>
+              <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>{orionParams.lowerBarrierFormatted || '-'}</td>
               <td style={{...styles.td, textAlign: 'center', fontSize: '0.8rem', color: '#64748b'}}>
                 {tr.capitalProtectionLevelDesc}
               </td>
               <td style={{...styles.td, textAlign: 'center'}}>
-                <span style={{
-                  background: indicativeValue.protectionIntact ? '#d1fae5' : '#fee2e2',
-                  color: indicativeValue.protectionIntact ? '#047857' : '#b91c1c',
-                  padding: '2px 8px',
-                  borderRadius: '4px',
-                  fontSize: '0.75rem'
-                }}>
-                  {indicativeValue.protectionIntact ? tr.protectedStatus : tr.breached}
-                </span>
+                {/* No barrier on this product: nothing is protected or breached. */}
+                {orionParams.hasLowerBarrier ? (
+                  <span style={{
+                    background: indicativeValue.protectionIntact ? '#d1fae5' : '#fee2e2',
+                    color: indicativeValue.protectionIntact ? '#047857' : '#b91c1c',
+                    padding: '2px 8px',
+                    borderRadius: '4px',
+                    fontSize: '0.75rem'
+                  }}>
+                    {indicativeValue.protectionIntact ? tr.protectedStatus : tr.breached}
+                  </span>
+                ) : '-'}
               </td>
             </tr>
             <tr>
@@ -814,7 +822,7 @@ const OrionReportPDF = ({ productId: propProductId }) => {
             </tr>
             <tr>
               <td style={styles.td}>{tr.lowerBarrierProtection}</td>
-              <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>{orionParams.lowerBarrier || '-'}%</td>
+              <td style={{...styles.td, textAlign: 'right', fontWeight: 600}}>{orionParams.lowerBarrierFormatted || '-'}</td>
             </tr>
             <tr>
               <td style={styles.td}>{tr.observationFrequency}</td>

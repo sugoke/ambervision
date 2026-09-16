@@ -137,9 +137,11 @@ const AlertsCard = ({ alerts, onAlertClick }) => {
       display: 'flex',
       flexDirection: 'column',
       gap: '8px',
+      // Fill whatever height the card gets from the grid row — a fixed maxHeight
+      // left the card mostly empty while forcing a scrollbar after 3 alerts.
       flex: 1,
-      overflow: 'auto',
-      maxHeight: '200px'
+      minHeight: 0,
+      overflow: 'auto'
     },
     alertItem: (severity) => {
       const s = getSeverityStyles(severity);

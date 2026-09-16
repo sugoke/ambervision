@@ -1,10 +1,15 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
-import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, OrderFormatters, OrderHelpers } from '/imports/api/orders';
+import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, OrderFormatters, OrderHelpers, EXECUTION_TYPES, EXECUTION_TYPE_LABELS, TERMSHEET_TRACE_TYPES } from '/imports/api/orders';
 import { UsersCollection } from '/imports/api/users';
 import { BanksCollection } from '/imports/api/banks';
+import { IssuersCollection } from '/imports/api/issuers';
 import { useIsMobile } from '../hooks/useIsMobile.js';
+import { useProductTitles, withProductTitle } from '../hooks/useProductTitles.js';
+import { useOrderEmailDelivery } from '../hooks/useOrderEmailDelivery.js';
+import TracePreview from './TracePreview.jsx';
+import BulkValidationPanel from './BulkValidationPanel.jsx';
 
 /**
  * ValidationBlotter - Displays orders pending four-eyes validation
@@ -14,6 +19,8 @@ import { useIsMobile } from '../hooks/useIsMobile.js';
  */
 const ValidationBlotter = ({ user, onOrderUpdate }) => {
   const isMobile = useIsMobile();
+  // Desktop gets the .eml draft; phones save the PDF and open a prefilled Outlook draft (see the hook).
+  const { deliverOrderEmail, orderEmailSheet } = useOrderEmailDelivery();
 
   /**
    * Sizing for the Validate / Reject / Request Modification buttons. On mobile they
@@ -31,6 +38,8 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
   const [deleteModalOrder, setDeleteModalOrder] = useState(null);
   const [isActioning, setIsActioning] = useState(null);
   const [reviewOrder, setReviewOrder] = useState(null);
+  // A bulk under review: { groupId, lockedByOther }. Exclusive with reviewOrder.
+  const [reviewGroup, setReviewGroup] = useState(null);
   // Inline-edit state for a sent-back order being revised by its creator
   const [editIsin, setEditIsin] = useState('');
   const [editSecurityName, setEditSecurityName] = useState('');
@@ -54,6 +63,15 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
   const [editFxForwardDate, setEditFxForwardDate] = useState('');
   const [editDepositTenor, setEditDepositTenor] = useState('');
   const [editDepositMaturityDate, setEditDepositMaturityDate] = useState('');
+  const [editOptionType, setEditOptionType] = useState('');
+  const [editOptionStrike, setEditOptionStrike] = useState('');
+  const [editOptionExpiry, setEditOptionExpiry] = useState('');
+  const [editOptionContractSize, setEditOptionContractSize] = useState('');
+  // Cover recomputed against today's positions, next to the snapshot the order
+  // carries. Bank files land between entry and validation and can flip the
+  // answer, but the snapshot must stay as the record of what the desk was told.
+  const [liveCoverage, setLiveCoverage] = useState(null);
+  const [liveCoverageState, setLiveCoverageState] = useState('idle');
   const [editError, setEditError] = useState(null);
   // Validator attestation: required when no CLIENT_ORDER trace is attached at review time
   const [emailCompared, setEmailCompared] = useState(false);
@@ -64,6 +82,9 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
   // the review order opens so the inline img/iframe previews can render.
   const [signedTraceUrls, setSignedTraceUrls] = useState({});
   const [selectedTraceType, setSelectedTraceType] = useState(null);
+  // Term-sheet traces (PDF) are collapsed by default so the client email stays
+  // the first thing a validator sees; keyed by trace _id.
+  const [expandedTermsheets, setExpandedTermsheets] = useState({});
   const [aiCheckResult, setAiCheckResult] = useState(null); // { loading, result, error }
   const [aiCheckOrderId, setAiCheckOrderId] = useState(null);
   // Ticks every 30s purely to re-render so review locks past their 5-minute TTL
@@ -100,8 +121,13 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
     }
 
     const handle = Meteor.subscribe('orders', sessionId, {
-      status: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING_MODIFICATION, ORDER_STATUSES.REVISION_REQUESTED]
+      status: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING_MODIFICATION, ORDER_STATUSES.REVISION_REQUESTED],
+      // The publication defaults to 100; a large bulk must never be cut in half.
+      limit: 500
     });
+    // Issuer records back the contact fallback for orders created before the
+    // coordinates were snapshotted onto the order itself.
+    Meteor.subscribe('issuers');
 
     if (!handle.ready()) {
       return { displayOrders: [], isLoading: true };
@@ -129,12 +155,73 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
         createdByName: creator
           ? `${creator.profile?.firstName || ''} ${creator.profile?.lastName || ''}`.trim() || creator.email
           : order.createdByName || 'Unknown',
-        bankName: bank?.name || order.bankName || ''
+        bankName: bank?.name || order.bankName || '',
+        // Issuer coordinates: the snapshot taken at order creation wins, the live
+        // issuer record is the fallback for orders placed before snapshots existed.
+        issuerCoordinates: (() => {
+          const snap = order.issuerContact;
+          if (snap && (snap.name || snap.email || snap.phone)) {
+            return {
+              issuerName: order.issuerName || order.broker || '',
+              name: snap.name || null,
+              email: snap.email || null,
+              phone: snap.phone || null
+            };
+          }
+          if (!order.issuerId) return null;
+          const iss = IssuersCollection.findOne(order.issuerId);
+          if (!iss) return null;
+          return {
+            issuerName: iss.name || '',
+            name: iss.contactName || null,
+            email: iss.contactEmail || null,
+            phone: iss.contactPhone || null
+          };
+        })()
       };
     });
 
     return { displayOrders: enriched, isLoading: false };
   }, [isStaff, sessionId]);
+
+  // Bulk orders pending validation are reviewed as one block. Only members still
+  // awaiting validation are grouped: a member sent back for revision or carrying
+  // a modification needs the single-order panel's tools, and a lone remaining
+  // member simply uses the ordinary flow.
+  // Ambervision product names for the ISINs on screen: a managed structured
+  // product shows its real title instead of the short label typed on the order.
+  const productTitles = useProductTitles(displayOrders.map(o => o.isin));
+  const titledOrders = useMemo(
+    () => displayOrders.map(o => withProductTitle(o, productTitles)),
+    [displayOrders, productTitles]
+  );
+
+  const { bulkGroups, singleOrders } = useMemo(() => {
+    const byGroup = new Map();
+    for (const order of titledOrders) {
+      if (order.bulkOrderGroupId && order.status === ORDER_STATUSES.PENDING_VALIDATION) {
+        if (!byGroup.has(order.bulkOrderGroupId)) byGroup.set(order.bulkOrderGroupId, []);
+        byGroup.get(order.bulkOrderGroupId).push(order);
+      }
+    }
+    const groups = [];
+    const groupedIds = new Set();
+    for (const [groupId, members] of byGroup) {
+      if (members.length < 2) continue;
+      members.forEach(m => groupedIds.add(m._id));
+      const first = members[0];
+      groups.push({
+        groupId,
+        members,
+        first,
+        totalQuantity: members.reduce((sum, m) => sum + (Number(m.quantity) || 0), 0),
+        tracesOnFile: members.filter(m => (m.emailTraces || []).some(t => t.traceType === EMAIL_TRACE_TYPES.CLIENT_ORDER)).length,
+        createdAt: members.reduce((latest, m) => (m.createdAt > latest ? m.createdAt : latest), first.createdAt)
+      });
+    }
+    groups.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    return { bulkGroups: groups, singleOrders: titledOrders.filter(o => !groupedIds.has(o._id)) };
+  }, [titledOrders]);
 
   // Auto-run AI check when review modal opens with email traces
   useEffect(() => {
@@ -203,6 +290,42 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
     }
   };
 
+  // Open a whole bulk for review. Claims every pending member in one call; the
+  // creator gets a read-only view without touching any lock.
+  const openGroupReview = async (group) => {
+    let lockedByOther = [];
+    if (group.first.createdBy !== user?._id) {
+      try {
+        const sessionId = getSessionId();
+        const result = await Meteor.callAsync('orders.claimBulkForReview', { bulkOrderGroupId: group.groupId, sessionId });
+        lockedByOther = result?.lockedByOther || [];
+        if ((result?.claimed || []).length === 0 && lockedByOther.length > 0) {
+          const who = [...new Set(lockedByOther.map(l => l.reviewingByName))].join(', ');
+          alert(`This block is currently being reviewed by ${who}. Please wait until they finish or the 5-minute lock expires.`);
+          return;
+        }
+      } catch (err) {
+        alert(err.reason || err.message || 'Could not open this block for review.');
+        return;
+      }
+    }
+    setReviewOrder(null);
+    setReviewGroup({ groupId: group.groupId, lockedByOther });
+  };
+
+  const closeGroupReview = async () => {
+    const current = reviewGroup;
+    setReviewGroup(null);
+    if (current?.groupId) {
+      try {
+        const sessionId = getSessionId();
+        await Meteor.callAsync('orders.releaseBulkReview', { bulkOrderGroupId: current.groupId, sessionId });
+      } catch (err) {
+        console.warn('[ValidationBlotter] releaseBulkReview failed:', err);
+      }
+    }
+  };
+
   // Closed-tab / navigation case is handled by the 5-min server-side TTL —
   // no explicit unmount-cleanup needed (and a useEffect-on-unmount captures
   // the wrong reviewOrder via stale closure anyway).
@@ -247,7 +370,48 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
     setEditFxForwardDate(toDateInputValue(reviewOrder.fxForwardDate));
     setEditDepositTenor(reviewOrder.depositTenor || '');
     setEditDepositMaturityDate(toDateInputValue(reviewOrder.depositMaturityDate));
+    setEditOptionType(reviewOrder.optionType || '');
+    setEditOptionStrike(reviewOrder.optionStrike?.toString() || '');
+    setEditOptionExpiry(toDateInputValue(reviewOrder.optionExpiry));
+    setEditOptionContractSize(reviewOrder.optionContractSize?.toString() || '');
   }, [reviewOrder?._id, isRevising]);
+
+  // Recompute the cover for a short call as the review pane opens. Excluding
+  // this order from the netting stops it counting its own contracts twice.
+  useEffect(() => {
+    setLiveCoverage(null);
+    const o = reviewOrder;
+    const isShortCall = o?.assetType === ASSET_TYPES.OPTION
+      && o.optionType === 'call' && o.orderType === 'sell';
+    if (!isShortCall || !o.optionUnderlyingIsin || !o.clientId || !o.bankAccountId) {
+      setLiveCoverageState('idle');
+      return;
+    }
+    let cancelled = false;
+    setLiveCoverageState('loading');
+    (async () => {
+      try {
+        const result = await Meteor.callAsync('orders.checkShortCallCoverage', {
+          clientId: o.clientId,
+          bankAccountId: o.bankAccountId,
+          underlyingIsin: o.optionUnderlyingIsin,
+          underlyingName: o.optionUnderlyingName || undefined,
+          contracts: o.quantity,
+          contractSize: o.optionContractSize || undefined,
+          excludeOrderId: o._id,
+          sessionId: getSessionId()
+        });
+        if (cancelled) return;
+        setLiveCoverage(result);
+        setLiveCoverageState(result ? 'done' : 'unavailable');
+      } catch (err) {
+        if (cancelled) return;
+        console.error('[ValidationBlotter] coverage recheck failed:', err);
+        setLiveCoverageState('unavailable');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [reviewOrder?._id]);
 
   // Debounced security search — same securities.search backend the new-order modal uses
   useEffect(() => {
@@ -292,11 +456,17 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
     setSecSearchResults([]);
   };
 
-  // Mint signed URLs for this order's trace files when the review order opens.
+  // Mint signed URLs for this order's trace files when the review order opens,
+  // then keep them fresh. The download tokens expire after 5 minutes; a review
+  // routinely takes longer than that, and a link minted at open time then
+  // clicked mid-review came back "Unauthorized". Re-minting every 4 minutes (and
+  // whenever the tab regains focus) keeps every link live for as long as the
+  // order is open.
   useEffect(() => {
-    if (!reviewOrder) { setSignedTraceUrls({}); return; }
+    if (!reviewOrder) { setSignedTraceUrls({}); setExpandedTermsheets({}); return; }
     let cancelled = false;
-    (async () => {
+
+    const mint = async () => {
       try {
         const sessionId = getSessionId();
         const urls = await Meteor.callAsync('orders.getEmailTraceSignedUrls', {
@@ -307,8 +477,17 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
         console.error('Error minting trace URLs:', err);
         if (!cancelled) setSignedTraceUrls({});
       }
-    })();
-    return () => { cancelled = true; };
+    };
+
+    mint();
+    const refresh = setInterval(mint, 4 * 60 * 1000);
+    window.addEventListener('focus', mint);
+
+    return () => {
+      cancelled = true;
+      clearInterval(refresh);
+      window.removeEventListener('focus', mint);
+    };
   }, [reviewOrder?._id]);
 
   // Auto-parse .eml traces when review order is opened
@@ -356,61 +535,6 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
     }
   }, [reviewOrder?._id, reviewOrder?.emailTraces?.length, reviewOrder?.pendingModification?.instructionFile?.fileName]);
 
-  // Build a .eml file (RFC 2822 MIME) with the PDF (and optional termsheet) attached
-  const buildEmlFile = (emailData, pdfBase64, pdfFilename, termsheet) => {
-    const boundary = '----=_NextPart_' + Date.now().toString(36);
-    const to = emailData.to;
-    const cc = emailData.cc || '';
-    const subject = emailData.subject || '';
-    const body = emailData.body || '';
-    const extraAttachments = [];
-    if (termsheet?.content && termsheet?.name) {
-      extraAttachments.push({
-        name: termsheet.name,
-        content: termsheet.content,
-        contentType: termsheet.contentType || 'application/octet-stream'
-      });
-    }
-
-    const lines = [
-      `To: ${to}`,
-      cc ? `Cc: ${cc}` : null,
-      `Subject: ${subject}`,
-      'X-Unsent: 1',
-      'MIME-Version: 1.0',
-      `Content-Type: multipart/mixed; boundary="${boundary}"`,
-      '',
-      `--${boundary}`,
-      'Content-Type: text/plain; charset="utf-8"',
-      'Content-Transfer-Encoding: quoted-printable',
-      '',
-      body,
-      '',
-      `--${boundary}`,
-      `Content-Type: application/pdf; name="${pdfFilename}"`,
-      'Content-Transfer-Encoding: base64',
-      `Content-Disposition: attachment; filename="${pdfFilename}"`,
-      '',
-      // Split base64 into 76-char lines per MIME spec
-      ...pdfBase64.match(/.{1,76}/g),
-      ''
-    ];
-    extraAttachments.forEach(att => {
-      lines.push(
-        `--${boundary}`,
-        `Content-Type: ${att.contentType}; name="${att.name}"`,
-        'Content-Transfer-Encoding: base64',
-        `Content-Disposition: attachment; filename="${att.name}"`,
-        '',
-        ...att.content.match(/.{1,76}/g),
-        ''
-      );
-    });
-    lines.push(`--${boundary}--`);
-
-    return lines.filter(l => l !== null).join('\r\n');
-  };
-
   const handleValidate = async (order) => {
     setIsActioning(order._id);
     try {
@@ -421,20 +545,19 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
         emailComparedAttestation: emailCompared
       });
 
-      // After validation: download .eml with PDF attached
-      // The .eml opens as a prefilled Outlook draft with To/CC/Subject/Body + PDF attachment
-      // Tip: right-click the download in Chrome → "Always open files of this type" for auto-open
+      // After validation: hand the user the bank email. Desktop downloads a .eml that opens
+      // as a prefilled Outlook draft (Tip: right-click the download in Chrome → "Always open
+      // files of this type"); phones cannot open .eml drafts, so they get the Outlook deep link.
       if (result.pdfData && result.emailData) {
-        const pdfFilename = `${result.orderReference || order.orderReference || 'order'}.pdf`;
-        const emlContent = buildEmlFile(result.emailData, result.pdfData, pdfFilename, result.termsheet);
-        const blob = new Blob([emlContent], { type: 'message/rfc822' });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = `${result.orderReference || order.orderReference || 'order'}.eml`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(link.href);
+        if (!result.emailData.to) {
+          alert(`No desk email is configured at ${result.emailData.bankName || 'this bank'} for ${order.assetTypeLabel || result.emailData.assetType || 'this asset type'} orders. The draft will open with an empty recipient — add the address in Bank Management.`);
+        }
+        deliverOrderEmail({
+          orderReference: result.orderReference || order.orderReference,
+          emailData: result.emailData,
+          pdfData: result.pdfData,
+          termsheet: result.termsheet
+        });
       }
       onOrderUpdate?.();
     } catch (err) {
@@ -605,6 +728,12 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
       if (editDepositTenor) updateData.depositTenor = editDepositTenor;
       if (editDepositMaturityDate) updateData.depositMaturityDate = editDepositMaturityDate;
     }
+    if (editAssetType === ASSET_TYPES.OPTION) {
+      if (editOptionType) updateData.optionType = editOptionType;
+      if (editOptionStrike !== '') updateData.optionStrike = parseFloat(editOptionStrike);
+      if (editOptionExpiry) updateData.optionExpiry = editOptionExpiry;
+      if (editOptionContractSize !== '') updateData.optionContractSize = parseFloat(editOptionContractSize);
+    }
 
     setIsActioning(order._id);
     try {
@@ -647,6 +776,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
 
   return (
     <>
+      {orderEmailSheet}
       <div style={styles.container}>
         <div style={styles.header}>
           <div style={styles.headerLeft}>
@@ -663,7 +793,52 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
           /* Phones get one tappable card per order instead of 13 columns behind a
              horizontal scrollbar. Same click target and same review modal. */
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px' }}>
-            {displayOrders.map(order => {
+            {bulkGroups.map(group => {
+              const own = group.first.createdBy === user._id;
+              const anyLocked = group.members.some(m => isLockedByOther(m));
+              return (
+                <div
+                  key={group.groupId}
+                  onClick={() => openGroupReview(group)}
+                  style={{
+                    padding: '12px',
+                    borderRadius: '10px',
+                    background: 'var(--bg-primary)',
+                    border: '1px solid rgba(99,102,241,0.4)',
+                    borderLeft: `3px solid ${own ? '#f97316' : '#6366f1'}`,
+                    cursor: 'pointer'
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                    <span style={{ fontSize: '10px', fontWeight: '700', color: '#6366f1', background: 'rgba(99,102,241,0.12)', padding: '2px 7px', borderRadius: '4px', textTransform: 'uppercase' }}>
+                      Bloc · {group.members.length} clients
+                    </span>
+                    <div style={{ display: 'flex', gap: '4px' }}>
+                      {anyLocked && (
+                        <span style={{ fontSize: '9px', fontWeight: '700', color: 'var(--warning-color)', background: 'rgba(245,158,11,0.12)', padding: '2px 6px', borderRadius: '3px', textTransform: 'uppercase' }}>
+                          🔒 In review
+                        </span>
+                      )}
+                      <span style={{ fontSize: '9px', fontWeight: '700', color: group.tracesOnFile === group.members.length ? 'var(--gain-color)' : 'var(--warning-color)', padding: '2px 6px', borderRadius: '3px', textTransform: 'uppercase' }}>
+                        📎 {group.tracesOnFile}/{group.members.length}
+                      </span>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                    <span style={{ textTransform: 'uppercase', color: group.first.orderType === 'buy' ? 'var(--gain-color)' : 'var(--loss-color)' }}>{group.first.orderType}</span> {group.first.securityName}
+                  </div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                    Total {group.totalQuantity.toLocaleString()}{group.first.quantityUnitLabel ? ` ${group.first.quantityUnitLabel}` : ''} · {group.first.createdByName}{own ? ' (you)' : ''} · {group.first.createdAtFormatted}
+                  </div>
+                  {own && (
+                    <div style={{ marginTop: '8px', fontSize: '11px', color: '#f97316' }}>
+                      You created this — another validator must approve it
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {singleOrders.map(order => {
               const locked = isLockedByOther(order);
               const blocked = locked && !isOwnOrder(order);
               const own = isOwnOrder(order);
@@ -725,6 +900,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                   </div>
                   <div style={{ fontSize: '11px', fontFamily: 'monospace', color: 'var(--text-muted)', marginBottom: '8px' }}>
                     {order.assetType === ASSET_TYPES.FX ? (order.fxPairFormatted || 'FX')
+                      : order.assetType === ASSET_TYPES.OPTION ? (order.optionContractDescription || 'Option')
                       : order.assetType === ASSET_TYPES.TERM_DEPOSIT ? (order.depositTenorLabel || 'TD')
                       : order.isin}
                   </div>
@@ -733,6 +909,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                     <div>
                       <span style={{ color: 'var(--text-muted)' }}>Qty </span>
                       <span style={{ fontWeight: '500' }}>{order.quantityFormatted}</span>
+                      {order.quantityUnitLabel ? <span style={{ color: 'var(--text-muted)' }}> {order.quantityUnitLabel}</span> : null}
                       {order.currency && <span style={{ color: 'var(--text-muted)' }}> {order.currency}</span>}
                     </div>
                     <div style={{ textAlign: 'right', color: 'var(--text-secondary)' }}>
@@ -787,7 +964,106 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                 </tr>
               </thead>
               <tbody>
-                {displayOrders.map(order => {
+                {bulkGroups.map(group => {
+                  const own = group.first.createdBy === user._id;
+                  const anyLocked = group.members.some(m => isLockedByOther(m));
+                  return (
+                    <tr
+                      key={group.groupId}
+                      style={{ ...styles.row, cursor: 'pointer' }}
+                      onClick={() => openGroupReview(group)}
+                      onMouseEnter={(e) => Array.from(e.currentTarget.children).forEach(td => td.style.background = 'var(--bg-secondary)')}
+                      onMouseLeave={(e) => Array.from(e.currentTarget.children).forEach(td => td.style.background = 'rgba(99,102,241,0.04)')}
+                    >
+                      {(() => {
+                        const bg = 'rgba(99,102,241,0.04)';
+                        const cell = { ...styles.td, background: bg };
+                        const f = group.first;
+                        const distinct = (pick) => Array.from(new Set(group.members.map(pick).filter(Boolean)));
+                        const banks = distinct(m => m.bankName);
+                        const ambassadors = distinct(m => m.wealthAmbassadorFormatted || m.wealthAmbassador);
+                        return (
+                          <>
+                            <td style={{ ...cell, borderLeft: `3px solid ${own ? '#f97316' : '#6366f1'}` }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', alignItems: 'flex-start' }}>
+                                <span style={{ fontSize: '10px', fontWeight: '700', color: '#6366f1', background: 'rgba(99,102,241,0.12)', padding: '2px 7px', borderRadius: '4px', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
+                                  Bloc · {group.members.length} clients
+                                </span>
+                                {anyLocked && (
+                                  <span style={{ fontSize: '9px', fontWeight: '700', color: 'var(--warning-color)', background: 'rgba(245,158,11,0.12)', padding: '1px 5px', borderRadius: '3px', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
+                                    🔒 In review
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td style={cell}><span title={f.createdAtFull}>{f.createdAtFormatted}</span></td>
+                            <td style={cell}>
+                              <span style={{ fontSize: '12px', fontWeight: own ? '600' : '400', color: own ? '#f97316' : 'var(--text-primary)' }}>
+                                {f.createdByName}
+                                {own && <span style={{ fontSize: '10px', marginLeft: '4px' }}>(you)</span>}
+                              </span>
+                            </td>
+                            <td style={cell}>
+                              <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-secondary)' }}>
+                                {ambassadors.join(' · ')}
+                              </span>
+                            </td>
+                            <td style={cell}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                {group.members.map(m => (
+                                  <span key={m._id} style={{ whiteSpace: 'nowrap' }}>{m.clientName}</span>
+                                ))}
+                                <span style={{ fontSize: '11px', fontWeight: '600', whiteSpace: 'nowrap', color: group.tracesOnFile === group.members.length ? 'var(--gain-color)' : 'var(--warning-color)' }}
+                                  title="Client instructions on file">
+                                  📎 {group.tracesOnFile}/{group.members.length} instructions
+                                </span>
+                              </div>
+                            </td>
+                            <td style={cell}>{banks.join(' · ')}</td>
+                            <td style={cell}>
+                              <span style={{
+                                fontSize: '11px', fontWeight: '700', textTransform: 'uppercase',
+                                color: f.orderType === 'buy' ? 'var(--gain-color)' : 'var(--loss-color)',
+                                padding: '2px 6px', borderRadius: '4px',
+                                background: f.orderType === 'buy' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)'
+                              }}>
+                                {f.assetType === ASSET_TYPES.FX ? (f.fxDirectionFormatted || f.orderType) : f.orderType}
+                              </span>
+                            </td>
+                            <td style={cell}>
+                              <div title={f.securityName} style={{ fontWeight: '500', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>{f.securityName}</div>
+                              <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                                {f.assetType === ASSET_TYPES.FX ? (f.fxPairFormatted || 'FX') :
+                                 f.assetType === ASSET_TYPES.OPTION ? (f.optionContractDescription || 'Option') :
+                                 f.assetType === ASSET_TYPES.TERM_DEPOSIT ? (f.depositTenorLabel || 'TD') :
+                                 f.isin}
+                              </div>
+                            </td>
+                            <td style={cell}>
+                              <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{f.assetTypeLabel || ''}</span>
+                            </td>
+                            <td style={cell}>{f.currency || ''}</td>
+                            <td style={cell}>
+                              <span style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase', marginRight: '4px' }}>Total</span>
+                              {group.totalQuantity.toLocaleString()}
+                              {f.quantityUnitLabel ? <span style={{ color: 'var(--text-muted)' }}> {f.quantityUnitLabel}</span> : null}
+                            </td>
+                            <td style={cell}>
+                              {f.priceType !== 'market' && f.limitPrice
+                                ? <span style={{ fontSize: '12px', fontWeight: '500' }} title={f.priceTypeLabel}>{f.limitPriceFormatted}</span>
+                                : <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{f.priceTypeLabel || 'Market'}</span>
+                              }
+                            </td>
+                            <td style={cell}>
+                              <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{f.broker || ''}</span>
+                            </td>
+                          </>
+                        );
+                      })()}
+                    </tr>
+                  );
+                })}
+                {singleOrders.map(order => {
                   const locked = isLockedByOther(order);
                   // The creator can never validate their own order, so a peer's
                   // review lock must not block them from opening it to view or
@@ -826,6 +1102,12 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                           {isOwnOrder(order) ? 'Revise' : 'Revision'}
                         </span>
                       )}
+                      {order.bulkOrderGroupId && (
+                        <span style={{ marginLeft: '6px', fontSize: '9px', fontWeight: '700', color: '#6366f1', background: 'rgba(99,102,241,0.1)', padding: '1px 5px', borderRadius: '3px', textTransform: 'uppercase' }}
+                          title="Part of a multi-account block">
+                          Bloc
+                        </span>
+                      )}
                       {order.emailTraces?.some(t => t.traceType === 'client_order') && (
                         <span title="Client order email attached" style={{ marginLeft: '4px', fontSize: '12px', cursor: 'help' }}>📎</span>
                       )}
@@ -862,6 +1144,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                       <div title={order.securityName} style={{ fontWeight: '500', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>{order.securityName}</div>
                       <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
                         {order.assetType === ASSET_TYPES.FX ? (order.fxPairFormatted || 'FX') :
+                         order.assetType === ASSET_TYPES.OPTION ? (order.optionContractDescription || 'Option') :
                          order.assetType === ASSET_TYPES.TERM_DEPOSIT ? (order.depositTenorLabel || 'TD') :
                          order.isin}
                       </div>
@@ -870,7 +1153,10 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                       <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{order.assetTypeLabel || ''}</span>
                     </td>
                     <td style={styles.td}>{order.currency || ''}</td>
-                    <td style={styles.td}>{order.quantityFormatted}</td>
+                    <td style={styles.td}>
+                      {order.quantityFormatted}
+                      {order.quantityUnitLabel ? <span style={{ color: 'var(--text-muted)' }}> {order.quantityUnitLabel}</span> : null}
+                    </td>
                     <td style={styles.td}>
                       {order.priceType !== 'market' && order.limitPrice
                         ? <span style={{ fontSize: '12px', fontWeight: '500' }} title={order.priceTypeLabel}>{order.limitPriceFormatted}</span>
@@ -1016,14 +1302,70 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
               marginBottom: '14px', fontSize: '12px'
             }}>
               <div><span style={styles.reviewLabel}>Security</span><div style={styles.reviewValue}>{reviewOrder.securityName}</div></div>
+              <div style={{ gridColumn: 'span 2' }}>
+                <span style={styles.reviewLabel}>Execution</span>
+                <div style={{
+                  ...styles.reviewValue,
+                  fontWeight: '700',
+                  color: reviewOrder.executionType === EXECUTION_TYPES.PRE_EXECUTED ? 'var(--warning-color)' : undefined
+                }}>
+                  {EXECUTION_TYPE_LABELS[reviewOrder.executionType] || EXECUTION_TYPE_LABELS[EXECUTION_TYPES.TO_EXECUTE]}
+                  {reviewOrder.executionType === EXECUTION_TYPES.PRE_EXECUTED && (
+                    <span title="The order creator attested this trade was already executed with the bank before submission. Confirm this before validating." style={{ marginLeft: '6px' }}>&#9888;&#65039;</span>
+                  )}
+                </div>
+              </div>
               <div><span style={styles.reviewLabel}>
                 {reviewOrder.assetType === ASSET_TYPES.FX ? 'Currency Pair' :
-                 reviewOrder.assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Tenor' : 'ISIN'}
+                 reviewOrder.assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Tenor' :
+                 reviewOrder.assetType === ASSET_TYPES.OPTION ? 'Contract' : 'ISIN'}
               </span><div style={{ ...styles.reviewValue, fontFamily: 'monospace' }}>
                 {reviewOrder.assetType === ASSET_TYPES.FX ? (reviewOrder.fxPairFormatted || 'FX') :
                  reviewOrder.assetType === ASSET_TYPES.TERM_DEPOSIT ? (reviewOrder.depositTenorLabel || 'TD') :
+                 reviewOrder.assetType === ASSET_TYPES.OPTION ? (reviewOrder.optionContractDescription || 'Option') :
                  reviewOrder.isin}
               </div></div>
+              {/* Contract terms, each driven by its own field: reclassifyByIsin
+                  can retype an order 'option' with no contract behind it. */}
+              {reviewOrder.assetType === ASSET_TYPES.OPTION && (
+                <>
+                  {reviewOrder.optionUnderlyingFormatted && (
+                    <div style={{ gridColumn: 'span 2' }}><span style={styles.reviewLabel}>Underlying</span><div style={styles.reviewValue}>
+                      {reviewOrder.optionUnderlyingFormatted}
+                      {reviewOrder.optionUnderlyingIsin ? ` (${reviewOrder.optionUnderlyingIsin})` : ''}
+                    </div></div>
+                  )}
+                  {reviewOrder.optionTypeLabel && (
+                    <div><span style={styles.reviewLabel}>Call / Put</span><div style={{ ...styles.reviewValue, fontWeight: '700' }}>{reviewOrder.optionTypeLabel}</div></div>
+                  )}
+                  {reviewOrder.optionStrikeFormatted && (
+                    <div><span style={styles.reviewLabel}>Strike</span><div style={styles.reviewValue}>{reviewOrder.optionStrikeFormatted}</div></div>
+                  )}
+                  {reviewOrder.optionExpiryFormatted && (
+                    <div><span style={styles.reviewLabel}>Expiry</span><div style={styles.reviewValue}>{reviewOrder.optionExpiryFormatted}</div></div>
+                  )}
+                  {reviewOrder.optionContractSizeFormatted && (
+                    <div><span style={styles.reviewLabel}>Contract Size</span><div style={styles.reviewValue}>
+                      {reviewOrder.optionContractSizeFormatted} shares
+                      {reviewOrder.optionShareEquivalentFormatted ? ` (${reviewOrder.optionShareEquivalentFormatted} in total)` : ''}
+                    </div></div>
+                  )}
+                  {reviewOrder.optionExchangeFormatted && (
+                    <div><span style={styles.reviewLabel}>Exchange</span><div style={styles.reviewValue}>{reviewOrder.optionExchangeFormatted}</div></div>
+                  )}
+                  {reviewOrder.optionContractSymbol && (
+                    <div><span style={styles.reviewLabel}>Contract Symbol</span><div style={{ ...styles.reviewValue, fontFamily: 'monospace' }}>{reviewOrder.optionContractSymbol}</div></div>
+                  )}
+                  {reviewOrder.optionQuoteAtEntryFormatted && (
+                    <div style={{ gridColumn: 'span 2' }}><span style={styles.reviewLabel}>Reference Premium at Entry</span><div style={styles.reviewValue}>
+                      {reviewOrder.optionQuoteAtEntryFormatted.bidAskFormatted || reviewOrder.optionQuoteAtEntryFormatted.last || '—'}
+                      {reviewOrder.optionQuoteAtEntryFormatted.impliedVolatilityFormatted ? ` · IV ${reviewOrder.optionQuoteAtEntryFormatted.impliedVolatilityFormatted}` : ''}
+                      {reviewOrder.optionQuoteAtEntryFormatted.deltaFormatted ? ` · Δ ${reviewOrder.optionQuoteAtEntryFormatted.deltaFormatted}` : ''}
+                      {reviewOrder.optionQuoteAtEntryFormatted.updatedAt ? ` · EOD ${reviewOrder.optionQuoteAtEntryFormatted.updatedAt}` : ''}
+                    </div></div>
+                  )}
+                </>
+              )}
               {reviewOrder.assetType === ASSET_TYPES.FX && reviewOrder.fxDirectionFormatted && (
                 <div style={{ gridColumn: 'span 2' }}><span style={styles.reviewLabel}>Direction</span><div style={{ ...styles.reviewValue, fontWeight: '700' }}>
                   {reviewOrder.fxDirectionFormatted}
@@ -1034,6 +1376,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
               <div><span style={styles.reviewLabel}>Quantity</span><div style={{ ...styles.reviewValue, fontWeight: '700', fontSize: '15px' }}>
                 {reviewOrder.quantityFormatted}
                 {reviewOrder.assetType === ASSET_TYPES.FX && reviewOrder.fxAmountCurrencyFormatted ? ` ${reviewOrder.fxAmountCurrencyFormatted}` : ''}
+                {reviewOrder.quantityUnitLabel ? <span style={{ fontSize: '11px', fontWeight: '500', color: 'var(--text-muted)' }}> {reviewOrder.quantityUnitLabel}</span> : null}
               </div></div>
               <div><span style={styles.reviewLabel}>Order Type</span><div style={styles.reviewValue}>{reviewOrder.priceTypeLabel || 'Market'}</div></div>
               {(reviewOrder.priceType === 'limit' || reviewOrder.priceType === 'stop_limit') && reviewOrder.limitPrice && (
@@ -1066,6 +1409,32 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
               )}
               {reviewOrder.broker && (
                 <div><span style={styles.reviewLabel}>Broker / Issuer</span><div style={styles.reviewValue}>{reviewOrder.broker}</div></div>
+              )}
+              {reviewOrder.issuerCoordinates && (
+                <div style={{ gridColumn: 'span 2' }}>
+                  <span style={styles.reviewLabel}>
+                    Issuer Contact{reviewOrder.issuerCoordinates.issuerName ? ` — ${reviewOrder.issuerCoordinates.issuerName}` : ''}
+                  </span>
+                  <div style={styles.reviewValue}>
+                    {(reviewOrder.issuerCoordinates.name || reviewOrder.issuerCoordinates.email || reviewOrder.issuerCoordinates.phone) ? (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 14px' }}>
+                        {reviewOrder.issuerCoordinates.name && <span style={{ fontWeight: '600' }}>{reviewOrder.issuerCoordinates.name}</span>}
+                        {reviewOrder.issuerCoordinates.email && (
+                          <a href={`mailto:${reviewOrder.issuerCoordinates.email}`} style={{ color: 'var(--accent-color)', textDecoration: 'none' }}>
+                            {reviewOrder.issuerCoordinates.email}
+                          </a>
+                        )}
+                        {reviewOrder.issuerCoordinates.phone && (
+                          <a href={`tel:${reviewOrder.issuerCoordinates.phone.replace(/\s/g, '')}`} style={{ color: 'var(--accent-color)', textDecoration: 'none' }}>
+                            {reviewOrder.issuerCoordinates.phone}
+                          </a>
+                        )}
+                      </div>
+                    ) : (
+                      <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>No contact details on file</span>
+                    )}
+                  </div>
+                </div>
               )}
               {reviewOrder.underlyings && (
                 <div style={{ gridColumn: 'span 2' }}><span style={styles.reviewLabel}>Underlyings</span><div style={styles.reviewValue}>{reviewOrder.underlyings}</div></div>
@@ -1114,6 +1483,24 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                 </div>
                 <div style={{ fontSize: '13px', color: 'var(--text-primary)', lineHeight: '1.5', whiteSpace: 'pre-wrap' }}>
                   {reviewOrder.notes}
+                </div>
+              </div>
+            )}
+
+            {/* Comment for Bank — goes out on the order PDF, so the validator sees it before approving */}
+            {reviewOrder.bankComment && (
+              <div style={{
+                padding: '12px 14px', borderRadius: '8px', marginBottom: '14px',
+                background: 'rgba(14, 165, 233, 0.08)', border: '1px solid rgba(14, 165, 233, 0.25)'
+              }}>
+                <div style={{ fontSize: '11px', fontWeight: '700', color: '#0ea5e9', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: '6px' }}>
+                  Comment for Bank
+                </div>
+                <div style={{ fontSize: '13px', color: 'var(--text-primary)', lineHeight: '1.5', whiteSpace: 'pre-wrap' }}>
+                  {reviewOrder.bankComment}
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px', fontStyle: 'italic' }}>
+                  Appears on the order PDF sent to the bank.
                 </div>
               </div>
             )}
@@ -1179,6 +1566,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                             <option value={ASSET_TYPES.ETF}>ETF</option>
                             <option value={ASSET_TYPES.FX}>FX</option>
                             <option value={ASSET_TYPES.TERM_DEPOSIT}>Term Deposit</option>
+                            <option value={ASSET_TYPES.OPTION}>Option</option>
                             <option value={ASSET_TYPES.OTHER}>Other</option>
                           </select>
                         </div>
@@ -1308,6 +1696,33 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                       </div>
                     </>
                   )}
+                  {editAssetType === ASSET_TYPES.OPTION && (
+                    <>
+                      <div>
+                        <label style={styles.editLabel}>Call / Put</label>
+                        <select style={styles.editInput} value={editOptionType}
+                          onChange={(e) => setEditOptionType(e.target.value)}>
+                          <option value="call">Call</option>
+                          <option value="put">Put</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label style={styles.editLabel}>Strike</label>
+                        <input type="number" style={styles.editInput} value={editOptionStrike}
+                          onChange={(e) => setEditOptionStrike(e.target.value)} min="0" step="any" />
+                      </div>
+                      <div>
+                        <label style={styles.editLabel}>Expiry</label>
+                        <input type="date" style={styles.editInput} value={editOptionExpiry}
+                          onChange={(e) => setEditOptionExpiry(e.target.value)} />
+                      </div>
+                      <div>
+                        <label style={styles.editLabel}>Contract Size</label>
+                        <input type="number" style={styles.editInput} value={editOptionContractSize}
+                          onChange={(e) => setEditOptionContractSize(e.target.value)} min="1" step="1" />
+                      </div>
+                    </>
+                  )}
                   <div style={{ gridColumn: 'span 2' }}>
                     <label style={styles.editLabel}>Notes</label>
                     <textarea style={{ ...styles.editInput, minHeight: '60px', resize: 'vertical' }} value={editNotes}
@@ -1325,11 +1740,6 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
               const traces = reviewOrder.emailTraces || [];
 
               const getTraceUrl = (trace) => signedTraceUrls[trace.storedFileName] || null;
-              const isPreviewable = (trace) => {
-                const ext = (trace.fileName || '').toLowerCase();
-                return ext.endsWith('.pdf') || ext.endsWith('.jpg') || ext.endsWith('.jpeg') ||
-                       ext.endsWith('.png') || ext.endsWith('.gif') || ext.endsWith('.html');
-              };
 
               const traceSlots = [
                 { type: EMAIL_TRACE_TYPES.CLIENT_ORDER, label: 'Client Order', icon: '📋', color: '#f97316', statusHint: null },
@@ -1380,10 +1790,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {traceSlots.map(({ type, label, icon, color, statusHint }) => {
                       const trace = traces.find(t => t.traceType === type);
-                      const previewable = trace && isPreviewable(trace);
                       const url = trace && getTraceUrl(trace);
-                      const isImage = trace && /\.(jpg|jpeg|png|gif)$/i.test(trace.fileName || '');
-                      const isEml = trace && /\.eml$/i.test(trace.fileName || '');
                       const parsed = trace && parsedEmails[trace._id];
 
                       return (
@@ -1443,90 +1850,74 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                             )}
                           </div>
 
-                          {/* Inline preview for attached trace */}
-                          {trace && previewable && (
-                            <div style={{ borderTop: '1px solid var(--border-color)', padding: '8px', background: 'var(--bg-primary)' }}>
-                              {isImage ? (
-                                <img
-                                  src={url}
-                                  alt={trace.fileName}
-                                  style={{ maxWidth: '100%', maxHeight: '500px', display: 'block', margin: '0 auto', borderRadius: '4px' }}
-                                />
-                              ) : (
-                                <iframe
-                                  src={url}
-                                  title={trace.fileName}
-                                  style={{ width: '100%', height: '500px', border: 'none', borderRadius: '4px', background: '#fff' }}
-                                />
-                              )}
-                            </div>
-                          )}
-
-                          {/* Inline preview for .eml (parsed server-side) */}
-                          {trace && isEml && (
-                            <div style={{ borderTop: '1px solid var(--border-color)', background: 'var(--bg-primary)' }}>
-                              {!parsed ? (
-                                <div style={{ padding: '16px', textAlign: 'center', fontSize: '12px', color: 'var(--text-muted)' }}>
-                                  Loading email...
-                                </div>
-                              ) : parsed.error ? (
-                                <div style={{ padding: '16px', textAlign: 'center', fontSize: '12px', color: 'var(--loss-color)' }}>
-                                  Could not parse email: {parsed.error}
-                                </div>
-                              ) : (
-                                <div>
-                                  <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-color)', fontSize: '12px' }}>
-                                    <div style={{ marginBottom: '3px' }}><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>From:</strong> <span style={{ color: 'var(--text-primary)' }}>{parsed.from}</span></div>
-                                    <div style={{ marginBottom: '3px' }}><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>To:</strong> <span style={{ color: 'var(--text-primary)' }}>{parsed.to}</span></div>
-                                    <div style={{ marginBottom: '3px' }}><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>Subject:</strong> <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{parsed.subject}</span></div>
-                                    {parsed.date && (
-                                      <div><strong style={{ color: 'var(--text-muted)', width: '50px', display: 'inline-block' }}>Date:</strong> <span style={{ color: 'var(--text-primary)' }}>{new Date(parsed.date).toLocaleString()}</span></div>
-                                    )}
-                                    {parsed.hasAttachments && (
-                                      <div style={{ marginTop: '4px', color: 'var(--text-muted)', fontSize: '11px' }}>
-                                        Attachments: {parsed.attachmentNames.join(', ')}
-                                      </div>
-                                    )}
-                                  </div>
-                                  {parsed.html ? (
-                                    <iframe
-                                      srcDoc={parsed.html}
-                                      title="Email content"
-                                      style={{ width: '100%', height: '400px', border: 'none', background: '#fff' }}
-                                      sandbox="allow-same-origin"
-                                    />
-                                  ) : (
-                                    <div style={{ padding: '12px', fontSize: '13px', color: 'var(--text-primary)', whiteSpace: 'pre-wrap', lineHeight: '1.5', maxHeight: '400px', overflowY: 'auto' }}>
-                                      {parsed.text}
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          )}
-
-                          {/* .msg files — download only */}
-                          {trace && !previewable && !isEml && (
-                            <div style={{ borderTop: '1px solid var(--border-color)', padding: '12px', textAlign: 'center' }}>
-                              <button
-                                style={{
-                                  padding: '6px 16px', borderRadius: '4px', border: '1px solid var(--border-color)',
-                                  background: 'transparent', color: 'var(--text-secondary)', fontSize: '12px',
-                                  fontWeight: '600', cursor: 'pointer'
-                                }}
-                                onClick={() => {
-                                  const a = document.createElement('a');
-                                  a.href = url; a.download = trace.fileName; a.click();
-                                }}
-                              >
-                                Download {trace.fileName}
-                              </button>
-                            </div>
+                          {/* Inline preview (image / pdf / parsed .eml / download for .msg) */}
+                          {trace && trace.traceMode !== 'phone' && (
+                            <TracePreview trace={trace} url={url} parsed={parsed} />
                           )}
                         </div>
                       );
                     })}
                   </div>
+
+                  {/* Term sheet(s) attached to the order: open in a new tab or preview inline.
+                      Lets the validator check the ISIN / terms against the client instruction. */}
+                  {(() => {
+                    const tsTraces = traces.filter(t => TERMSHEET_TRACE_TYPES.has(t.traceType) && t.traceMode !== 'phone');
+                    if (tsTraces.length === 0) return null;
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>
+                        {tsTraces.map(trace => {
+                          const url = getTraceUrl(trace);
+                          const parsed = parsedEmails[trace._id];
+                          const open = !!expandedTermsheets[trace._id];
+                          const color = '#8b5cf6';
+                          return (
+                            <div key={trace._id} style={{
+                              borderRadius: '6px', background: 'var(--bg-secondary)',
+                              border: `1px solid color-mix(in srgb, ${color} 40%, transparent)`, overflow: 'hidden'
+                            }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px' }}>
+                                <span style={{ fontSize: '14px' }}>&#128196;</span>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontSize: '11px', fontWeight: '600', color, textTransform: 'uppercase' }}>
+                                    {EMAIL_TRACE_LABELS[trace.traceType] || 'Term Sheet'}
+                                  </div>
+                                  <div style={{ fontSize: '12px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={trace.fileName}>
+                                    {trace.fileName}
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  style={{
+                                    padding: '4px 10px', borderRadius: '4px', border: `1px solid color-mix(in srgb, ${color} 40%, transparent)`,
+                                    background: `color-mix(in srgb, ${color} 10%, transparent)`, color, fontSize: '11px',
+                                    fontWeight: '600', cursor: url ? 'pointer' : 'wait', whiteSpace: 'nowrap'
+                                  }}
+                                  disabled={!url}
+                                  title="Open in a new tab"
+                                  onClick={() => { if (url) window.open(url, '_blank', 'noopener'); }}
+                                >
+                                  Open
+                                </button>
+                                <button
+                                  type="button"
+                                  style={{
+                                    padding: '4px 10px', borderRadius: '4px', border: '1px solid var(--border-color)',
+                                    background: 'transparent', color: 'var(--text-muted)', fontSize: '11px',
+                                    fontWeight: '600', cursor: 'pointer', whiteSpace: 'nowrap'
+                                  }}
+                                  onClick={() => setExpandedTermsheets(prev => ({ ...prev, [trace._id]: !open }))}
+                                >
+                                  {open ? 'Hide' : 'Preview'}
+                                </button>
+                              </div>
+                              {open && <TracePreview trace={trace} url={url} parsed={parsed} height={600} />}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })()}
@@ -1569,6 +1960,79 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
             </div>{/* END RIGHT COLUMN */}
 
             </div>{/* END TWO-COLUMN GRID */}
+
+            {/* Short-call cover. Two readings side by side: the snapshot taken
+                when the desk raised the order, which is the audit record of what
+                it was told, and a recomputation against today's positions, which
+                is what the validator is actually approving. Bank files land
+                between the two and can flip the answer. */}
+            {(reviewOrder.coverageCheckFormatted || liveCoverage) && (() => {
+              const snap = reviewOrder.coverageCheckFormatted;
+              const live = liveCoverage;
+              const fmt = (n) => Number(n || 0).toLocaleString('en-US');
+              const worst = live ? live.isCovered : snap?.isCovered;
+              const accent = worst ? 'var(--gain-color)' : 'var(--warning-color)';
+              const flipped = snap && live && snap.isCovered !== live.isCovered;
+
+              const column = (title, c, asOf) => (
+                <div style={{ flex: '1 1 220px', padding: '10px 12px', borderRadius: '6px', background: 'var(--bg-primary)' }}>
+                  <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '6px' }}>
+                    {title}{asOf ? ` — positions as of ${asOf}` : ''}
+                  </div>
+                  {c ? (
+                    <>
+                      <div style={{ fontSize: '13px', fontWeight: '700', color: c.isCovered ? 'var(--gain-color)' : 'var(--warning-color)', marginBottom: '4px' }}>
+                        {c.isCovered ? 'Covered' : `Uncovered — short by ${fmt(c.shortfallShares)}`}
+                      </div>
+                      <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)' }}>
+                        {fmt(c.requiredShares)} to deliver · {fmt(c.heldShares)} held
+                        {c.committedShares ? ` · ${fmt(c.committedShares)} already written` : ''}
+                      </div>
+                      {c.committedOrderRefs?.length > 0 && (
+                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '3px' }}>
+                          Written by {c.committedOrderRefs.join(', ')}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                      {liveCoverageState === 'loading' ? 'Checking…' : 'Not available'}
+                    </div>
+                  )}
+                </div>
+              );
+
+              return (
+                <div style={{
+                  padding: '14px 16px', marginBottom: '14px', borderRadius: '8px',
+                  background: worst ? 'rgba(16, 185, 129, 0.06)' : 'rgba(245, 158, 11, 0.08)',
+                  border: `1px solid ${worst ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`
+                }}>
+                  <div style={{ fontSize: '12px', fontWeight: '700', color: accent, marginBottom: '10px' }}>
+                    Short Call Cover
+                    {reviewOrder.optionUnderlyingFormatted ? ` — ${reviewOrder.optionUnderlyingFormatted}` : ''}
+                  </div>
+                  <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                    {column('At entry', snap, snap?.holdingsAsOfFormatted)}
+                    {column('Now', live, live?.holdingsAsOf ? OrderFormatters.formatDate(live.holdingsAsOf) : null)}
+                  </div>
+                  {flipped && (
+                    <div style={{ fontSize: '11.5px', color: accent, marginTop: '8px', fontWeight: '600' }}>
+                      The position has changed since this order was raised — the two readings disagree.
+                    </div>
+                  )}
+                  {snap?.justification && (
+                    <div style={{ fontSize: '12px', color: 'var(--text-primary)', marginTop: '8px', padding: '8px 10px', borderRadius: '6px', background: 'rgba(245, 158, 11, 0.05)', border: '1px solid rgba(245, 158, 11, 0.15)' }}>
+                      <span style={{ fontWeight: '600', color: 'var(--warning-color)', fontSize: '11px' }}>Reason given:</span>{' '}
+                      {snap.justification}
+                    </div>
+                  )}
+                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px' }}>
+                    Cover is informational: the order was never blocked. Approving it is your decision.
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Allocation Warning */}
             {reviewOrder.allocationWarning && reviewOrder.allocationWarning.breaches?.length > 0 && (
@@ -1904,6 +2368,20 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Bulk review: one panel for every client of a block */}
+      {reviewGroup && (
+        <BulkValidationPanel
+          groupId={reviewGroup.groupId}
+          lockedByOther={reviewGroup.lockedByOther}
+          user={user}
+          isMobile={isMobile}
+          onClose={closeGroupReview}
+          onOrderUpdate={onOrderUpdate}
+          onRejectClient={(member) => { setRejectModalOrder(member); setRejectionReason(''); }}
+          onRequestRevision={(member) => { setRevisionModalOrder(member); setRevisionReason(''); }}
+        />
       )}
 
       {/* Reject Reason Modal */}

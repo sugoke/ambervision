@@ -420,6 +420,177 @@ export const ClientEntityHelpers = {
     }, { sort: { 'profile.lastName': 1, 'profile.firstName': 1, 'profile.companyName': 1 } });
   },
 
+  // ---------------------------------------------------------------------------
+  // Legacy user <-> entity identity resolution
+  //
+  // customUsers is login accounts only; client identity lives here. During the
+  // entity migration most clients ended up with BOTH records, and only one
+  // entity actually got its migratedFromUserId stamped - so anything listing
+  // "clients" by merging the two collections shows the same person twice, often
+  // under two spellings ("baloise" / "BALOISE", "Aurelia" / "Aurelia").
+  //
+  // A client is one client no matter how many bank accounts or ids they hold, so
+  // resolution combines two independent signals and requires the name to agree:
+  //
+  //   1. An explicit link: entity.migratedFromUserId, or a bankAccounts row
+  //      stamped with both entityId and userId by the migration.
+  //   2. Name equality after normalisation (accents, case, punctuation and
+  //      company legal suffixes folded away).
+  //
+  // Neither signal is sufficient alone. Account links are not proof of identity
+  // - a beneficial owner and their company legitimately share an account, so
+  // e.g. account 304435.002 carries entity DONBERG TRADING with the legacy user
+  // of its owner, two clients that must stay separate. Names alone would merge
+  // an RM's stray client-role record into a same-surname client. So a shared
+  // account only merges when the names are compatible, and identical names merge
+  // on their own.
+  // ---------------------------------------------------------------------------
+
+  // Case/accent/punctuation-insensitive form of a client name, with company
+  // legal forms dropped so "DONBERG TRADING LTD" and "DONBERG TRADING LIMITED"
+  // compare equal.
+  normalizeClientName(name) {
+    if (!name || typeof name !== 'string') return '';
+    return name
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // strip accents
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')                         // punctuation/hyphens -> space
+      .replace(/\b(ltd|limited|sa|sarl|sas|scp|sca|ag|gmbh|inc|llc|plc|bv|nv|spa|srl|co|corp)\b/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  },
+
+  // True when two client names plausibly denote the same client. Beyond exact
+  // equality this tolerates the two ways the same client was typed twice in
+  // practice: a token subset ("Buon TAN" vs "Buon Huong TAN", "UTMOST" vs
+  // "UTMOST LUXEMBOURG") and a one-character typo in a token ("Iuliia" vs
+  // "Iulia"). Only used to corroborate an explicit account link - on its own,
+  // only exact normalised equality counts.
+  clientNamesAreCompatible(nameA, nameB) {
+    const a = this.normalizeClientName(nameA);
+    const b = this.normalizeClientName(nameB);
+    if (!a || !b) return false;
+    if (a === b) return true;
+
+    const tokensA = a.split(' ').filter(Boolean);
+    const tokensB = b.split(' ').filter(Boolean);
+    if (tokensA.length === 0 || tokensB.length === 0) return false;
+
+    // Token subset: every token of the shorter name appears in the longer one,
+    // allowing a one-character difference per token.
+    const [short, long] = tokensA.length <= tokensB.length ? [tokensA, tokensB] : [tokensB, tokensA];
+    return short.every(t => long.some(l => t === l || this.tokensWithinOneEdit(t, l)));
+  },
+
+  // Levenshtein distance <= 1, short-circuited - enough for a dropped or
+  // duplicated letter, not enough to conflate two different names.
+  tokensWithinOneEdit(a, b) {
+    if (a === b) return true;
+    if (Math.abs(a.length - b.length) > 1) return false;
+    if (a.length < 3 || b.length < 3) return false;   // too short to judge safely
+    const [s, l] = a.length <= b.length ? [a, b] : [b, a];
+    let i = 0, j = 0, diffs = 0;
+    while (i < s.length && j < l.length) {
+      if (s[i] === l[j]) { i++; j++; continue; }
+      if (++diffs > 1) return false;
+      if (s.length === l.length) { i++; j++; } else { j++; }
+    }
+    return true;
+  },
+
+  // Map of legacy client userId -> canonical entityId, for every legacy user
+  // that is really the same client as an entity. Used to collapse duplicate
+  // client lists and to widen id-based queries.
+  async getLegacyUserEntityLinks() {
+    const { UsersCollection } = await import('./users');
+    const { BankAccountsCollection } = await import('./bankAccounts');
+
+    const entities = await ClientEntitiesCollection.find(
+      { isActive: true },
+      { fields: { _id: 1, type: 1, profile: 1, migratedFromUserId: 1 } }
+    ).fetchAsync();
+    if (entities.length === 0) return new Map();
+
+    const legacyUsers = await UsersCollection.find(
+      { role: 'client' },
+      { fields: { _id: 1, username: 1, profile: 1 } }
+    ).fetchAsync();
+    if (legacyUsers.length === 0) return new Map();
+
+    const userName = (u) => (
+      `${u.profile?.firstName || ''} ${u.profile?.lastName || ''}`.trim()
+      || u.profile?.companyName
+      || u.username
+      || ''
+    );
+
+    const links = new Map();
+    const entityById = new Map(entities.map(e => [e._id, e]));
+
+    // Signal 1a: the migration's own stamp.
+    for (const e of entities) {
+      if (e.migratedFromUserId) links.set(e.migratedFromUserId, e._id);
+    }
+
+    // Signal 2: identical names. An ambiguous name (the same normalised name on
+    // two entities) is skipped rather than guessed at.
+    const byName = new Map();
+    for (const e of entities) {
+      const key = this.normalizeClientName(this.getEntityDisplayName(e));
+      if (!key) continue;
+      if (byName.has(key)) byName.set(key, null);   // ambiguous - never match it
+      else byName.set(key, e._id);
+    }
+    for (const u of legacyUsers) {
+      if (links.has(u._id)) continue;
+      const match = byName.get(this.normalizeClientName(userName(u)));
+      if (match) links.set(u._id, match);
+    }
+
+    // Signal 1b: accounts the migration stamped with both ids, accepted only
+    // when the two names agree (see the DONBERG example above).
+    const stampedAccounts = await BankAccountsCollection.find(
+      { userId: { $exists: true, $ne: null }, entityId: { $exists: true, $ne: null } },
+      { fields: { userId: 1, entityId: 1 } }
+    ).fetchAsync();
+    const userById = new Map(legacyUsers.map(u => [u._id, u]));
+    for (const acct of stampedAccounts) {
+      if (links.has(acct.userId)) continue;
+      const u = userById.get(acct.userId);
+      const e = entityById.get(acct.entityId);
+      if (!u || !e) continue;
+      if (this.clientNamesAreCompatible(userName(u), this.getEntityDisplayName(e))) {
+        links.set(u._id, e._id);
+      }
+    }
+
+    return links;
+  },
+
+  // Every id a single client's records may be stored under: the canonical
+  // entity id plus any legacy user id that resolves to it. Accepts either kind
+  // of id and always includes what was passed in, so a caller can use the
+  // result as a query set without special-casing unmigrated clients.
+  async getLinkedClientIds(clientId) {
+    if (!clientId || typeof clientId !== 'string') return [];
+
+    const links = await this.getLegacyUserEntityLinks();
+    const entityId = links.get(clientId) || clientId;
+
+    const ids = new Set([clientId, entityId]);
+    for (const [userId, linkedEntityId] of links) {
+      if (linkedEntityId === entityId) ids.add(userId);
+    }
+
+    const entity = await ClientEntitiesCollection.findOneAsync(
+      { _id: entityId },
+      { fields: { migratedFromUserId: 1 } }
+    );
+    if (entity && entity.migratedFromUserId) ids.add(entity.migratedFromUserId);
+
+    return [...ids];
+  },
+
   // Get all active entities
   getAllEntities() {
     return ClientEntitiesCollection.find({

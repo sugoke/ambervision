@@ -4,6 +4,7 @@ import { useTheme } from './ThemeContext.jsx';
 import BirthdayCalendar from './BirthdayCalendar.jsx';
 import BondPriceQuery from './components/BondPriceQuery.jsx';
 import MeetingReports from './MeetingReports.jsx';
+import ResearchLibrary from './ResearchLibrary.jsx';
 
 // Mini-app: Email Tester
 const EmailTester = ({ isDark }) => {
@@ -588,6 +589,12 @@ const Intranet = ({ user }) => {
       description: 'Rapport de Visite Client — AI-assisted'
     },
     {
+      id: 'research',
+      label: 'Research',
+      icon: '🔬',
+      description: 'Monthly report, equity recommended list, stock research'
+    },
+    {
       id: 'pitch-manager',
       label: 'Pitch Manager',
       icon: '📝',
@@ -624,6 +631,8 @@ const Intranet = ({ user }) => {
     switch (activeApp) {
       case 'meeting-reports':
         return <MeetingReports user={user} />;
+      case 'research':
+        return <ResearchLibrary user={user} />;
       case 'pitch-manager':
         return <PitchManager isDark={isDark} />;
       case 'birthday-calendar':

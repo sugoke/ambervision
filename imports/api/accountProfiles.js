@@ -8,9 +8,13 @@ export const AccountProfilesCollection = new Mongo.Collection('accountProfiles')
  * {
  *   _id: String,
  *   bankAccountId: String,      // Reference to BankAccountsCollection
+ *   minCash: Number,            // 0-100 (min % for Cash/Short Term)
  *   maxCash: Number,            // 0-100 (max % for Cash/Short Term)
+ *   minBonds: Number,           // 0-100 (min % for Bonds and similar)
  *   maxBonds: Number,           // 0-100 (max % for Bonds and similar)
+ *   minEquities: Number,        // 0-100 (min % for Equities and similar)
  *   maxEquities: Number,        // 0-100 (max % for Equities and similar)
+ *   minAlternative: Number,     // 0-100 (min % for Alternative investments)
  *   maxAlternative: Number,     // 0-100 (max % for Alternative investments)
  *   lastUpdated: Date,
  *   updatedBy: String           // userId who made the change
@@ -66,6 +70,11 @@ export const mapOrderAssetTypeToProfileCategory = (assetType, options = {}) => {
       return 'cash';
     case 'fund':
       return 'equities';
+    // A listed option is a derivative exposure, not the underlying asset class.
+    // Note only BUY orders reach the allocation check, and the value booked is
+    // the premium, not the notional the contract controls.
+    case 'option':
+      return 'alternative';
     case 'other':
       return 'alternative';
     default:
@@ -88,6 +97,8 @@ export const getBreakdownKeyForAssetType = (assetType, capitalProtected) => {
       return 'fixed_income';
     case 'structured_product':
       return capitalProtected ? 'structured_product_capital_guaranteed' : 'structured_product_equity_linked';
+    case 'option':
+      return 'other';
     case 'term_deposit':
       return 'time_deposit';
     case 'fx':
@@ -101,43 +112,93 @@ export const getBreakdownKeyForAssetType = (assetType, capitalProtected) => {
   }
 };
 
+// The four asset-class categories of an investment profile.
+// Field names are derived (min/max + key) so all profile code stays generic.
+export const PROFILE_CATEGORIES = [
+  { key: 'Cash', label: 'Cash', shortLabel: 'Cash', allocationKey: 'cash' },
+  { key: 'Bonds', label: 'Bonds', shortLabel: 'Bonds', allocationKey: 'bonds' },
+  { key: 'Equities', label: 'Equities', shortLabel: 'Equities', allocationKey: 'equities' },
+  { key: 'Alternative', label: 'Alternative', shortLabel: 'Alt.', allocationKey: 'alternative' }
+];
+
+export const PROFILE_LIMIT_FIELDS = PROFILE_CATEGORIES.flatMap(c => [`min${c.key}`, `max${c.key}`]);
+
 // Predefined profile templates
+// Templates define maximum exposures; minimums default to 0 (no floor).
 export const PROFILE_TEMPLATES = {
   'flexible-security': {
     name: 'Flexible Security',
+    minCash: 0,
     maxCash: 100,
+    minBonds: 0,
     maxBonds: 100,
+    minEquities: 0,
     maxEquities: 0,
+    minAlternative: 0,
     maxAlternative: 0
   },
   'flexible-conservative': {
     name: 'Flexible Conservative',
+    minCash: 0,
     maxCash: 100,
+    minBonds: 0,
     maxBonds: 100,
+    minEquities: 0,
     maxEquities: 30,
+    minAlternative: 0,
     maxAlternative: 0
   },
   'flexible-balanced': {
     name: 'Flexible Balanced',
+    minCash: 0,
     maxCash: 100,
+    minBonds: 0,
     maxBonds: 75,
+    minEquities: 0,
     maxEquities: 50,
+    minAlternative: 0,
     maxAlternative: 25
   },
   'flexible-dynamic': {
     name: 'Flexible Dynamic',
+    minCash: 0,
     maxCash: 100,
+    minBonds: 0,
     maxBonds: 100,
+    minEquities: 0,
     maxEquities: 100,
+    minAlternative: 0,
     maxAlternative: 100
   },
   'flexible': {
     name: 'Flexible',
+    minCash: 0,
     maxCash: 0,
+    minBonds: 0,
     maxBonds: 0,
+    minEquities: 0,
     maxEquities: 0,
+    minAlternative: 0,
     maxAlternative: 0
   }
+};
+
+/**
+ * Read a profile limit, defaulting to 0 when the field is absent
+ * (profiles created before minimums existed have no min* fields).
+ */
+export const getProfileLimit = (profile, field) => {
+  const value = profile?.[field];
+  return typeof value === 'number' ? value : 0;
+};
+
+/**
+ * Format a category's min-max range for display, e.g. "0 - 75%"
+ */
+export const formatProfileRange = (profile, categoryKey) => {
+  const min = getProfileLimit(profile, `min${categoryKey}`);
+  const max = getProfileLimit(profile, `max${categoryKey}`);
+  return `${min}% - ${max}%`;
 };
 
 /**
@@ -147,12 +208,51 @@ export const getProfileName = (profile) => {
   if (!profile) return null;
   if (profile.profileName) return profile.profileName;
   const match = Object.entries(PROFILE_TEMPLATES).find(([, tpl]) =>
-    tpl.maxCash === profile.maxCash &&
-    tpl.maxBonds === profile.maxBonds &&
-    tpl.maxEquities === profile.maxEquities &&
-    tpl.maxAlternative === profile.maxAlternative
+    PROFILE_LIMIT_FIELDS.every(field => getProfileLimit(tpl, field) === getProfileLimit(profile, field))
   );
   return match ? match[1].name : 'Custom';
+};
+
+/**
+ * Which profile bucket a structured-product category key belongs to.
+ *
+ * Keys are produced by buildCategoryKey() in assetClassification.js, e.g.
+ * 'structured_product_capital_guaranteed', 'structured_product_equity_linked',
+ * 'structured_product_equity_linked_barrier_protected'.
+ *
+ * Rule (profile classification): only an *unconditional* capital guarantee or
+ * protection makes a structured product bond-like. Conditional ("barrier")
+ * protection does not — if the barrier breaks the investor is long the
+ * underlying — so an equity-linked barrier product belongs with the equities.
+ *
+ * @param {String} categoryKey - lower-cased category key
+ * @returns {String} 'cash' | 'bonds' | 'equities' | 'alternative'
+ */
+export const classifyStructuredProductKey = (categoryKey) => {
+  const key = String(categoryKey || '').toLowerCase();
+
+  // Unconditional capital guarantee / protection -> Bonds
+  if (key.includes('capital_guaranteed') || key.includes('partial_guarantee')) {
+    return 'bonds';
+  }
+
+  // Non-equity underlyings
+  if (key.includes('commodities') || key.includes('credit')) {
+    return 'alternative';
+  }
+  if (key.includes('fixed_income')) {
+    return 'bonds';
+  }
+
+  // Legacy key with no underlying recorded: kept bond-like for the non-equity
+  // case it now exclusively marks (equity-linked barrier products carry their
+  // underlying in the key instead).
+  if (key === 'structured_product_barrier_protected') {
+    return 'bonds';
+  }
+
+  // Equity-linked (barrier protected or not) and unknown -> Equities
+  return 'equities';
 };
 
 /**
@@ -181,24 +281,23 @@ export const aggregateToFourCategories = (breakdown, totalValue) => {
         lowerCategory.includes('money_market')) {
       cash += value;
     }
-    // Alternative - check FIRST to catch private_equity before general equity check
+    // Structured products - resolved by their own rules (protection + underlying)
+    else if (lowerCategory.startsWith('structured_product')) {
+      const spCategory = classifyStructuredProductKey(lowerCategory);
+      if (spCategory === 'bonds') bonds += value;
+      else if (spCategory === 'alternative') alternative += value;
+      else equities += value;
+    }
+    // Alternative - check before the general equity check so private_equity
+    // isn't swallowed by the 'equity' substring match
     else if (lowerCategory === 'private_equity' ||
              lowerCategory === 'private_debt' ||
              lowerCategory === 'commodities' ||
              lowerCategory === 'real_estate' ||
              lowerCategory === 'hedge_fund' ||
              lowerCategory === 'derivatives' ||
-             lowerCategory === 'other' ||
-             lowerCategory === 'structured_product_commodities_linked' ||
-             lowerCategory === 'structured_product_credit_linked') {
+             lowerCategory === 'other') {
       alternative += value;
-    }
-    // Structured products with capital guarantee or protection -> Bonds
-    // Per profile rules: "Structured products with capital guarantee or protection (any underlying)"
-    else if (lowerCategory.includes('structured_product_capital_guaranteed') ||
-             lowerCategory === 'structured_product_barrier_protected' ||
-             lowerCategory === 'structured_product_partial_guarantee') {
-      bonds += value;
     }
     // Fixed Income / Bonds
     else if (lowerCategory.includes('fixed_income') ||
@@ -206,22 +305,10 @@ export const aggregateToFourCategories = (breakdown, totalValue) => {
              lowerCategory === 'convertible') {
       bonds += value;
     }
-    // Equities - includes equity-linked structured products (without capital protection)
+    // Equities
     else if (lowerCategory.includes('equity') ||
-             lowerCategory.includes('stock') ||
-             lowerCategory === 'structured_product_equity_linked') {
+             lowerCategory.includes('stock')) {
       equities += value;
-    }
-    // Default: categorize remaining structured products to Equities
-    // (most structured products are equity-linked by default)
-    else if (lowerCategory.includes('structured_product')) {
-      // Check for non-equity underlying types that should go to Alternative
-      if (lowerCategory.includes('commodities') || lowerCategory.includes('credit')) {
-        alternative += value;
-      } else {
-        // Equity-linked or unknown underlying -> Equities (safer default)
-        equities += value;
-      }
     }
     // Anything else goes to alternative
     else {

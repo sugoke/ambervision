@@ -78,16 +78,44 @@ export async function consumeDocumentToken(rawToken, requestedPath) {
 }
 
 /**
+ * The public path the browser actually requested.
+ *
+ * These handlers are mounted with `WebApp.connectHandlers.use('/termsheets', …)`,
+ * and Express strips the mount prefix from `req.url` inside a mounted handler —
+ * `/termsheets/X.pdf?dl=…` arrives as `/X.pdf?dl=…`. Tokens are minted against
+ * the full public path (`/termsheets/X.pdf`), so authorizing off `req.url` never
+ * matched and every document download 401'd. `req.originalUrl` keeps the prefix.
+ */
+function requestedUrl(req) {
+  if (req.originalUrl) return req.originalUrl;
+  const base = req.baseUrl || '';
+  return `${base}${req.url || ''}` || '/';
+}
+
+/**
+ * Paths are compared decoded on both sides: a token is minted from the stored
+ * path (`/order_traces/<id>/client order.eml`) while the browser sends it
+ * percent-encoded. Decoding fails closed on a malformed escape.
+ */
+function decodePath(pathname) {
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return pathname;
+  }
+}
+
+/**
  * Connect-handler helper: pull the token from ?dl= and validate it against the
  * request's own path. Returns { userId } or null. Never throws.
  */
 export async function authorizeDocumentRequest(req) {
   try {
     const host = req.headers?.host || 'localhost';
-    const url = new URL(req.url, `http://${host}`);
+    const url = new URL(requestedUrl(req), `http://${host}`);
     const token = url.searchParams.get('dl');
     if (!token) return null;
-    return await consumeDocumentToken(token, url.pathname);
+    return await consumeDocumentToken(token, decodePath(url.pathname));
   } catch {
     return null;
   }

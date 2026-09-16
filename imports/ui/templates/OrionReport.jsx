@@ -592,29 +592,41 @@ const OrionReport = ({ results, productId, product }) => {
               </div>
             </div>
 
-            {/* Protection Barrier Info */}
+            {/* Barrier Info — the protection segment only appears when the product
+                actually carries a protection barrier. Without one there is nothing to
+                colour green or red, so the strip stays neutral. */}
             <div style={{
               marginTop: '1rem',
               padding: '0.85rem 1rem',
-              background: results.indicativeMaturityValue.protectionIntact
-                ? 'rgba(16, 185, 129, 0.1)'
-                : 'rgba(239, 68, 68, 0.1)',
+              background: !results.indicativeMaturityValue.hasProtectionBarrier
+                ? 'var(--bg-primary)'
+                : results.indicativeMaturityValue.protectionIntact
+                  ? 'rgba(16, 185, 129, 0.1)'
+                  : 'rgba(239, 68, 68, 0.1)',
               borderRadius: '6px',
-              border: `1px solid ${results.indicativeMaturityValue.protectionIntact
-                ? 'rgba(16, 185, 129, 0.3)'
-                : 'rgba(239, 68, 68, 0.3)'}`,
+              border: `1px solid ${!results.indicativeMaturityValue.hasProtectionBarrier
+                ? 'var(--border-color)'
+                : results.indicativeMaturityValue.protectionIntact
+                  ? 'rgba(16, 185, 129, 0.3)'
+                  : 'rgba(239, 68, 68, 0.3)'}`,
               fontSize: '0.75rem',
               color: 'var(--text-secondary)',
               display: 'flex',
               alignItems: 'center',
               gap: '0.5rem'
             }}>
-              <span style={{ fontSize: '1rem' }}>
-                {results.indicativeMaturityValue.protectionIntact ? '🛡️' : '⚠️'}
-              </span>
+              {results.indicativeMaturityValue.hasProtectionBarrier && (
+                <span style={{ fontSize: '1rem' }}>
+                  {results.indicativeMaturityValue.protectionIntact ? '🛡️' : '⚠️'}
+                </span>
+              )}
               <div>
-                <strong>{tr.protectionBarrier}:</strong> {results.indicativeMaturityValue.protectionBarrierFormatted} |
-                <strong style={{ marginLeft: '0.5rem' }}>{tr.upperBarrier}:</strong> {results.indicativeMaturityValue.upperBarrierFormatted} |
+                {results.indicativeMaturityValue.hasProtectionBarrier && (
+                  <>
+                    <strong>{tr.protectionBarrier}:</strong> {results.indicativeMaturityValue.protectionBarrierFormatted} |
+                  </>
+                )}
+                <strong style={{ marginLeft: results.indicativeMaturityValue.hasProtectionBarrier ? '0.5rem' : 0 }}>{tr.upperBarrier}:</strong> {results.indicativeMaturityValue.upperBarrierFormatted} |
                 <strong style={{ marginLeft: '0.5rem' }}>Rebate:</strong> {results.indicativeMaturityValue.rebateFormatted}
               </div>
             </div>
@@ -691,7 +703,7 @@ const OrionReport = ({ results, productId, product }) => {
             Lower Barrier (Protection)
           </div>
           <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)' }}>
-            {orionParams.lowerBarrier || orionParams.capitalGuaranteed}%
+            {orionParams.lowerBarrierFormatted || '-'}
           </div>
         </div>
 

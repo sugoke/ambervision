@@ -8,6 +8,42 @@ export const BankAccountsCollection = new Mongo.Collection('bankAccounts');
 export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export const E164_PHONE_REGEX = /^\+[1-9]\d{1,14}$/;
 
+/**
+ * Every email address authorized to give order instructions for an account.
+ * Reads the canonical `authorizedEmails` list and falls back to the legacy
+ * single address + CC pair for records not yet re-saved.
+ */
+export function getAuthorizedEmails(account) {
+  const raw = Array.isArray(account?.authorizedEmails) && account.authorizedEmails.length > 0
+    ? account.authorizedEmails
+    : [account?.authorizedEmail, ...(Array.isArray(account?.authorizedCcEmails) ? account.authorizedCcEmails : [])];
+  const seen = new Set();
+  const out = [];
+  for (const e of raw) {
+    const v = typeof e === 'string' ? e.trim() : '';
+    if (!v) continue;
+    const k = v.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(v);
+  }
+  return out;
+}
+
+/**
+ * Trim, drop blanks, de-duplicate (case-insensitive) and validate a list of
+ * authorized emails coming from a client. Throws on the first invalid entry.
+ */
+function normalizeAuthorizedEmails(list) {
+  const cleaned = getAuthorizedEmails({ authorizedEmails: (list || []).filter(e => typeof e === 'string') });
+  for (const email of cleaned) {
+    if (!EMAIL_REGEX.test(email)) {
+      throw new Error(`Invalid authorized email: ${email}`);
+    }
+  }
+  return cleaned;
+}
+
 // Bank account schema structure:
 // {
 //   entityId: String (reference to ClientEntitiesCollection - the account owner),
@@ -21,16 +57,131 @@ export const E164_PHONE_REGEX = /^\+[1-9]\d{1,14}$/;
 //   lifeInsuranceCompany: String (only if accountType is life_insurance),
 //   authorizedOverdraft: Number (optional, credit line amount in reference currency),
 //   comment: String (optional, user notes like "Investment Account", "Credit Card", etc.),
+//   holderEntityIds: [String] (optional, ALL client entities holding this account —
+//     a joint account is held by several, e.g. a couple. entityId above is the
+//     PRIMARY holder and is always included here. Absent/single-element means a
+//     sole account. See the joint-account helpers below),
 //   relationshipManagerId: String (optional, reference to UsersCollection - the RM managing this account),
 //   beneficialOwnerIds: [String] (optional, references to ClientEntitiesCollection - UBOs for life insurance accounts),
 //   introducerId: String (optional, reference to UsersCollection - the business introducer for this account),
-//   authorizedEmail: String (optional, primary authorized email to send/receive orders for this account),
-//   authorizedCcEmails: [String] (optional, CC list of authorized emails),
+//   authorizedEmails: [String] (optional, every email address allowed to give order
+//     instructions for this account — the validator's sender check accepts any of them),
+//   authorizedEmail: String (legacy mirror of authorizedEmails[0]; kept in sync on write),
+//   authorizedCcEmails: [String] (legacy CC list, folded into authorizedEmails on the next save;
+//     always read contacts through getAuthorizedEmails()),
 //   authorizedPhone: String (optional, authorized phone number in E.164 format, e.g. +33612345678),
+//   kycRiskScore: Object (optional, the KYC risk assessment for THIS banking relationship —
+//     { assessmentDate, assessedBy, clientProspect/beneficialOwner/businessRelationship:
+//       { criteria, totalScore, riskLevel }, comments, nextReviewDate }),
+//   kycRiskScoreHistory: [Object] (optional, superseded assessments, oldest first),
 //   isActive: Boolean,
 //   createdAt: Date,
 //   updatedAt: Date
 // }
+//
+// Risk assessment is per bank account, not per client: each banking relationship
+// has its own jurisdiction, product mix and review cycle, so a client banking in
+// two places carries two assessments with two review dates.
+
+// GDPR data minimisation (Art. 5(1)(c)), matching the clientEntities publications:
+// the KYC risk assessment is not shipped by the broad account-list publications —
+// that would put the whole firm's risk scoring in every staff browser. It comes
+// one owner at a time via the 'bankAccounts.details' publication.
+export const BANK_ACCOUNT_LIST_FIELDS = {
+  fields: {
+    kycRiskScore: 0,
+    kycRiskScoreHistory: 0
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Joint accounts
+// ---------------------------------------------------------------------------
+//
+// A joint account is held by several client entities — typically a couple. It is
+// ONE account at the bank, so it is ONE row here, with `holderEntityIds` listing
+// every holder.
+//
+// `entityId` remains the PRIMARY holder and keeps its old meaning, so the many
+// existing `{ entityId }` queries stay correct: they resolve the account to a
+// real owner, just not necessarily the only one. Code that must see an account
+// from ANY holder's point of view (is this entity a client? which accounts does
+// this entity have?) uses `accountHolderSelector` / `isAccountHolder` below.
+//
+// This replaces an earlier workaround where a joint account was either one row
+// per co-holder (duplicating the account, and stamping holdings with only one
+// holder's id) or a single combined pseudo-entity such as "David & Bethany
+// WARKENTIN" — which put a person who does not exist in the client list.
+
+/** Every entity id holding this account, primary first. */
+export function getAccountHolderIds(account) {
+  if (!account) return [];
+  const ids = Array.isArray(account.holderEntityIds) ? [...account.holderEntityIds] : [];
+  // entityId is the primary holder and is always part of the set, even if an
+  // older row predates holderEntityIds or omitted it.
+  if (account.entityId && !ids.includes(account.entityId)) ids.unshift(account.entityId);
+  return ids;
+}
+
+/** Is `ownerId` (entity id, or a legacy user id) a holder of this account? */
+export function isAccountHolder(account, ownerId) {
+  if (!account || !ownerId) return false;
+  if (account.userId === ownerId) return true;
+  return getAccountHolderIds(account).includes(ownerId);
+}
+
+/**
+ * Mongo selector matching accounts held by any of `ownerIds` — as primary
+ * holder, co-holder, or under a legacy userId. Use this wherever "the accounts
+ * belonging to this client" is the question; a bare `{ entityId }` silently
+ * drops the other holders of a joint account.
+ */
+export function accountHolderSelector(ownerIds) {
+  const ids = Array.isArray(ownerIds) ? ownerIds.filter(Boolean) : [ownerIds].filter(Boolean);
+  if (ids.length === 0) return { _id: null };
+  return {
+    $or: [
+      { entityId: { $in: ids } },
+      { holderEntityIds: { $in: ids } },
+      { userId: { $in: ids } }
+    ]
+  };
+}
+
+/** True when the account has more than one holder. */
+export function isJointAccount(account) {
+  return getAccountHolderIds(account).length > 1;
+}
+
+/**
+ * Display name for a set of holders: "WARKENTIN David & Bethany" when they share
+ * a surname, otherwise "David WARKENTIN & Bethany SMITH". `holders` are entity
+ * documents; callers resolve the ids first.
+ */
+export function buildJointAccountName(holders) {
+  const people = (holders || []).filter(Boolean);
+  if (people.length === 0) return '';
+
+  const nameOf = (e) => {
+    const p = e.profile || {};
+    if (p.companyName) return p.companyName;
+    return `${p.lastName || ''} ${p.firstName || ''}`.trim();
+  };
+
+  if (people.length === 1) return nameOf(people[0]);
+
+  const surnames = people.map(e => (e.profile?.lastName || '').trim().toUpperCase());
+  const allPersons = people.every(e => !e.profile?.companyName);
+  const sharedSurname = allPersons && surnames[0] && surnames.every(s => s === surnames[0]);
+
+  if (sharedSurname) {
+    // "WARKENTIN David & Bethany" — the couple reads as one household
+    const firstNames = people.map(e => (e.profile?.firstName || '').trim()).filter(Boolean);
+    return `${people[0].profile.lastName} ${firstNames.join(' & ')}`.trim();
+  }
+
+  return people.map(nameOf).filter(Boolean).join(' & ');
+}
 
 // Helper functions for bank account management
 export const BankAccountHelpers = {
@@ -40,10 +191,14 @@ export const BankAccountHelpers = {
     return BankAccountsCollection.find({ userId: userId, isActive: true }, { sort: { createdAt: -1 } });
   },
 
-  // Get all bank accounts for a client entity
+  // Get all bank accounts for a client entity, including joint accounts where
+  // the entity is a co-holder rather than the primary holder.
   getEntityBankAccounts(entityId) {
     check(entityId, String);
-    return BankAccountsCollection.find({ entityId: entityId, isActive: true }, { sort: { createdAt: -1 } });
+    return BankAccountsCollection.find(
+      { ...accountHolderSelector([entityId]), isActive: true },
+      { sort: { createdAt: -1 } }
+    );
   },
 
   // Add a new bank account for a user
@@ -99,7 +254,7 @@ export const BankAccountHelpers = {
   },
 
   // Add a new bank account for a client entity
-  async addEntityBankAccount(entityId, bankId, accountNumber, referenceCurrency, accountType = 'personal', accountStructure = 'direct', { name = null, lifeInsuranceCompany = null, relationshipManagerId = null, backupRmIds = null, beneficialOwnerIds = null, authorizedOverdraft = null, comment = null, authorizedEmail = null, authorizedCcEmails = null, authorizedPhone = null } = {}) {
+  async addEntityBankAccount(entityId, bankId, accountNumber, referenceCurrency, accountType = 'personal', accountStructure = 'direct', { name = null, lifeInsuranceCompany = null, relationshipManagerId = null, backupRmIds = null, beneficialOwnerIds = null, authorizedOverdraft = null, comment = null, authorizedEmails = null, authorizedEmail = null, authorizedCcEmails = null, authorizedPhone = null } = {}) {
     check(entityId, String);
     check(bankId, String);
     check(accountNumber, String);
@@ -147,25 +302,16 @@ export const BankAccountHelpers = {
       accountData.comment = comment.trim();
     }
 
-    if (authorizedEmail && authorizedEmail.trim()) {
-      const email = authorizedEmail.trim();
-      if (!EMAIL_REGEX.test(email)) {
-        throw new Error(`Invalid authorizedEmail: ${email}`);
-      }
-      accountData.authorizedEmail = email;
-    }
-    if (Array.isArray(authorizedCcEmails) && authorizedCcEmails.length > 0) {
-      const cleaned = authorizedCcEmails
-        .map(e => (typeof e === 'string' ? e.trim() : ''))
-        .filter(e => e.length > 0);
-      for (const cc of cleaned) {
-        if (!EMAIL_REGEX.test(cc)) {
-          throw new Error(`Invalid authorizedCcEmails entry: ${cc}`);
-        }
-      }
-      if (cleaned.length > 0) {
-        accountData.authorizedCcEmails = cleaned;
-      }
+    // Authorized emails: the list is canonical; legacy callers may still pass the
+    // single address / CC pair, which is folded into it.
+    const emails = normalizeAuthorizedEmails([
+      ...(Array.isArray(authorizedEmails) ? authorizedEmails : []),
+      authorizedEmail,
+      ...(Array.isArray(authorizedCcEmails) ? authorizedCcEmails : [])
+    ]);
+    if (emails.length > 0) {
+      accountData.authorizedEmails = emails;
+      accountData.authorizedEmail = emails[0];
     }
     if (authorizedPhone && authorizedPhone.trim()) {
       const phone = authorizedPhone.trim();
@@ -183,7 +329,7 @@ export const BankAccountHelpers = {
     check(accountId, String);
     check(updates, Object);
 
-    const allowedFields = ['name', 'bankId', 'accountNumber', 'referenceCurrency', 'accountType', 'accountStructure', 'lifeInsuranceCompany', 'relationshipManagerId', 'backupRmIds', 'beneficialOwnerIds', 'authorizedOverdraft', 'comment', 'introducerId', 'authorizedEmail', 'authorizedCcEmails', 'authorizedPhone'];
+    const allowedFields = ['name', 'bankId', 'accountNumber', 'referenceCurrency', 'accountType', 'accountStructure', 'lifeInsuranceCompany', 'relationshipManagerId', 'backupRmIds', 'beneficialOwnerIds', 'authorizedOverdraft', 'comment', 'introducerId', 'authorizedEmails', 'authorizedEmail', 'authorizedCcEmails', 'authorizedPhone', 'holderEntityIds'];
     const filteredUpdates = {};
 
     allowedFields.forEach(field => {
@@ -192,32 +338,37 @@ export const BankAccountHelpers = {
       }
     });
 
+    // The primary holder is always part of the holder set — otherwise an account
+    // edited to add a co-holder could drop its own owner out of the list.
+    if (filteredUpdates.holderEntityIds !== undefined) {
+      const account = await BankAccountsCollection.findOneAsync(accountId);
+      const ids = Array.isArray(filteredUpdates.holderEntityIds)
+        ? filteredUpdates.holderEntityIds.filter(id => typeof id === 'string' && id)
+        : [];
+      const primary = filteredUpdates.entityId || account?.entityId;
+      if (primary && !ids.includes(primary)) ids.unshift(primary);
+      filteredUpdates.holderEntityIds = [...new Set(ids)];
+    }
+
     if (filteredUpdates.referenceCurrency) {
       filteredUpdates.referenceCurrency = filteredUpdates.referenceCurrency.toUpperCase();
     }
 
-    if (filteredUpdates.authorizedEmail !== undefined) {
-      const email = typeof filteredUpdates.authorizedEmail === 'string'
-        ? filteredUpdates.authorizedEmail.trim()
-        : '';
-      if (email && !EMAIL_REGEX.test(email)) {
-        throw new Error(`Invalid authorizedEmail: ${email}`);
-      }
-      filteredUpdates.authorizedEmail = email;
-    }
-    if (filteredUpdates.authorizedCcEmails !== undefined) {
-      const arr = Array.isArray(filteredUpdates.authorizedCcEmails)
-        ? filteredUpdates.authorizedCcEmails
-        : [];
-      const cleaned = arr
-        .map(e => (typeof e === 'string' ? e.trim() : ''))
-        .filter(e => e.length > 0);
-      for (const cc of cleaned) {
-        if (!EMAIL_REGEX.test(cc)) {
-          throw new Error(`Invalid authorizedCcEmails entry: ${cc}`);
-        }
-      }
-      filteredUpdates.authorizedCcEmails = cleaned;
+    // Authorized emails: any of the three fields on the payload rewrites the
+    // canonical list; the legacy mirror follows and the old CC list is dropped.
+    let unsetFields = null;
+    if (filteredUpdates.authorizedEmails !== undefined
+        || filteredUpdates.authorizedEmail !== undefined
+        || filteredUpdates.authorizedCcEmails !== undefined) {
+      const emails = normalizeAuthorizedEmails([
+        ...(Array.isArray(filteredUpdates.authorizedEmails) ? filteredUpdates.authorizedEmails : []),
+        filteredUpdates.authorizedEmail,
+        ...(Array.isArray(filteredUpdates.authorizedCcEmails) ? filteredUpdates.authorizedCcEmails : [])
+      ]);
+      filteredUpdates.authorizedEmails = emails;
+      filteredUpdates.authorizedEmail = emails[0] || '';
+      delete filteredUpdates.authorizedCcEmails;
+      unsetFields = { authorizedCcEmails: '' };
     }
     if (filteredUpdates.authorizedPhone !== undefined) {
       const phone = typeof filteredUpdates.authorizedPhone === 'string'
@@ -236,16 +387,16 @@ export const BankAccountHelpers = {
         delete filteredUpdates.authorizedOverdraft;
         return await BankAccountsCollection.updateAsync(accountId, {
           $set: { ...filteredUpdates, updatedAt: new Date() },
-          $unset: { authorizedOverdraft: '' }
+          $unset: { authorizedOverdraft: '', ...(unsetFields || {}) }
         });
       }
     }
 
     filteredUpdates.updatedAt = new Date();
 
-    return await BankAccountsCollection.updateAsync(accountId, {
-      $set: filteredUpdates
-    });
+    const modifier = { $set: filteredUpdates };
+    if (unsetFields) modifier.$unset = unsetFields;
+    return await BankAccountsCollection.updateAsync(accountId, modifier);
   },
 
   // Deactivate a bank account (soft delete)

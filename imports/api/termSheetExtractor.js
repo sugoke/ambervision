@@ -8,6 +8,12 @@ import { BUILT_IN_TEMPLATES } from './templates';
 import { SecuritiesMetadataHelpers } from './securitiesMetadata';
 import { normalizeExchangeForEOD } from '/imports/utils/tickerUtils';
 import { validateISIN, cleanISIN } from '/imports/utils/isinValidator';
+import {
+  TERMSHEET_SOURCES,
+  buildTermsheetFilename,
+  termsheetUrl,
+  writeTermsheetFile
+} from './documentStorage';
 
 // Anthropic API configuration (same as riskAnalysis.js)
 const ANTHROPIC_API_KEY = Meteor.settings.private?.ANTHROPIC_API_KEY;
@@ -15,79 +21,40 @@ const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_MODEL = 'claude-opus-4-7';
 
 if (Meteor.isServer) {
-  // Node.js imports for file system operations
-  const fs = require('fs');
-  const path = require('path');
-
-  /**
-   * Save the term sheet PDF file during extraction
-   * This allows the file to be available on the report page without re-uploading
-   * @param {string} base64Data - Base64 encoded PDF content
-   * @param {Object} product - The product document with isin and title
-   * @param {string} productId - The product ID
-   * @param {string} userId - The user ID who uploaded
-   * @returns {Object|null} - The termSheet object to store in the product, or null on failure
-   */
   /**
    * Build termSheet metadata (URL, filename) without writing the file yet.
    * This is called BEFORE product insertion so the termSheet field is included
    * in the initial insert, avoiding race conditions with Meteor hot-reload.
+   *
+   * Naming and directory come from imports/api/documentStorage.js, so a term
+   * sheet stored here, uploaded later on the product report, or promoted from
+   * an order's termsheet evidence all resolve to the same file.
    */
   function buildTermSheetMetadata(product, userId) {
-    const isin = product.isin || 'NO_ISIN';
-    const title = product.title || 'Untitled_Product';
-
-    const sanitizedIsin = isin.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const sanitizedTitle = title.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
-    const sanitizedFilename = `${sanitizedIsin}_${sanitizedTitle}.pdf`;
-
+    const filename = buildTermsheetFilename(product);
     return {
-      url: `/termsheets/${sanitizedFilename}`,
-      filename: sanitizedFilename,
+      url: termsheetUrl(filename),
+      filename,
       originalFilename: 'termsheet.pdf',
       uploadedAt: new Date(),
-      uploadedBy: userId
+      uploadedBy: userId,
+      source: TERMSHEET_SOURCES.EXTRACTION
     };
   }
 
   /**
    * Write the termsheet PDF file to disk.
    *
-   * Called AFTER product insertion. The file is written to a hidden
-   * directory (`.termsheets/`) OUTSIDE of `public/` so Meteor's dev-mode
-   * file watcher doesn't pick it up — writing into `public/` triggers a
-   * hot code push that reloads the client and wipes all UI state (the
-   * "screen refresh after extraction" bug). The WebApp.connectHandlers
-   * route at server/main.js:/termsheets reads from the same directory so
-   * the URL contract is unchanged.
+   * Called AFTER product insertion. The store lives OUTSIDE of `public/` so
+   * Meteor's dev-mode file watcher doesn't pick it up — writing into `public/`
+   * triggers a hot code push that reloads the client and wipes all UI state
+   * (the "screen refresh after extraction" bug). The WebApp.connectHandlers
+   * route at server/main.js:/termsheets reads from the same directory so the
+   * URL contract is unchanged.
    */
   function writeTermSheetFile(base64Data, termSheetMetadata) {
     try {
-      console.log('[TermSheetExtractor] Writing term sheet file to disk...');
-
-      // Determine the term sheets directory
-      let termsheetsDir;
-      if (process.env.TERMSHEETS_PATH) {
-        termsheetsDir = process.env.TERMSHEETS_PATH;
-      } else {
-        let projectRoot = process.cwd();
-        if (projectRoot.includes('.meteor')) {
-          projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
-        }
-        // Hidden directory (dotfile) — Meteor's build watcher ignores it.
-        termsheetsDir = path.join(projectRoot, '.termsheets');
-      }
-
-      // Create directory if it doesn't exist
-      if (!fs.existsSync(termsheetsDir)) {
-        fs.mkdirSync(termsheetsDir, { recursive: true });
-      }
-
-      // Decode base64 to buffer and write file
-      const fileBuffer = Buffer.from(base64Data, 'base64');
-      const filePath = path.join(termsheetsDir, termSheetMetadata.filename);
-      fs.writeFileSync(filePath, fileBuffer);
-
+      const filePath = writeTermsheetFile(termSheetMetadata.filename, Buffer.from(base64Data, 'base64'));
       console.log(`[TermSheetExtractor] Term sheet saved: ${filePath}`);
       return true;
     } catch (error) {

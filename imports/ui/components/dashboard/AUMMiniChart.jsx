@@ -112,10 +112,18 @@ const AUMMiniChart = ({ sessionId, viewAsFilter, currency = 'EUR', isMobile = fa
     const change = last - first;
     const changePercent = first > 0 ? ((change / first) * 100) : 0;
 
+    // Sign, colour and digits all have to agree with the number as displayed.
+    // The direction used to come from the raw change while the text came from
+    // toFixed(1), so a week that moved -0.04% rendered as a red "-0.0%" — a loss
+    // of nothing. Anything that rounds away to zero is flat, and shown as such.
+    const displayPercent = Number(changePercent.toFixed(1));
+
     return {
       amount: change,
       percent: changePercent,
-      isPositive: change >= 0
+      displayPercent,
+      isFlat: displayPercent === 0,
+      isPositive: displayPercent > 0
     };
   };
 
@@ -128,6 +136,20 @@ const AUMMiniChart = ({ sessionId, viewAsFilter, currency = 'EUR', isMobile = fa
       maximumFractionDigits: 0
     }).format(value);
   };
+
+  const yBounds = (() => {
+    const values = (chartData?.datasets?.[0]?.data || []).filter(v => typeof v === 'number' && isFinite(v));
+    if (values.length < 2) return {};
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const level = Math.abs((min + max) / 2);
+    if (level === 0) return {};
+    const minSpan = level * 0.01;
+    const span = max - min;
+    if (span >= minSpan) return {};
+    const pad = (minSpan - span) / 2;
+    return { min: min - pad, max: max + pad };
+  })();
 
   const chartOptions = {
     responsive: true,
@@ -163,7 +185,12 @@ const AUMMiniChart = ({ sessionId, viewAsFilter, currency = 'EUR', isMobile = fa
         display: false,
         grid: {
           display: false
-        }
+        },
+        // Chart.js fits the axis to the data range, so a week that moved 0.04%
+        // filled the whole card and read as a dramatic swing next to a 0.0%
+        // label. Guarantee the axis spans at least 1% of the AUM level: real
+        // moves still fill the chart, noise stays visually flat.
+        ...yBounds
       }
     },
     interaction: {
@@ -244,9 +271,13 @@ const AUMMiniChart = ({ sessionId, viewAsFilter, currency = 'EUR', isMobile = fa
           <div style={{
             fontSize: '0.85rem',
             fontWeight: '600',
-            color: change.isPositive ? 'var(--gain-color)' : 'var(--loss-color)'
+            color: change.isFlat
+              ? 'var(--neutral-color)'
+              : (change.isPositive ? 'var(--gain-color)' : 'var(--loss-color)')
           }}>
-            {change.isPositive ? '+' : ''}{change.percent.toFixed(1)}%
+            {change.isFlat
+              ? '0.0%'
+              : `${change.isPositive ? '+' : ''}${change.displayPercent.toFixed(1)}%`}
           </div>
         )}
       </div>

@@ -1,6 +1,17 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 const MarketWatchlistCard = ({ watchlist, onTickerClick }) => {
+  // Logos that failed to load, by fullTicker. Tracked in React state (not a
+  // direct DOM mutation in onError) so React's own reconciliation never finds
+  // the <img> node it expects gone — a manual `parentElement.textContent =`
+  // there caused "Failed to execute 'removeChild'" crashes (blank screen, no
+  // ErrorBoundary above this card) whenever the watchlist re-rendered after,
+  // e.g. a View As switch.
+  const [failedLogos, setFailedLogos] = useState(() => new Set());
+  const handleLogoError = (fullTicker) => {
+    setFailedLogos(prev => (prev.has(fullTicker) ? prev : new Set(prev).add(fullTicker)));
+  };
+
   const formatPrice = (price) => {
     if (!price && price !== 0) return '-';
     return price.toLocaleString('en-US', {
@@ -220,15 +231,12 @@ const MarketWatchlistCard = ({ watchlist, onTickerClick }) => {
                   <td style={styles.td}>
                     <div style={styles.tickerCell}>
                       <div style={styles.logo}>
-                        {hasEodTicker(ticker.fullTicker) ? (
+                        {hasEodTicker(ticker.fullTicker) && !failedLogos.has(ticker.fullTicker) ? (
                           <img
                             src={getLogoUrl(ticker.fullTicker)}
                             alt={ticker.symbol}
                             style={styles.logoImg}
-                            onError={(e) => {
-                              e.target.style.display = 'none';
-                              e.target.parentElement.textContent = getTickerInitials(ticker.name || ticker.symbol);
-                            }}
+                            onError={() => handleLogoError(ticker.fullTicker)}
                           />
                         ) : (
                           getTickerInitials(ticker.name || ticker.symbol)

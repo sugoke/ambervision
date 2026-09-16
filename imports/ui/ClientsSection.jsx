@@ -4,10 +4,14 @@ import { Meteor } from 'meteor/meteor';
 import { USER_ROLES } from '/imports/api/users';
 import { ClientEntitiesCollection, ENTITY_TYPES, ENTITY_STATUSES, ClientEntityHelpers } from '/imports/api/clientEntities';
 import { UserEntityAccessCollection } from '/imports/api/userEntityAccess';
-import { BankAccountsCollection } from '/imports/api/bankAccounts';
+import { BankAccountsCollection, getAccountHolderIds, isJointAccount, buildJointAccountName } from '/imports/api/bankAccounts';
 import { BanksCollection } from '/imports/api/banks';
 import UserDetailsScreen from './UserDetailsScreen.jsx';
 import LiquidGlassCard from './components/LiquidGlassCard.jsx';
+
+// Archived is a stored flag, independent of whether the entity holds accounts
+// (see ClientEntityHelpers.getComputedEntityStatus, which checks it first).
+const isArchivedEntity = (entity) => entity?.status === ENTITY_STATUSES.ARCHIVED;
 
 // Entity sub-tabs
 const ENTITY_SUB_TABS = {
@@ -97,23 +101,25 @@ const ClientsSection = ({ user: currentUser, theme }) => {
     // Query access records
     const allAccess = UserEntityAccessCollection.find({ isActive: true }).fetch();
 
-    // All active bank accounts with entityId — deduplicated per entity by
-    // accountNumber + bankId. The entityId MUST be part of the key: joint accounts are
-    // held by several entities under the same account number at the same bank, and a
-    // key without entityId silently drops all but one holder (they then look like
-    // prospects while their detail page shows them as clients).
+    // All active bank accounts with entityId — deduplicated by accountNumber +
+    // bankId. A joint account is now ONE row listing every holder, so the account
+    // number identifies it uniquely; each holder is counted as a client through
+    // holderEntityIds below rather than through a row of their own.
     const allAccountsRaw = BankAccountsCollection.find({ entityId: { $exists: true }, isActive: true }).fetch();
     const seen = new Set();
     const bankAccountsData = allAccountsRaw.filter(a => {
-      const key = `${a.entityId}_${a.accountNumber}_${a.bankId}`;
+      const key = `${a.accountNumber}_${a.bankId}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
     const banksData = BanksCollection.find().fetch();
 
-    // Build set of entity IDs that have bank accounts (= clients)
-    const accountEntityIds = new Set(bankAccountsData.map(a => a.entityId));
+    // Entity IDs holding a bank account (= clients, as opposed to prospects).
+    // Every holder of a joint account counts, not just the primary one.
+    const accountEntityIds = new Set(
+      bankAccountsData.flatMap(a => getAccountHolderIds(a))
+    );
 
     return {
       entities: allEntities,
@@ -229,49 +235,149 @@ const ClientsSection = ({ user: currentUser, theme }) => {
     isBeneficialOwner: entityBeneficiaryRoles[e._id]?.length > 0
   });
 
-  // Filter entities by sub-tab, status, and search
-  const filteredEntities = entities
-    .filter(entity => {
-      const normalizedType = entity.type === 'life_insurance' ? ENTITY_TYPES.COMPANY : entity.type;
-      if (entitySubTab === 'clients' && !entityIdsWithAccounts.has(entity._id)) return false;
-      if (typeFilter && normalizedType !== typeFilter) return false;
-      if (entityStatusFilter !== 'all' && getEntityComputedStatus(entity) !== entityStatusFilter) return false;
-      if (!searchTerm) return true;
-      const search = searchTerm.toLowerCase();
-      return getEntityDisplayName(entity).toLowerCase().includes(search)
-        || getEntitySortName(entity).toLowerCase().includes(search);
-    })
-    .sort((a, b) => getEntitySortName(a).localeCompare(getEntitySortName(b)));
+  // ── Client groups ──────────────────────────────────────────────────────
+  // A joint account is held by several entities (a couple). They are separate
+  // legal persons — so the Entities tab lists them individually — but they are
+  // ONE client relationship, and the Clients tab shows them on one line.
+  //
+  // Entities are grouped by co-holding: any two entities sharing an account land
+  // in the same group, transitively (union-find), so a chain of shared accounts
+  // collapses into a single client.
+  const clientGroups = useMemo(() => {
+    const parent = new Map();
+    const find = (x) => {
+      while (parent.get(x) !== x) {
+        parent.set(x, parent.get(parent.get(x)));
+        x = parent.get(x);
+      }
+      return x;
+    };
+    const union = (a, b) => {
+      const ra = find(a);
+      const rb = find(b);
+      if (ra !== rb) parent.set(ra, rb);
+    };
 
-  // Role priority for sorting (lower number = higher priority)
-  // Entity counts by type
+    entityIdsWithAccounts.forEach(id => parent.set(id, id));
+    allBankAccounts.forEach(acc => {
+      const holders = getAccountHolderIds(acc).filter(id => parent.has(id));
+      for (let i = 1; i < holders.length; i++) union(holders[0], holders[i]);
+    });
+
+    // Collect members per root, and remember which joint account tied them
+    // together so the group can borrow the bank's own wording for the couple.
+    const byRoot = new Map();
+    parent.forEach((_, id) => {
+      const root = find(id);
+      if (!byRoot.has(root)) byRoot.set(root, []);
+      const ent = entities.find(e => e._id === id);
+      if (ent) byRoot.get(root).push(ent);
+    });
+
+    const jointAccountByRoot = new Map();
+    allBankAccounts.forEach(acc => {
+      const holders = getAccountHolderIds(acc).filter(id => parent.has(id));
+      if (holders.length < 2) return;
+      const root = find(holders[0]);
+      if (!jointAccountByRoot.has(root)) jointAccountByRoot.set(root, acc);
+    });
+
+    const groups = [];
+    byRoot.forEach((members, root) => {
+      if (members.length === 0) return;
+      const jointAccount = jointAccountByRoot.get(root);
+      // The account's primary holder leads the group; that is the profile the
+      // row opens, and the one the bank files the holdings under.
+      const primary = (jointAccount && members.find(m => m._id === jointAccount.entityId)) || members[0];
+      const ordered = [primary, ...members.filter(m => m._id !== primary._id)];
+      groups.push({
+        key: root,
+        members: ordered,
+        primary,
+        isJoint: members.length > 1,
+        // Prefer the bank's own label for the couple ("WARKENTIN David & Bethany"),
+        // which reads the way the desk says it; fall back to composing one.
+        displayName: members.length > 1
+          ? (formatAccountName(jointAccount?.name) || buildJointAccountName(ordered))
+          : getEntitySortName(primary)
+      });
+    });
+    return groups;
+  }, [entities, allBankAccounts, entityIdsWithAccounts]);
+
+  // Rows for the sidebar: one per entity on the Entities tab, one per client
+  // relationship (joint holders collapsed) on the Clients tab.
+  const filteredRows = useMemo(() => {
+    const search = searchTerm.trim().toLowerCase();
+    const matchesSearch = (members) => !search || members.some(m =>
+      getEntityDisplayName(m).toLowerCase().includes(search)
+      || getEntitySortName(m).toLowerCase().includes(search)
+    );
+
+    const rows = entitySubTab === 'clients'
+      ? clientGroups
+      : entities.map(e => ({ key: e._id, members: [e], primary: e, isJoint: false, displayName: getEntitySortName(e) }));
+
+    return rows
+      .filter(row => {
+        // A group's type/status is that of its lead entity — joint holders are
+        // the same kind of client and share the relationship's status.
+        const primary = row.primary;
+        const normalizedType = primary.type === 'life_insurance' ? ENTITY_TYPES.COMPANY : primary.type;
+        if (typeFilter && normalizedType !== typeFilter) return false;
+        if (entityStatusFilter === 'all') {
+          // Unfiltered means "the book as it stands": archived relationships are
+          // left out so the list matches the counts above it. They are one click
+          // away under the Archived filter.
+          if (isArchivedEntity(primary)) return false;
+        } else if (getEntityComputedStatus(primary) !== entityStatusFilter) {
+          return false;
+        }
+        return matchesSearch(row.members);
+      })
+      .sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }, [entities, clientGroups, entitySubTab, typeFilter, entityStatusFilter, searchTerm, entityIdsWithAccounts, entityStakeholderRoles, entityBeneficiaryRoles]);
+
+  // Entity counts by type. The Clients tab counts client RELATIONSHIPS, so a
+  // couple holding one joint account counts once; the Entities tab counts every
+  // legal person separately.
+  //
+  // Archived entities are excluded: these badges answer "how many clients do we
+  // have", and an archived relationship is no longer one. They stay reachable
+  // through the Archived status filter, which keeps its own count.
   const entityTypeCounts = useMemo(() => {
     const all = { total: 0, clients: 0, [ENTITY_TYPES.PHYSICAL_PERSON]: 0, [ENTITY_TYPES.COMPANY]: 0 };
     const clientsOnly = { [ENTITY_TYPES.PHYSICAL_PERSON]: 0, [ENTITY_TYPES.COMPANY]: 0 };
     entities.forEach(e => {
+      if (isArchivedEntity(e)) return;
       all.total++;
       const normalizedType = e.type === 'life_insurance' ? ENTITY_TYPES.COMPANY : e.type;
       if (all[normalizedType] !== undefined) all[normalizedType]++;
-      if (entityIdsWithAccounts.has(e._id)) {
-        all.clients++;
-        if (clientsOnly[normalizedType] !== undefined) clientsOnly[normalizedType]++;
-      }
+    });
+    clientGroups.forEach(group => {
+      const primary = group.primary;
+      if (isArchivedEntity(primary)) return;
+      all.clients++;
+      const normalizedType = primary.type === 'life_insurance' ? ENTITY_TYPES.COMPANY : primary.type;
+      if (clientsOnly[normalizedType] !== undefined) clientsOnly[normalizedType]++;
     });
     return { all, clientsOnly };
-  }, [entities, entityIdsWithAccounts]);
+  }, [entities, clientGroups]);
 
-  // Entity status counts — respects entitySubTab and typeFilter
+  // Entity status counts — respects entitySubTab and typeFilter, and counts one
+  // per client relationship on the Clients tab (see clientGroups).
   const entityStatusCounts = useMemo(() => {
-    let filtered = entities;
-    if (entitySubTab === 'clients') filtered = filtered.filter(e => entityIdsWithAccounts.has(e._id));
-    if (typeFilter) filtered = filtered.filter(e => (e.type === 'life_insurance' ? ENTITY_TYPES.COMPANY : e.type) === typeFilter);
-    const counts = { all: filtered.length, active: 0, prospect: 0, archived: 0 };
-    filtered.forEach(e => {
+    let subjects = entitySubTab === 'clients'
+      ? clientGroups.map(g => g.primary)
+      : entities;
+    if (typeFilter) subjects = subjects.filter(e => (e.type === 'life_insurance' ? ENTITY_TYPES.COMPANY : e.type) === typeFilter);
+    const counts = { all: subjects.length, active: 0, prospect: 0, archived: 0 };
+    subjects.forEach(e => {
       const status = getEntityComputedStatus(e);
       if (counts[status] !== undefined) counts[status]++;
     });
     return counts;
-  }, [entities, entitySubTab, typeFilter, entityIdsWithAccounts, entityStakeholderRoles, entityBeneficiaryRoles]);
+  }, [entities, clientGroups, entitySubTab, typeFilter, entityIdsWithAccounts, entityStakeholderRoles, entityBeneficiaryRoles]);
 
   const canCreateEntities = currentUser?.role === USER_ROLES.ADMIN || currentUser?.role === USER_ROLES.SUPERADMIN || currentUser?.role === USER_ROLES.COMPLIANCE;
 
@@ -637,21 +743,26 @@ const ClientsSection = ({ user: currentUser, theme }) => {
               <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
                 Loading entities...
               </div>
-            ) : filteredEntities.length === 0 ? (
+            ) : filteredRows.length === 0 ? (
               <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
                 {searchTerm ? 'No entities match your search' : 'No entities found'}
               </div>
             ) : (
-              filteredEntities.map(entity => {
-                const displayName = getEntitySortName(entity);
-                const initials = getEntityInitials(entity);
+              filteredRows.map(row => {
+                // A row is one entity, or one client relationship whose joint
+                // holders share a line. The lead entity drives type and status.
+                const entity = row.primary;
+                const displayName = row.displayName;
+                const initials = row.isJoint
+                  ? displayName.split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase()
+                  : getEntityInitials(entity);
                 const typeDisplay = getEntityTypeDisplay(entity.type);
                 const statusDisplay = ClientEntityHelpers.getEntityStatusDisplay(getEntityComputedStatus(entity));
-                const isSelected = selectedEntityId === entity._id;
+                const isSelected = row.members.some(m => m._id === selectedEntityId);
 
                 return (
                   <div
-                    key={entity._id}
+                    key={row.key}
                     onClick={() => { setSelectedEntityId(entity._id); }}
                     style={{
                       padding: '10px 12px',
@@ -701,6 +812,16 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                           }}>
                             {typeDisplay.label}
                           </span>
+                          {row.isJoint && (
+                            <span style={{
+                              fontSize: '0.6rem', fontWeight: '600', padding: '1px 5px', borderRadius: '3px',
+                              background: isSelected ? 'rgba(255,255,255,0.15)' : 'rgba(139, 92, 246, 0.12)',
+                              color: isSelected ? 'rgba(255,255,255,0.8)' : '#8b5cf6',
+                              whiteSpace: 'nowrap', flexShrink: 0
+                            }} title={row.members.map(m => getEntitySortName(m)).join(' & ')}>
+                              Joint
+                            </span>
+                          )}
                           {(entity.isInsurance || entity.type === 'life_insurance') && (
                             <span style={{
                               fontSize: '0.6rem', fontWeight: '600', padding: '1px 5px', borderRadius: '3px',
@@ -759,6 +880,32 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                         </div>
                       </div>
                     </div>
+
+                    {/* Joint holders are one client but separate legal persons —
+                        each keeps their own KYC, documents and profile, so the
+                        open row lets you jump straight to either file. */}
+                    {row.isJoint && isSelected && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '8px', paddingLeft: '46px' }}>
+                        {row.members.map(member => {
+                          const isCurrent = member._id === selectedEntityId;
+                          return (
+                            <span
+                              key={member._id}
+                              onClick={(e) => { e.stopPropagation(); setSelectedEntityId(member._id); }}
+                              style={{
+                                fontSize: '0.7rem', fontWeight: '600', padding: '3px 8px', borderRadius: '5px',
+                                cursor: 'pointer', whiteSpace: 'nowrap',
+                                background: isCurrent ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.12)',
+                                color: 'white',
+                                border: isCurrent ? '1px solid rgba(255,255,255,0.6)' : '1px solid transparent'
+                              }}
+                            >
+                              {getEntitySortName(member)}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 );
               })
@@ -773,7 +920,9 @@ const ClientsSection = ({ user: currentUser, theme }) => {
           color: 'var(--text-secondary)',
           textAlign: 'center'
         }}>
-          {`${filteredEntities.length} entit${filteredEntities.length !== 1 ? "ies" : "y"}`}
+          {entitySubTab === 'clients'
+            ? `${filteredRows.length} client${filteredRows.length !== 1 ? 's' : ''}`
+            : `${filteredRows.length} entit${filteredRows.length !== 1 ? 'ies' : 'y'}`}
         </div>
       </div>
 
@@ -799,9 +948,12 @@ const ClientsSection = ({ user: currentUser, theme }) => {
           <div style={{ padding: '1.5rem 2rem', overflowY: 'auto', height: '100%' }}>
             {/* Clients Table */}
             {(() => {
-              const clientEntities = entities
-                .filter(e => entityIdsWithAccounts.has(e._id))
-                .sort((a, b) => getEntitySortName(a).localeCompare(getEntitySortName(b)));
+              // One row per client relationship, so a couple's joint account is
+              // a single client here too — matching the sidebar. Archived
+              // relationships are left out, as in the sidebar counts.
+              const clientRows = clientGroups
+                .filter(row => !isArchivedEntity(row.primary))
+                .sort((a, b) => a.displayName.localeCompare(b.displayName));
               return (
                 <div style={{ marginBottom: '2.5rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
@@ -809,9 +961,9 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                     <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: '700', color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
                       Entities
                     </h3>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{clientEntities.length}</span>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{clientRows.length}</span>
                   </div>
-                  {clientEntities.length === 0 ? (
+                  {clientRows.length === 0 ? (
                     <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)', background: 'var(--bg-secondary)', borderRadius: '10px', fontSize: '0.9rem' }}>No client entities yet</div>
                   ) : (
                     <div style={{ borderRadius: '10px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
@@ -825,18 +977,32 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                           </tr>
                         </thead>
                         <tbody>
-                          {clientEntities.map((ent, i) => {
+                          {clientRows.map((row, i) => {
+                            const ent = row.primary;
                             const typeDisplay = getEntityTypeDisplay(ent.type);
-                            const accountCount = allBankAccounts.filter(a => a.entityId === ent._id).length;
+                            // Count the relationship's accounts once, however many
+                            // of its holders appear on each one.
+                            const memberIds = row.members.map(m => m._id);
+                            const accountCount = allBankAccounts.filter(a =>
+                              getAccountHolderIds(a).some(id => memberIds.includes(id))
+                            ).length;
                             const statusDisplay = ClientEntityHelpers.getEntityStatusDisplay(getEntityComputedStatus(ent));
                             return (
-                              <tr key={ent._id}
+                              <tr key={row.key}
                                 onClick={() => { setSelectedEntityId(ent._id); }}
                                 style={{ cursor: 'pointer', background: i % 2 === 0 ? 'transparent' : 'var(--bg-secondary)', transition: 'background 0.12s' }}
                                 onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-tertiary)'}
                                 onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? 'transparent' : 'var(--bg-secondary)'}
                               >
-                                <td style={{ ...S.td, fontWeight: '600', color: 'var(--text-primary)' }}>{ClientEntityHelpers.getEntityDisplayName(ent)}</td>
+                                <td style={{ ...S.td, fontWeight: '600', color: 'var(--text-primary)' }}>
+                                  {row.displayName}
+                                  {row.isJoint && (
+                                    <span style={{ ...S.badge('#8b5cf6', 'rgba(139, 92, 246, 0.12)'), marginLeft: '8px' }}
+                                      title={row.members.map(m => getEntitySortName(m)).join(' & ')}>
+                                      Joint
+                                    </span>
+                                  )}
+                                </td>
                                 <td style={S.td}><span style={S.badge(typeDisplay.color, typeDisplay.bg)}>{typeDisplay.label}</span></td>
                                 <td style={{ ...S.td, textAlign: 'center', fontWeight: '700', color: 'var(--accent-color)', fontSize: '0.9rem' }}>{accountCount}</td>
                                 <td style={S.td}>
@@ -885,7 +1051,10 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                         const keyB = getEntitySortName(entities.find(e => e._id === b.entityId)) || formatAccountName(b.name) || '';
                         return keyA.localeCompare(keyB);
                       }).map((acc, i) => {
-                        const ent = entities.find(e => e._id === acc.entityId);
+                        const holders = getAccountHolderIds(acc)
+                          .map(id => entities.find(e => e._id === id))
+                          .filter(Boolean);
+                        const ent = holders[0] || entities.find(e => e._id === acc.entityId);
                         const bank = banks.find(b => b._id === acc.bankId);
                         const uboIds = acc.beneficialOwnerIds || (acc.beneficialOwnerId ? [acc.beneficialOwnerId] : []);
                         const ubos = uboIds.map(id => entities.find(e => e._id === id)).filter(Boolean);
@@ -896,7 +1065,15 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                             onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-tertiary)'}
                             onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? 'transparent' : 'var(--bg-secondary)'}
                           >
-                            <td style={{ ...S.td, fontWeight: '600', color: 'var(--text-primary)' }}>{formatAccountName(acc.name) || getEntitySortName(ent) || '-'}</td>
+                            <td style={{ ...S.td, fontWeight: '600', color: 'var(--text-primary)' }}>
+                              {formatAccountName(acc.name) || getEntitySortName(ent) || '-'}
+                              {isJointAccount(acc) && (
+                                <span title={holders.map(h => getEntitySortName(h)).join(' & ')}
+                                  style={{ marginLeft: '6px', padding: '1px 6px', borderRadius: '4px', fontSize: '0.68rem', fontWeight: '600', background: 'rgba(139, 92, 246, 0.12)', color: '#8b5cf6' }}>
+                                  Joint · {holders.length}
+                                </span>
+                              )}
+                            </td>
                             <td style={{ ...S.td, color: 'var(--text-primary)' }}>{bank?.name || '-'}</td>
                             <td style={{ ...S.td, color: 'var(--text-secondary)', fontFamily: "'Roboto Mono', monospace", fontSize: '0.82rem', letterSpacing: '0.03em' }}>{acc.accountNumber}</td>
                             <td style={{ ...S.td, textAlign: 'center' }}>

@@ -1379,7 +1379,7 @@ async function computeDashboardMetrics() {
     const allHoldings = await PMSHoldingsCollection.find({
       isActive: true,
       isLatest: true,
-      marketValue: { $exists: true, $gt: 0 },
+      marketValue: { $exists: true, $ne: null }, // net cash: debit balances count (credit-line accounts are excluded by account)
       portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
       entityId: { $nin: archivedOwners.entityIds },
       userId: { $nin: archivedOwners.userIds },
@@ -1493,10 +1493,15 @@ async function computeDashboardMetrics() {
     startDate.setDate(startDate.getDate() - 7);
     startDate.setHours(0, 0, 0, 0);
 
-    // Exclude CONSOLIDATED snapshots to avoid double-counting with individual portfolio snapshots
+    // Exclude CONSOLIDATED snapshots to avoid double-counting with individual
+    // portfolio snapshots, and the non-investment accounts (credit lines, cards)
+    // that totalAUMInEUR already drops. Without the latter the history carried
+    // the clients' negative credit-line balances while today's point did not, so
+    // the curve stepped up ~EUR 2.6m on its final point and WTD read +4% on a
+    // flat week.
     const wtdSnapshots = await PortfolioSnapshotsCollection.find({
       snapshotDate: { $gte: startDate, $lte: endDate },
-      portfolioCode: { $ne: 'CONSOLIDATED' },
+      portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
       userId: { $nin: archivedOwners.userIds },
       entityId: { $nin: archivedOwners.entityIds }
     }, {

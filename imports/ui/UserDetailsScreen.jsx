@@ -4,18 +4,83 @@ import { Meteor } from 'meteor/meteor';
 import { UsersCollection, USER_ROLES } from '../api/users.js';
 import { ClientEntitiesCollection, ClientEntityHelpers, ENTITY_TYPES, ENTITY_STATUSES } from '../api/clientEntities.js';
 import { UserEntityAccessCollection, ACCESS_LEVELS } from '../api/userEntityAccess.js';
-import { BankAccountsCollection } from '../api/bankAccounts.js';
+import { BankAccountsCollection, accountHolderSelector, getAccountHolderIds, isJointAccount, buildJointAccountName, getAuthorizedEmails } from '../api/bankAccounts.js';
 import { BanksCollection } from '../api/banks.js';
-import { AccountProfilesCollection, PROFILE_TEMPLATES, aggregateToFourCategories } from '../api/accountProfiles.js';
+import { AccountProfilesCollection, PROFILE_TEMPLATES, PROFILE_CATEGORIES, PROFILE_LIMIT_FIELDS, getProfileLimit, aggregateToFourCategories } from '../api/accountProfiles.js';
 import { PortfolioSnapshotsCollection } from '../api/portfolioSnapshots.js';
 import LiquidGlassCard from './components/LiquidGlassCard.jsx';
-import ClientDocumentManager, { KycDocumentManager } from './components/ClientDocumentManager.jsx';
+import ClientDocumentManager, { KycDocumentManager, SingleTypeDocumentManager, IdentityImageSlot } from './components/ClientDocumentManager.jsx';
+import { DOCUMENT_TYPES, REVIEW_YEARS_BY_RISK, computeNextReviewDate, computeNextVisitDate, VISIT_INTERVAL_YEARS } from '../api/clientDocuments.js';
 import Dialog from './Dialog.jsx';
 import { useDialog } from './useDialog.js';
 import { useTheme } from './ThemeContext.jsx';
+import { openDocumentWindow } from './utils/openDocument.js';
+
+// Percentage input used by the investment profile editor.
+// Keeps the "%" inside the field so the value always reads as a percentage.
+const PercentInput = ({ value, onChange, invalid, ariaLabel }) => (
+  <div style={{
+    display: 'flex',
+    alignItems: 'center',
+    flex: 1,
+    minWidth: 0,
+    padding: '6px 8px',
+    border: `1px solid ${invalid ? 'var(--loss-color)' : 'var(--border-color)'}`,
+    borderRadius: '6px',
+    background: 'var(--bg-primary)'
+  }}>
+    <input
+      type="number"
+      min="0"
+      max="100"
+      step="1"
+      aria-label={ariaLabel}
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      onFocus={e => e.target.select()}
+      style={{
+        width: '100%',
+        minWidth: 0,
+        padding: 0,
+        border: 'none',
+        outline: 'none',
+        background: 'transparent',
+        color: invalid ? 'var(--loss-color)' : 'var(--text-primary)',
+        fontFamily: 'inherit',
+        fontSize: '0.82rem',
+        fontWeight: '600',
+        textAlign: 'right'
+      }}
+    />
+    <span style={{ marginLeft: '2px', fontSize: '0.82rem', color: 'var(--text-muted)' }}>%</span>
+  </div>
+);
 
 // Validators for authorized contact fields on bank accounts
 const AUTHORIZED_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Merge the chip list with whatever is still typed in the add box, trim,
+ * de-duplicate case-insensitively and validate. Returns null (after alerting)
+ * on the first invalid address so the caller can abort the save.
+ */
+const collectAuthorizedEmails = (list, pendingInput) => {
+  const seen = new Set();
+  const out = [];
+  for (const raw of [...(list || []), pendingInput]) {
+    const v = typeof raw === 'string' ? raw.trim() : '';
+    if (!v) continue;
+    if (!AUTHORIZED_EMAIL_REGEX.test(v)) {
+      alert(`Authorized email is not valid: ${v}`);
+      return null;
+    }
+    const k = v.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(v);
+  }
+  return out;
+};
 const E164_PHONE_REGEX = /^\+[1-9]\d{1,14}$/;
 
 // Map bank names to their logo files in public/images/logos_banks/
@@ -61,6 +126,39 @@ const EntityField = ({ label, editing, value, display, onChange, type = 'text', 
   </div>
 );
 
+// Display form of a free-text amount ("18000000", "€750,000", "1 200 000 EUR"):
+// the numeric part gets thousands separators, any currency text around it is
+// kept. Values that aren't a single number (ranges, notes) are shown as typed.
+const formatAmountDisplay = (raw) => {
+  if (raw === null || raw === undefined || raw === '') return '';
+  const text = String(raw).trim();
+  const match = text.match(/^([^\d\-]*)(-?[\d][\d\s.,']*)(.*)$/);
+  if (!match) return text;
+  const [, prefix, rawNumber, rawSuffix] = match;
+  // Keep any space between the number and a trailing currency ("1 200 000 EUR").
+  const numberPart = rawNumber.trimEnd();
+  const suffix = rawNumber.slice(numberPart.length) + rawSuffix;
+  // Decide which separator is the decimal mark: the last one, if it is
+  // followed by exactly 1–2 digits and that separator appears only once.
+  const cleaned = numberPart.replace(/[\s']/g, '');
+  const lastSep = Math.max(cleaned.lastIndexOf('.'), cleaned.lastIndexOf(','));
+  let integerDigits = cleaned;
+  let decimals = '';
+  if (lastSep >= 0) {
+    const sepChar = cleaned[lastSep];
+    const after = cleaned.slice(lastSep + 1);
+    const onlyOnce = cleaned.split(sepChar).length === 2;
+    if (onlyOnce && after.length >= 1 && after.length <= 2) {
+      decimals = after;
+      integerDigits = cleaned.slice(0, lastSep);
+    }
+  }
+  integerDigits = integerDigits.replace(/[.,]/g, '');
+  if (!/^-?\d+$/.test(integerDigits)) return text;
+  const grouped = Number(integerDigits).toLocaleString('en-GB');
+  return `${prefix}${grouped}${decimals ? '.' + decimals : ''}${suffix}`;
+};
+
 // Section separator spanning the whole profile grid
 const EntitySectionTitle = ({ children }) => (
   <div style={{
@@ -100,6 +198,24 @@ const YesNoField = ({ label, sublabel, editing, value, onChange }) => (
     )}
   </div>
 );
+
+// Account opening committee outcome. The committee either admits the
+// relationship or turns it down; there is no middle state, so an unanswered
+// value stays null rather than defaulting either way.
+const COMMITTEE_OUTCOMES = [
+  { value: 'accepted', label: 'Accepted', color: 'var(--gain-color)' },
+  { value: 'refused', label: 'Refused', color: 'var(--loss-color)' }
+];
+
+// <input type="date"> only accepts yyyy-mm-dd; stored values may be Date objects
+// (Mongo) or already-formatted strings.
+const toDateInputValue = (value) => {
+  if (!value) return '';
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return typeof value === 'string' ? value : '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
 
 // Single-choice band selector (e.g. wealth / income categories), with optional range sublabels
 const ChoiceField = ({ label, editing, value, onChange, options }) => (
@@ -177,7 +293,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
   const { isDark: isDarkMode } = useTheme(); // v2
   const sessionId = localStorage.getItem('sessionId');
 
-  const { dialogState, showConfirm, hideDialog } = useDialog();
+  const { dialogState, showConfirm, showError, hideDialog } = useDialog();
 
   // State for editing sections
   const [editingBasicInfo, setEditingBasicInfo] = useState(false);
@@ -227,12 +343,11 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
     backupRmIds: [],
     beneficialOwnerIds: [],
     comment: '',
-    authorizedEmail: '',
-    authorizedCcEmails: [],
+    authorizedEmails: [],
     authorizedPhone: ''
   });
-  const [newAccountCcInput, setNewAccountCcInput] = useState('');
-  const [editAccountCcInput, setEditAccountCcInput] = useState('');
+  const [newAccountEmailInput, setNewAccountEmailInput] = useState('');
+  const [editAccountEmailInput, setEditAccountEmailInput] = useState('');
 
   // Bank account edit state
   const [editingBankAccount, setEditingBankAccount] = useState(null);
@@ -269,14 +384,11 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
   });
 
   // Per-account investment profile state
-  // Key: bankAccountId, Value: { maxCash, maxBonds, maxEquities, maxAlternative }
+  // Key: bankAccountId, Value: { min/max for Cash, Bonds, Equities, Alternative }
   const [editingAccountProfile, setEditingAccountProfile] = useState(null); // accountId being edited
   const [accountProfileDraft, setAccountProfileDraft] = useState({
     profileName: '',
-    maxCash: 0,
-    maxBonds: 0,
-    maxEquities: 0,
-    maxAlternative: 0,
+    ...Object.fromEntries(PROFILE_LIMIT_FIELDS.map(field => [field, 0])),
     isProfessionalInvestor: false
   });
 
@@ -295,6 +407,14 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
   const [editingRiskScore, setEditingRiskScore] = useState(false);
   const [savingRiskScore, setSavingRiskScore] = useState(false);
   const [riskScoreModalOpen, setRiskScoreModalOpen] = useState(false);
+  // Which bank account's assessment is open — risk is scored per banking
+  // relationship, so every assessment is bound to one account.
+  const [riskScoreAccountId, setRiskScoreAccountId] = useState(null);
+  const [riskScoreError, setRiskScoreError] = useState(null);
+  // Which assessment is being rendered to PDF, and why the last attempt failed.
+  // Rendering takes a second or two; without a busy state the button looks dead.
+  const [pdfBusyKey, setPdfBusyKey] = useState(null);
+  const [pdfError, setPdfError] = useState(null);
 
   // RM's clients state (for viewing RM profiles)
   const [rmClients, setRmClients] = useState([]);
@@ -315,6 +435,11 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
     if (entityId) {
       Meteor.subscribe('clientEntities.details', sessionId, entityId);
     }
+    // Same minimisation rule for accounts: 'allBankAccounts' omits the KYC risk
+    // assessment, so pull the full documents for the owner being viewed.
+    if (entityId || userId) {
+      Meteor.subscribe('bankAccounts.details', sessionId, entityId || userId);
+    }
     if (userId || entityId) {
       Meteor.subscribe('accountProfiles', sessionId, userId, entityId);
       if (userId) {
@@ -327,10 +452,12 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
     const introducersData = UsersCollection.find({ role: USER_ROLES.INTRODUCER }).fetch();
     const banksData = BanksCollection.find().fetch();
 
-    // Bank accounts: prefer entityId query, fall back to userId
-    const accountQuery = entityId
-      ? { entityId, isActive: true }
-      : userId ? { userId, isActive: true } : { _id: null };
+    // Bank accounts held by this client — as primary holder OR co-holder of a
+    // joint account (a couple's account is one row listing both).
+    const ownerId = entityId || userId;
+    const accountQuery = ownerId
+      ? { ...accountHolderSelector([ownerId]), isActive: true }
+      : { _id: null };
     const accountsData = BankAccountsCollection.find(accountQuery).fetch();
 
     // Life-insurance contracts where this entity is a beneficial owner. These accounts
@@ -611,25 +738,14 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
       return;
     }
 
-    const trimmedEmail = (newAccount.authorizedEmail || '').trim();
-    if (trimmedEmail && !AUTHORIZED_EMAIL_REGEX.test(trimmedEmail)) {
-      alert('Authorized email is not a valid email address.');
-      return;
-    }
     const trimmedPhone = (newAccount.authorizedPhone || '').trim();
     if (trimmedPhone && !E164_PHONE_REGEX.test(trimmedPhone)) {
       alert('Authorized phone must be in E.164 format (e.g. +33612345678).');
       return;
     }
-    const cleanedCcEmails = (newAccount.authorizedCcEmails || [])
-      .map(e => (typeof e === 'string' ? e.trim() : ''))
-      .filter(e => e.length > 0);
-    for (const cc of cleanedCcEmails) {
-      if (!AUTHORIZED_EMAIL_REGEX.test(cc)) {
-        alert(`CC email is not valid: ${cc}`);
-        return;
-      }
-    }
+    // An address typed but not yet added with Enter/Add still counts.
+    const cleanedEmails = collectAuthorizedEmails(newAccount.authorizedEmails, newAccountEmailInput);
+    if (cleanedEmails === null) return;
 
     try {
       if (entityId) {
@@ -648,8 +764,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
           backupRmIds: (newAccount.backupRmIds || []).filter(id => id),
           beneficialOwnerIds: (newAccount.beneficialOwnerIds || []).filter(id => id),
           comment: newAccount.comment || null,
-          authorizedEmail: trimmedEmail || null,
-          authorizedCcEmails: cleanedCcEmails,
+          authorizedEmails: cleanedEmails,
           authorizedPhone: trimmedPhone || null
         }, sessionId);
       } else {
@@ -657,8 +772,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
         await Meteor.callAsync('bankAccounts.create', {
           userId,
           ...newAccount,
-          authorizedEmail: trimmedEmail || null,
-          authorizedCcEmails: cleanedCcEmails,
+          authorizedEmails: cleanedEmails,
           authorizedPhone: trimmedPhone || null,
           sessionId
         });
@@ -675,11 +789,10 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
         backupRmIds: [],
         beneficialOwnerIds: [],
         comment: '',
-        authorizedEmail: '',
-        authorizedCcEmails: [],
+        authorizedEmails: [],
         authorizedPhone: ''
       });
-      setNewAccountCcInput('');
+      setNewAccountEmailInput('');
       setShowAddAccount(false);
 
       console.log('Bank account added successfully');
@@ -710,37 +823,25 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
       introducerId: account.introducerId || '',
       lifeInsuranceCompany: account.lifeInsuranceCompany || '',
       beneficialOwnerIds: account.beneficialOwnerIds || (account.beneficialOwnerId ? [account.beneficialOwnerId] : []),
+      holderEntityIds: getAccountHolderIds(account),
       relationshipManagerId: account.relationshipManagerId || '',
       backupRmIds: account.backupRmIds || [],
       name: account.name || '',
       accountNumber: account.accountNumber || '',
-      authorizedEmail: account.authorizedEmail || '',
-      authorizedCcEmails: account.authorizedCcEmails || [],
+      authorizedEmails: getAuthorizedEmails(account),
       authorizedPhone: account.authorizedPhone || ''
     });
-    setEditAccountCcInput('');
+    setEditAccountEmailInput('');
   };
 
   const handleSaveEditBankAccount = async (accountId) => {
-    const trimmedEmail = (editBankAccountData.authorizedEmail || '').trim();
-    if (trimmedEmail && !AUTHORIZED_EMAIL_REGEX.test(trimmedEmail)) {
-      alert('Authorized email is not a valid email address.');
-      return;
-    }
     const trimmedPhone = (editBankAccountData.authorizedPhone || '').trim();
     if (trimmedPhone && !E164_PHONE_REGEX.test(trimmedPhone)) {
       alert('Authorized phone must be in E.164 format (e.g. +33612345678).');
       return;
     }
-    const cleanedCcEmails = (editBankAccountData.authorizedCcEmails || [])
-      .map(e => (typeof e === 'string' ? e.trim() : ''))
-      .filter(e => e.length > 0);
-    for (const cc of cleanedCcEmails) {
-      if (!AUTHORIZED_EMAIL_REGEX.test(cc)) {
-        alert(`CC email is not valid: ${cc}`);
-        return;
-      }
-    }
+    const cleanedEmails = collectAuthorizedEmails(editBankAccountData.authorizedEmails, editAccountEmailInput);
+    if (cleanedEmails === null) return;
 
     try {
       const overdraftValue = editBankAccountData.authorizedOverdraft
@@ -758,13 +859,13 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
           comment: editBankAccountData.comment || '',
           introducerId: editBankAccountData.introducerId || null,
           beneficialOwnerIds: (editBankAccountData.beneficialOwnerIds || []).filter(id => id),
+          holderEntityIds: (editBankAccountData.holderEntityIds || []).filter(id => id),
           relationshipManagerId: editBankAccountData.relationshipManagerId || null,
           backupRmIds: (editBankAccountData.backupRmIds || []).filter(id => id),
           lifeInsuranceCompany: editBankAccountData.accountType === 'life_insurance'
             ? (editBankAccountData.lifeInsuranceCompany || null)
             : null,
-          authorizedEmail: trimmedEmail,
-          authorizedCcEmails: cleanedCcEmails,
+          authorizedEmails: cleanedEmails,
           authorizedPhone: trimmedPhone
         },
         sessionId
@@ -773,7 +874,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
 
       setEditingBankAccount(null);
       setEditBankAccountData({});
-      setEditAccountCcInput('');
+      setEditAccountEmailInput('');
     } catch (error) {
       console.error('Error updating bank account:', error);
       alert(`Failed to update bank account: ${error.reason || error.message}`);
@@ -843,16 +944,22 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
     const existingProfile = accountProfiles?.find(p => p.bankAccountId === accountId);
     setAccountProfileDraft({
       profileName: existingProfile?.profileName || '',
-      maxCash: existingProfile?.maxCash || 0,
-      maxBonds: existingProfile?.maxBonds || 0,
-      maxEquities: existingProfile?.maxEquities || 0,
-      maxAlternative: existingProfile?.maxAlternative || 0,
+      ...Object.fromEntries(PROFILE_LIMIT_FIELDS.map(field => [field, getProfileLimit(existingProfile, field)])),
       isProfessionalInvestor: existingProfile?.isProfessionalInvestor || false
     });
     setEditingAccountProfile(accountId);
   };
 
   const handleSaveAccountProfile = async (accountId) => {
+    const invalidCategories = getInvalidProfileCategories();
+    if (invalidCategories.length > 0) {
+      showError(
+        `Minimum cannot exceed maximum for: ${invalidCategories.map(c => c.label).join(', ')}.`,
+        'Invalid allocation range'
+      );
+      return;
+    }
+
     try {
       await Meteor.callAsync('accountProfiles.upsert', accountId, accountProfileDraft, sessionId);
 
@@ -860,6 +967,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
 
     } catch (error) {
       console.error('Error updating account profile:', error);
+      showError(error.reason || 'Failed to save the investment profile');
     }
   };
 
@@ -877,18 +985,21 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
       setAccountProfileDraft(prev => ({
         ...prev,
         profileName: template.name,
-        maxCash: template.maxCash,
-        maxBonds: template.maxBonds,
-        maxEquities: template.maxEquities,
-        maxAlternative: template.maxAlternative
+        ...Object.fromEntries(PROFILE_LIMIT_FIELDS.map(field => [field, getProfileLimit(template, field)]))
       }));
     }
   };
 
   // Utility functions
   const getAccountProfileTotal = () => {
-    return accountProfileDraft.maxCash + accountProfileDraft.maxBonds +
-           accountProfileDraft.maxEquities + accountProfileDraft.maxAlternative;
+    return PROFILE_CATEGORIES.reduce((sum, c) => sum + getProfileLimit(accountProfileDraft, `max${c.key}`), 0);
+  };
+
+  // Categories whose minimum exceeds their maximum (blocks saving)
+  const getInvalidProfileCategories = () => {
+    return PROFILE_CATEGORIES.filter(c =>
+      getProfileLimit(accountProfileDraft, `min${c.key}`) > getProfileLimit(accountProfileDraft, `max${c.key}`)
+    );
   };
 
   const getProfileForAccount = (accountId) => {
@@ -900,10 +1011,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
     if (profile.profileName) return profile.profileName;
     // Derive from template match
     for (const [, template] of Object.entries(PROFILE_TEMPLATES)) {
-      if (profile.maxCash === template.maxCash &&
-          profile.maxBonds === template.maxBonds &&
-          profile.maxEquities === template.maxEquities &&
-          profile.maxAlternative === template.maxAlternative) {
+      if (PROFILE_LIMIT_FIELDS.every(field => getProfileLimit(template, field) === getProfileLimit(profile, field))) {
         return template.name;
       }
     }
@@ -1161,6 +1269,9 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
       number: 15,
       label: 'Risque Produit',
       labelEn: 'Product Risk',
+      // A relationship usually holds several product classes at once, so this
+      // is multiple choice: the answer is an array of slugs and the points add up.
+      multiple: true,
       options: [
         { value: 'standard', label: 'Action/Obligation/Monetaire', labelEn: 'Equities/Bonds/Money Market', score: 1 },
         { value: 'structured', label: 'Produit Structure', labelEn: 'Structured Products', score: 3 },
@@ -1179,12 +1290,21 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
     }
   ];
 
+  // The options a saved/typed answer selects for one criterion. Single-choice
+  // criteria store one slug; multiple-choice ones store an array of slugs. A
+  // multiple-choice criterion saved before it became multiple still holds a
+  // plain string, which is read as a one-element selection.
+  const selectedRiskOptions = (criterion, answer) => {
+    const values = Array.isArray(answer) ? answer : (answer ? [answer] : []);
+    return criterion.options.filter(o => values.includes(o.value));
+  };
+
   // Helper function to calculate risk score for a single column
   const calculateRiskScore = (criteriaValues) => {
     let total = 0;
     RISK_CRITERIA.forEach(criterion => {
-      const selectedOption = criterion.options.find(o => o.value === criteriaValues[criterion.id]);
-      if (selectedOption) total += selectedOption.score;
+      selectedRiskOptions(criterion, criteriaValues[criterion.id])
+        .forEach(opt => { total += opt.score; });
     });
     return {
       totalScore: total,
@@ -1196,7 +1316,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
   const getRiskLevelDisplay = (riskLevel) => {
     switch (riskLevel) {
       case 'low':
-        return { label: 'Risque Faible', labelEn: 'Low Risk', color: 'var(--gain-color)', emoji: '🟢', reviewPeriod: '2 years' };
+        return { label: 'Risque Faible', labelEn: 'Low Risk', color: 'var(--gain-color)', emoji: '🟢', reviewPeriod: '3 years' };
       case 'medium':
         return { label: 'Risque Moyen', labelEn: 'Medium Risk', color: 'var(--warning-color)', emoji: '🟡', reviewPeriod: '2 years' };
       case 'high':
@@ -1206,34 +1326,94 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
     }
   };
 
-  // Initialize risk score form from entity (preferred) or legacy user profile data
-  const getInitialRiskScoreForm = () => {
-    const savedData = entity?.kycRiskScore || user?.profile?.kycRiskScore;
-    if (savedData) {
-      return {
-        clientProspect: savedData.clientProspect?.criteria || {},
-        beneficialOwner: savedData.beneficialOwner?.criteria || {},
-        businessRelationship: savedData.businessRelationship?.criteria || {},
-        comments: savedData.comments || ''
-      };
-    }
-    // Default empty form
+  // The Business Relationship column is not answered: it is the riskier of the
+  // Client and Beneficial Owner assessments (ties go to the client). Its score
+  // and level are stored with the assessment so every reader shows the same
+  // value without knowing this rule.
+  const deriveBusinessRelationship = (clientResult, beneficialOwnerResult) => {
+    const fromClient = clientResult.totalScore >= beneficialOwnerResult.totalScore;
+    const source = fromClient ? clientResult : beneficialOwnerResult;
     return {
-      clientProspect: {},
-      beneficialOwner: {},
-      businessRelationship: {},
-      comments: ''
+      totalScore: source.totalScore,
+      riskLevel: source.riskLevel,
+      derivedFrom: fromClient ? 'clientProspect' : 'beneficialOwner'
+    };
+  };
+  const BUSINESS_RELATIONSHIP_RULE = 'Highest of Client and Beneficial Owner';
+
+  // Only the two answered columns live in the form.
+  const EMPTY_RISK_SCORE_FORM = {
+    clientProspect: {},
+    beneficialOwner: {},
+    comments: ''
+  };
+
+  // Seed the assessment form from a saved assessment (one bank account's).
+  const riskScoreFormFrom = (savedData) => {
+    if (!savedData) return EMPTY_RISK_SCORE_FORM;
+    return {
+      clientProspect: savedData.clientProspect?.criteria || {},
+      beneficialOwner: savedData.beneficialOwner?.criteria || {},
+      comments: savedData.comments || ''
     };
   };
 
-  const [riskScoreForm, setRiskScoreForm] = useState(getInitialRiskScoreForm);
+  const [riskScoreForm, setRiskScoreForm] = useState(EMPTY_RISK_SCORE_FORM);
 
-  // Update risk score form when user or entity data changes
+  // Every save creates a NEW version and archives the one it replaces, so the
+  // modal is either recording a new assessment or displaying a superseded one
+  // read-only. `viewingVersion` holds the archived assessment being read.
+  const [viewingVersion, setViewingVersion] = useState(null);
+
+
+  // The bank account currently being assessed. Risk is per banking relationship,
+  // so the modal is always bound to one account.
+  const riskScoreAccount = useMemo(
+    () => (riskScoreAccountId ? bankAccounts.find(a => a._id === riskScoreAccountId) : null),
+    [riskScoreAccountId, bankAccounts]
+  );
+
+  // Reload the form whenever a different account is opened, or that account's
+  // saved assessment changes underneath us (another user re-scored it).
   useEffect(() => {
-    if (entity?.kycRiskScore || user?.profile?.kycRiskScore) {
-      setRiskScoreForm(getInitialRiskScoreForm());
-    }
-  }, [entity?.kycRiskScore, user?.profile?.kycRiskScore]);
+    // A read-only version drives the form itself — don't overwrite it with the
+    // account's current assessment.
+    if (viewingVersion) return;
+    setRiskScoreForm(riskScoreFormFrom(riskScoreAccount?.kycRiskScore));
+  }, [riskScoreAccountId, riskScoreAccount?.kycRiskScore?.assessmentDate, viewingVersion]);
+
+  /**
+   * Start a new assessment for one account.
+   *
+   * A periodic review usually revisits the previous answers rather than starting
+   * from nothing, so the form is seeded from the current assessment; "Start
+   * blank" in the modal clears it for a genuine re-assessment.
+   */
+  const openRiskScoreModal = (accountId) => {
+    setRiskScoreAccountId(accountId);
+    setViewingVersion(null);
+    setRiskScoreModalOpen(true);
+    setEditingRiskScore(true);
+    setRiskScoreError(null);
+  };
+
+  /** Open a superseded version read-only, straight from the history strip. */
+  const openRiskScoreVersion = (accountId, version, label) => {
+    setRiskScoreAccountId(accountId);
+    setViewingVersion({ ...version, versionLabel: label });
+    setRiskScoreForm(riskScoreFormFrom(version));
+    setRiskScoreModalOpen(true);
+    setEditingRiskScore(false);
+    setRiskScoreError(null);
+  };
+
+  const closeRiskScoreModal = () => {
+    setRiskScoreModalOpen(false);
+    setEditingRiskScore(false);
+    setRiskScoreAccountId(null);
+    setViewingVersion(null);
+    setRiskScoreError(null);
+  };
 
   // Handle risk score form changes
   const handleRiskScoreChange = (column, criterionId, value) => {
@@ -1252,14 +1432,14 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
     try {
       const clientProspectResult = calculateRiskScore(riskScoreForm.clientProspect);
       const beneficialOwnerResult = calculateRiskScore(riskScoreForm.beneficialOwner);
-      const businessRelationshipResult = calculateRiskScore(riskScoreForm.businessRelationship);
+      const businessRelationshipResult = deriveBusinessRelationship(clientProspectResult, beneficialOwnerResult);
 
       // Determine highest risk level for next review calculation
       const riskLevels = [clientProspectResult.riskLevel, beneficialOwnerResult.riskLevel, businessRelationshipResult.riskLevel];
       const highestRisk = riskLevels.includes('high') ? 'high' : riskLevels.includes('medium') ? 'medium' : 'low';
-      const reviewMonths = highestRisk === 'high' ? 12 : 24;
-      const nextReviewDate = new Date();
-      nextReviewDate.setMonth(nextReviewDate.getMonth() + reviewMonths);
+      // One review policy for the whole app: 1 year high, 2 medium, 3 low
+      // (REVIEW_YEARS_BY_RISK).
+      const nextReviewDate = computeNextReviewDate(new Date(), highestRisk);
 
       const riskScoreData = {
         assessmentDate: new Date(),
@@ -1275,36 +1455,50 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
           riskLevel: beneficialOwnerResult.riskLevel
         },
         businessRelationship: {
-          criteria: riskScoreForm.businessRelationship,
+          criteria: {},
           totalScore: businessRelationshipResult.totalScore,
-          riskLevel: businessRelationshipResult.riskLevel
+          riskLevel: businessRelationshipResult.riskLevel,
+          derivedFrom: businessRelationshipResult.derivedFrom
         },
         comments: riskScoreForm.comments,
         nextReviewDate: nextReviewDate
       };
 
-      if (entityId) {
-        // Archive the previous assessment so the version trail survives changes
-        const updatePayload = { kycRiskScore: riskScoreData };
-        if (entity?.kycRiskScore?.assessmentDate) {
-          updatePayload.kycRiskScoreHistory = [...(entity.kycRiskScoreHistory || []), entity.kycRiskScore];
-        }
-        await Meteor.callAsync('clientEntities.update', entityId, updatePayload, sessionId);
-      } else {
-        await Meteor.callAsync('users.updateRiskScore', userId, riskScoreData, sessionId);
+      // The assessment belongs to one banking relationship. The server archives
+      // the previous version onto kycRiskScoreHistory.
+      if (!riskScoreAccountId) {
+        throw new Error('No bank account selected for this assessment');
       }
+      await Meteor.callAsync('bankAccounts.updateRiskScore', {
+        accountId: riskScoreAccountId,
+        riskScoreData,
+        sessionId
+      });
 
       setEditingRiskScore(false);
+      setRiskScoreError(null);
     } catch (error) {
       console.error('Error saving risk score:', error);
+      setRiskScoreError(error.reason || error.message || 'Failed to save the assessment');
+      throw error;
     } finally {
       setSavingRiskScore(false);
     }
   };
 
-  // Export the saved KYC risk assessment as a PDF (audit trail of versions)
-  const exportRiskScorePdf = async (savedScore) => {
+  // Export one account's saved KYC risk assessment as a PDF (audit trail of versions).
+  // `account` is the banking relationship the assessment belongs to; `busyKey`
+  // identifies which button to show as busy.
+  //
+  // The finished PDF is opened in a tab rather than pushed through a silent
+  // browser download: a download that Chrome blocks (or drops straight into the
+  // Downloads folder) looks exactly like a dead button, which is how this was
+  // reported. openDocumentWindow opens the tab synchronously inside the click
+  // gesture, so the popup blocker doesn't eat it after the await.
+  const exportRiskScorePdf = async (savedScore, account, busyKey = 'current') => {
     if (!savedScore) return;
+    setPdfBusyKey(busyKey);
+    setPdfError(null);
     try {
       const { default: html2pdf } = await import('html2pdf.js');
 
@@ -1312,29 +1506,43 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
       const clientName = entity ? ClientEntityHelpers.getEntityDisplayName(entity) : `${user?.profile?.firstName || ''} ${user?.profile?.lastName || ''}`.trim();
       const assessor = savedScore.assessedBy ? UsersCollection.findOne(savedScore.assessedBy) : null;
       const assessorName = assessor ? (`${assessor.profile?.firstName || ''} ${assessor.profile?.lastName || ''}`.trim() || assessor.email || assessor.username || '') : '';
-      const accountLines = (bankAccounts || []).map(a => {
-        const bank = banks.find(b => b._id === a.bankId);
-        return `${esc(a.accountNumber)}${bank ? ' — ' + esc(bank.name) : ''}`;
-      }).join('<br/>');
+      const accountBank = account ? banks.find(b => b._id === account.bankId) : null;
+      const accountLine = account
+        ? `${esc(account.accountNumber)}${accountBank ? ' — ' + esc(accountBank.name) : ''}${account.name ? '<br/><span style="color:#6b7280;">' + esc(account.name) + '</span>' : ''}`
+        : '';
 
       const COLUMNS = [
         { key: 'clientProspect', label: 'Client Prospect' },
         { key: 'beneficialOwner', label: 'Beneficial Owner' },
         { key: 'businessRelationship', label: 'Business Relationship' }
       ];
+      // Multiple-choice criteria list every picked option and the summed points.
       const cellFor = (criterion, columnKey) => {
-        const v = savedScore[columnKey]?.criteria?.[criterion.id];
-        const opt = criterion.options.find(o => o.value === v);
-        return opt ? `${esc(opt.labelEn)} <b>(${opt.score})</b>` : '&mdash;';
+        const opts = selectedRiskOptions(criterion, savedScore[columnKey]?.criteria?.[criterion.id]);
+        if (!opts.length) return '&mdash;';
+        const points = opts.reduce((sum, o) => sum + o.score, 0);
+        return `${opts.map(o => esc(o.labelEn)).join(', ')} <b>(${points})</b>`;
       };
       const riskLabel = (level) => level === 'high' ? 'High Risk' : level === 'medium' ? 'Medium Risk' : level === 'low' ? 'Low Risk' : 'Not Assessed';
       const riskColor = (level) => level === 'high' ? '#b91c1c' : level === 'medium' ? '#b45309' : level === 'low' ? '#047857' : '#6b7280';
 
-      const rows = RISK_CRITERIA.map(c => `
+      // Assessments saved since the column became derived have no per-criterion
+      // answers for the business relationship: one merged cell states the rule.
+      // Older assessments still print the answers that were recorded.
+      const brDerived = !!savedScore.businessRelationship?.derivedFrom
+        || !Object.keys(savedScore.businessRelationship?.criteria || {}).length;
+      const rows = RISK_CRITERIA.map((c, i) => `
         <tr>
           <td style="text-align:center;color:#6b7280;">${c.number}</td>
           <td><b>${esc(c.labelEn)}</b></td>
-          ${COLUMNS.map(col => `<td style="text-align:center;">${cellFor(c, col.key)}</td>`).join('')}
+          ${COLUMNS.map(col => {
+            if (col.key === 'businessRelationship' && brDerived) {
+              return i === 0
+                ? `<td rowspan="${RISK_CRITERIA.length}" style="text-align:center;vertical-align:middle;color:#6b7280;font-style:italic;">${BUSINESS_RELATIONSHIP_RULE}</td>`
+                : '';
+            }
+            return `<td style="text-align:center;">${cellFor(c, col.key)}</td>`;
+          }).join('')}
         </tr>`).join('');
 
       const totals = `
@@ -1355,13 +1563,18 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
       const versionTag = savedScore.assessmentDate ? new Date(savedScore.assessmentDate) : stamp;
       const pad = (n) => String(n).padStart(2, '0');
       const fileDate = `${versionTag.getFullYear()}-${pad(versionTag.getMonth() + 1)}-${pad(versionTag.getDate())}_${pad(versionTag.getHours())}${pad(versionTag.getMinutes())}`;
-      const safeName = (clientName || 'Client').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '_');
+      const safeName = [clientName || 'Client', account?.accountNumber]
+        .filter(Boolean)
+        .join(' ')
+        .replace(/[^\w\- ]+/g, '')
+        .trim()
+        .replace(/\s+/g, '_');
 
       const html = `
         <div style="font-family: Arial, Helvetica, sans-serif; color:#111827; font-size:10px; padding:4px;">
           <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
             <div>
-              <div style="font-size:16px; font-weight:bold;">KYC Risk Assessment — Client Risk Matrix</div>
+              <div style="font-size:16px; font-weight:bold;">KYC Risk Assessment — Banking Relationship Risk Matrix</div>
               <div style="color:#6b7280; margin-top:2px;">Based on "Matrice risque Client AP"</div>
             </div>
             <div style="text-align:right; color:#6b7280;">
@@ -1377,7 +1590,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                 <span style="color:#6b7280;">Client:</span> <b>${esc(clientName)}</b>
               </td>
               <td style="border:1px solid #d1d5db; padding:6px 8px;">
-                <span style="color:#6b7280;">Account(s):</span><br/>${accountLines || '&mdash;'}
+                <span style="color:#6b7280;">Account:</span><br/>${accountLine || '&mdash;'}
               </td>
             </tr>
           </table>
@@ -1398,7 +1611,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
 
           <div style="margin-top:10px; color:#374151;">
             <b>Risk classification:</b> &lt; 15 pts = low risk &nbsp;|&nbsp; 15&ndash;29 pts = medium risk &nbsp;|&nbsp; &ge; 30 pts = high risk.
-            Review periodicity: every year for high risk, every 2 years for medium and low risk.
+            Review periodicity: every year for high risk, every 2 years for medium risk, every 3 years for low risk.
           </div>
 
           <div style="margin-top:10px;">
@@ -1435,19 +1648,38 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
       container.innerHTML = html;
       wrapper.appendChild(container);
       document.body.appendChild(wrapper);
+      const filename = `KYC_Risk_Assessment_${safeName}_${fileDate}.pdf`;
+      let blob;
       try {
-        await html2pdf().set({
+        blob = await html2pdf().set({
           margin: [10, 10, 10, 10],
-          filename: `KYC_Risk_Assessment_${safeName}_${fileDate}.pdf`,
+          filename,
           image: { type: 'jpeg', quality: 0.95 },
           html2canvas: { scale: 2, backgroundColor: '#ffffff' },
           jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
-        }).from(container).save();
+        }).from(container).outputPdf('blob');
       } finally {
         document.body.removeChild(wrapper);
       }
+
+      const url = URL.createObjectURL(blob);
+      const opened = await openDocumentWindow(() => url);
+      if (!opened) {
+        // No tab available (blocker / standalone PWA) — fall back to a download.
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+      // Give the tab time to load before releasing the blob.
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
     } catch (err) {
       console.error('Error exporting risk assessment PDF:', err);
+      setPdfError(err?.message || 'Could not generate the PDF');
+    } finally {
+      setPdfBusyKey(null);
     }
   };
 
@@ -1904,44 +2136,9 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
             </div>
 
 
-            {/* Risk Score Row (clients and entities) */}
-            {(isEntityMode || (hasUser && user.role === USER_ROLES.CLIENT)) && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                  <span>📊</span>
-                  {(() => {
-                    const riskScore = entity?.kycRiskScore || user?.profile?.kycRiskScore;
-                    if (!riskScore) {
-                      return <span style={{ color: 'var(--text-muted)' }}>Risk not assessed</span>;
-                    }
-                    // Get highest risk level from the three columns
-                    const levels = [
-                      riskScore.clientProspect?.riskLevel,
-                      riskScore.beneficialOwner?.riskLevel,
-                      riskScore.businessRelationship?.riskLevel
-                    ].filter(Boolean);
-                    const highestRisk = levels.includes('high') ? 'high' : levels.includes('medium') ? 'medium' : 'low';
-                    const display = getRiskLevelDisplay(highestRisk);
-                    return (
-                      <span style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        padding: '3px 10px',
-                        background: `color-mix(in srgb, ${display.color} 8%, transparent)`,
-                        border: `1px solid color-mix(in srgb, ${display.color} 25%, transparent)`,
-                        borderRadius: '12px',
-                        fontSize: '0.85rem',
-                        fontWeight: '500',
-                        color: display.color
-                      }}>
-                        {display.emoji} {display.labelEn}
-                      </span>
-                    );
-                  })()}
-                </div>
-              </div>
-            )}
+            {/* KYC risk is assessed per banking relationship, not per client — the
+                assessment lives on each bank account (Accounts tab), so there is no
+                single client-level risk level to show here. */}
           </div>
 
           {/* Quick Stats */}
@@ -2018,7 +2215,8 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
           { id: 'documents', label: 'Documents', icon: '📋', entityOrClient: true, notLifeInsurance: true },
           { id: 'kyc', label: 'KYC', icon: '✅', entityOrClient: true },
           { id: 'usPerson', label: 'US Person', icon: '🇺🇸', entityOnly: true },
-          { id: 'riskScore', label: 'Risk Score', icon: '📊', entityOrClient: true },
+          // No 'riskScore' tab: KYC risk is assessed per bank account, from the
+          // Risk Matrix panel inside each account row on the Accounts tab.
           { id: 'familyMembers', label: 'Family Members', icon: '👨‍👩‍👧', entityOnly: true, personOnly: true },
           { id: 'family', label: 'Linked People', icon: '\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67\u200d\ud83d\udc66', clientOnly: true, personOnly: true },
           { id: 'access', label: 'User Access', icon: '\ud83d\udd11', entityOnly: true, notLifeInsurance: true },
@@ -2186,6 +2384,27 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   </div>
                 )}
               </div>
+
+              {/* Photo and specimen signature — physical persons only. Stored as
+                  client documents (disk + token-gated download), not on the
+                  entity record, and editable outside the Edit mode since a
+                  drop replaces the image in one step. */}
+              {entity.type === ENTITY_TYPES.PHYSICAL_PERSON && (
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : '160px 320px', gap: '16px', marginBottom: '20px', alignItems: 'start' }}>
+                  <IdentityImageSlot
+                    userId={entityId}
+                    documentType={DOCUMENT_TYPES.CLIENT_PHOTO}
+                    label="Photo"
+                    aspectRatio="1 / 1"
+                  />
+                  <IdentityImageSlot
+                    userId={entityId}
+                    documentType={DOCUMENT_TYPES.CLIENT_SIGNATURE}
+                    label="Signature"
+                    aspectRatio="2 / 1"
+                  />
+                </div>
+              )}
 
               <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '16px' }}>
                 {entity.type === ENTITY_TYPES.PHYSICAL_PERSON ? (
@@ -3367,26 +3586,43 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
 
                   {/* Authorized contacts for order communication */}
                   {(() => {
-                    const addEmailValid = !newAccount.authorizedEmail || AUTHORIZED_EMAIL_REGEX.test(newAccount.authorizedEmail.trim());
                     const addPhoneValid = !newAccount.authorizedPhone || E164_PHONE_REGEX.test(newAccount.authorizedPhone.trim());
-                    const addCcInputValid = !newAccountCcInput.trim() || AUTHORIZED_EMAIL_REGEX.test(newAccountCcInput.trim());
-                    const handleAddCc = () => {
-                      const val = newAccountCcInput.trim();
+                    const emailInputValid = !newAccountEmailInput.trim() || AUTHORIZED_EMAIL_REGEX.test(newAccountEmailInput.trim());
+                    const handleAddEmail = () => {
+                      const val = newAccountEmailInput.trim();
                       if (!val || !AUTHORIZED_EMAIL_REGEX.test(val)) return;
-                      if ((newAccount.authorizedCcEmails || []).includes(val)) { setNewAccountCcInput(''); return; }
-                      setNewAccount(prev => ({ ...prev, authorizedCcEmails: [...(prev.authorizedCcEmails || []), val] }));
-                      setNewAccountCcInput('');
+                      if ((newAccount.authorizedEmails || []).some(e => e.toLowerCase() === val.toLowerCase())) { setNewAccountEmailInput(''); return; }
+                      setNewAccount(prev => ({ ...prev, authorizedEmails: [...(prev.authorizedEmails || []), val] }));
+                      setNewAccountEmailInput('');
                     };
                     return (
                       <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px dashed var(--border-color)' }}>
                         <div style={{ fontSize: '0.7rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Authorized contacts</div>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
-                          <div>
-                            <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Authorized email</label>
-                            <input type="email" placeholder="orders@example.com" value={newAccount.authorizedEmail}
-                              onChange={e => { const val = e.target.value; setNewAccount(prev => ({ ...prev, authorizedEmail: val })); }}
-                              style={{ width: '100%', padding: '9px', border: `1px solid ${addEmailValid ? 'var(--border-color)' : 'var(--loss-color)'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', boxSizing: 'border-box' }} />
-                            {!addEmailValid && <div style={{ color: 'var(--loss-color)', fontSize: '0.7rem', marginTop: '3px' }}>Invalid email format</div>}
+                          <div style={{ gridColumn: '1 / -1' }}>
+                            <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Authorized emails</label>
+                            {(newAccount.authorizedEmails || []).length > 0 && (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '6px' }}>
+                                {(newAccount.authorizedEmails || []).map(em => (
+                                  <span key={em} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '5px', fontSize: '0.75rem', fontWeight: '600', background: 'rgba(16, 185, 129, 0.1)', color: 'var(--gain-color)' }}>
+                                    {em}
+                                    <span title="Remove" onClick={() => setNewAccount(prev => ({ ...prev, authorizedEmails: (prev.authorizedEmails || []).filter(e => e !== em) }))} style={{ cursor: 'pointer', marginLeft: '2px', fontWeight: '700' }}>&times;</span>
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            <div style={{ display: 'flex', gap: '6px' }}>
+                              <input type="email" placeholder={(newAccount.authorizedEmails || []).length ? 'another@example.com' : 'client@example.com'} value={newAccountEmailInput}
+                                onChange={e => setNewAccountEmailInput(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddEmail(); } }}
+                                style={{ flex: 1, padding: '9px', border: `1px solid ${emailInputValid ? 'var(--border-color)' : 'var(--loss-color)'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', boxSizing: 'border-box' }} />
+                              <button type="button" onClick={handleAddEmail}
+                                disabled={!newAccountEmailInput.trim() || !emailInputValid}
+                                style={{ padding: '8px 14px', background: (!newAccountEmailInput.trim() || !emailInputValid) ? 'var(--bg-secondary)' : 'var(--accent-color)', color: (!newAccountEmailInput.trim() || !emailInputValid) ? 'var(--text-muted)' : 'white', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: (!newAccountEmailInput.trim() || !emailInputValid) ? 'not-allowed' : 'pointer', fontSize: '0.8rem', fontWeight: '600' }}>Add</button>
+                            </div>
+                            {!emailInputValid
+                              ? <div style={{ color: 'var(--loss-color)', fontSize: '0.7rem', marginTop: '3px' }}>Invalid email format</div>
+                              : <div style={{ color: 'var(--text-muted)', fontSize: '0.7rem', marginTop: '3px' }}>Any of these addresses may send order instructions for this account.</div>}
                           </div>
                           <div>
                             <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Authorized phone (E.164)</label>
@@ -3395,37 +3631,16 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                               style={{ width: '100%', padding: '9px', border: `1px solid ${addPhoneValid ? 'var(--border-color)' : 'var(--loss-color)'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', boxSizing: 'border-box' }} />
                             {!addPhoneValid && <div style={{ color: 'var(--loss-color)', fontSize: '0.7rem', marginTop: '3px' }}>Must be E.164, e.g. +33612345678</div>}
                           </div>
-                          <div style={{ gridColumn: '1 / -1' }}>
-                            <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>CC emails</label>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '6px' }}>
-                              {(newAccount.authorizedCcEmails || []).map(cc => (
-                                <span key={cc} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '5px', fontSize: '0.75rem', fontWeight: '600', background: 'rgba(14, 165, 233, 0.1)', color: '#0ea5e9' }}>
-                                  {cc}
-                                  <span onClick={() => setNewAccount(prev => ({ ...prev, authorizedCcEmails: (prev.authorizedCcEmails || []).filter(e => e !== cc) }))} style={{ cursor: 'pointer', marginLeft: '2px', fontWeight: '700' }}>&times;</span>
-                                </span>
-                              ))}
-                            </div>
-                            <div style={{ display: 'flex', gap: '6px' }}>
-                              <input type="email" placeholder="cc@example.com" value={newAccountCcInput}
-                                onChange={e => setNewAccountCcInput(e.target.value)}
-                                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddCc(); } }}
-                                style={{ flex: 1, padding: '9px', border: `1px solid ${addCcInputValid ? 'var(--border-color)' : 'var(--loss-color)'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.85rem', boxSizing: 'border-box' }} />
-                              <button type="button" onClick={handleAddCc}
-                                disabled={!newAccountCcInput.trim() || !addCcInputValid}
-                                style={{ padding: '8px 14px', background: (!newAccountCcInput.trim() || !addCcInputValid) ? 'var(--bg-secondary)' : 'var(--accent-color)', color: (!newAccountCcInput.trim() || !addCcInputValid) ? 'var(--text-muted)' : 'white', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: (!newAccountCcInput.trim() || !addCcInputValid) ? 'not-allowed' : 'pointer', fontSize: '0.8rem', fontWeight: '600' }}>Add</button>
-                            </div>
-                            {!addCcInputValid && <div style={{ color: 'var(--loss-color)', fontSize: '0.7rem', marginTop: '3px' }}>Invalid email format</div>}
-                          </div>
                         </div>
                       </div>
                     );
                   })()}
 
                   <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '12px' }}>
-                    <button onClick={() => { setShowAddAccount(false); setNewAccount({ name: '', bankId: '', accountNumber: '', referenceCurrency: 'USD', accountType: 'personal', accountStructure: 'direct', lifeInsuranceCompany: '', relationshipManagerId: '', backupRmIds: [], beneficialOwnerIds: [], comment: '', authorizedEmail: '', authorizedCcEmails: [], authorizedPhone: '' }); setNewAccountCcInput(''); }}
+                    <button onClick={() => { setShowAddAccount(false); setNewAccount({ name: '', bankId: '', accountNumber: '', referenceCurrency: 'USD', accountType: 'personal', accountStructure: 'direct', lifeInsuranceCompany: '', relationshipManagerId: '', backupRmIds: [], beneficialOwnerIds: [], comment: '', authorizedEmails: [], authorizedPhone: '' }); setNewAccountEmailInput(''); }}
                       style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}>Cancel</button>
                     {(() => {
-                      const addEmailOk = !newAccount.authorizedEmail || AUTHORIZED_EMAIL_REGEX.test(newAccount.authorizedEmail.trim());
+                      const addEmailOk = !newAccountEmailInput.trim() || AUTHORIZED_EMAIL_REGEX.test(newAccountEmailInput.trim());
                       const addPhoneOk = !newAccount.authorizedPhone || E164_PHONE_REGEX.test(newAccount.authorizedPhone.trim());
                       const canAdd = newAccount.bankId && newAccount.accountNumber && addEmailOk && addPhoneOk;
                       return (
@@ -3467,6 +3682,11 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                         const uboIds = account.beneficialOwnerIds || (account.beneficialOwnerId ? [account.beneficialOwnerId] : []);
                         const ubos = uboIds.map(id => allEntities.find(e => e._id === id)).filter(Boolean);
                         const isEditing = editingBankAccount === account._id;
+                        // Joint account: the other client entities holding this same account
+                        const holders = getAccountHolderIds(account)
+                          .map(id => allEntities.find(e => e._id === id))
+                          .filter(Boolean);
+                        const coHolders = holders.filter(h => h._id !== (entityId || userId));
 
                         return (
                           <React.Fragment key={account._id}>
@@ -3478,7 +3698,14 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                               onMouseLeave={e => e.currentTarget.style.background = idx % 2 === 0 ? 'transparent' : 'var(--bg-secondary)'}
                             >
                               <td style={{ padding: '10px 14px', fontWeight: '600', color: 'var(--text-primary)' }}>{bank?.name || '-'}</td>
-                              <td style={{ padding: '10px 14px', color: 'var(--text-primary)', fontSize: '0.85rem' }}>{account.name || fullName}</td>
+                              <td style={{ padding: '10px 14px', color: 'var(--text-primary)', fontSize: '0.85rem' }}>
+                                {account.name || buildJointAccountName(holders) || fullName}
+                                {coHolders.length > 0 && (
+                                  <div style={{ marginTop: '2px', fontSize: '0.72rem', color: '#8b5cf6', fontWeight: '600' }}>
+                                    Joint with {coHolders.map(h => ClientEntityHelpers.getEntityDisplayName(h)).join(', ')}
+                                  </div>
+                                )}
+                              </td>
                               <td style={{ padding: '10px 14px', fontFamily: "'Roboto Mono', monospace", fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{account.accountNumber}</td>
                               <td style={{ padding: '10px 14px', textAlign: 'center' }}>
                                 <span style={{ padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: '600', background: 'rgba(79, 166, 255, 0.1)', color: 'var(--accent-color)' }}>{account.referenceCurrency}</span>
@@ -3551,6 +3778,39 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                             </select>
                                           </div>
                                           </>)}
+                                          {/* Joint account: a second (or third) client entity holding the
+                                              SAME account — a couple, typically. One account, one row, several
+                                              holders; do NOT create a combined "A & B" client for this. */}
+                                          {isEntityMode && !entity?.isInsurance && (
+                                            <div style={{ gridColumn: '1 / -1' }}>
+                                              <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Joint holders</label>
+                                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '4px', alignItems: 'center' }}>
+                                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '5px', fontSize: '0.72rem', fontWeight: '600', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
+                                                  title="The primary holder is always a holder and cannot be removed here">
+                                                  {ClientEntityHelpers.getEntityDisplayName(entity)} <span style={{ opacity: 0.6 }}>(primary)</span>
+                                                </span>
+                                                {(editBankAccountData.holderEntityIds || []).filter(id => id !== entityId).map(holderId => {
+                                                  const holderEntity = allEntities.find(e => e._id === holderId);
+                                                  return holderEntity ? (
+                                                    <span key={holderId} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '5px', fontSize: '0.72rem', fontWeight: '600', background: 'rgba(139, 92, 246, 0.12)', color: '#8b5cf6' }}>
+                                                      {ClientEntityHelpers.getEntityDisplayName(holderEntity)}
+                                                      <span onClick={() => setEditBankAccountData(prev => ({...prev, holderEntityIds: (prev.holderEntityIds || []).filter(id => id !== holderId)}))} style={{ cursor: 'pointer', marginLeft: '2px', fontWeight: '700' }}>&times;</span>
+                                                    </span>
+                                                  ) : null;
+                                                })}
+                                              </div>
+                                              <select value="_placeholder" onChange={e => { const val = e.target.value; if (val && val !== '_placeholder') { setEditBankAccountData(prev => ({...prev, holderEntityIds: [...new Set([entityId, ...(prev.holderEntityIds || []), val])]})); } }}
+                                                style={{ width: '100%', padding: '7px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', cursor: 'pointer' }}>
+                                                <option value="_placeholder">Add joint holder...</option>
+                                                {allEntities.filter(e => e._id !== entityId && !(editBankAccountData.holderEntityIds || []).includes(e._id)).map(e => (
+                                                  <option key={e._id} value={e._id}>{ClientEntityHelpers.getEntityDisplayName(e)}</option>
+                                                ))}
+                                              </select>
+                                              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '3px' }}>
+                                                Each holder sees this account and its holdings on their own profile.
+                                              </div>
+                                            </div>
+                                          )}
                                           {(isEntityMode && entity?.isInsurance) && (
                                             <div style={{ gridColumn: '1 / -1' }}>
                                               <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Beneficial Owners (UBOs)</label>
@@ -3602,26 +3862,43 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                             </select>
                                           </div>
                                           {(() => {
-                                            const editEmailValid = !editBankAccountData.authorizedEmail || AUTHORIZED_EMAIL_REGEX.test((editBankAccountData.authorizedEmail || '').trim());
                                             const editPhoneValid = !editBankAccountData.authorizedPhone || E164_PHONE_REGEX.test((editBankAccountData.authorizedPhone || '').trim());
-                                            const editCcInputValid = !editAccountCcInput.trim() || AUTHORIZED_EMAIL_REGEX.test(editAccountCcInput.trim());
-                                            const handleAddEditCc = () => {
-                                              const val = editAccountCcInput.trim();
+                                            const emailInputValid = !editAccountEmailInput.trim() || AUTHORIZED_EMAIL_REGEX.test(editAccountEmailInput.trim());
+                                            const handleAddEmail = () => {
+                                              const val = editAccountEmailInput.trim();
                                               if (!val || !AUTHORIZED_EMAIL_REGEX.test(val)) return;
-                                              if ((editBankAccountData.authorizedCcEmails || []).includes(val)) { setEditAccountCcInput(''); return; }
-                                              setEditBankAccountData(prev => ({ ...prev, authorizedCcEmails: [...(prev.authorizedCcEmails || []), val] }));
-                                              setEditAccountCcInput('');
+                                              if ((editBankAccountData.authorizedEmails || []).some(e => e.toLowerCase() === val.toLowerCase())) { setEditAccountEmailInput(''); return; }
+                                              setEditBankAccountData(prev => ({ ...prev, authorizedEmails: [...(prev.authorizedEmails || []), val] }));
+                                              setEditAccountEmailInput('');
                                             };
                                             return (
                                               <div style={{ gridColumn: '1 / -1', marginTop: '8px', paddingTop: '10px', borderTop: '1px dashed var(--border-color)' }}>
                                                 <div style={{ fontSize: '0.68rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>Authorized contacts</div>
                                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
-                                                  <div>
-                                                    <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Authorized email</label>
-                                                    <input type="email" placeholder="orders@example.com" value={editBankAccountData.authorizedEmail || ''}
-                                                      onChange={e => setEditBankAccountData(prev => ({ ...prev, authorizedEmail: e.target.value }))}
-                                                      style={{ width: '100%', padding: '7px', border: `1px solid ${editEmailValid ? 'var(--border-color)' : 'var(--loss-color)'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', boxSizing: 'border-box' }} />
-                                                    {!editEmailValid && <div style={{ color: 'var(--loss-color)', fontSize: '0.68rem', marginTop: '3px' }}>Invalid email format</div>}
+                                                  <div style={{ gridColumn: '1 / -1' }}>
+                                                    <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Authorized emails</label>
+                                                    {(editBankAccountData.authorizedEmails || []).length > 0 && (
+                                                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '6px' }}>
+                                                        {(editBankAccountData.authorizedEmails || []).map(em => (
+                                                          <span key={em} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '5px', fontSize: '0.72rem', fontWeight: '600', background: 'rgba(16, 185, 129, 0.1)', color: 'var(--gain-color)' }}>
+                                                            {em}
+                                                            <span title="Remove" onClick={() => setEditBankAccountData(prev => ({ ...prev, authorizedEmails: (prev.authorizedEmails || []).filter(e => e !== em) }))} style={{ cursor: 'pointer', marginLeft: '2px', fontWeight: '700' }}>&times;</span>
+                                                          </span>
+                                                        ))}
+                                                      </div>
+                                                    )}
+                                                    <div style={{ display: 'flex', gap: '6px' }}>
+                                                      <input type="email" placeholder={(editBankAccountData.authorizedEmails || []).length ? 'another@example.com' : 'client@example.com'} value={editAccountEmailInput}
+                                                        onChange={e => setEditAccountEmailInput(e.target.value)}
+                                                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddEmail(); } }}
+                                                        style={{ flex: 1, padding: '7px', border: `1px solid ${emailInputValid ? 'var(--border-color)' : 'var(--loss-color)'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', boxSizing: 'border-box' }} />
+                                                      <button type="button" onClick={handleAddEmail}
+                                                        disabled={!editAccountEmailInput.trim() || !emailInputValid}
+                                                        style={{ padding: '6px 12px', background: (!editAccountEmailInput.trim() || !emailInputValid) ? 'var(--bg-secondary)' : 'var(--accent-color)', color: (!editAccountEmailInput.trim() || !emailInputValid) ? 'var(--text-muted)' : 'white', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: (!editAccountEmailInput.trim() || !emailInputValid) ? 'not-allowed' : 'pointer', fontSize: '0.78rem', fontWeight: '600' }}>Add</button>
+                                                    </div>
+                                                    {!emailInputValid
+                                                      ? <div style={{ color: 'var(--loss-color)', fontSize: '0.68rem', marginTop: '3px' }}>Invalid email format</div>
+                                                      : <div style={{ color: 'var(--text-muted)', fontSize: '0.68rem', marginTop: '3px' }}>Any of these addresses may send order instructions for this account.</div>}
                                                   </div>
                                                   <div>
                                                     <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Authorized phone (E.164)</label>
@@ -3630,34 +3907,13 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                                       style={{ width: '100%', padding: '7px', border: `1px solid ${editPhoneValid ? 'var(--border-color)' : 'var(--loss-color)'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', boxSizing: 'border-box' }} />
                                                     {!editPhoneValid && <div style={{ color: 'var(--loss-color)', fontSize: '0.68rem', marginTop: '3px' }}>Must be E.164, e.g. +33612345678</div>}
                                                   </div>
-                                                  <div style={{ gridColumn: '1 / -1' }}>
-                                                    <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>CC emails</label>
-                                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '6px' }}>
-                                                      {(editBankAccountData.authorizedCcEmails || []).map(cc => (
-                                                        <span key={cc} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '5px', fontSize: '0.72rem', fontWeight: '600', background: 'rgba(14, 165, 233, 0.1)', color: '#0ea5e9' }}>
-                                                          {cc}
-                                                          <span onClick={() => setEditBankAccountData(prev => ({ ...prev, authorizedCcEmails: (prev.authorizedCcEmails || []).filter(e => e !== cc) }))} style={{ cursor: 'pointer', marginLeft: '2px', fontWeight: '700' }}>&times;</span>
-                                                        </span>
-                                                      ))}
-                                                    </div>
-                                                    <div style={{ display: 'flex', gap: '6px' }}>
-                                                      <input type="email" placeholder="cc@example.com" value={editAccountCcInput}
-                                                        onChange={e => setEditAccountCcInput(e.target.value)}
-                                                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddEditCc(); } }}
-                                                        style={{ flex: 1, padding: '7px', border: `1px solid ${editCcInputValid ? 'var(--border-color)' : 'var(--loss-color)'}`, borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', boxSizing: 'border-box' }} />
-                                                      <button type="button" onClick={handleAddEditCc}
-                                                        disabled={!editAccountCcInput.trim() || !editCcInputValid}
-                                                        style={{ padding: '6px 12px', background: (!editAccountCcInput.trim() || !editCcInputValid) ? 'var(--bg-secondary)' : 'var(--accent-color)', color: (!editAccountCcInput.trim() || !editCcInputValid) ? 'var(--text-muted)' : 'white', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: (!editAccountCcInput.trim() || !editCcInputValid) ? 'not-allowed' : 'pointer', fontSize: '0.78rem', fontWeight: '600' }}>Add</button>
-                                                    </div>
-                                                    {!editCcInputValid && <div style={{ color: 'var(--loss-color)', fontSize: '0.68rem', marginTop: '3px' }}>Invalid email format</div>}
-                                                  </div>
                                                 </div>
                                               </div>
                                             );
                                           })()}
                                           <div style={{ gridColumn: '1 / -1', display: 'flex', gap: '8px', marginTop: '6px' }}>
                                             <button onClick={() => handleSaveEditBankAccount(account._id)} style={{ padding: '7px 14px', background: 'var(--gain-color)', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.82rem', fontWeight: '600' }}>Save</button>
-                                            <button onClick={() => { setEditingBankAccount(null); setEditBankAccountData({}); setEditAccountCcInput(''); }} style={{ padding: '7px 14px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.82rem' }}>Cancel</button>
+                                            <button onClick={() => { setEditingBankAccount(null); setEditBankAccountData({}); setEditAccountEmailInput(''); }} style={{ padding: '7px 14px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.82rem' }}>Cancel</button>
                                             <button onClick={() => handleDeleteBankAccount(account._id)} style={{ padding: '7px 14px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '6px', color: 'var(--loss-color)', cursor: 'pointer', fontSize: '0.82rem', marginLeft: 'auto' }}>Delete</button>
                                           </div>
                                         </div>
@@ -3735,16 +3991,37 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                               {Object.entries(PROFILE_TEMPLATES).map(([k, t]) => <option key={k} value={k}>{t.name}</option>)}
                                             </select>
                                           </div>
-                                          {['maxCash', 'maxBonds', 'maxEquities', 'maxAlternative'].map(field => (
-                                            <div key={field}>
-                                              <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>{field.replace('max', '')}</label>
-                                              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                                <input type="number" min="0" max="100" value={accountProfileDraft[field]} onChange={e => handleAccountAllocationChange(field, e.target.value)}
-                                                  style={{ width: '60px', padding: '7px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', textAlign: 'center' }} />
-                                                <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>%</span>
+                                          {PROFILE_CATEGORIES.map(category => {
+                                            const minField = `min${category.key}`;
+                                            const maxField = `max${category.key}`;
+                                            const minValue = getProfileLimit(accountProfileDraft, minField);
+                                            const maxValue = getProfileLimit(accountProfileDraft, maxField);
+                                            const rangeInvalid = minValue > maxValue;
+                                            return (
+                                              <div key={category.key}>
+                                                <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>{category.label}</label>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                                  <PercentInput
+                                                    value={minValue}
+                                                    onChange={v => handleAccountAllocationChange(minField, v)}
+                                                    invalid={rangeInvalid}
+                                                    ariaLabel={`${category.label} minimum percentage`}
+                                                  />
+                                                  <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>–</span>
+                                                  <PercentInput
+                                                    value={maxValue}
+                                                    onChange={v => handleAccountAllocationChange(maxField, v)}
+                                                    invalid={rangeInvalid}
+                                                    ariaLabel={`${category.label} maximum percentage`}
+                                                  />
+                                                </div>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: rangeInvalid ? 'var(--loss-color)' : 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em', marginTop: '2px' }}>
+                                                  <span>Min</span>
+                                                  <span>Max</span>
+                                                </div>
                                               </div>
-                                            </div>
-                                          ))}
+                                            );
+                                          })}
                                           <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: '6px' }}>
                                             <input type="checkbox" checked={accountProfileDraft.isProfessionalInvestor || false} onChange={e => setAccountProfileDraft(prev => ({...prev, isProfessionalInvestor: e.target.checked}))} />
                                             <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>Professional Investor</span>
@@ -3760,10 +4037,12 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                             {profile.isProfessionalInvestor && <span style={{ padding: '3px 8px', borderRadius: '5px', fontSize: '0.75rem', fontWeight: '600', background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6' }}>Professional</span>}
                                           </div>
                                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px' }}>
-                                            {[{label:'Cash', val: profile.maxCash}, {label:'Bonds', val: profile.maxBonds}, {label:'Equities', val: profile.maxEquities}, {label:'Alt.', val: profile.maxAlternative}].map(c => (
-                                              <div key={c.label} style={{ padding: '8px', background: 'var(--bg-secondary)', borderRadius: '6px', textAlign: 'center' }}>
-                                                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: '2px' }}>{c.label}</div>
-                                                <div style={{ fontSize: '1rem', fontWeight: '700', color: 'var(--text-primary)' }}>{c.val}%</div>
+                                            {PROFILE_CATEGORIES.map(category => (
+                                              <div key={category.key} style={{ padding: '8px', background: 'var(--bg-secondary)', borderRadius: '6px', textAlign: 'center' }}>
+                                                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: '2px' }}>{category.shortLabel}</div>
+                                                <div style={{ fontSize: '0.85rem', fontWeight: '700', color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>
+                                                  {getProfileLimit(profile, `min${category.key}`)} – {getProfileLimit(profile, `max${category.key}`)}%
+                                                </div>
                                               </div>
                                             ))}
                                           </div>
@@ -3773,9 +4052,12 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                       )}
                                     </div>
 
-                                    {/* Right: Risk Matrix */}
+                                    {/* Right: Risk Matrix — assessed per banking
+                                        relationship, so this reads THIS account's
+                                        assessment, not a shared client-level one. */}
                                     {(isEntityMode || (hasUser && user.role === USER_ROLES.CLIENT)) && (() => {
-                                      const riskScore = entity?.kycRiskScore || user?.profile?.kycRiskScore;
+                                      const riskScore = account.kycRiskScore;
+                                      const history = account.kycRiskScoreHistory || [];
                                       const getHighestRisk = (rs) => {
                                         if (!rs) return null;
                                         const levels = [rs.clientProspect?.riskLevel, rs.beneficialOwner?.riskLevel, rs.businessRelationship?.riskLevel].filter(Boolean);
@@ -3784,16 +4066,51 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                       const highestRisk = getHighestRisk(riskScore);
                                       const display = highestRisk ? getRiskLevelDisplay(highestRisk) : null;
                                       const isOverdue = riskScore?.nextReviewDate && new Date(riskScore.nextReviewDate) < new Date();
+                                      const canAssess = [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.COMPLIANCE].includes(currentUser?.role);
 
                                       return (
                                         <div style={{ padding: '16px', background: 'var(--bg-secondary)', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
                                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                            <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: '600', color: 'var(--text-primary)' }}>Risk Matrix</h4>
-                                            <button onClick={(e) => { e.stopPropagation(); setRiskScoreModalOpen(true); setEditingRiskScore(true); }}
-                                              style={{ padding: '4px 10px', background: 'var(--accent-color)', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}>
-                                              {riskScore ? 'Edit' : 'Assess'}
-                                            </button>
+                                            <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: '600', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                              KYC Risk Matrix
+                                              {riskScore && (
+                                                <span style={{ fontSize: '0.65rem', fontWeight: '600', padding: '1px 6px', borderRadius: '4px', background: 'var(--bg-tertiary)', color: 'var(--text-muted)' }}
+                                                  title="Every assessment is kept; the current one is the latest version">
+                                                  v{history.length + 1}
+                                                </span>
+                                              )}
+                                            </h4>
+                                            <div style={{ display: 'flex', gap: '6px' }}>
+                                              {riskScore && (() => {
+                                                const busyKey = `${account._id}:current`;
+                                                const busy = pdfBusyKey === busyKey;
+                                                return (
+                                                  <button onClick={(e) => { e.stopPropagation(); exportRiskScorePdf(riskScore, account, busyKey); }}
+                                                    disabled={!!pdfBusyKey}
+                                                    title="Export this assessment as PDF for the audit trail"
+                                                    style={{ padding: '4px 10px', background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '5px', cursor: pdfBusyKey ? 'wait' : 'pointer', fontSize: '0.75rem', fontWeight: '600', opacity: pdfBusyKey && !busy ? 0.5 : 1 }}>
+                                                    {busy ? '⏳ Generating…' : '📄 PDF'}
+                                                  </button>
+                                                );
+                                              })()}
+                                              {/* Saving always writes a new version and archives the
+                                                  previous one, so "Edit" was misleading. */}
+                                              {canAssess && (
+                                                <button onClick={(e) => { e.stopPropagation(); openRiskScoreModal(account._id); }}
+                                                  title={riskScore
+                                                    ? 'Record a new assessment — the current one is kept as a previous version'
+                                                    : 'Record the first assessment for this banking relationship'}
+                                                  style={{ padding: '4px 10px', background: 'var(--accent-color)', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}>
+                                                  {riskScore ? 'New assessment' : 'Assess'}
+                                                </button>
+                                              )}
+                                            </div>
                                           </div>
+                                          {pdfError && (
+                                            <div style={{ marginBottom: '10px', padding: '6px 10px', borderRadius: '6px', fontSize: '0.72rem', background: 'color-mix(in srgb, var(--loss-color) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--loss-color) 30%, transparent)', color: 'var(--loss-color)' }}>
+                                              {pdfError}
+                                            </div>
+                                          )}
                                           {riskScore ? (
                                             <div>
                                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
@@ -3832,6 +4149,47 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                                   </span>
                                                 )}
                                               </div>
+                                              {riskScore.comments && (
+                                                <div style={{ marginTop: '8px', padding: '6px 8px', background: 'var(--bg-primary)', borderRadius: '6px', fontSize: '0.72rem', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>
+                                                  {riskScore.comments}
+                                                </div>
+                                              )}
+                                              {history.length > 0 && (
+                                                <div style={{ marginTop: '10px', borderTop: '1px solid var(--border-color)', paddingTop: '8px' }}>
+                                                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: '4px' }}>
+                                                    Previous versions
+                                                  </div>
+                                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                                    {[...history].reverse().map((h, i) => {
+                                                      const versionNo = history.length - i;
+                                                      const busyKey = `${account._id}:v${versionNo}`;
+                                                      const busy = pdfBusyKey === busyKey;
+                                                      const hLevels = [h.clientProspect?.riskLevel, h.beneficialOwner?.riskLevel, h.businessRelationship?.riskLevel].filter(Boolean);
+                                                      const hHighest = hLevels.includes('high') ? 'high' : hLevels.includes('medium') ? 'medium' : hLevels.length ? 'low' : null;
+                                                      const hDisplay = hHighest ? getRiskLevelDisplay(hHighest) : null;
+                                                      return (
+                                                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                          <button
+                                                            onClick={(e) => { e.stopPropagation(); openRiskScoreVersion(account._id, h, `v${versionNo}`); }}
+                                                            title="Open this superseded version"
+                                                            style={{ flex: 1, minWidth: 0, textAlign: 'left', padding: '3px 8px', background: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: '4px', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '0.68rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                            <span style={{ fontWeight: '700', color: 'var(--text-muted)' }}>v{versionNo}</span>
+                                                            <span>{h.assessmentDate ? new Date(h.assessmentDate).toLocaleDateString('en-GB') : '—'}</span>
+                                                            {hDisplay && <span style={{ color: hDisplay.color }}>{hDisplay.emoji} {hDisplay.labelEn}</span>}
+                                                          </button>
+                                                          <button
+                                                            onClick={(e) => { e.stopPropagation(); exportRiskScorePdf(h, account, busyKey); }}
+                                                            disabled={!!pdfBusyKey}
+                                                            title="Export this version as PDF"
+                                                            style={{ padding: '3px 8px', background: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: '4px', color: 'var(--text-secondary)', cursor: pdfBusyKey ? 'wait' : 'pointer', fontSize: '0.68rem', flexShrink: 0, opacity: pdfBusyKey && !busy ? 0.5 : 1 }}>
+                                                            {busy ? '⏳' : '📄'}
+                                                          </button>
+                                                        </div>
+                                                      );
+                                                    })}
+                                                  </div>
+                                                </div>
+                                              )}
                                             </div>
                                           ) : (
                                             <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>Not assessed</div>
@@ -4013,6 +4371,13 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
             <ClientDocumentManager
               userId={userId || entityId}
               familyMembers={user?.profile?.familyMembers || entity?.profile?.familyMembers || []}
+              // Corporate documents (trade register, UBO register, articles,
+              // signatory powers) only apply to companies. 'life_insurance' is a
+              // legacy entity type that is also a legal person.
+              isCompany={
+                (isEntityMode && (entity?.type === ENTITY_TYPES.COMPANY || entity?.type === 'life_insurance'))
+                || (hasUser && user?.profile?.clientType === 'company')
+              }
             />
           )}
 
@@ -4059,7 +4424,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                     label="Portfolio Amount / Initial Contribution"
                     editing={editingEntityKyc}
                     value={kyc.portfolioAmount}
-                    display={kyc.portfolioAmount}
+                    display={formatAmountDisplay(kyc.portfolioAmount)}
                     placeholder="e.g. €750,000"
                     onChange={v => setKyc({ portfolioAmount: v })}
                   />
@@ -4082,9 +4447,9 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                 />
 
                 <div style={{ padding: '12px 0', borderBottom: '1px solid var(--border-color)', display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: '12px' }}>
-                  <EntityField label="Of which: Real Estate" editing={editingEntityKyc} value={kyc.wealthRealEstate} display={kyc.wealthRealEstate} onChange={v => setKyc({ wealthRealEstate: v })} />
-                  <EntityField label="Of which: Bank Assets" editing={editingEntityKyc} value={kyc.wealthBankAssets} display={kyc.wealthBankAssets} onChange={v => setKyc({ wealthBankAssets: v })} />
-                  <EntityField label="Other" editing={editingEntityKyc} value={kyc.wealthOther} display={kyc.wealthOther} onChange={v => setKyc({ wealthOther: v })} />
+                  <EntityField label="Of which: Real Estate" editing={editingEntityKyc} value={kyc.wealthRealEstate} display={formatAmountDisplay(kyc.wealthRealEstate)} onChange={v => setKyc({ wealthRealEstate: v })} />
+                  <EntityField label="Of which: Bank Assets" editing={editingEntityKyc} value={kyc.wealthBankAssets} display={formatAmountDisplay(kyc.wealthBankAssets)} onChange={v => setKyc({ wealthBankAssets: v })} />
+                  <EntityField label="Other" editing={editingEntityKyc} value={kyc.wealthOther} display={formatAmountDisplay(kyc.wealthOther)} onChange={v => setKyc({ wealthOther: v })} />
                 </div>
 
                 <ChoiceField
@@ -4105,7 +4470,201 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   />
                 </div>
 
+                {/* Account opening committee — the decision that admits the
+                    relationship. Kept with KYC because it is the outcome of it. */}
+                <div style={{ marginTop: '20px', marginBottom: '4px', fontSize: '0.78rem', fontWeight: '700', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  🏛️ Account Opening Committee
+                </div>
+
+                <div style={{ padding: '12px 0', borderBottom: '1px solid var(--border-color)', display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '12px', alignItems: 'start' }}>
+                  <EntityField
+                    label="Committee Date"
+                    editing={editingEntityKyc}
+                    type="date"
+                    value={toDateInputValue(kyc.committeeDate)}
+                    display={kyc.committeeDate ? new Date(kyc.committeeDate).toLocaleDateString() : ''}
+                    onChange={v => setKyc({ committeeDate: v || null })}
+                  />
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
+                      Outcome
+                    </label>
+                    {editingEntityKyc ? (
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        {COMMITTEE_OUTCOMES.map(opt => (
+                          <button key={opt.value}
+                            onClick={() => setKyc({ committeeOutcome: kyc.committeeOutcome === opt.value ? null : opt.value })}
+                            style={{
+                              padding: '7px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.82rem', fontWeight: '600',
+                              border: kyc.committeeOutcome === opt.value ? 'none' : '1px solid var(--border-color)',
+                              background: kyc.committeeOutcome === opt.value ? opt.color : 'var(--bg-secondary)',
+                              color: kyc.committeeOutcome === opt.value ? 'white' : 'var(--text-secondary)',
+                              transition: 'all 0.15s ease'
+                            }}>
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (() => {
+                      const chosen = COMMITTEE_OUTCOMES.find(o => o.value === kyc.committeeOutcome);
+                      return (
+                        <span style={{
+                          display: 'inline-block', padding: '3px 12px', borderRadius: '6px', fontSize: '0.85rem', fontWeight: '700',
+                          background: chosen ? `color-mix(in srgb, ${chosen.color} 12%, transparent)` : 'var(--bg-secondary)',
+                          color: chosen ? chosen.color : 'var(--text-muted)'
+                        }}>
+                          {chosen ? chosen.label : '—'}
+                        </span>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                <div style={{ padding: '12px 0' }}>
+                  <EntityField
+                    label="Committee Notes"
+                    editing={editingEntityKyc}
+                    value={kyc.committeeNotes}
+                    display={kyc.committeeNotes}
+                    placeholder="Conditions, reservations, attendees…"
+                    onChange={v => setKyc({ committeeNotes: v })}
+                  />
+                </div>
+
                 <KycDocumentManager userId={entityId} />
+
+                {/* Periodic review — the recurring re-examination of the
+                    relationship. Its due date follows the client's risk level,
+                    so the interval is derived rather than typed. */}
+                {(() => {
+                  // Risk is assessed per banking relationship; the client's
+                  // review cadence follows their WORST-rated account.
+                  const levels = bankAccounts
+                    .map(a => a.kycRiskScore)
+                    .filter(Boolean)
+                    .flatMap(rs => [rs.clientProspect?.riskLevel, rs.beneficialOwner?.riskLevel, rs.businessRelationship?.riskLevel])
+                    .filter(Boolean);
+                  const overallRisk = levels.includes('high') ? 'high'
+                    : levels.includes('medium') ? 'medium'
+                    : levels.length ? 'low' : null;
+                  const riskDisplay = overallRisk ? getRiskLevelDisplay(overallRisk) : null;
+                  const years = overallRisk ? REVIEW_YEARS_BY_RISK[overallRisk] : null;
+
+                  const storedNext = kyc.nextReviewDate ? new Date(kyc.nextReviewDate) : null;
+                  const derivedNext = computeNextReviewDate(kyc.lastReviewDate, overallRisk);
+                  const nextDue = storedNext || derivedNext;
+                  const isOverdue = nextDue && nextDue < new Date();
+
+                  return (
+                    <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid var(--border-color)' }}>
+                      <div style={{ fontSize: '0.78rem', fontWeight: '700', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        🔁 Periodic Review
+                        {riskDisplay && (
+                          <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: '600', fontSize: '0.72rem', padding: '2px 8px', borderRadius: '10px', background: `color-mix(in srgb, ${riskDisplay.color} 10%, transparent)`, color: riskDisplay.color }}>
+                            {riskDisplay.emoji} {riskDisplay.labelEn} · every {years} year{years > 1 ? 's' : ''}
+                          </span>
+                        )}
+                        {!riskDisplay && (
+                          <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: '500', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                            no account assessed yet — assess the risk matrix to set the cadence
+                          </span>
+                        )}
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '12px', marginBottom: '4px' }}>
+                        <EntityField
+                          label="Last Review Date"
+                          editing={editingEntityKyc}
+                          type="date"
+                          value={toDateInputValue(kyc.lastReviewDate)}
+                          display={kyc.lastReviewDate ? new Date(kyc.lastReviewDate).toLocaleDateString() : ''}
+                          onChange={v => setKyc({
+                            lastReviewDate: v || null,
+                            // Recomputed from the risk level in force at review time,
+                            // so a later re-rating doesn't silently move a past due date.
+                            nextReviewDate: v ? computeNextReviewDate(v, overallRisk) : null
+                          })}
+                        />
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
+                            Next Review Due
+                          </label>
+                          <div style={{ fontSize: '0.95rem', fontWeight: isOverdue ? '700' : '400', color: isOverdue ? 'var(--loss-color)' : 'var(--text-primary)' }}>
+                            {nextDue ? nextDue.toLocaleDateString() : '-'}
+                            {isOverdue && ' (overdue)'}
+                          </div>
+                          {kyc.lastReviewDate && years && (
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                              {years} year{years > 1 ? 's' : ''} after the last review
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <SingleTypeDocumentManager
+                        userId={entityId}
+                        documentType={DOCUMENT_TYPES.PERIODIC_REVIEW}
+                        title="📄 Review Files"
+                        bordered={false}
+                      />
+                    </div>
+                  );
+                })()}
+
+                {/* Visit reports — the yearly client visit. Same shape as the
+                    periodic review, but the cadence is fixed at one year and
+                    does not depend on the risk level. */}
+                {(() => {
+                  const storedNext = kyc.nextVisitDate ? new Date(kyc.nextVisitDate) : null;
+                  const nextDue = storedNext || computeNextVisitDate(kyc.lastVisitDate);
+                  const isOverdue = nextDue && nextDue < new Date();
+
+                  return (
+                    <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid var(--border-color)' }}>
+                      <div style={{ fontSize: '0.78rem', fontWeight: '700', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        🤝 Visit Reports
+                        <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: '500', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                          one visit every {VISIT_INTERVAL_YEARS > 1 ? `${VISIT_INTERVAL_YEARS} years` : 'year'}
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '12px', marginBottom: '4px' }}>
+                        <EntityField
+                          label="Last Visit Date"
+                          editing={editingEntityKyc}
+                          type="date"
+                          value={toDateInputValue(kyc.lastVisitDate)}
+                          display={kyc.lastVisitDate ? new Date(kyc.lastVisitDate).toLocaleDateString() : ''}
+                          onChange={v => setKyc({
+                            lastVisitDate: v || null,
+                            nextVisitDate: v ? computeNextVisitDate(v) : null
+                          })}
+                        />
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
+                            Next Visit Due
+                          </label>
+                          <div style={{ fontSize: '0.95rem', fontWeight: isOverdue ? '700' : '400', color: isOverdue ? 'var(--loss-color)' : 'var(--text-primary)' }}>
+                            {nextDue ? nextDue.toLocaleDateString() : '-'}
+                            {isOverdue && ' (overdue)'}
+                          </div>
+                          {kyc.lastVisitDate && (
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                              {VISIT_INTERVAL_YEARS} year{VISIT_INTERVAL_YEARS > 1 ? 's' : ''} after the last visit
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <SingleTypeDocumentManager
+                        userId={entityId}
+                        documentType={DOCUMENT_TYPES.VISIT_REPORT}
+                        title="📄 Visit Report Files"
+                        bordered={false}
+                      />
+                    </div>
+                  );
+                })()}
               </LiquidGlassCard>
             );
           })()}
@@ -4461,472 +5020,6 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
             </LiquidGlassCard>
           )}
 
-          {/* KYC Risk Score - riskScore tab (when viewing a client profile) */}
-          {activeTab === 'riskScore' && (isEntityMode || (hasUser && user.role === USER_ROLES.CLIENT)) && (() => {
-            const savedRiskScore = entity?.kycRiskScore || user?.profile?.kycRiskScore;
-            return (
-            <LiquidGlassCard style={{ padding: '24px' }}>
-              {/* Header */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-                <h2 style={{
-                  margin: 0,
-                  fontSize: '20px',
-                  fontWeight: '600',
-                  color: 'var(--text-primary)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '10px'
-                }}>
-                  <span>📊</span> KYC Risk Assessment
-                </h2>
-                {!editingRiskScore && (
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    {savedRiskScore && (
-                      <button
-                        onClick={() => exportRiskScorePdf(savedRiskScore)}
-                        title="Export this version as PDF for the audit trail"
-                        style={{
-                          padding: '8px 16px',
-                          background: 'var(--bg-secondary)',
-                          border: '1px solid var(--border-color)',
-                          borderRadius: '8px',
-                          color: 'var(--text-primary)',
-                          cursor: 'pointer',
-                          fontSize: '14px',
-                          fontWeight: '500',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          transition: 'all 0.3s ease'
-                        }}
-                      >
-                        📄 Export PDF
-                      </button>
-                    )}
-                    {(currentUser?.role === USER_ROLES.SUPERADMIN || currentUser?.role === USER_ROLES.ADMIN || currentUser?.role === USER_ROLES.COMPLIANCE) && (
-                      <button
-                        onClick={() => setEditingRiskScore(true)}
-                        style={{
-                          padding: '8px 16px',
-                          background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color-dark, #0284c7) 100%)',
-                          border: 'none',
-                          borderRadius: '8px',
-                          color: '#fff',
-                          cursor: 'pointer',
-                          fontSize: '14px',
-                          fontWeight: '500',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          transition: 'all 0.3s ease'
-                        }}
-                      >
-                        ✏️ Edit
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Assessment Info Bar */}
-              {savedRiskScore?.assessmentDate && (
-                <div style={{
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: '16px',
-                  marginBottom: '24px',
-                  padding: '12px 16px',
-                  background: 'var(--bg-secondary)',
-                  borderRadius: '8px',
-                  fontSize: '0.85rem'
-                }}>
-                  <div>
-                    <span style={{ color: 'var(--text-secondary)' }}>Last Assessment: </span>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: '500' }}>
-                      {new Date(savedRiskScore.assessmentDate).toLocaleDateString()}
-                    </span>
-                  </div>
-                  {savedRiskScore?.nextReviewDate && (
-                    <div>
-                      <span style={{ color: 'var(--text-secondary)' }}>Next Review Due: </span>
-                      <span style={{
-                        color: new Date(savedRiskScore.nextReviewDate) < new Date() ? 'var(--loss-color)' : 'var(--text-primary)',
-                        fontWeight: '500'
-                      }}>
-                        {new Date(savedRiskScore.nextReviewDate).toLocaleDateString()}
-                        {new Date(savedRiskScore.nextReviewDate) < new Date() && ' (Overdue)'}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Previous versions (audit trail) */}
-              {entity?.kycRiskScoreHistory?.length > 0 && (
-                <div style={{
-                  display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px',
-                  marginBottom: '24px', padding: '10px 16px',
-                  background: 'var(--bg-secondary)', borderRadius: '8px', fontSize: '0.82rem'
-                }}>
-                  <span style={{ color: 'var(--text-secondary)', fontWeight: '600' }}>🗂️ Previous versions:</span>
-                  {[...entity.kycRiskScoreHistory].reverse().map((h, i) => (
-                    <button key={i}
-                      onClick={() => exportRiskScorePdf(h)}
-                      title="Export this archived version as PDF"
-                      style={{
-                        padding: '4px 10px', background: 'var(--bg-primary)', border: '1px solid var(--border-color)',
-                        borderRadius: '6px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.78rem'
-                      }}>
-                      📄 {h.assessmentDate ? new Date(h.assessmentDate).toLocaleDateString('en-GB') : `Version ${entity.kycRiskScoreHistory.length - i}`}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {/* Risk Score Matrix Table */}
-              <div style={{ overflowX: 'auto', marginBottom: '24px' }}>
-                <table style={{
-                  width: '100%',
-                  borderCollapse: 'collapse',
-                  fontSize: '0.85rem'
-                }}>
-                  <thead>
-                    <tr style={{ background: 'var(--bg-tertiary)' }}>
-                      <th style={{
-                        padding: '12px 16px',
-                        textAlign: 'left',
-                        fontWeight: '600',
-                        color: 'var(--text-primary)',
-                        borderBottom: '2px solid var(--border-color)',
-                        minWidth: '200px'
-                      }}>
-                        Criteria
-                      </th>
-                      <th style={{
-                        padding: '12px 16px',
-                        textAlign: 'center',
-                        fontWeight: '600',
-                        color: 'var(--text-primary)',
-                        borderBottom: '2px solid var(--border-color)',
-                        minWidth: '180px'
-                      }}>
-                        Client Prospect
-                      </th>
-                      <th style={{
-                        padding: '12px 16px',
-                        textAlign: 'center',
-                        fontWeight: '600',
-                        color: 'var(--text-primary)',
-                        borderBottom: '2px solid var(--border-color)',
-                        minWidth: '180px'
-                      }}>
-                        Beneficial Owner
-                      </th>
-                      <th style={{
-                        padding: '12px 16px',
-                        textAlign: 'center',
-                        fontWeight: '600',
-                        color: 'var(--text-primary)',
-                        borderBottom: '2px solid var(--border-color)',
-                        minWidth: '180px'
-                      }}>
-                        Business Relationship
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {RISK_CRITERIA.map((criterion, idx) => (
-                      <tr key={criterion.id} style={{
-                        background: idx % 2 === 0 ? 'transparent' : 'var(--bg-secondary)'
-                      }}>
-                        <td style={{
-                          padding: '10px 16px',
-                          borderBottom: '1px solid var(--border-color)',
-                          color: 'var(--text-primary)'
-                        }}>
-                          <span style={{ color: 'var(--text-secondary)', marginRight: '8px' }}>{criterion.number}.</span>
-                          {criterion.labelEn}
-                        </td>
-                        {['clientProspect', 'beneficialOwner', 'businessRelationship'].map(column => (
-                          <td key={column} style={{
-                            padding: '10px 16px',
-                            borderBottom: '1px solid var(--border-color)',
-                            textAlign: 'center'
-                          }}>
-                            {editingRiskScore ? (
-                              <select
-                                value={riskScoreForm[column][criterion.id] || ''}
-                                onChange={(e) => handleRiskScoreChange(column, criterion.id, e.target.value)}
-                                style={{
-                                  width: '100%',
-                                  padding: '8px 12px',
-                                  background: 'var(--bg-primary)',
-                                  border: '1px solid var(--border-color)',
-                                  borderRadius: '6px',
-                                  color: 'var(--text-primary)',
-                                  fontSize: '0.8rem',
-                                  cursor: 'pointer'
-                                }}
-                              >
-                                <option value="">-- Select --</option>
-                                {criterion.options.map(option => (
-                                  <option key={option.value} value={option.value}>
-                                    {option.labelEn} ({option.score} pts)
-                                  </option>
-                                ))}
-                              </select>
-                            ) : (
-                              (() => {
-                                const savedValue = savedRiskScore?.[column]?.criteria?.[criterion.id];
-                                const selectedOption = criterion.options.find(o => o.value === savedValue);
-                                if (selectedOption) {
-                                  return (
-                                    <span style={{
-                                      padding: '4px 10px',
-                                      background: selectedOption.score >= 10 ? 'rgba(239, 68, 68, 0.1)'
-                                        : selectedOption.score >= 3 ? 'rgba(245, 158, 11, 0.1)'
-                                        : 'rgba(16, 185, 129, 0.1)',
-                                      border: `1px solid ${selectedOption.score >= 10 ? 'rgba(239, 68, 68, 0.3)'
-                                        : selectedOption.score >= 3 ? 'rgba(245, 158, 11, 0.3)'
-                                        : 'rgba(16, 185, 129, 0.3)'}`,
-                                      borderRadius: '4px',
-                                      fontSize: '0.8rem',
-                                      color: selectedOption.score >= 10 ? 'var(--loss-color)'
-                                        : selectedOption.score >= 3 ? 'var(--warning-color)'
-                                        : 'var(--gain-color)'
-                                    }}>
-                                      {selectedOption.labelEn} ({selectedOption.score})
-                                    </span>
-                                  );
-                                }
-                                return <span style={{ color: 'var(--text-muted)' }}>—</span>;
-                              })()
-                            )}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                  {/* Totals Row */}
-                  <tfoot>
-                    <tr style={{ background: 'var(--bg-tertiary)' }}>
-                      <td style={{
-                        padding: '14px 16px',
-                        fontWeight: '700',
-                        color: 'var(--text-primary)',
-                        borderTop: '2px solid var(--border-color)'
-                      }}>
-                        TOTAL SCORE
-                      </td>
-                      {['clientProspect', 'beneficialOwner', 'businessRelationship'].map(column => {
-                        const result = editingRiskScore
-                          ? calculateRiskScore(riskScoreForm[column])
-                          : {
-                              totalScore: savedRiskScore?.[column]?.totalScore || 0,
-                              riskLevel: savedRiskScore?.[column]?.riskLevel || null
-                            };
-                        const display = getRiskLevelDisplay(result.riskLevel);
-                        return (
-                          <td key={column} style={{
-                            padding: '14px 16px',
-                            textAlign: 'center',
-                            borderTop: '2px solid var(--border-color)'
-                          }}>
-                            <div style={{
-                              fontSize: '1.5rem',
-                              fontWeight: '700',
-                              color: display.color,
-                              marginBottom: '4px'
-                            }}>
-                              {result.totalScore}
-                            </div>
-                            <div style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '6px',
-                              padding: '4px 12px',
-                              background: `color-mix(in srgb, ${display.color} 8%, transparent)`,
-                              border: `1px solid color-mix(in srgb, ${display.color} 25%, transparent)`,
-                              borderRadius: '20px',
-                              fontSize: '0.8rem',
-                              fontWeight: '600',
-                              color: display.color
-                            }}>
-                              {display.emoji} {display.labelEn}
-                            </div>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-
-              {/* Score Legend */}
-              <div style={{
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: '16px',
-                marginBottom: '24px',
-                padding: '16px',
-                background: 'var(--bg-secondary)',
-                borderRadius: '8px'
-              }}>
-                <div style={{ fontWeight: '600', color: 'var(--text-primary)', marginRight: '8px' }}>Score Classification:</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ color: 'var(--gain-color)' }}>🟢</span>
-                  <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>&lt; 15 pts = Low Risk (review every 2 years)</span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ color: 'var(--warning-color)' }}>🟡</span>
-                  <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>15-29 pts = Medium Risk (review every 2 years)</span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ color: 'var(--loss-color)' }}>🔴</span>
-                  <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>≥ 30 pts = High Risk (review every year)</span>
-                </div>
-              </div>
-
-              {/* Comments Section */}
-              <div style={{ marginBottom: '24px' }}>
-                <h3 style={{
-                  margin: '0 0 12px',
-                  fontSize: '1rem',
-                  fontWeight: '600',
-                  color: 'var(--text-primary)'
-                }}>
-                  Comments
-                </h3>
-                {editingRiskScore ? (
-                  <textarea
-                    value={riskScoreForm.comments}
-                    onChange={(e) => setRiskScoreForm(prev => ({ ...prev, comments: e.target.value }))}
-                    placeholder="Enter any additional comments or observations..."
-                    style={{
-                      width: '100%',
-                      minHeight: '100px',
-                      padding: '12px',
-                      background: 'var(--bg-secondary)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '8px',
-                      color: 'var(--text-primary)',
-                      fontSize: '0.9rem',
-                      resize: 'vertical'
-                    }}
-                  />
-                ) : (
-                  <div style={{
-                    padding: '12px 16px',
-                    background: 'var(--bg-secondary)',
-                    borderRadius: '8px',
-                    color: savedRiskScore?.comments ? 'var(--text-primary)' : 'var(--text-muted)',
-                    fontSize: '0.9rem',
-                    whiteSpace: 'pre-wrap',
-                    minHeight: '60px'
-                  }}>
-                    {savedRiskScore?.comments || 'No comments recorded.'}
-                  </div>
-                )}
-              </div>
-
-              {/* Action Buttons (Edit Mode) */}
-              {editingRiskScore && (
-                <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                  <button
-                    onClick={() => {
-                      setEditingRiskScore(false);
-                      setRiskScoreForm(getInitialRiskScoreForm());
-                    }}
-                    disabled={savingRiskScore}
-                    style={{
-                      padding: '12px 24px',
-                      background: 'var(--bg-secondary)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '8px',
-                      color: 'var(--text-primary)',
-                      cursor: savingRiskScore ? 'not-allowed' : 'pointer',
-                      fontSize: '14px',
-                      fontWeight: '500',
-                      opacity: savingRiskScore ? 0.5 : 1,
-                      transition: 'all 0.3s ease'
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleSaveRiskScore}
-                    disabled={savingRiskScore}
-                    style={{
-                      padding: '12px 24px',
-                      background: 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
-                      border: 'none',
-                      borderRadius: '8px',
-                      color: '#fff',
-                      cursor: savingRiskScore ? 'not-allowed' : 'pointer',
-                      fontSize: '14px',
-                      fontWeight: '500',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      opacity: savingRiskScore ? 0.7 : 1,
-                      transition: 'all 0.3s ease'
-                    }}
-                  >
-                    {savingRiskScore ? (
-                      <>
-                        <span style={{
-                          width: '16px',
-                          height: '16px',
-                          border: '2px solid rgba(255,255,255,0.3)',
-                          borderTopColor: '#fff',
-                          borderRadius: '50%',
-                          animation: 'spin 1s linear infinite'
-                        }} />
-                        Saving...
-                      </>
-                    ) : (
-                      <>💾 Save Assessment</>
-                    )}
-                  </button>
-                </div>
-              )}
-
-              {/* No Assessment Yet */}
-              {!savedRiskScore && !editingRiskScore && (
-                <div style={{
-                  padding: '32px',
-                  textAlign: 'center',
-                  background: 'var(--bg-secondary)',
-                  borderRadius: '12px',
-                  border: '1px dashed var(--border-color)'
-                }}>
-                  <div style={{ fontSize: '48px', marginBottom: '12px', opacity: 0.5 }}>📋</div>
-                  <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '14px' }}>
-                    No KYC risk assessment has been performed for this client yet.
-                  </p>
-                  {(currentUser?.role === USER_ROLES.SUPERADMIN || currentUser?.role === USER_ROLES.ADMIN || currentUser?.role === USER_ROLES.COMPLIANCE) && (
-                    <button
-                      onClick={() => setEditingRiskScore(true)}
-                      style={{
-                        marginTop: '16px',
-                        padding: '10px 20px',
-                        background: 'linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color-dark, #0284c7) 100%)',
-                        border: 'none',
-                        borderRadius: '8px',
-                        color: '#fff',
-                        cursor: 'pointer',
-                        fontSize: '14px',
-                        fontWeight: '500'
-                      }}
-                    >
-                      Start Assessment
-                    </button>
-                  )}
-                </div>
-              )}
-            </LiquidGlassCard>
-            );
-          })()}
 
           {/* Family Members - family tab (when viewing a client profile) */}
           {activeTab === 'family' && hasUser && user.role === USER_ROLES.CLIENT && (
@@ -5745,17 +5838,66 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
         </div>
       </div>
 
-      {/* Risk Score Assessment Modal */}
+      {/* Risk Score Assessment Modal — always scoped to one bank account */}
       {riskScoreModalOpen && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', zIndex: 10000, overflowY: 'auto', padding: '40px 0' }}
-          onClick={() => { setRiskScoreModalOpen(false); setEditingRiskScore(false); }}>
+          onClick={closeRiskScoreModal}>
           <div style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', maxWidth: '900px', width: '95%', margin: 'auto', boxShadow: '0 20px 40px rgba(0,0,0,0.3)' }}
             onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-              <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: '700', color: 'var(--text-primary)' }}>KYC Risk Assessment</h3>
-              <button onClick={() => { setRiskScoreModalOpen(false); setEditingRiskScore(false); }}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: '700', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  {viewingVersion ? 'KYC Risk Assessment' : (riskScoreAccount?.kycRiskScore ? 'New KYC Risk Assessment' : 'KYC Risk Assessment')}
+                  {viewingVersion && (
+                    <span style={{ fontSize: '0.7rem', fontWeight: '600', padding: '2px 8px', borderRadius: '10px', background: 'var(--bg-tertiary)', color: 'var(--text-muted)' }}>
+                      {viewingVersion.versionLabel} · superseded · read-only
+                    </span>
+                  )}
+                </h3>
+                {/* The assessment covers this banking relationship only */}
+                {riskScoreAccount && (
+                  <div style={{ marginTop: '4px', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                    {(banks.find(b => b._id === riskScoreAccount.bankId)?.name) || 'Bank'} · {riskScoreAccount.accountNumber}
+                    {riskScoreAccount.name ? ` · ${riskScoreAccount.name}` : ''}
+                  </div>
+                )}
+              </div>
+              <button onClick={closeRiskScoreModal}
                 style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '20px', cursor: 'pointer', padding: '4px' }}>✕</button>
             </div>
+
+            {riskScoreError && (
+              <div style={{ marginBottom: '12px', padding: '10px 12px', background: 'color-mix(in srgb, var(--loss-color) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--loss-color) 30%, transparent)', borderRadius: '8px', color: 'var(--loss-color)', fontSize: '0.82rem' }}>
+                {riskScoreError}
+              </div>
+            )}
+
+            {viewingVersion ? (
+              <div style={{ marginBottom: '12px', padding: '10px 12px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+                <span>
+                  Recorded {viewingVersion.assessmentDate ? new Date(viewingVersion.assessmentDate).toLocaleDateString() : 'on an unknown date'}
+                  {viewingVersion.nextReviewDate ? ` · review was due ${new Date(viewingVersion.nextReviewDate).toLocaleDateString()}` : ''}
+                  . This version has been superseded and cannot be changed.
+                </span>
+                <button
+                  onClick={() => exportRiskScorePdf(viewingVersion, riskScoreAccount, `${riskScoreAccountId}:${viewingVersion.versionLabel}`)}
+                  disabled={!!pdfBusyKey}
+                  style={{ padding: '5px 12px', background: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', cursor: pdfBusyKey ? 'wait' : 'pointer', fontSize: '0.78rem', fontWeight: '600', flexShrink: 0 }}>
+                  {pdfBusyKey ? '⏳ Generating…' : '📄 Export PDF'}
+                </button>
+              </div>
+            ) : riskScoreAccount?.kycRiskScore ? (
+              // Seeded from the current assessment because a periodic review
+              // usually revisits the same answers; clear it for a fresh scoring.
+              <div style={{ marginBottom: '12px', padding: '10px 12px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+                <span>Pre-filled from the current assessment{riskScoreAccount.kycRiskScore.assessmentDate ? ` of ${new Date(riskScoreAccount.kycRiskScore.assessmentDate).toLocaleDateString()}` : ''}.</span>
+                <button
+                  onClick={() => { setRiskScoreForm(EMPTY_RISK_SCORE_FORM); setRiskScoreError(null); }}
+                  style={{ padding: '5px 12px', background: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.78rem', fontWeight: '600', flexShrink: 0 }}>
+                  Start blank
+                </button>
+              </div>
+            ) : null}
 
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
@@ -5774,47 +5916,100 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                         <span style={{ color: 'var(--text-muted)', marginRight: '4px' }}>{idx + 1}.</span>
                         {criterion.labelEn}
                       </td>
-                      {['clientProspect', 'beneficialOwner', 'businessRelationship'].map(column => (
-                        <td key={column} style={{ padding: '6px 8px', textAlign: 'center' }}>
-                          <select
-                            value={riskScoreForm[column]?.[criterion.id] ?? ''}
-                            onChange={(e) => handleRiskScoreChange(column, criterion.id, e.target.value ? parseInt(e.target.value) : '')}
-                            style={{
-                              width: '100%', padding: '4px', border: '1px solid var(--border-color)', borderRadius: '4px',
-                              background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.72rem', cursor: 'pointer'
-                            }}>
-                            <option value="">-</option>
-                            {criterion.options.map(opt => (
-                              <option key={opt.value} value={opt.value}>{opt.labelEn} ({opt.value} pts)</option>
-                            ))}
-                          </select>
+                      {['clientProspect', 'beneficialOwner'].map(column => {
+                        const answer = riskScoreForm[column]?.[criterion.id];
+                        if (criterion.multiple) {
+                          // Multiple choice: one checkbox per option, points add up.
+                          const picked = Array.isArray(answer) ? answer : (answer ? [answer] : []);
+                          const toggle = (value) => handleRiskScoreChange(
+                            column, criterion.id,
+                            picked.includes(value) ? picked.filter(v => v !== value) : [...picked, value]
+                          );
+                          return (
+                            <td key={column} style={{ padding: '6px 8px', textAlign: 'left' }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', fontSize: '0.72rem', color: 'var(--text-primary)', opacity: viewingVersion ? 0.85 : 1 }}>
+                                {criterion.options.map(opt => (
+                                  <label key={opt.value} style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: viewingVersion ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
+                                    <input
+                                      type="checkbox"
+                                      checked={picked.includes(opt.value)}
+                                      onChange={() => toggle(opt.value)}
+                                      disabled={!!viewingVersion}
+                                      style={{ margin: 0, accentColor: 'var(--accent-color)' }}
+                                    />
+                                    <span>{opt.labelEn} ({opt.score} pts)</span>
+                                  </label>
+                                ))}
+                              </div>
+                            </td>
+                          );
+                        }
+                        return (
+                          <td key={column} style={{ padding: '6px 8px', textAlign: 'center' }}>
+                            {/* Option values are slugs ('euLowRisk'), and calculateRiskScore
+                                matches on the slug. Coercing them with parseInt produced NaN,
+                                which matched no option, so every selection snapped back to "-". */}
+                            <select
+                              value={answer ?? ''}
+                              onChange={(e) => handleRiskScoreChange(column, criterion.id, e.target.value)}
+                              disabled={!!viewingVersion}
+                              style={{
+                                width: '100%', padding: '4px', border: '1px solid var(--border-color)', borderRadius: '4px',
+                                background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.72rem',
+                                cursor: viewingVersion ? 'default' : 'pointer', opacity: viewingVersion ? 0.85 : 1
+                              }}>
+                              <option value="">-</option>
+                              {criterion.options.map(opt => (
+                                <option key={opt.value} value={opt.value}>{opt.labelEn} ({opt.score} pts)</option>
+                              ))}
+                            </select>
+                          </td>
+                        );
+                      })}
+                      {/* Business Relationship is not answered — one merged cell states the rule. */}
+                      {idx === 0 && (
+                        <td rowSpan={RISK_CRITERIA.length} style={{ padding: '6px 8px', textAlign: 'center', verticalAlign: 'middle', color: 'var(--text-muted)', fontSize: '0.72rem', fontStyle: 'italic', background: 'var(--bg-secondary)' }}>
+                          Calculated<br />{BUSINESS_RELATIONSHIP_RULE.toLowerCase()}
                         </td>
-                      ))}
+                      )}
                     </tr>
                   ))}
-                  <tr style={{ borderTop: '2px solid var(--border-color)', fontWeight: '700' }}>
-                    <td style={{ padding: '10px', color: 'var(--text-primary)' }}>TOTAL SCORE</td>
-                    {['clientProspect', 'beneficialOwner', 'businessRelationship'].map(column => {
-                      const result = calculateRiskScore(riskScoreForm[column] || {});
-                      const colDisplay = getRiskLevelDisplay(result.riskLevel);
-                      return (
-                        <td key={column} style={{ padding: '10px', textAlign: 'center' }}>
-                          <div style={{ fontSize: '1rem', fontWeight: '700', color: colDisplay.color }}>{result.totalScore}</div>
-                          <span style={{ padding: '2px 8px', borderRadius: '8px', fontSize: '0.68rem', fontWeight: '600', background: `color-mix(in srgb, ${colDisplay.color} 8%, transparent)`, color: colDisplay.color }}>
-                            {colDisplay.emoji} {colDisplay.labelEn}
-                          </span>
-                        </td>
-                      );
-                    })}
-                  </tr>
+                  {(() => {
+                    const clientResult = calculateRiskScore(riskScoreForm.clientProspect || {});
+                    const uboResult = calculateRiskScore(riskScoreForm.beneficialOwner || {});
+                    const brResult = deriveBusinessRelationship(clientResult, uboResult);
+                    const totals = [
+                      { key: 'clientProspect', result: clientResult },
+                      { key: 'beneficialOwner', result: uboResult },
+                      { key: 'businessRelationship', result: brResult, note: brResult.derivedFrom === 'clientProspect' ? 'from Client' : 'from Benef. Owner' }
+                    ];
+                    return (
+                      <tr style={{ borderTop: '2px solid var(--border-color)', fontWeight: '700' }}>
+                        <td style={{ padding: '10px', color: 'var(--text-primary)' }}>TOTAL SCORE</td>
+                        {totals.map(({ key, result, note }) => {
+                          const colDisplay = getRiskLevelDisplay(result.riskLevel);
+                          return (
+                            <td key={key} style={{ padding: '10px', textAlign: 'center' }}>
+                              <div style={{ fontSize: '1rem', fontWeight: '700', color: colDisplay.color }}>{result.totalScore}</div>
+                              <span style={{ padding: '2px 8px', borderRadius: '8px', fontSize: '0.68rem', fontWeight: '600', background: `color-mix(in srgb, ${colDisplay.color} 8%, transparent)`, color: colDisplay.color }}>
+                                {colDisplay.emoji} {colDisplay.labelEn}
+                              </span>
+                              {note && <div style={{ fontSize: '0.62rem', fontWeight: '500', color: 'var(--text-muted)', marginTop: '3px' }}>{note}</div>}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })()}
                 </tbody>
               </table>
             </div>
 
-            <div style={{ marginTop: '12px', padding: '10px', background: 'var(--bg-secondary)', borderRadius: '8px', fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', gap: '16px' }}>
+            <div style={{ marginTop: '12px', padding: '10px', background: 'var(--bg-secondary)', borderRadius: '8px', fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
               <span>{'< 15 pts = Low Risk'}</span>
               <span>{'15-29 pts = Medium Risk'}</span>
-              <span>{'\u2265 30 pts = High Risk'}</span>
+              <span>{'≥ 30 pts = High Risk'}</span>
+              <span>Review: every year (high) / 2 years (medium) / 3 years (low)</span>
             </div>
 
             <div style={{ marginTop: '12px' }}>
@@ -5822,23 +6017,33 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
               <textarea
                 value={riskScoreForm.comments || ''}
                 onChange={(e) => setRiskScoreForm(prev => ({ ...prev, comments: e.target.value }))}
+                readOnly={!!viewingVersion}
                 rows={2}
                 style={{ width: '100%', padding: '8px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '0.82rem', resize: 'vertical', fontFamily: 'inherit', boxSizing: 'border-box' }}
                 placeholder="Additional notes..."
               />
             </div>
 
+            {!viewingVersion && riskScoreAccount?.kycRiskScore?.assessmentDate && (
+              <div style={{ marginTop: '8px', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                Saving records a new version. The assessment of {new Date(riskScoreAccount.kycRiskScore.assessmentDate).toLocaleDateString()} is kept in this account's version history.
+              </div>
+            )}
+
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
-              <button onClick={() => { setRiskScoreModalOpen(false); setEditingRiskScore(false); }}
+              <button onClick={closeRiskScoreModal}
                 style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}>
-                Cancel
+                {viewingVersion ? 'Close' : 'Cancel'}
               </button>
-              <button
-                onClick={async () => { await handleSaveRiskScore(); setRiskScoreModalOpen(false); setEditingRiskScore(false); }}
-                disabled={savingRiskScore}
-                style={{ padding: '8px 16px', background: 'var(--gain-color)', color: 'white', border: 'none', borderRadius: '8px', cursor: savingRiskScore ? 'not-allowed' : 'pointer', fontSize: '0.85rem', fontWeight: '600', opacity: savingRiskScore ? 0.7 : 1 }}>
-                {savingRiskScore ? 'Saving...' : 'Save Assessment'}
-              </button>
+              {!viewingVersion && (
+                <button
+                  // Only close on success — a failed save must keep the filled-in form
+                  onClick={async () => { try { await handleSaveRiskScore(); closeRiskScoreModal(); } catch { /* error shown in the modal */ } }}
+                  disabled={savingRiskScore}
+                  style={{ padding: '8px 16px', background: 'var(--gain-color)', color: 'white', border: 'none', borderRadius: '8px', cursor: savingRiskScore ? 'not-allowed' : 'pointer', fontSize: '0.85rem', fontWeight: '600', opacity: savingRiskScore ? 0.7 : 1 }}>
+                  {savingRiskScore ? 'Saving...' : 'Save Assessment'}
+                </button>
+              )}
             </div>
           </div>
         </div>

@@ -13,6 +13,7 @@ import { ClientDocumentsCollection, DOCUMENT_TYPES } from '/imports/api/clientDo
 import { SessionsCollection, SessionHelpers } from '/imports/api/sessions.js';
 import { UsersCollection } from '/imports/api/users.js';
 import { issueDocumentToken } from '../documentAccess.js';
+import { getFichierCentralDir } from '/imports/api/documentStorage.js';
 
 /**
  * Validate session and get user
@@ -39,20 +40,11 @@ async function validateSession(sessionId) {
   return user;
 }
 
-// Base path for document storage
-// SECURITY/GDPR: never fall back to public/ — Meteor serves it unauthenticated,
-// which would expose passport scans and KYC files. The dev fallback is the
-// non-served .fichier_central directory at the project root.
-const getDocumentsBasePath = () => {
-  if (process.env.FICHIER_CENTRAL_PATH) {
-    return process.env.FICHIER_CENTRAL_PATH;
-  }
-  let projectRoot = process.cwd();
-  if (projectRoot.includes('.meteor')) {
-    projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
-  }
-  return path.join(projectRoot, '.fichier_central');
-};
+// Base path for document storage.
+// SECURITY/GDPR: never falls back to public/ — Meteor serves that tree
+// unauthenticated, which would expose passport scans and KYC files. Resolved
+// by imports/api/documentStorage.js, the same module /fichier_central reads.
+const getDocumentsBasePath = () => getFichierCentralDir();
 
 // SECURITY: a document "subject" id is used as a directory name and must never be
 // able to escape the storage root. Meteor/entity ids are alphanumeric; reject anything
@@ -76,8 +68,23 @@ const authorizeDocumentSubject = (user, subjectUserId) => {
 };
 
 // Only these document types may be stored, matched by extension AND mime.
-const ALLOWED_EXTENSIONS = new Set(['.pdf', '.jpg', '.jpeg', '.png', '.webp', '.heic', '.gif', '.tif', '.tiff']);
+//
+// Word is accepted because KYC files and corporate deeds (articles, signatory
+// powers) routinely arrive as .doc/.docx. It is safe to store and serve: the
+// stored extension comes from this allowlist rather than the client's filename,
+// and the document endpoint serves Word as a download, never rendered inline.
+// The MIME side stays an exact list, not a prefix — 'application/' as a prefix
+// would wave through anything.
+const WORD_EXTENSIONS = new Set(['.doc', '.docx']);
+const ALLOWED_EXTENSIONS = new Set([
+  '.pdf', '.jpg', '.jpeg', '.png', '.webp', '.heic', '.gif', '.tif', '.tiff',
+  ...WORD_EXTENSIONS
+]);
 const ALLOWED_MIME_PREFIXES = ['image/', 'application/pdf'];
+const ALLOWED_WORD_MIMES = new Set([
+  'application/msword',                                                       // .doc
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document'   // .docx
+]);
 const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024; // 25 MB
 
 // Ensure user directory exists
@@ -147,8 +154,15 @@ Meteor.methods({
     if (!ALLOWED_EXTENSIONS.has(rawExt)) {
       throw new Meteor.Error('invalid-argument', `Unsupported file type: ${rawExt || '(none)'}`);
     }
-    if (!ALLOWED_MIME_PREFIXES.some(p => mimeType.startsWith(p))) {
+    const mimeAllowed = ALLOWED_MIME_PREFIXES.some(p => mimeType.startsWith(p))
+      || ALLOWED_WORD_MIMES.has(mimeType);
+    if (!mimeAllowed) {
       throw new Meteor.Error('invalid-argument', `Unsupported MIME type: ${mimeType}`);
+    }
+    // Extension and MIME must agree on whether this is a Word file, so a Word
+    // payload can't be stored under a .pdf extension (or the reverse).
+    if (WORD_EXTENSIONS.has(rawExt) !== ALLOWED_WORD_MIMES.has(mimeType)) {
+      throw new Meteor.Error('invalid-argument', `File type ${rawExt} does not match MIME type ${mimeType}`);
     }
     const buffer = Buffer.from(base64Data, 'base64');
     if (buffer.length === 0 || buffer.length > MAX_DOCUMENT_BYTES) {

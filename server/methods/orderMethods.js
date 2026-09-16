@@ -5,20 +5,25 @@ import path from 'path';
 import { Random } from 'meteor/random';
 import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { issueDocumentToken } from '../documentAccess.js';
+import { getOrderTracesDir } from '/imports/api/documentStorage.js';
+import { promoteOrderTermsheetToProduct, TERMSHEET_SOURCES as PRODUCT_TERMSHEET_SOURCES } from '../helpers/termsheetSync.js';
 import { generatePDFFromHTML } from '../helpers/pdfHelper.js';
 import { UsersCollection, UserHelpers } from '../../imports/api/users.js';
-import { BanksCollection } from '../../imports/api/banks.js';
-import { BankAccountsCollection } from '../../imports/api/bankAccounts.js';
+import { BanksCollection, BankHelpers } from '../../imports/api/banks.js';
+import { BankAccountsCollection, getAuthorizedEmails } from '../../imports/api/bankAccounts.js';
 import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
 import { ProductsCollection } from '../../imports/api/products.js';
 import { PMSOperationsCollection } from '../../imports/api/pmsOperations.js';
-import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, FX_SUBTYPES, TERM_DEPOSIT_TENORS, EXECUTION_TYPE_LABELS, OrderHelpers, OrderFormatters } from '../../imports/api/orders.js';
+import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, ORDER_SOURCE_TYPES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, FX_SUBTYPES, TERM_DEPOSIT_TENORS, EXECUTION_TYPE_LABELS, OPTION_TYPES, DEFAULT_OPTION_CONTRACT_SIZE, TERMINAL_ORDER_STATUSES, isPlaceholderIsin, OrderHelpers, OrderFormatters, quotesPriceAsPercent, isShortCall, computeShortCallCoverage, optionContractDescription, getOrderHealthCheck, HEALTH_FILTER_ANY } from '../../imports/api/orders.js';
+import { EODApiHelpers } from '../../imports/api/eodApi.js';
 import { AuditLog } from '/imports/api/auditLog';
 import { OrderCountersCollection, OrderCounterHelpers } from '../../imports/api/orderCounters.js';
 import { EmailService, EMAIL, emailShell, emailKvTable, emailParagraph, emailButton } from '../../imports/api/emailService.js';
 import { AccountProfilesCollection, aggregateToFourCategories, getBreakdownKeyForAssetType, mapOrderAssetTypeToProfileCategory, getProfileName } from '../../imports/api/accountProfiles.js';
+import { getHoldingCategoryKey } from '../../imports/api/assetClassification.js';
 import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetadata.js';
 import { IssuersCollection } from '../../imports/api/issuers.js';
+import { isProductCapitalProtected } from '../../imports/api/helpers/productProtection.js';
 
 /**
  * Order Management Server Methods
@@ -41,6 +46,29 @@ const creationAttachmentPattern = Match.Maybe([{
   mimeType: Match.Maybe(String)
 }]);
 
+/**
+ * Evidence shared by every order of a bulk. A client instruction is never shared:
+ * it belongs to exactly one client, so each row names its own file. Only the
+ * termsheet (identical for the whole block) may ride here.
+ */
+const sharedCreationAttachmentPattern = Match.Maybe([{
+  traceType: Match.Where(x => x === EMAIL_TRACE_TYPES.INITIAL_TERMSHEET),
+  fileName: String,
+  base64Data: String,
+  mimeType: Match.Maybe(String)
+}]);
+
+/**
+ * Client instruction files of a bulk, uploaded once and referenced by key from the
+ * rows, so one email covering two accounts of the same owner travels once.
+ */
+const bulkClientOrderFilesPattern = Match.Maybe([{
+  key: String,
+  fileName: String,
+  base64Data: String,
+  mimeType: Match.Maybe(String)
+}]);
+
 const TERMSHEET_MIME_BY_EXT = {
   '.pdf': 'application/pdf',
   '.html': 'text/html',
@@ -52,6 +80,96 @@ const TERMSHEET_MIME_BY_EXT = {
   '.eml': 'message/rfc822',
   '.msg': 'application/vnd.ms-outlook'
 };
+
+/**
+ * The heading of the instrument section, in both PDF generators.
+ */
+function instrumentSectionHeading(order) {
+  if (order?.assetType === ASSET_TYPES.FX) return 'FX Details';
+  if (order?.assetType === ASSET_TYPES.TERM_DEPOSIT) return 'Term Deposit Details';
+  if (order?.assetType === ASSET_TYPES.OPTION) return 'Option Details';
+  return 'Security Details';
+}
+
+/**
+ * The option contract as PDF info-rows. Both generators render the same
+ * fragment, so the audit trail can never ship without the strike the
+ * confirmation carried.
+ */
+function optionDetailRowsHtml(order) {
+  return optionDetailRows(order).map(([label, value]) => `
+      <div class="info-row">
+        <span class="info-label">${label}</span>
+        <span class="info-value">${value}</span>
+      </div>`).join('');
+}
+
+/**
+ * Does this order carry a real ISIN?
+ *
+ * FX, term deposits and listed options store a placeholder ('FX' / 'TD' /
+ * 'OPT'). Printing "ISIN: OPT" on a ticket sent to a bank is worse than
+ * printing nothing, so every document drops the row for these.
+ */
+function hasRealIsin(order) {
+  return !!order?.isin && !isPlaceholderIsin(order.isin);
+}
+
+/** What `quantity` counts, for the asset type. */
+function quantityLabelFor(order) {
+  if (order?.assetType === ASSET_TYPES.STRUCTURED_PRODUCT) return 'Nominal';
+  if (order?.assetType === ASSET_TYPES.TERM_DEPOSIT || order?.assetType === ASSET_TYPES.FX) return 'Amount';
+  if (order?.assetType === ASSET_TYPES.OPTION) return 'Contracts';
+  return 'Quantity';
+}
+
+/**
+ * Contract rows for an option, shared by both emails and both PDFs so the
+ * ticket, the confirmation and the audit trail always describe the same trade.
+ * Returns [] for anything that isn't an option.
+ */
+function optionDetailRows(order) {
+  if (!order || order.assetType !== ASSET_TYPES.OPTION) return [];
+  const rows = [];
+  if (order.optionUnderlyingName || order.optionUnderlyingIsin) {
+    rows.push(['Underlying', `${order.optionUnderlyingName || ''}${order.optionUnderlyingIsin ? ` (${order.optionUnderlyingIsin})` : ''}`.trim()]);
+  }
+  if (order.optionType) rows.push(['Call / Put', order.optionType.toUpperCase()]);
+  if (order.optionStrike != null) rows.push(['Strike', String(order.optionStrike)]);
+  if (order.optionExpiry) rows.push(['Expiry', OrderFormatters.formatDate(order.optionExpiry)]);
+  if (order.optionContractSize) {
+    const shares = (order.quantity || 0) * order.optionContractSize;
+    rows.push(['Contract Size', `${order.optionContractSize} shares${shares ? ` (${OrderFormatters.formatQuantity(shares)} in total)` : ''}`]);
+  }
+  if (order.optionExchange) rows.push(['Exchange', order.optionExchange]);
+  if (order.optionContractSymbol) rows.push(['Contract Symbol', order.optionContractSymbol]);
+  if (order.optionQuoteAtEntry && (order.optionQuoteAtEntry.bid != null || order.optionQuoteAtEntry.last != null)) {
+    const q = order.optionQuoteAtEntry;
+    const parts = [];
+    if (q.bid != null && q.ask != null) parts.push(`bid ${q.bid} / ask ${q.ask}`);
+    else if (q.last != null) parts.push(`last ${q.last}`);
+    if (q.impliedVolatility != null) parts.push(`IV ${Number(q.impliedVolatility).toFixed(1)}%`);
+    if (q.updatedAt) parts.push(`as of ${q.updatedAt}`);
+    rows.push(['Reference Premium', parts.join(', ')]);
+  }
+  return rows;
+}
+
+/**
+ * The issuer record for a structured-product order, or null.
+ *
+ * Only the fallback behind the order's own issuerContact snapshot -
+ * OrderHelpers.resolveIssuerContact decides which one wins.
+ */
+async function loadOrderIssuer(order) {
+  if (!order || order.assetType !== ASSET_TYPES.STRUCTURED_PRODUCT || !order.issuerId) return null;
+  try {
+    return await IssuersCollection.findOneAsync(order.issuerId);
+  } catch (err) {
+    console.error(`[ORDERS] Failed to load issuer ${order.issuerId}:`, err.message);
+    return null;
+  }
+}
 
 /**
  * Load the initial termsheet attachment for a structured-product order, if available.
@@ -78,6 +196,114 @@ function loadInitialTermsheetAttachment(order) {
     console.error(`[ORDERS] Failed to read termsheet for order ${order.orderReference}:`, err);
     return null;
   }
+}
+
+/**
+ * Latest active non-cash positions for one bank account.
+ *
+ * Shared by the sell-order position picker and the short-call coverage check so
+ * both ask the same question of the same rows. The userId-then-bankId fallback
+ * is load-bearing, not defensive: accounts created after the entity migration
+ * carry no userId, and for those only the bankId branch returns anything.
+ */
+async function findAccountHoldings(resolved, bankAccount) {
+  const holdingsQuery = {
+    isActive: true,
+    isLatest: true,
+    portfolioCode: { $regex: new RegExp('^' + bankAccount.accountNumber.split('-')[0]) },
+    assetClass: { $nin: ['cash', 'liquidity', 'Cash', 'Liquidity', 'CASH'] },
+    securityName: { $not: /^(cash|liquidity|compte|konto)/i }
+  };
+  const holdingsOpts = {
+    fields: {
+      isin: 1, securityName: 1, quantity: 1, marketValue: 1,
+      currency: 1, assetClass: 1, marketPrice: 1, snapshotDate: 1
+    },
+    sort: { securityName: 1 }
+  };
+
+  let holdings = await PMSHoldingsCollection.find(
+    { ...holdingsQuery, userId: resolved.holdingsUserId }, holdingsOpts
+  ).fetchAsync();
+  if (holdings.length === 0) {
+    holdings = await PMSHoldingsCollection.find(
+      { ...holdingsQuery, bankId: bankAccount.bankId }, holdingsOpts
+    ).fetchAsync();
+  }
+  return holdings;
+}
+
+/**
+ * Contracts already written against an underlying in this account by other
+ * live short-call orders.
+ *
+ * Without this, two 750-contract calls each look covered against 150,000 shares
+ * while together they are twice the position. Cancelled and rejected orders drop
+ * out via TERMINAL_ORDER_STATUSES.
+ */
+async function committedShortCallContracts({ bankAccountId, underlyingIsin, excludeOrderId }) {
+  if (!bankAccountId || !underlyingIsin) return { contracts: 0, orderRefs: [] };
+
+  const others = await OrdersCollection.find({
+    assetType: ASSET_TYPES.OPTION,
+    optionType: OPTION_TYPES.CALL,
+    orderType: 'sell',
+    bankAccountId,
+    optionUnderlyingIsin: underlyingIsin,
+    status: { $nin: TERMINAL_ORDER_STATUSES },
+    ...(excludeOrderId ? { _id: { $ne: excludeOrderId } } : {})
+  }, { fields: { quantity: 1, optionContractSize: 1, orderReference: 1 } }).fetchAsync();
+
+  return {
+    contracts: others.reduce((sum, o) => sum + (o.quantity || 0), 0),
+    orderRefs: others.map(o => o.orderReference).filter(Boolean)
+  };
+}
+
+/**
+ * Does the account hold enough of the underlying to cover this short call?
+ *
+ * Returns the stored `coverageCheck` shape, or null when the order isn't a
+ * short call. Never throws for a business reason - coverage flags, it does not
+ * block, so a failure here must not stop an order being raised.
+ */
+async function resolveShortCallCoverage({ resolved, bankAccount, order, excludeOrderId }) {
+  const holdings = await findAccountHoldings(resolved, bankAccount);
+  const { contracts: committedContracts, orderRefs } = await committedShortCallContracts({
+    bankAccountId: bankAccount._id,
+    underlyingIsin: order.optionUnderlyingIsin,
+    excludeOrderId
+  });
+
+  const contractSize = order.optionContractSize || DEFAULT_OPTION_CONTRACT_SIZE;
+  const maths = computeShortCallCoverage({
+    contracts: order.quantity,
+    contractSize,
+    underlyingIsin: order.optionUnderlyingIsin,
+    holdings,
+    committedContracts
+  });
+
+  // The valuation date behind heldShares, so a stale comparison is visible
+  // rather than silently trusted.
+  const matching = holdings.filter(h =>
+    String(h.isin || '').toUpperCase() === String(order.optionUnderlyingIsin || '').toUpperCase());
+  const holdingsAsOf = matching.reduce(
+    (latest, h) => (h.snapshotDate && (!latest || h.snapshotDate > latest) ? h.snapshotDate : latest),
+    null
+  );
+
+  return {
+    kind: 'short_call',
+    underlyingIsin: order.optionUnderlyingIsin || null,
+    underlyingName: order.optionUnderlyingName || (matching[0] && matching[0].securityName) || null,
+    contracts: order.quantity,
+    contractSize,
+    ...maths,
+    holdingsAsOf,
+    committedOrderRefs: orderRefs,
+    checkedAt: new Date()
+  };
 }
 
 /**
@@ -276,102 +502,10 @@ async function checkAllocationImpact({ bankAccountId, clientId, assetType, estim
     metadataRecords.forEach(record => { metadataMap[record.isin] = record; });
   }
 
+  // Classification lives in assetClassification.js - shared with the snapshot
+  // builder, the PMS screen and the portfolio review generator.
   investmentHoldings.forEach(h => {
-    let holdingAssetClass = 'other';
-    let subClass = null;
-    let underlyingType = null;
-    let protectionType = null;
-
-    // Priority 1: metadata
-    if (h.isin && metadataMap[h.isin]) {
-      const metadata = metadataMap[h.isin];
-      if (metadata.assetClass) {
-        holdingAssetClass = metadata.assetClass;
-        subClass = metadata.assetSubClass;
-        underlyingType = metadata.structuredProductUnderlyingType;
-        protectionType = metadata.structuredProductProtectionType;
-      }
-    }
-
-    // Priority 2: holding's own assetClass
-    if (holdingAssetClass === 'other' && h.assetClass) {
-      holdingAssetClass = h.assetClass;
-      if (h.bankSpecificData) {
-        underlyingType = h.bankSpecificData.structuredProductUnderlyingType || underlyingType;
-        protectionType = h.bankSpecificData.structuredProductProtectionType || protectionType;
-      }
-    }
-
-    // Priority 3: heuristic detection
-    if (holdingAssetClass === 'other') {
-      const type = String(h.securityType || '').trim().toLowerCase();
-      const name = (h.securityName || '').toLowerCase();
-
-      const isStructuredByType = type === 'certificate' || type === 'structured' || type === '19';
-      const isStructuredByIssuer = name.includes('sg issuer') || name.includes('julius baer express') ||
-          name.includes('bnp paribas iss') || name.includes('raiffeisen ch') ||
-          name.includes('banque intern') || name.includes('credit suisse ag') ||
-          name.includes('credit agricole') || name.includes('citigroup') ||
-          name.includes('ubs ag') || name.includes('vontobel');
-      const isStructuredByName = name.includes('autocallable') || name.includes('phoenix') ||
-          name.includes('orion') || name.includes('himalaya') || name.includes('reverse convertible') ||
-          name.includes('bar.cap') || name.includes('barrier') || name.includes('express') ||
-          name.includes('cap.prot') || name.includes('capital prot') ||
-          (name.includes('cert') && !name.includes('certificate of deposit'));
-
-      if (isStructuredByType || isStructuredByIssuer || isStructuredByName) {
-        holdingAssetClass = 'structured_product';
-        if (name.includes('capital guaranteed') || name.includes('cap.prot') ||
-            name.includes('capital protection') || name.includes('100%')) {
-          protectionType = 'capital_guaranteed_100';
-        } else if (name.includes('bar.cap') || name.includes('barrier')) {
-          protectionType = 'capital_protected_conditional';
-        }
-      } else if (type === '13' || name.includes('private equity') || name.includes('schroders capital') ||
-          name.includes('kkr') || name.includes('blackstone')) {
-        holdingAssetClass = 'private_equity';
-      } else if (type === 'money_market_fund' || (name.includes('money market') && name.includes('fund'))) {
-        holdingAssetClass = 'monetary_products';
-      } else if (type === 'fund' || type === 'etf' || name.includes('sicav') || name.includes('ucits')) {
-        holdingAssetClass = 'fund';
-      } else if (type === '1' || type === 'equity' || type === 'stock') {
-        holdingAssetClass = 'equity';
-        if (name.includes('fund') || name.includes('etf')) subClass = 'equity_fund';
-        else subClass = 'direct_equity';
-      } else if (type === '2' || type === 'bond' || name.includes('treasury')) {
-        holdingAssetClass = 'fixed_income';
-        if (name.includes('fund')) subClass = 'fixed_income_fund';
-        else subClass = 'direct_bond';
-      } else if (type === 'cash') {
-        holdingAssetClass = 'cash';
-      } else if (type === 'term_deposit' || name.includes('term deposit') || name.includes('time deposit') || name.includes('fixed deposit')) {
-        holdingAssetClass = 'time_deposit';
-      } else if (name.includes('gold') || name.includes('commodity') || name.includes('metal')) {
-        holdingAssetClass = 'commodities';
-      }
-    }
-
-    // Build granular category key
-    let categoryKey = holdingAssetClass;
-    if (holdingAssetClass === 'structured_product') {
-      if (protectionType === 'capital_guaranteed_100') {
-        categoryKey = 'structured_product_capital_guaranteed';
-      } else if (protectionType === 'capital_guaranteed_partial') {
-        categoryKey = 'structured_product_partial_guarantee';
-      } else if (protectionType === 'capital_protected_conditional') {
-        // Equity-linked barrier-protected SPs still carry equity risk → Equities (mirrors PMS)
-        categoryKey = (underlyingType === 'equity_linked')
-          ? 'structured_product_equity_linked_barrier_protected'
-          : 'structured_product_barrier_protected';
-      } else if (underlyingType) {
-        categoryKey = `structured_product_${underlyingType}`;
-      }
-    } else if (holdingAssetClass === 'equity' && subClass) {
-      categoryKey = `equity_${subClass}`;
-    } else if (holdingAssetClass === 'fixed_income' && subClass) {
-      categoryKey = `fixed_income_${subClass}`;
-    }
-
+    const categoryKey = getHoldingCategoryKey(h, h.isin ? metadataMap[h.isin] : null);
     assetClassBreakdown[categoryKey] = (assetClassBreakdown[categoryKey] || 0) + (h.marketValue || 0);
   });
 
@@ -491,6 +625,30 @@ Meteor.methods({
       depositCurrency: Match.Maybe(String),
       depositMaturityDate: Match.Maybe(String),
       depositAction: Match.Maybe(String),
+
+      // Listed option fields. `quantity` carries the number of CONTRACTS.
+      optionType: Match.Maybe(Match.Where(x => Object.values(OPTION_TYPES).includes(x))),
+      optionStrike: Match.Maybe(Number),
+      optionExpiry: Match.Maybe(String),
+      optionContractSize: Match.Maybe(Number),
+      optionUnderlyingIsin: Match.Maybe(String),
+      optionUnderlyingName: Match.Maybe(String),
+      optionUnderlyingTicker: Match.Maybe(String),
+      optionExchange: Match.Maybe(String),
+      optionContractSymbol: Match.Maybe(String),
+      optionQuoteAtEntry: Match.Maybe(Match.ObjectIncluding({
+        bid: Match.Maybe(Match.OneOf(Number, null)),
+        ask: Match.Maybe(Match.OneOf(Number, null)),
+        last: Match.Maybe(Match.OneOf(Number, null)),
+        mid: Match.Maybe(Match.OneOf(Number, null)),
+        impliedVolatility: Match.Maybe(Match.OneOf(Number, null)),
+        delta: Match.Maybe(Match.OneOf(Number, null)),
+        openInterest: Match.Maybe(Match.OneOf(Number, null)),
+        updatedAt: Match.Maybe(Match.OneOf(String, null)),
+        source: Match.Maybe(String)
+      })),
+      // Optional reason when the desk writes a call the position doesn't cover.
+      coverageJustification: Match.Maybe(String),
       // Allocation check
       capitalProtected: Match.Maybe(Boolean),
       allocationJustification: Match.Maybe(String),
@@ -546,8 +704,16 @@ Meteor.methods({
       };
     }
 
-    // For SELL orders, validate position (skip for term deposit decreases)
-    if (orderData.orderType === 'sell' && orderData.assetType !== ASSET_TYPES.TERM_DEPOSIT) {
+    // For SELL orders, validate position against the PMS holding.
+    //
+    // Skipped for term-deposit decreases and for listed options: neither has a
+    // PMS holding to point at. A written option creates the position rather than
+    // consuming one, so demanding a sourceHoldingId would reject every short
+    // call and put outright. Short calls are instead covered by the
+    // coverageCheck below, which flags rather than blocks.
+    const sellNeedsSourceHolding = orderData.assetType !== ASSET_TYPES.TERM_DEPOSIT
+      && orderData.assetType !== ASSET_TYPES.OPTION;
+    if (orderData.orderType === 'sell' && sellNeedsSourceHolding) {
       if (!orderData.sourceHoldingId) {
         if (!orderData.forceWithoutSourceHolding) {
           throw new Meteor.Error('invalid-order', 'Source holding required for sell orders');
@@ -578,6 +744,27 @@ Meteor.methods({
     // Auto-determine trade mode
     const tradeMode = orderData.tradeMode || (orderData.bulkOrderGroupId ? TRADE_MODES.BLOCK : TRADE_MODES.INDIVIDUAL);
 
+    // Snapshot the issuer's contact details onto the order. The issuer record can be
+    // edited or deactivated later, so the order keeps the coordinates that were in
+    // force when it was placed (and the audit trail stays truthful).
+    let issuerSnapshot = { issuerName: null, issuerContact: null };
+    if (orderData.issuerId) {
+      const issuer = await IssuersCollection.findOneAsync(orderData.issuerId);
+      if (!issuer) {
+        throw new Meteor.Error('invalid-issuer', 'Selected issuer no longer exists');
+      }
+      issuerSnapshot = {
+        issuerName: issuer.name || null,
+        issuerContact: {
+          name: issuer.contactName || null,
+          email: issuer.contactEmail || null,
+          phone: issuer.contactPhone || null,
+          code: issuer.code || null,
+          capturedAt: new Date()
+        }
+      };
+    }
+
     // Create order document
     const hasLimitPrice = orderData.priceType === 'limit' || orderData.priceType === 'stop_limit';
     const order = {
@@ -607,6 +794,8 @@ Meteor.methods({
       createdByName: userDisplayName,
       broker: orderData.broker || null,
       issuerId: orderData.issuerId || null,
+      issuerName: issuerSnapshot.issuerName,
+      issuerContact: issuerSnapshot.issuerContact,
       bankComment: orderData.bankComment || null,
       settlementCurrency: orderData.settlementCurrency || null,
       underlyings: orderData.underlyings || null,
@@ -635,6 +824,24 @@ Meteor.methods({
       ...(orderData.assetType === 'fund' && orderData.fundQuantityMode
         ? { fundQuantityMode: orderData.fundQuantityMode }
         : {}),
+      // Listed option contract. Spread conditionally rather than written as
+      // `x || null` like the FX/TD fields above, so non-option orders don't each
+      // carry eight permanent nulls.
+      ...(orderData.assetType === ASSET_TYPES.OPTION ? {
+        optionType: orderData.optionType || null,
+        optionStrike: orderData.optionStrike ?? null,
+        optionExpiry: orderData.optionExpiry ? new Date(orderData.optionExpiry) : null,
+        optionContractSize: orderData.optionContractSize || DEFAULT_OPTION_CONTRACT_SIZE,
+        optionUnderlyingIsin: orderData.optionUnderlyingIsin || null,
+        optionUnderlyingName: orderData.optionUnderlyingName || null,
+        optionUnderlyingTicker: orderData.optionUnderlyingTicker || null,
+        optionExchange: orderData.optionExchange || null,
+        // Only when the contract came from the chain. Typed contracts have no
+        // OCC symbol and no reference quote, and writing nulls would make the
+        // two cases indistinguishable.
+        ...(orderData.optionContractSymbol ? { optionContractSymbol: orderData.optionContractSymbol } : {}),
+        ...(orderData.optionQuoteAtEntry ? { optionQuoteAtEntry: { ...orderData.optionQuoteAtEntry, source: orderData.optionQuoteAtEntry.source || 'eod' } } : {})
+      } : {}),
       // Order source (email or phone)
       orderSource: orderData.orderSource || 'email',
       ...(orderData.phoneCallTime ? { phoneCallTime: orderData.phoneCallTime } : {}),
@@ -685,6 +892,32 @@ Meteor.methods({
       }
     }
 
+    // Short-call cover (non-blocking, flags only). Recorded server-side: the
+    // modal's panel is a preview, and a client-computed number must never become
+    // the audit record.
+    if (isShortCall(order)) {
+      try {
+        const bankAccount = await BankAccountsCollection.findOneAsync(orderData.bankAccountId);
+        if (bankAccount) {
+          const resolvedClient = await resolveClientId(orderData.clientId);
+          order.coverageCheck = {
+            ...(await resolveShortCallCoverage({ resolved: resolvedClient, bankAccount, order })),
+            ...(orderData.coverageJustification
+              ? { justification: orderData.coverageJustification }
+              : {})
+          };
+          if (!order.coverageCheck.isCovered) {
+            console.log(`[ORDERS] Uncovered short call on ${orderReference}: ` +
+              `${order.coverageCheck.requiredShares} required, ${order.coverageCheck.availableShares} available ` +
+              `(${order.coverageCheck.heldShares} held less ${order.coverageCheck.committedShares} already written)`);
+          }
+        }
+      } catch (coverErr) {
+        // Coverage flags, it never blocks - a failure here must not stop the order.
+        console.error('[ORDERS] Short-call coverage check error (non-blocking):', coverErr.message);
+      }
+    }
+
     // Get source position quantity for sell orders
     if (orderData.orderType === 'sell' && orderData.sourceHoldingId) {
       const holding = await PMSHoldingsCollection.findOneAsync(orderData.sourceHoldingId);
@@ -709,6 +942,19 @@ Meteor.methods({
     const orderId = Random.id();
     order._id = orderId;
     order.emailTraces = [];
+    // An order keeps one trace per type, and writeTraceFileToOrder deletes the
+    // previous file of that type from disk. Two attachments of the same type at
+    // creation would therefore silently drop evidence — refuse instead.
+    const seenTraceTypes = new Set();
+    for (const attachment of (attachments || [])) {
+      if (seenTraceTypes.has(attachment.traceType)) {
+        throw new Meteor.Error(
+          'duplicate-attachment-type',
+          `Only one ${EMAIL_TRACE_LABELS[attachment.traceType] || attachment.traceType} file can be attached at creation`
+        );
+      }
+      seenTraceTypes.add(attachment.traceType);
+    }
     const writeCreationTraces = async (targetOrder) => {
       for (const attachment of (attachments || [])) {
         const trace = await writeTraceFileToOrder({
@@ -731,6 +977,23 @@ Meteor.methods({
     await OrdersCollection.insertAsync(order);
 
     console.log(`[ORDERS] Created order ${orderReference} (${orderId}) by ${userDisplayName} (${userId})`);
+
+    // A structured-product order always carries the termsheet PDF. If a product
+    // exists for that ISIN with no term sheet of its own, give it this copy so
+    // the product report's Term Sheet button resolves instead of dead-ending.
+    // Never blocks order creation — the order's own evidence is already safe.
+    const initialTermsheet = (attachments || []).find(
+      a => a.traceType === EMAIL_TRACE_TYPES.INITIAL_TERMSHEET
+    );
+    if (initialTermsheet && order.isin) {
+      Meteor.defer(() => promoteOrderTermsheetToProduct({
+        isin: order.isin,
+        fileName: initialTermsheet.fileName,
+        base64Data: initialTermsheet.base64Data,
+        source: PRODUCT_TERMSHEET_SOURCES.ORDER_INITIAL,
+        userId
+      }));
+    }
 
     // Save phone number to user profile for future defaults
     if (orderData.phoneCallLine && orderData.phoneCallLine.trim()) {
@@ -843,7 +1106,7 @@ Meteor.methods({
         if (toList.length > 0) {
           const accountLabel = bankAccount.name || bankAccount.accountNumber || order.portfolioCode || '';
           const isStructuredProduct = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT;
-          const quantityLabel = isStructuredProduct ? 'Nominal' : (order.assetType === 'term_deposit' ? 'Amount' : 'Quantity');
+          const quantityLabel = quantityLabelFor(order);
           const priceDisplay = order.limitPrice
             ? (isStructuredProduct
                 ? `${Number(order.limitPrice).toFixed(2)}%`
@@ -853,14 +1116,24 @@ Meteor.methods({
           const subject = `[Pending Validation] ${orderReference} — ${order.securityName || ''}`.trim();
           const pendingRows = [
             ['Direction', String(OrderFormatters.orderDirectionLabel(order)).toUpperCase(), order.orderType === 'buy' ? EMAIL.success : EMAIL.danger],
-            [order.assetType === 'term_deposit' || order.assetType === 'fx' ? 'Description' : 'Security', order.securityName || ''],
-            ...(order.assetType === 'term_deposit' || order.assetType === 'fx' ? [] : [['ISIN', `<span style="font-family: Consolas, 'Courier New', monospace;">${order.isin || ''}</span>`]]),
+            [hasRealIsin(order) ? 'Security' : 'Description', order.securityName || ''],
+            ...(hasRealIsin(order) ? [['ISIN', `<span style="font-family: Consolas, 'Courier New', monospace;">${order.isin || ''}</span>`]] : []),
+            ...optionDetailRows(order),
             [quantityLabel, OrderFormatters.formatQuantity(order.quantity), EMAIL.amberText],
             ...(priceDisplay ? [['Price', priceDisplay]] : []),
             ...(order.estimatedValue ? [['Estimated Value', OrderFormatters.formatWithCurrency(order.estimatedValue, order.currency)]] : []),
             ...(order.broker ? [['Broker', order.broker]] : []),
             ['Client', order.clientName || ''],
-            ['Account', accountLabel]
+            ['Account', accountLabel],
+            // The whole point of the flag: the validator sees it before opening
+            // the blotter.
+            ...(order.coverageCheck && !order.coverageCheck.isCovered
+              ? [['Cover', `UNCOVERED SHORT CALL - short by ${OrderFormatters.formatQuantity(order.coverageCheck.shortfallShares)} shares` +
+                  (order.coverageCheck.justification ? ` (reason given: ${order.coverageCheck.justification})` : ''), EMAIL.danger]]
+              : []),
+            ...(order.coverageCheck && order.coverageCheck.isCovered
+              ? [['Cover', `Covered - ${OrderFormatters.formatQuantity(order.coverageCheck.heldShares)} shares held`, EMAIL.success]]
+              : [])
           ];
           const html = emailShell({
             title: 'Order Pending Validation',
@@ -869,20 +1142,16 @@ Meteor.methods({
             signatureName: userDisplayName,
             footerNote: 'This is an automated order notification. Please do not reply to this message.'
           });
+          // Derived from the same rows as the HTML rather than written out
+          // again. The hand-maintained copy had already drifted - it printed the
+          // raw orderType where the HTML printed the direction label, and an
+          // ISIN row for FX and term deposits that have none.
           const text = `
 Order Pending Validation: ${orderReference}
 
 ${userDisplayName} just created an order that requires four-eyes validation.
 
-Direction: ${(order.orderType || '').toUpperCase()}
-Security: ${order.securityName || ''}
-ISIN: ${order.isin || ''}
-${quantityLabel}: ${OrderFormatters.formatQuantity(order.quantity)}
-${priceDisplay ? `Price: ${priceDisplay}` : ''}
-${order.estimatedValue ? `Estimated Value: ${OrderFormatters.formatWithCurrency(order.estimatedValue, order.currency)}` : ''}
-${order.broker ? `Broker: ${order.broker}` : ''}
-Client: ${order.clientName || ''}
-Account: ${accountLabel}
+${pendingRows.map(([label, value]) => `${label}: ${String(value).replace(/<[^>]*>/g, '')}`).join('\n')}
 
 Please review it in the Orders blotter:
 ${orderBookUrl}
@@ -909,11 +1178,15 @@ ${userDisplayName}
   /**
    * Create multiple orders in bulk (same security to multiple accounts)
    */
-  async 'orders.createBulk'({ bulkOrderData, attachments, sessionId }) {
+  async 'orders.createBulk'({ bulkOrderData, attachments, clientOrderFiles, sessionId }) {
     check(sessionId, String);
-    // Evidence shared by every order in the block (e.g. one client email covering all
-    // accounts). Per-account evidence rides along on each row instead.
-    check(attachments, creationAttachmentPattern);
+    // Evidence shared by every order in the block: the termsheet only. A client
+    // instruction belongs to one client — sending it here used to copy the same
+    // email onto every account and, since an order keeps one trace per type, left
+    // each order holding whichever file was dropped last.
+    check(attachments, sharedCreationAttachmentPattern);
+    // Per-client instructions, keyed so rows of the same owner can share one file.
+    check(clientOrderFiles, bulkClientOrderFilesPattern);
     check(bulkOrderData, {
       orderType: Match.Where(x => ['buy', 'sell'].includes(x)),
       isin: String,
@@ -922,6 +1195,10 @@ ${userDisplayName}
       currency: String,
       priceType: Match.Where(x => Object.values(PRICE_TYPES).includes(x)),
       limitPrice: Match.Maybe(Number),
+      // Consideration for the whole block; prorated onto each row by nominal
+      // so every order carries its own share for the allocation check.
+      estimatedValue: Match.Maybe(Number),
+      capitalProtected: Match.Maybe(Boolean),
       notes: Match.Maybe(String),
       // Already forwarded to orders.create via sharedFields below
       bankComment: Match.Maybe(String),
@@ -946,6 +1223,28 @@ ${userDisplayName}
       depositCurrency: Match.Maybe(String),
       depositMaturityDate: Match.Maybe(String),
       depositAction: Match.Maybe(String),
+      // Listed option fields (the contract is shared across the block; only the
+      // contract count varies per row)
+      optionType: Match.Maybe(Match.Where(x => Object.values(OPTION_TYPES).includes(x))),
+      optionStrike: Match.Maybe(Number),
+      optionExpiry: Match.Maybe(String),
+      optionContractSize: Match.Maybe(Number),
+      optionUnderlyingIsin: Match.Maybe(String),
+      optionUnderlyingName: Match.Maybe(String),
+      optionUnderlyingTicker: Match.Maybe(String),
+      optionExchange: Match.Maybe(String),
+      optionContractSymbol: Match.Maybe(String),
+      optionQuoteAtEntry: Match.Maybe(Match.ObjectIncluding({
+        bid: Match.Maybe(Match.OneOf(Number, null)),
+        ask: Match.Maybe(Match.OneOf(Number, null)),
+        last: Match.Maybe(Match.OneOf(Number, null)),
+        mid: Match.Maybe(Match.OneOf(Number, null)),
+        impliedVolatility: Match.Maybe(Match.OneOf(Number, null)),
+        delta: Match.Maybe(Match.OneOf(Number, null)),
+        openInterest: Match.Maybe(Match.OneOf(Number, null)),
+        updatedAt: Match.Maybe(Match.OneOf(String, null)),
+        source: Match.Maybe(String)
+      })),
       // Order source (email or phone)
       orderSource: Match.Maybe(String),
       phoneCallTime: Match.Maybe(String),
@@ -968,7 +1267,12 @@ ${userDisplayName}
         estimatedValue: Match.Maybe(Number),
         sourceHoldingId: Match.Maybe(String),
         // Evidence specific to this account (per-account client order email)
-        attachments: creationAttachmentPattern
+        attachments: creationAttachmentPattern,
+        // Key into clientOrderFiles — this client's own instruction email
+        clientOrderFileKey: Match.Maybe(String),
+        // Phone instruction taken for this client (overrides the block defaults)
+        phoneCallTime: Match.Maybe(String),
+        phoneCallLine: Match.Maybe(String)
       }]
     });
 
@@ -979,16 +1283,45 @@ ${userDisplayName}
       throw new Meteor.Error('invalid-order', 'At least one order is required');
     }
 
+    const filesByKey = new Map((clientOrderFiles || []).map(f => [f.key, f]));
+    const isPhoneSource = bulkOrderData.orderSource === ORDER_SOURCE_TYPES.PHONE;
+
     // Generate unique bulk group ID
     const bulkOrderGroupId = `BULK-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
     const createdOrders = [];
     const errors = [];
+    const blockQuantity = bulkOrderData.orders.reduce((sum, o) => sum + (o.quantity || 0), 0);
 
     for (let i = 0; i < bulkOrderData.orders.length; i++) {
       const individualOrder = bulkOrderData.orders[i];
 
       try {
+        // Every client must carry their own instruction. This mirrors the modal's
+        // step check so a hand-built payload cannot slip a row through without one.
+        const rowHasClientOrder = (individualOrder.attachments || [])
+          .some(a => a.traceType === EMAIL_TRACE_TYPES.CLIENT_ORDER);
+        let rowClientOrder = null;
+        if (individualOrder.clientOrderFileKey) {
+          const file = filesByKey.get(individualOrder.clientOrderFileKey);
+          if (!file) {
+            throw new Meteor.Error('unknown-client-order-file', 'Unknown client instruction file for this account');
+          }
+          rowClientOrder = {
+            traceType: EMAIL_TRACE_TYPES.CLIENT_ORDER,
+            fileName: file.fileName,
+            base64Data: file.base64Data,
+            mimeType: file.mimeType
+          };
+        }
+        if (isPhoneSource) {
+          if (!individualOrder.phoneCallTime && !bulkOrderData.phoneCallTime) {
+            throw new Meteor.Error('missing-phone-instruction', 'Call time is required for this account');
+          }
+        } else if (!rowClientOrder && !rowHasClientOrder) {
+          throw new Meteor.Error('missing-client-order', 'A client instruction is required for this account');
+        }
+
         // Build individual order data with shared fields
         const sharedFields = {
           orderType: bulkOrderData.orderType,
@@ -1004,9 +1337,23 @@ ${userDisplayName}
           issuerId: bulkOrderData.issuerId,
           settlementCurrency: bulkOrderData.settlementCurrency,
           underlyings: bulkOrderData.underlyings,
+          capitalProtected: bulkOrderData.capitalProtected,
           tradeMode: TRADE_MODES.BLOCK,
           bulkOrderGroupId
         };
+        // orders.create checks its payload with Match.Maybe(...) per key, but the
+        // check package tests a key that is PRESENT with an undefined value against
+        // the inner pattern — so a block without notes failed every row with
+        // "Expected string, got undefined in field notes". Drop the blanks.
+        Object.keys(sharedFields).forEach(key => {
+          if (sharedFields[key] === undefined) delete sharedFields[key];
+        });
+        // Row's share of the block consideration, by nominal. A row that names
+        // its own estimate keeps it.
+        if (individualOrder.estimatedValue == null && bulkOrderData.estimatedValue > 0 && blockQuantity > 0) {
+          const share = bulkOrderData.estimatedValue * (individualOrder.quantity / blockQuantity);
+          sharedFields.estimatedValue = Math.round(share * 100) / 100;
+        }
         // Pass through FX/TD fields if present
         if (bulkOrderData.fxSubtype) sharedFields.fxSubtype = bulkOrderData.fxSubtype;
         if (bulkOrderData.fxPair) sharedFields.fxPair = bulkOrderData.fxPair;
@@ -1029,18 +1376,40 @@ ${userDisplayName}
         if (bulkOrderData.validityType) sharedFields.validityType = bulkOrderData.validityType;
         if (bulkOrderData.validityDate) sharedFields.validityDate = bulkOrderData.validityDate;
         if (bulkOrderData.fundQuantityMode) sharedFields.fundQuantityMode = bulkOrderData.fundQuantityMode;
+        // Listed option contract - shared by the whole block; only the number of
+        // contracts differs per row. Each row's coverage is snapshotted for free
+        // because every row goes through orders.create.
+        if (bulkOrderData.optionType) sharedFields.optionType = bulkOrderData.optionType;
+        if (bulkOrderData.optionStrike != null) sharedFields.optionStrike = bulkOrderData.optionStrike;
+        if (bulkOrderData.optionExpiry) sharedFields.optionExpiry = bulkOrderData.optionExpiry;
+        if (bulkOrderData.optionContractSize) sharedFields.optionContractSize = bulkOrderData.optionContractSize;
+        if (bulkOrderData.optionUnderlyingIsin) sharedFields.optionUnderlyingIsin = bulkOrderData.optionUnderlyingIsin;
+        if (bulkOrderData.optionUnderlyingName) sharedFields.optionUnderlyingName = bulkOrderData.optionUnderlyingName;
+        if (bulkOrderData.optionUnderlyingTicker) sharedFields.optionUnderlyingTicker = bulkOrderData.optionUnderlyingTicker;
+        if (bulkOrderData.optionExchange) sharedFields.optionExchange = bulkOrderData.optionExchange;
+        if (bulkOrderData.optionContractSymbol) sharedFields.optionContractSymbol = bulkOrderData.optionContractSymbol;
+        if (bulkOrderData.optionQuoteAtEntry) sharedFields.optionQuoteAtEntry = bulkOrderData.optionQuoteAtEntry;
 
         // entityId and attachments are not part of the orders.create payload shape:
         // the entity is resolved from the bank account, and the files are passed
         // alongside so each order is inserted with its evidence already attached.
-        const { entityId: _rowEntityId, attachments: rowAttachments, ...rowFields } = individualOrder;
+        const {
+          entityId: _rowEntityId,
+          attachments: rowAttachments,
+          clientOrderFileKey: _rowFileKey,
+          ...rowFields
+        } = individualOrder;
 
         const result = await Meteor.callAsync('orders.create', {
           orderData: {
             ...sharedFields,
             ...rowFields
           },
-          attachments: [...(attachments || []), ...(rowAttachments || [])],
+          attachments: [
+            ...(attachments || []),
+            ...(rowAttachments || []),
+            ...(rowClientOrder ? [rowClientOrder] : [])
+          ],
           sessionId
         });
 
@@ -1181,7 +1550,13 @@ ${userDisplayName}
       takeProfitPrice: Match.Maybe(Number),
       depositTenor: Match.Maybe(String),
       depositMaturityDate: Match.Maybe(String),
-      depositAction: Match.Maybe(String)
+      depositAction: Match.Maybe(String),
+      // Listed option contract - revisable during four-eyes review so a
+      // fat-fingered strike or expiry can be corrected rather than re-keyed.
+      optionType: Match.Maybe(Match.Where(x => Object.values(OPTION_TYPES).includes(x))),
+      optionStrike: Match.Maybe(Number),
+      optionExpiry: Match.Maybe(String),
+      optionContractSize: Match.Maybe(Number)
     });
 
     const { user, userId, userDisplayName } = await validateSession(sessionId);
@@ -1266,6 +1641,68 @@ ${userDisplayName}
     }
     if (updateData.depositMaturityDate !== undefined) {
       updateFields.depositMaturityDate = updateData.depositMaturityDate ? new Date(updateData.depositMaturityDate) : null;
+    }
+    if (updateData.optionType !== undefined) {
+      updateFields.optionType = updateData.optionType || null;
+    }
+    if (updateData.optionStrike !== undefined) {
+      updateFields.optionStrike = updateData.optionStrike ?? null;
+    }
+    if (updateData.optionExpiry !== undefined) {
+      updateFields.optionExpiry = updateData.optionExpiry ? new Date(updateData.optionExpiry) : null;
+    }
+    if (updateData.optionContractSize !== undefined) {
+      updateFields.optionContractSize = updateData.optionContractSize || DEFAULT_OPTION_CONTRACT_SIZE;
+    }
+    if ((updateData.optionType !== undefined || updateData.optionStrike !== undefined || updateData.optionExpiry !== undefined)
+      && order.optionContractSymbol) {
+      // The OCC symbol encodes type, strike and expiry. Once any of them is
+      // edited it names a different contract, and the quote that came with it
+      // is for that other contract too.
+      updateFields.optionContractSymbol = null;
+      updateFields.optionQuoteAtEntry = null;
+    }
+
+    // An option's securityName IS the contract, composed at entry. Correcting a
+    // fat-fingered strike or expiry without recomposing it would leave the name
+    // on the blotter, the ticket and both PDFs describing the old contract.
+    const contractChanged = updateData.optionType !== undefined
+      || updateData.optionStrike !== undefined
+      || updateData.optionExpiry !== undefined
+      || updateData.optionContractSize !== undefined;
+    if (contractChanged && (updateFields.assetType || order.assetType) === ASSET_TYPES.OPTION) {
+      const recomposed = optionContractDescription({ ...order, ...updateFields });
+      if (recomposed) updateFields.securityName = recomposed;
+    }
+
+    // Re-snapshot the cover when a revision changes what has to be delivered.
+    // Leaving the original snapshot would show the validator cover for a
+    // contract count that no longer exists.
+    const revised = { ...order, ...updateFields };
+    const coverInputsChanged = updateData.quantity !== undefined
+      || updateData.optionContractSize !== undefined
+      || updateData.optionType !== undefined;
+    if (coverInputsChanged && isShortCall(revised)) {
+      try {
+        const bankAccount = await BankAccountsCollection.findOneAsync(order.bankAccountId);
+        if (bankAccount) {
+          const resolvedClient = await resolveClientId(order.clientId);
+          updateFields.coverageCheck = {
+            ...(await resolveShortCallCoverage({
+              resolved: resolvedClient,
+              bankAccount,
+              order: revised,
+              // Don't let the order count its own contracts against itself.
+              excludeOrderId: orderId
+            })),
+            ...(order.coverageCheck?.justification
+              ? { justification: order.coverageCheck.justification }
+              : {})
+          };
+        }
+      } catch (coverErr) {
+        console.error('[ORDERS] Short-call coverage re-check error (non-blocking):', coverErr.message);
+      }
     }
 
     await OrdersCollection.updateAsync(orderId, { $set: updateFields });
@@ -1933,6 +2370,20 @@ ${userDisplayName}
 
     console.log(`[ORDERS] Advanced termsheet to "${targetStatus}" for order ${order.orderReference} by ${userDisplayName} (${userId}) with evidence ${trace.storedFileName}`);
 
+    // The signed termsheet is the definitive document for the ISIN, so it
+    // supersedes whatever the product currently shows (see termsheetSync.js).
+    // The "sent" evidence is often the covering email rather than the document
+    // itself, so it is not promoted.
+    if (traceType === EMAIL_TRACE_TYPES.TERMSHEET_SIGNED && order.isin) {
+      Meteor.defer(() => promoteOrderTermsheetToProduct({
+        isin: order.isin,
+        fileName,
+        base64Data,
+        source: PRODUCT_TERMSHEET_SOURCES.ORDER_SIGNED,
+        userId
+      }));
+    }
+
     return { success: true, orderId, termsheetStatus: targetStatus, traceId: trace._id };
   },
 
@@ -1982,7 +2433,12 @@ ${userDisplayName}
         _id: bank._id,
         name: bank.name,
         deskEmail: bank.deskEmail
-      } : null
+      } : null,
+      // Where an order email for this order would go (desk chosen by asset type)
+      resolvedDesk: bank ? (() => {
+        const r = BankHelpers.resolveOrderRecipients(bank, order.assetType);
+        return { to: r.to, deskLabel: r.deskLabel, matched: r.matched };
+      })() : null
     };
   },
 
@@ -2000,7 +2456,11 @@ ${userDisplayName}
       search: Match.Maybe(String),
       bulkOrderGroupId: Match.Maybe(String),
       validatedByName: Match.Maybe(String),
-      missingTermsheet: Match.Maybe(Boolean)
+      missingTermsheet: Match.Maybe(Boolean),
+      // Health-check filter from the order book summary bar: HEALTH_FILTER_ANY
+      // keeps every incomplete order, otherwise the name of one missing item
+      // ("Termsheet signed", "Exec price", ...) as reported by getOrderHealthCheck.
+      healthMissing: Match.Maybe(String)
     });
     check(pagination, {
       limit: Match.Maybe(Number),
@@ -2039,7 +2499,13 @@ ${userDisplayName}
     }
 
     if (filters.clientId) {
-      query.clientId = filters.clientId;
+      // One client can hold several accounts and, across the entity migration,
+      // several ids: orders may be filed under the entity id or under a legacy
+      // user id it absorbed. Filter on all of them so picking a client in the
+      // blotter returns every order of theirs.
+      const { ClientEntityHelpers: CEH } = require('../../imports/api/clientEntities.js');
+      const linkedIds = await CEH.getLinkedClientIds(filters.clientId);
+      query.clientId = linkedIds.length > 1 ? { $in: linkedIds } : filters.clientId;
     }
 
     if (filters.bankId) {
@@ -2083,23 +2549,49 @@ ${userDisplayName}
       ];
     }
 
-    // Count total matching orders
-    const total = await OrdersCollection.find(query).countAsync();
-
     // Build sort
     const sortField = pagination.sortField || 'createdAt';
     const sortOrder = pagination.sortOrder || -1;
     const sort = { [sortField]: sortOrder };
 
-    // Fetch orders
     const limit = pagination.limit || 50;
     const skip = pagination.skip || 0;
 
-    const orders = await OrdersCollection.find(query, {
-      sort,
-      limit,
-      skip
-    }).fetchAsync();
+    let total;
+    let orders;
+    if (filters.healthMissing) {
+      // The health check depends on status, traces and termsheet state together,
+      // so it cannot be expressed as a Mongo selector. Evaluate it over the
+      // whole match and paginate in memory — the order book is a few thousand
+      // rows at most, and the filter narrows the other criteria first.
+      const wantAny = filters.healthMissing === HEALTH_FILTER_ANY;
+      const candidates = await OrdersCollection.find(query, { sort }).fetchAsync();
+      const matching = candidates.filter(o => {
+        const h = getOrderHealthCheck(o);
+        if (h.max === 0 || h.score === h.max) return false;
+        return wantAny || h.missing.includes(filters.healthMissing);
+      });
+      total = matching.length;
+      orders = matching.slice(skip, skip + limit);
+    } else {
+      total = await OrdersCollection.find(query).countAsync();
+      orders = await OrdersCollection.find(query, { sort, limit, skip }).fetchAsync();
+    }
+
+    // Ambervision product titles for structured products: the desk types a
+    // short label on the order ("Ph+"), the product record carries the full
+    // name. One batched query; ISINs without a product simply get no title.
+    const orderIsins = [...new Set(orders.map(o => o.isin).filter(Boolean))];
+    const productTitleByIsin = new Map();
+    if (orderIsins.length > 0) {
+      const titled = await ProductsCollection.find(
+        { isin: { $in: orderIsins } },
+        { fields: { isin: 1, title: 1 } }
+      ).fetchAsync();
+      for (const p of titled) {
+        if (p.isin && p.title) productTitleByIsin.set(p.isin, p.title);
+      }
+    }
 
     // Enrich orders with client, bank, and creator names
     const { ClientEntitiesCollection: EntColList } = require('../../imports/api/clientEntities.js');
@@ -2128,7 +2620,8 @@ ${userDisplayName}
         bankName: bank?.name || 'Unknown',
         createdByName: creator ? `${creator.profile?.firstName || ''} ${creator.profile?.lastName || ''}`.trim() : 'Unknown',
         accountNumber: bankAccount?.accountNumber || order.portfolioCode || '',
-        accountName: bankAccount?.name || ''
+        accountName: bankAccount?.name || '',
+        productTitle: (order.isin && productTitleByIsin.get(order.isin)) || null
       };
     }));
 
@@ -2249,11 +2742,15 @@ ${userDisplayName}
     const bankAccount = await BankAccountsCollection.findOneAsync(order.bankAccountId);
     const bank = await BanksCollection.findOneAsync(order.bankId);
 
-    const subject = OrderHelpers.generateEmailSubject(order);
-    const body = OrderHelpers.generateEmailBody(order, client, bank, bankAccount);
+    const liveIssuer = await loadOrderIssuer(order);
+    const recipients = BankHelpers.resolveOrderRecipients(bank, order.assetType);
+    const subject = OrderHelpers.generateEmailSubject(order, liveIssuer);
+    const body = OrderHelpers.generateEmailBody(order, client, bank, bankAccount, liveIssuer, recipients.deskLabel);
 
     return {
-      to: bank?.deskEmail || '',
+      to: recipients.to,
+      cc: recipients.cc.join(';'),
+      deskLabel: recipients.deskLabel,
       subject,
       body,
       orderReference: order.orderReference
@@ -2288,15 +2785,22 @@ ${userDisplayName}
       format: 'A4', marginTop: '10mm', marginRight: '15mm', marginBottom: '10mm', marginLeft: '15mm'
     });
 
-    // Prepare email data
-    const subject = OrderHelpers.generateEmailSubject(order);
-    const body = OrderHelpers.generateEmailBody(order, client, bank, bankAccount);
+    // Prepare email data. The recipient desk depends on the order's asset type
+    // (e.g. FX orders go to the bank's FX team) — see BankHelpers.resolveOrderRecipients.
+    const liveIssuer = await loadOrderIssuer(order);
+    const recipients = BankHelpers.resolveOrderRecipients(bank, order.assetType);
+    const subject = OrderHelpers.generateEmailSubject(order, liveIssuer);
+    const body = OrderHelpers.generateEmailBody(order, client, bank, bankAccount, liveIssuer, recipients.deskLabel);
 
-    // Build CC list: bank CC emails + order creator's email
-    const ccList2 = [...(bank?.ccEmails || [])];
-    const creatorEmail2 = createdByUser?.email;
+    // Build CC list: bank + desk CC emails + order creator's email
+    const ccList2 = [...recipients.cc];
+    const creatorEmail2 = createdByUser?.email?.toLowerCase();
     if (creatorEmail2 && !ccList2.includes(creatorEmail2)) {
       ccList2.push(creatorEmail2);
+    }
+
+    if (!recipients.to) {
+      console.warn(`[ORDERS] Bank ${bank?.name || order.bankId} has no desk email for asset type ${order.assetType}`);
     }
 
     return {
@@ -2304,10 +2808,13 @@ ${userDisplayName}
       orderReference: order.orderReference,
       pdfData: pdfResult.pdfData,
       emailData: {
-        to: bank?.deskEmail || '',
+        to: recipients.to,
         cc: ccList2.join(';'),
         subject,
-        body
+        body,
+        deskLabel: recipients.deskLabel,
+        bankName: bank?.name || '',
+        assetType: order.assetType
       },
       termsheet: loadInitialTermsheetAttachment(order)
     };
@@ -2337,8 +2844,9 @@ ${userDisplayName}
     const bank = await BanksCollection.findOneAsync(order.bankId);
     const createdByUser = await UsersCollection.findOneAsync(order.createdBy);
 
-    if (!bank?.deskEmail) {
-      throw new Meteor.Error('no-desk-email', 'Bank does not have a desk email configured');
+    const recipients = BankHelpers.resolveOrderRecipients(bank, order.assetType);
+    if (!recipients.to) {
+      throw new Meteor.Error('no-desk-email', `Bank does not have a desk email configured for ${order.assetType} orders`);
     }
 
     console.log(`[ORDERS] Generating PDF and sending email for order: ${order.orderReference} by ${userDisplayName}`);
@@ -2354,17 +2862,17 @@ ${userDisplayName}
     });
 
     // Step 2: Prepare email content
-    const subject = OrderHelpers.generateEmailSubject(order);
+    const liveIssuer = await loadOrderIssuer(order);
+    const subject = OrderHelpers.generateEmailSubject(order, liveIssuer);
     const clientName = client ? `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() : 'Unknown';
 
     const isStructuredProduct = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT;
 
-    // For structured products, look up issuer contact info to include in the email
-    let issuer = null;
-    if (isStructuredProduct && order.issuerId) {
-      issuer = await IssuersCollection.findOneAsync(order.issuerId);
-    }
-    const issuerContactHtml = (issuer && (issuer.contactName || issuer.contactEmail || issuer.contactPhone)) ? `
+    // Issuer coordinates, resolved the way every order email resolves them
+    // (OrderHelpers.resolveIssuerContact): the creation-time snapshot wins, the
+    // live issuer record is the fallback for pre-snapshot orders.
+    const issuer = OrderHelpers.resolveIssuerContact(order, liveIssuer);
+    const issuerContactHtml = OrderHelpers.hasIssuerCoordinates(issuer) ? `
               <table width="100%" cellpadding="0" cellspacing="0" style="margin: 20px 0 0;">
                 <tr>
                   <td style="padding: 16px 20px; background-color: ${EMAIL.paper}; border: 1px solid ${EMAIL.hairline}; border-left: 3px solid ${EMAIL.amber}; border-radius: 8px;">
@@ -2375,26 +2883,21 @@ ${userDisplayName}
                   </td>
                 </tr>
               </table>` : '';
-    const issuerContactText = (issuer && (issuer.contactName || issuer.contactEmail || issuer.contactPhone))
+    const issuerContactText = OrderHelpers.hasIssuerCoordinates(issuer)
       ? `\nIssuer Contact (${issuer.name}):\n${issuer.contactName ? issuer.contactName + '\n' : ''}${issuer.contactEmail ? issuer.contactEmail + '\n' : ''}${issuer.contactPhone ? issuer.contactPhone + '\n' : ''}`
       : '';
-    const quantityLabel = isStructuredProduct ? 'Nominal' : (order.assetType === 'term_deposit' ? 'Amount' : 'Quantity');
+    const quantityLabel = quantityLabelFor(order);
     const priceCellHtml = order.limitPrice
       ? (isStructuredProduct
           ? `${Number(order.limitPrice).toFixed(2)}%`
           : OrderFormatters.formatWithCurrency(order.limitPrice, order.currency))
       : null;
-    const priceTextValue = order.limitPrice
-      ? (isStructuredProduct
-          ? `${Number(order.limitPrice).toFixed(2)}%`
-          : OrderFormatters.formatWithCurrency(order.limitPrice, order.currency))
-      : null;
 
-    const isTdOrFx = order.assetType === 'term_deposit' || order.assetType === 'fx';
     const confirmationRows = [
       ['Order Type', `<span style="display: inline-block; padding: 4px 12px; border-radius: 12px; background-color: ${order.orderType === 'buy' ? '#EAF3EE' : '#F9EDEB'}; color: ${order.orderType === 'buy' ? EMAIL.success : EMAIL.danger}; font-weight: 600; text-transform: uppercase; font-size: 12px;">${OrderFormatters.orderDirectionLabel(order)}</span>`],
-      [isTdOrFx ? 'Description' : 'Security', order.securityName],
-      ...(isTdOrFx ? [] : [['ISIN', `<span style="font-family: Consolas, 'Courier New', monospace;">${order.isin}</span>`]]),
+      [hasRealIsin(order) ? 'Security' : 'Description', order.securityName],
+      ...(hasRealIsin(order) ? [['ISIN', `<span style="font-family: Consolas, 'Courier New', monospace;">${order.isin}</span>`]] : []),
+      ...optionDetailRows(order),
       [quantityLabel, OrderFormatters.formatQuantity(order.quantity), EMAIL.amberText],
       ...(isStructuredProduct
         ? (priceCellHtml ? [['Price', priceCellHtml]] : [])
@@ -2418,22 +2921,12 @@ ${userDisplayName}
       footerNote: 'This order confirmation was sent via Ambervision by Amber Lake Partners.'
     });
 
+    // Same rows as the HTML, stripped of markup, so the plain-text part of the
+    // confirmation can never describe a different trade from the HTML one.
     const emailText = `
 Order Confirmation: ${order.orderReference}
 
-Order Type: ${OrderFormatters.orderDirectionLabel(order)}
-${order.assetType === 'term_deposit' || order.assetType === 'fx' ? 'Description' : 'Security'}: ${order.securityName}
-${order.assetType === 'term_deposit' || order.assetType === 'fx' ? '' : `ISIN: ${order.isin}\n`}${quantityLabel}: ${OrderFormatters.formatQuantity(order.quantity)}
-${isStructuredProduct
-  ? (priceTextValue ? `Price: ${priceTextValue}` : '')
-  : order.assetType === 'term_deposit' ? ''
-  : `Price Type: ${order.priceType === 'market' ? 'Market' : 'Limit'}
-${order.priceType === 'limit' && priceTextValue ? `Limit Price: ${priceTextValue}` : ''}
-${order.validityType ? `Validity: ${order.validityType === 'gtc' ? 'Good Till Canceled' : order.validityType === 'gtd' ? `Good Till ${order.validityDate ? OrderFormatters.formatDate(order.validityDate) : 'Date'}` : 'Day Order'}` : ''}`
-}
-${order.broker ? `Broker: ${order.broker}` : ''}
-Client: ${clientName}
-Account: ${bankAccount?.accountNumber || order.portfolioCode || 'N/A'}
+${confirmationRows.map(([label, value]) => `${label}: ${String(value).replace(/<[^>]*>/g, '').trim()}`).join('\n')}
 ${order.notes ? `\nNotes: ${order.notes}` : ''}
 ${issuerContactText}
 Please find the full order confirmation attached as PDF.
@@ -2464,18 +2957,18 @@ ${userDisplayName}
         subject,
         html: emailHtml,
         text: emailText,
-        to: [{ email: bank.deskEmail, name: bank.name }],
+        to: [{ email: recipients.to, name: recipients.matched ? `${bank.name} - ${recipients.deskLabel}` : bank.name }],
         attachments
       });
 
-      console.log(`[ORDERS] Email sent successfully to: ${bank.deskEmail} by ${userDisplayName}`);
+      console.log(`[ORDERS] Email sent successfully to: ${recipients.to} (${recipients.deskLabel}) by ${userDisplayName}`);
 
       // Step 4: Mark order as sent
       await OrdersCollection.updateAsync(orderId, {
         $set: {
           status: ORDER_STATUSES.SENT,
           sentAt: new Date(),
-          sentTo: bank.deskEmail,
+          sentTo: recipients.to,
           sentMethod: 'sendpulse',
           updatedAt: new Date(),
           updatedBy: userId
@@ -2485,7 +2978,7 @@ ${userDisplayName}
       return {
         success: true,
         orderId,
-        sentTo: bank.deskEmail,
+        sentTo: recipients.to,
         orderReference: order.orderReference
       };
 
@@ -2633,6 +3126,148 @@ ${userDisplayName}
   },
 
   /**
+   * Claim the review lock on every pending member of a bulk in one round-trip.
+   * Members the caller created are skipped (four-eyes), members locked by
+   * someone else are reported rather than thrown, so a validator can still
+   * review the rest of the block.
+   */
+  async 'orders.claimBulkForReview'({ bulkOrderGroupId, sessionId }) {
+    check(bulkOrderGroupId, String);
+    check(sessionId, String);
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+    if (!user.canValidateOrders && user.role !== 'compliance') {
+      throw new Meteor.Error('not-authorized', 'You do not have order validation permission');
+    }
+
+    const members = await OrdersCollection.find({
+      bulkOrderGroupId,
+      status: ORDER_STATUSES.PENDING_VALIDATION
+    }).fetchAsync();
+    if (members.length === 0) {
+      throw new Meteor.Error('not-found', 'No order of this block is pending validation');
+    }
+
+    const lockStaleBefore = new Date(Date.now() - REVIEW_LOCK_TTL_MS);
+    const claimed = [];
+    const lockedByOther = [];
+    const skippedOwn = [];
+
+    for (const order of members) {
+      await validateOrderAccess(order, user);
+      if (order.createdBy === userId) {
+        skippedOwn.push(order._id);
+        continue;
+      }
+      const updateResult = await OrdersCollection.rawCollection().findOneAndUpdate(
+        {
+          _id: order._id,
+          $or: [
+            { reviewingBy: { $in: [null, userId] } },
+            { reviewingBy: { $exists: false } },
+            { reviewingAt: { $lt: lockStaleBefore } }
+          ]
+        },
+        { $set: { reviewingBy: userId, reviewingByName: userDisplayName, reviewingAt: new Date() } },
+        { returnDocument: 'after', includeResultMetadata: true }
+      );
+      if (updateResult.value) {
+        claimed.push(order._id);
+      } else {
+        const current = await OrdersCollection.findOneAsync(order._id);
+        lockedByOther.push({
+          orderId: order._id,
+          orderReference: order.orderReference,
+          reviewingByName: current?.reviewingByName || 'another user'
+        });
+      }
+    }
+
+    return { claimed, lockedByOther, skippedOwn };
+  },
+
+  /**
+   * Release every review lock the caller holds on a bulk. No-op for locks held
+   * by others.
+   */
+  async 'orders.releaseBulkReview'({ bulkOrderGroupId, sessionId }) {
+    check(bulkOrderGroupId, String);
+    check(sessionId, String);
+
+    const { userId } = await validateSession(sessionId);
+
+    const result = await OrdersCollection.rawCollection().updateMany(
+      { bulkOrderGroupId, reviewingBy: userId },
+      { $unset: { reviewingBy: '', reviewingByName: '', reviewingAt: '' } }
+    );
+
+    return { released: result.modifiedCount || 0 };
+  },
+
+  /**
+   * Validate several members of a bulk in one call. Each order still goes
+   * through orders.validate, so the four-eyes, attestation, access and
+   * atomic-transition rules live in exactly one place; this method only
+   * loops, aggregates, and returns one email payload per client.
+   *
+   * Sequential on purpose: each validation renders a PDF, and N concurrent
+   * renders would starve the browser pool.
+   */
+  async 'orders.validateBulk'({ bulkOrderGroupId, orderIds, attestations, sessionId }) {
+    check(bulkOrderGroupId, String);
+    check(orderIds, [String]);
+    check(attestations, Match.Maybe(Object));
+    check(sessionId, String);
+
+    // N PDF renders — do not hold up the caller's other method calls.
+    this.unblock();
+
+    await validateSession(sessionId);
+
+    const members = await OrdersCollection.find(
+      { _id: { $in: orderIds }, bulkOrderGroupId },
+      { fields: { _id: 1, orderReference: 1 } }
+    ).fetchAsync();
+    const memberRefs = new Map(members.map(m => [m._id, m.orderReference]));
+
+    const results = [];
+    const errors = [];
+    let termsheet = null;
+
+    for (const orderId of orderIds) {
+      if (!memberRefs.has(orderId)) {
+        errors.push({ orderId, orderReference: null, error: 'Order does not belong to this block' });
+        continue;
+      }
+      try {
+        const result = await Meteor.callAsync('orders.validate', {
+          orderId,
+          sessionId,
+          emailComparedAttestation: !!(attestations && attestations[orderId])
+        });
+        // Every member of a bulk carries the same termsheet; return it once.
+        if (!termsheet && result.termsheet) termsheet = result.termsheet;
+        results.push({
+          orderId,
+          orderReference: result.orderReference,
+          pdfData: result.pdfData,
+          emailData: result.emailData
+        });
+      } catch (error) {
+        errors.push({
+          orderId,
+          orderReference: memberRefs.get(orderId),
+          error: error.reason || error.message
+        });
+      }
+    }
+
+    console.log(`[ORDERS] Bulk validation ${bulkOrderGroupId}: ${results.length} validated, ${errors.length} errors`);
+
+    return { results, errors, termsheet };
+  },
+
+  /**
    * Validate an order (four-eyes principle: move from PENDING_VALIDATION → PENDING)
    * Enforces: validator !== creator, validator has canValidateOrders permission,
    * and the review-lock claim mechanism — only the user holding the lock (or
@@ -2777,26 +3412,29 @@ ${userDisplayName}
       });
       pdfData = pdfResult.pdfData;
 
-      // Prepare email data
+      // Prepare email data — recipient desk chosen by the order's asset type
+      const recipients = BankHelpers.resolveOrderRecipients(bank, order.assetType);
       const subject = OrderHelpers.generateEmailSubject(order);
-      const body = OrderHelpers.generateEmailBody(order, client, bank, bankAccount);
-      // Build CC list: bank CC emails + order creator's email
-      const ccList = [...(bank?.ccEmails || [])];
-      const creatorEmail = createdByUser?.email;
+      const body = OrderHelpers.generateEmailBody(order, client, bank, bankAccount, null, recipients.deskLabel);
+      // Build CC list: bank + desk CC emails + order creator's email
+      const ccList = [...recipients.cc];
+      const creatorEmail = createdByUser?.email?.toLowerCase();
       if (creatorEmail && !ccList.includes(creatorEmail)) {
         ccList.push(creatorEmail);
       }
 
-      if (!bank?.deskEmail) {
-        console.warn(`[ORDERS] Bank ${bank?.name || order.bankId} has no deskEmail configured`);
+      if (!recipients.to) {
+        console.warn(`[ORDERS] Bank ${bank?.name || order.bankId} has no desk email for asset type ${order.assetType}`);
       }
 
       emailData = {
-        to: bank?.deskEmail || '',
+        to: recipients.to,
         cc: ccList.join(';'),
         subject,
         body,
-        bankName: bank?.name || ''
+        deskLabel: recipients.deskLabel,
+        bankName: bank?.name || '',
+        assetType: order.assetType
       };
 
       console.log(`[ORDERS] PDF generated and email data prepared for order ${order.orderReference}`);
@@ -2875,7 +3513,12 @@ ${userDisplayName}
   // (the .eml flow builds and downloads the file client-side).
 
   /**
-   * Reject an order validation (move from PENDING_VALIDATION → REJECTED)
+   * Reject an order validation (move from PENDING_VALIDATION → REJECTED), or reject an
+   * already-validated order that hasn't been transmitted to the bank yet (PENDING → REJECTED).
+   * The latter is the safety valve for a mistake caught after four-eyes validation but before
+   * the order ever reaches the bank — it must go through this audited path, not a silent Modify
+   * or a hard Delete, so the correction is re-entered as a brand new order rather than patched
+   * in place.
    */
   async 'orders.rejectValidation'({ orderId, reason, sessionId }) {
     check(orderId, String);
@@ -2894,8 +3537,15 @@ ${userDisplayName}
       throw new Meteor.Error('not-found', 'Order not found');
     }
 
-    if (order.status !== ORDER_STATUSES.PENDING_VALIDATION) {
+    const isPostValidationReject = order.status === ORDER_STATUSES.PENDING;
+    if (order.status !== ORDER_STATUSES.PENDING_VALIDATION && !isPostValidationReject) {
       throw new Meteor.Error('invalid-operation', 'Order is not pending validation');
+    }
+
+    // Rejecting an order that's already been validated undoes an approval that already
+    // happened — require a reason for the audit trail (pre-validation rejection stays optional).
+    if (isPostValidationReject && (!reason || !reason.trim())) {
+      throw new Meteor.Error('reason-required', 'A rejection reason is required to reject a validated order');
     }
 
     // RMs/Assistants can only reject orders for their own clients
@@ -3124,6 +3774,43 @@ ${userDisplayName}
 });
 
 /**
+ * Convert a PMS-sourced price into the convention the order model uses for
+ * limitPrice/executedPrice. Percentage-quoted instruments arrive as decimals
+ * from some sources (parsers normalise pmsHoldings prices to 1.0001 = 100.01 %,
+ * and a price derived from grossAmount / nominal is cash-per-unit-of-nominal)
+ * and as percent from others (CMB operation rows carry price 100 = 100 %).
+ *
+ * Disambiguation is corroborated against the operation's own cash leg rather
+ * than guessed from magnitude: |cash| / |nominal| × 100 is the percent of par
+ * the bank actually settled, so whichever reading of `price` sits closer to it
+ * wins. The two candidate readings are 100× apart while the cash check is only
+ * off by fees/accrued interest (well under 1 %), so the comparison is decisive
+ * — and unlike a magnitude cut-off it stays correct for a distressed bond
+ * genuinely trading at 5 % of par.
+ *
+ * Falls back to a magnitude test only when no cash leg is available, mirroring
+ * the parser-level heuristic (a value already in percent range is left alone,
+ * so an unnormalised price isn't inflated to 10 000 %).
+ */
+function toOrderPriceConvention(price, assetType, cashAmount, nominalQuantity) {
+  if (typeof price !== 'number' || !isFinite(price) || price === 0) return price;
+  if (!quotesPriceAsPercent(assetType)) return price;
+
+  const cash = Math.abs(cashAmount || 0);
+  const nominal = Math.abs(nominalQuantity || 0);
+  if (cash > 0 && nominal > 0) {
+    const settledPercent = (cash / nominal) * 100;
+    if (isFinite(settledPercent) && settledPercent > 0) {
+      const asPercentError = Math.abs(Math.abs(price) - settledPercent) / settledPercent;
+      const asDecimalError = Math.abs(Math.abs(price) * 100 - settledPercent) / settledPercent;
+      return asDecimalError < asPercentError ? price * 100 : price;
+    }
+  }
+
+  return Math.abs(price) < 10 ? price * 100 : price;
+}
+
+/**
  * Match an order against PMSOperations to detect if it was booked
  */
 /**
@@ -3175,20 +3862,29 @@ async function tryHoldingsFallback(order, escapedCode, orderDate) {
     : 0;
   if (qtyRatio < 0.95) return null;
 
+  // Quotation-convention translation. Bank parsers normalise percentage-quoted
+  // instruments to decimals in pmsHoldings (1.0001 = 100.01 % of par), whereas
+  // orders carry those same prices as percent of par (limitPrice 100 = 100 %).
+  // Copying costPrice through untranslated made an executed structured product
+  // display as "1.00 %" instead of "100.01 %". The cash leg keeps using the
+  // decimal price, since quantity × decimal price is the currency amount.
+  const cashAmount = Math.abs(holdingQty * earliest.costPrice);
+  const executionPrice = toOrderPriceConvention(earliest.costPrice, order.assetType, cashAmount, holdingQty);
+
   return {
     bookingStatus: 'confirmed',
     matchedOperation: {
       operationDate: earliest.snapshotDate,
       quantity: earliest.quantity,
-      price: earliest.costPrice,
-      grossAmount: -Math.abs(holdingQty * earliest.costPrice) * (order.orderType === 'buy' ? 1 : -1),
+      price: executionPrice,
+      grossAmount: -cashAmount * (order.orderType === 'buy' ? 1 : -1),
       operationCode: null,
       instrumentName: earliest.securityName || null,
       remark: 'Synthesised from pmsHoldings (no operation row delivered)',
       operationType: 'HOLDINGS_FALLBACK'
     },
     confidence: 'holdings_fallback',
-    reason: `Position appeared on ${earliest.snapshotDate.toISOString().split('T')[0]} at cost ${earliest.costPrice} ${earliest.currency || ''} — no transaction row in PMS but holding is fresh.`
+    reason: `Position appeared on ${earliest.snapshotDate.toISOString().split('T')[0]} at cost ${executionPrice} ${quotesPriceAsPercent(order.assetType) ? '%' : (earliest.currency || '')} — no transaction row in PMS but holding is fresh.`
   };
 }
 
@@ -3384,6 +4080,18 @@ export async function matchOrderToOperations(order) {
   if (order.assetType === ASSET_TYPES.TERM_DEPOSIT) {
     return matchTermDepositToHoldings(order);
   }
+  // Listed options carry the placeholder ISIN 'OPT', which is truthy - without
+  // this branch the missing-ISIN guard below lets them through and every option
+  // runs a full operations query against a literal 'OPT' that can never match.
+  // There is no option feed, so there is nothing to settle against.
+  if (order.assetType === ASSET_TYPES.OPTION) {
+    return {
+      bookingStatus: 'none',
+      matchedOperation: null,
+      confidence: null,
+      reason: 'Options are not settlement-matched'
+    };
+  }
 
   if (!order.isin) {
     return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'Missing ISIN' };
@@ -3569,6 +4277,20 @@ export async function matchOrderToOperations(order) {
     }
   }
 
+  // Quotation-convention translation for percent-quoted instruments
+  // (structured products, bonds). Two ways a decimal fraction of par can reach
+  // us instead of a percent: a bank parser that normalised op.price to decimal
+  // (1.0001 = 100.01 %), and the grossAmount / quantity derivation above, which
+  // yields cash-per-nominal-unit (40 223.62 / 40 000 = 1.00559). Orders quote
+  // these prices as percent of par, so a raw decimal displayed as "1.01 %"
+  // instead of "100.56 %". Values already in percent range are left alone.
+  resolvedPrice = toOrderPriceConvention(
+    resolvedPrice,
+    order.assetType,
+    bestMatch.grossAmount != null ? bestMatch.grossAmount : bestMatch.netAmount,
+    resolvedQuantity != null ? resolvedQuantity : bestMatch.quantity
+  );
+
   return {
     bookingStatus,
     matchedOperation: {
@@ -3589,19 +4311,11 @@ export async function matchOrderToOperations(order) {
 }
 
 /**
- * Get base path for order file storage
+ * Get base path for order file storage.
+ * Resolved by imports/api/documentStorage.js, the same module the
+ * /order_traces endpoint reads from.
  */
-const getOrdersBasePath = () => {
-  if (process.env.FICHIER_CENTRAL_PATH) {
-    return path.join(process.env.FICHIER_CENTRAL_PATH, 'orders');
-  }
-  // Store outside public/ to avoid triggering Meteor hot code push
-  let projectRoot = process.cwd();
-  if (projectRoot.includes('.meteor')) {
-    projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
-  }
-  return path.join(projectRoot, '.fichier_central', 'orders');
-};
+const getOrdersBasePath = () => getOrderTracesDir();
 
 /**
  * Ensure order directory exists
@@ -4101,11 +4815,7 @@ Meteor.methods({
 
     // Deterministic authorized-email check: compare email sender(s) vs. bank account's authorized contacts
     const buildAuthorizedEmailCheck = () => {
-      const authorized = bankAccount?.authorizedEmail ? bankAccount.authorizedEmail.trim().toLowerCase() : '';
-      const ccList = Array.isArray(bankAccount?.authorizedCcEmails)
-        ? bankAccount.authorizedCcEmails.map(e => String(e).trim().toLowerCase()).filter(Boolean)
-        : [];
-      const authorizedSet = new Set([authorized, ...ccList].filter(Boolean));
+      const authorizedSet = new Set(getAuthorizedEmails(bankAccount).map(e => e.toLowerCase()));
 
       if (authorizedSet.size === 0) {
         return {
@@ -4148,17 +4858,34 @@ Meteor.methods({
     const fxLegs = isFx ? OrderFormatters.fxLegs(order) : null;
     const fxAmountCcy = isFx ? (order.fxAmountCurrency || order.currency) : null;
 
+    // Listed options need the same treatment as FX, for the same reason: the
+    // quantity is in contracts, not shares, and the ISIN is the placeholder
+    // 'OPT'. Left unsaid, the model reads "Quantity: 200" against a client
+    // email saying 20,000 shares and reports a mismatch that isn't one.
+    const isOption = order.assetType === ASSET_TYPES.OPTION;
+    const optionSize = isOption ? (order.optionContractSize || DEFAULT_OPTION_CONTRACT_SIZE) : null;
+    const optionShares = isOption ? (order.quantity || 0) * optionSize : null;
+
     const orderSummary = [
       `Order Reference: ${order.orderReference}`,
       isFx && fxLegs
         ? `Direction: BUY ${fxLegs.buy} / SELL ${fxLegs.sell} (client converts ${fxLegs.sell} into ${fxLegs.buy})`
         : `Direction: ${order.orderType?.toUpperCase()} (${order.orderType === 'buy' ? 'Purchase' : 'Sale'})`,
       `Security: ${order.securityName}`,
-      isFx ? 'ISIN: none (FX trades have no ISIN)' : `ISIN: ${order.isin}`,
+      isFx ? 'ISIN: none (FX trades have no ISIN)'
+        : isOption ? "ISIN: none (listed options are identified by underlying/type/strike/expiry; the order stores the placeholder 'OPT')"
+        : `ISIN: ${order.isin}`,
       `Asset Type: ${order.assetType}`,
       isFx
         ? `Amount: ${order.quantity} ${fxAmountCcy} (the amount is denominated in ${fxAmountCcy})`
+        : isOption
+        ? `Quantity: ${order.quantity} CONTRACTS (each contract covers ${optionSize} shares, so ${optionShares} shares in total)`
         : `Quantity: ${order.quantity}`,
+      isOption && order.optionUnderlyingName ? `Option Underlying: ${order.optionUnderlyingName}${order.optionUnderlyingIsin ? ` (${order.optionUnderlyingIsin})` : ''}` : null,
+      isOption && order.optionType ? `Option Type: ${order.optionType.toUpperCase()}` : null,
+      isOption && order.optionStrike != null ? `Strike: ${order.optionStrike}` : null,
+      isOption && order.optionExpiry ? `Expiry: ${OrderFormatters.formatDate(order.optionExpiry)}` : null,
+      isOption && order.optionExchange ? `Exchange: ${order.optionExchange}` : null,
       order.assetType === 'fund' && order.fundQuantityMode ? `Fund Quantity Mode: ${order.fundQuantityMode}` : null,
       isFx && fxLegs
         ? `Buy Currency: ${fxLegs.buy}\nSell Currency: ${fxLegs.sell}`
@@ -4185,6 +4912,14 @@ Meteor.methods({
       order.validityType ? `Validity: ${order.validityType === 'gtc' ? 'Good Till Canceled' : order.validityType === 'gtd' ? `Good Till ${order.validityDate ? OrderFormatters.formatDate(order.validityDate) : 'Date'}` : 'Day Order'}` : null,
     ].filter(Boolean).join('\n');
 
+    const optionGuidance = isOption ? `
+
+LISTED OPTION SEMANTICS (this order is an option contract — READ CAREFULLY):
+- The order's Quantity is a number of CONTRACTS (${order.quantity}), not a number of shares. Each contract covers ${optionSize} shares, so the order represents ${optionShares} shares of the underlying. A client email saying "${optionShares} shares" or "${order.quantity} contracts" or "${order.quantity} lots" ALL match this quantity — do not flag a mismatch on the difference between contracts and shares.
+- Options have NO ISIN. Do not expect one and do not flag a missing ISIN. The contract is identified by underlying, call/put, strike and expiry — verify those against the email instead.
+- "Price" on an option order is the PREMIUM per share of the option, not the underlying's price and not the strike. Do not compare it to the strike.
+- BUY means the client pays the premium; SELL means the client writes the option and receives it.` : '';
+
     let fxGuidance = '';
     if (isFx && fxLegs) {
       fxGuidance = `
@@ -4208,7 +4943,7 @@ FX ORDER SEMANTICS (this order is an FX conversion — READ CAREFULLY):
 KEY CONTEXT — READ CAREFULLY:
 - Amber Lake Partners IS the firm running this system. Emails sent FROM @amberlakepartners.com to the client are Amber Lake's advisory proposals, NOT third-party intermediary issues. Do not flag "is Amber Lake authorized" — Amber Lake is the advisor and the question is moot.
 - The client typically replies on top of a long email thread (their reply is usually short and the proposal details are in quoted text BELOW their reply, or earlier in the thread). You MUST read the whole thread, including quoted/forwarded portions, before judging completeness. A short "ok" approving a fully-detailed proposal earlier in the thread IS a complete instruction, not a vague approval.
-- Authorized signatories for the account are configured separately on the bank account (authorizedEmail / authorizedCcEmails / authorizedPhone). A separate deterministic check already verifies the sender against those fields — do NOT re-flag the authorized-email match in your output (it will be added automatically).
+- Authorized signatories for the account are configured separately on the bank account (authorizedEmails / authorizedPhone). A separate deterministic check already verifies the sender against those fields — do NOT re-flag the authorized-email match in your output (it will be added automatically).
 - Price for structured products is in % of par (e.g., 100 means 100% of nominal), not in currency units.
 
 MULTI-ORDER EMAILS — IMPORTANT:
@@ -4229,7 +4964,7 @@ TERM SHEET ISIN CHECK (structured product order):
     - status "ok" if the PDF's ISIN matches the order's ISIN.
     - status "mismatch" if the PDF's ISIN differs from the order's ISIN — this is a serious red flag.
     - status "warning" if no term sheet PDF is attached, or if the PDF text doesn't contain an extractable ISIN.
-- Quote the ISIN you found in the detail field.` : ''}${fxGuidance}
+- Quote the ISIN you found in the detail field.` : ''}${fxGuidance}${optionGuidance}
 
 ORDER ENTERED IN SYSTEM:
 ${orderSummary}
@@ -4244,7 +4979,7 @@ Analyze and respond with a JSON object (no markdown, just raw JSON):
   "summary": "One sentence overall assessment",
   "checks": [
     {
-      "field": "field name (e.g. ${isFx ? 'Direction, Currency Pair, Amount, Rate, Value Date' : `Direction, Security, Quantity, Price, Currency, Settlement Date${isStructuredProduct ? ', Term sheet ISIN' : ''}`})",
+      "field": "field name (e.g. ${isFx ? 'Direction, Currency Pair, Amount, Rate, Value Date' : isOption ? 'Direction, Underlying, Call/Put, Strike, Expiry, Contracts, Premium' : `Direction, Security, Quantity, Price, Currency, Settlement Date${isStructuredProduct ? ', Term sheet ISIN' : ''}`})",
       "status": "ok" | "warning" | "mismatch",
       "detail": "Brief explanation grounded in the email thread"
     }
@@ -4259,6 +4994,8 @@ Important:
 - Do NOT flag a mismatch because the email references additional securities/orders other than this one — multi-order emails are normal.
 ${isFx
   ? '- Compare direction (which currency is bought and which is sold), currency pair, amount (and the currency it is denominated in), rate if stated, and value date. FX orders have no ISIN — never flag one as missing. Missing fields → warning, not mismatch.'
+  : isOption
+  ? '- Compare direction (buy/sell), underlying, call/put, strike, expiry, number of contracts and premium. Options have no ISIN — never flag one as missing. Missing fields → warning, not mismatch.'
   : '- Compare direction (buy/sell), security/ISIN, quantity, price, currency. Missing fields → warning, not mismatch.'}
 - Be concise. Focus on real discrepancies between the order and what the client (or the proposal they approved) specified.`;
 
@@ -4557,10 +5294,10 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
   </div>
 
   <div class="section">
-    <h2>${order.assetType === 'fx' ? 'FX Details' : order.assetType === 'term_deposit' ? 'Term Deposit Details' : 'Security Details'}</h2>
+    <h2>${instrumentSectionHeading(order)}</h2>
     <div class="info-grid">
       <div class="info-row full-width">
-        <span class="info-label">${order.assetType === 'fx' || order.assetType === 'term_deposit' ? 'Description' : 'Security Name'}</span>
+        <span class="info-label">${hasRealIsin(order) ? 'Security Name' : 'Description'}</span>
         <span class="info-value">${order.securityName}</span>
       </div>
       ${order.assetType === 'fx' && order.fxPair ? `
@@ -4634,10 +5371,12 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
       </div>
       ` : ''}
       ` : `
+      ${hasRealIsin(order) ? `
       <div class="info-row">
         <span class="info-label">ISIN</span>
         <span class="info-value">${order.isin}</span>
       </div>
+      ` : ''}${optionDetailRowsHtml(order)}
       `}
       <div class="info-row">
         <span class="info-label">Asset Type</span>
@@ -4658,7 +5397,7 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
         <span class="highlight-value">${OrderFormatters.orderDirectionLabel(order)}</span>
       </div>
       <div class="highlight-row">
-        <span class="highlight-label">${order.assetType === 'structured_product' ? 'Nominal' : (order.assetType === 'term_deposit' || order.assetType === 'fx' ? 'Amount' : 'Quantity')}</span>
+        <span class="highlight-label">${quantityLabelFor(order)}</span>
         <span class="highlight-value">${order.assetType === 'fx' ? `${OrderFormatters.formatFxAmount(order.quantity, order.fxAmountCurrency)} ${order.fxAmountCurrency || ''}`.trim() : OrderFormatters.formatQuantity(order.quantity)}</span>
       </div>
       ${order.assetType === 'structured_product' ? `
@@ -5163,16 +5902,24 @@ function generateAuditTrailPDFHTML(order, client, bankAccount, bank, createdByUs
   </div>
 
   <div class="section">
-    <h2>${order.assetType === 'fx' ? 'FX Details' : order.assetType === 'term_deposit' ? 'Term Deposit Details' : 'Security Details'}</h2>
+    <h2>${instrumentSectionHeading(order)}</h2>
     <div class="info-grid">
       <div class="info-row full-width">
-        <span class="info-label">${order.assetType === 'fx' || order.assetType === 'term_deposit' ? 'Description' : 'Security Name'}</span>
+        <span class="info-label">${hasRealIsin(order) ? 'Security Name' : 'Description'}</span>
         <span class="info-value">${order.securityName || 'N/A'}</span>
       </div>
-      ${order.isin && order.assetType !== 'fx' && order.assetType !== 'term_deposit' ? `
+      ${hasRealIsin(order) ? `
       <div class="info-row">
         <span class="info-label">ISIN</span>
         <span class="info-value">${order.isin}</span>
+      </div>
+      ` : ''}${optionDetailRowsHtml(order)}
+      ${order.coverageCheck ? `
+      <div class="info-row full-width">
+        <span class="info-label">Cover at entry</span>
+        <span class="info-value">${order.coverageCheck.isCovered
+          ? `Covered - ${OrderFormatters.formatQuantity(order.coverageCheck.heldShares)} shares held`
+          : `UNCOVERED - short by ${OrderFormatters.formatQuantity(order.coverageCheck.shortfallShares)} shares${order.coverageCheck.justification ? ` (reason: ${order.coverageCheck.justification})` : ''}`}</span>
       </div>
       ` : ''}
       <div class="info-row">
@@ -5200,7 +5947,7 @@ function generateAuditTrailPDFHTML(order, client, bankAccount, bank, createdByUs
         <span class="highlight-value">${OrderFormatters.orderDirectionLabel(order)}</span>
       </div>
       <div class="highlight-row">
-        <span class="highlight-label">${order.assetType === 'structured_product' ? 'Nominal' : (order.assetType === 'term_deposit' || order.assetType === 'fx' ? 'Amount' : 'Quantity')}</span>
+        <span class="highlight-label">${quantityLabelFor(order)}</span>
         <span class="highlight-value">${order.assetType === 'fx' ? `${OrderFormatters.formatFxAmount(order.quantity, order.fxAmountCurrency)} ${order.fxAmountCurrency || ''}`.trim() : OrderFormatters.formatQuantity(order.quantity)}</span>
       </div>
       ${order.assetType === 'structured_product' ? `
@@ -5433,25 +6180,79 @@ Meteor.methods({
     } else {
       entityCursor = ClientEntityHelpers.getAllEntities();
     }
-    const entities = await entityCursor.fetchAsync();
+    // Archived (closed) relationships are not clients any more: they must not be
+    // selectable for a new order, nor clutter the blotter's client filter. Every
+    // other client-facing read path already excludes them (holdings, products,
+    // RM dashboard, View As picker); this list was the one that did not, which is
+    // why resigned clients kept showing up in the filter. Their existing orders
+    // stay visible in the blotter under "All Clients".
+    const entitiesInScope = await entityCursor.fetchAsync();
+    const entities = entitiesInScope.filter(e => !ClientEntityHelpers.isEntityArchived(e));
+    const archivedEntityIds = new Set(
+      entitiesInScope.filter(e => ClientEntityHelpers.isEntityArchived(e)).map(e => e._id)
+    );
+
+    // Collapse legacy user accounts into the entity that replaced them. Only one
+    // entity ever got its migratedFromUserId stamped during the migration, so
+    // relying on that field alone listed most clients twice — often under two
+    // spellings ("baloise" / "BALOISE", "Aurelia" / "Aurelia"). The shared
+    // resolver corroborates the migration's bank-account stamps against the
+    // names; see ClientEntityHelpers.getLegacyUserEntityLinks().
+    const legacyLinks = await ClientEntityHelpers.getLegacyUserEntityLinks();
+    const entityIdsInScope = new Set(entities.map(e => e._id));
+    const legacyIdsByEntity = new Map();
+    for (const [userId, entityId] of legacyLinks) {
+      if (!entityIdsInScope.has(entityId)) continue;
+      if (!legacyIdsByEntity.has(entityId)) legacyIdsByEntity.set(entityId, []);
+      legacyIdsByEntity.get(entityId).push(userId);
+    }
 
     const mappedEntities = entities.map(e => ({
       _id: e._id,
       username: ClientEntityHelpers.getEntityDisplayName(e),
+      displayName: ClientEntityHelpers.getEntityDisplayName(e),
       profile: {
         ...(e.profile || {}),
         clientType: e.type === 'company' ? 'company' : 'individual'
       },
       role: 'client',
       entityId: e._id,
-      migratedFromUserId: e.migratedFromUserId || null
+      migratedFromUserId: e.migratedFromUserId || null,
+      // Every id this client's records may be filed under, so callers can query
+      // across the entity and the legacy accounts it absorbed.
+      linkedClientIds: [...new Set([
+        e._id,
+        ...(legacyIdsByEntity.get(e._id) || []),
+        ...(e.migratedFromUserId ? [e.migratedFromUserId] : [])
+      ])]
     }));
 
-    // Dedupe: prefer the entity record over a legacy user with the same id.
-    const migratedUserIds = new Set(
-      mappedEntities.map(m => m.migratedFromUserId).filter(Boolean)
-    );
-    const filteredUsers = users.filter(u => !migratedUserIds.has(u._id));
+    // A legacy user is dropped when its canonical entity is in this caller's
+    // scope, or when that entity is archived. Scoping matters so an RM whose
+    // client was reassigned to another RM's entity does not lose the client from
+    // their list; the archived case matters because the entity has just been
+    // filtered out above — without it, a closed relationship would walk straight
+    // back into the list through its legacy login.
+    const filteredUsers = users
+      .filter(u => {
+        const linkedEntityId = legacyLinks.get(u._id);
+        if (!linkedEntityId) return true;
+        return !(entityIdsInScope.has(linkedEntityId) || archivedEntityIds.has(linkedEntityId));
+      })
+      .map(u => ({
+        ...u,
+        // Company logins carry their name on profile.companyName, with the
+        // first/last name fields left empty — without this the list fell back to
+        // the raw username and showed "baloise" instead of the company name.
+        displayName: (
+          (u.profile?.clientType === 'company' && u.profile?.companyName)
+            ? u.profile.companyName
+            : (`${u.profile?.firstName || ''} ${u.profile?.lastName || ''}`.trim()
+              || u.profile?.companyName
+              || u.username)
+        ),
+        linkedClientIds: [u._id]
+      }));
 
     return [...filteredUsers, ...mappedEntities];
   },
@@ -5554,25 +6355,86 @@ Meteor.methods({
       return [];
     }
 
-    // Find latest active holdings for this account (exclude cash positions)
-    const holdingsQuery = {
-      isActive: true,
-      isLatest: true,
-      portfolioCode: { $regex: new RegExp('^' + bankAccount.accountNumber.split('-')[0]) },
-      assetClass: { $nin: ['cash', 'liquidity', 'Cash', 'Liquidity', 'CASH'] },
-      securityName: { $not: /^(cash|liquidity|compte|konto)/i }
-    };
-    const holdingsOpts = {
-      fields: { isin: 1, securityName: 1, quantity: 1, marketValue: 1, currency: 1, assetClass: 1, marketPrice: 1 },
-      sort: { securityName: 1 }
-    };
-    // Try with userId first, then by bankId for entity-based accounts
-    let holdings = await PMSHoldingsCollection.find({ ...holdingsQuery, userId: resolved.holdingsUserId }, holdingsOpts).fetchAsync();
-    if (holdings.length === 0) {
-      holdings = await PMSHoldingsCollection.find({ ...holdingsQuery, bankId: bankAccount.bankId }, holdingsOpts).fetchAsync();
+    return findAccountHoldings(resolved, bankAccount);
+  },
+
+  /**
+   * Short-call cover, computed NOW.
+   *
+   * Two callers, two reasons. The order modal calls it once before confirming,
+   * to pick up contracts already written by other live orders - netting the
+   * client cannot see. The validation blotter calls it when a short call is
+   * opened for review, because bank files land between entry and validation and
+   * can flip the answer; the validator needs today's picture next to the
+   * snapshot taken when the desk raised it.
+   *
+   * Pass `excludeOrderId` when re-checking an existing order so it doesn't
+   * count its own contracts against itself.
+   */
+  /**
+   * The listed-option chain for an underlying, for the order entry screen.
+   *
+   * Resolves the underlying to its US listing first (the search often hands
+   * back an LSE or XETRA line for a US name), then loads the EOD chain. Returns
+   * { available: false, reason } - never throws for "no options here" - so the
+   * modal can fall back to typed contract entry for Eurex/Euronext names.
+   */
+  async 'orders.getOptionChain'({ underlyingTicker, underlyingIsin, sessionId }) {
+    check(underlyingTicker, Match.Maybe(String));
+    check(underlyingIsin, Match.Maybe(String));
+    check(sessionId, String);
+    this.unblock();
+
+    const { user } = await validateSession(sessionId);
+    if (!OrderHelpers.canPlaceOrders(user.role)) {
+      throw new Meteor.Error('not-authorized', 'Not authorized to load option chains');
     }
 
-    return holdings;
+    const symbol = await EODApiHelpers.resolveUsOptionsSymbol({ ticker: underlyingTicker, isin: underlyingIsin });
+    if (!symbol) {
+      return { available: false, reason: 'No US listing for this underlying - the option feed covers US-listed contracts only' };
+    }
+    return EODApiHelpers.getOptionsChain(symbol);
+  },
+
+  async 'orders.checkShortCallCoverage'({ clientId, bankAccountId, underlyingIsin, underlyingName, contracts, contractSize, excludeOrderId, sessionId }) {
+    check(clientId, String);
+    check(bankAccountId, String);
+    check(underlyingIsin, String);
+    check(underlyingName, Match.Maybe(String));
+    check(contracts, Number);
+    check(contractSize, Match.Maybe(Number));
+    check(excludeOrderId, Match.Maybe(String));
+    check(sessionId, String);
+
+    const { user } = await validateSession(sessionId);
+    if (!OrderHelpers.canPlaceOrders(user.role)) {
+      throw new Meteor.Error('not-authorized', 'Not authorized to access position data');
+    }
+
+    const resolved = await resolveClientId(clientId);
+
+    if (user.role === 'rm' || user.role === 'assistant') {
+      const rmIds = UserHelpers.getEffectiveRmIds(user);
+      if (!rmIds.includes(resolved.relationshipManagerId)) {
+        throw new Meteor.Error('not-authorized', 'You do not have access to this client');
+      }
+    }
+
+    const bankAccount = await BankAccountsCollection.findOneAsync(bankAccountId);
+    if (!bankAccount) return null;
+
+    return resolveShortCallCoverage({
+      resolved,
+      bankAccount,
+      order: {
+        quantity: contracts,
+        optionContractSize: contractSize || DEFAULT_OPTION_CONTRACT_SIZE,
+        optionUnderlyingIsin: underlyingIsin,
+        optionUnderlyingName: underlyingName || null
+      },
+      excludeOrderId
+    });
   },
 
   /**
@@ -5690,7 +6552,7 @@ Meteor.methods({
 
     const product = await ProductsCollection.findOneAsync(
       { isin: { $regex: new RegExp('^' + isin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') } },
-      { fields: { title: 1, isin: 1, issuer: 1, currency: 1, denomination: 1 } }
+      { fields: { title: 1, isin: 1, issuer: 1, currency: 1, denomination: 1, templateId: 1, structureParams: 1, structureParameters: 1, structure: 1 } }
     );
 
     if (!product) return null;
@@ -5700,7 +6562,9 @@ Meteor.methods({
       isin: product.isin,
       issuer: product.issuer || '',
       currency: product.currency || '',
-      denomination: product.denomination || null
+      denomination: product.denomination || null,
+      // null when the record gives nothing to classify from
+      capitalProtected: isProductCapitalProtected(product)
     };
   },
 

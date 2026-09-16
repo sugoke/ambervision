@@ -127,8 +127,11 @@ const Modal = ({
   };
 
   const headerStyle = {
-    padding: isMobile ? '0.875rem 1rem' : '1.5rem 1.5rem 1rem 1.5rem',
-    paddingTop: isMobile ? 'calc(0.875rem + env(safe-area-inset-top, 0px))' : undefined,
+    // The longhand must always carry a real value: React writes `paddingTop = ''`
+    // for undefined, which runs AFTER the shorthand and erases its top value
+    // (computed padding-top became 0 on desktop).
+    padding: isMobile ? '0.875rem 1rem' : '1.25rem 1.5rem 1rem 1.5rem',
+    paddingTop: isMobile ? 'calc(0.875rem + env(safe-area-inset-top, 0px))' : '1.25rem',
     borderBottom: '1px solid var(--border-color)',
     display: 'flex',
     alignItems: 'center',
@@ -178,12 +181,15 @@ const Modal = ({
   };
 
   const footerStyle = {
-    padding: isMobile ? '0.75rem 1rem' : '1rem 1.5rem 1.5rem 1.5rem',
-    paddingBottom: isMobile ? 'calc(0.75rem + env(safe-area-inset-bottom, 0px))' : undefined,
+    // Same shorthand/longhand trap as the header: an undefined paddingBottom
+    // zeroed the bottom padding, so the buttons sat flush on the modal's edge.
+    padding: isMobile ? '0.75rem 1rem' : '1rem 1.5rem',
+    paddingBottom: isMobile ? 'calc(0.75rem + env(safe-area-inset-bottom, 0px))' : '1rem',
     borderTop: '1px solid var(--border-color)',
     display: 'flex',
-    // Left unset on desktop so the previous default (stretch) is preserved exactly.
-    ...(isMobile ? { alignItems: 'stretch' } : {}),
+    // Mobile stretches so wrapped buttons fill their row; desktop centres the
+    // buttons on their midline so mixed heights/variants sit level.
+    alignItems: isMobile ? 'stretch' : 'center',
     justifyContent: 'flex-end',
     // Action bars with several buttons (the order detail view has up to seven) overflow
     // a phone-width row; wrapping keeps every one of them reachable.

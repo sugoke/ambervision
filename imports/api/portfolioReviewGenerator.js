@@ -7,6 +7,7 @@ import { ProductCommentaryCollection } from './riskAnalysis';
 import { MarketDataCacheCollection } from './marketDataCache';
 import { CurrencyRateCacheCollection } from './currencyCache';
 import { AccountProfilesCollection, aggregateToFourCategories } from './accountProfiles';
+import { buildAssetClassBreakdown } from './assetClassification';
 import { BankAccountsCollection } from './bankAccounts';
 import { EODApiHelpers } from './eodApi';
 import {
@@ -538,38 +539,9 @@ async function gatherEquityNews(equityHoldings) {
  * Gather allocation profile data
  */
 async function gatherAllocationData(holdings, accountFilter, viewAsFilter) {
-  // Build granular breakdown by asset class with structured product protection types
-  // Must match the same logic as PMS fourCategoryAllocation for consistency
-  const breakdown = {};
-  let totalValue = 0;
-
-  for (const h of holdings) {
-    let categoryKey = (h.assetClass || 'other').toLowerCase();
-    const mv = h.marketValue || 0;
-
-    if (categoryKey === 'structured_product') {
-      const protectionType = h.structuredProductProtectionType;
-      const underlyingType = h.structuredProductUnderlyingType || 'equity_linked';
-      if (protectionType === 'capital_guaranteed_100') {
-        categoryKey = 'structured_product_capital_guaranteed';
-      } else if (protectionType === 'capital_guaranteed_partial') {
-        categoryKey = 'structured_product_partial_guarantee';
-      } else if (protectionType === 'capital_protected_conditional') {
-        // Equity-linked barrier protected → equities (still has equity risk)
-        // Non-equity barrier protected → bonds
-        if (underlyingType === 'equity_linked') {
-          categoryKey = 'structured_product_equity_linked_barrier_protected';
-        } else {
-          categoryKey = 'structured_product_barrier_protected';
-        }
-      } else if (h.structuredProductUnderlyingType) {
-        categoryKey = `structured_product_${h.structuredProductUnderlyingType}`;
-      }
-    }
-
-    breakdown[categoryKey] = (breakdown[categoryKey] || 0) + mv;
-    totalValue += mv;
-  }
+  // Granular breakdown via the shared classifier (assetClassification.js), the
+  // same one the PMS screen and the snapshot builder use.
+  const { breakdown, totalValue } = buildAssetClassBreakdown(holdings);
 
   const currentAllocation = aggregateToFourCategories(breakdown, totalValue);
 

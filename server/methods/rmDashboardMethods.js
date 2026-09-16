@@ -9,7 +9,7 @@ import { AllocationsCollection } from '../../imports/api/allocations.js';
 import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
 import { AccountProfilesCollection, aggregateToFourCategories } from '../../imports/api/accountProfiles.js';
 import { PortfolioSnapshotsCollection, filterSnapshotsByBankStartDate } from '../../imports/api/portfolioSnapshots.js';
-import { BankAccountsCollection } from '../../imports/api/bankAccounts.js';
+import { BankAccountsCollection, accountHolderSelector } from '../../imports/api/bankAccounts.js';
 import { BanksCollection } from '../../imports/api/banks.js';
 import { TickerPriceCacheCollection } from '../../imports/api/tickerCache.js';
 import { NotificationsCollection } from '../../imports/api/notifications.js';
@@ -276,7 +276,9 @@ async function getFilteredClientIds(currentUser, viewAsFilter = null) {
  */
 async function getBeneficialAccountClauses(clientIds) {
   if (!clientIds || clientIds.length === 0) return [];
-  const accounts = await BankAccountsCollection.find({
+
+  // Accounts where the perimeter is a beneficial owner of someone else's account
+  const beneficialAccounts = await BankAccountsCollection.find({
     isActive: true,
     $or: [
       { beneficialOwnerIds: { $in: clientIds } },
@@ -286,16 +288,34 @@ async function getBeneficialAccountClauses(clientIds) {
     // entityId/userId clauses
     entityId: { $nin: clientIds }
   }, { fields: { bankId: 1, accountNumber: 1 } }).fetchAsync();
-  return accounts
-    .filter(a => a.bankId && a.accountNumber)
-    .map(a => ({
+
+  // Accounts the perimeter holds — as primary holder, co-holder of a joint
+  // account, or under a legacy userId. The bank stamps the resulting PMSHoldings
+  // row with only ONE holder's entityId/userId, so viewing the OTHER holder would
+  // miss the holding entirely even though they legitimately hold the account.
+  // Matching by (bankId, portfolioCode) instead of the holding's stamped owner
+  // catches this, mirroring the entity fallback in server/publications/pmsHoldings.js.
+  const ownedAccounts = await BankAccountsCollection.find({
+    ...accountHolderSelector(clientIds),
+    isActive: true
+  }, { fields: { bankId: 1, accountNumber: 1 } }).fetchAsync();
+
+  const seen = new Set();
+  const clauses = [];
+  for (const a of [...beneficialAccounts, ...ownedAccounts]) {
+    if (!a.bankId || !a.accountNumber) continue;
+    // Anchor to the whole account: base and its sub-accounts (-USD, -1…),
+    // never a neighbouring code sharing the prefix
+    const baseNum = a.accountNumber.split('-')[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const key = `${a.bankId}|${baseNum}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    clauses.push({
       bankId: a.bankId,
-      // Anchor to the whole account: base and its sub-accounts (-USD, -1…),
-      // never a neighbouring code sharing the prefix
-      portfolioCode: {
-        $regex: `^${a.accountNumber.split('-')[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(-|$)`
-      }
-    }));
+      portfolioCode: { $regex: `^${baseNum}(-|$)` }
+    });
+  }
+  return clauses;
 }
 
 /**
@@ -796,7 +816,7 @@ Meteor.methods({
         const allHoldings = await PMSHoldingsCollection.find({
           isActive: true,
           isLatest: true,
-          marketValue: { $exists: true, $gt: 0 },
+          marketValue: { $exists: true, $ne: null }, // net cash: debit balances count (credit-line accounts are excluded by account)
           portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
           ...archivedHoldingFilter,
           $or: [
@@ -843,7 +863,7 @@ Meteor.methods({
           ],
           isActive: true,
           isLatest: true,
-          marketValue: { $exists: true, $gt: 0 },
+          marketValue: { $exists: true, $ne: null }, // net cash: debit balances count (credit-line accounts are excluded by account)
           portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
           $or: [
             { assetClass: { $in: aumAssetClasses } },
@@ -1048,7 +1068,7 @@ Meteor.methods({
               matchedCurrentHoldings = await PMSHoldingsCollection.find({
                 isActive: true,
                 isLatest: true,
-                marketValue: { $exists: true, $gt: 0 },
+                marketValue: { $exists: true, $ne: null }, // net cash: debit balances count (credit-line accounts are excluded by account)
                 portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
                 ...archivedHoldingFilter,
                 $or: [
@@ -1066,7 +1086,7 @@ Meteor.methods({
                 ],
                 isActive: true,
                 isLatest: true,
-                marketValue: { $exists: true, $gt: 0 },
+                marketValue: { $exists: true, $ne: null }, // net cash: debit balances count (credit-line accounts are excluded by account)
                 portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
                 $or: [
                   { assetClass: { $in: ['cash', 'equity', 'fixed_income', 'structured_product', 'time_deposit', 'monetary_products', 'commodities', 'private_equity', 'private_debt', 'etf', 'fund'] } },
@@ -1240,6 +1260,19 @@ Meteor.methods({
       const currencyRates = await CurrencyRateCacheCollection.find({}).fetchAsync();
       const ratesMap = buildRatesMap(currencyRates);
 
+      // Non-investment accounts (credit lines, credit cards, spending accounts)
+      // are excluded from AUM. The live "today" point below already drops them,
+      // but the historical snapshot days did not — so the curve carried the
+      // clients' negative credit-line balances while its last point did not, and
+      // every admin chart stepped up by that amount on the final point (~EUR 2.6m,
+      // +3% of AUM, reading as a one-day rally that never happened). Resolve the
+      // exclusion once and apply it to both sides so the whole line is one basis.
+      const nonInvestmentAccounts = await BankAccountsCollection.find(
+        { comment: { $in: ['Credit line', 'Credit Card', 'Credit account', 'Spending'] } },
+        { fields: { accountNumber: 1 } }
+      ).fetchAsync();
+      const excludedPortfolioCodes = nonInvestmentAccounts.map(a => a.accountNumber);
+
       // Get all snapshots in date range, aggregated by date
       // For admin/superadmin: all portfolios
       // For RM: only their clients' portfolios
@@ -1276,7 +1309,7 @@ Meteor.methods({
         const { userIds: archivedUserIds, entityIds: archivedEntityIds } = await ClientEntityHelpers.getArchivedOwnerIds();
         rawSnapshots = await PortfolioSnapshotsCollection.find({
           snapshotDate: { $gte: startDate, $lte: endDate },
-          portfolioCode: { $ne: 'CONSOLIDATED' },
+          portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
           userId: { $nin: archivedUserIds },
           entityId: { $nin: archivedEntityIds }
         }, {
@@ -1291,11 +1324,16 @@ Meteor.methods({
           return { hasData: false, labels: [], values: [], snapshots: [] };
         }
 
-        // Exclude CONSOLIDATED snapshots to avoid double-counting
+        // Exclude CONSOLIDATED snapshots to avoid double-counting, plus the same
+        // archived owners and non-investment accounts the RM live point below
+        // excludes — otherwise the history and the final point disagree.
+        const { userIds: rmArchivedUserIds, entityIds: rmArchivedEntityIds } = await ClientEntityHelpers.getArchivedOwnerIds();
         rawSnapshots = await PortfolioSnapshotsCollection.find({
           $or: [{ userId: { $in: clientIds } }, { entityId: { $in: clientIds } }],
           snapshotDate: { $gte: startDate, $lte: endDate },
-          portfolioCode: { $ne: 'CONSOLIDATED' }
+          portfolioCode: { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes },
+          userId: { $nin: rmArchivedUserIds },
+          entityId: { $nin: rmArchivedEntityIds }
         }, {
           sort: { snapshotDate: 1 }
         }).fetchAsync();
@@ -1330,9 +1368,14 @@ Meteor.methods({
           };
           if (accountScope) liveQuery.bankId = accountScope.bankId;
         } else {
+          // Count the reference portfolios on the SAME basis as the snapshot days
+          // above: those now drop non-investment accounts, so counting them here
+          // would inflate the reference and make minThreshold (80% coverage)
+          // reject every day, emptying the chart.
+          const referenceCode = { $ne: 'CONSOLIDATED', $nin: excludedPortfolioCodes };
           liveQuery = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE
-            ? { isActive: true, isLatest: true, portfolioCode: { $ne: 'CONSOLIDATED' } }
-            : { userId: { $in: (await getAssignedClients(currentUser)).map(c => c._id) }, isActive: true, isLatest: true, portfolioCode: { $ne: 'CONSOLIDATED' } };
+            ? { isActive: true, isLatest: true, portfolioCode: referenceCode }
+            : { userId: { $in: (await getAssignedClients(currentUser)).map(c => c._id) }, isActive: true, isLatest: true, portfolioCode: referenceCode };
         }
         const liveHoldings = await PMSHoldingsCollection.find(liveQuery, { fields: { portfolioCode: 1, bankId: 1 } }).fetchAsync();
         const liveKeys = new Set(liveHoldings.map(h => `${h.portfolioCode}|${h.bankId}`));
@@ -1366,11 +1409,8 @@ Meteor.methods({
       // Without them the chart's final point jumps above the displayed AUM
       // (e.g. the fictional demo client's €30M inflating the line).
       const liveArchivedOwners = await ClientEntityHelpers.getArchivedOwnerIds();
-      const liveNonInvestmentAccounts = await BankAccountsCollection.find(
-        { comment: { $in: ['Credit line', 'Credit Card', 'Credit account', 'Spending'] } },
-        { fields: { accountNumber: 1 } }
-      ).fetchAsync();
-      const liveExcludedPortfolioCodes = liveNonInvestmentAccounts.map(a => a.accountNumber);
+      // Same list the snapshot queries above use, resolved once.
+      const liveExcludedPortfolioCodes = excludedPortfolioCodes;
 
       let liveAUMInEUR = 0;
       if (hasViewFilter) {
@@ -1389,7 +1429,7 @@ Meteor.methods({
           ],
           isActive: true,
           isLatest: true,
-          marketValue: { $exists: true, $gt: 0 },
+          marketValue: { $exists: true, $ne: null }, // net cash: debit balances count (credit-line accounts are excluded by account)
           portfolioCode: { $ne: 'CONSOLIDATED' }
         };
         if (accountScope) {
@@ -1404,7 +1444,7 @@ Meteor.methods({
         const allHoldings = await PMSHoldingsCollection.find({
           isActive: true,
           isLatest: true,
-          marketValue: { $exists: true, $gt: 0 },
+          marketValue: { $exists: true, $ne: null }, // net cash: debit balances count (credit-line accounts are excluded by account)
           portfolioCode: { $ne: 'CONSOLIDATED', $nin: liveExcludedPortfolioCodes },
           userId: { $nin: liveArchivedOwners.userIds },
           entityId: { $nin: liveArchivedOwners.entityIds },
@@ -1423,7 +1463,7 @@ Meteor.methods({
             ],
             isActive: true,
             isLatest: true,
-            marketValue: { $exists: true, $gt: 0 },
+            marketValue: { $exists: true, $ne: null }, // net cash: debit balances count (credit-line accounts are excluded by account)
             portfolioCode: { $ne: 'CONSOLIDATED', $nin: liveExcludedPortfolioCodes },
             userId: { $nin: liveArchivedOwners.userIds },
             entityId: { $nin: liveArchivedOwners.entityIds }

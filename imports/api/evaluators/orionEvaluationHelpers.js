@@ -12,6 +12,60 @@ import { getSplitAdjustedStrike } from '/imports/api/splitAdjustment';
  */
 export const OrionEvaluationHelpers = {
   /**
+   * Decide whether a resolved price series actually belongs to this underlying.
+   *
+   * Ported from the Phoenix strike-vs-feed validation (see phoenixEvaluator.js):
+   * the (split-adjusted) strike is contractual, so if the series' close around
+   * the trade date disagrees with it beyond drift tolerance, the exchange
+   * fallback has resolved a DIFFERENT instrument (e.g. an LSE pence line for a
+   * USD ADR strike) — and any performance or barrier verdict computed from it
+   * would be garbage. A confirmed split is the only accepted override.
+   *
+   * @param {Array} history - price records, ALREADY pence-normalized if applicable
+   * @param {number} strike - split-adjusted strike (same units as history)
+   * @param {Date} tradeDate
+   * @param {string} fullTicker - for the splits lookup and logging
+   * @returns {Promise<{ok: boolean, basis: number, reason: string}>}
+   */
+  async validateSeriesBasis(history, strike, tradeDate, fullTicker) {
+    if (!strike || strike <= 0 || !Array.isArray(history) || history.length === 0) {
+      return { ok: true, basis: strike, reason: 'not-validatable' };
+    }
+
+    const tradeDateStr = tradeDate.toISOString().split('T')[0];
+    // Earliest record on/after the trade date — the series' own view of the
+    // initial fixing (may be a few sessions later if the cache starts late).
+    const anchor = history.find(r => new Date(r.date).toISOString().split('T')[0] >= tradeDateStr)
+      || history[0];
+    const anchorClose = anchor ? (anchor.close || anchor.adjustedClose) : null;
+    if (!anchorClose || anchorClose <= 0) {
+      return { ok: true, basis: strike, reason: 'not-validatable' };
+    }
+
+    const ratio = strike / anchorClose;
+    // Generous drift band: the anchor may sit days after the trade date. It still
+    // catches pence (x100), cross-listing mixups (x5+), and unadjusted splits (x1.5+).
+    if (ratio > 0.75 && ratio < 1.33) {
+      return { ok: true, basis: strike, reason: 'matches-feed' };
+    }
+
+    // A recorded split explains the gap: measure against the adjusted series.
+    try {
+      const splits = await EODApiHelpers.getStockSplits(fullTicker, tradeDate, new Date());
+      const cumulative = (Array.isArray(splits) ? splits : []).reduce((acc, s) => acc * (s.ratio || 1), 1);
+      if (cumulative > 0 && Math.abs(ratio / cumulative - 1) <= 0.1) {
+        console.warn(`[ORION] ${fullTicker}: split-adjusted series confirmed (cumulative ${cumulative.toFixed(4)}) — measuring against adjusted close ${anchorClose}`);
+        return { ok: true, basis: anchorClose, reason: 'split-adjusted' };
+      }
+    } catch (e) {
+      // Failed lookup must not silently bless the gap — fall through to reject.
+    }
+
+    console.error(`[ORION] ${fullTicker}: series close ${anchorClose} near ${tradeDateStr} is inconsistent with strike ${strike} (x${(1 / ratio).toFixed(2)}) and no split explains it — this feed is NOT this underlying's instrument. Ignoring the series.`);
+    return { ok: false, basis: strike, reason: 'wrong-instrument' };
+  },
+
+  /**
    * Set redemption prices for redeemed Orion products
    */
   async setRedemptionPricesForProduct(product) {
@@ -240,11 +294,20 @@ export const OrionEvaluationHelpers = {
         fullTicker
       );
 
+      // A barrier verdict from the wrong instrument is worse than no verdict:
+      // verify the series belongs to this strike before scanning it.
+      const seriesCheck = await this.validateSeriesBasis(relevantHistory, initialPrice, tradeDate, cacheDoc.fullTicker || fullTicker);
+      if (!seriesCheck.ok) {
+        console.error(`[ORION BARRIER CHECK] ❌ ${fullTicker}: price series rejected (${seriesCheck.reason}) — cannot determine barrier touches from a mismatched feed`);
+        return false;
+      }
+      const barrierBasis = seriesCheck.basis;
+
       // Check if any daily close reached or exceeded the upper barrier
       // upperBarrier is percentage (e.g., 150 means 150% of initial)
-      const barrierPrice = initialPrice * (upperBarrier / 100);
+      const barrierPrice = barrierBasis * (upperBarrier / 100);
 
-      console.log('[ORION BARRIER CHECK] Barrier price:', barrierPrice, `(${upperBarrier}% of ${initialPrice})`);
+      console.log('[ORION BARRIER CHECK] Barrier price:', barrierPrice, `(${upperBarrier}% of basis ${barrierBasis})`);
 
       let maxPrice = 0;
       let maxDate = null;
@@ -377,14 +440,48 @@ export const OrionEvaluationHelpers = {
 
         // Normalize GBp to GBP for LSE stocks
         // LSE prices are quoted in pence (GBp), strikes are in pounds (GBP)
-        const currentPrice = CurrencyNormalization.normalizePriceToGBP(
+        let currentPrice = CurrencyNormalization.normalizePriceToGBP(
           evaluationPriceInfo.price,
           initialPrice,
           usedTicker
         );
 
-        let performance = initialPrice > 0 ?
-          ((currentPrice - initialPrice) / initialPrice) * 100 : 0;
+        // Verify the resolved series actually belongs to this underlying before
+        // deriving a performance from it (the exchange-fallback loop above can
+        // land on a different instrument — e.g. an LSE line for a USD ADR).
+        let feedMismatch = false;
+        let performanceBasis = initialPrice;
+        try {
+          const tradeDateForCheck = new Date(product.tradeDate || product.issueDate || product.valueDate);
+          const usedCacheDoc = await MarketDataCacheCollection.findOneAsync({ fullTicker: usedTicker });
+          if (usedCacheDoc?.history?.length && initialPrice > 0 && !Number.isNaN(tradeDateForCheck.getTime())) {
+            const normalizedHistory = CurrencyNormalization.normalizeHistoricalPrices(
+              usedCacheDoc.history, initialPrice, usedTicker
+            );
+            const seriesCheck = await this.validateSeriesBasis(
+              normalizedHistory, initialPrice, tradeDateForCheck, usedTicker
+            );
+            if (!seriesCheck.ok) {
+              feedMismatch = true;
+            } else {
+              performanceBasis = seriesCheck.basis;
+            }
+          }
+        } catch (e) {
+          console.warn(`[ORION] Series validation failed for ${usedTicker}: ${e.message}`);
+        }
+
+        let performance;
+        if (feedMismatch) {
+          // No number is better than a wrong one: suppress rather than report
+          // a performance measured against the wrong instrument.
+          performance = 0;
+          currentPrice = 0;
+          console.error(`[ORION] ${underlying.ticker}: current price suppressed — resolved series (${usedTicker}) does not match the strike`);
+        } else {
+          performance = performanceBasis > 0 ?
+            ((currentPrice - performanceBasis) / performanceBasis) * 100 : 0;
+        }
 
         // Use the underlying's currency for display, not the product currency
         const displayCurrency = underlying.securityData?.currency || 'USD';
@@ -396,7 +493,7 @@ export const OrionEvaluationHelpers = {
 
           initialPrice: initialPrice,
           currentPrice: currentPrice,
-          priceSource: evaluationPriceInfo.source,
+          priceSource: feedMismatch ? 'feed_mismatch' : evaluationPriceInfo.source,
           priceDate: evaluationPriceInfo.date,
 
           performance: performance,
@@ -405,8 +502,8 @@ export const OrionEvaluationHelpers = {
           // Use underlying's currency for price display
           currency: displayCurrency,
           initialPriceFormatted: this.formatCurrency(initialPrice, displayCurrency),
-          currentPriceFormatted: this.formatCurrency(currentPrice, displayCurrency),
-          performanceFormatted: (performance >= 0 ? '+' : '') + performance.toFixed(2) + '%',
+          currentPriceFormatted: feedMismatch ? '—' : this.formatCurrency(currentPrice, displayCurrency),
+          performanceFormatted: feedMismatch ? '—' : ((performance >= 0 ? '+' : '') + performance.toFixed(2) + '%'),
           priceDateFormatted: evaluationPriceInfo.date ?
             new Date(evaluationPriceInfo.date).toLocaleDateString('en-US', {
               month: 'short',
@@ -414,7 +511,7 @@ export const OrionEvaluationHelpers = {
               year: 'numeric'
             }) : null,
 
-          hasCurrentData: !!(underlying.securityData?.price?.price),
+          hasCurrentData: !feedMismatch && !!(underlying.securityData?.price?.price),
           lastUpdated: new Date().toISOString(),
 
           fullTicker: usedTicker,

@@ -205,14 +205,35 @@ const SummaryModule = ({
     </div>
   );
 
-  // Orion Memory Summary
-  const renderOrionSummary = () => (
+  // Orion Summary
+  //
+  // Orion notes pay NO coupon. The whole return is delivered at maturity:
+  // every underlying is watched over the life of the product and, if it ever
+  // touches the upper barrier, its performance is locked at the rebate; the
+  // redemption is 100% + the average of those "considered" performances,
+  // floored by the capital guarantee. Terms mirror OrionEvaluator
+  // .extractOrionParameters() so the designer shows what the evaluator will use.
+  const renderOrionSummary = () => {
+    const upperBarrier = structureParams?.upperBarrier ?? 100;
+    const rebate = structureParams?.rebate ?? 8.0;
+    const capitalGuaranteed = structureParams?.capitalGuaranteed ?? 100;
+    // No default: an Orion carrying no downside barrier is protected by the
+    // guarantee, not by an invented level.
+    const lowerBarrier = structureParams?.lowerBarrier
+      ?? structureParams?.protectionBarrierLevel
+      ?? null;
+    const hasLowerBarrier = lowerBarrier != null && lowerBarrier > 0;
+    const lowerBarrierText = hasLowerBarrier
+      ? `${lowerBarrier}%`
+      : 'None (capital guarantee only)';
+
+    return (
     <div>
       <div style={cardStyle}>
         <h3 style={titleStyle}>
-          ⭐ Orion Memory Product Summary
+          ⭐ Orion Product Summary
         </h3>
-        
+
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
           <div>
             <h4 style={{ margin: '0 0 1rem 0', color: 'var(--text-primary)', fontSize: '1rem' }}>
@@ -220,24 +241,23 @@ const SummaryModule = ({
             </h4>
             <div style={infoRowStyle}>
               <span style={labelStyle}>Product Type:</span>
-              <span style={valueStyle}>Memory Coupon Note</span>
+              <span style={valueStyle}>Lookback Rainbow Note</span>
             </div>
             <div style={infoRowStyle}>
-              <span style={labelStyle}>Memory Feature:</span>
-              <span style={valueStyle}>
-                {structureParams?.memoryFeature === 'full' ? 'Full Memory - Cumulative' :
-                 structureParams?.memoryFeature === 'partial' ? 'Partial Memory - Limited' :
-                 structureParams?.memoryFeature === 'none' ? 'No Memory' :
-                 config.hasMemory ? 'Full Memory - Cumulative' : 'No Memory'}
-              </span>
+              <span style={labelStyle}>Coupons:</span>
+              <span style={valueStyle}>None — return paid at maturity</span>
             </div>
             <div style={infoRowStyle}>
-              <span style={labelStyle}>Coupon Frequency:</span>
-              <span style={valueStyle}>{config.frequency}</span>
+              <span style={labelStyle}>Barrier Monitoring:</span>
+              <span style={valueStyle}>Continuous (lookback over full life)</span>
+            </div>
+            <div style={infoRowStyle}>
+              <span style={labelStyle}>Basket Reference:</span>
+              <span style={valueStyle}>Average of considered performances</span>
             </div>
             <div style={{ ...infoRowStyle, borderBottom: 'none' }}>
-              <span style={labelStyle}>Capital Protection:</span>
-              <span style={valueStyle}>{config.protectionBarrier}% at Maturity</span>
+              <span style={labelStyle}>Capital Guarantee:</span>
+              <span style={valueStyle}>{capitalGuaranteed}% at Maturity</span>
             </div>
           </div>
 
@@ -246,25 +266,20 @@ const SummaryModule = ({
               Key Parameters
             </h4>
             <div style={infoRowStyle}>
-              <span style={labelStyle}>Coupon Rate:</span>
-              <span style={valueStyle}>{config.couponRate}% p.a.</span>
+              <span style={labelStyle}>Upper Barrier (Cap):</span>
+              <span style={valueStyle}>{upperBarrier}%</span>
             </div>
             <div style={infoRowStyle}>
-              <span style={labelStyle}>Memory Barrier:</span>
-              <span style={valueStyle}>{config.couponBarrier}%</span>
+              <span style={labelStyle}>Rebate:</span>
+              <span style={valueStyle}>{rebate}%</span>
             </div>
             <div style={infoRowStyle}>
-              <span style={labelStyle}>Protection Level:</span>
-              <span style={valueStyle}>{config.protectionBarrier}%</span>
+              <span style={labelStyle}>Protection Barrier:</span>
+              <span style={valueStyle}>{lowerBarrierText}</span>
             </div>
             <div style={{ ...infoRowStyle, borderBottom: 'none' }}>
-              <span style={labelStyle}>Memory Type:</span>
-              <span style={valueStyle}>
-                {structureParams?.memoryFeature === 'full' ? 'Accumulative' :
-                 structureParams?.memoryFeature === 'partial' ? 'Limited Carryover' :
-                 structureParams?.memoryFeature === 'none' ? 'None' :
-                 config.hasMemory ? 'Accumulative' : 'None'}
-              </span>
+              <span style={labelStyle}>Underlyings:</span>
+              <span style={valueStyle}>{underlyings.length > 0 ? `${underlyings.length} configured` : 'None configured'}</span>
             </div>
           </div>
         </div>
@@ -272,40 +287,47 @@ const SummaryModule = ({
 
       <div style={cardStyle}>
         <h3 style={titleStyle}>
-          💰 Memory Coupon Mechanism
+          🎯 Lookback Cap & Rebate Mechanism
         </h3>
-        
-        <div style={{ 
-          background: 'var(--bg-tertiary)', 
-          padding: '1.5rem', 
+
+        <div style={{
+          background: 'var(--bg-tertiary)',
+          padding: '1.5rem',
           borderRadius: '8px',
           marginBottom: '1rem'
         }}>
           <h4 style={{ margin: '0 0 0.75rem 0', color: 'var(--text-primary)', fontSize: '0.95rem' }}>
-            How Memory Works
+            How the Payoff Works
           </h4>
           <div style={{ display: 'grid', gap: '0.75rem', fontSize: '0.9rem' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span style={{ color: 'var(--success-color)', fontWeight: '600' }}>✓</span>
-              <span>If underlying ≥ {config.couponBarrier}%: Coupon is paid ({config.couponRate}% {config.frequency.toLowerCase()})</span>
+              <span style={{ color: 'var(--success-color)', fontWeight: '600' }}>🎯</span>
+              <span>If an underlying touches {upperBarrier}% at any time: its performance is locked at the rebate ({rebate}%), wherever it ends</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span style={{ color: 'var(--warning-color)', fontWeight: '600' }}>○</span>
-              <span>If underlying &lt; {config.couponBarrier}%: Coupon is stored in memory</span>
+              <span style={{ color: 'var(--accent-color)', fontWeight: '600' }}>↔</span>
+              <span>If it never touches {upperBarrier}%: its actual final performance is used, up or down</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span style={{ color: 'var(--accent-color)', fontWeight: '600' }}>⚡</span>
-              <span>When barrier is reached again: All memory coupons paid out</span>
+              <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>∑</span>
+              <span>At maturity: redemption = 100% + average of all considered performances</span>
             </div>
+            {hasLowerBarrier && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span style={{ color: 'var(--warning-color)', fontWeight: '600' }}>⚠️</span>
+                <span>If the worst performer closes below {lowerBarrier}%: the investor bears that loss instead of the basket average</span>
+              </div>
+            )}
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>💎</span>
-              <span>At maturity: All accumulated memory coupons paid regardless</span>
+              <span style={{ color: 'var(--success-color)', fontWeight: '600' }}>🛡️</span>
+              <span>Floor: redemption is never below the {capitalGuaranteed}% capital guarantee</span>
             </div>
           </div>
         </div>
       </div>
     </div>
-  );
+    );
+  };
 
   // Himalaya Protection Summary
   const renderHimalayaSummary = () => (

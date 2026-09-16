@@ -476,13 +476,13 @@ export const HimalayaChartBuilder = {
 
       if (!cacheDoc) {
         console.log(`⚠️ No cache document found for ${ticker} or any variant`);
-        return this.generateSyntheticData(tradeDate, maturityDate, today, seed, underlyingData);
+        return []; // no fabricated data — missing series stays absent
       }
 
       // Check if history exists
       if (!cacheDoc.history || cacheDoc.history.length === 0) {
         console.log(`⚠️ Cache document exists but has no history array for ${ticker}`);
-        return this.generateSyntheticData(tradeDate, maturityDate, today, seed, underlyingData);
+        return []; // no fabricated data — missing series stays absent
       }
 
       console.log(`📊 Found cache for ${ticker} with ${cacheDoc.history.length} total records`);
@@ -497,7 +497,7 @@ export const HimalayaChartBuilder = {
 
       if (history.length === 0) {
         console.log(`⚠️ No historical data in date range for ${ticker}, generating synthetic data based on actual performance`);
-        return this.generateSyntheticData(tradeDate, maturityDate, today, seed, underlyingData);
+        return []; // no fabricated data — missing series stays absent
       }
 
       // Get initial price (at trade date) - use adjustedClose
@@ -519,7 +519,7 @@ export const HimalayaChartBuilder = {
 
     } catch (error) {
       console.error(`❌ Error fetching price data for ${ticker}:`, error);
-      return this.generateSyntheticData(tradeDate, maturityDate, today, seed, underlyingData);
+      return []; // no fabricated data — missing series stays absent
     }
   },
 

@@ -191,36 +191,67 @@ const MarketTicker = () => {
 
   // Get all ticker prices from database
   const tickerPricesFromDB = useFind(() =>
-    TickerPriceCacheCollection.find({}, { sort: { symbol: 1 } })
+    TickerPriceCacheCollection.find({}, { sort: { symbol: 1 } }),
+    []
   );
+
+  // Last-known-good display item per symbol, kept across renders. The cache
+  // doc's TTL (server-side) is timed close to the ~15min refresh cron, so a
+  // slightly slow or skipped refresh cycle can let a doc expire (and get
+  // removed from Mongo) a little before it's re-cached — the symbol briefly
+  // vanishes from tickerPricesFromDB. If we rendered that directly, the strip
+  // would lose an item, its total width would change, and the CSS scroll
+  // animation (translateX(-50%), which is relative to that width) visibly
+  // jumps. Merging on top of the last-known values means only the PRICE
+  // updates in place; the rendered item count — and thus the width the
+  // animation runs against — stays stable through those transient gaps.
+  const lastKnownItemsRef = useRef(new Map()); // symbol -> { item, lastSeenAt }
+  // A symbol absent for longer than this is treated as genuinely gone (e.g. the
+  // product that referenced it was deleted/edited), not a transient cache gap,
+  // and is dropped so the strip doesn't accumulate stale ghost entries forever.
+  const STALE_GRACE_MS = 45 * 60 * 1000; // ~3 refresh cycles
 
   // Transform database ticker prices into display format
   const marketData = useMemo(() => {
-    if (!tickerPricesFromDB || tickerPricesFromDB.length === 0) {
-      // Return empty if no data yet
-      return [];
-    }
+    const now = Date.now();
+    const freshSymbols = new Set();
 
-    return tickerPricesFromDB.map(ticker => {
+    (tickerPricesFromDB || []).forEach(ticker => {
       const metadata = getTickerMetadata(ticker.symbol);
       const currency = getCurrencyFromTicker(ticker.symbol);
+      freshSymbols.add(ticker.symbol);
 
-      return {
-        symbol: ticker.symbol,
-        name: metadata.name,
-        type: metadata.type,
-        currency: currency,
-        price: ticker.price || null,
-        change: ticker.change || null,
-        changePercent: ticker.changePercent || null,
-        previousClose: ticker.previousClose || null,
-        source: ticker.source || 'eod',
-        timestamp: ticker.timestamp,
-        loading: false,
-        error: false,
-        fallback: false
-      };
+      lastKnownItemsRef.current.set(ticker.symbol, {
+        lastSeenAt: now,
+        item: {
+          symbol: ticker.symbol,
+          name: metadata.name,
+          type: metadata.type,
+          currency: currency,
+          price: ticker.price || null,
+          change: ticker.change || null,
+          changePercent: ticker.changePercent || null,
+          previousClose: ticker.previousClose || null,
+          source: ticker.source || 'eod',
+          timestamp: ticker.timestamp,
+          loading: false,
+          error: false,
+          fallback: false
+        }
+      });
     });
+
+    // Drop entries missing for longer than the grace period — distinguishes a
+    // genuine removal from a transient refresh-cycle race.
+    for (const [symbol, entry] of lastKnownItemsRef.current) {
+      if (!freshSymbols.has(symbol) && now - entry.lastSeenAt > STALE_GRACE_MS) {
+        lastKnownItemsRef.current.delete(symbol);
+      }
+    }
+
+    return Array.from(lastKnownItemsRef.current.values())
+      .map(entry => entry.item)
+      .sort((a, b) => a.symbol.localeCompare(b.symbol));
   }, [tickerPricesFromDB]);
 
   // Calculate animation duration once when content is first rendered

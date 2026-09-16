@@ -2,7 +2,17 @@ import { Mongo } from 'meteor/mongo';
 import { Meteor } from 'meteor/meteor';
 import { check } from 'meteor/check';
 import fs from 'fs';
-import path from 'path';
+import {
+  TERMSHEET_SOURCES,
+  getTermsheetsDir,
+  resolveProjectRoot,
+  resolveTermsheetPath,
+  buildTermsheetFilename,
+  termsheetUrl,
+  termsheetFilenameFromUrl,
+  writeTermsheetFile,
+  deleteTermsheetFile
+} from './documentStorage';
 
 export const ProductsCollection = new Mongo.Collection('products');
 
@@ -135,6 +145,87 @@ if (Meteor.isServer) {
       return `${filePath}?dl=${token}`;
     },
 
+    /**
+     * The term sheet already on file for an ISIN, for the order book.
+     *
+     * Placing a structured-product order requires the termsheet PDF, which for a
+     * product already in the system is the same document the product report
+     * serves. Rather than making the desk find and re-upload it, the order modal
+     * looks it up here and attaches the stored copy as the order's evidence.
+     *
+     * Called twice: without `includeData` to show what is on file, then with it
+     * to pull the bytes at submit time.
+     */
+    /**
+     * Ambervision product titles for a set of ISINs.
+     *
+     * The desk types a short label on an order ("Ph+"); the product record
+     * carries the full name ("ENI/SHELL/TTE Phoenix Autocallable"). The order
+     * book and validation panels show the latter when the ISIN is a product we
+     * manage, so every screen reads the same name. Returns { [isin]: title }.
+     */
+    async 'products.getTitlesByIsins'(isins, sessionId) {
+      check(isins, [String]);
+      check(sessionId, String);
+
+      const user = await Meteor.callAsync('auth.getCurrentUser', sessionId);
+      if (!user) throw new Meteor.Error('not-authorized', 'You must be logged in');
+
+      const unique = [...new Set(isins.map(i => String(i).trim()).filter(Boolean))].slice(0, 500);
+      if (unique.length === 0) return {};
+      const variants = [...new Set(unique.flatMap(i => [i, i.toUpperCase()]))];
+      const products = await ProductsCollection.find(
+        { isin: { $in: variants } },
+        { fields: { isin: 1, title: 1 } }
+      ).fetchAsync();
+      const titles = {};
+      for (const p of products) {
+        if (!p.isin || !p.title) continue;
+        titles[p.isin] = p.title;
+        titles[p.isin.toUpperCase()] = p.title;
+      }
+      return titles;
+    },
+
+    async 'products.getTermSheetByIsin'(isin, sessionId, includeData = false) {
+      check(isin, String);
+      check(sessionId, String);
+      check(includeData, Boolean);
+
+      const user = await Meteor.callAsync('auth.getCurrentUser', sessionId);
+      if (!user) throw new Meteor.Error('not-authorized', 'You must be logged in');
+
+      const product = await ProductsCollection.findOneAsync({ isin });
+      const filename = termsheetFilenameFromUrl(product?.termSheet?.url);
+      if (!filename) return null;
+
+      const filePath = resolveTermsheetPath(filename);
+      if (!filePath) {
+        // Metadata without the file: the product record points at a term sheet
+        // that isn't on disk (restored DB, pre-volume upload). Report it as
+        // absent so the order modal asks for an upload instead of silently
+        // attaching nothing.
+        console.warn(`[TermSheet] ${isin} references ${filename} but it is not on disk`);
+        return null;
+      }
+
+      const result = {
+        productId: product._id,
+        productTitle: product.title || null,
+        filename,
+        originalFilename: product.termSheet.originalFilename || filename,
+        uploadedAt: product.termSheet.uploadedAt || null,
+        source: product.termSheet.source || null,
+        sizeBytes: fs.statSync(filePath).size
+      };
+
+      if (includeData) {
+        result.base64Data = fs.readFileSync(filePath).toString('base64');
+      }
+
+      return result;
+    },
+
     async 'products.uploadTermSheet'(productId, base64Data, filename, sessionId) {
       check(productId, String);
       check(base64Data, String);
@@ -163,100 +254,29 @@ if (Meteor.isServer) {
         throw new Meteor.Error('invalid-data', 'File data and filename are required');
       }
 
-      // Generate filename from ISIN and product title
-      const isin = product.isin || 'NO_ISIN';
-      const title = product.title || 'Untitled_Product';
+      // Same naming and same directory as every other writer — term-sheet
+      // extraction at product creation, and promotion from an order's termsheet
+      // evidence. See imports/api/documentStorage.js. This used to write to
+      // public/termsheets/ in dev, which both diverged from the extractor and
+      // tripped Meteor's file watcher (hot reload mid-upload).
+      const sanitizedFilename = buildTermsheetFilename(product);
 
-      // Sanitize ISIN and title for filename - remove special characters, keep only alphanumeric, hyphens, underscores
-      const sanitizedIsin = isin.replace(/[^a-zA-Z0-9_-]/g, '_');
-      const sanitizedTitle = title.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50); // Limit title length
-
-      // Create filename: ISIN_Title.pdf
-      const sanitizedFilename = `${sanitizedIsin}_${sanitizedTitle}.pdf`;
-
-      // Create directory path for termsheets (flat structure - no product subdirectories)
-      // Use environment variable in production (persistent volume), fallback to public/ in development
-      let termsheetsDir;
-
-      if (process.env.TERMSHEETS_PATH) {
-        // Production: use persistent volume mount (flat structure)
-        termsheetsDir = process.env.TERMSHEETS_PATH;
-        console.log(`📁 Term sheet upload - Using persistent volume:`);
-        console.log(`   TERMSHEETS_PATH: ${process.env.TERMSHEETS_PATH}`);
-      } else {
-        // Development: use public directory (flat structure)
-        let projectRoot = process.cwd();
-        if (projectRoot.includes('.meteor')) {
-          projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
-        }
-        const publicDir = path.join(projectRoot, 'public');
-        termsheetsDir = path.join(publicDir, 'termsheets');
-        console.log(`📁 Term sheet upload - Using public directory:`);
-        console.log(`   Project root: ${projectRoot}`);
-        console.log(`   Public dir: ${publicDir}`);
+      // Replacing a term sheet stored under a different name (the product title
+      // changed since, or the pre-2025 nested URL form) would orphan the old file.
+      const previousFilename = termsheetFilenameFromUrl(product.termSheet?.url);
+      if (previousFilename && previousFilename !== sanitizedFilename) {
+        deleteTermsheetFile(previousFilename);
       }
 
-      console.log(`   Termsheets dir: ${termsheetsDir}`);
-
-      // Create directory if it doesn't exist
+      let storedPath;
       try {
-        if (!fs.existsSync(termsheetsDir)) {
-          fs.mkdirSync(termsheetsDir, { recursive: true });
-        }
+        storedPath = writeTermsheetFile(sanitizedFilename, Buffer.from(base64Data, 'base64'));
       } catch (error) {
-        console.error('Error creating directory:', error);
-        throw new Meteor.Error('file-system-error', 'Failed to create directory structure');
-      }
-
-      // If there's an existing term sheet, delete the old file
-      if (product.termSheet && product.termSheet.url) {
-        // Extract filename from URL (handles both old /termsheets/{productId}/{filename} and new /termsheets/{filename} formats)
-        const urlParts = product.termSheet.url.replace(/^\//, '').split('/');
-        const oldFilename = urlParts[urlParts.length - 1]; // Always get last part (the actual filename)
-
-        let oldFilePath;
-        if (process.env.TERMSHEETS_PATH) {
-          // Try new flat structure first
-          oldFilePath = path.join(process.env.TERMSHEETS_PATH, oldFilename);
-
-          // If not found, try old structure with product subdirectory (for migration compatibility)
-          if (!fs.existsSync(oldFilePath) && urlParts.length === 3) {
-            const oldProductId = urlParts[1];
-            oldFilePath = path.join(process.env.TERMSHEETS_PATH, oldProductId, oldFilename);
-          }
-        } else {
-          let projectRoot = process.cwd();
-          if (projectRoot.includes('.meteor')) {
-            projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
-          }
-          const publicDir = path.join(projectRoot, 'public');
-          oldFilePath = path.join(publicDir, product.termSheet.url.replace(/^\//, ''));
-        }
-
-        try {
-          if (fs.existsSync(oldFilePath)) {
-            fs.unlinkSync(oldFilePath);
-            console.log(`🗑️ Deleted old term sheet: ${oldFilePath}`);
-          }
-        } catch (error) {
-          console.error('Error deleting old term sheet:', error);
-          // Continue anyway - don't fail the upload if we can't delete the old file
-        }
-      }
-
-      // Save the new file (flat structure - directly in termsheets directory)
-      const filePath = path.join(termsheetsDir, sanitizedFilename);
-      try {
-        const buffer = Buffer.from(base64Data, 'base64');
-        fs.writeFileSync(filePath, buffer);
-        console.log(`📄 Term sheet saved to: ${filePath}`);
-      } catch (error) {
-        console.error('Error writing file:', error);
+        console.error('Error writing term sheet file:', error);
         throw new Meteor.Error('file-system-error', 'Failed to save term sheet file');
       }
 
-      // Generate public URL (flat structure - no product subdirectory)
-      const publicUrl = `/termsheets/${sanitizedFilename}`;
+      const publicUrl = termsheetUrl(sanitizedFilename);
 
       // Update product document with term sheet metadata
       const updateResult = await ProductsCollection.updateAsync(productId, {
@@ -266,12 +286,13 @@ if (Meteor.isServer) {
             filename: sanitizedFilename,
             originalFilename: filename,
             uploadedAt: new Date(),
-            uploadedBy: user._id
+            uploadedBy: user._id,
+            source: TERMSHEET_SOURCES.MANUAL_UPLOAD
           }
         }
       });
 
-      console.log(`📄 Term sheet uploaded for product ${productId} by ${user.email}: ${sanitizedFilename} (original: ${filename})`);
+      console.log(`[TermSheet] Uploaded for product ${productId} by ${user.email}: ${sanitizedFilename} (original: ${filename}) -> ${storedPath}`);
 
       return {
         success: true,
@@ -282,19 +303,18 @@ if (Meteor.isServer) {
     },
 
     /**
-     * Debug method to check filesystem paths
+     * Debug method to check where term sheets are actually stored
      */
     'products.debugPaths'() {
-      const cwd = process.cwd();
-      const projectRoot = cwd.includes('.meteor') ? cwd.split('.meteor')[0].replace(/[\\\/]$/, '') : cwd;
-      const publicDir = path.join(projectRoot, 'public');
+      const termsheetsDir = getTermsheetsDir();
 
       return {
-        cwd,
-        projectRoot,
-        publicDir,
-        publicExists: fs.existsSync(publicDir),
-        publicContents: fs.existsSync(publicDir) ? fs.readdirSync(publicDir) : []
+        cwd: process.cwd(),
+        projectRoot: resolveProjectRoot(),
+        termsheetsDir,
+        termsheetsPathEnv: process.env.TERMSHEETS_PATH || null,
+        termsheetsExists: fs.existsSync(termsheetsDir),
+        termsheetsContents: fs.existsSync(termsheetsDir) ? fs.readdirSync(termsheetsDir) : []
       };
     },
 

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { generatePDFFromHTML } from './pdfHelper';
+import { getMeetingReportsDir } from '/imports/api/documentStorage.js';
 import {
   MEETING_TYPES,
   SATISFACTION_LEVELS
@@ -37,14 +38,11 @@ export async function generateMeetingReportPdf(report) {
 }
 
 function resolveOutputDir() {
-  if (process.env.MEETING_REPORTS_PATH) return process.env.MEETING_REPORTS_PATH;
-  let projectRoot = process.cwd();
-  if (projectRoot.includes('.meteor')) {
-    projectRoot = projectRoot.split('.meteor')[0].replace(/[\\/]$/, '');
-  }
-  // SECURITY/GDPR: meeting reports contain client PII — never write them under
-  // public/ (served unauthenticated, and touching it triggers the dev watcher).
-  return path.join(projectRoot, '.fichier_central', 'meetingReports');
+  // SECURITY/GDPR: meeting reports contain client PII — never written under
+  // public/ (served unauthenticated, and touching it trips the dev watcher).
+  // Shared with the /meetingReports endpoint via documentStorage.js, which
+  // also keeps production PDFs on the FICHIER_CENTRAL_PATH volume.
+  return getMeetingReportsDir();
 }
 
 // ---------- HTML rendering ---------------------------------------------------

@@ -142,17 +142,83 @@ const StructuredProductChart = ({ productId, height = '400px' }) => {
         });
       }
 
+      // The stored Chart.js config is desktop-tuned. On narrow screens, declutter
+      // it at render time (display-only: fonts, legend, tick density, annotation
+      // labels) — the underlying pre-computed data is never touched.
+      let renderOptions = {
+        ...chartData.options,
+        responsive: true,
+        maintainAspectRatio: false,
+        // Override height
+        height: parseInt(height.replace('px', ''))
+      };
+
+      const isNarrowScreen = typeof window !== 'undefined' && window.innerWidth < 768;
+      if (isNarrowScreen) {
+        renderOptions = JSON.parse(JSON.stringify(renderOptions));
+        const plugins = renderOptions.plugins || (renderOptions.plugins = {});
+
+        // Compact legend below the chart
+        plugins.legend = {
+          ...(plugins.legend || {}),
+          position: 'bottom',
+          labels: {
+            ...((plugins.legend || {}).labels || {}),
+            boxWidth: 10,
+            boxHeight: 10,
+            padding: 8,
+            font: { size: 10 }
+          }
+        };
+
+        // No in-canvas title/subtitle — the surrounding card already has a
+        // heading, and the title collides with the fullscreen button on phones.
+        if (plugins.title) plugins.title.display = false;
+        if (plugins.subtitle) plugins.subtitle.display = false;
+
+        // Keep annotation lines/points but drop their labels — they overlap badly
+        // on a phone; tooltips still carry the detail.
+        const annotations = plugins.annotation?.annotations;
+        if (annotations) {
+          Object.values(annotations).forEach((a) => {
+            if (a && a.label) {
+              a.label.display = false;
+              a.label.enabled = false; // plugin v2 key, harmless on v3
+            }
+            if (a && a.type === 'point' && typeof a.radius === 'number') {
+              a.radius = Math.min(a.radius, 4);
+            }
+          });
+        }
+
+        // Fewer, horizontal date ticks; smaller axis fonts
+        const scales = renderOptions.scales || {};
+        if (scales.x) {
+          scales.x.ticks = {
+            ...(scales.x.ticks || {}),
+            maxTicksLimit: 4,
+            maxRotation: 0,
+            minRotation: 0,
+            autoSkip: true,
+            font: { size: 9 }
+          };
+          if (scales.x.title) scales.x.title.display = false;
+        }
+        if (scales.y) {
+          scales.y.ticks = {
+            ...(scales.y.ticks || {}),
+            maxTicksLimit: 6,
+            font: { size: 9 }
+          };
+          if (scales.y.title) scales.y.title.display = false;
+        }
+      }
+
       // Create new chart with processed data
       chartRef.current = new window.Chart(ctx, {
         type: chartData.type || 'line',
         data: processedData,
-        options: {
-          ...chartData.options,
-          responsive: true,
-          maintainAspectRatio: false,
-          // Override height
-          height: parseInt(height.replace('px', ''))
-        }
+        options: renderOptions
       });
 
       console.log('✅ Chart.js instance created successfully');

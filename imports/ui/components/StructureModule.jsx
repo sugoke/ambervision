@@ -369,7 +369,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                 fontWeight: '600',
                 borderBottom: '2px solid var(--accent-color)',
                 paddingBottom: '8px'
-              }}>⭐ Orion Memory Configuration</h4>
+              }}>⭐ Orion Configuration</h4>
 
               {/* Essential ORION Parameters */}
               <div style={{
@@ -391,7 +391,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                     onChange={(e) => onParamChange && onParamChange('upperBarrier', parseInt(e.target.value) || 0)}
                   />
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                    Autocall trigger level
+                    Lookback cap: touching it locks the rebate
                   </div>
                 </div>
 
@@ -409,7 +409,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                     onChange={(e) => onParamChange && onParamChange('rebate', parseFloat(e.target.value) || 0)}
                   />
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                    Annual coupon rate
+                    Performance credited if the cap is touched
                   </div>
                 </div>
 

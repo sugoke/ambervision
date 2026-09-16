@@ -54,8 +54,11 @@ export const OrionEvaluator = {
         ...underlying,
         hitUpperBarrier,
         // lowerBarrier of 70 means 70% of initial price (100% - 30% loss)
-        // So compare performance to (barrier - 100) to check if crossed
-        hitLowerBarrier: underlying.performance <= (lowerBarrier - 100),
+        // So compare performance to (barrier - 100) to check if crossed.
+        // No barrier on this product => nothing can be breached.
+        hitLowerBarrier: orionParams.hasLowerBarrier
+          ? underlying.performance <= (lowerBarrier - 100)
+          : false,
         upperBarrier,
         lowerBarrier,
         consideredPerformance,
@@ -85,7 +88,7 @@ export const OrionEvaluator = {
       // Key product features
       features: {
         hasUpperBarrier: orionParams.upperBarrier > 0,
-        hasLowerBarrier: orionParams.lowerBarrier > 0,
+        hasLowerBarrier: orionParams.hasLowerBarrier,
         hasMemoryCoupon: orionParams.couponRate > 0,
         observationFrequency: orionParams.observationFrequency || 'quarterly'
       },
@@ -129,11 +132,35 @@ export const OrionEvaluator = {
     const scheduleParams = product.scheduleParameters || {};
     const structureParams = product.structureParams || product.structureParameters || {};
 
+    // Protection (lower) barrier. Many Orion notes carry NO downside barrier at all —
+    // a 100% capital-guaranteed Orion is protected by the guarantee, not by a barrier.
+    // Never substitute a default here: an invented level would be reported as a real
+    // product term. `null` means "this product has no protection barrier" and every
+    // consumer must branch on hasLowerBarrier rather than assume a number.
+    // `protectionBarrierLevel` is the field the designer / term-sheet extractor writes.
+    const lowerBarrier = structureParams.lowerBarrier
+      ?? structure.lowerBarrier
+      ?? structureParams.protectionBarrierLevel
+      ?? structure.protectionBarrierLevel
+      ?? null;
+    const hasLowerBarrier = lowerBarrier != null && lowerBarrier > 0;
+
+    const upperBarrier = structureParams.upperBarrier ?? structure.upperBarrier ?? 100;
+    const rebate = structureParams.rebate ?? structure.rebate ?? structureParams.couponRate ?? structure.couponRate ?? 8.0;
+    const capitalGuaranteed = structureParams.capitalGuaranteed ?? structure.capitalGuaranteed ?? 100;
+
     return {
-      upperBarrier: structureParams.upperBarrier ?? structure.upperBarrier ?? 100,
-      rebate: structureParams.rebate ?? structure.rebate ?? structureParams.couponRate ?? structure.couponRate ?? 8.0,
-      capitalGuaranteed: structureParams.capitalGuaranteed ?? structure.capitalGuaranteed ?? 100,
-      lowerBarrier: structureParams.lowerBarrier ?? structure.lowerBarrier ?? 70,
+      upperBarrier,
+      upperBarrierFormatted: `${upperBarrier}%`,
+      rebate,
+      rebateFormatted: `${rebate}%`,
+      capitalGuaranteed,
+      capitalGuaranteedFormatted: `${capitalGuaranteed}%`,
+      lowerBarrier,
+      hasLowerBarrier,
+      // Display-ready: reports print this instead of composing `${lowerBarrier}%`,
+      // which rendered a bare "-%" when the product had no barrier.
+      lowerBarrierFormatted: hasLowerBarrier ? `${lowerBarrier}%` : '-',
       couponRate: structureParams.couponRate ?? structure.couponRate ?? structureParams.rebate ?? 0,
       observationFrequency: scheduleParams.observationFrequency ?? structure.observationFrequency ?? 'quarterly',
       memoryCoupon: structureParams.memoryCoupon !== false,
@@ -155,17 +182,31 @@ export const OrionEvaluator = {
 
     // For Orion products:
     // - Capital return = 100% + basket considered performance (capped at rebate if upper barrier hit)
-    // - Lower barrier provides protection: if basket performance < -(100 - lowerBarrier), investor loses
-    const lowerBarrierThreshold = orionParams.lowerBarrier - 100; // e.g., 70% barrier = -30% threshold
+    // - Where a lower barrier exists it provides protection: if the worst performer falls
+    //   below -(100 - lowerBarrier), the investor bears the loss.
+    // - Where NO lower barrier exists, downside is governed solely by the capital
+    //   guarantee floor applied below. Nothing is protected *or* breached, so
+    //   protectionIntact stays null and reports must not render a barrier status.
+    const hasLowerBarrier = orionParams.hasLowerBarrier;
+    const lowerBarrierThreshold = hasLowerBarrier ? orionParams.lowerBarrier - 100 : null;
+    // ?? not ||: a product with an explicit 0% capital guarantee has NO floor.
+    // `|| 100` turned that into full protection and reported a 100% redemption on
+    // a product that can lose principal. Absent value still defaults to 100 in
+    // extractOrionParameters().
+    const minimumCapital = orionParams.capitalGuaranteed ?? 100;
 
     let capitalReturn = 100;
     let capitalExplanation = '';
 
-    // Check if protection is intact (basket performance above lower barrier threshold)
     const worstPerforming = Math.min(...underlyings.map(u => u.performance));
-    const protectionIntact = worstPerforming >= lowerBarrierThreshold;
+    const protectionIntact = hasLowerBarrier ? worstPerforming >= lowerBarrierThreshold : null;
 
-    if (protectionIntact) {
+    if (!hasLowerBarrier) {
+      // No protection barrier on this product: full participation in the basket's
+      // considered performance, floored by the capital guarantee.
+      capitalReturn = 100 + basketConsideredPerformance;
+      capitalExplanation = `No protection barrier — capital floored at the ${minimumCapital}% guarantee`;
+    } else if (protectionIntact) {
       // Protection intact: investor gets 100% + basket considered performance
       capitalReturn = 100 + basketConsideredPerformance;
       capitalExplanation = `Capital protected (worst performer ${worstPerforming >= 0 ? '+' : ''}${worstPerforming.toFixed(2)}% above ${lowerBarrierThreshold}% barrier)`;
@@ -176,10 +217,11 @@ export const OrionEvaluator = {
     }
 
     // Apply minimum capital guarantee floor (e.g., 100% capital guarantee means min return is 100%)
-    const minimumCapital = orionParams.capitalGuaranteed || 100;
     if (capitalReturn < minimumCapital) {
       capitalReturn = minimumCapital;
-      capitalExplanation = `Capital guaranteed at ${minimumCapital}% (barrier breached but principal protected by guarantee)`;
+      capitalExplanation = hasLowerBarrier
+        ? `Capital guaranteed at ${minimumCapital}% (barrier breached but principal protected by guarantee)`
+        : `Capital guaranteed at ${minimumCapital}% (principal protected by guarantee)`;
     }
 
     // Count underlyings that hit upper barrier
@@ -214,10 +256,11 @@ export const OrionEvaluator = {
           ? `No underlyings hit upper barrier (full participation)`
           : `${hitBarrierCount}/${underlyings.length} underlyings hit upper barrier`,
 
-      // Protection status
+      // Protection status — null barrier means the product has none; reports show '-'
+      hasProtectionBarrier: hasLowerBarrier,
       protectionIntact,
-      protectionBarrier: orionParams.lowerBarrier,
-      protectionBarrierFormatted: `${orionParams.lowerBarrier}%`,
+      protectionBarrier: hasLowerBarrier ? orionParams.lowerBarrier : null,
+      protectionBarrierFormatted: hasLowerBarrier ? `${orionParams.lowerBarrier}%` : '-',
 
       // Capital guarantee
       capitalGuaranteed: minimumCapital,

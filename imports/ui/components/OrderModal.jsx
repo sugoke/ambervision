@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
+import { Random } from 'meteor/random';
 import Modal from './common/Modal.jsx';
 import ActionButton from './common/ActionButton.jsx';
-import { ASSET_TYPES, PRICE_TYPES, TRADE_MODES, FX_SUBTYPES, VALIDITY_TYPES, TERM_DEPOSIT_TENORS, EMAIL_TRACE_TYPES, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, ORDER_SOURCE_TYPES, EXECUTION_TYPES, EXECUTION_TYPE_LABELS, FUND_QUANTITY_MODES, OrderFormatters, assetTypeForAssetClass } from '/imports/api/orders';
+import { ASSET_TYPES, PRICE_TYPES, TRADE_MODES, FX_SUBTYPES, VALIDITY_TYPES, TERM_DEPOSIT_TENORS, EMAIL_TRACE_TYPES, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, ORDER_SOURCE_TYPES, EXECUTION_TYPES, EXECUTION_TYPE_LABELS, FUND_QUANTITY_MODES, OPTION_TYPES, DEFAULT_OPTION_CONTRACT_SIZE, OrderFormatters, assetTypeForAssetClass, quotesPriceAsPercent, computeShortCallCoverage } from '/imports/api/orders';
 import { IssuersCollection } from '/imports/api/issuers';
 import FormattedNumberInput from './FormattedNumberInput.jsx';
 import AccountAutocomplete from './AccountAutocomplete.jsx';
@@ -32,6 +33,26 @@ const readAttachment = (file, traceType, defaultMimeType = 'application/octet-st
     reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
     reader.readAsDataURL(file);
   });
+
+/**
+ * One row of a multi-account order. Each client carries their own instruction:
+ * `traceFileKey` points into the modal's file registry (so two accounts of the
+ * same owner can share one email), and the phone fields override the block
+ * defaults when the instruction came by phone.
+ */
+const emptyBulkRow = () => ({
+  clientId: '', bankAccountId: '', quantity: '', accountLabel: '',
+  traceFileKey: null, phoneCallTime: '', phoneCallLine: ''
+});
+
+// Resolve a clientId to its row in the client list. An order may be filed under
+// a legacy user id that has since been absorbed by a client entity, so the row's
+// linkedClientIds are matched too - otherwise those orders render as "N/A".
+const findClientById = (clients, clientId) => {
+  if (!clientId) return undefined;
+  return clients.find(c => c._id === clientId)
+    || clients.find(c => Array.isArray(c.linkedClientIds) && c.linkedClientIds.includes(clientId));
+};
 
 /**
  * OrderModal - Multi-step wizard for creating buy/sell orders
@@ -136,6 +157,11 @@ const OrderModal = ({
   const [broker, setBroker] = useState('');
   const [issuerId, setIssuerId] = useState('');
   const [termsheetFile, setTermsheetFile] = useState(null);
+  // Term sheet already stored against this ISIN's product, if any. Structured
+  // products in the system were created from their term sheet, so re-uploading
+  // the same PDF to place an order is busywork — the stored copy is offered
+  // instead and its bytes are pulled at submit time. { filename, sizeBytes, ... }
+  const [productTermsheet, setProductTermsheet] = useState(null);
   const [settlementCurrency, setSettlementCurrency] = useState('');
   const [underlyings, setUnderlyings] = useState('');
 
@@ -195,6 +221,29 @@ const OrderModal = ({
   const [depositCurrency, setDepositCurrency] = useState('EUR');
   const [depositAction, setDepositAction] = useState('increase'); // 'increase' or 'decrease'
 
+  // Listed option-specific. The underlying comes from the normal security
+  // search (it is a real equity); everything below describes the contract
+  // written on it, because there is no option feed to look it up in.
+  const [optionType, setOptionType] = useState(OPTION_TYPES.CALL);
+  const [optionStrike, setOptionStrike] = useState('');
+  const [optionExpiry, setOptionExpiry] = useState('');
+  const [optionContractSize, setOptionContractSize] = useState(String(DEFAULT_OPTION_CONTRACT_SIZE));
+  const [optionExchange, setOptionExchange] = useState('');
+  // The EOD chain for the underlying (US listings only), or {available:false}.
+  // When it loads, strike and expiry become pickers and the contract carries
+  // its OCC symbol and the end-of-day quote the desk saw.
+  const [optionChain, setOptionChain] = useState(null);
+  const [isLoadingChain, setIsLoadingChain] = useState(false);
+  const [optionManualEntry, setOptionManualEntry] = useState(false);
+  const [optionContractSymbol, setOptionContractSymbol] = useState('');
+  const [optionQuote, setOptionQuote] = useState(null);
+  // Short-call cover. Previewed locally against the holdings already loaded for
+  // this account, then confirmed once by the server before the review step so
+  // contracts already written by other live orders are counted too.
+  const [coverageCheck, setCoverageCheck] = useState(null);
+  const [isCheckingCoverage, setIsCheckingCoverage] = useState(false);
+  const [coverageJustification, setCoverageJustification] = useState('');
+
   // Step 3: Account Selection
   const [selectedClientId, setSelectedClientId] = useState('');
   const [selectedBankAccountId, setSelectedBankAccountId] = useState('');
@@ -205,15 +254,16 @@ const OrderModal = ({
 
   // Bulk mode state
   const [isBulkMode, setIsBulkMode] = useState(bulkMode);
-  const [bulkOrders, setBulkOrders] = useState([{ clientId: '', bankAccountId: '', quantity: '', accountLabel: '' }]);
+  const [bulkOrders, setBulkOrders] = useState([emptyBulkRow()]);
   const [bulkAccountsMap, setBulkAccountsMap] = useState({});
   const [bulkAccountsLoading, setBulkAccountsLoading] = useState({});
   const [bulkCashBalances, setBulkCashBalances] = useState({});
-  const [bulkOrderFiles, setBulkOrderFiles] = useState({});  // { rowIndex: File }
+  // Client instruction files of a multi-account order, keyed so a row references
+  // a file by key rather than by position (rows can be removed; keys survive).
+  const [bulkTraceFiles, setBulkTraceFiles] = useState({});  // { key: File }
 
-  // Client order email attachments (single file for single mode, array for bulk)
+  // Client order email attachment (single mode)
   const [clientOrderFile, setClientOrderFile] = useState(null);
-  const [clientOrderFiles, setClientOrderFiles] = useState([]);
   // Creator attests they will attach the client order later (mobile / technical-issue bypass).
   // Validator must then tick a paired attestation in the four-eyes review.
   const [deferAttachment, setDeferAttachment] = useState(false);
@@ -416,34 +466,49 @@ const OrderModal = ({
     }
   }, [assetType]);
 
+  // Sum of the nominals typed on the block's rows - the quantity a bulk order
+  // trades, where a single order has `quantity`.
+  const bulkTotalQuantity = bulkOrders
+    .filter(o => o.clientId && o.bankAccountId)
+    .reduce((sum, o) => sum + (parseFloat(o.quantity) || 0), 0);
+
   // Auto-calculate estimated value from quantity and price
   useEffect(() => {
     if (estimatedValueManuallyEdited) return;
 
-    const qty = parseFloat(quantity);
+    const qty = isBulkMode ? bulkTotalQuantity : parseFloat(quantity);
     if (!qty || qty <= 0) {
       setEstimatedValue('');
       return;
     }
 
+    const isOption = assetType === ASSET_TYPES.OPTION;
+    // An option premium is quoted per share, so the consideration is
+    // premium x contracts x contract size. Without the multiplier 200 contracts
+    // at 2.50 reads as 500 instead of 50,000 - and that figure feeds the
+    // allocation check, the cash-exceeded test and the order ticket.
+    const multiplier = isOption ? (parseFloat(optionContractSize) || DEFAULT_OPTION_CONTRACT_SIZE) : 1;
+    const isPercentage = quotesPriceAsPercent(assetType);
+
     if (priceType === PRICE_TYPES.LIMIT) {
       const price = parseFloat(limitPrice);
       if (price && price > 0) {
-        const isPercentage = assetType === ASSET_TYPES.STRUCTURED_PRODUCT || assetType === ASSET_TYPES.BOND;
-        const value = isPercentage ? qty * price / 100 : qty * price;
+        const value = isPercentage ? qty * price / 100 : qty * price * multiplier;
         setEstimatedValue(value.toFixed(2));
       }
-    } else if (indicativePrice && indicativePrice > 0) {
-      // Use indicative price from holding or EOD
-      const isPercentage = assetType === ASSET_TYPES.STRUCTURED_PRODUCT || assetType === ASSET_TYPES.BOND;
-      const value = isPercentage ? qty * indicativePrice : qty * indicativePrice;
-      setEstimatedValue(value.toFixed(2));
-    } else if (prefillData?.marketPrice && prefillData.marketPrice > 0) {
-      const isPercentage = prefillData?.priceType === 'percentage';
-      const value = isPercentage ? qty * prefillData.marketPrice : qty * prefillData.marketPrice;
-      setEstimatedValue(value.toFixed(2));
+    } else if (isOption && optionQuote?.mid > 0) {
+      // Market order on a chain contract: the end-of-day mid is the best
+      // reference we have for the premium.
+      setEstimatedValue((qty * optionQuote.mid * multiplier).toFixed(2));
+    } else if (indicativePrice && indicativePrice > 0 && !isOption) {
+      // Use indicative price from holding or EOD. Skipped for options: the
+      // indicative price is the UNDERLYING's, and pricing a premium at the
+      // underlying's level would be wrong by orders of magnitude.
+      setEstimatedValue((qty * indicativePrice).toFixed(2));
+    } else if (prefillData?.marketPrice && prefillData.marketPrice > 0 && !isOption) {
+      setEstimatedValue((qty * prefillData.marketPrice).toFixed(2));
     }
-  }, [quantity, priceType, limitPrice, prefillData, estimatedValueManuallyEdited, indicativePrice, assetType]);
+  }, [quantity, isBulkMode, bulkTotalQuantity, priceType, limitPrice, prefillData, estimatedValueManuallyEdited, indicativePrice, assetType, optionContractSize, optionQuote]);
 
   // Reset form when modal closes
   useEffect(() => {
@@ -468,6 +533,7 @@ const OrderModal = ({
       setAttachedTakeProfit('');
       setAttachedStopLoss('');
       setEstimatedValue('');
+      setCapitalProtected(false);
       setNotes('');
       setBankComment('');
       setBroker('');
@@ -479,9 +545,10 @@ const OrderModal = ({
       setSelectedEntityId('');
       setClientBankAccounts([]);
       setIsBulkMode(bulkMode);
-      setBulkOrders([{ clientId: '', bankAccountId: '', quantity: '', accountLabel: '' }]);
+      setBulkOrders([emptyBulkRow()]);
       setBulkAccountsMap({});
       setBulkAccountsLoading({});
+      setBulkTraceFiles({});
       setEstimatedValueManuallyEdited(false);
       // Reset FX fields
       setFxSubtype(FX_SUBTYPES.SPOT);
@@ -507,9 +574,23 @@ const OrderModal = ({
       setDepositTenor('');
       setDepositCurrency('EUR');
       setDepositAction('increase');
+      // Reset listed option fields
+      setOptionType(OPTION_TYPES.CALL);
+      setOptionStrike('');
+      setOptionExpiry('');
+      setOptionContractSize(String(DEFAULT_OPTION_CONTRACT_SIZE));
+      setOptionExchange('');
+      setOptionChain(null);
+      setIsLoadingChain(false);
+      setOptionManualEntry(false);
+      setOptionContractSymbol('');
+      setOptionQuote(null);
+      setCoverageCheck(null);
+      setIsCheckingCoverage(false);
+      setCoverageJustification('');
       // Reset client order attachments
       setClientOrderFile(null);
-      setClientOrderFiles([]);
+      setBulkTraceFiles({});
       setDeferAttachment(false);
       // Reset price data
       setIndicativePrice(null);
@@ -545,7 +626,12 @@ const OrderModal = ({
       try {
         const sessionId = getSessionId();
         // Search in securities metadata (which includes products, equities, etc.)
-        const results = await Meteor.callAsync('securities.search', { query: searchQuery, limit: 15, assetType }, sessionId);
+        // For an option the search targets its UNDERLYING, which is an
+        // ordinary equity. Passing 'option' through would match neither of
+        // securities.search's hardcoded buckets, so it would skip the EOD and
+        // product sources and return almost nothing.
+        const searchAssetType = assetType === ASSET_TYPES.OPTION ? ASSET_TYPES.EQUITY : assetType;
+        const results = await Meteor.callAsync('securities.search', { query: searchQuery, limit: 15, assetType: searchAssetType }, sessionId);
         setSearchResults(results || []);
       } catch (err) {
         console.error('Error searching securities:', err);
@@ -561,6 +647,31 @@ const OrderModal = ({
       }
     };
   }, [searchQuery, selectedSecurity, assetType]);
+
+  // Look up the term sheet already stored against the selected structured
+  // product, so a document the app already holds doesn't have to be uploaded
+  // again to place an order. Metadata only here; the bytes are fetched on submit.
+  useEffect(() => {
+    const isin = selectedSecurity?.isin || prefillData?.isin;
+    if (!isOpen || assetType !== ASSET_TYPES.STRUCTURED_PRODUCT || mode === 'sell' || !isin) {
+      setProductTermsheet(null);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const found = await Meteor.callAsync('products.getTermSheetByIsin', isin, getSessionId(), false);
+        if (!cancelled) setProductTermsheet(found || null);
+      } catch (err) {
+        // Not being able to look it up just means the desk uploads the PDF.
+        console.error('Error looking up stored term sheet:', err);
+        if (!cancelled) setProductTermsheet(null);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [isOpen, assetType, mode, selectedSecurity?.isin, prefillData?.isin]);
 
   // Load bank accounts when client is selected
   useEffect(() => {
@@ -715,6 +826,69 @@ const OrderModal = ({
     }
   };
 
+  // Load the option chain whenever the underlying changes on an option order.
+  // A typed contract is always allowed; the chain just makes the common case
+  // (a US name) a pick instead of a transcription.
+  useEffect(() => {
+    if (assetType !== ASSET_TYPES.OPTION || !selectedSecurity) {
+      setOptionChain(null);
+      return;
+    }
+    let cancelled = false;
+    setIsLoadingChain(true);
+    setOptionChain(null);
+    setOptionContractSymbol('');
+    setOptionQuote(null);
+    (async () => {
+      try {
+        const chain = await Meteor.callAsync('orders.getOptionChain', {
+          underlyingTicker: selectedSecurity.ticker || undefined,
+          underlyingIsin: selectedSecurity.isin || undefined,
+          sessionId: getSessionId()
+        });
+        if (cancelled) return;
+        setOptionChain(chain || { available: false, reason: 'No option feed' });
+        // Fall back to typing when there is nothing to pick from.
+        setOptionManualEntry(!(chain && chain.available));
+      } catch (err) {
+        if (cancelled) return;
+        console.warn('Option chain unavailable:', err.message);
+        setOptionChain({ available: false, reason: err.reason || 'Option feed unavailable' });
+        setOptionManualEntry(true);
+      } finally {
+        if (!cancelled) setIsLoadingChain(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [assetType, selectedSecurity?.isin, selectedSecurity?.ticker]);
+
+  // Contracts of the loaded chain for the current side + expiry, sorted by strike.
+  const chainContractsForExpiry = (expiry, type = optionType) => {
+    if (!optionChain?.available || !expiry) return [];
+    const e = optionChain.expirations.find(x => x.expirationDate === expiry);
+    if (!e) return [];
+    return type === OPTION_TYPES.PUT ? e.puts : e.calls;
+  };
+
+  // Pick one contract from the chain: strike, symbol, quote and size in one go,
+  // so the four can never disagree with each other.
+  const applyChainContract = (contract) => {
+    if (!contract) {
+      setOptionContractSymbol('');
+      setOptionQuote(null);
+      return;
+    }
+    setOptionStrike(String(contract.strike));
+    setOptionContractSymbol(contract.contractName || '');
+    setOptionQuote({
+      bid: contract.bid, ask: contract.ask, last: contract.last, mid: contract.mid,
+      impliedVolatility: contract.impliedVolatility, delta: contract.delta,
+      openInterest: contract.openInterest, updatedAt: contract.updatedAt || null, source: 'eod'
+    });
+    if (contract.contractSize) setOptionContractSize(String(contract.contractSize));
+    if (!optionExchange) setOptionExchange('US');
+  };
+
   // Look up Ambervision product data by ISIN to enrich order fields
   const enrichFromProduct = async (isin) => {
     if (!isin) return;
@@ -725,6 +899,7 @@ const OrderModal = ({
         if (product.issuer) setBroker(product.issuer);
         if (product.currency) setSettlementCurrency(product.currency);
         if (product.currency) setIndicativePriceCurrency(product.currency);
+        if (typeof product.capitalProtected === 'boolean') setCapitalProtected(product.capitalProtected);
       }
     } catch (err) {
       console.warn('Could not look up product:', err.message);
@@ -736,8 +911,11 @@ const OrderModal = ({
     setSearchQuery(security.name || security.ticker || security.isin);
     setSearchResults([]);
 
-    // Auto-detect asset type
-    if (security.assetClass) {
+    // Auto-detect asset type - except for an option, where the security being
+    // picked is the UNDERLYING (an equity). Letting it retype the order would
+    // turn the option into an equity sell the moment the underlying is chosen,
+    // hide the contract block, and bring the position picker back.
+    if (security.assetClass && assetType !== ASSET_TYPES.OPTION) {
       setAssetType(assetTypeForAssetClass(security.assetClass));
     }
 
@@ -749,6 +927,9 @@ const OrderModal = ({
     if (security.source === 'product') {
       if (security.issuer) setBroker(security.issuer);
       if (security.denomination) setQuantity(String(security.denomination));
+      // A known note tells us whether its capital is guaranteed; the toggle
+      // stays editable for the cases the record cannot decide.
+      if (typeof security.capitalProtected === 'boolean') setCapitalProtected(security.capitalProtected);
     } else {
       // For any non-product source, try to enrich from Ambervision by ISIN
       if (security.isin && security.isin.length >= 10) {
@@ -846,14 +1027,51 @@ const OrderModal = ({
           return true;
         }
         if (!selectedSecurity || !selectedSecurity.isin) {
-          setError('Please select a security with a valid ISIN');
+          setError(assetType === ASSET_TYPES.OPTION
+            ? 'Pick the underlying first: type its name, ISIN or ticker in the Underlying box and choose it from the list. The strike, expiry and contract size appear once it is chosen.'
+            : 'Please select a security with a valid ISIN');
           return false;
+        }
+        if (assetType === ASSET_TYPES.OPTION) {
+          if (!optionType) {
+            setError('Please choose Call or Put');
+            return false;
+          }
+          if (!optionStrike || parseFloat(optionStrike) <= 0) {
+            setError('Please enter a strike price');
+            return false;
+          }
+          if (!optionExpiry) {
+            setError('Please enter an expiry date');
+            return false;
+          }
+          // An expiry in the past is always a typo, and the whole order would be
+          // meaningless - worth stopping at entry rather than at the bank.
+          const expiry = new Date(optionExpiry);
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          if (isNaN(expiry.getTime()) || expiry < today) {
+            setError('Expiry must be today or later');
+            return false;
+          }
+          if (!optionContractSize || parseFloat(optionContractSize) <= 0) {
+            setError('Please enter the contract size (shares per contract)');
+            return false;
+          }
         }
         return true;
 
       case 3: // Order Details
         if (!isBulkMode && (!quantity || parseFloat(quantity) <= 0)) {
-          setError(assetType === ASSET_TYPES.FX ? 'Please enter a valid amount' : assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Please enter a valid amount' : 'Please enter a valid quantity');
+          setError(assetType === ASSET_TYPES.FX ? 'Please enter a valid amount'
+            : assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Please enter a valid amount'
+            : assetType === ASSET_TYPES.OPTION ? 'Please enter the number of contracts'
+            : 'Please enter a valid quantity');
+          return false;
+        }
+        // Contracts are indivisible.
+        if (!isBulkMode && assetType === ASSET_TYPES.OPTION && !Number.isInteger(parseFloat(quantity))) {
+          setError('Contracts must be a whole number');
           return false;
         }
         if (isBulkMode) {
@@ -899,10 +1117,13 @@ const OrderModal = ({
         // and lives on the original buy order / product record.
         if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && mode !== 'sell') {
           if (!issuerId) {
-            setError('Please select the issuer for this structured product.');
+            setError('Please select the counterparty for this structured product.');
             return false;
           }
-          if (!termsheetFile) {
+          // A term sheet already on file for this ISIN satisfies the requirement —
+          // it is the same document, and it is attached to the order for real
+          // below, so the order's evidence trail is identical either way.
+          if (!termsheetFile && !productTermsheet) {
             setError('Please attach the termsheet PDF for this structured product.');
             return false;
           }
@@ -912,8 +1133,12 @@ const OrderModal = ({
         // attached now (mobile/technical issue); bulk mode still requires real files.
         if (orderSource === ORDER_SOURCE_TYPES.EMAIL) {
           if (isBulkMode) {
-            if (clientOrderFiles.length === 0 && Object.keys(bulkOrderFiles).length === 0) {
-              setError('Please attach the client order email or switch to phone confirmation');
+            // Every client needs their own instruction on file.
+            const missing = validBulkRows()
+              .filter(({ row }) => !row.traceFileKey || !bulkTraceFiles[row.traceFileKey])
+              .map(({ row }) => bulkRowClientName(row));
+            if (missing.length > 0) {
+              setError(`Missing client instruction for: ${missing.join(', ')}`);
               return false;
             }
           } else if (!clientOrderFile && !deferAttachment) {
@@ -921,7 +1146,15 @@ const OrderModal = ({
             return false;
           }
         } else if (orderSource === ORDER_SOURCE_TYPES.PHONE) {
-          if (!phoneCallTime) {
+          if (isBulkMode) {
+            const missing = validBulkRows()
+              .filter(({ row }) => !rowPhoneCallTime(row))
+              .map(({ row }) => bulkRowClientName(row));
+            if (missing.length > 0) {
+              setError(`Missing call time for: ${missing.join(', ')}`);
+              return false;
+            }
+          } else if (!phoneCallTime) {
             setError('Please enter the phone call date/time');
             return false;
           }
@@ -960,6 +1193,38 @@ const OrderModal = ({
           setAllocationCheck(null);
         }
       }
+
+      // Confirm short-call cover with the server on the way to review. The local
+      // preview can only see this account's holdings; only the server knows how
+      // many contracts other live orders have already written against them.
+      if (currentStep === 3 && !isBulkMode
+        && assetType === ASSET_TYPES.OPTION
+        && optionType === OPTION_TYPES.CALL
+        && mode === 'sell'
+        && selectedSecurity?.isin && selectedClientId && selectedBankAccountId
+        && parseFloat(quantity) > 0) {
+        setIsCheckingCoverage(true);
+        try {
+          const result = await Meteor.callAsync('orders.checkShortCallCoverage', {
+            clientId: selectedClientId,
+            bankAccountId: selectedBankAccountId,
+            underlyingIsin: selectedSecurity.isin,
+            underlyingName: selectedSecurity.name || selectedSecurity.ticker || undefined,
+            contracts: parseFloat(quantity),
+            contractSize: parseFloat(optionContractSize) || DEFAULT_OPTION_CONTRACT_SIZE,
+            sessionId: getSessionId()
+          });
+          setCoverageCheck(result);
+        } catch (err) {
+          // Cover flags, it never blocks - fall back to the local preview.
+          console.error('Coverage check failed:', err);
+          setCoverageCheck(null);
+        }
+        setIsCheckingCoverage(false);
+      } else if (currentStep === 3) {
+        setCoverageCheck(null);
+      }
+
       setCurrentStep(prev => Math.min(prev + 1, 4));
     }
   };
@@ -967,6 +1232,31 @@ const OrderModal = ({
   const handleBack = () => {
     setError(null);
     setCurrentStep(prev => Math.max(prev - 1, 1));
+  };
+
+  /**
+   * The initial-termsheet attachment for a structured-product order: the file
+   * the user picked, or the copy already stored against the product. Either way
+   * the order gets its own evidence file — the stored copy is fetched, not
+   * referenced, so deleting it later can't hollow out the order's trace.
+   */
+  const buildTermsheetAttachment = async () => {
+    if (termsheetFile) {
+      return readAttachment(termsheetFile, EMAIL_TRACE_TYPES.INITIAL_TERMSHEET, 'application/pdf');
+    }
+    if (!productTermsheet) return null;
+
+    const isin = selectedSecurity?.isin || prefillData?.isin;
+    const stored = await Meteor.callAsync('products.getTermSheetByIsin', isin, getSessionId(), true);
+    if (!stored?.base64Data) {
+      throw new Error('The stored term sheet could not be read. Please attach the PDF.');
+    }
+    return {
+      traceType: EMAIL_TRACE_TYPES.INITIAL_TERMSHEET,
+      fileName: stored.filename,
+      base64Data: stored.base64Data,
+      mimeType: 'application/pdf'
+    };
   };
 
   const handleSubmit = async () => {
@@ -995,6 +1285,12 @@ const OrderModal = ({
           const tenorLabel = TERM_DEPOSIT_TENORS.find(t => t.value === depositTenor)?.label || depositTenor;
           bulkSecurityName = `Term Deposit ${depositCurrency} ${tenorLabel}`;
           bulkCurrency = depositCurrency || 'EUR';
+        } else if (assetType === ASSET_TYPES.OPTION) {
+          // A listed contract has no tradeable ISIN, so the order carries the
+          // 'OPT' marker and the underlying travels in its own fields.
+          bulkIsin = 'OPT';
+          bulkSecurityName = buildOptionContractName();
+          bulkCurrency = selectedSecurity.currency || 'USD';
         } else {
           bulkIsin = selectedSecurity.isin;
           bulkSecurityName = selectedSecurity.name || selectedSecurity.ticker;
@@ -1002,17 +1298,25 @@ const OrderModal = ({
         }
 
         // Evidence travels with the create call so no order in the block is queued
-        // for validation before its files exist: emails covering the whole block go
-        // in `attachments`, per-account emails ride along on their own row.
+        // for validation before its files exist. Only the termsheet is shared by
+        // the block; each client's instruction is theirs alone and is referenced
+        // by key from their row, so a file covering two accounts travels once.
         const sharedAttachments = [];
-        for (const file of clientOrderFiles) {
-          sharedAttachments.push(await readAttachment(file, EMAIL_TRACE_TYPES.CLIENT_ORDER));
-        }
-        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && termsheetFile) {
-          sharedAttachments.push(await readAttachment(termsheetFile, EMAIL_TRACE_TYPES.INITIAL_TERMSHEET, 'application/pdf'));
+        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT) {
+          const termsheetAttachment = await buildTermsheetAttachment();
+          if (termsheetAttachment) sharedAttachments.push(termsheetAttachment);
         }
 
-        const bulkRows = await Promise.all(validOrders.map(async (o) => {
+        const isPhone = orderSource === ORDER_SOURCE_TYPES.PHONE;
+        const referencedKeys = isPhone
+          ? []
+          : [...new Set(validOrders.map(o => o.traceFileKey).filter(k => k && bulkTraceFiles[k]))];
+        const clientOrderFilesPayload = await Promise.all(referencedKeys.map(async (key) => {
+          const read = await readAttachment(bulkTraceFiles[key], EMAIL_TRACE_TYPES.CLIENT_ORDER);
+          return { key, fileName: read.fileName, base64Data: read.base64Data, mimeType: read.mimeType };
+        }));
+
+        const bulkRows = validOrders.map((o) => {
           const rowIdx = bulkOrders.indexOf(o);
           const rowAccounts = bulkAccountsMap[rowIdx] || [];
           const account = rowAccounts.find(a => a._id === o.bankAccountId);
@@ -1025,12 +1329,14 @@ const OrderModal = ({
           if (account?.accountNumber) {
             orderItem.portfolioCode = account.accountNumber;
           }
-          const rowFile = bulkOrderFiles[rowIdx];
-          if (rowFile) {
-            orderItem.attachments = [await readAttachment(rowFile, EMAIL_TRACE_TYPES.CLIENT_ORDER)];
+          if (isPhone) {
+            if (o.phoneCallTime) orderItem.phoneCallTime = o.phoneCallTime;
+            if (o.phoneCallLine) orderItem.phoneCallLine = o.phoneCallLine.trim();
+          } else if (o.traceFileKey) {
+            orderItem.clientOrderFileKey = o.traceFileKey;
           }
           return orderItem;
-        }));
+        });
 
         const bulkOrderData = {
           orderType: mode,
@@ -1045,6 +1351,13 @@ const OrderModal = ({
         // Add optional fields only if they have values
         if ((priceType === PRICE_TYPES.LIMIT || priceType === PRICE_TYPES.STOP_LIMIT) && limitPrice) {
           bulkOrderData.limitPrice = parseFloat(limitPrice);
+        }
+        // Block consideration; the server prorates it onto each row by nominal
+        if (mode === 'buy' && parseFloat(estimatedValue) > 0) {
+          bulkOrderData.estimatedValue = parseFloat(estimatedValue);
+        }
+        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && capitalProtected) {
+          bulkOrderData.capitalProtected = true;
         }
         if (notes && notes.trim()) {
           bulkOrderData.notes = notes.trim();
@@ -1068,6 +1381,23 @@ const OrderModal = ({
         if (underlyings && underlyings.trim()) {
           bulkOrderData.underlyings = underlyings.trim();
         }
+        // Listed option contract
+        if (assetType === ASSET_TYPES.OPTION) {
+          bulkOrderData.optionType = optionType;
+          bulkOrderData.optionStrike = parseFloat(optionStrike);
+          bulkOrderData.optionExpiry = optionExpiry;
+          bulkOrderData.optionContractSize = parseFloat(optionContractSize) || DEFAULT_OPTION_CONTRACT_SIZE;
+          bulkOrderData.optionUnderlyingIsin = selectedSecurity.isin;
+          bulkOrderData.optionUnderlyingName = selectedSecurity.name || selectedSecurity.ticker || '';
+          if (selectedSecurity.ticker) bulkOrderData.optionUnderlyingTicker = selectedSecurity.ticker;
+          if (optionExchange && optionExchange.trim()) bulkOrderData.optionExchange = optionExchange.trim();
+          // Only when picked from the chain - a typed contract has neither.
+          if (!optionManualEntry && optionContractSymbol) {
+            bulkOrderData.optionContractSymbol = optionContractSymbol;
+            if (optionQuote) bulkOrderData.optionQuoteAtEntry = optionQuote;
+          }
+        }
+
         if (assetType === ASSET_TYPES.FUND) {
           bulkOrderData.fundQuantityMode = fundQuantityMode;
         }
@@ -1091,6 +1421,7 @@ const OrderModal = ({
         const result = await Meteor.callAsync('orders.createBulk', {
           bulkOrderData,
           ...(sharedAttachments.length > 0 ? { attachments: sharedAttachments } : {}),
+          ...(clientOrderFilesPayload.length > 0 ? { clientOrderFiles: clientOrderFilesPayload } : {}),
           sessionId
         });
 
@@ -1121,6 +1452,12 @@ const OrderModal = ({
           const tenorLabel = TERM_DEPOSIT_TENORS.find(t => t.value === depositTenor)?.label || depositTenor;
           orderSecurityName = `Term Deposit ${depositCurrency} ${tenorLabel}`;
           orderCurrency = depositCurrency || 'EUR';
+        } else if (assetType === ASSET_TYPES.OPTION) {
+          // A listed contract has no tradeable ISIN, so the order carries the
+          // 'OPT' marker and the underlying travels in its own fields.
+          orderIsin = 'OPT';
+          orderSecurityName = buildOptionContractName();
+          orderCurrency = selectedSecurity.currency || 'USD';
         } else {
           orderIsin = selectedSecurity.isin;
           orderSecurityName = selectedSecurity.name || selectedSecurity.ticker;
@@ -1211,6 +1548,28 @@ const OrderModal = ({
           orderData.depositCurrency = depositCurrency;
           orderData.depositAction = depositAction;
         }
+        // Listed option contract
+        if (assetType === ASSET_TYPES.OPTION) {
+          orderData.optionType = optionType;
+          orderData.optionStrike = parseFloat(optionStrike);
+          orderData.optionExpiry = optionExpiry;
+          orderData.optionContractSize = parseFloat(optionContractSize) || DEFAULT_OPTION_CONTRACT_SIZE;
+          orderData.optionUnderlyingIsin = selectedSecurity.isin;
+          orderData.optionUnderlyingName = selectedSecurity.name || selectedSecurity.ticker || '';
+          if (selectedSecurity.ticker) orderData.optionUnderlyingTicker = selectedSecurity.ticker;
+          if (optionExchange && optionExchange.trim()) orderData.optionExchange = optionExchange.trim();
+          // Only when picked from the chain - a typed contract has neither.
+          if (!optionManualEntry && optionContractSymbol) {
+            orderData.optionContractSymbol = optionContractSymbol;
+            if (optionQuote) orderData.optionQuoteAtEntry = optionQuote;
+          }
+        }
+        // The desk's reason for writing a call the position doesn't cover.
+        // Optional by design - the order is flagged either way and the
+        // validator decides.
+        if (assetType === ASSET_TYPES.OPTION && coverageJustification && coverageJustification.trim()) {
+          orderData.coverageJustification = coverageJustification.trim();
+        }
         // Capital protected flag for structured products
         if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && capitalProtected) {
           orderData.capitalProtected = true;
@@ -1261,8 +1620,9 @@ const OrderModal = ({
         if (clientOrderFile) {
           attachments.push(await readAttachment(clientOrderFile, EMAIL_TRACE_TYPES.CLIENT_ORDER));
         }
-        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && termsheetFile) {
-          attachments.push(await readAttachment(termsheetFile, EMAIL_TRACE_TYPES.INITIAL_TERMSHEET, 'application/pdf'));
+        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT) {
+          const termsheetAttachment = await buildTermsheetAttachment();
+          if (termsheetAttachment) attachments.push(termsheetAttachment);
         }
 
         const result = await Meteor.callAsync('orders.create', {
@@ -1285,8 +1645,77 @@ const OrderModal = ({
 
   // Bulk order management
   const addBulkOrder = () => {
-    setBulkOrders([...bulkOrders, { clientId: '', bankAccountId: '', quantity: '', accountLabel: '' }]);
+    setBulkOrders([...bulkOrders, emptyBulkRow()]);
   };
+
+  // ---- Per-client instruction registry (multi-account orders) ----
+
+  /** Display name of the client on a bulk row, matching the account picker. */
+  const bulkRowClientName = (row) => {
+    const client = findClientById(availableClients, row.clientId);
+    if (!client) return row.accountLabel || 'N/A';
+    return client.profile?.clientType === 'company' && client.profile?.companyName
+      ? client.profile.companyName
+      : `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() || client.username;
+  };
+
+  /** Rows that name a client and an account, with their original index kept. */
+  const validBulkRows = () => bulkOrders
+    .map((row, origIdx) => ({ row, origIdx }))
+    .filter(({ row }) => row.clientId && row.bankAccountId);
+
+  /** Validate and register files; returns the keys of the ones accepted. */
+  const addTraceFiles = (files) => {
+    const accepted = [];
+    for (const file of files) {
+      const ext = '.' + file.name.split('.').pop().toLowerCase();
+      if (!EMAIL_TRACE_ACCEPTED_TYPES.includes(ext)) {
+        setError(`File type ${ext} not accepted. Use: ${EMAIL_TRACE_ACCEPTED_TYPES.join(', ')}`);
+        return [];
+      }
+      if (file.size > EMAIL_TRACE_MAX_SIZE) {
+        setError(`${file.name} exceeds maximum size of 15MB`);
+        return [];
+      }
+      accepted.push({ key: Random.id(), file });
+    }
+    if (accepted.length > 0) {
+      setBulkTraceFiles(prev => {
+        const next = { ...prev };
+        accepted.forEach(({ key, file }) => { next[key] = file; });
+        return next;
+      });
+      setError(null);
+    }
+    return accepted.map(a => a.key);
+  };
+
+  const assignTraceFile = (origIdx, key) => {
+    setBulkOrders(prev => prev.map((row, i) => (i === origIdx ? { ...row, traceFileKey: key || null } : row)));
+  };
+
+  /** Drop a file and detach it from every row that pointed at it. */
+  const removeTraceFile = (key) => {
+    setBulkTraceFiles(prev => { const next = { ...prev }; delete next[key]; return next; });
+    setBulkOrders(prev => prev.map(row => (row.traceFileKey === key ? { ...row, traceFileKey: null } : row)));
+  };
+
+  const applyTraceFileToUnassigned = (key) => {
+    setBulkOrders(prev => prev.map(row => (
+      row.clientId && row.bankAccountId && !row.traceFileKey ? { ...row, traceFileKey: key } : row
+    )));
+  };
+
+  const traceFileUsageCount = (key) => bulkOrders.filter(r => r.clientId && r.bankAccountId && r.traceFileKey === key).length;
+
+  /** Copy the block-level phone defaults onto every row. */
+  const applyPhoneToAllRows = () => {
+    setBulkOrders(prev => prev.map(row => ({ ...row, phoneCallTime, phoneCallLine })));
+  };
+
+  /** Effective phone instruction of a row: its own value, else the block default. */
+  const rowPhoneCallTime = (row) => row.phoneCallTime || phoneCallTime;
+  const rowPhoneCallLine = (row) => row.phoneCallLine || phoneCallLine;
 
   const removeBulkOrder = (index) => {
     if (bulkOrders.length > 1) {
@@ -1576,7 +2005,9 @@ const OrderModal = ({
     <div>
       {assetType !== ASSET_TYPES.FX && assetType !== ASSET_TYPES.TERM_DEPOSIT && (
       <div style={styles.formGroup}>
-        <label style={styles.label}>Search Security</label>
+        <label style={styles.label}>
+          {assetType === ASSET_TYPES.OPTION ? 'Underlying' : 'Search Security'}
+        </label>
         {selectedSecurity ? (
           <div style={styles.selectedSecurity}>
             <div>
@@ -1882,6 +2313,220 @@ const OrderModal = ({
           )}
         </div>
       )}
+
+      {/* Listed option contract. The underlying is picked with the normal
+          security search above. For a US name the EOD chain turns strike and
+          expiry into pickers and pins the OCC symbol; anything else (Eurex,
+          Euronext...) is typed, exactly as before. */}
+      {assetType === ASSET_TYPES.OPTION && selectedSecurity && (
+        <div style={{ marginTop: '16px', padding: '14px', background: 'var(--bg-secondary)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '12px', gap: '10px' }}>
+            <div style={{ fontSize: '13px', fontWeight: '700', color: 'var(--text-primary)' }}>
+              Option Contract
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'right' }}>
+              {isLoadingChain
+                ? 'Loading option chain...'
+                : optionChain?.available
+                  ? <>
+                      Chain: <strong>{optionChain.symbol}</strong>
+                      {optionChain.underlyingAsOf ? ` · EOD ${optionChain.underlyingAsOf}` : ''}
+                      {' · '}
+                      <span
+                        style={{ color: 'var(--accent-color)', cursor: 'pointer' }}
+                        onClick={() => {
+                          const next = !optionManualEntry;
+                          setOptionManualEntry(next);
+                          if (next) { setOptionContractSymbol(''); setOptionQuote(null); }
+                        }}
+                      >
+                        {optionManualEntry ? 'Pick from chain' : 'Enter manually'}
+                      </span>
+                    </>
+                  : (optionChain?.reason || 'No option feed - enter the contract')}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: '12px' }}>
+            <label style={styles.label}>Type *</label>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {[
+                { value: OPTION_TYPES.CALL, label: 'Call' },
+                { value: OPTION_TYPES.PUT, label: 'Put' }
+              ].map(opt => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => {
+                    setOptionType(opt.value);
+                    if (optionChain?.available && !optionManualEntry && optionExpiry && optionStrike) {
+                      // Same strike on the other side, if it exists.
+                      const match = chainContractsForExpiry(optionExpiry, opt.value)
+                        .find(c => c.strike === parseFloat(optionStrike));
+                      applyChainContract(match || null);
+                      if (!match) setOptionStrike('');
+                    }
+                  }}
+                  style={{
+                    flex: 1, padding: '9px', borderRadius: '6px', cursor: 'pointer',
+                    fontSize: '0.88rem', fontWeight: '600',
+                    border: optionType === opt.value ? 'none' : '1px solid var(--border-color)',
+                    background: optionType === opt.value ? 'var(--accent-color)' : 'var(--bg-primary)',
+                    color: optionType === opt.value ? 'white' : 'var(--text-secondary)',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {optionChain?.available && !optionManualEntry ? (
+            <div style={styles.row}>
+              <div style={styles.col}>
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>Expiry *</label>
+                  <select
+                    style={styles.select}
+                    value={optionExpiry}
+                    onChange={(e) => {
+                      const expiry = e.target.value;
+                      setOptionExpiry(expiry);
+                      // Keep the strike if the new expiry lists it; otherwise
+                      // clear it rather than carry a strike that isn't listed.
+                      const match = chainContractsForExpiry(expiry).find(c => c.strike === parseFloat(optionStrike));
+                      applyChainContract(match || null);
+                      if (!match) setOptionStrike('');
+                    }}
+                  >
+                    <option value="">Select expiry...</option>
+                    {optionChain.expirations.map(e => (
+                      <option key={e.expirationDate} value={e.expirationDate}>
+                        {new Date(e.expirationDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                        {e.optionsCount ? ` (${e.optionsCount} contracts)` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div style={styles.col}>
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>Strike *</label>
+                  <select
+                    style={styles.select}
+                    value={optionStrike}
+                    disabled={!optionExpiry}
+                    onChange={(e) => {
+                      const strike = parseFloat(e.target.value);
+                      const match = chainContractsForExpiry(optionExpiry).find(c => c.strike === strike);
+                      if (match) applyChainContract(match); else { setOptionStrike(e.target.value); applyChainContract(null); }
+                    }}
+                  >
+                    <option value="">{optionExpiry ? 'Select strike...' : 'Pick an expiry first'}</option>
+                    {chainContractsForExpiry(optionExpiry).map(c => (
+                      <option key={c.contractName} value={String(c.strike)}>
+                        {c.strike}
+                        {c.mid != null ? ` — ${c.bid ?? '-'} / ${c.ask ?? '-'}` : ''}
+                        {c.inTheMoney ? ' · ITM' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+          ) : (
+          <div style={styles.row}>
+            <div style={styles.col}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Strike *</label>
+                <FormattedNumberInput
+                  style={styles.input}
+                  value={optionStrike}
+                  onChange={(e) => setOptionStrike(e.target.value)}
+                  placeholder="e.g. 60"
+                  maxDecimals={4}
+                />
+              </div>
+            </div>
+            <div style={styles.col}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Expiry *</label>
+                <input
+                  type="date"
+                  style={styles.input}
+                  value={optionExpiry}
+                  onChange={(e) => setOptionExpiry(e.target.value)}
+                />
+              </div>
+            </div>
+          </div>
+          )}
+
+          {/* The end-of-day quote for the picked contract. A reference for the
+              desk and the validator, not an executable price. */}
+          {!optionManualEntry && optionQuote && optionContractSymbol && (
+            <div style={{
+              display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(90px, 1fr))', gap: '8px',
+              padding: '10px 12px', marginBottom: '12px', borderRadius: '6px',
+              background: 'var(--bg-primary)', border: '1px solid var(--border-color)'
+            }}>
+              {[
+                { label: 'Bid / Ask', value: (optionQuote.bid != null && optionQuote.ask != null) ? `${optionQuote.bid} / ${optionQuote.ask}` : '—' },
+                { label: 'Last', value: optionQuote.last != null && optionQuote.last > 0 ? optionQuote.last : '—' },
+                { label: 'IV', value: optionQuote.impliedVolatility != null ? `${Number(optionQuote.impliedVolatility).toFixed(1)}%` : '—' },
+                { label: 'Delta', value: optionQuote.delta != null ? Number(optionQuote.delta).toFixed(2) : '—' },
+                { label: 'Open Int.', value: optionQuote.openInterest != null ? Number(optionQuote.openInterest).toLocaleString('en-US') : '—' }
+              ].map(cell => (
+                <div key={cell.label}>
+                  <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>{cell.label}</div>
+                  <div style={{ fontSize: '0.9rem', fontWeight: '600', color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>{cell.value}</div>
+                </div>
+              ))}
+              <div style={{ gridColumn: '1 / -1', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                <span style={{ fontFamily: 'monospace' }}>{optionContractSymbol}</span>
+                {optionQuote.updatedAt ? ` · end-of-day quote as of ${optionQuote.updatedAt}` : ' · end-of-day quote'}
+              </div>
+            </div>
+          )}
+
+          <div style={styles.row}>
+            <div style={styles.col}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Contract Size</label>
+                <FormattedNumberInput
+                  style={styles.input}
+                  value={optionContractSize}
+                  onChange={(e) => setOptionContractSize(e.target.value)}
+                  placeholder={String(DEFAULT_OPTION_CONTRACT_SIZE)}
+                  maxDecimals={0}
+                />
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '3px' }}>
+                  Shares per contract
+                </div>
+              </div>
+            </div>
+            <div style={styles.col}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Exchange</label>
+                <input
+                  type="text"
+                  style={styles.input}
+                  value={optionExchange}
+                  onChange={(e) => setOptionExchange(e.target.value)}
+                  placeholder="e.g. EUREX (optional)"
+                />
+              </div>
+            </div>
+          </div>
+
+          {optionStrike && optionExpiry && (
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+              Contract: <strong>{buildOptionContractName()}</strong>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 
@@ -1890,6 +2535,52 @@ const OrderModal = ({
     if (assetType === ASSET_TYPES.TERM_DEPOSIT) return depositCurrency || 'EUR';
     return selectedSecurity?.currency || 'USD';
   };
+
+  // The contract, written the way the desk says it. Mirrors
+  // optionContractDescription() on the order so the name shown before
+  // submitting is the name that gets stored.
+  const buildOptionContractName = () => {
+    const underlying = selectedSecurity?.name || selectedSecurity?.ticker || '';
+    const parts = [underlying, (optionType || '').toUpperCase()];
+    if (optionStrike) parts.push(String(optionStrike));
+    if (optionExpiry) {
+      parts.push(new Date(optionExpiry).toLocaleDateString('en-GB', {
+        day: '2-digit', month: 'short', year: 'numeric'
+      }));
+    }
+    const size = parseFloat(optionContractSize);
+    if (size && size !== DEFAULT_OPTION_CONTRACT_SIZE) parts.push(`x${size}`);
+    return parts.filter(Boolean).join(' ');
+  };
+
+  // Shares this order would have to deliver if assigned.
+  const optionShareEquivalent = (() => {
+    const contracts = parseFloat(quantity);
+    const size = parseFloat(optionContractSize) || DEFAULT_OPTION_CONTRACT_SIZE;
+    return contracts > 0 ? contracts * size : 0;
+  })();
+
+  const isWritingCall = assetType === ASSET_TYPES.OPTION
+    && optionType === OPTION_TYPES.CALL
+    && mode === 'sell';
+
+  // Local preview of the cover, against the holdings already loaded for this
+  // account. It cannot see contracts written by other live orders, so the
+  // server is asked once before the review step; until then this keeps the
+  // panel responsive without a round trip per keystroke.
+  const coveragePreview = (() => {
+    if (!isWritingCall || !selectedSecurity?.isin || !(parseFloat(quantity) > 0)) return null;
+    return computeShortCallCoverage({
+      contracts: parseFloat(quantity),
+      contractSize: parseFloat(optionContractSize) || DEFAULT_OPTION_CONTRACT_SIZE,
+      underlyingIsin: selectedSecurity.isin,
+      holdings: accountHoldings
+    });
+  })();
+
+  // The server's answer wins once we have it - only it knows about the
+  // contracts other live orders have already committed.
+  const effectiveCoverage = coverageCheck || coveragePreview;
 
   const renderStep2 = () => (
     <div>
@@ -1953,7 +2644,7 @@ const OrderModal = ({
                         fontVariantNumeric: 'tabular-nums'
                       }}
                     >
-                      {p.currency} {p.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {p.currency} {p.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </button>
                   );
                 })}
@@ -2029,7 +2720,7 @@ const OrderModal = ({
               <span>
                 <strong>Buy {fxBuyCurrency || '—'} / Sell {fxSellCurrency || '—'}</strong>
                 {fxSubtype === FX_SUBTYPES.FORWARD ? ' Forward' : ' Spot'}
-                {quantity ? ` — ${parseFloat(quantity).toLocaleString()} ${fxAmountCurrency === 'buy' ? fxBuyCurrency : fxSellCurrency}` : ''}
+                {quantity ? ` — ${parseFloat(quantity).toLocaleString('en-US')} ${fxAmountCurrency === 'buy' ? fxBuyCurrency : fxSellCurrency}` : ''}
               </span>
               <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>
                 {fxSpotLoading ? 'Loading...' : Number.isFinite(Number(fxSpotRate)) ? `Spot: ${Number(fxSpotRate).toFixed(4)}` : ''}
@@ -2137,12 +2828,14 @@ const OrderModal = ({
               alignItems: 'center',
               fontSize: '13px'
             }}>
-              <span style={{ color: 'var(--text-secondary)' }}>Indicative Price</span>
+              <span style={{ color: 'var(--text-secondary)' }}>
+                {assetType === ASSET_TYPES.OPTION ? 'Underlying Spot' : 'Indicative Price'}
+              </span>
               {isLoadingPrice ? (
                 <span style={{ color: 'var(--text-secondary)' }}>Fetching...</span>
               ) : (
                 <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>
-                  {indicativePriceCurrency || ''} {indicativePrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                  {indicativePriceCurrency || ''} {indicativePrice?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
                 </span>
               )}
             </div>
@@ -2183,7 +2876,7 @@ const OrderModal = ({
               )}
               {bulkOrders.filter(o => o.clientId && o.bankAccountId).map((order, idx) => {
                 const origIdx = bulkOrders.indexOf(order);
-                const client = availableClients.find(c => c._id === order.clientId);
+                const client = findClientById(availableClients, order.clientId);
                 const accounts = bulkAccountsMap[origIdx] || [];
                 const account = accounts.find(a => a._id === order.bankAccountId);
                 const clientName = client
@@ -2202,7 +2895,6 @@ const OrderModal = ({
                 const rowEstCost = rowQty > 0 && price ? rowQty * price : 0;
                 const rowExceeds = rowCashInCcy && rowEstCost > rowCashInCcy.amount;
                 const rowMaxShares = rowCashInCcy && price && price > 0 ? Math.floor(rowCashInCcy.amount / price) : null;
-                const rowFile = bulkOrderFiles[origIdx];
 
                 return (
                   <div key={origIdx} style={{ marginBottom: '8px', padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: '8px', border: `1px solid ${rowExceeds ? 'rgba(239, 68, 68, 0.3)' : 'var(--border-color)'}` }}>
@@ -2218,7 +2910,7 @@ const OrderModal = ({
                           style={{ ...styles.input, padding: '7px 10px' }}
                           value={order.quantity}
                           onChange={(e) => updateBulkOrder(origIdx, 'quantity', e.target.value)}
-                          placeholder={assetType === ASSET_TYPES.FUND ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 'Amount' : 'Units') : 'Qty'}
+                          placeholder={assetType === ASSET_TYPES.FUND ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 'Amount' : 'Units') : assetType === ASSET_TYPES.OPTION ? 'Contracts' : 'Qty'}
                           maxDecimals={
                             assetType === ASSET_TYPES.TERM_DEPOSIT ? 2
                             : assetType === ASSET_TYPES.FUND ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 2 : 4)
@@ -2230,9 +2922,9 @@ const OrderModal = ({
                     {/* Cash check */}
                     {mode === 'buy' && (assetType === ASSET_TYPES.EQUITY || assetType === ASSET_TYPES.ETF) && rowCashInCcy && (
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', marginBottom: '4px' }}>
-                        <span style={{ color: 'var(--text-secondary)' }}>Cash {secCurrency}: <span style={{ fontWeight: '600', color: rowExceeds ? 'var(--loss-color)' : 'var(--gain-color)' }}>{rowCashInCcy.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></span>
+                        <span style={{ color: 'var(--text-secondary)' }}>Cash {secCurrency}: <span style={{ fontWeight: '600', color: rowExceeds ? 'var(--loss-color)' : 'var(--gain-color)' }}>{rowCashInCcy.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></span>
                         {rowMaxShares !== null && rowMaxShares > 0 && (
-                          <span style={{ color: 'var(--accent-color)', cursor: 'pointer' }} onClick={() => updateBulkOrder(origIdx, 'quantity', String(rowMaxShares))}>Max: {rowMaxShares.toLocaleString()}</span>
+                          <span style={{ color: 'var(--accent-color)', cursor: 'pointer' }} onClick={() => updateBulkOrder(origIdx, 'quantity', String(rowMaxShares))}>Max: {rowMaxShares.toLocaleString('en-US')}</span>
                         )}
                         {rowExceeds && rowQty > 0 && (
                           <span style={{ color: 'var(--loss-color)', fontWeight: '500' }}>Exceeds cash</span>
@@ -2256,45 +2948,17 @@ const OrderModal = ({
                               title="Fill with the full position quantity"
                               onClick={() => updateBulkOrder(origIdx, 'quantity', String(rowHolding.quantity))}
                             >
-                              Full position: {rowHolding.quantity.toLocaleString()}
+                              Full position: {rowHolding.quantity.toLocaleString('en-US')}
                             </span>
                           </div>
                         );
                       })()}
-                    {/* Per-row file attachment */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px' }}>
-                      {rowFile ? (
-                        <>
-                          <span style={{ color: 'var(--gain-color)' }}>📎 {rowFile.name}</span>
-                          <button onClick={() => setBulkOrderFiles(prev => { const next = { ...prev }; delete next[origIdx]; return next; })} style={{ background: 'none', border: 'none', color: 'var(--loss-color)', cursor: 'pointer', fontSize: '12px', padding: '0 2px' }}>x</button>
-                        </>
-                      ) : (
-                        <span
-                          style={{ color: 'var(--accent-color)', cursor: 'pointer' }}
-                          onClick={() => {
-                            const input = document.createElement('input');
-                            input.type = 'file';
-                            input.accept = EMAIL_TRACE_ACCEPTED_TYPES.join(',');
-                            input.onchange = (e) => {
-                              const file = e.target.files[0];
-                              if (file) {
-                                if (file.size > EMAIL_TRACE_MAX_SIZE) { setError(`${file.name} exceeds 15MB`); return; }
-                                setBulkOrderFiles(prev => ({ ...prev, [origIdx]: file }));
-                              }
-                            };
-                            input.click();
-                          }}
-                        >
-                          + Attach client instruction
-                        </span>
-                      )}
-                    </div>
                   </div>
                 );
               })}
               {bulkOrders.filter(o => o.clientId && o.bankAccountId).length > 1 && (
                 <div style={{ textAlign: 'right', fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                  Total: {bulkOrders.filter(o => o.clientId && o.bankAccountId).reduce((sum, o) => sum + (parseFloat(o.quantity) || 0), 0).toLocaleString()}
+                  Total: {bulkTotalQuantity.toLocaleString('en-US')}
                 </div>
               )}
             </div>
@@ -2307,10 +2971,12 @@ const OrderModal = ({
                       ? 'Amount'
                       : assetType === ASSET_TYPES.STRUCTURED_PRODUCT
                         ? 'Nominal'
-                        : assetType === ASSET_TYPES.FUND
-                          ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 'Nominal Amount' : 'Units')
-                          : 'Quantity'}
-                    {mode === 'sell' && selectedHolding?.quantity && ` (Max: ${selectedHolding.quantity.toLocaleString()})`}
+                        : assetType === ASSET_TYPES.OPTION
+                          ? 'Contracts'
+                          : assetType === ASSET_TYPES.FUND
+                            ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 'Nominal Amount' : 'Units')
+                            : 'Quantity'}
+                    {mode === 'sell' && selectedHolding?.quantity && ` (Max: ${selectedHolding.quantity.toLocaleString('en-US')})`}
                     {mode === 'sell' && !selectedHolding && prefillData?.quantity && ` (Max: ${prefillData.quantity})`}
                     {(() => {
                       // Full-position autofill for sell orders. Holding quantities are in
@@ -2376,6 +3042,8 @@ const OrderModal = ({
                         ? 'Enter amount'
                         : assetType === ASSET_TYPES.STRUCTURED_PRODUCT
                           ? 'Enter nominal'
+                          : assetType === ASSET_TYPES.OPTION
+                            ? 'Number of contracts'
                           : assetType === ASSET_TYPES.FUND
                             ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 'Enter amount' : 'Enter units')
                             : 'Enter quantity'
@@ -2386,6 +3054,12 @@ const OrderModal = ({
                       : 0
                     }
                   />
+                  {assetType === ASSET_TYPES.OPTION && optionShareEquivalent > 0 && (
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                      {parseFloat(quantity).toLocaleString('en-US')} contracts × {(parseFloat(optionContractSize) || DEFAULT_OPTION_CONTRACT_SIZE).toLocaleString('en-US')} = <strong>{optionShareEquivalent.toLocaleString('en-US')} shares</strong>
+                      {selectedSecurity?.name ? ` of ${selectedSecurity.name}` : ''}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -2413,26 +3087,26 @@ const OrderModal = ({
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: maxShares ? '4px' : 0 }}>
                   <span style={{ color: 'var(--text-secondary)' }}>Cash in {secCurrency}</span>
                   <span style={{ fontWeight: '600', color: cashInCurrency ? (exceeds ? 'var(--loss-color)' : 'var(--gain-color)') : 'var(--text-secondary)' }}>
-                    {cashInCurrency ? cashInCurrency.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : 'No balance'}
+                    {cashInCurrency ? cashInCurrency.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : 'No balance'}
                   </span>
                 </div>
                 {maxShares !== null && maxShares > 0 && (
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>
-                      Max shares at {price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {secCurrency}
+                      Max shares at {price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {secCurrency}
                     </span>
                     <span
                       style={{ fontWeight: '600', color: 'var(--accent-color)', cursor: 'pointer' }}
                       title="Click to fill quantity"
                       onClick={() => setQuantity(String(maxShares))}
                     >
-                      {maxShares.toLocaleString()}
+                      {maxShares.toLocaleString('en-US')}
                     </span>
                   </div>
                 )}
                 {exceeds && qty > 0 && (
                   <div style={{ marginTop: '4px', color: 'var(--loss-color)', fontSize: '12px', fontWeight: '500' }}>
-                    Estimated cost {secCurrency} {estCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} exceeds available cash
+                    Estimated cost {secCurrency} {estCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} exceeds available cash
                   </div>
                 )}
               </div>
@@ -2483,7 +3157,9 @@ const OrderModal = ({
               <label style={styles.label}>
                 {assetType === ASSET_TYPES.STRUCTURED_PRODUCT
                   ? 'Price (% of par) — optional'
-                  : `Limit Price (${getCurrencyForDisplay()})`}
+                  : assetType === ASSET_TYPES.OPTION
+                    ? `Premium (${getCurrencyForDisplay()} per share)`
+                    : `Limit Price (${getCurrencyForDisplay()})`}
               </label>
               <FormattedNumberInput
                 style={styles.input}
@@ -2492,6 +3168,10 @@ const OrderModal = ({
                 placeholder={
                   assetType === ASSET_TYPES.STRUCTURED_PRODUCT
                     ? '100'
+                    : assetType === ASSET_TYPES.OPTION
+                      ? (optionQuote?.mid > 0
+                          ? `${mode === 'buy' ? 'Max to pay' : 'Min to receive'} — EOD mid ${Number(optionQuote.mid).toFixed(2)}`
+                          : (mode === 'buy' ? 'Maximum premium to pay' : 'Minimum premium to receive'))
                     : mode === 'buy' ? 'Maximum price to buy' : 'Minimum price to sell'
                 }
                 maxDecimals={2}
@@ -2722,20 +3402,49 @@ const OrderModal = ({
               <div style={styles.formGroup}>
                 {assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? (
                   <>
-                    <label style={styles.label}>Issuer *</label>
+                    <label style={styles.label}>Counterparty *</label>
                     <select
                       style={styles.input}
                       value={issuerId}
                       onChange={(e) => setIssuerId(e.target.value)}
                       required
                     >
-                      <option value="">— Select issuer —</option>
+                      <option value="">— Select counterparty —</option>
                       {issuers.map(iss => (
                         <option key={iss._id} value={iss._id}>
                           {iss.name}{iss.code ? ` (${iss.code})` : ''}
                         </option>
                       ))}
                     </select>
+                    {/* Counterparty coordinates — read from the issuer record and stored on the order */}
+                    {(() => {
+                      if (!issuerId) return null;
+                      const iss = issuers.find(i => i._id === issuerId);
+                      if (!iss) return null;
+                      const hasContact = iss.contactName || iss.contactEmail || iss.contactPhone;
+                      return (
+                        <div style={{
+                          marginTop: '6px', padding: '8px 10px', borderRadius: '6px',
+                          background: 'var(--bg-secondary)', border: '1px solid var(--border-color)',
+                          fontSize: '12px', lineHeight: '1.5'
+                        }}>
+                          <div style={{ fontSize: '10px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: '4px' }}>
+                            Counterparty Contact
+                          </div>
+                          {hasContact ? (
+                            <>
+                              {iss.contactName && <div style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{iss.contactName}</div>}
+                              {iss.contactEmail && <div><a href={`mailto:${iss.contactEmail}`} style={{ color: 'var(--accent-color)', textDecoration: 'none' }}>{iss.contactEmail}</a></div>}
+                              {iss.contactPhone && <div><a href={`tel:${iss.contactPhone.replace(/\s/g, '')}`} style={{ color: 'var(--accent-color)', textDecoration: 'none' }}>{iss.contactPhone}</a></div>}
+                            </>
+                          ) : (
+                            <div style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                              No contact details on file — add them in Issuer Management.
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </>
                 ) : (
                   <>
@@ -2814,6 +3523,43 @@ const OrderModal = ({
                       title="Remove file"
                     >
                       x
+                    </button>
+                  </div>
+                ) : productTermsheet ? (
+                  <div style={{
+                    border: '2px solid var(--info-color)',
+                    background: 'rgba(14, 165, 233, 0.08)',
+                    borderRadius: '8px',
+                    padding: '10px 12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}>
+                    <span style={{ fontSize: '18px' }}>📋</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--info-color)', wordBreak: 'break-all' }}>
+                        {productTermsheet.filename}
+                      </div>
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                        Already on file for this product ({(productTermsheet.sizeBytes / 1024).toFixed(0)} KB) — it will be attached to this order
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      style={{
+                        background: 'none', border: '1px solid var(--border-color)', borderRadius: '4px',
+                        color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '11px', padding: '4px 8px', flexShrink: 0
+                      }}
+                      onClick={() => {
+                        const input = document.createElement('input');
+                        input.type = 'file';
+                        input.accept = 'application/pdf';
+                        input.onchange = (e) => validateAndSetTermsheet(e.target.files?.[0]);
+                        input.click();
+                      }}
+                      title="Attach a different PDF for this order"
+                    >
+                      Replace
                     </button>
                   </div>
                 ) : (
@@ -2919,10 +3665,10 @@ const OrderModal = ({
               }}
               onClick={() => {
                 setOrderSource(value);
-                // Clear the other source's data when switching
+                // Clear the other source's data when switching. The bulk file
+                // registry is kept: a mis-click must not throw away uploads.
                 if (value === ORDER_SOURCE_TYPES.PHONE) {
                   setClientOrderFile(null);
-                  setClientOrderFiles([]);
                   setDeferAttachment(false);
                 } else {
                   setPhoneCallTime('');
@@ -2942,7 +3688,7 @@ const OrderModal = ({
             <div style={{ display: 'grid', gridTemplateColumns: gridCols('1fr 1fr'), gap: '10px', marginBottom: '6px' }}>
               <div>
                 <label style={{ fontSize: '12px', fontWeight: '600', color: 'var(--info-color)', display: 'block', marginBottom: '6px' }}>
-                  Call received at
+                  {isBulkMode ? 'Default call time' : 'Call received at'}
                 </label>
                 <input
                   type="datetime-local"
@@ -2953,7 +3699,7 @@ const OrderModal = ({
               </div>
               <div>
                 <label style={{ fontSize: '12px', fontWeight: '600', color: 'var(--info-color)', display: 'block', marginBottom: '6px' }}>
-                  Phone line
+                  {isBulkMode ? 'Default phone line' : 'Phone line'}
                 </label>
                 <input
                   type="tel"
@@ -2964,43 +3710,231 @@ const OrderModal = ({
                 />
               </div>
             </div>
-            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-              Phone line is saved to your profile for future orders
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--text-muted)' }}>
+              <span>Phone line is saved to your profile for future orders</span>
+              {isBulkMode && (
+                <button
+                  type="button"
+                  onClick={applyPhoneToAllRows}
+                  style={{ background: 'none', border: '1px solid var(--info-color)', color: 'var(--info-color)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', fontWeight: '600', cursor: 'pointer' }}
+                >
+                  Apply to all clients
+                </button>
+              )}
             </div>
+
+            {/* One call per client: each row records when and on which line the
+                instruction was taken. Empty fields fall back to the defaults above. */}
+            {isBulkMode && validBulkRows().length > 0 && (
+              <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {validBulkRows().map(({ row, origIdx }) => {
+                  const account = (bulkAccountsMap[origIdx] || []).find(a => a._id === row.bankAccountId);
+                  return (
+                    <div key={origIdx} style={{ padding: '8px 10px', background: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px', fontSize: '12px' }}>
+                        <span style={{ flex: 2, fontWeight: '600', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bulkRowClientName(row)}</span>
+                        <span style={{ flex: 2, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{account ? `${account.bankName} - ${account.accountNumber}` : row.accountLabel}</span>
+                        <span style={{ flex: 1, textAlign: 'right', color: 'var(--text-muted)' }}>{row.quantity ? parseFloat(row.quantity).toLocaleString('en-US') : ''}</span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: gridCols('1fr 1fr'), gap: '8px' }}>
+                        <input
+                          type="datetime-local"
+                          value={rowPhoneCallTime(row)}
+                          onChange={(e) => updateBulkOrder(origIdx, 'phoneCallTime', e.target.value)}
+                          style={{ ...styles.input, marginBottom: '0', padding: '6px 8px', fontSize: '12px' }}
+                        />
+                        <input
+                          type="tel"
+                          value={rowPhoneCallLine(row)}
+                          onChange={(e) => updateBulkOrder(origIdx, 'phoneCallLine', e.target.value)}
+                          placeholder="Phone line"
+                          style={{ ...styles.input, marginBottom: '0', padding: '6px 8px', fontSize: '12px' }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
+        ) : isBulkMode ? (
+          <>
+            {/* Multi-account order: each client has their own instruction. Files
+                are uploaded once into a registry and assigned per row, so one
+                email covering two accounts of the same owner is picked twice. */}
+            {(() => {
+              const registryKeys = Object.keys(bulkTraceFiles);
+              const rows = validBulkRows();
+              const assignedCount = rows.filter(({ row }) => row.traceFileKey && bulkTraceFiles[row.traceFileKey]).length;
+              const pickFiles = (multiple, onKeys) => {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = EMAIL_TRACE_ACCEPTED_TYPES.join(',');
+                input.multiple = multiple;
+                input.onchange = (e) => {
+                  const keys = addTraceFiles(Array.from(e.target.files || []));
+                  if (keys.length > 0) onKeys?.(keys);
+                };
+                input.click();
+              };
+              return (
+                <>
+                  <label style={{ ...styles.label, marginBottom: '6px' }}>
+                    Client instruction files ({registryKeys.length})
+                  </label>
+
+                  {registryKeys.length > 0 && (
+                    <div style={{ marginBottom: '8px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      {registryKeys.map((key) => {
+                        const file = bulkTraceFiles[key];
+                        const used = traceFileUsageCount(key);
+                        return (
+                          <div key={key} style={{
+                            display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap',
+                            padding: '6px 10px',
+                            background: used > 0 ? 'rgba(16, 185, 129, 0.05)' : 'rgba(245, 158, 11, 0.06)',
+                            border: `1px solid ${used > 0 ? 'rgba(16, 185, 129, 0.2)' : 'rgba(245, 158, 11, 0.35)'}`,
+                            borderRadius: '6px'
+                          }}>
+                            <span style={{ fontSize: '14px' }}>📎</span>
+                            <span style={{ fontSize: '12px', fontWeight: '500', color: used > 0 ? 'var(--gain-color)' : 'var(--warning-color)', flex: 1, minWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
+                            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>({(file.size / 1024).toFixed(0)} KB)</span>
+                            <span style={{ fontSize: '11px', color: used > 0 ? 'var(--text-muted)' : 'var(--warning-color)' }}>
+                              {used > 0 ? `used by ${used} client${used > 1 ? 's' : ''}` : 'not assigned'}
+                            </span>
+                            {rows.some(({ row }) => !row.traceFileKey) && (
+                              <button
+                                type="button"
+                                onClick={() => applyTraceFileToUnassigned(key)}
+                                style={{ background: 'none', border: '1px solid var(--accent-color)', color: 'var(--accent-color)', borderRadius: '6px', padding: '2px 8px', fontSize: '11px', fontWeight: '600', cursor: 'pointer' }}
+                              >
+                                Use for all unassigned
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              style={{ background: 'none', border: 'none', color: 'var(--loss-color)', cursor: 'pointer', fontSize: '13px', padding: '2px 6px' }}
+                              onClick={() => removeTraceFile(key)}
+                              title="Remove file"
+                            >
+                              x
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <div
+                    style={{
+                      border: '2px dashed var(--border-color)',
+                      borderRadius: '8px',
+                      padding: registryKeys.length > 0 ? '10px' : '16px',
+                      textAlign: 'center',
+                      cursor: 'pointer',
+                      background: 'var(--bg-secondary)',
+                      transition: 'border-color 0.15s, background 0.15s'
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      e.currentTarget.style.borderColor = 'var(--gain-color)';
+                      e.currentTarget.style.background = 'rgba(16, 185, 129, 0.05)';
+                    }}
+                    onDragLeave={(e) => {
+                      e.currentTarget.style.borderColor = 'var(--border-color)';
+                      e.currentTarget.style.background = 'var(--bg-secondary)';
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      e.currentTarget.style.borderColor = 'var(--border-color)';
+                      e.currentTarget.style.background = 'var(--bg-secondary)';
+                      let droppedFiles = Array.from(e.dataTransfer.files || []);
+                      if (droppedFiles.length === 0 && e.dataTransfer.items) {
+                        droppedFiles = Array.from(e.dataTransfer.items)
+                          .filter(item => item.kind === 'file')
+                          .map(item => item.getAsFile())
+                          .filter(Boolean);
+                      }
+                      if (droppedFiles.length === 0) {
+                        setError('No file received. Dragging directly from Outlook is not supported by the browser — first drag the email to your desktop (this saves it as a .msg file), then drop that file here, or click to browse.');
+                        return;
+                      }
+                      addTraceFiles(droppedFiles);
+                    }}
+                    onClick={() => pickFiles(true)}
+                  >
+                    <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                      {registryKeys.length > 0 ? '+ Add more client instruction files' : 'Drop the client instruction emails here, or click to browse'}
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                      .msg, .eml, .pdf — then assign one to each client below
+                    </div>
+                  </div>
+
+                  {/* One instruction per client */}
+                  {rows.length > 0 && (
+                    <div style={{ marginTop: '10px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                        <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-primary)' }}>Instruction per client</span>
+                        <span style={{ fontSize: '11px', fontWeight: '600', color: assignedCount === rows.length ? 'var(--gain-color)' : 'var(--warning-color)' }}>
+                          {assignedCount} of {rows.length} client{rows.length > 1 ? 's' : ''} covered
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        {rows.map(({ row, origIdx }) => {
+                          const account = (bulkAccountsMap[origIdx] || []).find(a => a._id === row.bankAccountId);
+                          const covered = !!(row.traceFileKey && bulkTraceFiles[row.traceFileKey]);
+                          return (
+                            <div key={origIdx} style={{
+                              display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap',
+                              padding: '8px 10px', background: 'var(--bg-primary)',
+                              border: '1px solid var(--border-color)',
+                              borderLeft: `3px solid ${covered ? 'var(--gain-color)' : 'var(--loss-color)'}`,
+                              borderRadius: '8px'
+                            }}>
+                              <div style={{ flex: 2, minWidth: '140px', overflow: 'hidden' }}>
+                                <div style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bulkRowClientName(row)}</div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {account ? `${account.bankName} - ${account.accountNumber}` : row.accountLabel}
+                                  {row.quantity ? ` · ${parseFloat(row.quantity).toLocaleString('en-US')}` : ''}
+                                </div>
+                              </div>
+                              <select
+                                value={row.traceFileKey && bulkTraceFiles[row.traceFileKey] ? row.traceFileKey : ''}
+                                onChange={(e) => {
+                                  if (e.target.value === '__browse__') {
+                                    pickFiles(false, (keys) => assignTraceFile(origIdx, keys[0]));
+                                    return;
+                                  }
+                                  assignTraceFile(origIdx, e.target.value || null);
+                                }}
+                                style={{ ...styles.input, marginBottom: '0', flex: 3, minWidth: '180px', padding: '6px 8px', fontSize: '12px' }}
+                              >
+                                <option value="">— select instruction —</option>
+                                {registryKeys.map((key) => (
+                                  <option key={key} value={key}>{bulkTraceFiles[key].name}</option>
+                                ))}
+                                <option value="__browse__">+ Browse for a file…</option>
+                              </select>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+          </>
         ) : (
           <>
             <label style={{ ...styles.label, marginBottom: '6px' }}>
-              {isBulkMode ? `Client Order Emails (${clientOrderFiles.length} attached)` : 'Client Order Email *'}
+              Client Order Email *
             </label>
 
-            {/* Show existing files for bulk mode */}
-            {isBulkMode && clientOrderFiles.length > 0 && (
-              <div style={{ marginBottom: '8px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                {clientOrderFiles.map((file, idx) => (
-                  <div key={idx} style={{
-                    display: 'flex', alignItems: 'center', gap: '8px',
-                    padding: '6px 10px', background: 'rgba(16, 185, 129, 0.05)',
-                    border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '6px'
-                  }}>
-                    <span style={{ fontSize: '14px' }}>📎</span>
-                    <span style={{ fontSize: '12px', fontWeight: '500', color: 'var(--gain-color)', flex: 1 }}>{file.name}</span>
-                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                      ({(file.size / 1024).toFixed(0)} KB)
-                    </span>
-                    <button
-                      style={{ background: 'none', border: 'none', color: 'var(--loss-color)', cursor: 'pointer', fontSize: '13px', padding: '2px 6px' }}
-                      onClick={() => setClientOrderFiles(prev => prev.filter((_, i) => i !== idx))}
-                      title="Remove file"
-                    >
-                      x
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Show single file for non-bulk mode */}
+            {/* Show the attached file */}
             {!isBulkMode && clientOrderFile && (
               <div style={{
                 display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px',
@@ -3022,13 +3956,13 @@ const OrderModal = ({
               </div>
             )}
 
-            {/* Drop zone / file picker — always shown for bulk (to add more), shown when no file for single */}
-            {(isBulkMode || !clientOrderFile) && (
+            {/* Drop zone / file picker — shown while no file is attached */}
+            {!clientOrderFile && (
               <div
                 style={{
                   border: '2px dashed var(--border-color)',
                   borderRadius: '8px',
-                  padding: isBulkMode && clientOrderFiles.length > 0 ? '10px' : '16px',
+                  padding: '16px',
                   textAlign: 'center',
                   cursor: 'pointer',
                   background: 'var(--bg-secondary)',
@@ -3081,11 +4015,7 @@ const OrderModal = ({
                     validFiles.push(file);
                   }
                   if (validFiles.length > 0) {
-                    if (isBulkMode) {
-                      setClientOrderFiles(prev => [...prev, ...validFiles]);
-                    } else {
-                      setClientOrderFile(validFiles[0]);
-                    }
+                    setClientOrderFile(validFiles[0]);
                     setError(null);
                   }
                 }}
@@ -3093,7 +4023,6 @@ const OrderModal = ({
                   const input = document.createElement('input');
                   input.type = 'file';
                   input.accept = EMAIL_TRACE_ACCEPTED_TYPES.join(',');
-                  if (isBulkMode) input.multiple = true;
                   input.onchange = (e) => {
                     const selectedFiles = Array.from(e.target.files);
                     for (const file of selectedFiles) {
@@ -3103,11 +4032,7 @@ const OrderModal = ({
                       }
                     }
                     if (selectedFiles.length > 0) {
-                      if (isBulkMode) {
-                        setClientOrderFiles(prev => [...prev, ...selectedFiles]);
-                      } else {
-                        setClientOrderFile(selectedFiles[0]);
-                      }
+                      setClientOrderFile(selectedFiles[0]);
                       setError(null);
                     }
                   };
@@ -3115,9 +4040,7 @@ const OrderModal = ({
                 }}
               >
                 <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-                  {isBulkMode
-                    ? (clientOrderFiles.length > 0 ? '+ Add more client emails' : 'Drop client order emails here, or click to browse')
-                    : 'Drop client order email here, or click to browse'}
+                  Drop client order email here, or click to browse
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                   .msg, .eml, .pdf — Visible to validators for four-eyes check
@@ -3208,10 +4131,10 @@ const OrderModal = ({
             const next = !isBulkMode;
             setIsBulkMode(next);
             if (!next) {
-              setBulkOrders([{ clientId: '', bankAccountId: '', quantity: '', accountLabel: '' }]);
+              setBulkOrders([emptyBulkRow()]);
               setBulkAccountsMap({});
               setBulkAccountsLoading({});
-              setClientOrderFiles([]);
+              setBulkTraceFiles({});
             }
           }}>
             <span style={{ fontSize: '13px', fontWeight: '600', color: isBulkMode ? '#6366f1' : 'var(--text-primary)' }}>
@@ -3336,7 +4259,7 @@ const OrderModal = ({
   };
 
   const renderStep4 = () => {
-    const selectedClient = availableClients.find(c => c._id === selectedClientId);
+    const selectedClient = findClientById(availableClients, selectedClientId);
     const selectedAccount = clientBankAccounts.find(a => a._id === selectedBankAccountId);
 
     return (
@@ -3369,6 +4292,73 @@ const OrderModal = ({
             Checking investment profile compliance...
           </div>
         )}
+        {/* Short-call cover. Never blocks: it states the position plainly and
+            lets the desk add a reason, and the four-eyes validator decides. */}
+        {isCheckingCoverage && (
+          <div style={{
+            padding: '12px 16px', marginBottom: '16px', borderRadius: '8px',
+            background: 'rgba(99, 102, 241, 0.08)', border: '1px solid rgba(99, 102, 241, 0.3)',
+            fontSize: '13px', color: '#6366f1', textAlign: 'center'
+          }}>
+            Checking cover against the position...
+          </div>
+        )}
+        {!isCheckingCoverage && isWritingCall && effectiveCoverage && (() => {
+          const covered = effectiveCoverage.isCovered;
+          const accent = covered ? 'var(--gain-color)' : 'var(--warning-color)';
+          const fmt = (n) => Number(n || 0).toLocaleString('en-US');
+          return (
+            <div style={{
+              padding: '14px 16px', marginBottom: '16px', borderRadius: '8px',
+              background: covered ? 'rgba(16, 185, 129, 0.06)' : 'rgba(245, 158, 11, 0.08)',
+              border: `1px solid ${covered ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.35)'}`
+            }}>
+              <div style={{ fontSize: '13px', fontWeight: '700', color: accent, marginBottom: '10px' }}>
+                {covered ? 'Covered call' : 'Uncovered short call'}
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '10px', marginBottom: '10px' }}>
+                {[
+                  { label: 'To deliver', value: fmt(effectiveCoverage.requiredShares) },
+                  { label: 'Held', value: fmt(effectiveCoverage.heldShares) },
+                  ...(effectiveCoverage.committedShares
+                    ? [{ label: 'Already written', value: fmt(effectiveCoverage.committedShares) }]
+                    : []),
+                  { label: covered ? 'Still available' : 'Short by',
+                    value: fmt(covered ? effectiveCoverage.availableShares - effectiveCoverage.requiredShares : effectiveCoverage.shortfallShares),
+                    accent: !covered }
+                ].map(cell => (
+                  <div key={cell.label} style={{ padding: '8px 10px', background: 'var(--bg-primary)', borderRadius: '6px' }}>
+                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>{cell.label}</div>
+                    <div style={{ fontSize: '0.95rem', fontWeight: '700', color: cell.accent ? accent : 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>
+                      {cell.value}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>
+                {parseFloat(quantity) || 0} contracts x {parseFloat(optionContractSize) || DEFAULT_OPTION_CONTRACT_SIZE} shares
+                {effectiveCoverage.underlyingName ? ` of ${effectiveCoverage.underlyingName}` : ''}, in this account
+                {effectiveCoverage.committedOrderRefs?.length
+                  ? ` - already written by ${effectiveCoverage.committedOrderRefs.join(', ')}`
+                  : ''}
+              </div>
+
+              {!covered && (
+                <div style={{ marginTop: '12px' }}>
+                  <label style={{ ...styles.label, color: accent }}>Reason (optional)</label>
+                  <textarea
+                    style={{ ...styles.textarea, minHeight: '54px' }}
+                    value={coverageJustification}
+                    onChange={(e) => setCoverageJustification(e.target.value)}
+                    placeholder="Why is this being written uncovered? Shown to the validator."
+                  />
+                </div>
+              )}
+            </div>
+          );
+        })()}
         {allocationCheck?.hasProfile && (
           <div style={{
             padding: '14px 16px', marginBottom: '16px', borderRadius: '8px',
@@ -3530,7 +4520,7 @@ const OrderModal = ({
               </div>
               <div style={styles.reviewRow}>
                 <span style={styles.reviewLabel}>Amount</span>
-                <span style={styles.reviewValue}>{parseFloat(quantity).toLocaleString()} {fxAmountCurrency === 'buy' ? fxBuyCurrency : fxSellCurrency}</span>
+                <span style={styles.reviewValue}>{parseFloat(quantity).toLocaleString('en-US')} {fxAmountCurrency === 'buy' ? fxBuyCurrency : fxSellCurrency}</span>
               </div>
               {Number.isFinite(Number(fxSpotRate)) && (
                 <div style={styles.reviewRow}>
@@ -3604,6 +4594,59 @@ const OrderModal = ({
               </div>
             </>
           ) : (
+            assetType === ASSET_TYPES.OPTION ? (
+            <>
+              <div style={styles.reviewRow}>
+                <span style={styles.reviewLabel}>Contract</span>
+                <span style={{ ...styles.reviewValue, fontWeight: '600' }}>{buildOptionContractName()}</span>
+              </div>
+              <div style={styles.reviewRow}>
+                <span style={styles.reviewLabel}>Underlying</span>
+                <span style={styles.reviewValue}>{selectedSecurity?.name}{selectedSecurity?.isin ? ` (${selectedSecurity.isin})` : ''}</span>
+              </div>
+              <div style={styles.reviewRow}>
+                <span style={styles.reviewLabel}>Call / Put</span>
+                <span style={styles.reviewValue}>{(optionType || '').toUpperCase()}</span>
+              </div>
+              <div style={styles.reviewRow}>
+                <span style={styles.reviewLabel}>Strike</span>
+                <span style={styles.reviewValue}>{optionStrike}</span>
+              </div>
+              <div style={styles.reviewRow}>
+                <span style={styles.reviewLabel}>Expiry</span>
+                <span style={styles.reviewValue}>{optionExpiry ? new Date(optionExpiry).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : ''}</span>
+              </div>
+              <div style={styles.reviewRow}>
+                <span style={styles.reviewLabel}>Contract Size</span>
+                <span style={styles.reviewValue}>
+                  {(parseFloat(optionContractSize) || DEFAULT_OPTION_CONTRACT_SIZE).toLocaleString('en-US')} shares
+                  {optionShareEquivalent > 0 ? ` (${optionShareEquivalent.toLocaleString('en-US')} in total)` : ''}
+                </span>
+              </div>
+              {optionExchange && optionExchange.trim() && (
+                <div style={styles.reviewRow}>
+                  <span style={styles.reviewLabel}>Exchange</span>
+                  <span style={styles.reviewValue}>{optionExchange.trim()}</span>
+                </div>
+              )}
+              {!optionManualEntry && optionContractSymbol && (
+                <div style={styles.reviewRow}>
+                  <span style={styles.reviewLabel}>Contract Symbol</span>
+                  <span style={{ ...styles.reviewValue, fontFamily: 'monospace' }}>{optionContractSymbol}</span>
+                </div>
+              )}
+              {!optionManualEntry && optionQuote && (optionQuote.bid != null || optionQuote.last > 0) && (
+                <div style={styles.reviewRow}>
+                  <span style={styles.reviewLabel}>Reference Premium</span>
+                  <span style={styles.reviewValue}>
+                    {optionQuote.bid != null && optionQuote.ask != null ? `${optionQuote.bid} / ${optionQuote.ask}` : `last ${optionQuote.last}`}
+                    {optionQuote.impliedVolatility != null ? ` · IV ${Number(optionQuote.impliedVolatility).toFixed(1)}%` : ''}
+                    {optionQuote.updatedAt ? ` · EOD ${optionQuote.updatedAt}` : ''}
+                  </span>
+                </div>
+              )}
+            </>
+          ) : (
             <>
               <div style={styles.reviewRow}>
                 <span style={styles.reviewLabel}>Security</span>
@@ -3614,7 +4657,7 @@ const OrderModal = ({
                 <span style={styles.reviewValue}>{selectedSecurity?.isin}</span>
               </div>
             </>
-          )}
+          ))}
           <div style={styles.reviewRow}>
             <span style={styles.reviewLabel}>Asset Type</span>
             <span style={styles.reviewValue}>{OrderFormatters.getAssetTypeLabel(assetType)}</span>
@@ -3629,7 +4672,7 @@ const OrderModal = ({
           <div style={styles.reviewTitle}>Order Details</div>
           {!isBulkMode && (
             <div style={styles.reviewRow}>
-              <span style={styles.reviewLabel}>{assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Amount' : assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 'Nominal' : assetType === ASSET_TYPES.FUND ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 'Nominal Amount' : 'Units') : 'Quantity'}</span>
+              <span style={styles.reviewLabel}>{assetType === ASSET_TYPES.TERM_DEPOSIT ? 'Amount' : assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 'Nominal' : assetType === ASSET_TYPES.OPTION ? 'Contracts' : assetType === ASSET_TYPES.FUND ? (fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL ? 'Nominal Amount' : 'Units') : 'Quantity'}</span>
               <span style={styles.reviewValue}>{OrderFormatters.formatQuantity(parseFloat(quantity) || 0)}</span>
             </div>
           )}
@@ -3647,7 +4690,7 @@ const OrderModal = ({
           )}
           {(priceType === PRICE_TYPES.LIMIT || priceType === PRICE_TYPES.STOP_LIMIT) && limitPrice && (
             <div style={styles.reviewRow}>
-              <span style={styles.reviewLabel}>{assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 'Price' : 'Limit Price'}</span>
+              <span style={styles.reviewLabel}>{assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? 'Price' : assetType === ASSET_TYPES.OPTION ? 'Premium (per share)' : 'Limit Price'}</span>
               <span style={styles.reviewValue}>
                 {assetType === ASSET_TYPES.STRUCTURED_PRODUCT
                   ? `${parseFloat(limitPrice) || 0}%`
@@ -3661,7 +4704,24 @@ const OrderModal = ({
               <span style={styles.reviewValue}>{OrderFormatters.formatWithCurrency(parseFloat(estimatedValue) || 0, getCurrencyForDisplay())}</span>
             </div>
           )}
-          {broker && (
+          {assetType === ASSET_TYPES.STRUCTURED_PRODUCT && issuerId && (() => {
+            const iss = issuers.find(i => i._id === issuerId);
+            if (!iss) return null;
+            const contact = [iss.contactName, iss.contactEmail, iss.contactPhone].filter(Boolean).join(' · ');
+            return (
+              <>
+                <div style={styles.reviewRow}>
+                  <span style={styles.reviewLabel}>Counterparty</span>
+                  <span style={styles.reviewValue}>{iss.name}{iss.code ? ` (${iss.code})` : ''}</span>
+                </div>
+                <div style={styles.reviewRow}>
+                  <span style={styles.reviewLabel}>Counterparty Contact</span>
+                  <span style={styles.reviewValue}>{contact || 'None on file'}</span>
+                </div>
+              </>
+            );
+          })()}
+          {broker && assetType !== ASSET_TYPES.STRUCTURED_PRODUCT && (
             <div style={styles.reviewRow}>
               <span style={styles.reviewLabel}>Broker / Issuer</span>
               <span style={styles.reviewValue}>{broker}</span>
@@ -3712,7 +4772,7 @@ const OrderModal = ({
           <div style={styles.reviewSection}>
             <div style={styles.reviewTitle}>Accounts ({bulkOrders.filter(o => o.clientId && o.bankAccountId).length})</div>
             {bulkOrders.filter(o => o.clientId && o.bankAccountId).map((order, idx) => {
-              const client = availableClients.find(c => c._id === order.clientId);
+              const client = findClientById(availableClients, order.clientId);
               const accounts = bulkAccountsMap[bulkOrders.indexOf(order)] || [];
               const account = accounts.find(a => a._id === order.bankAccountId);
               const clientName = client
@@ -3797,18 +4857,40 @@ const OrderModal = ({
             </div>
           </div>
         )}
-        {orderSource === ORDER_SOURCE_TYPES.EMAIL && isBulkMode && clientOrderFiles.length > 0 && (
+        {isBulkMode && validBulkRows().length > 0 && (
           <div style={styles.reviewSection}>
-            <div style={styles.reviewTitle}>Client Order Emails ({clientOrderFiles.length})</div>
-            {clientOrderFiles.map((file, idx) => (
-              <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'var(--text-secondary)', padding: '4px 0' }}>
-                <span>📎</span>
-                <span>{file.name}</span>
-                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                  ({(file.size / 1024).toFixed(0)} KB)
-                </span>
-              </div>
-            ))}
+            <div style={styles.reviewTitle}>
+              {orderSource === ORDER_SOURCE_TYPES.PHONE ? 'Phone instruction per client' : 'Client instruction per client'}
+            </div>
+            {validBulkRows().map(({ row, origIdx }) => {
+              const account = (bulkAccountsMap[origIdx] || []).find(a => a._id === row.bankAccountId);
+              const file = row.traceFileKey ? bulkTraceFiles[row.traceFileKey] : null;
+              return (
+                <div key={origIdx} style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', fontSize: '12px', padding: '5px 0', borderBottom: '1px solid var(--border-color)' }}>
+                  <span style={{ flex: 2, minWidth: '120px', fontWeight: '600', color: 'var(--text-primary)' }}>{bulkRowClientName(row)}</span>
+                  <span style={{ flex: 2, minWidth: '120px', color: 'var(--text-secondary)' }}>
+                    {account ? `${account.bankName} - ${account.accountNumber}` : row.accountLabel}
+                  </span>
+                  <span style={{ flex: 3, minWidth: '160px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    {orderSource === ORDER_SOURCE_TYPES.PHONE ? (
+                      <>
+                        <span>📞</span>
+                        <span>{rowPhoneCallTime(row) ? new Date(rowPhoneCallTime(row)).toLocaleString() : 'No call time'}</span>
+                        {rowPhoneCallLine(row) && <span style={{ color: 'var(--text-muted)' }}>· {rowPhoneCallLine(row)}</span>}
+                      </>
+                    ) : file ? (
+                      <>
+                        <span>📎</span>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>({(file.size / 1024).toFixed(0)} KB)</span>
+                      </>
+                    ) : (
+                      <span style={{ color: 'var(--loss-color)', fontWeight: '600' }}>No instruction attached</span>
+                    )}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         )}
         {orderSource === ORDER_SOURCE_TYPES.EMAIL && !isBulkMode && clientOrderFile && (
@@ -3832,6 +4914,18 @@ const OrderModal = ({
     // Only offer positions matching the selected asset type — selling a fund
     // shouldn't list structured products.
     const typeHoldings = accountHoldings.filter(h => assetTypeForAssetClass(h.assetClass) === assetType);
+    // Does selling this asset type mean selling an existing position?
+    //
+    // For equities, funds and the rest, yes: the sell side starts from a holding
+    // in the book. FX and term deposits aren't positions at all. A listed option
+    // is the third case: selling one WRITES the contract - it is a sale to open,
+    // and nothing exists in the book to pick from. Showing those desks a
+    // "Positions Available / No Option positions available" panel asks them for
+    // something that cannot exist. Cover on a short call is checked separately,
+    // against the UNDERLYING, and it flags rather than blocks.
+    const sellsFromPosition = assetType !== ASSET_TYPES.FX
+      && assetType !== ASSET_TYPES.TERM_DEPOSIT
+      && assetType !== ASSET_TYPES.OPTION;
     const filteredHoldings = typeHoldings.filter(h => {
       if (!holdingSearchQuery) return true;
       const q = holdingSearchQuery.toLowerCase();
@@ -3870,6 +4964,15 @@ const OrderModal = ({
                 setMode('buy');
                 setSellManualSearch(false);
               }
+              // Options keep the buy/sell intent — direction is real — but never
+              // carry a source holding: the contract is opened by this order, and
+              // a holding left over from an equity sell would be sent as the
+              // position being closed.
+              if (e.target.value === ASSET_TYPES.OPTION) {
+                setSelectedHolding(null);
+                setSellManualSearch(false);
+                setForceWithoutSourceHolding(false);
+              }
             }}
           >
             <option value={ASSET_TYPES.EQUITY}>Equity</option>
@@ -3879,6 +4982,7 @@ const OrderModal = ({
             <option value={ASSET_TYPES.ETF}>ETF</option>
             <option value={ASSET_TYPES.FX}>FX</option>
             <option value={ASSET_TYPES.TERM_DEPOSIT}>Term Deposit</option>
+            <option value={ASSET_TYPES.OPTION}>Listed Option</option>
             <option value={ASSET_TYPES.OTHER}>Other</option>
           </select>
         </div>
@@ -3924,6 +5028,13 @@ const OrderModal = ({
               SELL
             </button>
           </div>
+          {assetType === ASSET_TYPES.OPTION && (
+            <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginTop: '6px' }}>
+              {mode === 'sell'
+                ? 'Selling writes the contract — there is no existing position to pick. Cover on a short call is checked against the underlying below.'
+                : 'Buying pays the premium and opens the contract.'}
+            </div>
+          )}
         </div>
         )}
 
@@ -3949,7 +5060,7 @@ const OrderModal = ({
                       color: pos.amount >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                       fontSize: '13px'
                     }}>
-                      {pos.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {pos.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </div>
                 ))}
@@ -3997,7 +5108,7 @@ const OrderModal = ({
                               <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{pos.currency}</span>
                                 <span style={{ fontWeight: '600', color: pos.amount >= 0 ? 'var(--gain-color)' : 'var(--loss-color)', fontSize: '12px' }}>
-                                  {pos.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  {pos.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </span>
                               </div>
                             ))}
@@ -4018,7 +5129,7 @@ const OrderModal = ({
                                   {h.securityName} <span style={{ opacity: 0.7 }}>({h.isin})</span>
                                 </span>
                                 <span style={{ fontSize: '12px', fontWeight: '600', whiteSpace: 'nowrap' }}>
-                                  {h.quantity?.toLocaleString()} · {h.currency} {h.marketValue?.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                  {h.quantity?.toLocaleString('en-US')} · {h.currency} {h.marketValue?.toLocaleString('en-US', { maximumFractionDigits: 0 })}
                                 </span>
                               </div>
                             ))}
@@ -4037,7 +5148,7 @@ const OrderModal = ({
         })()}
 
         {/* Positions Available (sell mode) - mirror the Cash Available panel */}
-        {mode === 'sell' && !isBulkMode && assetType !== ASSET_TYPES.FX && assetType !== ASSET_TYPES.TERM_DEPOSIT && !(selectedHolding || selectedSecurity) && (
+        {mode === 'sell' && !isBulkMode && sellsFromPosition && !(selectedHolding || selectedSecurity) && (
           <div style={{
             padding: '10px 14px',
             background: 'var(--bg-secondary)',
@@ -4110,10 +5221,10 @@ const OrderModal = ({
                       </div>
                       <div style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                         <div style={{ fontSize: '13px', fontWeight: '600' }}>
-                          Qty: {holding.quantity?.toLocaleString()}
+                          Qty: {holding.quantity?.toLocaleString('en-US')}
                         </div>
                         <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-                          {holding.currency} {holding.marketValue?.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                          {holding.currency} {holding.marketValue?.toLocaleString('en-US', { maximumFractionDigits: 0 })}
                         </div>
                       </div>
                     </div>
@@ -4125,7 +5236,7 @@ const OrderModal = ({
         )}
 
         {/* Selected security display (both modes) */}
-        {(selectedHolding || selectedSecurity) && mode === 'sell' && !isBulkMode && assetType !== ASSET_TYPES.FX && assetType !== ASSET_TYPES.TERM_DEPOSIT && (
+        {(selectedHolding || selectedSecurity) && mode === 'sell' && !isBulkMode && sellsFromPosition && (
           <div style={styles.formGroup}>
             <label style={styles.label}>Selected Position</label>
             <div style={styles.selectedSecurity}>
@@ -4133,7 +5244,7 @@ const OrderModal = ({
                 <div style={{ fontWeight: '500' }}>{selectedHolding?.securityName || selectedSecurity?.name}</div>
                 <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
                   {selectedHolding?.isin || selectedSecurity?.isin}
-                  {selectedHolding ? ` | Qty: ${selectedHolding.quantity?.toLocaleString()}` : ''}
+                  {selectedHolding ? ` | Qty: ${selectedHolding.quantity?.toLocaleString('en-US')}` : ''}
                   {` | ${selectedHolding?.currency || selectedSecurity?.currency || ''}`}
                 </div>
               </div>
@@ -4154,11 +5265,11 @@ const OrderModal = ({
             In sell manual mode, once a security is picked the "Selected Position" panel
             above already shows it with a Change button — don't render the search step's
             duplicate "Search Security" card. */}
-        {(mode === 'buy' || isBulkMode || assetType === ASSET_TYPES.FX || assetType === ASSET_TYPES.TERM_DEPOSIT
+        {(mode === 'buy' || isBulkMode || !sellsFromPosition
           || (sellManualSearch && !(selectedHolding || selectedSecurity))) && renderStep1()}
 
         {/* Sell manual-entry escape hatch */}
-        {mode === 'sell' && !sellManualSearch && !isBulkMode && assetType !== ASSET_TYPES.FX && assetType !== ASSET_TYPES.TERM_DEPOSIT && !(selectedHolding || selectedSecurity) && (
+        {mode === 'sell' && !sellManualSearch && !isBulkMode && sellsFromPosition && !(selectedHolding || selectedSecurity) && (
           <div style={{ marginTop: '-8px' }}>
             <span
               style={{ fontSize: '12px', color: 'var(--accent-color)', cursor: 'pointer' }}
@@ -4180,7 +5291,7 @@ const OrderModal = ({
         )}
 
         {/* Force-override: allow sell without a source holding (bank-side discrepancy) */}
-        {mode === 'sell' && !isBulkMode && !selectedHolding && assetType !== ASSET_TYPES.FX && assetType !== ASSET_TYPES.TERM_DEPOSIT && (sellManualSearch || selectedSecurity) && (
+        {mode === 'sell' && !isBulkMode && !selectedHolding && sellsFromPosition && (sellManualSearch || selectedSecurity) && (
           <div style={{
             marginTop: '12px',
             padding: '10px 12px',

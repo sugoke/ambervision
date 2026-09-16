@@ -67,6 +67,13 @@ const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, use
   // answer the morning questions instead: what moved, what needs me, what's next.
   // All are scoped to the active View As perimeter by the dashboard methods.
   const dayChangeIsPositive = (summary?.aumChange ?? 0) >= 0;
+  // When the banks' files for today haven't been ingested yet, the comparison is
+  // valuation-vs-same-valuation — label it with the data date instead of
+  // pretending the day was flat.
+  const staleValuation = summary?.valuationIsStale && summary?.valuationDate;
+  const valuationLabel = staleValuation
+    ? new Date(summary.valuationDate).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' })
+    : null;
   const stats = [
     {
       label: 'Total AUM',
@@ -87,7 +94,9 @@ const PortfolioSummaryCard = ({ summary, onCurrencyChange, selectedCurrency, use
         ? `${dayChangeIsPositive ? '+' : ''}${formatCurrency(summary?.aumChange, true)}`
         : '—',
       sub: hasVariation && summary?.aumChangePercent != null
-        ? `${dayChangeIsPositive ? '+' : ''}${summary.aumChangePercent.toFixed(2)}% vs yesterday`
+        ? (staleValuation
+          ? `${dayChangeIsPositive ? '+' : ''}${summary.aumChangePercent.toFixed(2)}% · data as of ${valuationLabel}`
+          : `${dayChangeIsPositive ? '+' : ''}${summary.aumChangePercent.toFixed(2)}% vs yesterday`)
         : 'no comparison snapshot',
       icon: (
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

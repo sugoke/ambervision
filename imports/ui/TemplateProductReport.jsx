@@ -24,6 +24,7 @@ import TwinWinReport from './templates/TwinWinReport.jsx';
 import RateReport from './templates/RateReport.jsx';
 import ProductCommentaryCard from './components/ProductCommentaryCard.jsx';
 import PriceSparkline from './components/PriceSparkline.jsx';
+import HoldingPriceChart from './components/HoldingPriceChart.jsx';
 import TermSheetManager from './components/TermSheetManager.jsx';
 import PDFDownloadButton from './components/PDFDownloadButton.jsx';
 import { useIsMobile } from './hooks/useIsMobile.js';
@@ -550,6 +551,19 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
   // Use cached product if current product is undefined (during re-renders like window resize)
   const displayProduct = product || productCache.current;
 
+  // The note's own price card (last price of the product + its price-history
+  // sparkline). It used to be gated on productStatus === 'live', so the moment a
+  // product matured or autocalled the whole card disappeared and the price
+  // progression went with it — even though the full history is still stored and
+  // active in productPrices. Now it survives redemption: while live it needs the
+  // product to be held somewhere (unchanged), and once redeemed it shows as long
+  // as there is price history to show.
+  const noteProductStatus = latestReport?.templateResults?.currentStatus?.productStatus;
+  const isNoteLive = noteProductStatus === 'live';
+  const showNotePriceCard = isNoteLive
+    ? !!(linkedHoldings && linkedHoldings.length > 0)
+    : !!productPrice;
+
   // DEBUG: Log what's happening
   // Show loading if we have no product data at all (neither current nor cached)
   if (!displayProduct) {
@@ -849,7 +863,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
         {/* Bottom Section - Product Details and Price */}
         <div style={{
           display: 'grid',
-          gridTemplateColumns: isMobile ? '1fr' : (latestReport?.templateResults?.currentStatus?.productStatus === 'live' ? '1fr auto' : '1fr'),
+          gridTemplateColumns: isMobile ? '1fr' : (showNotePriceCard ? '1fr auto' : '1fr'),
           gap: '1.5rem',
           padding: isMobile ? '1rem' : '1.5rem',
           alignItems: 'flex-start'
@@ -1101,17 +1115,22 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
             </div>
           </div>
 
-          {/* Current Product Price - Show only for live products that are still held in at least one portfolio */}
-          {latestReport?.templateResults?.currentStatus?.productStatus === 'live' && linkedHoldings && linkedHoldings.length > 0 && (
+          {/* Product price + price history. Live and held, or redeemed with a
+              price history to keep showing (see showNotePriceCard above). */}
+          {showNotePriceCard && (
             <div style={{
               padding: '1rem 1.5rem',
-              background: productPrice
-                ? 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)'
-                : 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)',
+              // Slate for a redeemed note: the number is a last known price, not a
+              // live quote, so it must not read as a live valuation.
+              background: !isNoteLive
+                ? 'linear-gradient(135deg, #475569 0%, #334155 100%)'
+                : (productPrice
+                  ? 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)'
+                  : 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)'),
               borderRadius: '8px',
               minWidth: isMobile ? 'auto' : '220px',
               width: isMobile ? '100%' : 'auto',
-              boxShadow: productPrice
+              boxShadow: (productPrice && isNoteLive)
                 ? '0 4px 12px rgba(16, 185, 129, 0.25)'
                 : '0 4px 12px rgba(107, 114, 128, 0.15)'
             }}>
@@ -1121,9 +1140,26 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
                 textTransform: 'uppercase',
                 letterSpacing: '0.5px',
                 fontWeight: '600',
-                marginBottom: '0.5rem'
+                marginBottom: '0.5rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '0.5rem'
               }}>
-                Market Price
+                <span>{isNoteLive ? 'Market Price' : 'Final Price'}</span>
+                {/* Opens the full price history of the note itself. Kept out of
+                    PDF output, where nothing is clickable. The rows are stored as
+                    percent of par, so the chart is told to label in % rather than
+                    treat the numbers as a currency amount. */}
+                {productPrice && !isPDFMode && (
+                  <HoldingPriceChart
+                    isin={displayProduct.isin}
+                    securityName={`${latestReport?.templateResults?.generatedProductName || displayProduct.title || displayProduct.productName || displayProduct.isin} — price history`}
+                    sessionId={currentSessionId}
+                    priceUnit="percent"
+                    iconColor="rgba(255, 255, 255, 0.9)"
+                  />
+                )}
               </div>
               <div style={{
                 fontSize: productPrice ? '1.75rem' : '0.95rem',

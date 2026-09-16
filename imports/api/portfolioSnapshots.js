@@ -1,6 +1,17 @@
 import { Mongo } from 'meteor/mongo';
 import { SecuritiesMetadataCollection } from './securitiesMetadata';
+import { getHoldingCategoryKey } from './assetClassification';
 import { PMSOperationsCollection } from './pmsOperations';
+import { PMSHoldingsCollection } from './pmsHoldings';
+
+// Conditionally-protected ("barrier") structured products. The legacy key kept
+// no underlying, so equity-linked products landed in it too and were counted as
+// bonds; buildCategoryKey() now records the underlying alongside the protection.
+const LEGACY_BARRIER_PROTECTED_KEY = 'structured_product_barrier_protected';
+const EQUITY_LINKED_BARRIER_PROTECTED_KEY = 'structured_product_equity_linked_barrier_protected';
+
+// Snapshots corrected per bulk write when reclassifying stored breakdowns.
+const WRITE_BATCH_SIZE = 500;
 
 /**
  * Portfolio Snapshots Collection
@@ -192,6 +203,379 @@ export const PortfolioSnapshotHelpers = {
   },
 
   /**
+   * Split holdings into cash vs investment positions.
+   * Cash is detected on the raw bank fields (not the enriched asset class) so
+   * the split is identical whatever bank the file came from.
+   * @param {Array} holdings
+   * @returns {Object} { cashHoldings, investmentHoldings }
+   */
+  splitCashHoldings(holdings = []) {
+    const isCash = (h) => {
+      const type = String(h.securityType || '').trim().toUpperCase();
+      const name = (h.securityName || '').toLowerCase();
+      return type === 'CASH' || type === '4' || name.includes('cash') || name.includes('money market');
+    };
+    return {
+      cashHoldings: holdings.filter(isCash),
+      investmentHoldings: holdings.filter(h => !isCash(h))
+    };
+  },
+
+  /**
+   * Build the granular asset class breakdown for a set of holdings.
+   * Classification itself lives in assetClassification.js, shared with the PMS
+   * screen, the portfolio review generator and the pre-trade check, so a
+   * position can never land in one bucket here and another one there.
+   * @param {Array} holdings - Position objects (cash included; it is split out here)
+   * @returns {Object} Map of category key -> market value
+   */
+  async buildAssetClassBreakdown(holdings = []) {
+    const { cashHoldings, investmentHoldings } = this.splitCashHoldings(holdings);
+
+    const assetClassBreakdown = {};
+
+    // Pre-populate cash from cashHoldings (already filtered by securityType)
+    // This ensures cash is always in the breakdown regardless of the classifier
+    const cashBalance = cashHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+    if (cashBalance > 0) {
+      assetClassBreakdown['cash'] = cashBalance;
+    }
+
+    // Batch lookup securities metadata for the investment holdings
+    const isins = investmentHoldings
+      .map(h => h.isin)
+      .filter(isin => isin && isin.trim());
+
+    const metadataMap = {};
+    if (isins.length > 0) {
+      const metadataRecords = await SecuritiesMetadataCollection.find({
+        isin: { $in: isins }
+      }).fetchAsync();
+
+      metadataRecords.forEach(record => {
+        metadataMap[record.isin] = record;
+      });
+    }
+
+    investmentHoldings.forEach(h => {
+      const categoryKey = getHoldingCategoryKey(h, h.isin ? metadataMap[h.isin] : null);
+      assetClassBreakdown[categoryKey] = (assetClassBreakdown[categoryKey] || 0) + (h.marketValue || 0);
+    });
+
+    return assetClassBreakdown;
+  },
+
+  /**
+   * The holdings on record for a snapshot's date: the newest record per
+   * uniqueKey dated on or before the snapshot's day.
+   *
+   * A position is not restated in every bank file, and a snapshot can be
+   * carried forward when a bank's file lags a day - so matching on the
+   * snapshot's own day alone loses positions. This mirrors the historical
+   * (asOfDate) PMS view: $top per uniqueKey rather than $sort + $group, which
+   * blows MongoDB's 32MB sort limit during plan selection on this collection.
+   *
+   * @param {Object} snapshot - A portfolio snapshot document
+   * @returns {Array} Holdings as of that snapshot's date, newest record per key
+   */
+  async getHoldingsAsOfDate(snapshot) {
+    const dayEnd = new Date(snapshot.snapshotDate);
+    dayEnd.setUTCHours(0, 0, 0, 0);
+    dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
+
+    // Scope to the snapshot's owner: several clients share the literal
+    // portfolioCode 'CONSOLIDATED', so bank + code + date alone would merge them.
+    const ownerSelector = snapshot.userId
+      ? { userId: snapshot.userId }
+      : (snapshot.entityId ? { entityId: snapshot.entityId } : {});
+
+    const latestByKey = await PMSHoldingsCollection.rawCollection().aggregate([
+      {
+        $match: {
+          portfolioCode: snapshot.portfolioCode,
+          ...(snapshot.bankId ? { bankId: snapshot.bankId } : {}),
+          ...ownerSelector,
+          snapshotDate: { $lt: dayEnd }
+        }
+      },
+      {
+        $group: {
+          _id: '$uniqueKey',
+          top: {
+            $top: {
+              sortBy: { snapshotDate: -1, version: -1 },
+              output: '$$ROOT'
+            }
+          }
+        }
+      }
+    ], { allowDiskUse: true }).toArray();
+
+    return latestByKey.map(doc => doc.top);
+  },
+
+  /**
+   * Split holdings' conditionally-protected ("barrier") structured products by
+   * underlying, using the shared classifier.
+   * @param {Array} holdings
+   * @param {Object} metadataByIsin
+   * @returns {Object} { equityLinked, nonEquity } market values
+   */
+  splitBarrierProtectedByUnderlying(holdings, metadataByIsin) {
+    let equityLinked = 0;
+    let nonEquity = 0;
+
+    holdings.forEach(h => {
+      const key = getHoldingCategoryKey(h, h.isin ? metadataByIsin[h.isin] : null);
+      if (key === LEGACY_BARRIER_PROTECTED_KEY) {
+        nonEquity += h.marketValue || 0;
+      } else if (key === EQUITY_LINKED_BARRIER_PROTECTED_KEY) {
+        equityLinked += h.marketValue || 0;
+      }
+    });
+
+    return { equityLinked, nonEquity };
+  },
+
+  /**
+   * Reclassify the legacy structured-product key on existing snapshots.
+   *
+   * Snapshots written before the classifier was unified filed every
+   * conditionally-protected ("barrier") structured product under
+   * `structured_product_barrier_protected`, dropping the underlying - so an
+   * equity-linked barrier product was counted as a bond. Allocation alerts and
+   * the RM dashboard read the stored breakdown, so they keep reporting the old
+   * classification until the snapshots are corrected.
+   *
+   * This only ever RE-BUCKETS: the stored amount is split between the equity
+   * and non-equity keys and every other key keeps its stored value, so a
+   * snapshot's total is unchanged by construction. Values are never rebuilt
+   * from today's holdings - a position deactivated after a snapshot was taken
+   * (a rollover, a stale-key reconcile) makes that unreproducible, and fixing
+   * the classification must not rewrite history's numbers.
+   *
+   * How the split is resolved, in order of confidence:
+   *   - `exact`     - the barrier holdings on record account for the stored
+   *                   amount, so their split is the snapshot's split
+   *   - `one-sided` - every barrier product on record shares one underlying
+   *                   class, so the split is unambiguous whatever the amount
+   *   - `siblings`  - a CONSOLIDATED roll-up takes the split of its per-account
+   *                   snapshots for that day (its own holdings are duplicate
+   *                   roll-up copies and would double count)
+   *   - `apportioned` - mixed underlyings, holdings within 5% of the stored
+   *                   amount: apportion by their mix
+   * Anything less certain than that is left untouched and reported.
+   *
+   * @param {Object} params
+   * @param {String} [params.portfolioCode] - Limit to one portfolio
+   * @param {String} [params.bankId] - Limit to one bank
+   * @param {Date} [params.since] - Only snapshots on/after this date
+   * @param {Boolean} [params.dryRun=true] - Report without writing
+   * @param {Number} [params.limit=20000] - Max snapshots to examine
+   * @returns {Object} Counts by resolution basis plus a sample of the changes
+   */
+  async rebuildAssetClassBreakdowns({
+    portfolioCode = null,
+    bankId = null,
+    since = null,
+    dryRun = true,
+    limit = 20000
+  } = {}) {
+    const selector = {
+      [`assetClassBreakdown.${LEGACY_BARRIER_PROTECTED_KEY}`]: { $exists: true },
+      ...(portfolioCode ? { portfolioCode } : {}),
+      ...(bankId ? { bankId } : {}),
+      ...(since ? { snapshotDate: { $gte: since } } : {})
+    };
+
+    const snapshots = await PortfolioSnapshotsCollection.find(selector, {
+      sort: { snapshotDate: -1 },
+      limit
+    }).fetchAsync();
+
+    const stats = {
+      examined: snapshots.length,
+      exact: 0,
+      oneSided: 0,
+      siblings: 0,
+      apportioned: 0,
+      unchangedAllNonEquity: 0,
+      skippedNoBarrierHoldings: 0,
+      skippedUncertainMix: 0
+    };
+    const samples = [];
+
+    // Thousands of snapshots are corrected in one pass. Each Meteor updateAsync
+    // costs a round trip plus observer work on every connected client, so the
+    // corrections go out as unordered bulk writes instead.
+    const pendingWrites = [];
+    const reclassifiedAt = new Date();
+
+    // The same positions recur across hundreds of daily snapshots - cache their
+    // metadata rather than re-reading it per snapshot.
+    const metadataByIsin = {};
+    const metadataFetched = new Set();
+
+    const loadMetadata = async (holdings) => {
+      const missing = [...new Set(holdings
+        .map(h => h.isin)
+        .filter(isin => isin && isin.trim() && !metadataFetched.has(isin)))];
+      if (missing.length === 0) return;
+      missing.forEach(isin => metadataFetched.add(isin));
+      const records = await SecuritiesMetadataCollection.find({
+        isin: { $in: missing }
+      }).fetchAsync();
+      records.forEach(record => { metadataByIsin[record.isin] = record; });
+    };
+
+    // Per-account splits, keyed by owner|bank|day, so a CONSOLIDATED roll-up can
+    // take the split of the accounts it rolls up.
+    const dayKey = (snapshot) =>
+      [
+        snapshot.userId || snapshot.entityId || '',
+        snapshot.bankId || '',
+        new Date(snapshot.snapshotDate).toISOString().slice(0, 10)
+      ].join('|');
+    const perAccountSplits = new Map();
+
+    // Per-account snapshots first: the roll-ups are resolved from them.
+    const ordered = [
+      ...snapshots.filter(s => s.portfolioCode !== 'CONSOLIDATED'),
+      ...snapshots.filter(s => s.portfolioCode === 'CONSOLIDATED')
+    ];
+
+    for (const snapshot of ordered) {
+      const storedLegacy = snapshot.assetClassBreakdown?.[LEGACY_BARRIER_PROTECTED_KEY] || 0;
+      if (!storedLegacy) {
+        stats.skippedNoBarrierHoldings++;
+        continue;
+      }
+
+      const isConsolidated = snapshot.portfolioCode === 'CONSOLIDATED';
+      let split = null;
+      let basis = null;
+
+      // A roll-up's own holdings are duplicate copies of the per-account ones -
+      // reconstructing from them double counts. Use the accounts' split.
+      if (isConsolidated) {
+        const sibling = perAccountSplits.get(dayKey(snapshot));
+        if (sibling && (sibling.equityLinked + sibling.nonEquity) > 0) {
+          split = sibling;
+          basis = 'siblings';
+        }
+      }
+
+      if (!split) {
+        const holdings = await this.getHoldingsAsOfDate(snapshot);
+        await loadMetadata(holdings);
+
+        // Prefer the active positions (what createSnapshot counted). Fall back
+        // to every record on file when the active ones don't account for the
+        // stored amount - a position can have been deactivated since.
+        const candidates = [
+          this.splitBarrierProtectedByUnderlying(holdings.filter(h => h.isActive !== false), metadataByIsin),
+          this.splitBarrierProtectedByUnderlying(holdings, metadataByIsin)
+        ];
+        const tolerance = Math.max(0.01, storedLegacy * 0.001);
+        const exact = candidates.find(c =>
+          Math.abs((c.equityLinked + c.nonEquity) - storedLegacy) <= tolerance
+        );
+        const observed = exact || candidates.find(c => c.equityLinked + c.nonEquity > 0);
+
+        if (!observed) {
+          stats.skippedNoBarrierHoldings++;
+          continue;
+        }
+
+        const observedTotal = observed.equityLinked + observed.nonEquity;
+        const drift = Math.abs(observedTotal - storedLegacy) / storedLegacy;
+        const isMixed = observed.equityLinked > 0 && observed.nonEquity > 0;
+
+        if (exact) {
+          basis = 'exact';
+        } else if (!isMixed) {
+          // One underlying class only - the split is unambiguous whatever the
+          // amount on record.
+          basis = 'one-sided';
+        } else if (drift <= 0.05) {
+          basis = 'apportioned';
+        } else {
+          // Mixed underlyings and the holdings don't line up with the stored
+          // amount: no honest way to split it. Leave it.
+          stats.skippedUncertainMix++;
+          continue;
+        }
+        split = observed;
+      }
+
+      const observedTotal = split.equityLinked + split.nonEquity;
+      // Re-bucket the STORED amount, never the observed one, so the snapshot's
+      // total is untouched.
+      const equityValue = storedLegacy * (split.equityLinked / observedTotal);
+      const nonEquityValue = storedLegacy - equityValue;
+
+      if (!isConsolidated) {
+        const key = dayKey(snapshot);
+        const running = perAccountSplits.get(key) || { equityLinked: 0, nonEquity: 0 };
+        running.equityLinked += equityValue;
+        running.nonEquity += nonEquityValue;
+        perAccountSplits.set(key, running);
+      }
+
+      if (equityValue <= 0) {
+        // Genuinely non-equity underlyings: the legacy key is still correct.
+        stats.unchangedAllNonEquity++;
+        continue;
+      }
+
+      const updated = { ...snapshot.assetClassBreakdown };
+      delete updated[LEGACY_BARRIER_PROTECTED_KEY];
+      updated[EQUITY_LINKED_BARRIER_PROTECTED_KEY] =
+        (updated[EQUITY_LINKED_BARRIER_PROTECTED_KEY] || 0) + equityValue;
+      if (nonEquityValue > 0) {
+        updated[LEGACY_BARRIER_PROTECTED_KEY] = nonEquityValue;
+      }
+
+      if (basis === 'exact') stats.exact++;
+      else if (basis === 'one-sided') stats.oneSided++;
+      else if (basis === 'siblings') stats.siblings++;
+      else stats.apportioned++;
+
+      if (samples.length < 20) {
+        samples.push({
+          snapshotId: snapshot._id,
+          portfolioCode: snapshot.portfolioCode,
+          snapshotDate: snapshot.snapshotDate,
+          outcome: dryRun ? 'would_update' : 'updated',
+          basis,
+          storedLegacy,
+          before: snapshot.assetClassBreakdown,
+          after: updated
+        });
+      }
+
+      if (!dryRun) {
+        pendingWrites.push({
+          updateOne: {
+            filter: { _id: snapshot._id },
+            update: { $set: { assetClassBreakdown: updated, breakdownReclassifiedAt: reclassifiedAt } }
+          }
+        });
+        if (pendingWrites.length >= WRITE_BATCH_SIZE) {
+          await PortfolioSnapshotsCollection.rawCollection().bulkWrite(pendingWrites, { ordered: false });
+          pendingWrites.length = 0;
+        }
+      }
+    }
+
+    if (pendingWrites.length > 0) {
+      await PortfolioSnapshotsCollection.rawCollection().bulkWrite(pendingWrites, { ordered: false });
+    }
+
+    return { ...stats, samples };
+  },
+
+  /**
    * Create a portfolio snapshot from current holdings
    * @param {Object} params
    * @param {Array} [params.transferOpsCache] - Optional pre-fetched transfer operations to avoid repeated DB queries
@@ -216,29 +600,19 @@ export const PortfolioSnapshotHelpers = {
     holdings = holdings.filter(h => h.isActive !== false);
 
     // Separate cash positions from investment holdings
-    const cashHoldings = holdings.filter(h => {
-      const type = String(h.securityType || '').trim().toUpperCase();
-      const name = (h.securityName || '').toLowerCase();
-      return type === 'CASH' || type === '4' || name.includes('cash') || name.includes('money market');
-    });
-
-    const investmentHoldings = holdings.filter(h => {
-      const type = String(h.securityType || '').trim().toUpperCase();
-      const name = (h.securityName || '').toLowerCase();
-      return !(type === 'CASH' || type === '4' || name.includes('cash') || name.includes('money market'));
-    });
+    const { cashHoldings, investmentHoldings } = this.splitCashHoldings(holdings);
 
     // Calculate cash balance
     const cashBalance = cashHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
 
     // Calculate totals for investment holdings (excluding cash)
     const totalMarketValue = investmentHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+    // costPrice is already normalized to decimal by every bank parser
+    // (1.0 = 100% for percentage-quoted instruments, see CLAUDE.md), so it
+    // must NOT be divided by 100 again here — doing so shrank the cost basis
+    // of bonds and structured notes 100× in every snapshot.
     const totalCostBasis = investmentHoldings.reduce((sum, h) => {
-      // Convert percentage prices to decimal (e.g., 100% → 1.0)
-      const adjustedCostPrice = h.priceType === 'percentage'
-        ? (h.costPrice || 0) / 100
-        : (h.costPrice || 0);
-      return sum + (h.quantity * adjustedCostPrice);
+      return sum + ((h.quantity || 0) * (h.costPrice || 0));
     }, 0);
     const unrealizedPnL = totalMarketValue - totalCostBasis;
     const unrealizedPnLPercent = totalCostBasis > 0 ? (unrealizedPnL / totalCostBasis) * 100 : 0;
@@ -257,141 +631,7 @@ export const PortfolioSnapshotHelpers = {
     const hasMixedCurrencies = currencies.length > 1;
 
     // Calculate asset class breakdown
-    const assetClassBreakdown = {};
-
-    // Pre-populate cash from cashHoldings (already filtered by securityType)
-    // This ensures cash is always in the breakdown regardless of the heuristic loop
-    if (cashBalance > 0) {
-      assetClassBreakdown['cash'] = cashBalance;
-    }
-
-    // Create a map to store ISINs for batch lookup (only for investment holdings)
-    const isins = investmentHoldings
-      .map(h => h.isin)
-      .filter(isin => isin && isin.trim());
-
-    // Batch lookup all securities metadata
-    const metadataMap = {};
-    if (isins.length > 0) {
-      const metadataRecords = await SecuritiesMetadataCollection.find({
-        isin: { $in: isins }
-      }).fetchAsync();
-
-      metadataRecords.forEach(record => {
-        metadataMap[record.isin] = record;
-      });
-    }
-
-    // Process only investment holdings (cash is already handled above)
-    investmentHoldings.forEach(h => {
-      let assetClass = 'other'; // Default to 'other' (standardized value)
-      let subClass = null;
-      let underlyingType = null;
-      let protectionType = null;
-
-      // First, try to get asset class and sub-class from metadata
-      if (h.isin && metadataMap[h.isin]) {
-        const metadata = metadataMap[h.isin];
-        if (metadata.assetClass) {
-          assetClass = metadata.assetClass;
-          subClass = metadata.assetSubClass;
-          underlyingType = metadata.structuredProductUnderlyingType;
-          protectionType = metadata.structuredProductProtectionType;
-        }
-      }
-
-      // If no metadata, try the holding's own assetClass (from Ambervision enrichment)
-      if (assetClass === 'other' && h.assetClass) {
-        assetClass = h.assetClass;
-        // Also try to get sub-class info from bankSpecificData
-        if (h.bankSpecificData) {
-          underlyingType = h.bankSpecificData.structuredProductUnderlyingType || underlyingType;
-          protectionType = h.bankSpecificData.structuredProductProtectionType || protectionType;
-        }
-      }
-
-      // If still 'other', fall back to heuristic detection using standardized values
-      if (assetClass === 'other') {
-        const type = String(h.securityType || '').trim().toLowerCase();
-        const name = (h.securityName || '').toLowerCase();
-
-        // STRUCTURED PRODUCTS - Check FIRST (before equity/bonds since some have misleading types)
-        // Type 19 is Julius Baer's code for structured products/certificates
-        const isStructuredByType = type === 'certificate' || type === 'structured' || type === '19';
-        const isStructuredByIssuer = name.includes('sg issuer') || name.includes('julius baer express') ||
-            name.includes('bnp paribas iss') || name.includes('raiffeisen ch') ||
-            name.includes('banque intern') || name.includes('credit suisse ag') ||
-            name.includes('credit agricole') || name.includes('citigroup') ||
-            name.includes('ubs ag') || name.includes('vontobel');
-        const isStructuredByName = name.includes('autocallable') || name.includes('phoenix') ||
-            name.includes('orion') || name.includes('himalaya') || name.includes('reverse convertible') ||
-            name.includes('bar.cap') || name.includes('barrier') || name.includes('express') ||
-            name.includes('cap.prot') || name.includes('capital prot') ||
-            (name.includes('cert') && !name.includes('certificate of deposit'));
-
-        if (isStructuredByType || isStructuredByIssuer || isStructuredByName) {
-          assetClass = 'structured_product';
-          if (name.includes('capital guaranteed') || name.includes('cap.prot') ||
-              name.includes('capital protection') || name.includes('100%')) {
-            protectionType = 'capital_guaranteed_100';
-          } else if (name.includes('bar.cap') || name.includes('barrier')) {
-            protectionType = 'capital_protected_conditional';
-          }
-        } else if (type === '13' || name.includes('private equity') || name.includes('schroders capital') ||
-            name.includes('kkr') || name.includes('blackstone')) {
-          assetClass = 'private_equity';
-        } else if (type === 'money_market_fund' || (name.includes('money market') && name.includes('fund'))) {
-          assetClass = 'monetary_products';
-        } else if (type === 'fund' || type === 'etf' || name.includes('sicav') || name.includes('ucits')) {
-          assetClass = 'fund';
-        } else if (type === '1' || type === 'equity' || type === 'stock') {
-          assetClass = 'equity';
-          if (name.includes('fund') || name.includes('etf')) {
-            subClass = 'equity_fund';
-          } else {
-            subClass = 'direct_equity';
-          }
-        } else if (type === '2' || type === 'bond' || name.includes('treasury')) {
-          assetClass = 'fixed_income';
-          if (name.includes('fund')) {
-            subClass = 'fixed_income_fund';
-          } else {
-            subClass = 'direct_bond';
-          }
-        } else if (type === 'cash') {
-          assetClass = 'cash';
-        } else if (type === 'term_deposit' || name.includes('term deposit') || name.includes('time deposit') || name.includes('fixed deposit')) {
-          assetClass = 'time_deposit';
-        } else if (name.includes('gold') || name.includes('commodity') || name.includes('metal')) {
-          assetClass = 'commodities';
-        }
-      }
-
-      // Build granular category key
-      let categoryKey = assetClass;
-
-      if (assetClass === 'structured_product') {
-        // Prioritize protection type (capital guaranteed is most important)
-        if (protectionType === 'capital_guaranteed_100') {
-          categoryKey = 'structured_product_capital_guaranteed';
-        } else if (protectionType === 'capital_guaranteed_partial') {
-          categoryKey = 'structured_product_partial_guarantee';
-        } else if (protectionType === 'capital_protected_conditional') {
-          categoryKey = 'structured_product_barrier_protected';
-        } else if (underlyingType) {
-          // If no specific protection, use underlying type
-          categoryKey = `structured_product_${underlyingType}`;
-        }
-        // Otherwise just 'structured_product'
-      } else if (assetClass === 'equity' && subClass) {
-        categoryKey = `equity_${subClass}`;
-      } else if (assetClass === 'fixed_income' && subClass) {
-        categoryKey = `fixed_income_${subClass}`;
-      }
-      // For cash, commodities, monetary_products, other: use base class as key
-
-      assetClassBreakdown[categoryKey] = (assetClassBreakdown[categoryKey] || 0) + (h.marketValue || 0);
-    });
+    const assetClassBreakdown = await this.buildAssetClassBreakdown(holdings);
 
     // Calculate total capital invested from cash flow operations
     const totalCapitalInvested = await this.calculateTotalCapitalInvested({
@@ -422,7 +662,12 @@ export const PortfolioSnapshotHelpers = {
       cashBalance,
       totalAccountValue: totalMarketValue + cashBalance,
       positionCount: investmentHoldings.length,  // Count only investment holdings (not cash)
+      // `currency` is the dominant SECURITY trading currency (display only).
+      // `portfolioCurrency` is what totalAccountValue is DENOMINATED in — the
+      // portfolio reference currency the parsers converted marketValue into.
+      // Aggregations must convert by portfolioCurrency, never by `currency`.
       currency: dominantCurrency,
+      portfolioCurrency: holdings.find(h => h.portfolioCurrency)?.portfolioCurrency || 'EUR',
       hasMixedCurrencies,
       assetClassBreakdown,
       version: 1,

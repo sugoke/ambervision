@@ -1,5 +1,8 @@
+import { Meteor } from 'meteor/meteor';
 import { Mongo } from 'meteor/mongo';
-import { check } from 'meteor/check';
+import { check, Match } from 'meteor/check';
+import { Random } from 'meteor/random';
+import { ASSET_TYPES, OrderFormatters } from './orders';
 
 // Banks collection for managing bank information
 export const BanksCollection = new Mongo.Collection('banks');
@@ -10,16 +13,126 @@ export const BanksCollection = new Mongo.Collection('banks');
 //   city: String,
 //   country: String,
 //   countryCode: String (ISO 3166-1 alpha-2, e.g., "CH", "DE", "US"),
-//   deskEmail: String (optional - email address of the bank's desk/contact),
-//   ccEmails: [String] (optional - additional email addresses in copy),
+//   deskEmail: String (optional - DEFAULT order desk; fallback for any asset type
+//                      not claimed by a desk below),
+//   ccEmails: [String] (optional - bank-wide copies, always added to order emails),
+//   desks: [{                     (optional - order intake split by asset class,
+//     key: String,                 e.g. CFM: securities -> trading desk, FX -> FX
+//     label: String,               team, funds -> funds team)
+//     email: String,
+//     ccEmails: [String],
+//     assetTypes: [String]         subset of ASSET_TYPES; each asset type belongs
+//   }],                            to at most one desk
 //   isActive: Boolean,
 //   createdAt: Date,
 //   updatedAt: Date,
 //   createdBy: String (userId of admin who created it)
 // }
 
+const DEFAULT_DESK_LABEL = 'Trading Desk';
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const isValidEmail = (value) => typeof value === 'string' && EMAIL_PATTERN.test(value);
+
+const normalizeEmailList = (list) => {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  return list
+    .map(e => (typeof e === 'string' ? e.trim().toLowerCase() : ''))
+    .filter(e => e && !seen.has(e) && seen.add(e));
+};
+
+/**
+ * Validate and normalise the per-asset-class desks an admin saved on a bank.
+ *
+ * Rows left completely blank (an untouched "Add desk" row) are dropped. Any
+ * other row must carry a label, a valid email and at least one asset type,
+ * and an asset type may belong to one desk only — otherwise the routing would
+ * be ambiguous. Throws Meteor.Error so the admin UI can show the reason.
+ */
+export function sanitizeDesks(desks) {
+  check(desks, [Object]);
+  const validAssetTypes = new Set(Object.values(ASSET_TYPES));
+  const claimedBy = new Map(); // assetType -> desk label
+  const result = [];
+
+  desks.forEach((row, index) => {
+    check(row, Match.ObjectIncluding({
+      key: Match.Maybe(String),
+      label: Match.Maybe(String),
+      email: Match.Maybe(String),
+      ccEmails: Match.Maybe([String]),
+      assetTypes: Match.Maybe([String])
+    }));
+
+    const label = (row.label || '').trim();
+    const email = (row.email || '').trim().toLowerCase();
+    const ccEmails = normalizeEmailList(row.ccEmails);
+    const assetTypes = [...new Set((row.assetTypes || []).filter(t => validAssetTypes.has(t)))];
+
+    if (!label && !email && assetTypes.length === 0) return; // blank placeholder row
+
+    const where = label || `desk #${index + 1}`;
+    if (!label) throw new Meteor.Error('invalid-desk', `Desk #${index + 1} needs a name`);
+    if (!isValidEmail(email)) throw new Meteor.Error('invalid-desk', `"${where}" needs a valid email address`);
+    const badCc = ccEmails.find(e => !isValidEmail(e));
+    if (badCc) throw new Meteor.Error('invalid-desk', `"${where}" has an invalid CC address: ${badCc}`);
+    if (assetTypes.length === 0) {
+      throw new Meteor.Error('invalid-desk', `"${where}" must handle at least one asset type`);
+    }
+    assetTypes.forEach(type => {
+      if (claimedBy.has(type)) {
+        throw new Meteor.Error(
+          'duplicate-asset-type',
+          `Asset type "${OrderFormatters.getAssetTypeLabel(type)}" is mapped to both "${claimedBy.get(type)}" and "${where}"`
+        );
+      }
+      claimedBy.set(type, label);
+    });
+
+    result.push({
+      key: row.key || Random.id(8),
+      label,
+      email,
+      ccEmails: ccEmails.filter(e => e !== email),
+      assetTypes
+    });
+  });
+
+  return result;
+}
+
 // Helper functions for bank management
 export const BankHelpers = {
+  /**
+   * Who receives an order email for this bank, given the order's asset type.
+   *
+   * The desk whose assetTypes include the order's type wins; anything not
+   * claimed by a desk (or a bank with no desks at all) falls back to the
+   * bank-wide deskEmail, so banks that never configured desks behave as
+   * before. Bank-wide ccEmails are always copied; the matched desk's own
+   * ccEmails are added on top. A desk row without an email is ignored so a
+   * half-filled configuration can never swallow orders into an empty "To".
+   *
+   * Pure — safe to call from client code for display.
+   *
+   * @returns {{ to: string, cc: string[], deskLabel: string, matched: boolean }}
+   */
+  resolveOrderRecipients(bank, assetType) {
+    const desk = (bank?.desks || []).find(d =>
+      d?.email && Array.isArray(d.assetTypes) && assetType && d.assetTypes.includes(assetType)
+    );
+    const to = (desk?.email || bank?.deskEmail || '').toLowerCase();
+    const cc = normalizeEmailList([...(bank?.ccEmails || []), ...(desk?.ccEmails || [])])
+      .filter(e => e !== to);
+    return {
+      to,
+      cc,
+      deskLabel: desk?.label || DEFAULT_DESK_LABEL,
+      matched: !!desk
+    };
+  },
+
   // Get all active banks
   getActiveBanks() {
     return BanksCollection.find({ isActive: true }, { sort: { name: 1 } });
@@ -81,7 +194,7 @@ export const BankHelpers = {
     check(updates, Object);
     check(updatedBy, String);
 
-    const allowedFields = ['name', 'city', 'country', 'countryCode', 'deskEmail', 'ccEmails'];
+    const allowedFields = ['name', 'city', 'country', 'countryCode', 'deskEmail', 'ccEmails', 'desks'];
     const filteredUpdates = {};
 
     allowedFields.forEach(field => {
@@ -94,6 +207,8 @@ export const BankHelpers = {
           filteredUpdates[field] = Array.isArray(updates[field])
             ? updates[field].map(e => e.trim().toLowerCase()).filter(e => e)
             : [];
+        } else if (field === 'desks') {
+          filteredUpdates[field] = sanitizeDesks(Array.isArray(updates[field]) ? updates[field] : []);
         } else {
           filteredUpdates[field] = updates[field].trim();
         }

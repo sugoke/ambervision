@@ -1,6 +1,11 @@
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
-import { AccountProfilesCollection } from '../../imports/api/accountProfiles.js';
+import {
+  AccountProfilesCollection,
+  PROFILE_CATEGORIES,
+  PROFILE_LIMIT_FIELDS,
+  getProfileLimit
+} from '../../imports/api/accountProfiles.js';
 import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection, USER_ROLES } from '../../imports/api/users.js';
 import { BankAccountsCollection } from '../../imports/api/bankAccounts.js';
@@ -9,16 +14,20 @@ Meteor.methods({
   /**
    * Upsert (create or update) an account profile
    * @param {String} bankAccountId - The bank account ID
-   * @param {Object} profile - The profile data (maxCash, maxBonds, maxEquities, maxAlternative)
+   * @param {Object} profile - The profile data (min/max for Cash, Bonds, Equities, Alternative)
    * @param {String} sessionId - The session ID for authorization
    */
   async 'accountProfiles.upsert'(bankAccountId, profile, sessionId) {
     check(bankAccountId, String);
     check(profile, {
       profileName: Match.Maybe(String),
+      minCash: Match.Maybe(Match.Integer),
       maxCash: Match.Integer,
+      minBonds: Match.Maybe(Match.Integer),
       maxBonds: Match.Integer,
+      minEquities: Match.Maybe(Match.Integer),
       maxEquities: Match.Integer,
+      minAlternative: Match.Maybe(Match.Integer),
       maxAlternative: Match.Integer,
       isProfessionalInvestor: Match.Maybe(Boolean)
     });
@@ -72,9 +81,20 @@ Meteor.methods({
     }
 
     // Validate percentages are between 0 and 100
-    for (const [key, value] of Object.entries(profile)) {
+    for (const field of PROFILE_LIMIT_FIELDS) {
+      const value = profile[field];
+      if (value === undefined) continue;
       if (value < 0 || value > 100) {
-        throw new Meteor.Error('invalid-value', `${key} must be between 0 and 100`);
+        throw new Meteor.Error('invalid-value', `${field} must be between 0 and 100`);
+      }
+    }
+
+    // Validate each category's minimum does not exceed its maximum
+    for (const category of PROFILE_CATEGORIES) {
+      const min = getProfileLimit(profile, `min${category.key}`);
+      const max = getProfileLimit(profile, `max${category.key}`);
+      if (min > max) {
+        throw new Meteor.Error('invalid-range', `${category.label}: minimum (${min}%) cannot exceed maximum (${max}%)`);
       }
     }
 

@@ -7,20 +7,11 @@ import { UserEntityAccessCollection, UserEntityAccessHelpers, ACCESS_LEVELS } fr
 import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection, USER_ROLES } from '../../imports/api/users.js';
 import { BankAccountsCollection, BankAccountHelpers } from '../../imports/api/bankAccounts.js';
+import { getEntityDocumentsDir } from '/imports/api/documentStorage.js';
 
-// Resolve base path for fichier_central (matches clientDocumentMethods.js)
-const getEntitiesDocsBasePath = () => {
-  if (process.env.FICHIER_CENTRAL_PATH) {
-    return path.join(process.env.FICHIER_CENTRAL_PATH, 'entities');
-  }
-  let projectRoot = process.cwd();
-  if (projectRoot.includes('.meteor')) {
-    projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
-  }
-  // SECURITY/GDPR: never fall back to public/ (served unauthenticated) — use
-  // the non-served .fichier_central tree, matching clientDocumentMethods.js.
-  return path.join(projectRoot, '.fichier_central', 'entities');
-};
+// Entity documents live under the shared fichier_central tree.
+// SECURITY/GDPR: never falls back to public/ (served unauthenticated).
+const getEntitiesDocsBasePath = () => getEntityDocumentsDir();
 
 // Helper: validate session and return current user
 async function validateSession(sessionId) {
@@ -337,6 +328,7 @@ Meteor.methods({
         beneficialOwnerIds: uboIds,
         authorizedOverdraft: accountData.authorizedOverdraft,
         comment: accountData.comment,
+        authorizedEmails: accountData.authorizedEmails,
         authorizedEmail: accountData.authorizedEmail,
         authorizedCcEmails: accountData.authorizedCcEmails,
         authorizedPhone: accountData.authorizedPhone

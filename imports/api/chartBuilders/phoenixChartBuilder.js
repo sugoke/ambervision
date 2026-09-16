@@ -630,7 +630,7 @@ export const PhoenixChartBuilder = {
 
       if (!cacheDoc || !cacheDoc.history || cacheDoc.history.length === 0) {
         console.log(`📊 No market data cache for ${ticker}, using synthetic data with performance: ${currentPerformance}%`);
-        return this.generateSyntheticData(tradeDate, maturityDate, today, currentPerformance);
+        return []; // no fabricated data — missing series stays absent
       }
 
       const history = cacheDoc.history.filter(record => {
@@ -640,7 +640,7 @@ export const PhoenixChartBuilder = {
 
       if (history.length === 0) {
         console.log(`📊 No history data in range for ${ticker}, using synthetic data with performance: ${currentPerformance}%`);
-        return this.generateSyntheticData(tradeDate, maturityDate, today, currentPerformance);
+        return []; // no fabricated data — missing series stays absent
       }
 
       // Prefer the contractual initial level the evaluator used; fall back to the feed's
@@ -663,7 +663,7 @@ export const PhoenixChartBuilder = {
 
     } catch (error) {
       console.error(`❌ Error fetching price data for ${ticker}:`, error);
-      return this.generateSyntheticData(tradeDate, maturityDate, today, currentPerformance);
+      return []; // no fabricated data — missing series stays absent
     }
   },
 

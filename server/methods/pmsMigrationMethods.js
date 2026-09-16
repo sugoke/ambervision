@@ -5,7 +5,7 @@ import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.j
 import { UsersCollection } from '../../imports/api/users.js';
 import { PMSHoldingsCollection, PMSHoldingsHelpers } from '../../imports/api/pmsHoldings.js';
 import { PMSOperationsCollection } from '../../imports/api/pmsOperations.js';
-import { PortfolioSnapshotsCollection } from '../../imports/api/portfolioSnapshots.js';
+import { PortfolioSnapshotsCollection, PortfolioSnapshotHelpers } from '../../imports/api/portfolioSnapshots.js';
 
 /**
  * Validate session and ensure user is superadmin
@@ -770,6 +770,69 @@ Meteor.methods({
     } catch (error) {
       console.error(`[PMS_MIGRATION] Duplicate snapshot cleanup failed: ${error.message}`);
       throw new Meteor.Error('cleanup-failed', error.message);
+    }
+  },
+
+  /**
+   * Recompute assetClassBreakdown on existing portfolio snapshots.
+   *
+   * Snapshots written before the classifier was unified stored structured
+   * products under a key that dropped the underlying, so an equity-linked
+   * barrier product was counted as a bond. Allocation alerts and the RM
+   * dashboard read the stored breakdown, so they keep reporting the old
+   * classification until the snapshots are rebuilt.
+   *
+   * Rebuilds strictly from the holdings recorded for the snapshot's own day -
+   * nothing is inferred from the stored keys. A snapshot whose holdings are
+   * missing, or whose holdings no longer add up to the stored breakdown, is
+   * left untouched and reported.
+   *
+   * SUPERADMIN ONLY - This modifies existing data. Defaults to a dry run.
+   */
+  async 'pmsSnapshots.rebuildAssetClassBreakdown'({
+    sessionId,
+    portfolioCode = null,
+    bankId = null,
+    since = null,
+    dryRun = true,
+    limit = 5000
+  }) {
+    check(sessionId, String);
+    check(portfolioCode, Match.Maybe(String));
+    check(bankId, Match.Maybe(String));
+    check(since, Match.Maybe(Date));
+    check(dryRun, Boolean);
+    check(limit, Match.Maybe(Number));
+    this.unblock();
+
+    const user = await validateSuperadminSession(sessionId);
+
+    console.log(
+      `[PMS_MIGRATION] Asset breakdown rebuild started by ${user.username} ` +
+      `(portfolioCode=${portfolioCode || 'all'}, bankId=${bankId || 'all'}, dryRun=${dryRun})`
+    );
+
+    try {
+      const result = await PortfolioSnapshotHelpers.rebuildAssetClassBreakdowns({
+        portfolioCode,
+        bankId,
+        since,
+        dryRun,
+        limit
+      });
+
+      console.log(
+        `[PMS_MIGRATION] Asset breakdown rebuild ${dryRun ? '(dry run) ' : ''}complete: ` +
+        `${result.exact} exact, ${result.oneSided} one-sided, ${result.siblings} from siblings, ` +
+        `${result.apportioned} apportioned, ${result.unchangedAllNonEquity} already correct, ` +
+        `${result.skippedNoBarrierHoldings} without barrier holdings, ` +
+        `${result.skippedUncertainMix} uncertain mix`
+      );
+
+      return { success: true, dryRun, ...result };
+    } catch (error) {
+      console.error(`[PMS_MIGRATION] Asset breakdown rebuild failed: ${error.message}`);
+      throw new Meteor.Error('rebuild-failed', error.message);
     }
   }
 });

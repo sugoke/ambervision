@@ -14,6 +14,7 @@ import { AllocationsCollection } from '../../imports/api/allocations.js';
 import { ProductsCollection } from '../../imports/api/products.js';
 import { OrdersCollection } from '../../imports/api/orders.js';
 import { MeetingReportsCollection } from '../../imports/api/meetingReports.js';
+import { getFichierCentralDir } from '/imports/api/documentStorage.js';
 import { ClientDocumentsCollection } from '../../imports/api/clientDocuments.js';
 import { PortfolioSnapshotsCollection } from '../../imports/api/portfolioSnapshots.js';
 import { NotificationsCollection } from '../../imports/api/notifications.js';
@@ -56,14 +57,7 @@ async function validateSuperadminSession(sessionId) {
   return user;
 }
 
-const resolveFichierCentralBase = () => {
-  if (process.env.FICHIER_CENTRAL_PATH) return process.env.FICHIER_CENTRAL_PATH;
-  let projectRoot = process.cwd();
-  if (projectRoot.includes('.meteor')) {
-    projectRoot = projectRoot.split('.meteor')[0].replace(/[\\/]$/, '');
-  }
-  return path.join(projectRoot, '.fichier_central');
-};
+const resolveFichierCentralBase = () => getFichierCentralDir();
 
 const removeDirIfExists = (dir) => {
   try {
@@ -298,9 +292,17 @@ Meteor.methods({
 
     // 3. bankAccounts: strip contact fields; account number stays (AML re-identification
     //    is restricted to the firm — that is permitted pseudonymisation, not identification).
+    //    The KYC risk assessment goes too: it now lives on the account (it used to
+    //    be a client-level field, unset above) and it profiles the data subject.
     const accountsRes = await BankAccountsCollection.updateAsync(
       { $or: [{ entityId: { $in: perimeter } }, { userId: { $in: perimeter } }] },
-      { $set: { comment: null }, $unset: { authorizedEmail: '', authorizedCcEmails: '', authorizedPhone: '', name: '' } },
+      {
+        $set: { comment: null },
+        $unset: {
+          authorizedEmails: '', authorizedEmail: '', authorizedCcEmails: '', authorizedPhone: '', name: '',
+          kycRiskScore: '', kycRiskScoreHistory: ''
+        }
+      },
       { multi: true }
     );
     counts.bankAccounts = accountsRes;

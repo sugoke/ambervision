@@ -46,7 +46,14 @@ export const CMBMonacoParser = {
    * @returns {Object} Map of portfolioNumber → referenceCurrency
    */
   detectPortfolioReferenceCurrencies(rows) {
-    const detected = {};
+    // Collect ALL matching cash rows per portfolio first. The bank sometimes
+    // writes Cost_Value_in_Ref_Ccy == Position_Value for cash in ANY currency,
+    // so "first matching row wins" made the detected currency depend on file
+    // row order and flip-flop day to day (302894.001 oscillated EUR/USD,
+    // corrupting the AUM history). Only an UNAMBIGUOUS single-currency match
+    // is trusted; ambiguity falls through to the overrides (from
+    // bankAccounts.referenceCurrency) and then the EUR default.
+    const candidates = {};
 
     for (const row of rows) {
       // Only check cash positions
@@ -60,13 +67,19 @@ export const CMBMonacoParser = {
       // Skip zero or null values
       if (!positionValue || positionValue === 0) continue;
 
-      // If Position_Value equals Cost_Value_in_Ref_Ccy (within 0.01 tolerance for rounding),
-      // this currency is the reference currency
       if (Math.abs(positionValue - costRefValue) < 0.01) {
-        if (!detected[portfolioNumber]) {
-          detected[portfolioNumber] = positionCurrency;
-          console.log(`[CMB_PARSER] Auto-detected reference currency for ${portfolioNumber}: ${positionCurrency}`);
-        }
+        if (!candidates[portfolioNumber]) candidates[portfolioNumber] = new Set();
+        candidates[portfolioNumber].add(positionCurrency);
+      }
+    }
+
+    const detected = {};
+    for (const [portfolioNumber, currencies] of Object.entries(candidates)) {
+      if (currencies.size === 1) {
+        detected[portfolioNumber] = [...currencies][0];
+        console.log(`[CMB_PARSER] Auto-detected reference currency for ${portfolioNumber}: ${detected[portfolioNumber]}`);
+      } else {
+        console.warn(`[CMB_PARSER] Ambiguous reference currency for ${portfolioNumber} (${[...currencies].join(', ')}) — falling back to override/default`);
       }
     }
 

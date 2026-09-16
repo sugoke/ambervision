@@ -71,6 +71,11 @@ export const OrdersCollection = new Mongo.Collection('orders');
 //   // Additional fields
 //   wealthAmbassador: String (optional),        // Auto-filled from creating user's initials
 //   broker: String (optional),                   // Broker / Issuer (free text)
+//   issuerId: String (optional),                 // Selected issuer (structured products)
+//   issuerName: String (optional),               // Issuer name snapshotted at creation
+//   issuerContact: {                             // Issuer coordinates snapshotted at creation,
+//     name, email, phone, code, capturedAt       // so the order keeps what was on file then
+//   } (optional),
 //   settlementCurrency: String (optional),       // Settlement currency (may differ from security currency)
 //   tradeMode: 'individual' | 'block',           // Derived from bulk vs single order
 //   underlyings: String (optional),              // Sous-jacents (e.g. "TSLA/AAPL/MSFT")
@@ -93,6 +98,33 @@ export const OrdersCollection = new Mongo.Collection('orders');
 //   depositTenor: String (e.g. "1M", "6M", "2Y"),
 //   depositCurrency: String,
 //   depositMaturityDate: Date (optional),
+//
+//   // Listed option-specific fields. `quantity` is the number of CONTRACTS and
+//   // `isin` is the literal 'OPT' - a listed contract has no tradeable ISIN of
+//   // its own, so the underlying is carried separately.
+//   optionType: 'call' | 'put',
+//   optionStrike: Number,
+//   optionExpiry: Date,
+//   optionContractSize: Number (shares per contract, default 100),
+//   optionUnderlyingIsin: String,
+//   optionUnderlyingName: String,
+//   optionUnderlyingTicker: String (optional),
+//   optionExchange: String (optional),
+//   optionContractSymbol: String (optional - OCC symbol e.g. AAPL261002C00315000,
+//                         set when the contract was picked from the EOD chain),
+//   optionQuoteAtEntry: { bid, ask, last, mid, impliedVolatility, delta,
+//                         openInterest, updatedAt, source } (optional - the
+//                         end-of-day quote shown to the desk when it entered
+//                         the order; a record, never a live price),
+//
+//   // Short-call cover, snapshotted at creation. Never blocks the order - the
+//   // four-eyes validator decides. See computeShortCallCoverage below.
+//   coverageCheck: {
+//     kind: 'short_call', underlyingIsin, underlyingName, contracts, contractSize,
+//     requiredShares, heldShares, committedShares, availableShares,
+//     isCovered, shortfallShares, holdingsAsOf, committedOrderRefs,
+//     checkedAt, justification (optional, supplied by the trader)
+//   } (optional),
 //
 //   // Limit modification history
 //   limitHistory: [{ price: Number, priceType: String, changedAt: Date, changedBy: String, changedByName: String, reason: String }],
@@ -208,13 +240,31 @@ export const ASSET_TYPES = {
   FUND: 'fund',
   ETF: 'etf',
   TERM_DEPOSIT: 'term_deposit',
+  OPTION: 'option',
   OTHER: 'other'
 };
+
+// Listed option contract sides.
+export const OPTION_TYPES = { CALL: 'call', PUT: 'put' };
+
+// Shares per contract when the desk doesn't say otherwise. Listed equity
+// options are 100 nearly everywhere, but it stays editable per order because
+// index and adjusted contracts differ.
+export const DEFAULT_OPTION_CONTRACT_SIZE = 100;
+
+// Placeholder ISINs. FX, term deposits and listed options carry no tradeable
+// ISIN of their own, so the order stores a literal marker instead. Anything
+// keyed on a real ISIN (reclassification, settlement matching, the ISIN row in
+// bank emails) has to recognise these and step around them.
+export const PLACEHOLDER_ISINS = ['FX', 'TD', 'OPT'];
+export function isPlaceholderIsin(isin) {
+  return PLACEHOLDER_ISINS.includes(isin);
+}
 
 // Map a canonical SECURITY_TYPES value (as stored on securities/holdings) to the
 // order book's narrower assetType enum. Used when a security is reclassified so
 // existing orders stay in sync. Anything without a direct order equivalent
-// (commodities, options, private markets, cash…) falls back to 'other'.
+// (commodities, private markets, cash…) falls back to 'other'.
 export const SECURITY_TYPE_TO_ASSET_TYPE = {
   [SECURITY_TYPES.EQUITY]: ASSET_TYPES.EQUITY,
   [SECURITY_TYPES.ETF]: ASSET_TYPES.ETF,
@@ -224,7 +274,8 @@ export const SECURITY_TYPE_TO_ASSET_TYPE = {
   [SECURITY_TYPES.TERM_DEPOSIT]: ASSET_TYPES.TERM_DEPOSIT,
   [SECURITY_TYPES.STRUCTURED_PRODUCT]: ASSET_TYPES.STRUCTURED_PRODUCT,
   [SECURITY_TYPES.CERTIFICATE]: ASSET_TYPES.STRUCTURED_PRODUCT,
-  [SECURITY_TYPES.FX_FORWARD]: ASSET_TYPES.FX
+  [SECURITY_TYPES.FX_FORWARD]: ASSET_TYPES.FX,
+  [SECURITY_TYPES.OPTION]: ASSET_TYPES.OPTION
 };
 
 // Map a holding's assetClass (as stored on pmsHoldings by the bank parsers,
@@ -511,6 +562,7 @@ export const OrderFormatters = {
       [ASSET_TYPES.FUND]: 'Fund',
       [ASSET_TYPES.ETF]: 'ETF',
       [ASSET_TYPES.TERM_DEPOSIT]: 'Term Deposit',
+      [ASSET_TYPES.OPTION]: 'Option',
       [ASSET_TYPES.OTHER]: 'Other'
     };
     return labels[assetType] || assetType;
@@ -571,9 +623,167 @@ export const OrderFormatters = {
 
 // Helper functions for order management
 /**
+ * Terminal statuses — the order will never proceed, so no further evidence is
+ * expected and nothing should be reported as "missing".
+ */
+export const TERMINAL_ORDER_STATUSES = [ORDER_STATUSES.CANCELLED, ORDER_STATUSES.REJECTED];
+
+export function isTerminalOrderStatus(status) {
+  return TERMINAL_ORDER_STATUSES.includes(status);
+}
+
+/**
+ * The trace types an order is expected to collect, derived from the order itself
+ * (same rule the detail modal uses to decide which trace tiles to render).
+ * Termsheet traces are excluded — they are tracked separately via termsheetStatus.
+ */
+export function getRequiredTraceTypes(order) {
+  const types = [
+    EMAIL_TRACE_TYPES.CLIENT_ORDER,
+    EMAIL_TRACE_TYPES.ORDER_TO_BANK,
+    EMAIL_TRACE_TYPES.BANK_CONFIRMATION
+  ];
+  if (order?.assetType === ASSET_TYPES.STRUCTURED_PRODUCT) {
+    types.push(EMAIL_TRACE_TYPES.ORDER_TO_ISSUER);
+  }
+  return types;
+}
+
+/**
+ * Trace completeness for the blotter badges and exports.
+ *
+ * A terminal order (cancelled / rejected) is never incomplete: it is normal for a
+ * rejected order to hold only the traces captured before it died — the trade was
+ * re-entered elsewhere. So we report the captured count with no denominator and a
+ * neutral colour, mirroring getOrderHealthCheck() which returns '-' for these.
+ *
+ * Returns { count, max, label, color, isTerminal }.
+ */
+export function getTraceCompleteness(order) {
+  const required = getRequiredTraceTypes(order);
+  const traces = order?.emailTraces || [];
+  const count = required.filter(type => traces.some(t => t.traceType === type)).length;
+
+  if (isTerminalOrderStatus(order?.status)) {
+    return {
+      count,
+      max: 0,
+      label: count > 0 ? String(count) : '-',
+      color: 'var(--text-muted)',
+      isTerminal: true
+    };
+  }
+
+  const max = required.length;
+  return {
+    count,
+    max,
+    label: `${count}/${max}`,
+    color: count === max ? 'var(--gain-color)' : count > 0 ? 'var(--warning-color)' : 'var(--text-muted)',
+    isTerminal: false
+  };
+}
+
+/**
+ * Single source of truth for price quotation convention. Structured products and
+ * bonds carry limitPrice/executedPrice as a percentage of par (100 = 100 %);
+ * every other asset type uses absolute currency prices. Shared by the display
+ * formatter and the PMS settlement matcher, which has to translate incoming
+ * bank prices into this convention — keeping one definition means a new
+ * percent-quoted asset type only has to be added here.
+ */
+/**
+ * Is this order a written (short) call? That is the only side that needs cover:
+ * a long option can always be abandoned, a short put settles in cash, but a
+ * short call can be assigned and the underlying has to be delivered.
+ */
+export function isShortCall(order) {
+  return !!order
+    && order.assetType === ASSET_TYPES.OPTION
+    && order.optionType === OPTION_TYPES.CALL
+    && order.orderType === 'sell';
+}
+
+/**
+ * Human-readable contract, e.g. "Anheuser-Busch InBev CALL 60 19 Dec 2026".
+ * The multiplier is only shown when it isn't the standard 100, so the common
+ * case stays short.
+ */
+export function optionContractDescription(order) {
+  if (!order || order.assetType !== ASSET_TYPES.OPTION) return '';
+  const parts = [];
+  if (order.optionUnderlyingName) parts.push(order.optionUnderlyingName);
+  if (order.optionType) parts.push(order.optionType.toUpperCase());
+  if (order.optionStrike != null) parts.push(String(order.optionStrike));
+  if (order.optionExpiry) {
+    parts.push(new Date(order.optionExpiry).toLocaleDateString('en-GB', {
+      day: '2-digit', month: 'short', year: 'numeric'
+    }));
+  }
+  const size = order.optionContractSize;
+  if (size && size !== DEFAULT_OPTION_CONTRACT_SIZE) parts.push(`x${size}`);
+  return parts.join(' ');
+}
+
+/**
+ * Does the account hold enough of the underlying to cover a short call?
+ *
+ * Pure on purpose: the order modal previews with it against the holdings it has
+ * already loaded, and the server records the result with it. One function means
+ * the number the desk was shown and the number in the audit trail cannot drift.
+ *
+ * `committedContracts` is the contracts already written against this underlying
+ * by other live orders. Without it, two 750-contract calls each look covered
+ * against 150,000 shares while together they are twice the position.
+ *
+ * @param {Object[]} holdings - candidate positions in the SAME bank account
+ * @returns {Object} the arithmetic, all in shares
+ */
+export function computeShortCallCoverage({
+  contracts,
+  contractSize = DEFAULT_OPTION_CONTRACT_SIZE,
+  underlyingIsin,
+  holdings = [],
+  committedContracts = 0
+}) {
+  const size = Number(contractSize) || DEFAULT_OPTION_CONTRACT_SIZE;
+  const requiredShares = (Number(contracts) || 0) * size;
+  const committedShares = (Number(committedContracts) || 0) * size;
+
+  // Sum every matching row rather than taking the first: a bank can split one
+  // ISIN across sub-positions of the same account.
+  const wanted = String(underlyingIsin || '').toUpperCase();
+  const heldShares = wanted
+    ? holdings.reduce((sum, h) => (
+      String(h?.isin || '').toUpperCase() === wanted ? sum + (Number(h.quantity) || 0) : sum
+    ), 0)
+    : 0;
+
+  const availableShares = heldShares - committedShares;
+  const shortfallShares = Math.max(0, requiredShares - availableShares);
+
+  return {
+    requiredShares,
+    heldShares,
+    committedShares,
+    availableShares,
+    isCovered: shortfallShares === 0,
+    shortfallShares
+  };
+}
+
+export function quotesPriceAsPercent(assetType) {
+  return assetType === ASSET_TYPES.STRUCTURED_PRODUCT || assetType === ASSET_TYPES.BOND;
+}
+
+/**
  * Order health check - computes completeness score based on order status and required items.
  * Returns { score, max, missing, color } where score/max is the fraction and missing lists what's absent.
  */
+// Sentinel for the order-book health filter: "any incomplete order" rather
+// than one named missing item.
+export const HEALTH_FILTER_ANY = '__any__';
+
 export function getOrderHealthCheck(order) {
   if (!order) return { score: 0, max: 1, missing: [], color: '#6b7280' };
 
@@ -582,7 +792,7 @@ export function getOrderHealthCheck(order) {
   const checks = [];
 
   // Terminal statuses — no health check needed
-  if (order.status === ORDER_STATUSES.CANCELLED || order.status === ORDER_STATUSES.REJECTED) {
+  if (isTerminalOrderStatus(order.status)) {
     return { score: 0, max: 0, missing: [], color: '#6b7280', label: '-' };
   }
 
@@ -688,6 +898,13 @@ export const OrderHelpers = {
     if (!isin) throw new Error('ISIN is required for reclassification');
     if (!securityType) throw new Error('securityType is required for reclassification');
 
+    // FX, term-deposit and option orders store a literal marker in `isin`
+    // ('FX' / 'TD' / 'OPT'), not a real one. Reclassifying by such a value would
+    // rewrite the asset type of every order of that kind at once.
+    if (isPlaceholderIsin(isin)) {
+      return { modifiedCount: 0, isin, assetType: null, skipped: 'placeholder-isin' };
+    }
+
     const assetType = SECURITY_TYPE_TO_ASSET_TYPE[securityType] || ASSET_TYPES.OTHER;
 
     const $set = { assetType, updatedAt: new Date() };
@@ -695,8 +912,8 @@ export const OrderHelpers = {
     // untouched; the canonical name lives in `displayName`.
     if (securityName) $set.displayName = securityName;
 
-    // Only touch orders that actually carry this ISIN. FX / term-deposit orders
-    // have no ISIN and are therefore never affected.
+    // Only touch orders that actually carry this ISIN. FX / term-deposit /
+    // option orders carry a placeholder and are excluded above.
     const modified = await OrdersCollection.updateAsync(
       { isin },
       { $set },
@@ -741,10 +958,8 @@ export const OrderHelpers = {
   formatOrderDetails(order) {
     if (!order) return null;
 
-    const isStructuredProduct = order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT;
-    const isBond = order.assetType === ASSET_TYPES.BOND;
     // Structured products and bonds quote prices as a percentage of par; everything else uses absolute currency.
-    const quotesAsPercent = isStructuredProduct || isBond;
+    const quotesAsPercent = quotesPriceAsPercent(order.assetType);
     // Price formatter for price-only fields (limit, executed, stop). The
     // table/detail views always show the currency in a separate column, so
     // we deliberately drop the currency code here to avoid duplicating it
@@ -832,6 +1047,53 @@ export const OrderHelpers = {
       depositTenorLabel: order.depositTenor ? (TERM_DEPOSIT_TENORS.find(t => t.value === order.depositTenor)?.label || order.depositTenor) : null,
       depositMaturityDateFormatted: order.depositMaturityDate ? OrderFormatters.formatDate(order.depositMaturityDate) : null,
       depositAction: order.depositAction || null,
+      // Listed option-specific formatted fields. Each is driven by its own field
+      // rather than by assetType: reclassification can leave an order typed
+      // 'option' with none of the contract details filled in.
+      optionTypeLabel: order.optionType ? order.optionType.toUpperCase() : null,
+      optionStrikeFormatted: order.optionStrike != null
+        ? Number(order.optionStrike).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })
+        : null,
+      optionExpiryFormatted: order.optionExpiry ? OrderFormatters.formatDate(order.optionExpiry) : null,
+      optionContractSizeFormatted: order.optionContractSize != null ? String(order.optionContractSize) : null,
+      optionUnderlyingFormatted: order.optionUnderlyingName || order.optionUnderlyingIsin || null,
+      optionUnderlyingIsin: order.optionUnderlyingIsin || null,
+      optionExchangeFormatted: order.optionExchange || null,
+      optionContractSymbol: order.optionContractSymbol || null,
+      optionQuoteAtEntryFormatted: order.optionQuoteAtEntry ? {
+        ...order.optionQuoteAtEntry,
+        bidAskFormatted: (order.optionQuoteAtEntry.bid != null && order.optionQuoteAtEntry.ask != null)
+          ? `${order.optionQuoteAtEntry.bid} / ${order.optionQuoteAtEntry.ask}`
+          : null,
+        midFormatted: order.optionQuoteAtEntry.mid != null ? Number(order.optionQuoteAtEntry.mid).toFixed(2) : null,
+        impliedVolatilityFormatted: order.optionQuoteAtEntry.impliedVolatility != null
+          ? `${Number(order.optionQuoteAtEntry.impliedVolatility).toFixed(1)}%`
+          : null,
+        deltaFormatted: order.optionQuoteAtEntry.delta != null ? Number(order.optionQuoteAtEntry.delta).toFixed(2) : null
+      } : null,
+      optionContractDescription: order.assetType === ASSET_TYPES.OPTION ? optionContractDescription(order) : null,
+      // Shares the contracts represent - the number that actually matters for risk.
+      optionShareEquivalent: (order.assetType === ASSET_TYPES.OPTION && order.quantity && order.optionContractSize)
+        ? order.quantity * order.optionContractSize
+        : null,
+      optionShareEquivalentFormatted: (order.assetType === ASSET_TYPES.OPTION && order.quantity && order.optionContractSize)
+        ? OrderFormatters.formatQuantity(order.quantity * order.optionContractSize)
+        : null,
+      // `quantity` carries a different unit per asset type and formatQuantity
+      // returns a bare number, so every render site needs this to say what the
+      // number counts. Contracts are the first unit not implied by the name.
+      quantityUnitLabel: order.assetType === ASSET_TYPES.OPTION ? 'contracts' : null,
+      // Short-call cover as recorded when the order was raised.
+      coverageCheckFormatted: order.coverageCheck ? {
+        ...order.coverageCheck,
+        requiredSharesFormatted: OrderFormatters.formatQuantity(order.coverageCheck.requiredShares || 0),
+        heldSharesFormatted: OrderFormatters.formatQuantity(order.coverageCheck.heldShares || 0),
+        committedSharesFormatted: OrderFormatters.formatQuantity(order.coverageCheck.committedShares || 0),
+        availableSharesFormatted: OrderFormatters.formatQuantity(order.coverageCheck.availableShares || 0),
+        shortfallSharesFormatted: OrderFormatters.formatQuantity(order.coverageCheck.shortfallShares || 0),
+        checkedAtFormatted: order.coverageCheck.checkedAt ? OrderFormatters.formatDateTime(order.coverageCheck.checkedAt) : null,
+        holdingsAsOfFormatted: order.coverageCheck.holdingsAsOf ? OrderFormatters.formatDate(order.coverageCheck.holdingsAsOf) : null
+      } : null,
       // Limit modification history
       limitHistoryFormatted: (order.limitHistory || []).map(entry => ({
         ...entry,
@@ -873,8 +1135,52 @@ export const OrderHelpers = {
     return orders.map(order => this.formatOrderDetails(order));
   },
 
+  /**
+   * The issuer behind a structured-product order, with contact coordinates.
+   *
+   * The snapshot taken when the order was created wins - it is what the issuer's
+   * coordinates were at the time, which is what the desk needs to reach them
+   * about THIS trade. `liveIssuer` (an IssuersCollection document) is the
+   * fallback for orders placed before snapshots existed; callers that can hit
+   * the database pass it in.
+   *
+   * Returns null for anything that isn't a structured product with an issuer.
+   */
+  resolveIssuerContact(order, liveIssuer = null) {
+    if (!order || order.assetType !== ASSET_TYPES.STRUCTURED_PRODUCT) return null;
+
+    const snap = order.issuerContact;
+    if (snap && (snap.name || snap.email || snap.phone)) {
+      return {
+        name: order.issuerName || liveIssuer?.name || '',
+        contactName: snap.name || '',
+        contactEmail: snap.email || '',
+        contactPhone: snap.phone || ''
+      };
+    }
+
+    if (liveIssuer) {
+      return {
+        name: liveIssuer.name || order.issuerName || '',
+        contactName: liveIssuer.contactName || '',
+        contactEmail: liveIssuer.contactEmail || '',
+        contactPhone: liveIssuer.contactPhone || ''
+      };
+    }
+
+    // Name only - still worth putting in the subject line.
+    return order.issuerName
+      ? { name: order.issuerName, contactName: '', contactEmail: '', contactPhone: '' }
+      : null;
+  },
+
+  /** Does this issuer record carry anything the desk could actually reach? */
+  hasIssuerCoordinates(issuer) {
+    return !!(issuer && (issuer.contactName || issuer.contactEmail || issuer.contactPhone));
+  },
+
   // Generate email body for mailto
-  generateEmailBody(order, client, bank, bankAccount) {
+  generateEmailBody(order, client, bank, bankAccount, liveIssuer = null, deskLabel = 'Trading Desk') {
     const clientName = client
       ? (client.profile?.clientType === 'company'
         ? (client.profile?.companyName || 'our client')
@@ -882,10 +1188,25 @@ export const OrderHelpers = {
       : 'our client';
     const accountNumber = bankAccount?.accountNumber || order.portfolioCode || '';
 
+    const issuer = OrderHelpers.resolveIssuerContact(order, liveIssuer);
+
     const lines = [
-      'Dear Trading Desk,',
+      `Dear ${deskLabel || 'Trading Desk'},`,
       '',
-      `Please find attached an order instruction (Ref: ${order.orderReference}) for the account of ${clientName}${accountNumber ? ` (account ${accountNumber})` : ''}.`,
+      `Please find attached an order instruction (Ref: ${order.orderReference}) for the account of ${clientName}${accountNumber ? ` (account ${accountNumber})` : ''}.`
+    ];
+
+    // The desk deals directly with the issuer on a structured product, so give
+    // them the coordinates rather than making them come back and ask.
+    if (issuer?.name || OrderHelpers.hasIssuerCoordinates(issuer)) {
+      lines.push('');
+      if (issuer.name) lines.push(`Issuer: ${issuer.name}`);
+      if (issuer.contactName) lines.push(`Contact: ${issuer.contactName}`);
+      if (issuer.contactEmail) lines.push(`Email: ${issuer.contactEmail}`);
+      if (issuer.contactPhone) lines.push(`Phone: ${issuer.contactPhone}`);
+    }
+
+    lines.push(
       '',
       'We kindly ask you to process this order at your earliest convenience and confirm execution.',
       '',
@@ -893,14 +1214,18 @@ export const OrderHelpers = {
       '',
       'Kind regards,',
       'Amberlake Partners'
-    ];
+    );
 
     return lines.join('\n');
   },
 
   // Generate email subject
-  generateEmailSubject(order) {
+  generateEmailSubject(order, liveIssuer = null) {
     const isinPart = order.isin ? ` (${order.isin})` : '';
-    return `Order: ${order.orderReference} - ${order.orderType.toUpperCase()} ${order.securityName}${isinPart}`;
+    // The issuer is what the desk routes a structured-product order by, so it
+    // belongs in the subject where they see it without opening the mail.
+    const issuer = OrderHelpers.resolveIssuerContact(order, liveIssuer);
+    const issuerPart = issuer?.name ? ` - Issuer: ${issuer.name}` : '';
+    return `Order: ${order.orderReference} - ${order.orderType.toUpperCase()} ${order.securityName}${isinPart}${issuerPart}`;
   }
 };

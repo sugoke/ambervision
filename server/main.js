@@ -19,6 +19,15 @@ import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { Random } from 'meteor/random';
 import { authorizeDocumentRequest } from './documentAccess.js';
+import {
+  getFichierCentralDir,
+  getOrderTracesDir,
+  getMeetingReportsDir,
+  getResearchDir,
+  getTermsheetsDir,
+  resolveTermsheetPath
+} from '/imports/api/documentStorage.js';
+import { ResearchDocumentsCollection } from '/imports/api/researchDocuments';
 import './securityHeaders.js'; // register baseline security response headers
 import { WebApp } from 'meteor/webapp';
 import { MongoInternals } from 'meteor/mongo';
@@ -34,7 +43,7 @@ import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
 import { BanksCollection, BankHelpers } from '/imports/api/banks';
 import { BankConnectionsCollection, BankConnectionHelpers } from '/imports/api/bankConnections';
 import { BankConnectionLogsCollection, BankConnectionLogHelpers } from '/imports/api/bankConnectionLogs';
-import { BankAccountsCollection, BankAccountHelpers } from '/imports/api/bankAccounts';
+import { BankAccountsCollection, BankAccountHelpers, BANK_ACCOUNT_LIST_FIELDS, accountHolderSelector } from '/imports/api/bankAccounts';
 import { ProductPricesCollection, ProductPriceHelpers } from '/imports/api/productPrices';
 import { IssuersCollection, IssuerHelpers, DEFAULT_ISSUERS } from '/imports/api/issuers';
 import { TemplatesCollection, TemplateHelpers, BUILT_IN_TEMPLATES } from '/imports/api/templates';
@@ -93,6 +102,8 @@ import './migrations/migrateToEntities';
 import './migrations/dedupeBankAccounts';
 import { resetTermsheetWithoutEvidence } from './migrations/resetTermsheetWithoutEvidence';
 import { movePublicDocumentsPrivate } from './migrations/movePublicDocumentsPrivate';
+import { splitJointAccountEntities } from './migrations/splitJointAccountEntities';
+import { moveRiskScoreToAccounts } from './migrations/moveRiskScoreToAccounts';
 import { AuditLog } from '/imports/api/auditLog';
 import { migrateLegacyPasswordHashes } from './migrations/migrateLegacyPasswordHashes';
 import { encryptStoredCredentials } from './migrations/encryptStoredCredentials';
@@ -117,6 +128,8 @@ import './methods/gdprMethods';
 import './methods/oauthMethods';
 import '/imports/api/meetingReports'; // Client meeting reports — collection + methods
 import './publications/meetingReports';
+import './methods/researchMethods'; // Intranet research library — manual PDF uploads
+import './publications/researchDocuments';
 import './mcp/mcpHttpHandler'; // MCP Streamable HTTP endpoint at /mcp (also mounts OAuth endpoints)
 import './telekursIngestHandler'; // Telekurs.xlsx price ingest endpoint at POST /api/telekurs/quotes
 import './pdfAuth'; // PDF authentication middleware
@@ -346,6 +359,38 @@ Meteor.startup(async () => {
     await movePublicDocumentsPrivate();
   } catch (error) {
     console.error('❌ Error moving public documents to private storage:', error);
+  }
+
+  // Joint accounts: retire combined "A & B" pseudo-entities in favour of one
+  // account row listing every holder. Runs before the risk-score seeding so the
+  // assessment lands on the merged row, not one that is about to be retired.
+  try {
+    await splitJointAccountEntities();
+  } catch (error) {
+    console.error('Error splitting joint-account entities:', error);
+  }
+
+  // KYC risk assessment moved from the client to the bank account: seed each
+  // account from the client-level assessment it inherits.
+  try {
+    await moveRiskScoreToAccounts();
+  } catch (error) {
+    console.error('Error moving KYC risk scores to bank accounts:', error);
+  }
+
+  // Link bank positions to their products. Auto-allocation used to run only when
+  // a product was created, but the bank normally reports the position days after
+  // the product is booked — so those positions never got an allocation and the
+  // product dashboard showed a dash where the size should be. Idempotent, and
+  // also runs after every bank-file import.
+  try {
+    const { AllocationHelpers } = await import('/imports/api/allocations.js');
+    const linked = await AllocationHelpers.linkUnlinkedHoldings();
+    if (linked.allocationsCreated > 0) {
+      console.log(`Linked ${linked.allocationsCreated} unallocated bank position(s) across ${linked.productsLinked} product(s)`);
+    }
+  } catch (error) {
+    console.error('Error linking unallocated bank positions:', error);
   }
 
   // SECURITY: convert any remaining reversible legacy password hashes to scrypt.
@@ -581,7 +626,7 @@ Meteor.startup(async () => {
       return this.ready();
     }
     
-    return BankAccountsCollection.find({ isActive: true });
+    return BankAccountsCollection.find({ isActive: true }, BANK_ACCOUNT_LIST_FIELDS);
   });
 
   // Ensure demo accounts exist (create or update existing users)
@@ -2336,6 +2381,63 @@ Meteor.methods({
     }
 
     return await BankAccountHelpers.updateBankAccount(accountId, updates);
+  },
+
+  /**
+   * Save the KYC risk assessment for ONE bank account.
+   *
+   * Risk is assessed per banking relationship, not per client: each account has
+   * its own jurisdiction, product mix and review cycle. The previous assessment
+   * is pushed onto kycRiskScoreHistory so the audit trail survives a re-scoring.
+   */
+  async 'bankAccounts.updateRiskScore'({ accountId, riskScoreData, sessionId }) {
+    check(accountId, String);
+    check(sessionId, String);
+    check(riskScoreData, {
+      assessmentDate: Date,
+      assessedBy: Match.Maybe(String),
+      clientProspect: { criteria: Object, totalScore: Number, riskLevel: String },
+      beneficialOwner: { criteria: Object, totalScore: Number, riskLevel: String },
+      // Business relationship is derived (highest of client / beneficial owner);
+      // derivedFrom records which column drove it. Older clients omit it.
+      businessRelationship: { criteria: Object, totalScore: Number, riskLevel: String, derivedFrom: Match.Maybe(String) },
+      comments: Match.Maybe(String),
+      nextReviewDate: Match.Maybe(Date)
+    });
+
+    const currentUser = await validateSessionAndGetUser(sessionId);
+    const allowedRoles = [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.COMPLIANCE];
+    if (!allowedRoles.includes(currentUser.role)) {
+      throw new Meteor.Error('not-authorized', 'Only admins and compliance officers can update KYC risk scores');
+    }
+
+    const account = await BankAccountsCollection.findOneAsync(accountId);
+    if (!account) {
+      throw new Meteor.Error('not-found', 'Bank account not found');
+    }
+
+    const update = {
+      $set: { kycRiskScore: riskScoreData, updatedAt: new Date() }
+    };
+    if (account.kycRiskScore?.assessmentDate) {
+      update.$push = { kycRiskScoreHistory: account.kycRiskScore };
+    }
+
+    const result = await BankAccountsCollection.updateAsync(accountId, update);
+
+    console.log(`[bankAccounts.updateRiskScore] ${currentUser.role} ${currentUser._id} assessed account ${account.accountNumber} (${accountId}): ` +
+      `client ${riskScoreData.clientProspect.totalScore} (${riskScoreData.clientProspect.riskLevel}), ` +
+      `UBO ${riskScoreData.beneficialOwner.totalScore} (${riskScoreData.beneficialOwner.riskLevel}), ` +
+      `relationship ${riskScoreData.businessRelationship.totalScore} (${riskScoreData.businessRelationship.riskLevel})`);
+
+    await AuditLog.record({
+      actorUserId: currentUser._id,
+      action: 'bankAccount.riskScore.update',
+      targetType: 'bankAccount',
+      targetId: accountId
+    });
+
+    return result;
   },
 
   async 'bankAccounts.remove'({ accountId, sessionId }) {
@@ -6454,7 +6556,42 @@ Meteor.publish('allBankAccounts', async function (sessionId) {
   ];
   if (!currentUser || !STAFF_ROLES.includes(currentUser.role)) return this.ready();
 
-  return BankAccountsCollection.find({ isActive: true }, { sort: { createdAt: -1 } });
+  // The KYC risk assessment is deliberately omitted here (see
+  // BANK_ACCOUNT_LIST_FIELDS): this publication ships EVERY client's accounts to
+  // every staff browser, so the risk scoring comes via 'bankAccounts.details'.
+  return BankAccountsCollection.find(
+    { isActive: true },
+    { sort: { createdAt: -1 }, ...BANK_ACCOUNT_LIST_FIELDS }
+  );
+});
+
+/**
+ * Full bank-account documents — including the KYC risk assessment — for the
+ * accounts of ONE owner. Mirrors 'clientEntities.details': the detail screen
+ * needs the risk block for the client being viewed, while the list publications
+ * stay minimised.
+ */
+Meteor.publish('bankAccounts.details', async function (sessionId, ownerId) {
+  if (!sessionId || !ownerId) return this.ready();
+  check(sessionId, String);
+  check(ownerId, String);
+
+  const session = await SessionHelpers.validateSession(sessionId);
+  if (!session || !session.userId) return this.ready();
+
+  const currentUser = await UsersCollection.findOneAsync(session.userId);
+  const RISK_VIEWER_ROLES = [
+    USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.COMPLIANCE,
+    USER_ROLES.RELATIONSHIP_MANAGER, USER_ROLES.ASSISTANT
+  ];
+  if (!currentUser || !RISK_VIEWER_ROLES.includes(currentUser.role)) return this.ready();
+
+  // Matches the owner as primary holder, co-holder of a joint account, or under
+  // a legacy userId.
+  return BankAccountsCollection.find({
+    ...accountHolderSelector([ownerId]),
+    isActive: true
+  });
 });
 
 Meteor.publish('equityHoldings', async function (bankAccountId, sessionId = null) {
@@ -6757,47 +6894,23 @@ WebApp.connectHandlers.use('/termsheets', async (req, res, next) => {
 
   const filename = decodeURIComponent(urlParts[0]);
 
-  // Resolve termsheets directory: TERMSHEETS_PATH (production) or hidden
-  // `.termsheets/` (dev). The hidden directory is OUTSIDE `public/` so that
-  // writing a freshly-extracted PDF doesn't trigger Meteor's dev file
-  // watcher (which would hot-reload the client and wipe the create-product
-  // form mid-extraction).
-  let termsheetsDir = process.env.TERMSHEETS_PATH;
-  if (!termsheetsDir) {
-    let projectRoot = process.cwd();
-    if (projectRoot.includes('.meteor')) {
-      projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
-    }
-    termsheetsDir = path.join(projectRoot, '.termsheets');
-
-    // Backwards-compat: older installs wrote into public/termsheets/. If the
-    // new dir doesn't have the requested file but the old one does, fall
-    // through to the legacy location so existing products still resolve.
-    if (!fs.existsSync(path.join(termsheetsDir, filename))) {
-      const legacyDir = path.join(projectRoot, 'public', 'termsheets');
-      if (fs.existsSync(path.join(legacyDir, filename))) {
-        termsheetsDir = legacyDir;
-      }
-    }
+  // Security: the filename is the whole path segment, so anything carrying a
+  // separator or a traversal component is rejected before touching the disk.
+  if (!/^[A-Za-z0-9_.-]+$/.test(filename) || filename.includes('..')) {
+    console.error('Security: rejected termsheet filename:', req.originalUrl || req.url);
+    res.writeHead(403, { 'Content-Type': 'text/plain' });
+    res.end('Forbidden');
+    return;
   }
 
   try {
-    // Construct file path (flat structure)
-    const filePath = path.join(termsheetsDir, filename);
+    // Single resolver shared with every writer (imports/api/documentStorage.js):
+    // TERMSHEETS_PATH in production, .termsheets/ in dev, plus the legacy
+    // public/termsheets/ fallback for files the startup migration hasn't drained.
+    const filePath = resolveTermsheetPath(filename);
 
-    // Security: Prevent directory traversal
-    const normalizedPath = path.normalize(filePath);
-    const normalizedDir = path.normalize(termsheetsDir);
-    if (!normalizedPath.startsWith(normalizedDir)) {
-      console.error('⚠️  Security: Attempted directory traversal:', req.url);
-      res.writeHead(403, { 'Content-Type': 'text/plain' });
-      res.end('Forbidden');
-      return;
-    }
-
-    // Check if file exists
-    if (!fs.existsSync(filePath)) {
-      console.log(`📄 Termsheet not found: ${filePath}`);
+    if (!filePath) {
+      console.log(`[TermSheet] Not found in ${getTermsheetsDir()}: ${filename}`);
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Termsheet not found');
       return;
@@ -6811,11 +6924,13 @@ WebApp.connectHandlers.use('/termsheets', async (req, res, next) => {
       'Content-Type': 'application/pdf',
       'Content-Length': stat.size,
       'Content-Disposition': `inline; filename="${filename}"`,
-      'Cache-Control': 'public, max-age=86400' // Cache for 24 hours
+      // Access is per-request and token-gated, so no shared cache may hold
+      // the bytes. Matches the other document endpoints.
+      'Cache-Control': 'private, max-age=300'
     });
 
     res.end(fileBuffer);
-    console.log(`📄 Served termsheet: ${filename} (${stat.size} bytes)`);
+    console.log(`[TermSheet] Served ${filename} (${stat.size} bytes)`);
 
   } catch (error) {
     console.error('Error serving termsheet:', error);
@@ -6842,15 +6957,10 @@ WebApp.connectHandlers.use('/meetingReports', async (req, res, next) => {
     return;
   }
 
-  let baseDir = process.env.MEETING_REPORTS_PATH;
-  if (!baseDir) {
-    let projectRoot = process.cwd();
-    if (projectRoot.includes('.meteor')) {
-      projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
-    }
-    // Matches meetingReportPdfHelper.js — private tree, never public/.
-    baseDir = path.join(projectRoot, '.fichier_central', 'meetingReports');
-  }
+  // Same resolver the PDF writer uses (imports/api/documentStorage.js). It
+  // now honours FICHIER_CENTRAL_PATH, so production reports land on the
+  // persistent volume instead of the container's ephemeral filesystem.
+  const baseDir = getMeetingReportsDir();
 
   try {
     const filePath = path.join(baseDir, filename);
@@ -6885,6 +6995,67 @@ WebApp.connectHandlers.use('/meetingReports', async (req, res, next) => {
   }
 });
 
+// Intranet research library PDFs (monthly report, equity recommended list,
+// stock research). Uploaded by staff via research.upload, stored under
+// getResearchDir(), served only with a capability token minted by
+// research.getDownloadUrl.
+WebApp.connectHandlers.use('/research', async (req, res, next) => {
+  // URL format: /research/{storedFileName}?dl=<token>
+  // (req.url has the mount prefix stripped; authorizeDocumentRequest reads originalUrl)
+  const urlParts = req.url.split('?')[0].split('/').filter(p => p);
+  if (urlParts.length !== 1) return next();
+
+  const filename = decodeURIComponent(urlParts[0]);
+  if (!/^[A-Za-z0-9_-]+\.pdf$/.test(filename)) return next();
+
+  const auth = await authorizeDocumentRequest(req);
+  if (!auth) {
+    res.writeHead(401, { 'Content-Type': 'text/plain' });
+    res.end('Unauthorized');
+    return;
+  }
+
+  try {
+    const baseDir = path.resolve(getResearchDir());
+    const filePath = path.resolve(baseDir, filename);
+    if (!filePath.startsWith(baseDir + path.sep)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Forbidden');
+      return;
+    }
+
+    if (!fs.existsSync(filePath)) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Research document not found');
+      return;
+    }
+
+    // Serve under the original upload name so "Save as" is meaningful.
+    // Header-safe: ASCII only, no quotes / control characters.
+    const doc = await ResearchDocumentsCollection.findOneAsync(
+      { storedFileName: filename },
+      { fields: { fileName: 1 } }
+    );
+    const downloadName = String(doc?.fileName || filename)
+      .replace(/[^\x20-\x7E]/g, '_')
+      .replace(/["\\]/g, '_')
+      .slice(0, 200) || filename;
+
+    const stat = fs.statSync(filePath);
+    res.writeHead(200, {
+      'Content-Type': 'application/pdf',
+      'Content-Length': stat.size,
+      'Content-Disposition': `inline; filename="${downloadName}"`,
+      'Cache-Control': 'private, max-age=300'
+    });
+    fs.createReadStream(filePath).pipe(res);
+  } catch (error) {
+    console.error('Error serving research document:', error);
+    res.writeHead(500, { 'Content-Type': 'text/plain' });
+    res.end('Internal server error');
+  }
+});
+
 // Server-side routing for client documents (fichier_central) from persistent volume
 WebApp.connectHandlers.use('/fichier_central', async (req, res, next) => {
   // URL format: /fichier_central/{userId}/{filename}?dl=<token>
@@ -6894,14 +7065,7 @@ WebApp.connectHandlers.use('/fichier_central', async (req, res, next) => {
   // SECURITY/GDPR: these are KYC/PII documents. The token gate applies in EVERY
   // environment — there is no dev bypass. In dev (no FICHIER_CENTRAL_PATH) files
   // live in the non-served .fichier_central tree, matching clientDocumentMethods.js.
-  const fichierCentralBase = (() => {
-    if (process.env.FICHIER_CENTRAL_PATH) return process.env.FICHIER_CENTRAL_PATH;
-    let projectRoot = process.cwd();
-    if (projectRoot.includes('.meteor')) {
-      projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
-    }
-    return path.join(projectRoot, '.fichier_central');
-  })();
+  const fichierCentralBase = getFichierCentralDir();
 
   if (urlParts.length !== 2) {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -6952,14 +7116,24 @@ WebApp.connectHandlers.use('/fichier_central', async (req, res, next) => {
       '.jpg': 'image/jpeg',
       '.jpeg': 'image/jpeg',
       '.png': 'image/png',
-      '.gif': 'image/gif'
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.tif': 'image/tiff',
+      '.tiff': 'image/tiff',
+      '.heic': 'image/heic',
+      '.doc': 'application/msword',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     };
     const contentType = contentTypes[ext] || 'application/octet-stream';
+    // A browser cannot render Word, and an inline unknown type is a needless
+    // risk — hand those over as a download instead.
+    const disposition = ['.doc', '.docx'].includes(ext) || !contentTypes[ext] ? 'attachment' : 'inline';
 
     res.writeHead(200, {
       'Content-Type': contentType,
       'Content-Length': stat.size,
-      'Content-Disposition': `inline; filename="${filename}"`,
+      'Content-Disposition': `${disposition}; filename="${filename}"`,
+      'X-Content-Type-Options': 'nosniff',
       'Cache-Control': 'private, max-age=3600' // Cache for 1 hour
     });
 
@@ -6994,17 +7168,8 @@ WebApp.connectHandlers.use('/order_traces', async (req, res, next) => {
   const [orderId, filename] = urlParts.map(decodeURIComponent);
 
   try {
-    // Resolve base path: FICHIER_CENTRAL_PATH in production, .fichier_central/ in dev
-    let ordersBase;
-    if (process.env.FICHIER_CENTRAL_PATH) {
-      ordersBase = path.join(process.env.FICHIER_CENTRAL_PATH, 'orders');
-    } else {
-      let projectRoot = process.cwd();
-      if (projectRoot.includes('.meteor')) {
-        projectRoot = projectRoot.split('.meteor')[0].replace(/[\\\/]$/, '');
-      }
-      ordersBase = path.join(projectRoot, '.fichier_central', 'orders');
-    }
+    // Same resolver the trace writer uses (imports/api/documentStorage.js).
+    const ordersBase = getOrderTracesDir();
 
     const filePath = path.join(ordersBase, orderId, filename);
 

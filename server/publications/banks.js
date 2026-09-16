@@ -3,7 +3,7 @@
 
 import { Meteor } from 'meteor/meteor';
 import { BanksCollection } from '/imports/api/banks';
-import { BankAccountsCollection } from '/imports/api/bankAccounts';
+import { BankAccountsCollection, BANK_ACCOUNT_LIST_FIELDS } from '/imports/api/bankAccounts';
 import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
 import { ClientEntitiesCollection } from '/imports/api/clientEntities';
 import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
@@ -178,7 +178,7 @@ Meteor.publish("bankAccounts", async function () {
     return this.ready();
   }
 
-  return BankAccountsCollection.find({ isActive: true });
+  return BankAccountsCollection.find({ isActive: true }, BANK_ACCOUNT_LIST_FIELDS);
 });
 
 

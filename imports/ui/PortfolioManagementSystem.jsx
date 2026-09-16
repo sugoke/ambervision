@@ -10,7 +10,8 @@ import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { BanksCollection } from '/imports/api/banks';
 import { ProductsCollection } from '/imports/api/products';
 import { AllocationsCollection } from '/imports/api/allocations';
-import { AccountProfilesCollection, aggregateToFourCategories, PROFILE_TEMPLATES } from '/imports/api/accountProfiles';
+import { AccountProfilesCollection, aggregateToFourCategories, PROFILE_TEMPLATES, PROFILE_LIMIT_FIELDS, getProfileLimit } from '/imports/api/accountProfiles';
+import { buildAssetClassBreakdown } from '/imports/api/assetClassification';
 import { useViewAs } from './ViewAsContext.jsx';
 import {
   getAssetClassLabel,
@@ -1068,38 +1069,10 @@ const PortfolioManagementSystem = ({ user }) => {
       return { cash: 0, bonds: 0, equities: 0, alternative: 0, total: 0 };
     }
 
-    // Build granular asset class breakdown by value
-    // For structured products, use protection type to distinguish capital-protected (bonds) from equity-linked (equities)
-    const breakdown = {};
-    let total = 0;
-
-    filteredHoldings.forEach(holding => {
-      let categoryKey = holding.assetClass || 'other';
-      const marketValue = holding.marketValue || 0;
-
-      if (categoryKey === 'structured_product') {
-        const protectionType = holding.structuredProductProtectionType;
-        const underlyingType = holding.structuredProductUnderlyingType || 'equity_linked';
-        if (protectionType === 'capital_guaranteed_100') {
-          categoryKey = 'structured_product_capital_guaranteed';
-        } else if (protectionType === 'capital_guaranteed_partial') {
-          categoryKey = 'structured_product_partial_guarantee';
-        } else if (protectionType === 'capital_protected_conditional') {
-          // Equity-linked barrier protected → equities (still has equity risk)
-          // Non-equity barrier protected → bonds
-          if (underlyingType === 'equity_linked') {
-            categoryKey = 'structured_product_equity_linked_barrier_protected';
-          } else {
-            categoryKey = 'structured_product_barrier_protected';
-          }
-        } else if (holding.structuredProductUnderlyingType) {
-          categoryKey = `structured_product_${holding.structuredProductUnderlyingType}`;
-        }
-      }
-
-      breakdown[categoryKey] = (breakdown[categoryKey] || 0) + marketValue;
-      total += marketValue;
-    });
+    // Granular breakdown via the shared classifier (assetClassification.js) so
+    // this screen, the snapshot builder, the portfolio review and the pre-trade
+    // check all bucket a position the same way.
+    const { breakdown, totalValue: total } = buildAssetClassBreakdown(filteredHoldings);
 
     const categories = aggregateToFourCategories(breakdown, total);
     return { ...categories, total };
@@ -1821,22 +1794,75 @@ const PortfolioManagementSystem = ({ user }) => {
   const totalNonCashGainLoss = totalNonCashPortfolioValue - totalCostBasis;
   const totalGainLossPercent = totalCostBasis > 0 ? ((totalNonCashGainLoss / totalCostBasis) * 100) : 0;
 
-  // Calculate total cash from all currencies (using PTF_MKT_VAL for portfolio currency)
-  // Note: Negative cash (credit lines/overdrafts) should not reduce the total - only count positive cash
-  const totalCashValue = cashPositions.reduce((sum, pos) => {
-    const value = pos.marketValue || 0;
-    return sum + Math.max(0, value); // Cap negative cash at 0 (credit lines don't reduce totals)
-  }, 0);
+  // Calculate total cash from all currencies (using PTF_MKT_VAL for portfolio currency).
+  // Negative cash is NETTED, exactly as on the bank statement: a debit balance
+  // (e.g. purchases booked before their value date, an overdraft) reduces the
+  // total. Credit-line / card / spending accounts are excluded at ACCOUNT level
+  // (bankAccounts.comment) by the AUM code, so no cash floor is needed here —
+  // flooring at 0 showed a 1.9M portfolio that was really 1.5M once the −0.4M
+  // pending settlement debit was counted, and put the headline on a different
+  // basis from the snapshots used for the day change (fake +26.67%).
+  const totalCashValue = cashPositions.reduce((sum, pos) => sum + (pos.marketValue || 0), 0);
 
-  // Total portfolio value = instruments + deposits (non-cash) + positive cash (credit lines
-  // capped at 0 above) + the mark-to-market value of FX forwards. All figures are in portfolio
-  // currency (PTF_MKT_VAL). FX forwards were previously omitted from the headline total.
+  // Total portfolio value = instruments + deposits (non-cash) + net cash + the
+  // mark-to-market value of FX forwards. All figures are in portfolio currency
+  // (PTF_MKT_VAL). This matches portfolioSnapshots.totalAccountValue.
   const totalPortfolioValue = totalNonCashPortfolioValue + totalCashValue + totalFxForwardPortfolioValue;
   const totalGainLoss = totalNonCashGainLoss; // Gain/loss only applies to non-cash positions
 
   // NOTE: portfolioCurrency is resolved much earlier (right after displayPositionsRaw),
   // because position values are converted into the display currency at the source —
   // see the "Determine portfolio reference currency" block above the position splits.
+
+  // One-day variation of the headline total, in currency. Resolved server-side
+  // against each portfolio's OWN previous valuation date, so a Monday compares
+  // against Friday and a bank whose file hasn't landed drops out of the
+  // comparison rather than reading as a crash.
+  const [dayVariation, setDayVariation] = useState(null);
+
+  // The portfolios actually on screen, so the comparison matches the figure.
+  const variationKeys = useMemo(() => {
+    const seen = new Set();
+    const keys = [];
+    for (const pos of displayPositionsRaw) {
+      if (!pos.bankId || !pos.portfolioCode || pos.portfolioCode === 'CONSOLIDATED') continue;
+      const k = `${pos.bankId}|${pos.portfolioCode}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      keys.push({ bankId: pos.bankId, portfolioCode: pos.portfolioCode });
+    }
+    return keys;
+  }, [displayPositionsRaw]);
+
+  const variationKeysSignature = variationKeys.map(k => `${k.bankId}|${k.portfolioCode}`).sort().join(',');
+
+  useEffect(() => {
+    let cancelled = false;
+    // Holdings stream in batch by batch, so the key set churns while the
+    // subscription settles. Firing per batch queued dozens of copies of a
+    // multi-second query against each other and nothing ever landed — wait for
+    // the data to be ready, then debounce the last change.
+    if (isLoading || !variationKeys.length || !portfolioCurrency) { setDayVariation(null); return; }
+    const sessionId = typeof window !== 'undefined' ? localStorage.getItem('sessionId') : null;
+    if (!sessionId) { setDayVariation(null); return; }
+
+    const timer = setTimeout(() => {
+      Meteor.callAsync('pms.getDayVariation', {
+        sessionId,
+        portfolioKeys: variationKeys,
+        currency: portfolioCurrency,
+        asOfDate: selectedDate ? new Date(selectedDate) : null
+      })
+        .then(result => { if (!cancelled) setDayVariation(result || null); })
+        .catch(err => {
+          // A missing comparison is not worth an error surface - just show nothing.
+          console.error('[PMS] Day variation unavailable:', err);
+          if (!cancelled) setDayVariation(null);
+        });
+    }, 600);
+
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [isLoading, variationKeysSignature, portfolioCurrency, selectedDate, refreshKey]);
 
   // Spot rates for FX deal lifecycles: fetch (a) foreign→base for mark-to-market
   // on every open leg and (b) base→portfolioCurrency to express per-row P&L in
@@ -2835,6 +2861,47 @@ const PortfolioManagementSystem = ({ user }) => {
         }}>
           {formatCurrency(totalPortfolioValue, portfolioCurrency)}
         </span>
+
+        {/* One-day variation, in currency. The date is spelled out because
+            "1 day" means the previous valuation, which on a Monday is Friday. */}
+        {dayVariation && (() => {
+          const up = dayVariation.change >= 0;
+          const colour = dayVariation.change === 0
+            ? 'var(--text-muted)'
+            : up ? 'var(--gain-color)' : 'var(--loss-color)';
+          const prev = new Date(dayVariation.previousDate);
+          const prevLabel = prev.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: '2-digit' });
+          const partial = dayVariation.comparedPortfolios < dayVariation.totalPortfolios;
+          return (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap',
+              marginTop: '8px', fontVariantNumeric: 'tabular-nums'
+            }}>
+              <span style={{ fontSize: isMobile ? '0.95rem' : '1.05rem', fontWeight: '600', color: colour }}>
+                {up ? '+' : '\u2212'}{formatCurrency(Math.abs(dayVariation.change), portfolioCurrency)}
+              </span>
+              <span style={{
+                fontSize: '0.8rem', fontWeight: '600', padding: '2px 8px', borderRadius: '10px',
+                background: `color-mix(in srgb, ${colour} 10%, transparent)`, color: colour
+              }}>
+                {up ? '+' : '\u2212'}{Math.abs(dayVariation.changePercent).toFixed(2)}%
+              </span>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                vs {prevLabel}
+              </span>
+              {partial && (
+                <span
+                  title={`${dayVariation.comparedPortfolios} of ${dayVariation.totalPortfolios} accounts compared \u2014 the others have no earlier valuation, so they are excluded from both sides`}
+                  style={{
+                    fontSize: '0.72rem', fontWeight: '600', padding: '2px 8px', borderRadius: '10px',
+                    background: 'color-mix(in srgb, var(--warning-color) 12%, transparent)', color: 'var(--warning-color)'
+                  }}>
+                  {dayVariation.comparedPortfolios}/{dayVariation.totalPortfolios} accounts
+                </span>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Cash Table */}
@@ -6186,10 +6253,7 @@ const PortfolioManagementSystem = ({ user }) => {
         const getProfileName = (profile) => {
           if (!profile) return null;
           const match = Object.entries(PROFILE_TEMPLATES).find(([, tpl]) =>
-            tpl.maxCash === profile.maxCash &&
-            tpl.maxBonds === profile.maxBonds &&
-            tpl.maxEquities === profile.maxEquities &&
-            tpl.maxAlternative === profile.maxAlternative
+            PROFILE_LIMIT_FIELDS.every(field => getProfileLimit(tpl, field) === getProfileLimit(profile, field))
           );
           return match ? match[1].name : 'Custom';
         };

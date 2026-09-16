@@ -725,6 +725,37 @@ const AppContent = () => {
                   </>
                 )}
 
+                {/* PMS quick access — the page the desk lives in, one click from
+                    anywhere instead of via the navigation menu. Sits next to the
+                    View As filter because the two are used together. */}
+                <button
+                  onClick={() => handleSectionChange('pms')}
+                  style={{
+                    width: isMobile ? '32px' : '36px',
+                    height: isMobile ? '32px' : '36px',
+                    borderRadius: '50%',
+                    border: 'none',
+                    background: currentSection === 'pms'
+                      ? 'linear-gradient(135deg, var(--info-color) 0%, #2563eb 100%)'
+                      : 'linear-gradient(135deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%)',
+                    color: currentSection === 'pms' ? '#fff' : 'var(--text-primary)',
+                    fontSize: isMobile ? '1rem' : '1.05rem',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    transition: 'all 0.2s ease',
+                    boxShadow: currentSection === 'pms'
+                      ? '0 2px 8px rgba(59, 130, 246, 0.4)'
+                      : '0 2px 4px rgba(0, 0, 0, 0.1)',
+                    flexShrink: 0
+                  }}
+                  title="Portfolio Management System"
+                  aria-label="Portfolio Management System"
+                >
+                  📈
+                </button>
+
                 <NotificationCenter
                   currentUser={user}
                   onViewAllClick={() => handleSectionChange('notifications')}

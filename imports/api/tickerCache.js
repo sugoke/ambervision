@@ -25,16 +25,25 @@ export const TickerPriceCacheCollection = new Mongo.Collection('tickerPriceCache
 // }
 
 if (Meteor.isServer) {
-  // Create TTL index for automatic cleanup (expires after 2 minutes)
+  // TTL index: Mongo removes each doc at its own `expiresAt` (expireAfterSeconds: 0
+  // means "at the stored timestamp", not a fixed 2 minutes — the actual lifetime is
+  // CACHE_DURATION below).
   TickerPriceCacheCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-  
+
   // Create index for efficient symbol lookup
   TickerPriceCacheCollection.createIndex({ symbol: 1 });
 }
 
 export const TickerCacheHelpers = {
-  // Cache duration in milliseconds (15 minutes)
-  CACHE_DURATION: 15 * 60 * 1000,
+  // Cache lifetime in milliseconds. Kept noticeably longer than the ~15min
+  // marketTickerUpdate cron cadence: a doc that expires (and gets TTL-removed)
+  // before the next refresh writes fresh data makes that symbol vanish from
+  // the MarketTicker strip for a moment, which visibly resizes the scrolling
+  // ribbon. 25 minutes gives room for one slow or skipped refresh cycle
+  // without that gap opening up. (The client also tolerates gaps up to ~45min
+  // via a last-known-value merge — see MarketTicker.jsx — but keeping this
+  // buffer wide means that fallback rarely has to do any work.)
+  CACHE_DURATION: 25 * 60 * 1000,
 
   // Get cached ticker price
   async getCachedPrice(symbol) {

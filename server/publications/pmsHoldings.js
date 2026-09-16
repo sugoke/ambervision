@@ -182,10 +182,12 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
             return this.ready();
           }
         }
-        // Find bank accounts owned by this entity OR where entity is a beneficial owner
+        // Accounts this entity holds (primary holder or co-holder of a joint
+        // account) OR where it is a beneficial owner
         const entityAccounts = await BankAccountsCollection.find({
           $or: [
             { entityId: entity._id },
+            { holderEntityIds: entity._id },
             { beneficialOwnerIds: entity._id },
             { beneficialOwnerId: entity._id }
           ],

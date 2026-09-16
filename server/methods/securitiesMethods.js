@@ -11,6 +11,7 @@ import { ProductsCollection } from '../../imports/api/products.js';
 import { mapAssetClassToSecurityType } from '../../imports/api/helpers/securityResolver.js';
 import { detectUnderlyingType } from '../../imports/api/helpers/underlyingTypeDetector.js';
 import { OrderHelpers } from '../../imports/api/orders.js';
+import { isProductCapitalProtected } from '../../imports/api/helpers/productProtection.js';
 
 /**
  * Validate session and ensure user has one of the allowed roles.
@@ -1338,7 +1339,9 @@ Meteor.methods({
             issuer: prod.issuer || '',
             denomination: prod.denomination || null,
             underlyings: underlyingsStr,
-            notional: prod.notional || null
+            notional: prod.notional || null,
+            // Lets the order form pre-tick "Capital Protected" for a known note
+            capitalProtected: isProductCapitalProtected(prod)
           });
         }
       });
