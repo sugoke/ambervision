@@ -2,6 +2,7 @@ import { Meteor } from 'meteor/meteor';
 import { WebApp } from 'meteor/webapp';
 import { check } from 'meteor/check';
 import { UsersCollection } from '../imports/api/users.js';
+import { findUserByPdfAccessToken } from './helpers/pdfAccessTokens.js';
 
 /**
  * PDF Authentication Middleware
@@ -37,11 +38,9 @@ WebApp.connectHandlers.use(async (req, res, next) => {
     try {
       console.log('[PDF_AUTH] Validating PDF token for user:', userId);
 
-      // Find user with matching PDF access token
-      const user = await UsersCollection.findOneAsync({
-        _id: userId,
-        'services.pdfAccess.token': pdfToken
-      });
+      // Matches either token shape and checks expiry in the query itself —
+      // see server/helpers/pdfAccessTokens.js.
+      const user = await findUserByPdfAccessToken(userId, pdfToken);
 
       if (!user) {
         console.log('[PDF_AUTH] Invalid or expired PDF token');
@@ -60,9 +59,9 @@ WebApp.connectHandlers.use(async (req, res, next) => {
         return;
       }
 
-      // Check if token is expired
-      const expiresAt = user.services.pdfAccess.expiresAt;
-      if (expiresAt && new Date(expiresAt) < new Date()) {
+      // Expiry is already part of the selector; this covers the legacy slot only.
+      const expiresAt = user.services?.pdfAccess?.expiresAt;
+      if (expiresAt && user.services?.pdfAccess?.token === pdfToken && new Date(expiresAt) < new Date()) {
         console.log('[PDF_AUTH] PDF token expired at:', expiresAt);
         res.writeHead(401, { 'Content-Type': 'text/html' });
         res.end(`
@@ -113,18 +112,10 @@ Meteor.methods({
     check(userId, String);
     check(pdfToken, String);
     // This is called from client-side to validate before rendering
-    const user = await UsersCollection.findOneAsync({
-      _id: userId,
-      'services.pdfAccess.token': pdfToken
-    });
+    const user = await findUserByPdfAccessToken(userId, pdfToken);
 
     if (!user) {
       return { valid: false, reason: 'Invalid or expired token' };
-    }
-
-    const expiresAt = user.services.pdfAccess.expiresAt;
-    if (expiresAt && new Date(expiresAt) < new Date()) {
-      return { valid: false, reason: 'Token expired' };
     }
 
     return { valid: true, userId: user._id };

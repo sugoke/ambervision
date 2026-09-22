@@ -7,6 +7,11 @@ import {
   ResearchDocumentsCollection,
   RESEARCH_CATEGORY_CONFIG,
   RESEARCH_CATEGORY_ORDER,
+  RESEARCH_LANGUAGE_CONFIG,
+  RESEARCH_LANGUAGE_ORDER,
+  getResearchFileMap,
+  getResearchLanguages,
+  resolveResearchLanguage,
   canWriteResearch,
   canDeleteResearch
 } from '../api/researchDocuments';
@@ -19,6 +24,10 @@ import { openDocumentWindow } from './utils/openDocument.js';
  * research notes); everyone on the Intranet can browse, search and open them.
  * Files are served through the token-gated /research endpoint — the list only
  * ever holds metadata.
+ *
+ * A document can exist in several languages (EN / FR). Both editions live on
+ * one entry with one set of metadata, so the library shows one row per report
+ * with a badge per available language rather than the same report twice.
  */
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
@@ -81,6 +90,8 @@ function suggestTitle(category, dateValue, security) {
 
 function matchesSearch(doc, term) {
   if (!term) return true;
+  const languages = getResearchLanguages(doc);
+  const fileMap = getResearchFileMap(doc);
   const haystack = [
     doc.title,
     doc.description,
@@ -89,7 +100,8 @@ function matchesSearch(doc, term) {
     doc.security?.name,
     doc.security?.isin,
     doc.uploadedByName,
-    doc.fileName
+    ...languages.map(lang => RESEARCH_LANGUAGE_CONFIG[lang]?.label),
+    ...languages.map(lang => fileMap[lang]?.fileName)
   ].filter(Boolean).join(' ').toLowerCase();
   return haystack.includes(term);
 }
@@ -170,7 +182,131 @@ const countBadge = (active) => ({
   textAlign: 'center'
 });
 
+/**
+ * EN / FR pill. `state` is 'available' (the edition exists — click to open),
+ * or 'missing' (it does not; writers get a dashed "add it" affordance).
+ */
+const languageBadge = (state) => ({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  padding: '2px 8px',
+  marginRight: 6,
+  borderRadius: 4,
+  fontSize: 11,
+  fontWeight: 700,
+  letterSpacing: '0.03em',
+  whiteSpace: 'nowrap',
+  cursor: 'pointer',
+  background: state === 'available' ? 'rgba(0,123,255,0.12)' : 'transparent',
+  color: state === 'available' ? 'var(--accent-color)' : 'var(--text-muted)',
+  border: state === 'available' ? '1px solid transparent' : '1px dashed var(--border-color)'
+});
+
 // ---------- Upload / edit form (portaled modal) -----------------------------------
+
+/**
+ * One language's PDF: the file already on the document, the one about to be
+ * uploaded, or an empty drop zone. Identical in the upload and edit forms —
+ * in edit mode it is also how a missing translation gets added later.
+ */
+function LanguageFileSlot({ language, existing, pendingFile, removed, busy, isDark, canReplace, onPick, onClear, onRemoveExisting, onRestore }) {
+  const [isDragging, setIsDragging] = useState(false);
+  const config = RESEARCH_LANGUAGE_CONFIG[language];
+  const inputId = `research-file-${language}`;
+  const showsExisting = !!existing && !pendingFile && !removed;
+  // An edition someone else uploaded can only be replaced by them or an admin —
+  // the same right it takes to delete it. Adding a missing one is open to any
+  // writer, so an empty slot always accepts a file.
+  const locked = showsExisting && !canReplace;
+
+  const pick = (candidate) => {
+    if (!candidate || locked) return;
+    onPick(language, candidate);
+  };
+
+  return (
+    <div>
+      <label style={labelStyle}>
+        <span style={{ marginRight: 5 }}>{config.flag}</span>{config.label}
+      </label>
+      <div
+        onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+        onDragLeave={(e) => { e.preventDefault(); setIsDragging(false); }}
+        onDrop={(e) => { e.preventDefault(); setIsDragging(false); pick(e.dataTransfer.files?.[0]); }}
+        onClick={() => !busy && !locked && document.getElementById(inputId)?.click()}
+        style={{
+          border: `2px dashed ${isDragging ? 'var(--accent-color)' : 'var(--border-color)'}`,
+          borderRadius: 10,
+          padding: '1rem 0.75rem',
+          textAlign: 'center',
+          minHeight: 104,
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'center',
+          gap: 2,
+          cursor: busy || locked ? 'default' : 'pointer',
+          background: isDragging ? 'rgba(0,123,255,0.06)' : (isDark ? 'var(--bg-tertiary)' : '#fafafa'),
+          opacity: removed ? 0.55 : 1,
+          transition: 'all 0.15s ease'
+        }}
+      >
+        <input
+          id={inputId}
+          type="file"
+          accept="application/pdf,.pdf"
+          style={{ display: 'none' }}
+          onChange={(e) => { pick(e.target.files?.[0]); e.target.value = ''; }}
+        />
+        {pendingFile ? (
+          <>
+            <div style={{ fontSize: '1.3rem' }}>📄</div>
+            <div style={{ fontWeight: 600, fontSize: '0.85rem', wordBreak: 'break-all' }}>{pendingFile.name}</div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              {formatFileSize(pendingFile.size)}{existing ? ' · replaces the current file' : ''}
+            </div>
+          </>
+        ) : showsExisting ? (
+          <>
+            <div style={{ fontSize: '1.3rem' }}>📕</div>
+            <div style={{ fontWeight: 600, fontSize: '0.85rem', wordBreak: 'break-all' }}>{existing.fileName}</div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              {formatFileSize(existing.fileSize)}
+              {locked ? ` · uploaded by ${existing.uploadedByName || 'someone else'}` : ' · click to replace'}
+            </div>
+          </>
+        ) : removed ? (
+          <>
+            <div style={{ fontSize: '1.3rem' }}>🗑️</div>
+            <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>Will be removed on save</div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: '1.3rem' }}>📎</div>
+            <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>Drop the {config.short} PDF or click</div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>optional · up to 25 MB</div>
+          </>
+        )}
+      </div>
+      <div style={{ marginTop: 5, textAlign: 'right', minHeight: 22 }}>
+        {pendingFile && (
+          <button type="button" disabled={busy} onClick={() => onClear(language)} style={ghostBtn}>Clear</button>
+        )}
+        {showsExisting && !locked && onRemoveExisting && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onRemoveExisting(language)}
+            style={{ ...ghostBtn, color: '#dc3545' }}
+          >Remove {config.short}</button>
+        )}
+        {removed && (
+          <button type="button" disabled={busy} onClick={() => onRestore(language)} style={ghostBtn}>Keep it</button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function ResearchFormModal({ mode, initial, defaultCategory, user, onClose, onSaved }) {
   const { isDark } = useTheme();
@@ -192,11 +328,15 @@ function ResearchFormModal({ mode, initial, defaultCategory, user, onClose, onSa
   const [title, setTitle] = useState(initial?.title || '');
   const [titleTouched, setTitleTouched] = useState(isEdit);
   const [description, setDescription] = useState(initial?.description || '');
-  const [file, setFile] = useState(null);
-  const [isDragging, setIsDragging] = useState(false);
+  // One pending upload per language, plus the existing editions an edit is
+  // about to drop. Both keyed by language code.
+  const [files, setFiles] = useState({});
+  const [removedLanguages, setRemovedLanguages] = useState({});
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState('');
   const [error, setError] = useState('');
+
+  const existingFiles = useMemo(() => getResearchFileMap(initial), [initial]);
 
   // Switching category changes the date granularity: re-seed the picker.
   const handleCategoryChange = (next) => {
@@ -210,7 +350,7 @@ function ResearchFormModal({ mode, initial, defaultCategory, user, onClose, onSa
     if (!titleTouched) setTitle(suggestTitle(category, dateValue, security));
   }, [category, dateValue, security, titleTouched]);
 
-  const pickFile = (candidate) => {
+  const pickFile = (language, candidate) => {
     setError('');
     if (!candidate) return;
     if (!candidate.name.toLowerCase().endsWith('.pdf')) {
@@ -221,8 +361,20 @@ function ResearchFormModal({ mode, initial, defaultCategory, user, onClose, onSa
       setError('File exceeds the 25 MB limit');
       return;
     }
-    setFile(candidate);
+    // Picking a file for a language that was marked for removal keeps it,
+    // replaced by the new one.
+    setRemovedLanguages(r => ({ ...r, [language]: false }));
+    setFiles(f => ({ ...f, [language]: candidate }));
   };
+
+  const clearFile = (language) => setFiles(f => ({ ...f, [language]: null }));
+  const removeExisting = (language) => setRemovedLanguages(r => ({ ...r, [language]: true }));
+  const restoreExisting = (language) => setRemovedLanguages(r => ({ ...r, [language]: false }));
+
+  // What the document will hold once this form is saved.
+  const resultingLanguages = RESEARCH_LANGUAGE_ORDER.filter(lang =>
+    files[lang] || (existingFiles[lang] && !removedLanguages[lang])
+  );
 
   const submit = async () => {
     setError('');
@@ -234,8 +386,10 @@ function ResearchFormModal({ mode, initial, defaultCategory, user, onClose, onSa
       setError('Enter at least a ticker or a company name');
       return;
     }
-    if (!isEdit && !file) {
-      setError('Select a PDF to upload');
+    if (resultingLanguages.length === 0) {
+      setError(isEdit
+        ? 'A document needs at least one language — delete it instead to remove everything'
+        : 'Select at least one PDF (English, French, or both)');
       return;
     }
 
@@ -247,28 +401,61 @@ function ResearchFormModal({ mode, initial, defaultCategory, user, onClose, onSa
         ? { ticker: security.ticker.trim() || null, name: security.name.trim() || null, isin: security.isin.trim() || null }
         : null;
 
+      // One method call per file: two 25 MB PDFs on a single DDP message would
+      // be twice the ceiling the server accepts.
+      const pendingLanguages = RESEARCH_LANGUAGE_ORDER.filter(lang => files[lang]);
+      let documentId = initial?._id;
+
       if (isEdit) {
         setStage('Saving…');
-        await Meteor.callAsync('research.updateMetadata', sessionId, initial._id, {
+        await Meteor.callAsync('research.updateMetadata', sessionId, documentId, {
           title: title.trim(),
           description: description.trim(),
           documentDate,
           security: securityPayload
         });
       } else {
-        setStage('Reading file…');
-        const base64Data = await fileToBase64(file);
-        setStage('Uploading…');
-        await Meteor.callAsync('research.upload', sessionId, {
+        // The first file creates the entry; the rest attach to it.
+        const [firstLanguage] = pendingLanguages;
+        const firstFile = files[firstLanguage];
+        setStage(`Reading ${RESEARCH_LANGUAGE_CONFIG[firstLanguage].short}…`);
+        const base64Data = await fileToBase64(firstFile);
+        setStage(`Uploading ${RESEARCH_LANGUAGE_CONFIG[firstLanguage].short}…`);
+        const res = await Meteor.callAsync('research.upload', sessionId, {
           category,
           title: title.trim(),
           description: description.trim(),
           documentDate,
           security: securityPayload,
-          fileName: file.name,
+          language: firstLanguage,
+          fileName: firstFile.name,
+          base64Data
+        });
+        documentId = res.documentId;
+        pendingLanguages.shift();
+      }
+
+      // Removals run before the additions so a language can be swapped in the
+      // same save without ever leaving the document empty.
+      for (const language of RESEARCH_LANGUAGE_ORDER) {
+        if (removedLanguages[language] && existingFiles[language] && !files[language]) {
+          setStage(`Removing ${RESEARCH_LANGUAGE_CONFIG[language].short}…`);
+          await Meteor.callAsync('research.removeVersion', sessionId, documentId, language);
+        }
+      }
+
+      for (const language of pendingLanguages) {
+        const candidate = files[language];
+        setStage(`Reading ${RESEARCH_LANGUAGE_CONFIG[language].short}…`);
+        const base64Data = await fileToBase64(candidate);
+        setStage(`Uploading ${RESEARCH_LANGUAGE_CONFIG[language].short}…`);
+        await Meteor.callAsync('research.addVersion', sessionId, documentId, {
+          language,
+          fileName: candidate.name,
           base64Data
         });
       }
+
       onSaved?.();
       onClose();
     } catch (err) {
@@ -302,7 +489,7 @@ function ResearchFormModal({ mode, initial, defaultCategory, user, onClose, onSa
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
           <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 600 }}>
-            {isEdit ? 'Edit document' : 'Upload research PDF'}
+            {isEdit ? 'Edit document' : 'Upload research document'}
           </h3>
           <button
             onClick={onClose}
@@ -418,52 +605,36 @@ function ResearchFormModal({ mode, initial, defaultCategory, user, onClose, onSa
           />
         </div>
 
-        {/* File drop zone (upload only) */}
-        {!isEdit && (
-          <div
-            onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-            onDragLeave={(e) => { e.preventDefault(); setIsDragging(false); }}
-            onDrop={(e) => { e.preventDefault(); setIsDragging(false); pickFile(e.dataTransfer.files?.[0]); }}
-            onClick={() => !busy && document.getElementById('research-file-input')?.click()}
-            style={{
-              border: `2px dashed ${isDragging ? 'var(--accent-color)' : 'var(--border-color)'}`,
-              borderRadius: 10,
-              padding: '1.25rem',
-              textAlign: 'center',
-              cursor: busy ? 'default' : 'pointer',
-              background: isDragging ? 'rgba(0,123,255,0.06)' : (isDark ? 'var(--bg-tertiary)' : '#fafafa'),
-              marginBottom: '1rem',
-              transition: 'all 0.15s ease'
-            }}
-          >
-            <input
-              id="research-file-input"
-              type="file"
-              accept="application/pdf,.pdf"
-              style={{ display: 'none' }}
-              onChange={(e) => pickFile(e.target.files?.[0])}
+        {/* One PDF per language — upload either, or both, at any time */}
+        <div style={{ marginBottom: '0.4rem', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+          Versions
+        </div>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: `repeat(${RESEARCH_LANGUAGE_ORDER.length}, minmax(0, 1fr))`,
+          gap: '0.75rem',
+          marginBottom: '0.5rem'
+        }}>
+          {RESEARCH_LANGUAGE_ORDER.map(language => (
+            <LanguageFileSlot
+              key={language}
+              language={language}
+              existing={existingFiles[language] || null}
+              pendingFile={files[language] || null}
+              removed={!!removedLanguages[language]}
+              busy={busy}
+              isDark={isDark}
+              canReplace={!isEdit || canDeleteResearch(user, initial)}
+              onPick={pickFile}
+              onClear={clearFile}
+              onRemoveExisting={resultingLanguages.length > 1 || files[language] ? removeExisting : null}
+              onRestore={restoreExisting}
             />
-            {file ? (
-              <div>
-                <div style={{ fontSize: '1.6rem' }}>📄</div>
-                <div style={{ fontWeight: 600, wordBreak: 'break-all' }}>{file.name}</div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{formatFileSize(file.size)} · click to change</div>
-              </div>
-            ) : (
-              <div>
-                <div style={{ fontSize: '1.6rem' }}>📎</div>
-                <div style={{ fontWeight: 600 }}>Drop a PDF here or click to browse</div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>PDF only · up to 25 MB</div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {isEdit && (
-          <div style={{ marginBottom: '1rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-            File: {initial.fileName} ({formatFileSize(initial.fileSize)}). To replace the PDF, delete this entry and upload again.
-          </div>
-        )}
+          ))}
+        </div>
+        <div style={{ marginBottom: '1rem', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+          Upload whichever you have — the missing language can be added later from Edit.
+        </div>
 
         {error && (
           <div style={{
@@ -492,6 +663,8 @@ function ResearchFormModal({ mode, initial, defaultCategory, user, onClose, onSa
 // ---------- Latest issue hero ----------------------------------------------------
 
 function LatestCard({ doc, config, isDark, onOpen }) {
+  const fileMap = getResearchFileMap(doc);
+  const languages = getResearchLanguages(doc);
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: '1.25rem', flexWrap: 'wrap',
@@ -509,13 +682,28 @@ function LatestCard({ doc, config, isDark, onOpen }) {
         </div>
         <div style={{ fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-primary)' }}>{doc.title}</div>
         <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: 2 }}>
-          {config.dateLabel}: {doc.periodLabel} · {formatFileSize(doc.fileSize)} · uploaded by {doc.uploadedByName}
+          {config.dateLabel}: {doc.periodLabel} · uploaded by {doc.uploadedByName}
         </div>
         {doc.description && (
           <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginTop: 6 }}>{doc.description}</div>
         )}
       </div>
-      <button onClick={() => onOpen(doc)} style={primaryBtn}>📖 Open PDF</button>
+      {/* One button per available edition — no language switch to hunt for. */}
+      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+        {languages.map(language => {
+          const lang = RESEARCH_LANGUAGE_CONFIG[language];
+          return (
+            <button
+              key={language}
+              onClick={() => onOpen(doc, language)}
+              title={`${fileMap[language].fileName} · ${formatFileSize(fileMap[language].fileSize)}`}
+              style={primaryBtn}
+            >
+              {lang.flag} Open {lang.short}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -534,7 +722,7 @@ function DocumentTable({ docs, showCategory, showSecurity, user, onOpen, onEdit,
               <th style={{ padding: '10px 14px' }}>Title</th>
               {showSecurity && <th style={{ padding: '10px 14px' }}>Security</th>}
               <th style={{ padding: '10px 14px' }}>Date</th>
-              <th style={{ padding: '10px 14px' }}>Size</th>
+              <th style={{ padding: '10px 14px' }}>Versions</th>
               <th style={{ padding: '10px 14px' }}>Uploaded</th>
               <th style={{ padding: '10px 14px', textAlign: 'right' }}></th>
             </tr>
@@ -543,6 +731,7 @@ function DocumentTable({ docs, showCategory, showSecurity, user, onOpen, onEdit,
             {docs.map(doc => {
               const config = RESEARCH_CATEGORY_CONFIG[doc.category] || {};
               const confirming = pendingDeleteId === doc._id;
+              const fileMap = getResearchFileMap(doc);
               return (
                 <tr key={doc._id} style={{ borderTop: '1px solid var(--border-color)' }}>
                   {showCategory && (
@@ -583,7 +772,37 @@ function DocumentTable({ docs, showCategory, showSecurity, user, onOpen, onEdit,
                     </td>
                   )}
                   <td style={{ padding: '10px 14px', whiteSpace: 'nowrap' }}>{doc.periodLabel}</td>
-                  <td style={{ padding: '10px 14px', whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>{formatFileSize(doc.fileSize)}</td>
+                  <td style={{ padding: '10px 14px', whiteSpace: 'nowrap' }}>
+                    {RESEARCH_LANGUAGE_ORDER.map(language => {
+                      const lang = RESEARCH_LANGUAGE_CONFIG[language];
+                      const entry = fileMap[language];
+                      if (entry) {
+                        return (
+                          <span
+                            key={language}
+                            onClick={() => onOpen(doc, language)}
+                            title={`${entry.fileName} · ${formatFileSize(entry.fileSize)}`}
+                            style={languageBadge('available')}
+                          >
+                            {lang.flag} {lang.short}
+                          </span>
+                        );
+                      }
+                      // A translation nobody has uploaded yet: visible to
+                      // whoever can fix it, invisible to everyone else.
+                      if (!canWrite) return null;
+                      return (
+                        <span
+                          key={language}
+                          onClick={() => onEdit(doc)}
+                          title={`No ${lang.label} version — click to add one`}
+                          style={languageBadge('missing')}
+                        >
+                          + {lang.short}
+                        </span>
+                      );
+                    })}
+                  </td>
                   <td style={{ padding: '10px 14px', whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>
                     <div>{doc.uploadedByName}</div>
                     <div style={{ fontSize: 11 }}>{doc.uploadedAt ? new Date(doc.uploadedAt).toLocaleDateString() : ''}</div>
@@ -669,10 +888,16 @@ export default function ResearchLibrary({ user }) {
     ? visibleDocs.some(d => d.security)
     : !!activeConfig?.hasSecurity;
 
-  const handleOpen = useCallback(async (doc) => {
+  // `language` is optional — the server falls back to the edition that exists.
+  const handleOpen = useCallback(async (doc, language) => {
     try {
       await openDocumentWindow(async () => {
-        const res = await Meteor.callAsync('research.getDownloadUrl', getSessionId(), doc._id);
+        const res = await Meteor.callAsync(
+          'research.getDownloadUrl',
+          getSessionId(),
+          doc._id,
+          language || resolveResearchLanguage(doc, null)
+        );
         return res.url;
       });
     } catch (err) {

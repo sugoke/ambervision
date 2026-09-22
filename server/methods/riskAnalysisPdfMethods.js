@@ -10,6 +10,7 @@ import { Meteor } from 'meteor/meteor';
 import { check } from 'meteor/check';
 import { RiskAnalysisReportsCollection } from '/imports/api/riskAnalysis';
 import { UsersCollection } from '/imports/api/users';
+import { findUserByPdfAccessToken } from '../helpers/pdfAccessTokens.js';
 
 /**
  * Validate PDF token and return the user
@@ -19,18 +20,12 @@ async function validatePdfToken(userId, pdfToken) {
     throw new Meteor.Error('invalid-params', 'Missing userId or pdfToken');
   }
 
-  const user = await UsersCollection.findOneAsync({
-    _id: userId,
-    'services.pdfAccess.token': pdfToken
-  });
+  // See server/helpers/pdfAccessTokens.js — one token per generation, so a
+  // retry cannot invalidate the run that is still rendering.
+  const user = await findUserByPdfAccessToken(userId, pdfToken);
 
   if (!user) {
     throw new Meteor.Error('unauthorized', 'Invalid or expired PDF token');
-  }
-
-  const expiresAt = user.services?.pdfAccess?.expiresAt;
-  if (expiresAt && new Date(expiresAt) < new Date()) {
-    throw new Meteor.Error('token-expired', 'PDF token has expired');
   }
 
   return user;

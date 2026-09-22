@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import UserInfoDisplay from './UserInfoDisplay.jsx';
 import UserProfileForm from './UserProfileForm.jsx';
 import McpApiTokens from './components/McpApiTokens.jsx';
+import OutlookConnection from './components/OutlookConnection.jsx';
 import { useTheme } from './ThemeContext.jsx';
 
 const ProfileManagement = ({ user, currentSection }) => {
@@ -189,6 +190,12 @@ const ProfileManagement = ({ user, currentSection }) => {
           />
         </div>
       )
+    },
+    {
+      id: 'mailbox',
+      label: 'Outlook Mailbox',
+      icon: '📧',
+      component: <OutlookConnection />
     },
     {
       id: 'api-access',

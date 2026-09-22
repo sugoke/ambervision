@@ -13,7 +13,7 @@ import { checkDataFreshness, formatDataDate } from '/imports/api/helpers/dataFre
 import { PMSHoldingsCollection } from '/imports/api/pmsHoldings.js';
 import { PortfolioSnapshotsCollection, PortfolioSnapshotHelpers } from '/imports/api/portfolioSnapshots.js';
 import { PMSOperationsCollection } from '/imports/api/pmsOperations.js';
-import { matchOrderToOperations } from '../methods/orderMethods.js';
+import { matchOrderToOperations, scanForBankReplies } from '../methods/orderMethods.js';
 import { ClientEntityHelpers } from '/imports/api/clientEntities.js';
 import { BanksCollection } from '/imports/api/banks.js';
 import { UsersCollection, USER_ROLES } from '/imports/api/users.js';
@@ -112,7 +112,8 @@ let cronJobs = {
   cmbFileSync: null,  // CMB-specific sync (runs later due to late file uploads)
   priceTrackerScrape: null,  // Manual price tracker scrape for securities without EOD coverage
   settlementCheck: null,     // Daily settlement reconciliation for executed orders
-  dataRetention: null        // GDPR retention: purge expired logs, leads, sessions, old bank files
+  dataRetention: null,       // GDPR retention: purge expired logs, leads, sessions, old bank files
+  bankReplyScan: null        // Outlook: spot bank replies to orders sent via Graph (notifies only)
 };
 
 // Store next run times for the dashboard
@@ -1953,6 +1954,23 @@ export async function initializeCronJobs() {
 
   console.log('✓ Price Tracker Scrape scheduled for 09:15 CET Mon-Fri');
 
+  // Bank-reply scan — every 10 minutes during business hours, Mon-Fri.
+  // Notifies only; attaching a bank_confirmation advances the order to EXECUTED,
+  // which stays a human decision. Quiet outside trading hours because bank desks
+  // are not replying at 03:00 and every tick costs Graph calls per sender.
+  cronJobs.bankReplyScan = cron.schedule('*/10 7-20 * * 1-5', Meteor.bindEnvironment(async () => {
+    try {
+      await scanForBankReplies();
+    } catch (error) {
+      console.error('[CRON] Bank reply scan error:', error);
+    }
+  }), {
+    scheduled: true,
+    timezone: "Europe/Paris"
+  });
+
+  console.log('✓ Bank reply scan scheduled every 10 min, 07:00-20:00 CET Mon-Fri');
+
   // Settlement Check — 09:30 CET Mon-Fri (after bank file syncs)
   cronJobs.settlementCheck = cron.schedule(scheduleInfo.settlementCheck.schedule, Meteor.bindEnvironment(async () => {
     console.log('[CRON] ========================================');
@@ -2133,6 +2151,31 @@ if (Meteor.isServer) {
 
       try {
         const result = await priceTrackerScrapeJob();
+        return { success: true, result };
+      } catch (error) {
+        throw new Meteor.Error('job-execution-failed', error.message);
+      }
+    },
+
+    /**
+     * Manually trigger the Outlook bank-reply scan.
+     *
+     * The dev instance sets CRON_DISABLED, so this is how the scan is exercised
+     * there — the settings comment notes manual triggers always work.
+     */
+    async 'cronJobs.triggerBankReplyScan'(sessionId) {
+      check(sessionId, String);
+      this.unblock();
+
+      const currentUser = await Meteor.callAsync('auth.getCurrentUser', sessionId);
+      if (!currentUser || (currentUser.role !== 'admin' && currentUser.role !== 'superadmin')) {
+        throw new Meteor.Error('access-denied', 'Admin privileges required');
+      }
+
+      console.log(`[MANUAL] Bank reply scan triggered by user ${currentUser._id}`);
+
+      try {
+        const result = await scanForBankReplies();
         return { success: true, result };
       } catch (error) {
         throw new Meteor.Error('job-execution-failed', error.message);

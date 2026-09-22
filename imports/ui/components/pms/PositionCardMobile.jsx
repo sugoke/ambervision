@@ -38,7 +38,11 @@ const PositionCardMobile = ({
   userRole,
   onBuy,
   onSell,
-  onReclassify
+  onReclassify,
+  // Opens the linked structured product's report in the app, with the PMS still
+  // behind it. Absent when the host provides no navigation, in which case the
+  // name stays an ordinary link.
+  onOpenReport
 }) => {
   const gainPositive = position.gainLoss >= 0;
   const gainPctPositive = position.gainLossPercent >= 0;
@@ -196,7 +200,15 @@ const PositionCardMobile = ({
             {position.linkedProduct ? (
               <a
                 href={`/report/${position.linkedProduct._id}`}
-                onClick={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (onOpenReport) {
+                    // In-app: a full page load would drop the PMS and leave no
+                    // way back to this list.
+                    e.preventDefault();
+                    onOpenReport(position.linkedProduct._id);
+                  }
+                }}
                 style={{ color: 'var(--text-primary)', textDecoration: 'none' }}
               >
                 {position.name}
@@ -378,6 +390,23 @@ const PositionCardMobile = ({
               );
             })}
           </div>
+
+          {/* The report of the structured product this position holds. On a
+              phone the product name is a two-line clamp inside a card whose tap
+              expands it, so the link in it is easy to miss — this is the
+              obvious way in, and every role gets it. */}
+          {position.linkedProduct && onOpenReport && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onOpenReport(position.linkedProduct._id); }}
+              style={{
+                ...actionButtonStyle('var(--info-color)', 'rgba(59, 130, 246, 0.15)'),
+                width: '100%',
+                marginTop: '0.875rem'
+              }}
+            >
+              📄 View product report
+            </button>
+          )}
 
           {/* Actions - RM/Admin only */}
           {canTrade && (

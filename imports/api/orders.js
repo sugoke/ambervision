@@ -63,7 +63,22 @@ export const OrdersCollection = new Mongo.Collection('orders');
 //   // Email
 //   sentAt: Date,
 //   sentTo: String,
-//   sentMethod: 'mailto' | 'sendpulse',
+//   sentMethod: 'mailto' | 'sendpulse' | 'graph',
+//
+//   // Present when the order was sent from the user's own Outlook mailbox via
+//   // Microsoft Graph. The ids are captured from the DRAFT before sending —
+//   // sending moves the message to Sent Items under a new id, and
+//   // internetMessageId is the only handle stable across that move (it is also
+//   // what matches the bank's reply back to this order).
+//   graphSend: {
+//     draftId, internetMessageId, conversationId,
+//     mailbox,                  // address it was sent from
+//     sentBy, sentAt,
+//     sentTraceStatus: 'pending' | 'attached'
+//                               // 'pending' = the mail went out but the Sent
+//                               // Items copy had not materialised yet, so the
+//                               // order_to_bank trace still needs filing
+//   } (optional),
 //
 //   // Bulk grouping
 //   bulkOrderGroupId: String (optional),
@@ -154,6 +169,15 @@ export const OrdersCollection = new Mongo.Collection('orders');
 //     fileSize: Number,
 //     uploadedAt: Date,
 //     uploadedBy: String,
+//     // Provenance, present only when the message was picked from the user's
+//     // Outlook mailbox rather than dropped in. Graph returns RFC-822 MIME, so
+//     // the stored file is a .eml either way and everything downstream is
+//     // unchanged; these fields just record where it came from.
+//     source: 'graph' (optional),
+//     graph: {
+//       messageId, internetMessageId, conversationId,
+//       receivedDateTime: Date, fromAddress
+//     } (optional),
 //     // Phone mode fields:
 //     phoneCallTime: Date,
 //     phoneCaller: String,
@@ -463,9 +487,19 @@ export const OrderFormatters = {
   // Human-readable order direction for confirmations/tickets. FX shows both legs;
   // a term deposit is increased or decreased (there is no "buy"/"sell" of a
   // deposit); everything else uses the plain BUY/SELL order type.
+  /**
+   * How the desk names an order's direction. The raw orderType is only ever
+   * 'buy' or 'sell' because that is what the engine stores, but nobody "buys" a
+   * term deposit — the client places more or takes some out — and an FX order's
+   * direction is the pair, not a side. Every view shows this instead of the raw
+   * field, so an order reads the same wherever it appears.
+   */
   orderDirectionLabel(order) {
     if (!order) return '';
-    if (order.assetType === ASSET_TYPES.FX) return this.fxDirectionLabel(order);
+    if (order.assetType === ASSET_TYPES.FX) {
+      // Prefer the server-formatted pair when the record carries it.
+      return order.fxDirectionFormatted || this.fxDirectionLabel(order);
+    }
     if (order.assetType === ASSET_TYPES.TERM_DEPOSIT) {
       return order.orderType === 'sell' ? 'Decrease' : 'Increase';
     }
@@ -1191,7 +1225,9 @@ export const OrderHelpers = {
     const issuer = OrderHelpers.resolveIssuerContact(order, liveIssuer);
 
     const lines = [
-      `Dear ${deskLabel || 'Trading Desk'},`,
+      // The mail goes to a desk address with several people in copy, so it opens
+      // to all of them rather than to a desk label or one named recipient.
+      'Dear all,',
       '',
       `Please find attached an order instruction (Ref: ${order.orderReference}) for the account of ${clientName}${accountNumber ? ` (account ${accountNumber})` : ''}.`
     ];
@@ -1222,10 +1258,13 @@ export const OrderHelpers = {
   // Generate email subject
   generateEmailSubject(order, liveIssuer = null) {
     const isinPart = order.isin ? ` (${order.isin})` : '';
+    // "BUY Term Deposit" is not how the desk or the bank talks about a deposit —
+    // orderDirectionLabel gives INCREASE / DECREASE there, and the pair for FX.
+    const direction = OrderFormatters.orderDirectionLabel(order).toUpperCase();
     // The issuer is what the desk routes a structured-product order by, so it
     // belongs in the subject where they see it without opening the mail.
     const issuer = OrderHelpers.resolveIssuerContact(order, liveIssuer);
     const issuerPart = issuer?.name ? ` - Issuer: ${issuer.name}` : '';
-    return `Order: ${order.orderReference} - ${order.orderType.toUpperCase()} ${order.securityName}${isinPart}${issuerPart}`;
+    return `Order: ${order.orderReference} - ${direction} ${order.securityName}${isinPart}${issuerPart}`;
   }
 };

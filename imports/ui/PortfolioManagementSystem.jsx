@@ -268,7 +268,7 @@ const getAssetClassSortOrder = (assetClass) => {
   return sortOrder[assetClass] || 999; // Unknown asset classes go to the end
 };
 
-const PortfolioManagementSystem = ({ user }) => {
+const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
   const { theme } = useTheme();
   const { viewAsFilter } = useViewAs();
   const [activeTab, setActiveTab] = useState('positions');
@@ -4022,6 +4022,7 @@ const PortfolioManagementSystem = ({ user }) => {
                     onBuy={(p) => openOrderModal('buy', p)}
                     onSell={(p) => openOrderModal('sell', p)}
                     onReclassify={handleReclassify}
+                    onOpenReport={onOpenProductReport}
                   />
                 );
               }
@@ -4063,7 +4064,17 @@ const PortfolioManagementSystem = ({ user }) => {
                             {position.linkedProduct ? (
                               <a
                                 href={`/report/${position.linkedProduct._id}`}
-                                onClick={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  // In-app when the host provides navigation, so the
+                                  // PMS stays mounted behind the report and its back
+                                  // button returns to this list. The href stays for
+                                  // middle-click / "open in new tab".
+                                  if (onOpenProductReport && !e.metaKey && !e.ctrlKey && e.button === 0) {
+                                    e.preventDefault();
+                                    onOpenProductReport(position.linkedProduct._id);
+                                  }
+                                  e.stopPropagation();
+                                }}
                                 style={{ color: 'var(--text-primary)', textDecoration: 'none' }}
                                 onMouseEnter={(e) => e.currentTarget.style.color = 'var(--info-color)'}
                                 onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-primary)'}

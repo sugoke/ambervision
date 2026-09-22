@@ -140,6 +140,19 @@ if (Meteor.isServer) {
 
       const storedUrl = String(product.termSheet.url);
       const filePath = storedUrl.split('?')[0]; // token binds to the exact path
+
+      // A term-sheet record is not proof the PDF is in the store. Minting a
+      // token regardless made every missing file look like a working download
+      // that opened a blank tab reading "Termsheet not found" — say so here
+      // instead, so the caller can report it and the record can be fixed.
+      if (!resolveTermsheetPath(termsheetFilenameFromUrl(storedUrl))) {
+        console.error(`[TermSheet] Record points at a file that is not in the store: ${storedUrl} (product ${productId})`);
+        throw new Meteor.Error(
+          'termsheet-file-missing',
+          'The term sheet is recorded for this product but its file is missing from the store. Please re-upload it.'
+        );
+      }
+
       const { issueDocumentToken } = await import('/server/documentAccess.js');
       const token = await issueDocumentToken(filePath, user._id);
       return `${filePath}?dl=${token}`;

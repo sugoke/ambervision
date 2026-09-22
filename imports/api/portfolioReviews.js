@@ -102,16 +102,20 @@ if (Meteor.isServer) {
     if (!userId || !pdfToken) {
       throw new Meteor.Error('invalid-params', 'Missing userId or pdfToken');
     }
+    // Same rule as server/helpers/pdfAccessTokens.js (the source of truth):
+    // a token from the per-generation list, or the legacy single slot, and
+    // unexpired either way. Inlined rather than imported because this file is
+    // shared code — a /server import would be pulled into the client bundle.
+    const now = new Date();
     const user = await UsersCollection.findOneAsync({
       _id: userId,
-      'services.pdfAccess.token': pdfToken
+      $or: [
+        { 'services.pdfAccessTokens': { $elemMatch: { token: pdfToken, expiresAt: { $gt: now } } } },
+        { 'services.pdfAccess.token': pdfToken, 'services.pdfAccess.expiresAt': { $gt: now } }
+      ]
     });
     if (!user) {
       throw new Meteor.Error('unauthorized', 'Invalid or expired PDF token');
-    }
-    const expiresAt = user.services?.pdfAccess?.expiresAt;
-    if (expiresAt && new Date(expiresAt) < new Date()) {
-      throw new Meteor.Error('token-expired', 'PDF token has expired');
     }
     return user;
   }

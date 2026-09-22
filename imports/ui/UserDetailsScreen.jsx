@@ -15,6 +15,12 @@ import Dialog from './Dialog.jsx';
 import { useDialog } from './useDialog.js';
 import { useTheme } from './ThemeContext.jsx';
 import { openDocumentWindow } from './utils/openDocument.js';
+// Imported statically on purpose. Production's CSP (server/securityHeaders.js)
+// grants 'unsafe-eval' in development only, and Meteor's dynamic-import package
+// evals fetched module source — so `await import('html2pdf.js')` threw
+// "Evaluating a string as JavaScript violates ... 'unsafe-eval'" on the
+// deployed app while working locally. Never lazy-load in this app's client code.
+import html2pdf from 'html2pdf.js';
 
 // Percentage input used by the investment profile editor.
 // Keeps the "%" inside the field so the value always reads as a percentage.
@@ -415,6 +421,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
   // Rendering takes a second or two; without a busy state the button looks dead.
   const [pdfBusyKey, setPdfBusyKey] = useState(null);
   const [pdfError, setPdfError] = useState(null);
+  const [deletingVersionKey, setDeletingVersionKey] = useState(null);
 
   // RM's clients state (for viewing RM profiles)
   const [rmClients, setRmClients] = useState([]);
@@ -1250,7 +1257,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
       label: 'Compte > 10M/25M',
       labelEn: 'Account > 10M/25M',
       options: [
-        { value: 'yes', label: 'Oui', labelEn: 'Yes', score: 10 },
+        { value: 'yes', label: 'Oui', labelEn: 'Yes', score: 20 },
         { value: 'no', label: 'Non', labelEn: 'No', score: 0 }
       ]
     },
@@ -1407,6 +1414,42 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
     setRiskScoreError(null);
   };
 
+  /**
+   * Delete one superseded assessment. Restricted to superadmin and compliance:
+   * an ordinary admin may re-score an account but not erase its history.
+   * `historyIndex` is the position in the stored (oldest-first) array, while
+   * the strip renders newest-first — the row passes the stored index and the
+   * assessment date, which the server re-checks before removing anything.
+   */
+  const canDeleteRiskScoreVersion =
+    currentUser?.role === USER_ROLES.SUPERADMIN || currentUser?.role === USER_ROLES.COMPLIANCE;
+
+  const deleteRiskScoreVersion = async (account, historyIndex, version, versionLabel, busyKey) => {
+    const when = version?.assessmentDate ? new Date(version.assessmentDate).toLocaleDateString('en-GB') : 'unknown date';
+    const confirmed = await showConfirm(
+      `Delete ${versionLabel} of the KYC risk assessment for account ${account.accountNumber}?
+
+` +
+      `Assessed ${when}. This removes a compliance record permanently and cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setDeletingVersionKey(busyKey);
+    try {
+      await Meteor.callAsync('bankAccounts.deleteRiskScoreVersion', {
+        accountId: account._id,
+        versionIndex: historyIndex,
+        assessmentDate: version?.assessmentDate ? new Date(version.assessmentDate) : null,
+        sessionId
+      });
+    } catch (error) {
+      console.error('Failed to delete risk assessment version:', error);
+      showError(error.reason || error.message || 'Could not delete this version');
+    } finally {
+      setDeletingVersionKey(null);
+    }
+  };
+
   const closeRiskScoreModal = () => {
     setRiskScoreModalOpen(false);
     setEditingRiskScore(false);
@@ -1500,8 +1543,6 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
     setPdfBusyKey(busyKey);
     setPdfError(null);
     try {
-      const { default: html2pdf } = await import('html2pdf.js');
-
       const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const clientName = entity ? ClientEntityHelpers.getEntityDisplayName(entity) : `${user?.profile?.firstName || ''} ${user?.profile?.lastName || ''}`.trim();
       const assessor = savedScore.assessedBy ? UsersCollection.findOne(savedScore.assessedBy) : null;
@@ -1571,7 +1612,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
         .replace(/\s+/g, '_');
 
       const html = `
-        <div style="font-family: Arial, Helvetica, sans-serif; color:#111827; font-size:10px; padding:4px;">
+        <div style="font-family: Arial, Helvetica, sans-serif; color:#111827; font-size:10px; padding:4px; width:100%; max-width:100%; box-sizing:border-box; overflow-wrap:break-word;">
           <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
             <div>
               <div style="font-size:16px; font-weight:bold;">KYC Risk Assessment — Banking Relationship Risk Matrix</div>
@@ -1584,7 +1625,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
             </div>
           </div>
 
-          <table style="width:100%; border-collapse:collapse; margin-bottom:12px;" border="0">
+          <table style="width:100%; table-layout:fixed; border-collapse:collapse; margin-bottom:12px; word-wrap:break-word;" border="0">
             <tr>
               <td style="border:1px solid #d1d5db; padding:6px 8px; width:50%;">
                 <span style="color:#6b7280;">Client:</span> <b>${esc(clientName)}</b>
@@ -1595,10 +1636,22 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
             </tr>
           </table>
 
-          <table style="width:100%; border-collapse:collapse;" border="0">
+          <!-- table-layout:fixed with an explicit colgroup. Left to lay out
+               automatically, a cell like "Equities/Bonds/Money Market,
+               Structured Products, Private Equity" widened the table past the
+               794px capture surface, and html2pdf clipped everything beyond the
+               right edge of the page — the last column, the header dates and
+               the last total all lost their right-hand side. Fixed widths make
+               the text wrap inside the page instead. -->
+          <table style="width:100%; table-layout:fixed; border-collapse:collapse; word-wrap:break-word;" border="0">
+            <colgroup>
+              <col style="width:4%;" />
+              <col style="width:21%;" />
+              ${COLUMNS.map(() => `<col style="width:${(75 / COLUMNS.length).toFixed(2)}%;" />`).join('')}
+            </colgroup>
             <thead>
               <tr style="background:#1f2937; color:white;">
-                <th style="padding:5px; width:18px;">#</th>
+                <th style="padding:5px;">#</th>
                 <th style="padding:5px; text-align:left;">Risk Criteria</th>
                 ${COLUMNS.map(c => `<th style="padding:5px;">${c.label}</th>`).join('')}
               </tr>
@@ -1655,7 +1708,12 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
           margin: [10, 10, 10, 10],
           filename,
           image: { type: 'jpeg', quality: 0.95 },
-          html2canvas: { scale: 2, backgroundColor: '#ffffff' },
+          // html2canvas re-renders the element in a cloned document; without
+          // width/windowWidth it lays that clone out at the real window width,
+          // so the matrix reflowed to something wider than the page and the
+          // capture was cropped at the right edge. Pinning both to the A4
+          // portrait width makes the clone match what is measured here.
+          html2canvas: { scale: 2, backgroundColor: '#ffffff', width: 794, windowWidth: 794 },
           jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
         }).from(container).outputPdf('blob');
       } finally {
@@ -4164,6 +4222,9 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                                       const versionNo = history.length - i;
                                                       const busyKey = `${account._id}:v${versionNo}`;
                                                       const busy = pdfBusyKey === busyKey;
+                                                      // The strip is newest-first; the stored array is oldest-first.
+                                                      const historyIndex = versionNo - 1;
+                                                      const deleting = deletingVersionKey === busyKey;
                                                       const hLevels = [h.clientProspect?.riskLevel, h.beneficialOwner?.riskLevel, h.businessRelationship?.riskLevel].filter(Boolean);
                                                       const hHighest = hLevels.includes('high') ? 'high' : hLevels.includes('medium') ? 'medium' : hLevels.length ? 'low' : null;
                                                       const hDisplay = hHighest ? getRiskLevelDisplay(hHighest) : null;
@@ -4184,6 +4245,15 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                                             style={{ padding: '3px 8px', background: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: '4px', color: 'var(--text-secondary)', cursor: pdfBusyKey ? 'wait' : 'pointer', fontSize: '0.68rem', flexShrink: 0, opacity: pdfBusyKey && !busy ? 0.5 : 1 }}>
                                                             {busy ? '⏳' : '📄'}
                                                           </button>
+                                                          {canDeleteRiskScoreVersion && (
+                                                            <button
+                                                              onClick={(e) => { e.stopPropagation(); deleteRiskScoreVersion(account, historyIndex, h, `v${versionNo}`, busyKey); }}
+                                                              disabled={!!deletingVersionKey}
+                                                              title={`Delete v${versionNo} permanently`}
+                                                              style={{ padding: '3px 8px', background: 'var(--bg-primary)', border: '1px solid color-mix(in srgb, var(--loss-color) 35%, transparent)', borderRadius: '4px', color: 'var(--loss-color)', cursor: deletingVersionKey ? 'wait' : 'pointer', fontSize: '0.68rem', flexShrink: 0, opacity: deletingVersionKey && !deleting ? 0.5 : 1 }}>
+                                                              {deleting ? '⏳' : '🗑️'}
+                                                            </button>
+                                                          )}
                                                         </div>
                                                       );
                                                     })}

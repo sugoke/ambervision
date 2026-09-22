@@ -61,57 +61,23 @@ const PDFDownloadButton = ({
 
       console.log('[PDF] Received result type:', typeof result);
 
-      // Handle both string and object responses
-      let base64Data = result;
-      if (typeof result === 'object' && result !== null) {
-        base64Data = result.pdfData || result.data || result;
-        console.log('[PDF] Extracted from object, keys were:', Object.keys(result));
+      // The server writes the PDF to a temporary store and hands back a
+      // short-lived, token-gated URL. Big reports (a consolidated PMS report
+      // runs to double-digit MB) are streamed over HTTP; sending them back
+      // through DDP used to take the server down with them.
+      if (!result || typeof result !== 'object' || !result.downloadUrl) {
+        console.error('[PDF] Unexpected response from server:', result);
+        throw new Error('Server did not return a download link. Check server logs.');
       }
 
-      if (!base64Data) {
-        throw new Error('No PDF data received from server');
-      }
+      console.log('[PDF] Export ready, size:', result.fileSize, 'bytes');
 
-      if (typeof base64Data !== 'string') {
-        console.error('[PDF] Unexpected data type:', typeof base64Data, base64Data);
-        throw new Error(`Unexpected data type: ${typeof base64Data}`);
-      }
-
-      // Clean the base64 string (remove any whitespace/newlines)
-      const cleanBase64 = base64Data.replace(/[\s\n\r]/g, '');
-      console.log('[PDF] Base64 length:', cleanBase64.length);
-      console.log('[PDF] First 50 chars:', cleanBase64.substring(0, 50));
-
-      // Validate it looks like a PDF (PDF files in base64 start with "JVBERi" which is "%PDF-")
-      if (!cleanBase64.startsWith('JVBERi')) {
-        console.error('[PDF] Data does not appear to be a PDF. First 200 chars:', cleanBase64.substring(0, 200));
-        // Try to decode and see what the content is
-        try {
-          const decoded = atob(cleanBase64.substring(0, 100));
-          console.error('[PDF] Decoded start:', decoded);
-        } catch (e) {
-          console.error('[PDF] Could not decode sample');
-        }
-        throw new Error('Server did not return valid PDF data. Check server logs.');
-      }
-
-      // Convert base64 to blob and trigger download
-      const byteCharacters = atob(cleanBase64);
-      const byteArray = new Uint8Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteArray[i] = byteCharacters.charCodeAt(i);
-      }
-      const blob = new Blob([byteArray], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-
-      // Create download link and trigger
       const a = document.createElement('a');
-      a.href = url;
+      a.href = result.downloadUrl;
       a.download = `${filename || 'report'}.pdf`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      URL.revokeObjectURL(url);
 
       console.log('[PDF] Download triggered successfully');
 

@@ -164,14 +164,101 @@ export function termsheetFilenameFromUrl(url) {
 export function resolveTermsheetPath(filename) {
   if (!isSafeTermsheetFilename(filename)) return null;
 
-  const candidates = [path.join(getTermsheetsDir(), filename)];
-  if (!process.env.TERMSHEETS_PATH) {
-    candidates.push(path.join(resolveProjectRoot(), 'public', 'termsheets', filename));
-  }
-  for (const candidate of candidates) {
+  for (const root of termsheetSearchRoots()) {
+    const candidate = path.join(root, filename);
     if (fs.existsSync(candidate)) return candidate;
   }
+
+  // Legacy nested layout: term sheets used to be stored a directory deeper,
+  // under the product id (<store>/<productId>/<file>.pdf). The URL contract is
+  // flat and the public→private migration preserved the nesting, so those files
+  // are on disk yet invisible to the lookup above — every one of them served a
+  // 404 while the product still advertised a term sheet. flattenNestedTermsheets()
+  // repairs the layout at startup; this fallback covers anything it could not move.
+  return findNestedTermsheet(filename);
+}
+
+/** Directories a flat term-sheet filename may legitimately live in. */
+function termsheetSearchRoots() {
+  const roots = [getTermsheetsDir()];
+  if (!process.env.TERMSHEETS_PATH) {
+    roots.push(path.join(resolveProjectRoot(), 'public', 'termsheets'));
+  }
+  return roots;
+}
+
+/**
+ * Look for `filename` one level down inside the term-sheet stores. The filename
+ * has already passed isSafeTermsheetFilename(), so it is a single path segment
+ * and cannot escape the directory it is joined to.
+ */
+function findNestedTermsheet(filename) {
+  for (const root of termsheetSearchRoots()) {
+    let entries;
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue; // store not present in this environment
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const candidate = path.join(root, entry.name, filename);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
   return null;
+}
+
+/**
+ * Move term sheets stranded in nested product-id folders up into the flat
+ * store, so the documented layout and what is on disk agree.
+ *
+ * Safe to run repeatedly. A nested file whose name is already taken at the root
+ * is left where it is (the root copy is the one live code paths resolve), and
+ * nothing is ever deleted.
+ */
+export function flattenNestedTermsheets() {
+  const root = getTermsheetsDir();
+  const stats = { moved: 0, skipped: 0 };
+  let entries;
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return stats; // no store in this environment
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(root, entry.name);
+    let files;
+    try {
+      files = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (!file.isFile() || !isSafeTermsheetFilename(file.name)) continue;
+      const dest = path.join(root, file.name);
+      if (fs.existsSync(dest)) {
+        stats.skipped++;
+        continue;
+      }
+      try {
+        fs.renameSync(path.join(dir, file.name), dest);
+        stats.moved++;
+      } catch (error) {
+        console.error(`[documentStorage] Could not flatten ${file.name}:`, error.message);
+      }
+    }
+    try {
+      if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+    } catch { /* leave a non-empty or busy directory alone */ }
+  }
+
+  if (stats.moved || stats.skipped) {
+    console.log(`[documentStorage] Flattened nested term sheets: ${stats.moved} moved, ${stats.skipped} left (name already taken at root)`);
+  }
+  return stats;
 }
 
 /**

@@ -25,9 +25,20 @@ import {
   getMeetingReportsDir,
   getResearchDir,
   getTermsheetsDir,
-  resolveTermsheetPath
+  resolveTermsheetPath,
+  flattenNestedTermsheets
 } from '/imports/api/documentStorage.js';
-import { ResearchDocumentsCollection } from '/imports/api/researchDocuments';
+import {
+  ResearchDocumentsCollection,
+  researchStoredFileSelector,
+  findResearchFileByStoredName
+} from '/imports/api/researchDocuments';
+import {
+  PDF_EXPORT_URL_PREFIX,
+  SAFE_PDF_EXPORT_FILENAME,
+  resolvePdfExportPath,
+  sweepPdfExports
+} from './pdfExportStore.js';
 import './securityHeaders.js'; // register baseline security response headers
 import { WebApp } from 'meteor/webapp';
 import { MongoInternals } from 'meteor/mongo';
@@ -104,6 +115,7 @@ import { resetTermsheetWithoutEvidence } from './migrations/resetTermsheetWithou
 import { movePublicDocumentsPrivate } from './migrations/movePublicDocumentsPrivate';
 import { splitJointAccountEntities } from './migrations/splitJointAccountEntities';
 import { moveRiskScoreToAccounts } from './migrations/moveRiskScoreToAccounts';
+import { migrateResearchDocumentLanguages } from './migrations/migrateResearchDocumentLanguages';
 import { AuditLog } from '/imports/api/auditLog';
 import { migrateLegacyPasswordHashes } from './migrations/migrateLegacyPasswordHashes';
 import { encryptStoredCredentials } from './migrations/encryptStoredCredentials';
@@ -126,6 +138,8 @@ import './methods/dataQualityMethods';
 import './methods/demoClientMethods';
 import './methods/gdprMethods';
 import './methods/oauthMethods';
+import './methods/msGraphMethods'; // Outlook mailbox connection lifecycle (Microsoft Graph)
+import './msgraph/callbackHandler'; // OAuth redirect target at /auth/microsoft/callback
 import '/imports/api/meetingReports'; // Client meeting reports — collection + methods
 import './publications/meetingReports';
 import './methods/researchMethods'; // Intranet research library — manual PDF uploads
@@ -361,6 +375,16 @@ Meteor.startup(async () => {
     console.error('❌ Error moving public documents to private storage:', error);
   }
 
+  // Term sheets stranded in legacy <store>/<productId>/ folders are on disk but
+  // unreachable: the URL contract and the resolver are both flat, so every one
+  // of them answered 404 on the report page and broke the order flow's
+  // "attach the stored term sheet" step. Lift them into the flat store.
+  try {
+    flattenNestedTermsheets();
+  } catch (error) {
+    console.error('❌ Error flattening nested term sheets:', error);
+  }
+
   // Joint accounts: retire combined "A & B" pseudo-entities in favour of one
   // account row listing every holder. Runs before the risk-score seeding so the
   // assessment lands on the merged row, not one that is about to be retired.
@@ -376,6 +400,23 @@ Meteor.startup(async () => {
     await moveRiskScoreToAccounts();
   } catch (error) {
     console.error('Error moving KYC risk scores to bank accounts:', error);
+  }
+
+  // Research library: a document now holds one PDF per language, so move the
+  // pre-split single-file documents into their language map.
+  try {
+    await migrateResearchDocumentLanguages();
+  } catch (error) {
+    console.error('Error migrating research documents to language editions:', error);
+  }
+
+  // Generated report PDFs are temporary: clear anything a previous run left
+  // behind (a download that never happened, or a restart mid-generation).
+  try {
+    const swept = sweepPdfExports(0);
+    if (swept > 0) console.log(`[PDFExport] Cleared ${swept} leftover export(s) from the previous run`);
+  } catch (error) {
+    console.error('Error clearing generated PDF exports:', error);
   }
 
   // Link bank positions to their products. Auto-allocation used to run only when
@@ -2433,6 +2474,63 @@ Meteor.methods({
     await AuditLog.record({
       actorUserId: currentUser._id,
       action: 'bankAccount.riskScore.update',
+      targetType: 'bankAccount',
+      targetId: accountId
+    });
+
+    return result;
+  },
+
+  /**
+   * Delete ONE superseded assessment from a bank account's history.
+   *
+   * This removes a compliance record, so it is restricted to superadmin and
+   * compliance (an ordinary admin may re-score but not erase). The caller
+   * passes the assessment date it believes sits at `versionIndex`; if the
+   * history has shifted since the list was rendered the delete is refused
+   * rather than silently removing the neighbouring version. The current
+   * assessment is never touched — only kycRiskScoreHistory entries.
+   */
+  async 'bankAccounts.deleteRiskScoreVersion'({ accountId, versionIndex, assessmentDate, sessionId }) {
+    check(accountId, String);
+    check(versionIndex, Number);
+    check(assessmentDate, Match.Maybe(Match.OneOf(Date, null)));
+    check(sessionId, String);
+
+    const currentUser = await validateSessionAndGetUser(sessionId);
+    const allowedRoles = [USER_ROLES.SUPERADMIN, USER_ROLES.COMPLIANCE];
+    if (!allowedRoles.includes(currentUser.role)) {
+      throw new Meteor.Error('not-authorized', 'Only superadmins and compliance officers can delete a risk assessment version');
+    }
+
+    const account = await BankAccountsCollection.findOneAsync(accountId);
+    if (!account) {
+      throw new Meteor.Error('not-found', 'Bank account not found');
+    }
+
+    const history = Array.isArray(account.kycRiskScoreHistory) ? account.kycRiskScoreHistory : [];
+    if (!Number.isInteger(versionIndex) || versionIndex < 0 || versionIndex >= history.length) {
+      throw new Meteor.Error('not-found', 'That assessment version no longer exists');
+    }
+
+    const target = history[versionIndex];
+    const targetDate = target?.assessmentDate ? new Date(target.assessmentDate).getTime() : null;
+    const expectedDate = assessmentDate ? new Date(assessmentDate).getTime() : null;
+    if (targetDate !== expectedDate) {
+      throw new Meteor.Error('version-moved', 'This history has changed since the list was loaded. Reopen the account and try again.');
+    }
+
+    const remaining = history.filter((_, i) => i !== versionIndex);
+    const result = await BankAccountsCollection.updateAsync(accountId, {
+      $set: { kycRiskScoreHistory: remaining, updatedAt: new Date() }
+    });
+
+    console.log(`[bankAccounts.deleteRiskScoreVersion] ${currentUser.role} ${currentUser._id} deleted version ${versionIndex + 1} ` +
+      `(assessed ${target?.assessmentDate ? new Date(target.assessmentDate).toISOString() : 'unknown'}) from account ${account.accountNumber} (${accountId})`);
+
+    await AuditLog.record({
+      actorUserId: currentUser._id,
+      action: 'bankAccount.riskScore.versionDelete',
       targetType: 'bankAccount',
       targetId: accountId
     });
@@ -6995,6 +7093,54 @@ WebApp.connectHandlers.use('/meetingReports', async (req, res, next) => {
   }
 });
 
+// Generated report PDFs (pdf.generateReport). The file is streamed from the
+// temporary export store instead of being returned inline by the method — a
+// 13 MB consolidated PMS report used to OOM-kill the server on its way through
+// DDP. Token minted by pdf.generateReport; see server/pdfExportStore.js.
+WebApp.connectHandlers.use(PDF_EXPORT_URL_PREFIX, async (req, res, next) => {
+  // URL format: /pdf-exports/{storedFileName}?dl=<token>
+  // (req.url has the mount prefix stripped; authorizeDocumentRequest reads originalUrl)
+  const urlParts = req.url.split('?')[0].split('/').filter(p => p);
+  if (urlParts.length !== 1) return next();
+
+  const filename = decodeURIComponent(urlParts[0]);
+  if (!SAFE_PDF_EXPORT_FILENAME.test(filename)) return next();
+
+  const auth = await authorizeDocumentRequest(req);
+  if (!auth) {
+    res.writeHead(401, { 'Content-Type': 'text/plain' });
+    res.end('Unauthorized');
+    return;
+  }
+
+  try {
+    const filePath = resolvePdfExportPath(filename);
+    if (!filePath || !fs.existsSync(filePath)) {
+      // Swept after its TTL, or the container restarted since it was generated.
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('This export has expired — generate the report again');
+      return;
+    }
+
+    const stat = fs.statSync(filePath);
+    res.writeHead(200, {
+      'Content-Type': 'application/pdf',
+      'Content-Length': stat.size,
+      // No filename parameter on purpose: a filename here would win over the
+      // download attribute on the link, and the browser would save the file
+      // under its internal store name (title + random suffix) instead of the
+      // clean one the report page asked for.
+      'Content-Disposition': 'attachment',
+      'Cache-Control': 'private, no-store'
+    });
+    fs.createReadStream(filePath).pipe(res);
+  } catch (error) {
+    console.error('Error serving generated PDF export:', error);
+    res.writeHead(500, { 'Content-Type': 'text/plain' });
+    res.end('Internal server error');
+  }
+});
+
 // Intranet research library PDFs (monthly report, equity recommended list,
 // stock research). Uploaded by staff via research.upload, stored under
 // getResearchDir(), served only with a capability token minted by
@@ -7030,13 +7176,16 @@ WebApp.connectHandlers.use('/research', async (req, res, next) => {
       return;
     }
 
-    // Serve under the original upload name so "Save as" is meaningful.
+    // Serve under the original upload name so "Save as" is meaningful. The file
+    // sits in whichever language slot it was uploaded into, so the lookup asks
+    // for the stored name across all of them.
     // Header-safe: ASCII only, no quotes / control characters.
     const doc = await ResearchDocumentsCollection.findOneAsync(
-      { storedFileName: filename },
-      { fields: { fileName: 1 } }
+      researchStoredFileSelector(filename),
+      { fields: { files: 1, fileName: 1, storedFileName: 1 } }
     );
-    const downloadName = String(doc?.fileName || filename)
+    const entry = doc ? findResearchFileByStoredName(doc, filename) : null;
+    const downloadName = String(entry?.file?.fileName || filename)
       .replace(/[^\x20-\x7E]/g, '_')
       .replace(/["\\]/g, '_')
       .slice(0, 200) || filename;

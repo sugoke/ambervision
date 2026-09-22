@@ -1,5 +1,9 @@
-@import 'structured-product.css';
-@import 'pdf-styles.css';
+/* structured-product.css and pdf-styles.css are NOT @imported here. Meteor
+   already bundles every .css file under client/ into the one served
+   stylesheet, so an @import was both redundant and broken: it survived into
+   the merged output, the browser requested /structured-product.css, the app's
+   catch-all answered with the SPA's HTML, and every page load logged
+   "Refused to apply style ... MIME type ('text/html')". */
 
 /* ==========================================================================
    Ambervision design system — base tokens

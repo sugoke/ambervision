@@ -11,7 +11,11 @@ import { check, Match } from 'meteor/check';
 import { PMSHoldingsCollection } from '/imports/api/pmsHoldings';
 import { PMSOperationsCollection } from '/imports/api/pmsOperations';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
-import { UsersCollection, USER_ROLES } from '/imports/api/users';
+import { findUserByPdfAccessToken } from '../helpers/pdfAccessTokens.js';
+import { accountHolderSelector } from '/imports/api/bankAccounts';
+// The perimeter rule lives with the dashboard that defined it. Importing it is
+// the point: this file used to carry its own copy, and the copy was wrong.
+import { getFilteredClientIds } from './rmDashboardMethods.js';
 import { ProductsCollection } from '/imports/api/products';
 import { SecuritiesMetadataCollection } from '/imports/api/securitiesMetadata';
 import { PortfolioSnapshotHelpers } from '/imports/api/portfolioSnapshots';
@@ -24,22 +28,66 @@ async function validatePdfToken(userId, pdfToken) {
     throw new Meteor.Error('invalid-params', 'Missing userId or pdfToken');
   }
 
-  const user = await UsersCollection.findOneAsync({
-    _id: userId,
-    'services.pdfAccess.token': pdfToken
-  });
+  // Accepts a token from the per-run list as well as the legacy single slot,
+  // and checks expiry in the query — see server/helpers/pdfAccessTokens.js.
+  const user = await findUserByPdfAccessToken(userId, pdfToken);
 
   if (!user) {
     throw new Meteor.Error('unauthorized', 'Invalid or expired PDF token');
   }
 
-  const expiresAt = user.services?.pdfAccess?.expiresAt;
-  if (expiresAt && new Date(expiresAt) < new Date()) {
-    throw new Meteor.Error('token-expired', 'PDF token has expired');
-  }
-
   return user;
 }
+
+/**
+ * The report's data perimeter, resolved exactly as the on-screen PMS resolves it.
+ *
+ * This file used to branch on the role by hand, and honoured `viewAsFilter` only
+ * for ADMIN and SUPERADMIN. A COMPLIANCE user matched no branch at all, so the
+ * filter stayed `{ isActive, isLatest }` and the report was built from EVERY
+ * client's holdings — while its header still named the one client that had been
+ * selected. It also knew nothing about the 'entity' viewAs type (what the picker
+ * returns since the entity migration) and matched `userId` only, so entity-only
+ * clients were invisible.
+ *
+ * @returns {{ ownerIds: string[], account: Object|null }}
+ */
+const resolvePdfScope = async (currentUser, viewAsFilter) => {
+  const ownerIds = await getFilteredClientIds(currentUser, viewAsFilter || null);
+
+  // 'account' narrows to ONE account. getFilteredClientIds resolves the account's
+  // OWNER, which on its own would widen the report back out to every account
+  // that owner holds.
+  const account = viewAsFilter?.type === 'account'
+    ? await BankAccountsCollection.findOneAsync(viewAsFilter.id)
+    : null;
+
+  return { ownerIds, account };
+};
+
+/** Holdings/operations carry the owner as a legacy userId or as an entityId. */
+const ownerSelector = (ownerIds) => ({
+  $or: [
+    { userId: { $in: ownerIds } },
+    { entityId: { $in: ownerIds } }
+  ]
+});
+
+/**
+ * Positions in the perimeter.
+ *
+ * CONSOLIDATED rows are roll-up copies of the per-account rows — including both
+ * is what put every position in the report twice and doubled the total (289 real
+ * rows plus 221 roll-ups read as 510 holdings and ~200M instead of ~117M).
+ */
+const holdingsSelector = ({ ownerIds, account }) => ({
+  isActive: true,
+  isLatest: true,
+  ...ownerSelector(ownerIds),
+  ...(account
+    ? { portfolioCode: account.accountNumber, bankId: account.bankId }
+    : { portfolioCode: { $ne: 'CONSOLIDATED' } })
+});
 
 // GDPR accountability
 const { AuditLog } = require('/imports/api/auditLog');
@@ -69,45 +117,13 @@ Meteor.methods({
       targetId: viewAsFilter ? `${viewAsFilter.type}:${viewAsFilter.id}` : 'all'
     });
 
-    // Build query filter based on role
-    let queryFilter = { isActive: true, isLatest: true };
+    const scope = await resolvePdfScope(currentUser, viewAsFilter);
 
-    // Admins and superadmins with viewAsFilter
-    if (viewAsFilter && (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN)) {
-      if (viewAsFilter.type === 'client') {
-        queryFilter.userId = viewAsFilter.id;
-      } else if (viewAsFilter.type === 'account') {
-        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-        if (bankAccount) {
-          queryFilter.userId = bankAccount.userId;
-          queryFilter.portfolioCode = bankAccount.accountNumber;
-          queryFilter.bankId = bankAccount.bankId;
-        }
-      }
-    }
-    // Admins without filter - see all holdings
-    else if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN) {
-      // No additional filter - see all active holdings
-    }
-    // Relationship Managers
-    else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
-      const assignedClients = await UsersCollection.find({
-        relationshipManagerId: currentUser._id
-      }).fetchAsync();
-      const clientIds = assignedClients.map(c => c._id);
-      clientIds.push(currentUser._id);
-      queryFilter.userId = { $in: clientIds };
-    }
-    // Clients - only their own holdings
-    else if (currentUser.role === USER_ROLES.CLIENT) {
-      queryFilter.userId = currentUser._id;
-    }
-
-    const holdings = await PMSHoldingsCollection.find(queryFilter, {
+    const holdings = await PMSHoldingsCollection.find(holdingsSelector(scope), {
       sort: { securityName: 1 }
     }).fetchAsync();
 
-    console.log('[PMS_PDF] Found', holdings.length, 'holdings');
+    console.log(`[PMS_PDF] Found ${holdings.length} holdings for ${scope.ownerIds.length} owner(s)${scope.account ? ` on account ${scope.account.accountNumber}` : ''}`);
     return holdings;
   },
 
@@ -127,79 +143,49 @@ Meteor.methods({
     // Validate PDF token
     const currentUser = await validatePdfToken(userId, pdfToken);
 
-    // Build query filter based on role
-    let queryFilter = { isActive: true };
+    const scope = await resolvePdfScope(currentUser, viewAsFilter);
 
-    // Admins and superadmins with viewAsFilter
-    if (viewAsFilter && (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN)) {
-      if (viewAsFilter.type === 'client') {
-        queryFilter.userId = viewAsFilter.id;
-      } else if (viewAsFilter.type === 'account') {
-        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-        if (bankAccount) {
-          queryFilter.userId = bankAccount.userId;
-          queryFilter.portfolioCode = bankAccount.accountNumber;
-          queryFilter.bankId = bankAccount.bankId;
-        }
-      }
-    }
-    // Admins without filter
-    else if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN) {
-      // See all operations
-    }
-    // Relationship Managers
-    else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
-      const assignedClients = await UsersCollection.find({
-        relationshipManagerId: currentUser._id
-      }).fetchAsync();
-      const clientIds = assignedClients.map(c => c._id);
-      clientIds.push(currentUser._id);
-      queryFilter.userId = { $in: clientIds };
-    }
-    // Clients
-    else if (currentUser.role === USER_ROLES.CLIENT) {
-      queryFilter.userId = currentUser._id;
-    }
-
-    const operations = await PMSOperationsCollection.find(queryFilter, {
+    const operations = await PMSOperationsCollection.find({
+      isActive: true,
+      ...ownerSelector(scope.ownerIds),
+      ...(scope.account
+        ? { portfolioCode: scope.account.accountNumber, bankId: scope.account.bankId }
+        : {})
+    }, {
       sort: { operationDate: -1, inputDate: -1 }
     }).fetchAsync();
 
-    console.log('[PMS_PDF] Found', operations.length, 'operations');
+    console.log(`[PMS_PDF] Found ${operations.length} operations for ${scope.ownerIds.length} owner(s)`);
     return operations;
   },
 
   /**
    * Get bank accounts for PDF generation
    */
-  async 'pms.getBankAccountsForPdf'({ userId, pdfToken }) {
+  async 'pms.getBankAccountsForPdf'({ userId, pdfToken, viewAsFilter }) {
     check(userId, String);
     check(pdfToken, String);
+    check(viewAsFilter, Match.Maybe(Match.ObjectIncluding({
+      type: String,
+      id: String
+    })));
 
     console.log('[PMS_PDF] Fetching bank accounts for PDF, userId:', userId);
 
     // Validate PDF token
     const currentUser = await validatePdfToken(userId, pdfToken);
 
-    // Build query based on role
-    let queryFilter = { isActive: true };
+    const scope = await resolvePdfScope(currentUser, viewAsFilter);
 
-    if (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN) {
-      // See all accounts
-    } else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
-      const assignedClients = await UsersCollection.find({
-        relationshipManagerId: currentUser._id
-      }).fetchAsync();
-      const clientIds = assignedClients.map(c => c._id);
-      clientIds.push(currentUser._id);
-      queryFilter.userId = { $in: clientIds };
-    } else if (currentUser.role === USER_ROLES.CLIENT) {
-      queryFilter.userId = currentUser._id;
-    }
+    // accountHolderSelector, not a bare { entityId }: a joint account is one row
+    // listing every holder, and the co-holders would otherwise lose it.
+    const accounts = await BankAccountsCollection.find(
+      scope.account
+        ? { _id: scope.account._id }
+        : { isActive: true, ...accountHolderSelector(scope.ownerIds) }
+    ).fetchAsync();
 
-    const accounts = await BankAccountsCollection.find(queryFilter).fetchAsync();
-
-    console.log('[PMS_PDF] Found', accounts.length, 'bank accounts');
+    console.log(`[PMS_PDF] Found ${accounts.length} bank accounts for ${scope.ownerIds.length} owner(s)`);
     return accounts;
   },
 
@@ -262,21 +248,13 @@ Meteor.methods({
 
     const now = new Date();
 
-    // Determine target userId based on role and viewAsFilter
-    let targetUserId = currentUser._id;
-    let targetPortfolioCode = null;
-
-    if (viewAsFilter && (currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN)) {
-      if (viewAsFilter.type === 'client') {
-        targetUserId = viewAsFilter.id;
-      } else if (viewAsFilter.type === 'account') {
-        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-        if (bankAccount) {
-          targetUserId = bankAccount.userId;
-          targetPortfolioCode = bankAccount.accountNumber;
-        }
-      }
-    }
+    // Same perimeter as the positions above. The snapshot helper works from one
+    // owner, so take the first of the resolved ids: with a viewAs selection that
+    // is the selected client (or the selected account's owner), and without one
+    // there is no single portfolio whose performance this would be.
+    const scope = await resolvePdfScope(currentUser, viewAsFilter);
+    const targetUserId = viewAsFilter ? (scope.ownerIds[0] || currentUser._id) : currentUser._id;
+    const targetPortfolioCode = scope.account ? scope.account.accountNumber : null;
 
     // Define period start dates
     const periods = {

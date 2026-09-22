@@ -7,6 +7,7 @@ import { BanksCollection } from '/imports/api/banks';
 import { downloadEmlSequential } from '/imports/utils/emlBuilder.js';
 import { useOrderEmailDelivery } from '../hooks/useOrderEmailDelivery.js';
 import TracePreview from './TracePreview.jsx';
+import BulkSendPreviewModal from './BulkSendPreviewModal.jsx';
 import { useProductTitles } from '../hooks/useProductTitles.js';
 
 const REVIEW_LOCK_TTL_MS = 5 * 60 * 1000;
@@ -36,7 +37,7 @@ const BulkValidationPanel = ({
   const getSessionId = () => localStorage.getItem('sessionId');
   const sessionId = useMemo(() => localStorage.getItem('sessionId'), []);
   // Desktop: .eml drafts. Phone: Outlook compose deep link per client (one hand-off at a time).
-  const { deliverOrderEmail, orderEmailSheet, isMobileMailDevice } = useOrderEmailDelivery();
+  const { deliverOrderEmail, orderEmailSheet, orderSendPreview, notifyOrdersSent, isMobileMailDevice, graphConnected, graphMailbox } = useOrderEmailDelivery();
 
   const { members, isLoading } = useTracker(() => {
     if (!sessionId || !groupId) return { members: [], isLoading: false };
@@ -72,6 +73,7 @@ const BulkValidationPanel = ({
   const [groupTermsheet, setGroupTermsheet] = useState(null);
   const [rowErrors, setRowErrors] = useState({});        // orderId -> message
   const [emailBusy, setEmailBusy] = useState(null);      // orderId | 'all'
+  const [bulkSendItems, setBulkSendItems] = useState(null); // rows for the Outlook bulk-send review
 
   // Ticks so a lock that passed its TTL visually expires (see ValidationBlotter).
   const [, setLockTick] = useState(0);
@@ -237,10 +239,45 @@ const BulkValidationPanel = ({
     setEmailBusy(m._id);
     try {
       const payload = await resolveEmailPayload(m);
-      warnIfNoDesk(payload, m);
-      deliverOrderEmail(payload);
+      if (!graphConnected) warnIfNoDesk(payload, m);
+      deliverOrderEmail(payload, { orderId: m._id });
     } catch (err) {
       alert(err.reason || err.message || 'Could not prepare the email');
+    } finally {
+      setEmailBusy(null);
+    }
+  };
+
+  /**
+   * Prepare every validated member's email, then open the review list. Payload
+   * preparation is per-order and tolerant: one order that cannot be prepared is
+   * reported and skipped rather than blocking the whole batch.
+   */
+  const handleSendAll = async () => {
+    if (validatedMembers.length === 0) return;
+    setEmailBusy('all');
+    try {
+      const items = [];
+      const failures = [];
+      for (const m of validatedMembers) {
+        try {
+          const payload = await resolveEmailPayload(m);
+          items.push({
+            orderId: m._id,
+            orderReference: m.orderReference,
+            clientName: m.clientName,
+            bankName: m.bankName,
+            payload
+          });
+        } catch (err) {
+          console.error('[BulkValidationPanel] prepareEmail failed:', err);
+          failures.push(`${m.orderReference}: ${err.reason || err.message}`);
+        }
+      }
+      if (failures.length) {
+        alert(`Could not prepare ${failures.length} of ${validatedMembers.length} emails:\n\n${failures.join('\n')}`);
+      }
+      if (items.length) setBulkSendItems(items);
     } finally {
       setEmailBusy(null);
     }
@@ -302,6 +339,16 @@ const BulkValidationPanel = ({
   return (
     <>
     {orderEmailSheet}
+    {orderSendPreview}
+    <BulkSendPreviewModal
+      items={bulkSendItems}
+      mailbox={graphMailbox}
+      onClose={() => setBulkSendItems(null)}
+      onDone={(summary) => {
+        onOrderUpdate?.();
+        if (summary?.sent > 0) notifyOrdersSent({ count: summary.sent });
+      }}
+    />
     <div
       style={{ ...s.overlay, alignItems: 'flex-start', overflowY: 'auto', padding: isMobile ? 0 : '40px 0' }}
       onClick={onClose}
@@ -331,7 +378,7 @@ const BulkValidationPanel = ({
                   padding: '3px 10px', borderRadius: '4px',
                   background: first.orderType === 'buy' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'
                 }}>
-                  {first.assetType === ASSET_TYPES.FX ? (first.fxDirectionFormatted || first.orderType) : first.orderType}
+                  {OrderFormatters.orderDirectionLabel(first)}
                 </span>
                 <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }} title={blockSecurityName !== first.securityName ? `Entered on the order as “${first.securityName}”` : undefined}>{blockSecurityName}</span>
                 {first.assetType !== ASSET_TYPES.FX && (
@@ -589,16 +636,41 @@ const BulkValidationPanel = ({
               <div style={{ ...s.sectionTitle, marginBottom: 0, color: 'var(--gain-color)' }}>
                 Bank emails · one draft per client ({validatedMembers.length})
               </div>
-              {!isMobileMailDevice && (
-                <button
-                  type="button"
-                  style={{ ...s.validateBtn, opacity: emailBusy ? 0.5 : 1 }}
-                  disabled={!!emailBusy}
-                  onClick={handleDownloadAll}
-                  title="Download every draft, one after another"
-                >
-                  {emailBusy === 'all' ? 'Preparing…' : `Download all (${validatedMembers.length})`}
-                </button>
+              {/* With a mailbox connected the send is server-side, so the batch
+                  works on a phone too; only the .eml downloads stay desktop-only
+                  (a phone cannot open them as drafts). */}
+              {(!isMobileMailDevice || graphConnected) && (
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {graphConnected && (
+                    <button
+                      type="button"
+                      style={{ ...s.validateBtn, opacity: emailBusy ? 0.5 : 1 }}
+                      disabled={!!emailBusy}
+                      onClick={handleSendAll}
+                      title="Review and send every email from your Outlook mailbox"
+                    >
+                      {emailBusy === 'all' ? 'Preparing…' : `Send all (${validatedMembers.length})`}
+                    </button>
+                  )}
+                  {/* Kept whether or not a mailbox is connected: the escape hatch
+                      for anything Graph will not do. Desktop only — a phone
+                      cannot open a downloaded .eml as a draft. */}
+                  {!isMobileMailDevice && (
+                    <button
+                      type="button"
+                      style={{
+                        ...s.validateBtn,
+                        opacity: emailBusy ? 0.5 : 1,
+                        ...(graphConnected ? { background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-color)' } : {})
+                      }}
+                      disabled={!!emailBusy}
+                      onClick={handleDownloadAll}
+                      title="Download every draft, one after another"
+                    >
+                      {emailBusy === 'all' ? 'Preparing…' : `Download all (${validatedMembers.length})`}
+                    </button>
+                  )}
+                </div>
               )}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -625,9 +697,11 @@ const BulkValidationPanel = ({
               })}
             </div>
             <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-muted)' }}>
-              {isMobileMailDevice
-                ? `Each email saves the order PDF${groupTermsheet ? ' and the termsheet' : ''} to Files and opens a prefilled Outlook draft; attach the PDF from Files › Downloads.`
-                : `Each draft opens in Outlook with the order PDF${groupTermsheet ? ' and the termsheet' : ''} attached. Chrome may ask once to allow several downloads.`}
+              {graphConnected
+                ? `Each email is sent from your Outlook mailbox with the order PDF${groupTermsheet ? ' and the termsheet' : ''} attached, and files itself back on the order as the "order to bank" trace.`
+                : isMobileMailDevice
+                  ? `Each email saves the order PDF${groupTermsheet ? ' and the termsheet' : ''} to Files and opens a prefilled Outlook draft; attach the PDF from Files › Downloads.`
+                  : `Each draft opens in Outlook with the order PDF${groupTermsheet ? ' and the termsheet' : ''} attached. Chrome may ask once to allow several downloads.`}
             </div>
           </div>
         )}

@@ -9,6 +9,8 @@ import { IssuersCollection } from '/imports/api/issuers';
 import FormattedNumberInput from './FormattedNumberInput.jsx';
 import AccountAutocomplete from './AccountAutocomplete.jsx';
 import { useIsMobile } from '../hooks/useIsMobile.js';
+import { useGraphConnection } from '../hooks/useGraphConnection.js';
+import MailPickerModal from './MailPickerModal.jsx';
 
 // Main tradable currencies, ordered by importance. Used for every currency
 // dropdown in the new-order flow (FX legs, deposit, settlement, manual entry).
@@ -94,6 +96,10 @@ const OrderModal = ({
   }, []);
 
   const isMobile = useIsMobile();
+  const graphConnection = useGraphConnection();
+  // 'single' | 'bulk' — the order does not exist yet here, so the picker runs in
+  // file mode and hands back a File for the existing attachment state.
+  const [outlookPicker, setOutlookPicker] = useState(null);
 
   /**
    * Collapse a multi-column form grid to a single column on a phone. Two-column
@@ -270,7 +276,11 @@ const OrderModal = ({
 
   // Order source: email (default) or phone
   const [orderSource, setOrderSource] = useState(ORDER_SOURCE_TYPES.EMAIL);
+  // Execution type follows the asset type until the user picks one: a
+  // structured product is agreed with the issuer before the ticket is written,
+  // so it is pre-executed; everything else still has to be worked.
   const [executionType, setExecutionType] = useState(EXECUTION_TYPES.TO_EXECUTE);
+  const [executionTypeTouched, setExecutionTypeTouched] = useState(false);
   const [phoneCallTime, setPhoneCallTime] = useState(() => {
     // Default to current datetime in local format for datetime-local input
     const now = new Date();
@@ -472,15 +482,14 @@ const OrderModal = ({
     .filter(o => o.clientId && o.bankAccountId)
     .reduce((sum, o) => sum + (parseFloat(o.quantity) || 0), 0);
 
-  // Auto-calculate estimated value from quantity and price
-  useEffect(() => {
-    if (estimatedValueManuallyEdited) return;
-
+  /**
+   * What the order is worth on the numbers currently entered, or null when they
+   * do not say. Kept separate from the field's state so it can be offered back
+   * after someone has typed over it — see the hint under Estimated Value.
+   */
+  const computedEstimatedValue = useMemo(() => {
     const qty = isBulkMode ? bulkTotalQuantity : parseFloat(quantity);
-    if (!qty || qty <= 0) {
-      setEstimatedValue('');
-      return;
-    }
+    if (!qty || qty <= 0) return null;
 
     const isOption = assetType === ASSET_TYPES.OPTION;
     // An option premium is quoted per share, so the consideration is
@@ -488,31 +497,58 @@ const OrderModal = ({
     // at 2.50 reads as 500 instead of 50,000 - and that figure feeds the
     // allocation check, the cash-exceeded test and the order ticket.
     const multiplier = isOption ? (parseFloat(optionContractSize) || DEFAULT_OPTION_CONTRACT_SIZE) : 1;
+    // A structured product or bond is quoted as a percentage of par: 750,000
+    // nominal at 100.65 is 754,875, not 750,000.
     const isPercentage = quotesPriceAsPercent(assetType);
 
     if (priceType === PRICE_TYPES.LIMIT) {
       const price = parseFloat(limitPrice);
       if (price && price > 0) {
-        const value = isPercentage ? qty * price / 100 : qty * price * multiplier;
-        setEstimatedValue(value.toFixed(2));
+        return (isPercentage ? qty * price / 100 : qty * price * multiplier).toFixed(2);
       }
-    } else if (isOption && optionQuote?.mid > 0) {
+      return null;
+    }
+    if (isOption && optionQuote?.mid > 0) {
       // Market order on a chain contract: the end-of-day mid is the best
       // reference we have for the premium.
-      setEstimatedValue((qty * optionQuote.mid * multiplier).toFixed(2));
-    } else if (indicativePrice && indicativePrice > 0 && !isOption) {
+      return (qty * optionQuote.mid * multiplier).toFixed(2);
+    }
+    if (indicativePrice && indicativePrice > 0 && !isOption) {
       // Use indicative price from holding or EOD. Skipped for options: the
       // indicative price is the UNDERLYING's, and pricing a premium at the
       // underlying's level would be wrong by orders of magnitude.
-      setEstimatedValue((qty * indicativePrice).toFixed(2));
-    } else if (prefillData?.marketPrice && prefillData.marketPrice > 0 && !isOption) {
-      setEstimatedValue((qty * prefillData.marketPrice).toFixed(2));
+      return (qty * indicativePrice).toFixed(2);
     }
-  }, [quantity, isBulkMode, bulkTotalQuantity, priceType, limitPrice, prefillData, estimatedValueManuallyEdited, indicativePrice, assetType, optionContractSize, optionQuote]);
+    if (prefillData?.marketPrice && prefillData.marketPrice > 0 && !isOption) {
+      return (qty * prefillData.marketPrice).toFixed(2);
+    }
+    return null;
+  }, [quantity, isBulkMode, bulkTotalQuantity, priceType, limitPrice, prefillData, indicativePrice, assetType, optionContractSize, optionQuote]);
+
+  // Keep the field on the computed value until someone types their own.
+  useEffect(() => {
+    if (estimatedValueManuallyEdited) return;
+    const qty = isBulkMode ? bulkTotalQuantity : parseFloat(quantity);
+    if (!qty || qty <= 0) {
+      setEstimatedValue('');
+      return;
+    }
+    if (computedEstimatedValue !== null) setEstimatedValue(computedEstimatedValue);
+  }, [computedEstimatedValue, estimatedValueManuallyEdited, quantity, isBulkMode, bulkTotalQuantity]);
+
+  // Default the execution type from the asset type, until the desk overrides it.
+  useEffect(() => {
+    if (executionTypeTouched) return;
+    setExecutionType(assetType === ASSET_TYPES.STRUCTURED_PRODUCT
+      ? EXECUTION_TYPES.PRE_EXECUTED
+      : EXECUTION_TYPES.TO_EXECUTE);
+  }, [assetType, executionTypeTouched]);
 
   // Reset form when modal closes
   useEffect(() => {
     if (!isOpen) {
+      setExecutionType(EXECUTION_TYPES.TO_EXECUTE);
+      setExecutionTypeTouched(false);
       setCurrentStep(1);
       setError(null);
       setSearchQuery('');
@@ -3104,11 +3140,21 @@ const OrderModal = ({
                     </span>
                   </div>
                 )}
-                {exceeds && qty > 0 && (
-                  <div style={{ marginTop: '4px', color: 'var(--loss-color)', fontSize: '12px', fontWeight: '500' }}>
-                    Estimated cost {secCurrency} {estCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} exceeds available cash
-                  </div>
-                )}
+                {exceeds && qty > 0 && (() => {
+                  // Short on cash is not the same as short on money: say so when
+                  // the shortfall is covered by a money market fund or a deposit.
+                  const nearCash = cashBalance?.nearCashPositions?.find(p => p.currency === secCurrency);
+                  return (
+                    <div style={{ marginTop: '4px', color: 'var(--loss-color)', fontSize: '12px', fontWeight: '500' }}>
+                      Estimated cost {secCurrency} {estCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} exceeds available cash
+                      {nearCash && nearCash.amount > 0 && (
+                        <span style={{ color: 'var(--text-secondary)', fontWeight: '400' }}>
+                          {' '}— {secCurrency} {nearCash.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} sits in money market &amp; deposits, which must be sold first
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             ) : null;
           })()}
@@ -3341,11 +3387,32 @@ const OrderModal = ({
             value={estimatedValue}
             onChange={(e) => {
               setEstimatedValue(e.target.value);
-              setEstimatedValueManuallyEdited(true);
+              // Emptying the field hands control back to the calculation, so a
+              // typed-over estimate is not a one-way door.
+              setEstimatedValueManuallyEdited(e.target.value.trim() !== '');
             }}
             placeholder="Enter estimated value"
             maxDecimals={2}
           />
+          {/* Once it has been typed over, the field stops following the nominal
+              and the price — which looks exactly like "the amount is not
+              updating". Say what the numbers give and offer it back. */}
+          {estimatedValueManuallyEdited
+            && computedEstimatedValue !== null
+            && parseFloat(computedEstimatedValue) !== parseFloat(estimatedValue || '0') && (
+            <div style={{ marginTop: '5px', fontSize: '11.5px', color: 'var(--text-muted)' }}>
+              {quotesPriceAsPercent(assetType) && parseFloat(limitPrice) > 0
+                ? `${OrderFormatters.formatQuantity(parseFloat(isBulkMode ? bulkTotalQuantity : quantity) || 0)} × ${limitPrice}% = `
+                : 'From the quantity and price: '}
+              <span
+                onClick={() => { setEstimatedValue(computedEstimatedValue); setEstimatedValueManuallyEdited(false); }}
+                style={{ color: 'var(--accent-color)', cursor: 'pointer', fontWeight: 600 }}
+                title="Use this value"
+              >
+                {Number(computedEstimatedValue).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {getCurrencyForDisplay()}
+              </span>
+            </div>
+          )}
         </div>
       )}
 
@@ -3871,6 +3938,19 @@ const OrderModal = ({
                     <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                       .msg, .eml, .pdf — then assign one to each client below
                     </div>
+                    {graphConnection.connected && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setOutlookPicker('bulk'); }}
+                        style={{
+                          marginTop: '8px', padding: '4px 14px', fontSize: '11px', fontWeight: 500,
+                          border: '1px solid #0ea5e9', borderRadius: '4px',
+                          background: 'rgba(14, 165, 233, 0.1)', color: '#0ea5e9', cursor: 'pointer'
+                        }}
+                      >
+                        Pick from Outlook
+                      </button>
+                    )}
                   </div>
 
                   {/* One instruction per client */}
@@ -4045,6 +4125,19 @@ const OrderModal = ({
                 <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                   .msg, .eml, .pdf — Visible to validators for four-eyes check
                 </div>
+                {graphConnection.connected && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setOutlookPicker('single'); }}
+                    style={{
+                      marginTop: '8px', padding: '4px 14px', fontSize: '11px', fontWeight: 500,
+                      border: '1px solid #0ea5e9', borderRadius: '4px',
+                      background: 'rgba(14, 165, 233, 0.1)', color: '#0ea5e9', cursor: 'pointer'
+                    }}
+                  >
+                    Pick from Outlook
+                  </button>
+                )}
               </div>
             )}
 
@@ -4099,7 +4192,7 @@ const OrderModal = ({
                 fontSize: '13px', fontWeight: '600', cursor: 'pointer',
                 transition: 'background 0.15s, color 0.15s'
               }}
-              onClick={() => setExecutionType(value)}
+              onClick={() => { setExecutionType(value); setExecutionTypeTouched(true); }}
             >
               {label}
             </button>
@@ -5068,6 +5161,28 @@ const OrderModal = ({
             ) : (
               <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>N/A</span>
             )}
+
+            {/* Money market funds and term deposits: liquidity the client holds,
+                but it settles nothing until it is sold. Listed under its own
+                heading so the cash figures above still reconcile with the PMS. */}
+            {!isLoadingCash && cashBalance?.nearCashPositions?.length > 0 && (
+              <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: '1px dashed var(--border-color)' }}>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                  Money market &amp; deposits <span style={{ fontStyle: 'italic' }}>— sell to settle</span>
+                </div>
+                {cashBalance.nearCashPositions.map((pos, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+                    <span style={{ fontSize: '13px', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      title={pos.names?.join(', ') || pos.currency}>
+                      {pos.currency}{pos.name ? ` · ${pos.name}` : ''}
+                    </span>
+                    <span style={{ fontWeight: '600', color: 'var(--text-secondary)', fontSize: '13px', whiteSpace: 'nowrap' }}>
+                      {pos.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -5391,6 +5506,18 @@ const OrderModal = ({
   );
 
   return (
+    <>
+    <MailPickerModal
+      open={Boolean(outlookPicker)}
+      onClose={() => setOutlookPicker(null)}
+      heading="Pick the client instruction from Outlook"
+      onPickFile={(file) => {
+        if (outlookPicker === 'bulk') addTraceFiles([file]);
+        else setClientOrderFile(file);
+        setError(null);
+        setOutlookPicker(null);
+      }}
+    />
     <Modal
       isOpen={isOpen}
       onClose={handleClose}
@@ -5454,6 +5581,7 @@ const OrderModal = ({
         </div>
       )}
     </Modal>
+    </>
   );
 };
 

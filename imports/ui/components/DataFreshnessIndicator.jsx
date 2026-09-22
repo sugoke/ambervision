@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Meteor } from 'meteor/meteor';
+import { useIsMobile } from '../hooks/useIsMobile.js';
 
 /**
  * DataFreshnessBadge Component
@@ -51,6 +52,7 @@ export const DataFreshnessBadge = ({
   };
 
   const styles = getStatusStyles();
+  const isMobileView = useIsMobile();
 
   if (compact) {
     return (
@@ -75,14 +77,13 @@ export const DataFreshnessBadge = ({
     );
   }
 
-  // Responsive sizing based on window width
-  const isMobileView = typeof window !== 'undefined' && window.innerWidth < 768;
-
+  // On a phone the badges stack, so one takes the full row: the bank name gets
+  // the space it needs and the date sits against the right edge.
   return (
     <div
       title={lastError && status === 'error' ? lastError : undefined}
       style={{
-        display: 'inline-flex',
+        display: isMobileView ? 'flex' : 'inline-flex',
         alignItems: 'center',
         gap: '8px',
         padding: '6px 12px',
@@ -90,13 +91,30 @@ export const DataFreshnessBadge = ({
         background: styles.background,
         color: styles.textColor,
         boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
-        flex: isMobileView ? '0 0 auto' : 'none',
-        whiteSpace: 'nowrap'
+        flex: 'none',
+        width: isMobileView ? '100%' : 'auto',
+        minWidth: 0,
+        boxSizing: 'border-box'
       }}
     >
-      <span style={{ fontSize: '13px', lineHeight: 1 }}>{statusIcon}</span>
-      <span style={{ fontWeight: '600', fontSize: '12px' }}>{bankName}</span>
-      <span style={{ fontSize: '12px', opacity: 0.9 }}>
+      <span style={{ fontSize: '13px', lineHeight: 1, flex: 'none' }}>{statusIcon}</span>
+      <span style={{
+        fontWeight: '600',
+        fontSize: '12px',
+        // A long bank name truncates rather than pushing the row wider than
+        // the screen; the full name stays in the title tooltip.
+        minWidth: 0,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap'
+      }}>{bankName}</span>
+      <span style={{
+        fontSize: '12px',
+        opacity: 0.9,
+        whiteSpace: 'nowrap',
+        marginLeft: isMobileView ? 'auto' : 0,
+        flex: 'none'
+      }}>
         {status === 'error' ? 'Sync Failed' : dataDateFormatted}
       </span>
     </div>
@@ -170,6 +188,9 @@ export const DataFreshnessPanel = ({
   const [freshnessData, setFreshnessData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // Declared with the other hooks: the early returns below would otherwise
+  // make the hook order vary between renders.
+  const isMobileView = useIsMobile();
 
   useEffect(() => {
     console.log('[DataFreshness] useEffect - sessionId:', sessionId, 'userId:', userId, 'visibleBankIds:', visibleBankIds);
@@ -228,11 +249,8 @@ export const DataFreshnessPanel = ({
   const hasStaleData = filteredBanks.some(r => r.status === 'stale' || r.status === 'old');
   const hasErrors = filteredBanks.some(r => r.status === 'error');
 
-  // Responsive layout based on window width
-  const isMobileView = typeof window !== 'undefined' && window.innerWidth < 768;
-
   return (
-    <div>
+    <div style={{ width: isMobileView ? '100%' : 'auto', minWidth: 0 }}>
       {showWarning && (
         <DataFreshnessWarning
           banks={filteredBanks}
@@ -241,20 +259,19 @@ export const DataFreshnessPanel = ({
         />
       )}
 
+      {/* Phones stack the badges: a horizontal row of them ran off the right
+          edge of the screen, and a scroll strip hid banks nobody thought to
+          swipe for. Wider viewports keep the wrapping row. */}
       <div
         style={{
           display: 'flex',
+          flexDirection: isMobileView ? 'column' : 'row',
           flexWrap: isMobileView ? 'nowrap' : 'wrap',
+          // Compact pills keep their natural width; full badges take the row.
+          alignItems: isMobileView ? (compact ? 'flex-start' : 'stretch') : 'center',
           gap: compact ? '8px' : (isMobileView ? '8px' : '12px'),
-          overflowX: isMobileView ? 'auto' : 'visible',
-          paddingBottom: isMobileView ? '8px' : '0',
-          marginLeft: isMobileView ? '-4px' : '0',
-          marginRight: isMobileView ? '-4px' : '0',
-          paddingLeft: isMobileView ? '4px' : '0',
-          paddingRight: isMobileView ? '4px' : '0',
-          WebkitOverflowScrolling: 'touch',
-          scrollbarWidth: 'none',
-          msOverflowStyle: 'none'
+          width: isMobileView ? '100%' : 'auto',
+          minWidth: 0
         }}
       >
         {filteredBanks.map((bank) => (

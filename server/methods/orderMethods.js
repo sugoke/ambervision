@@ -24,6 +24,24 @@ import { getHoldingCategoryKey } from '../../imports/api/assetClassification.js'
 import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetadata.js';
 import { IssuersCollection } from '../../imports/api/issuers.js';
 import { isProductCapitalProtected } from '../../imports/api/helpers/productProtection.js';
+import {
+  isPureCashHolding,
+  isCashEquivalentHolding
+} from '../../imports/api/helpers/cashCalculator.js';
+import {
+  getMessage as graphGetMessage,
+  getMessageMime as graphGetMessageMime,
+  createDraft,
+  sendDraft,
+  addLargeAttachment,
+  findSentByInternetMessageId,
+  getMessagesByConversationId,
+  searchMessages,
+  INLINE_ATTACHMENT_LIMIT
+} from '../msgraph/graphClient.js';
+import { getGraphConfig } from '../msgraph/config.js';
+import { getPublicStatus } from '../msgraph/accountStore.js';
+import { createRateLimiter } from '../mcp/rateLimit.js';
 
 /**
  * Order Management Server Methods
@@ -2559,6 +2577,7 @@ ${userDisplayName}
 
     let total;
     let orders;
+    let healthSource = null;
     if (filters.healthMissing) {
       // The health check depends on status, traces and termsheet state together,
       // so it cannot be expressed as a Mongo selector. Evaluate it over the
@@ -2566,6 +2585,7 @@ ${userDisplayName}
       // rows at most, and the filter narrows the other criteria first.
       const wantAny = filters.healthMissing === HEALTH_FILTER_ANY;
       const candidates = await OrdersCollection.find(query, { sort }).fetchAsync();
+      healthSource = candidates;
       const matching = candidates.filter(o => {
         const h = getOrderHealthCheck(o);
         if (h.max === 0 || h.score === h.max) return false;
@@ -2577,6 +2597,31 @@ ${userDisplayName}
       total = await OrdersCollection.find(query).countAsync();
       orders = await OrdersCollection.find(query, { sort, limit, skip }).fetchAsync();
     }
+
+    // Completeness summary over the WHOLE filtered set, deliberately ignoring
+    // filters.healthMissing: these counts are the health filter's own controls,
+    // so they have to stay put while it is toggled. They used to be computed on
+    // the client from the loaded page, which made "Termsheet signed: 9" read 18
+    // the moment you clicked it — the page had simply refilled with 20 orders
+    // that were all missing a termsheet.
+    const healthDocs = healthSource || await OrdersCollection.find(query, {
+      fields: {
+        status: 1, assetType: 1, orderType: 1, orderSource: 1,
+        emailTraces: 1, pendingModification: 1, validatedAt: 1,
+        termsheetStatus: 1, executedPrice: 1
+      }
+    }).fetchAsync();
+
+    const healthStats = healthDocs.reduce((acc, o) => {
+      const h = getOrderHealthCheck(o);
+      if (h.max === 0) return acc;               // terminal / nothing to check
+      if (h.score === h.max) acc.complete += 1;
+      else {
+        acc.incomplete += 1;
+        h.missing.forEach(m => { acc.missingCounts[m] = (acc.missingCounts[m] || 0) + 1; });
+      }
+      return acc;
+    }, { complete: 0, incomplete: 0, missingCounts: {} });
 
     // Ambervision product titles for structured products: the desk types a
     // short label on the order ("Ph+"), the product record carries the full
@@ -2629,7 +2674,8 @@ ${userDisplayName}
       orders: enrichedOrders,
       total,
       page: Math.floor(skip / limit) + 1,
-      totalPages: Math.ceil(total / limit)
+      totalPages: Math.ceil(total / limit),
+      healthStats
     };
   },
 
@@ -2655,7 +2701,7 @@ ${userDisplayName}
     const createdByUser = await UsersCollection.findOneAsync(order.createdBy);
 
     // Build HTML for PDF
-    const html = generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser);
+    const html = generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser, await loadOrderIssuer(order));
 
     console.log(`[ORDERS] Generating PDF for order: ${order.orderReference} by ${userDisplayName}`);
 
@@ -2774,50 +2820,8 @@ ${userDisplayName}
       throw new Meteor.Error('invalid-operation', 'Cannot prepare email for orders pending validation');
     }
 
-    const client = await UsersCollection.findOneAsync(order.clientId);
-    const bankAccount = await BankAccountsCollection.findOneAsync(order.bankAccountId);
-    const bank = await BanksCollection.findOneAsync(order.bankId);
-    const createdByUser = await UsersCollection.findOneAsync(order.createdBy);
-
-    // Generate PDF
-    const html = generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser);
-    const pdfResult = await generatePDFFromHTML(html, {
-      format: 'A4', marginTop: '10mm', marginRight: '15mm', marginBottom: '10mm', marginLeft: '15mm'
-    });
-
-    // Prepare email data. The recipient desk depends on the order's asset type
-    // (e.g. FX orders go to the bank's FX team) — see BankHelpers.resolveOrderRecipients.
-    const liveIssuer = await loadOrderIssuer(order);
-    const recipients = BankHelpers.resolveOrderRecipients(bank, order.assetType);
-    const subject = OrderHelpers.generateEmailSubject(order, liveIssuer);
-    const body = OrderHelpers.generateEmailBody(order, client, bank, bankAccount, liveIssuer, recipients.deskLabel);
-
-    // Build CC list: bank + desk CC emails + order creator's email
-    const ccList2 = [...recipients.cc];
-    const creatorEmail2 = createdByUser?.email?.toLowerCase();
-    if (creatorEmail2 && !ccList2.includes(creatorEmail2)) {
-      ccList2.push(creatorEmail2);
-    }
-
-    if (!recipients.to) {
-      console.warn(`[ORDERS] Bank ${bank?.name || order.bankId} has no desk email for asset type ${order.assetType}`);
-    }
-
-    return {
-      success: true,
-      orderReference: order.orderReference,
-      pdfData: pdfResult.pdfData,
-      emailData: {
-        to: recipients.to,
-        cc: ccList2.join(';'),
-        subject,
-        body,
-        deskLabel: recipients.deskLabel,
-        bankName: bank?.name || '',
-        assetType: order.assetType
-      },
-      termsheet: loadInitialTermsheetAttachment(order)
-    };
+    const payload = await buildOrderEmailPayload(order, user);
+    return { success: true, ...payload };
   },
 
   /**
@@ -2852,7 +2856,7 @@ ${userDisplayName}
     console.log(`[ORDERS] Generating PDF and sending email for order: ${order.orderReference} by ${userDisplayName}`);
 
     // Step 1: Generate PDF
-    const html = generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser);
+    const html = generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser, await loadOrderIssuer(order));
     const pdfResult = await generatePDFFromHTML(html, {
       format: 'A4',
       marginTop: '10mm',
@@ -3396,46 +3400,13 @@ ${userDisplayName}
     let pdfData = null;
     let emailData = null;
     try {
-      const client = await UsersCollection.findOneAsync(order.clientId);
-      const bankAccount = await BankAccountsCollection.findOneAsync(order.bankAccountId);
-      const bank = await BanksCollection.findOneAsync(order.bankId);
-      const createdByUser = await UsersCollection.findOneAsync(order.createdBy);
-
-      // Generate PDF
-      const html = generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser);
-      const pdfResult = await generatePDFFromHTML(html, {
-        format: 'A4',
-        marginTop: '10mm',
-        marginRight: '15mm',
-        marginBottom: '10mm',
-        marginLeft: '15mm'
-      });
-      pdfData = pdfResult.pdfData;
-
-      // Prepare email data — recipient desk chosen by the order's asset type
-      const recipients = BankHelpers.resolveOrderRecipients(bank, order.assetType);
-      const subject = OrderHelpers.generateEmailSubject(order);
-      const body = OrderHelpers.generateEmailBody(order, client, bank, bankAccount, null, recipients.deskLabel);
-      // Build CC list: bank + desk CC emails + order creator's email
-      const ccList = [...recipients.cc];
-      const creatorEmail = createdByUser?.email?.toLowerCase();
-      if (creatorEmail && !ccList.includes(creatorEmail)) {
-        ccList.push(creatorEmail);
-      }
-
-      if (!recipients.to) {
-        console.warn(`[ORDERS] Bank ${bank?.name || order.bankId} has no desk email for asset type ${order.assetType}`);
-      }
-
-      emailData = {
-        to: recipients.to,
-        cc: ccList.join(';'),
-        subject,
-        body,
-        deskLabel: recipients.deskLabel,
-        bankName: bank?.name || '',
-        assetType: order.assetType
-      };
+      // Shared with orders.prepareEmail and orders.sendViaGraph. This path used
+      // to build its own copy WITHOUT the live issuer, so the mail handed over at
+      // validation could carry a different subject/body than the same order's
+      // resend — going through one builder removes that divergence.
+      const payload = await buildOrderEmailPayload(order, user);
+      pdfData = payload.pdfData;
+      emailData = payload.emailData;
 
       console.log(`[ORDERS] PDF generated and email data prepared for order ${order.orderReference}`);
     } catch (pdfError) {
@@ -4411,6 +4382,329 @@ const writeTraceFileToOrder = async ({
   };
 };
 
+// Sending is low-frequency per user; this only exists to bound a runaway client.
+const graphSendRateLimit = createRateLimiter({ max: 30 });
+
+/**
+ * Split a recipient string (the app joins with ';') into validated addresses.
+ * Anything that is not plausibly an address is dropped rather than handed to
+ * Graph, which would reject the whole message for one bad entry.
+ */
+const parseRecipientList = (value) => {
+  if (!value) return [];
+  const parts = String(value).split(/[;,]/).map(s => s.trim()).filter(Boolean);
+  const valid = parts.filter(a => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a));
+  const dropped = parts.filter(a => !valid.includes(a));
+  if (dropped.length) console.warn(`[ORDERS] Ignoring malformed recipient(s): ${dropped.join(', ')}`);
+  // De-duplicate case-insensitively, keeping first spelling.
+  const seen = new Set();
+  return valid.filter(a => {
+    const k = a.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).slice(0, 50);
+};
+
+/**
+ * Fetch the just-sent message back out of Sent Items and store it as the
+ * order_to_bank trace.
+ *
+ * Two things make this fiddly. Sending invalidates the draft id, so the message
+ * has to be found by internetMessageId; and Exchange materialises the Sent Items
+ * copy a second or two later, hence the retries. Failure is non-fatal — the mail
+ * has already left, so this records `pending` and returns false rather than
+ * making a successful send look like a failed one.
+ *
+ * Worth noting the trace is the POST-transport copy, after mail-flow rules have
+ * applied disclaimers or rewriting: better evidence than the .eml draft, which
+ * was never itself the thing that got sent.
+ */
+const attachSentCopyAsTrace = async ({ order, userId, userDisplayName, internetMessageId }) => {
+  if (!internetMessageId) return false;
+
+  // Exchange usually materialises the Sent Items copy within a couple of
+  // seconds, but under load it has taken far longer — and giving up early is
+  // what leaves an order sent with no evidence on file. This all runs in the
+  // background, so a slow success beats a fast `pending`.
+  const delays = [1500, 3000, 6000, 15000, 30000];
+  for (let attempt = 0; attempt < delays.length; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, delays[attempt]));
+    try {
+      const sent = await findSentByInternetMessageId(userId, internetMessageId);
+      if (!sent) continue;
+
+      const mime = await graphGetMessageMime(userId, sent.id, { maxBytes: EMAIL_TRACE_MAX_SIZE });
+      const fresh = await OrdersCollection.findOneAsync(order._id);
+
+      const trace = await writeTraceFileToOrder({
+        order: fresh,
+        traceType: EMAIL_TRACE_TYPES.ORDER_TO_BANK,
+        fileName: `${fresh.orderReference}_order_to_bank.eml`,
+        base64Data: mime.toString('base64'),
+        mimeType: 'message/rfc822',
+        userId,
+        userDisplayName
+      });
+      trace.source = 'graph';
+      trace.graph = {
+        messageId: sent.id,
+        internetMessageId: sent.internetMessageId || internetMessageId,
+        conversationId: sent.conversationId || null,
+        receivedDateTime: sent.sentDateTime ? new Date(sent.sentDateTime) : null,
+        fromAddress: null
+      };
+
+      await pushTraceAndAdvance({ order: fresh, trace, traceType: EMAIL_TRACE_TYPES.ORDER_TO_BANK, userId });
+      await OrdersCollection.updateAsync(order._id, { $set: { 'graphSend.sentTraceStatus': 'attached' } });
+
+      console.log(`[ORDERS] Sent copy auto-filed as order_to_bank trace for ${fresh.orderReference}`);
+      return true;
+    } catch (err) {
+      console.warn(`[ORDERS] Could not auto-file sent copy (attempt ${attempt + 1}):`, err.message);
+    }
+  }
+
+  console.warn(`[ORDERS] Sent copy for ${order.orderReference} not filed — left pending`);
+  return false;
+};
+
+/**
+ * Find messages in an order's mail thread that look like the bank replying.
+ *
+ * Three rules, evaluated together so a weakness in one is covered by another:
+ *   1. conversationId matches — exact, and the usual case.
+ *   2. In-Reply-To / References cites our internetMessageId — survives a subject
+ *      rewrite, which is precisely when conversationId stops matching.
+ *   3. The sender's domain matches the desk we mailed and the subject carries
+ *      the order reference — catches a reply sent as a fresh message.
+ *
+ * Excluded: anything from the sender themselves (our own Sent Items copy and
+ * any chasers), and anything predating the send.
+ */
+const findOrderReplies = async (order) => {
+  const send = order.graphSend;
+  if (!send?.conversationId && !send?.internetMessageId) return [];
+
+  const senderUserId = send.sentBy;
+  const sentAt = send.sentAt ? new Date(send.sentAt) : null;
+  const ownMailbox = (send.mailbox || '').toLowerCase();
+  const deskDomains = String(order.sentTo || '')
+    .split(/[;,]/).map(s => s.trim().toLowerCase().split('@')[1]).filter(Boolean);
+
+  let messages = [];
+  if (send.conversationId) {
+    messages = await getMessagesByConversationId(senderUserId, send.conversationId, {
+      sinceIso: sentAt ? sentAt.toISOString() : undefined
+    });
+  }
+
+  const citesOurMessage = (m) => {
+    if (!send.internetMessageId) return false;
+    const headers = m.internetMessageHeaders || [];
+    return headers.some(h =>
+      ['In-Reply-To', 'References'].includes(h.name) &&
+      String(h.value || '').includes(send.internetMessageId)
+    );
+  };
+
+  const fromDesk = (m) => {
+    const address = (m.from?.emailAddress?.address || '').toLowerCase();
+    if (!address) return false;
+    const domain = address.split('@')[1];
+    return deskDomains.includes(domain) &&
+      String(m.subject || '').includes(order.orderReference);
+  };
+
+  return messages.filter(m => {
+    const address = (m.from?.emailAddress?.address || '').toLowerCase();
+    if (ownMailbox && address === ownMailbox) return false; // our own sent copy
+    if (sentAt && m.receivedDateTime && new Date(m.receivedDateTime) <= sentAt) return false;
+    return Boolean(m.conversationId === send.conversationId || citesOurMessage(m) || fromDesk(m));
+  });
+};
+
+/**
+ * Background sweep for bank replies to orders sent through Outlook.
+ *
+ * Notifies; never attaches. Same reasoning as orders.checkGraphReplies — a
+ * bank_confirmation trace advances the order to EXECUTED, which is not a call
+ * to make from a keyword match on an inbound mail.
+ *
+ * Polling rather than Graph change-notification webhooks, deliberately: those
+ * need a public unauthenticated endpoint on a deliberately hardened app, a
+ * 10-second validation handshake, and per-user subscriptions renewed inside
+ * three days that fail SILENTLY when a renewal is missed. For a workflow where
+ * a ten-minute delay costs nothing, that is a lot of machinery pointed at the
+ * wrong risk.
+ *
+ * Exported for the cron job; safe to call manually (crons are disabled on dev
+ * instances via CRON_DISABLED, and manual triggers still work).
+ */
+export async function scanForBankReplies({ lookbackDays = 14 } = {}) {
+  const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
+
+  const orders = await OrdersCollection.find({
+    status: ORDER_STATUSES.TRANSMITTED,
+    'graphSend.conversationId': { $exists: true, $ne: null },
+    'graphSend.sentAt': { $gte: since }
+  }, { limit: 200 }).fetchAsync();
+
+  if (orders.length === 0) return { scanned: 0, notified: 0 };
+
+  const { NotificationHelpers } = await import('../../imports/api/notifications.js');
+  let notified = 0;
+
+  for (const order of orders) {
+    try {
+      const alreadySeen = new Set(order.graphSend?.notifiedReplyIds || []);
+      const replies = await findOrderReplies(order);
+      const fresh = replies.filter(m => !alreadySeen.has(m.id));
+      if (fresh.length === 0) continue;
+
+      const first = fresh[0];
+      await NotificationHelpers.create({
+        userId: order.graphSend.sentBy,
+        type: 'info',
+        title: 'Bank replied to an order',
+        message: `${first.from?.emailAddress?.address || 'The bank'} replied on order ${order.orderReference} `
+          + `(${order.securityName || ''}). Review it and attach it as the bank confirmation if appropriate.`,
+        metadata: {
+          orderId: order._id,
+          orderReference: order.orderReference,
+          graphMessageId: first.id
+        }
+      });
+
+      // Persist what we have already raised, so the next sweep does not
+      // re-notify the same reply every ten minutes.
+      await OrdersCollection.updateAsync(order._id, {
+        $set: { 'graphSend.lastReplyScanAt': new Date() },
+        $addToSet: { 'graphSend.notifiedReplyIds': { $each: fresh.map(m => m.id) } }
+      });
+      notified += 1;
+    } catch (err) {
+      // One user's expired mailbox connection must not stop the sweep.
+      console.warn(`[ORDERS] Reply scan failed for ${order.orderReference}:`, err.message);
+    }
+  }
+
+  console.log(`[ORDERS] Bank-reply scan: ${orders.length} order(s) checked, ${notified} notification(s) raised`);
+  return { scanned: orders.length, notified };
+}
+
+/**
+ * Build everything needed to mail an order to its bank: the order PDF, the
+ * recipients, the subject and body, and the initial termsheet attachment.
+ *
+ * Single source for orders.prepareEmail, orders.validate and orders.sendViaGraph.
+ * These three previously each assembled it, and a third copy for the Graph path
+ * is exactly how the .eml draft and the Graph-sent mail would quietly drift
+ * apart — which, for an order confirmation, is a compliance problem rather than
+ * a cosmetic one.
+ */
+const buildOrderEmailPayload = async (order, sender = null) => {
+  const client = await UsersCollection.findOneAsync(order.clientId);
+  const bankAccount = await BankAccountsCollection.findOneAsync(order.bankAccountId);
+  const bank = await BanksCollection.findOneAsync(order.bankId);
+  const createdByUser = await UsersCollection.findOneAsync(order.createdBy);
+
+  const html = generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser, await loadOrderIssuer(order));
+  const pdfResult = await generatePDFFromHTML(html, {
+    format: 'A4', marginTop: '10mm', marginRight: '15mm', marginBottom: '10mm', marginLeft: '15mm'
+  });
+
+  // The recipient desk depends on the order's asset type (e.g. FX orders go to
+  // the bank's FX team) — see BankHelpers.resolveOrderRecipients.
+  const liveIssuer = await loadOrderIssuer(order);
+  const recipients = BankHelpers.resolveOrderRecipients(bank, order.assetType);
+  const subject = OrderHelpers.generateEmailSubject(order, liveIssuer);
+  const body = OrderHelpers.generateEmailBody(order, client, bank, bankAccount, liveIssuer, recipients.deskLabel);
+
+  // CC: bank + desk CC addresses, the order creator, and whoever is sending it
+  // now — under four-eyes the sender is usually the validator, not the creator,
+  // and they get a copy of every order that leaves under their name.
+  const ccList = [...recipients.cc];
+  const addCc = (email) => {
+    const address = email?.trim?.().toLowerCase();
+    if (address && !ccList.some(existing => existing.toLowerCase() === address)) ccList.push(address);
+  };
+  addCc(createdByUser?.email);
+  addCc(sender?.email);
+
+  if (!recipients.to) {
+    console.warn(`[ORDERS] Bank ${bank?.name || order.bankId} has no desk email for asset type ${order.assetType}`);
+  }
+
+  return {
+    orderReference: order.orderReference,
+    pdfData: pdfResult.pdfData,
+    emailData: {
+      to: recipients.to,
+      cc: ccList.join(';'),
+      subject,
+      body,
+      deskLabel: recipients.deskLabel,
+      bankName: bank?.name || '',
+      assetType: order.assetType
+    },
+    termsheet: loadInitialTermsheetAttachment(order)
+  };
+};
+
+/**
+ * Turn a mail subject into a safe .eml filename.
+ *
+ * The subject is attacker-influenced free text that becomes part of a path, so
+ * strip path separators, Windows-reserved characters and control codes, then
+ * cap the length. Always forces .eml, which is what Graph actually returns.
+ */
+const graphTraceFileName = (subject, traceType) => {
+  const cleaned = String(subject || '')
+    .replace(/[\\/:*?"<>|]/g, ' ')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[ -]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+
+  const base = cleaned || `${traceType}_${new Date().toISOString().slice(0, 10)}`;
+  return `${base}.eml`;
+};
+
+/**
+ * Attach a written trace to its order and apply the status side effects.
+ *
+ * Shared by the drag-and-drop upload and the Outlook picker so the two cannot
+ * drift apart: these transitions (and the clientOrderDeferred clear) are
+ * compliance-visible, and having two copies of them is how they end up
+ * disagreeing.
+ */
+const pushTraceAndAdvance = async ({ order, trace, traceType, userId }) => {
+  const updateFields = { updatedAt: new Date(), updatedBy: userId };
+
+  if (traceType === EMAIL_TRACE_TYPES.ORDER_TO_BANK && order.status !== ORDER_STATUSES.EXECUTED) {
+    updateFields.status = ORDER_STATUSES.TRANSMITTED;
+    updateFields.transmittedAt = new Date();
+    console.log(`[ORDERS] Auto-advancing order ${order.orderReference} to TRANSMITTED (order-to-bank email attached)`);
+  } else if (traceType === EMAIL_TRACE_TYPES.BANK_CONFIRMATION) {
+    updateFields.status = ORDER_STATUSES.EXECUTED;
+    updateFields.executedAt = new Date();
+    console.log(`[ORDERS] Auto-advancing order ${order.orderReference} to EXECUTED (bank confirmation attached)`);
+  }
+
+  // Clear deferred-attach flag once the creator's promised client-order trace lands
+  const updateOp = {
+    $push: { emailTraces: trace },
+    $set: updateFields
+  };
+  if (traceType === EMAIL_TRACE_TYPES.CLIENT_ORDER && order.clientOrderDeferred) {
+    updateOp.$unset = { clientOrderDeferred: '' };
+  }
+
+  await OrdersCollection.updateAsync(order._id, updateOp);
+};
+
 /**
  * Email Trace Management Methods
  */
@@ -4448,32 +4742,384 @@ Meteor.methods({
     });
     const traceId = trace._id;
 
-    // Push to order's emailTraces array and auto-advance status based on trace type
-    const updateFields = { updatedAt: new Date(), updatedBy: userId };
-
-    if (traceType === EMAIL_TRACE_TYPES.ORDER_TO_BANK && order.status !== ORDER_STATUSES.EXECUTED) {
-      updateFields.status = ORDER_STATUSES.TRANSMITTED;
-      updateFields.transmittedAt = new Date();
-      console.log(`[ORDERS] Auto-advancing order ${order.orderReference} to TRANSMITTED (order-to-bank email uploaded)`);
-    } else if (traceType === EMAIL_TRACE_TYPES.BANK_CONFIRMATION) {
-      updateFields.status = ORDER_STATUSES.EXECUTED;
-      updateFields.executedAt = new Date();
-      console.log(`[ORDERS] Auto-advancing order ${order.orderReference} to EXECUTED (bank confirmation uploaded)`);
-    }
-
-    // Clear deferred-attach flag once the creator's promised client-order trace lands
-    const updateOp = {
-      $push: { emailTraces: trace },
-      $set: updateFields
-    };
-    if (traceType === EMAIL_TRACE_TYPES.CLIENT_ORDER && order.clientOrderDeferred) {
-      updateOp.$unset = { clientOrderDeferred: '' };
-    }
-    await OrdersCollection.updateAsync(orderId, updateOp);
+    await pushTraceAndAdvance({ order, trace, traceType, userId });
 
     console.log(`[ORDERS] Email trace uploaded: ${traceType} for order ${order.orderReference} (${traceId}) by ${userDisplayName} (${userId})`);
 
     return { success: true, traceId, trace };
+  },
+
+  /**
+   * Attach a message picked from the user's Outlook mailbox as an order trace.
+   *
+   * Lives here rather than in msGraphMethods.js because validateSession,
+   * validateOrderPermission, validateOrderAccess and writeTraceFileToOrder are
+   * module-private to this file — the Graph modules stay a pure transport layer.
+   *
+   * Graph returns the message as RFC-822 MIME, which is exactly a .eml, so the
+   * stored trace is indistinguishable from a dragged-in .eml and everything
+   * downstream (parseEmailTrace, TracePreview, aiComplianceCheck, the audit
+   * PDF) works on it unchanged. The .msg blind spot simply does not arise.
+   */
+  async 'orders.attachGraphMessageAsTrace'({ orderId, traceType, messageId, sessionId }) {
+    check(orderId, String);
+    check(traceType, Match.Where(x => Object.values(EMAIL_TRACE_TYPES).includes(x)));
+    check(messageId, String);
+    check(sessionId, String);
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+    validateOrderPermission(user);
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    await validateOrderAccess(order, user);
+
+    // Same carve-out as the upload path: termsheet evidence has a dedicated
+    // method that also drives the termsheet status transition.
+    if (traceType === EMAIL_TRACE_TYPES.TERMSHEET_SENT || traceType === EMAIL_TRACE_TYPES.TERMSHEET_SIGNED) {
+      throw new Meteor.Error('invalid-operation', 'Use orders.advanceTermsheetWithEvidence to upload termsheet evidence');
+    }
+
+    const message = await graphGetMessage(userId, messageId, {
+      select: 'id,subject,from,receivedDateTime,hasAttachments,conversationId,internetMessageId'
+    });
+
+    let mimeBuffer;
+    try {
+      mimeBuffer = await graphGetMessageMime(userId, messageId, { maxBytes: EMAIL_TRACE_MAX_SIZE });
+    } catch (err) {
+      if (err.error === 'msgraph-too-large') {
+        throw new Meteor.Error(
+          'file-too-large',
+          `This email (with its attachments) exceeds the ${Math.round(EMAIL_TRACE_MAX_SIZE / 1024 / 1024)}MB limit for order traces. ` +
+          'Forward it without the large attachments, or save it as a .msg and drag it in.'
+        );
+      }
+      throw err;
+    }
+
+    const trace = await writeTraceFileToOrder({
+      order,
+      traceType,
+      fileName: graphTraceFileName(message.subject, traceType),
+      base64Data: mimeBuffer.toString('base64'),
+      mimeType: 'message/rfc822',
+      userId,
+      userDisplayName
+    });
+
+    // Provenance, so a trace can later be traced back to the actual mailbox item.
+    trace.source = 'graph';
+    trace.graph = {
+      messageId: message.id || messageId,
+      internetMessageId: message.internetMessageId || null,
+      conversationId: message.conversationId || null,
+      receivedDateTime: message.receivedDateTime ? new Date(message.receivedDateTime) : null,
+      fromAddress: message.from?.emailAddress?.address || null
+    };
+
+    await pushTraceAndAdvance({ order, trace, traceType, userId });
+
+    AuditLog.record({
+      actorUserId: userId,
+      actorRole: user.role || null,
+      action: 'order.trace.graphAttach',
+      targetType: 'order',
+      targetId: orderId,
+      meta: { traceType, from: trace.graph.fromAddress, subject: (message.subject || '').slice(0, 120) }
+    });
+
+    console.log(`[ORDERS] Outlook message attached: ${traceType} for order ${order.orderReference} (${trace._id}) by ${userDisplayName} (${userId})`);
+
+    return { success: true, traceId: trace._id, trace };
+  },
+
+  /**
+   * Send the order to the bank from the user's own Outlook mailbox.
+   *
+   * The whole payload is rebuilt server-side; the client may only override the
+   * recipients, subject and body from the preview. A client-supplied PDF would
+   * mean the document of record was whatever the browser chose to send.
+   */
+  async 'orders.sendViaGraph'({ orderId, sessionId, overrides }) {
+    check(orderId, String);
+    check(sessionId, String);
+    check(overrides, Match.Maybe({
+      to: Match.Maybe(String),
+      cc: Match.Maybe(String),
+      subject: Match.Maybe(String),
+      body: Match.Maybe(String)
+    }));
+
+    // A PDF render plus several Graph round-trips — do not hold up the caller's
+    // other method calls behind it.
+    this.unblock();
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+    validateOrderPermission(user);
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    await validateOrderAccess(order, user);
+
+    if (order.status === ORDER_STATUSES.PENDING_VALIDATION) {
+      throw new Meteor.Error('invalid-operation', 'Cannot send an order that is still pending validation');
+    }
+    if (!graphSendRateLimit(userId)) {
+      throw new Meteor.Error('rate-limited', 'Too many sends in a short time. Please wait a moment.');
+    }
+
+    const payload = await buildOrderEmailPayload(order, user);
+    const o = overrides || {};
+
+    const toList = parseRecipientList(o.to !== undefined ? o.to : payload.emailData.to);
+    const ccList = parseRecipientList(o.cc !== undefined ? o.cc : payload.emailData.cc);
+    if (toList.length === 0) {
+      throw new Meteor.Error('no-recipient', 'This order has no recipient. Add the desk address in Bank Management, or type one in the preview.');
+    }
+
+    const subject = String(o.subject ?? payload.emailData.subject ?? '').slice(0, 255);
+    const body = String(o.body ?? payload.emailData.body ?? '').slice(0, 50000);
+
+    const archiveBcc = getGraphConfig().archiveBcc;
+
+    // Attachments small enough to ride along with the draft; anything larger is
+    // added afterwards through an upload session.
+    const attachments = [];
+    const large = [];
+    const addAttachment = (name, contentBytes, contentType) => {
+      if (!contentBytes) return;
+      const target = Buffer.byteLength(contentBytes, 'base64') > INLINE_ATTACHMENT_LIMIT ? large : attachments;
+      target.push({
+        '@odata.type': '#microsoft.graph.fileAttachment',
+        name,
+        contentType: contentType || 'application/octet-stream',
+        contentBytes
+      });
+    };
+    addAttachment(`${order.orderReference}.pdf`, payload.pdfData, 'application/pdf');
+    if (payload.termsheet) {
+      addAttachment(payload.termsheet.name, payload.termsheet.content, payload.termsheet.contentType);
+    }
+
+    const draft = await createDraft(userId, {
+      subject,
+      // Plain text: the existing body is \n-joined text, and Text sidesteps a
+      // whole class of HTML-escaping bugs in figures and ISINs.
+      body: { contentType: 'Text', content: body },
+      toRecipients: toList.map(address => ({ emailAddress: { address } })),
+      ccRecipients: ccList.map(address => ({ emailAddress: { address } })),
+      ...(archiveBcc ? { bccRecipients: [{ emailAddress: { address: archiveBcc } }] } : {}),
+      ...(attachments.length ? { attachments } : {})
+    });
+
+    for (const attachment of large) {
+      await addLargeAttachment(userId, draft.id, attachment);
+    }
+
+    await sendDraft(userId, draft.id);
+
+    const sentAt = new Date();
+    await OrdersCollection.updateAsync(orderId, {
+      $set: {
+        status: order.status === ORDER_STATUSES.EXECUTED ? order.status : ORDER_STATUSES.TRANSMITTED,
+        ...(order.status === ORDER_STATUSES.EXECUTED ? {} : { transmittedAt: sentAt }),
+        sentAt,
+        sentTo: toList.join('; '),
+        sentMethod: 'graph',
+        graphSend: {
+          draftId: draft.id,
+          internetMessageId: draft.internetMessageId || null,
+          conversationId: draft.conversationId || null,
+          mailbox: (await getPublicStatus(userId))?.microsoftEmail || null,
+          sentBy: userId,
+          sentAt,
+          sentTraceStatus: 'pending'
+        },
+        updatedAt: sentAt,
+        updatedBy: userId
+      }
+    });
+
+    AuditLog.record({
+      actorUserId: userId,
+      actorRole: user.role || null,
+      action: 'order.email.sent',
+      targetType: 'order',
+      targetId: orderId,
+      meta: { via: 'graph', to: toList.join('; '), subject: subject.slice(0, 120) }
+    });
+
+    console.log(`[ORDERS] Order ${order.orderReference} sent via Outlook by ${userDisplayName} (${userId}) to ${toList.join('; ')}`);
+
+    // File the sent copy as the order_to_bank trace. Deliberately NOT awaited:
+    // Exchange takes a moment to materialise the Sent Items copy, so awaiting
+    // would hold the response — and spin the user's preview — for up to ten
+    // seconds after the mail has already gone. The order is reactive, so the
+    // trace tile fills in on its own; `graphSend.sentTraceStatus` records
+    // whether it ever did.
+    attachSentCopyAsTrace({
+      order, userId, userDisplayName, internetMessageId: draft.internetMessageId
+    }).catch(err => console.error('[ORDERS] Auto-filing the sent copy failed:', err.message));
+
+    return {
+      success: true,
+      orderReference: order.orderReference,
+      sentTo: toList.join('; '),
+      conversationId: draft.conversationId || null,
+      traceAttached: 'pending'
+    };
+  },
+
+  /**
+   * Look for the bank's reply to an order sent through Outlook.
+   *
+   * Returns candidates for a human to confirm; it deliberately does NOT attach
+   * anything. A bank_confirmation trace auto-advances the order to EXECUTED
+   * (see pushTraceAndAdvance), and a reply is just as likely to be a question
+   * about the order as a confirmation of it — so the state change stays a
+   * decision, not a guess. Attaching goes through orders.attachGraphMessageAsTrace
+   * once the user picks one.
+   */
+  async 'orders.checkGraphReplies'({ orderId, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+    this.unblock();
+
+    const { user, userId } = await validateSession(sessionId);
+    validateOrderPermission(user);
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    await validateOrderAccess(order, user);
+
+    if (!order.graphSend?.conversationId && !order.graphSend?.internetMessageId) {
+      throw new Meteor.Error('not-sent-via-graph',
+        'This order was not sent through Outlook, so there is no mail thread to follow.');
+    }
+    // The thread lives in the mailbox that sent it; another user's token cannot see it.
+    if (order.graphSend.sentBy !== userId) {
+      throw new Meteor.Error('not-sender',
+        `This order was sent from ${order.graphSend.mailbox || 'another user\'s mailbox'}, so only they can check its replies.`);
+    }
+
+    const replies = await findOrderReplies(order);
+
+    await OrdersCollection.updateAsync(orderId, {
+      $set: { 'graphSend.lastReplyScanAt': new Date() }
+    });
+
+    return {
+      success: true,
+      replies: replies.map(m => ({
+        id: m.id,
+        subject: m.subject || '(no subject)',
+        fromName: m.from?.emailAddress?.name || m.from?.emailAddress?.address || '',
+        fromAddress: m.from?.emailAddress?.address || '',
+        receivedDateTime: m.receivedDateTime || null,
+        hasAttachments: Boolean(m.hasAttachments),
+        preview: (m.bodyPreview || '').slice(0, 160),
+        isRead: true
+      }))
+    };
+  },
+
+  /**
+   * File the mail that was sent to the bank as this order's order_to_bank
+   * trace, without anyone dragging it anywhere.
+   *
+   * Two routes in, both automatic:
+   *   - the order went out through Graph and the post-send filing did not land
+   *     (Exchange can be slow to materialise the Sent Items copy) — retry it by
+   *     internetMessageId, which is exact;
+   *   - the order went out some other way (the .eml draft, an Outlook hand-off
+   *     on a phone) — find it in the sender's Sent Items by the order reference,
+   *     which every generated subject carries.
+   *
+   * Returns { attached, reason } and never throws for "nothing found": this is
+   * called on opening an order, where a failure is not an error.
+   */
+  async 'orders.autoAttachOrderToBank'({ orderId, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+    this.unblock();
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+    validateOrderPermission(user);
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    await validateOrderAccess(order, user);
+
+    const alreadyFiled = (order.emailTraces || []).some(t => t.traceType === EMAIL_TRACE_TYPES.ORDER_TO_BANK);
+    if (alreadyFiled) return { attached: false, reason: 'already-filed' };
+
+    // Only the mailbox that sent it can see the message.
+    if (order.graphSend?.sentBy && order.graphSend.sentBy !== userId) {
+      return { attached: false, reason: 'other-mailbox' };
+    }
+
+    // 1. Sent through Graph: the message id is exact, so retry that first.
+    if (order.graphSend?.internetMessageId) {
+      const filed = await attachSentCopyAsTrace({
+        order,
+        userId,
+        userDisplayName,
+        internetMessageId: order.graphSend.internetMessageId
+      });
+      if (filed) return { attached: true, reason: 'graph-sent-copy' };
+    }
+
+    // 2. Otherwise look for it in Sent Items. The subject of every order mail
+    //    carries the reference ("Order: 2026-00143 - …"), which is unique.
+    let candidates;
+    try {
+      const result = await searchMessages(userId, {
+        query: order.orderReference,
+        folderId: 'sentitems',
+        top: 10
+      });
+      candidates = result.messages || [];
+    } catch (error) {
+      console.warn('[ORDERS] Auto-attach search failed:', error.message);
+      return { attached: false, reason: 'search-failed' };
+    }
+
+    const reference = String(order.orderReference || '').toLowerCase();
+    if (!reference) return { attached: false, reason: 'no-reference' };
+
+    const sentAfter = order.createdAt ? new Date(order.createdAt).getTime() : 0;
+    const match = candidates
+      .filter(m => String(m.subject || '').toLowerCase().includes(reference))
+      .filter(m => !sentAfter || new Date(m.sentDateTime || m.receivedDateTime || 0).getTime() >= sentAfter)
+      // Newest first: a resend supersedes the original.
+      .sort((a, b) => new Date(b.sentDateTime || b.receivedDateTime || 0) - new Date(a.sentDateTime || a.receivedDateTime || 0))[0];
+
+    if (!match) return { attached: false, reason: 'not-found' };
+
+    try {
+      const mime = await graphGetMessageMime(userId, match.id, { maxBytes: EMAIL_TRACE_MAX_SIZE });
+      const fresh = await OrdersCollection.findOneAsync(orderId);
+      const trace = await writeTraceFileToOrder({
+        order: fresh,
+        traceType: EMAIL_TRACE_TYPES.ORDER_TO_BANK,
+        fileName: `${fresh.orderReference}_order_to_bank.eml`,
+        base64Data: mime.toString('base64'),
+        mimeType: 'message/rfc822',
+        userId,
+        userDisplayName
+      });
+      trace.source = 'graph';
+      trace.graph = {
+        messageId: match.id,
+        internetMessageId: match.internetMessageId || null,
+        conversationId: match.conversationId || null,
+        receivedDateTime: match.sentDateTime ? new Date(match.sentDateTime) : null,
+        fromAddress: null
+      };
+      await pushTraceAndAdvance({ order: fresh, trace, traceType: EMAIL_TRACE_TYPES.ORDER_TO_BANK, userId });
+      console.log(`[ORDERS] Auto-filed the sent mail as order_to_bank for ${fresh.orderReference} (found in Sent Items)`);
+      return { attached: true, reason: 'sent-items-match', subject: match.subject || '' };
+    } catch (error) {
+      console.warn('[ORDERS] Auto-attach could not store the message:', error.message);
+      return { attached: false, reason: 'store-failed' };
+    }
   },
 
   /**
@@ -5057,8 +5703,13 @@ ${isFx
 /**
  * Generate HTML for Order Confirmation PDF
  */
-function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
+function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser, liveIssuer = null) {
   const orderDate = OrderFormatters.formatDateTime(order.createdAt);
+  // Structured products are dealt directly with the issuer, so the ticket
+  // carries the same coordinates as the covering email — the desk works from
+  // the PDF once the mail is filed, and shouldn't have to go back to it.
+  const issuer = OrderHelpers.resolveIssuerContact(order, liveIssuer);
+  const showIssuer = !!(issuer && (issuer.name || OrderHelpers.hasIssuerCoordinates(issuer)));
   // Use bank account name first, then resolve client/entity name
   const clientName = bankAccount?.name
     || (client?.profile?.companyName)
@@ -5388,6 +6039,38 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser) {
       </div>
     </div>
   </div>
+
+  ${showIssuer ? `
+  <div class="section">
+    <h2>Issuer</h2>
+    <div class="info-grid">
+      ${issuer.name ? `
+      <div class="info-row">
+        <span class="info-label">Issuer</span>
+        <span class="info-value">${issuer.name}</span>
+      </div>
+      ` : ''}
+      ${issuer.contactName ? `
+      <div class="info-row">
+        <span class="info-label">Contact</span>
+        <span class="info-value">${issuer.contactName}</span>
+      </div>
+      ` : ''}
+      ${issuer.contactEmail ? `
+      <div class="info-row">
+        <span class="info-label">Email</span>
+        <span class="info-value">${issuer.contactEmail}</span>
+      </div>
+      ` : ''}
+      ${issuer.contactPhone ? `
+      <div class="info-row">
+        <span class="info-label">Phone</span>
+        <span class="info-value">${issuer.contactPhone}</span>
+      </div>
+      ` : ''}
+    </div>
+  </div>
+  ` : ''}
 
   <div class="section">
     <h2>Order Details</h2>
@@ -6467,25 +7150,44 @@ Meteor.methods({
       return { cashBalance: null, currency: null };
     }
 
-    // Find cash holdings (try by userId first, then by bankId+portfolioCode for entity-based accounts)
+    // Load the account's holdings and classify them with the SAME predicates the
+    // PMS cash monitor uses. This used to select cash with a name regex
+    // (/cash|liquidity|compte|konto/), which counted an "Amundi Euro
+    // Liquidity-Rated" money-market fund as cash: the modal showed a second,
+    // positive EUR line of 1.5M next to the real -400,970.09 balance, and the
+    // two never matched the PMS.
     const portfolioRegex = new RegExp('^' + bankAccount.accountNumber.split('-')[0]);
-    const cashQuery = {
+    const accountQuery = {
       isActive: true,
       isLatest: true,
-      portfolioCode: { $regex: portfolioRegex },
-      $or: [
-        { assetClass: { $in: ['cash', 'liquidity', 'Cash', 'Liquidity', 'CASH'] } },
-        { securityName: { $regex: /cash|liquidity|compte|konto/i } }
-      ]
+      portfolioCode: { $regex: portfolioRegex }
     };
     // Try with userId first
-    let cashHoldings = await PMSHoldingsCollection.find({ ...cashQuery, userId: resolved.holdingsUserId }).fetchAsync();
+    let accountHoldings = await PMSHoldingsCollection.find({ ...accountQuery, userId: resolved.holdingsUserId }).fetchAsync();
     let scope = { userId: resolved.holdingsUserId };
     // If no results, try with bankId + portfolioCode only (entity-based accounts)
-    if (cashHoldings.length === 0) {
-      cashHoldings = await PMSHoldingsCollection.find({ ...cashQuery, bankId: bankAccount.bankId }).fetchAsync();
+    if (accountHoldings.length === 0) {
+      accountHoldings = await PMSHoldingsCollection.find({ ...accountQuery, bankId: bankAccount.bankId }).fetchAsync();
       scope = { bankId: bankAccount.bankId };
     }
+
+    // Holdings whose own fields say nothing are classified from securities
+    // metadata, exactly as the cash monitor does.
+    const heldIsins = accountHoldings.map(h => h.isin).filter(Boolean);
+    const cashEquivalentMetadata = heldIsins.length > 0
+      ? await SecuritiesMetadataCollection.find({
+        isin: { $in: heldIsins },
+        assetClass: { $in: ['monetary_products', 'time_deposit'] }
+      }, { fields: { isin: 1 } }).fetchAsync()
+      : [];
+    const cashEquivalentISINs = new Set(cashEquivalentMetadata.map(m => m.isin));
+
+    const cashHoldings = accountHoldings.filter(h => isPureCashHolding(h));
+    // Near-cash: liquidity the client really has, but which has to be sold
+    // before it can settle anything. Reported separately, never added to cash.
+    const nearCashHoldings = accountHoldings.filter(
+      h => !isPureCashHolding(h) && isCashEquivalentHolding(h, cashEquivalentISINs)
+    );
 
     // `marketValue` is stored in the portfolio's reference currency, NOT in the
     // position's own currency (a CHF account holding 291.91 CHF is stored with
@@ -6505,21 +7207,34 @@ Meteor.methods({
     const totalCash = cashHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
     const currency = bankAccount.referenceCurrency || cashHoldings[0]?.currency || 'EUR';
 
-    const cashPositions = cashHoldings.map(h => ({
-      currency: h.currency,
-      amount: nativeAmount(h),
-      name: h.securityName
-    }));
+    /**
+     * One row per currency, like the PMS Cash Balances panel. Two cash lines in
+     * the same currency (a current account and a savings account, say) are one
+     * balance to whoever is placing the order, not two.
+     */
+    const aggregateByCurrency = (holdings) => {
+      const byCurrency = new Map();
+      for (const h of holdings) {
+        const ccy = h.currency || currency;
+        const row = byCurrency.get(ccy) || { currency: ccy, amount: 0, names: [] };
+        row.amount += nativeAmount(h);
+        if (h.securityName) row.names.push(h.securityName);
+        byCurrency.set(ccy, row);
+      }
+      return [...byCurrency.values()].map(row => ({
+        currency: row.currency,
+        amount: row.amount,
+        name: row.names.length === 1 ? row.names[0] : null,
+        names: row.names
+      }));
+    };
+
+    const cashPositions = aggregateByCurrency(cashHoldings);
+    const nearCashPositions = aggregateByCurrency(nearCashHoldings);
 
     // Show a zero row for every currency in which the portfolio has any holding
     // but no cash position — makes the absence of cash explicit rather than hiding it.
-    const portfolioHoldings = await PMSHoldingsCollection.find({
-      isActive: true,
-      isLatest: true,
-      portfolioCode: { $regex: portfolioRegex },
-      ...scope
-    }, { fields: { currency: 1 } }).fetchAsync();
-    const portfolioCurrencies = new Set(portfolioHoldings.map(h => h.currency).filter(Boolean));
+    const portfolioCurrencies = new Set(accountHoldings.map(h => h.currency).filter(Boolean));
     const cashCurrencies = new Set(cashPositions.map(p => p.currency));
     for (const ccy of portfolioCurrencies) {
       if (!cashCurrencies.has(ccy)) {
@@ -6531,10 +7246,14 @@ Meteor.methods({
       return (a.currency || '').localeCompare(b.currency || '');
     });
 
+    nearCashPositions.sort((a, b) => (a.currency || '').localeCompare(b.currency || ''));
+
     return {
       cashBalance: totalCash,
       currency,
-      cashPositions
+      cashPositions,
+      // Money market funds / term deposits, kept apart from cash on purpose.
+      nearCashPositions
     };
   },
 

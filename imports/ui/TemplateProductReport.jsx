@@ -202,7 +202,7 @@ const ProcessingIssuesAlert = ({ product }) => {
  * This replaces the old complex ProductReport with a simpler, template-focused approach.
  * Each template will have its own report builder and layout.
  */
-const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct, onAllocateProduct }) => {
+const TemplateProductReport = ({ productId, user, onNavigateBack, backLabel, onEditProduct, onAllocateProduct }) => {
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [evaluationError, setEvaluationError] = useState(null);
   const [showAllocationDetails, setShowAllocationDetails] = useState(false);
@@ -640,13 +640,15 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
                 background: 'var(--bg-secondary)',
                 border: '1px solid var(--border-color)',
                 color: 'var(--text-primary)',
-                fontSize: '0.9rem',
+                fontSize: isMobile ? '1rem' : '0.9rem',
                 cursor: 'pointer',
                 marginBottom: '0.75rem',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '0.5rem',
-                padding: '0.5rem 1rem',
+                // A comfortable thumb target on a phone, where this is the only
+                // way back to the list the report was opened from.
+                padding: isMobile ? '0.7rem 1.1rem' : '0.5rem 1rem',
                 borderRadius: '4px',
                 transition: 'all 0.2s ease'
               }}
@@ -659,7 +661,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, onEditProduct,
                 e.currentTarget.style.borderColor = 'var(--border-color)';
               }}
             >
-              ← Back
+              ← {backLabel || 'Back'}
             </button>
           )}
 

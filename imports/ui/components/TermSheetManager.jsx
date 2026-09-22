@@ -10,6 +10,9 @@ const TermSheetManager = ({ product, user, productId }) => {
   const [dragActive, setDragActive] = useState(false);
   const [uploadError, setUploadError] = useState(null);
   const [uploadSuccess, setUploadSuccess] = useState(false);
+  // A download that fails (missing file, expired session) used to be logged to
+  // the console only, so the tab just blinked shut and nothing explained why.
+  const [openError, setOpenError] = useState(null);
 
   const isAdmin = user && (user.role === USER_ROLES.ADMIN || user.role === USER_ROLES.SUPERADMIN);
   const hasTermSheet = product && product.termSheet && product.termSheet.url;
@@ -105,13 +108,18 @@ const TermSheetManager = ({ product, user, productId }) => {
   // blocked by mobile popup blockers.
   const openTermSheet = async () => {
     if (!hasTermSheet) return;
+    setOpenError(null);
     try {
       const sessionId = localStorage.getItem('sessionId');
-      await openDocumentWindow(() =>
+      const opened = await openDocumentWindow(() =>
         Meteor.callAsync('products.getTermSheetUrl', productId, sessionId)
       );
+      if (!opened) {
+        setOpenError('The term sheet could not be opened in a new tab. Allow pop-ups for this site and try again.');
+      }
     } catch (error) {
       console.error('Failed to open term sheet:', error);
+      setOpenError(error.reason || error.message || 'The term sheet could not be opened.');
     }
   };
 
@@ -181,6 +189,23 @@ const TermSheetManager = ({ product, user, productId }) => {
       >
         {hasTermSheet ? '📋' : '📤'}
       </button>
+
+      {openError && (
+        <div
+          role="alert"
+          onClick={() => setOpenError(null)}
+          title="Dismiss"
+          style={{
+            marginTop: '6px', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer',
+            fontSize: '0.75rem', lineHeight: 1.35, maxWidth: '260px',
+            background: 'color-mix(in srgb, var(--loss-color) 12%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--loss-color) 35%, transparent)',
+            color: 'var(--loss-color)'
+          }}
+        >
+          {openError}
+        </div>
+      )}
 
       {/* Upload Modal - Rendered via Portal to document.body */}
       {showModal && createPortal(

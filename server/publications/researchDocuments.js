@@ -2,13 +2,25 @@ import { Meteor } from 'meteor/meteor';
 
 import { SessionHelpers } from '/imports/api/sessions';
 import { UsersCollection } from '/imports/api/users';
-import { ResearchDocumentsCollection, canReadResearch } from '/imports/api/researchDocuments';
+import {
+  ResearchDocumentsCollection,
+  RESEARCH_LANGUAGE_ORDER,
+  canReadResearch
+} from '/imports/api/researchDocuments';
 
 if (Meteor.isServer) {
   Meteor.startup(() => {
     ResearchDocumentsCollection.createIndex({ category: 1, documentDate: -1 });
     ResearchDocumentsCollection.createIndex({ 'security.ticker': 1, documentDate: -1 });
-    ResearchDocumentsCollection.createIndex({ storedFileName: 1 }, { unique: true });
+    // One stored file per language slot. Sparse: a document that exists only in
+    // English leaves files.fr absent, and a non-sparse unique index would let
+    // exactly one such document exist.
+    RESEARCH_LANGUAGE_ORDER.forEach((language) => {
+      ResearchDocumentsCollection.createIndex(
+        { [`files.${language}.storedFileName`]: 1 },
+        { unique: true, sparse: true }
+      );
+    });
   });
 }
 

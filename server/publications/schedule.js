@@ -265,22 +265,31 @@ Meteor.publish("schedule.observations", async function (sessionId = null, viewAs
   const heldProductIds = await getHeldProductIdsForScope({ currentUser, viewAsFilter });
 
   // productQuery is either {} (admin, no scope) or { _id: { $in: [...] } } (access-scoped).
-  // Intersect its allowed ids with the held set.
-  let allowedProductIds;
+  //
+  // A redeemed product leaves the holdings feed, so intersecting with "currently
+  // held" used to drop it from the schedule entirely — and its PAST observations
+  // went with it, leaving holes in the history exactly where products had been
+  // called. Those products stay in scope here; the loop below emits only their
+  // past observations, so the history is complete while a closed position never
+  // advertises a date that will never be observed.
+  let productSelector;
   if (productQuery._id && Array.isArray(productQuery._id.$in)) {
-    allowedProductIds = productQuery._id.$in.filter(id => heldProductIds.has(String(id)));
+    // Access-scoped: allocations are the durable record of what this scope held,
+    // so they still cover positions the holdings feed has since dropped.
+    const accessibleIds = productQuery._id.$in.map(String);
+    if (accessibleIds.length === 0) {
+      return this.ready();
+    }
+    productSelector = { _id: { $in: accessibleIds } };
   } else {
-    allowedProductIds = [...heldProductIds];
+    // Admin with no view-as: every product, currently held or since redeemed.
+    productSelector = {};
   }
 
-  console.log(`[SCHEDULE] Held products in scope: ${heldProductIds.size}, allowed after access intersect: ${allowedProductIds.length}`);
-
-  if (allowedProductIds.length === 0) {
-    return this.ready();
-  }
+  console.log(`[SCHEDULE] Held products in scope: ${heldProductIds.size}`);
 
   const products = await ProductsCollection.find({
-    _id: { $in: allowedProductIds },
+    ...productSelector,
     observationSchedule: { $exists: true, $ne: [] }
   }).fetchAsync();
 
@@ -364,6 +373,10 @@ Meteor.publish("schedule.observations", async function (sessionId = null, viewAs
     // Get product status to check if autocalled
     const productStatus = productStatusMap[product._id] || { isEarlyAutocall: false, isMaturedAtFinal: false, productCalled: false };
 
+    // Still in the holdings feed, or a closed position kept for its history?
+    // (see the scope note above the product query).
+    const isHeld = heldProductIds.has(String(product._id));
+
     // If product was autocalled, find the autocall observation index from report data
     // so we can skip all subsequent observations
     let autocallObsIndex = -1;
@@ -430,6 +443,12 @@ Meteor.publish("schedule.observations", async function (sessionId = null, viewAs
       const isPast = daysLeft < 0;
 
       console.log('[SCHEDULE] Observation', index, 'date:', dateValue, 'Days left:', daysLeft, 'Past or Future:', isPast ? 'PAST' : 'FUTURE');
+
+      // A position that is no longer held keeps its history but not its future:
+      // once the product is redeemed those observations never take place.
+      if (!isHeld && !isPast) {
+        return;
+      }
 
       // Try to find matching observation outcome from report
       let outcome = null;

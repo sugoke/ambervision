@@ -137,7 +137,7 @@ async function getAssignedClients(currentUser) {
  * The fictional demo entity is allowed ONLY via an explicit entity selection (that is
  * its purpose); it never enters unscoped lists. Archived clients never appear at all.
  */
-async function getFilteredClientIds(currentUser, viewAsFilter = null) {
+export async function getFilteredClientIds(currentUser, viewAsFilter = null) {
   const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
   const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
   const isCompliance = currentUser.role === USER_ROLES.COMPLIANCE;

@@ -33,15 +33,18 @@ ChartJS.register(ArcElement, Tooltip, Legend);
  */
 
 // Asset class colors for chart
+// Allocation chart series. The brand guide rules out bright or neon colour, so
+// this is a muted sequence led by navy, with the warm accents drawn from the
+// amber/bronze end of the palette. Chosen to stay distinguishable in greyscale.
 const ASSET_CLASS_COLORS = {
-  structured_product: '#6366f1',
-  equity: '#047857',
-  fixed_income: '#b45309',
-  cash: '#64748b',
-  time_deposit: '#475569',
-  monetary_products: '#8b5cf6',
-  commodities: '#ec4899',
-  other: '#5c656d'
+  structured_product: '#1B2A4A',
+  equity: '#14724F',
+  fixed_income: '#8A5F0B',
+  cash: '#767C88',
+  time_deposit: '#4A6785',
+  monetary_products: '#6E8B7E',
+  commodities: '#A9683A',
+  other: '#8C8579'
 };
 
 // Helper functions
@@ -284,7 +287,7 @@ const PMSReportPDF = () => {
       Promise.all([
         Meteor.callAsync('pms.getHoldingsForPdf', { userId: pdfUserId, pdfToken, viewAsFilter }),
         Meteor.callAsync('pms.getOperationsForPdf', { userId: pdfUserId, pdfToken, viewAsFilter }),
-        Meteor.callAsync('pms.getBankAccountsForPdf', { userId: pdfUserId, pdfToken }),
+        Meteor.callAsync('pms.getBankAccountsForPdf', { userId: pdfUserId, pdfToken, viewAsFilter }),
         Meteor.callAsync('pms.getProductsForPdf', { userId: pdfUserId, pdfToken }),
         Meteor.callAsync('pms.getSecuritiesMetadataForPdf', { userId: pdfUserId, pdfToken })
       ]).then(([holdingsResult, operationsResult, accountsResult, productsResult, metadataResult]) => {
@@ -638,9 +641,9 @@ const PMSReportPDF = () => {
         minHeight: '100vh',
         padding: '2rem'
       }}>
-        <h1 style={{ color: '#1e293b', marginBottom: '1rem' }}>Portfolio Report - Loading</h1>
-        <p style={{ color: '#64748b', fontSize: '1rem' }}>{loadingMessage}</p>
-        <p style={{ color: '#5c656d', fontSize: '0.875rem', marginTop: '1rem' }}>
+        <h1 style={{ color: '#2D2D2D', marginBottom: '1rem' }}>Portfolio Report - Loading</h1>
+        <p style={{ color: '#767C88', fontSize: '1rem' }}>{loadingMessage}</p>
+        <p style={{ color: '#767C88', fontSize: '0.875rem', marginTop: '1rem' }}>
           Debug: isLoading={String(isLoading)}, validated={String(pdfAuthState.validated)}
         </p>
       </div>
@@ -649,57 +652,92 @@ const PMSReportPDF = () => {
 
   return (
     <>
+      {/* Poppins is the brand face. Served from our own /public so it survives
+          the production CSP, which allows font-src 'self' only — a Google Fonts
+          import would be blocked and silently fall back to a system face. */}
+      <link rel="stylesheet" href="/fonts/poppins.css" />
       <style>{`
         html, body, #react-target { background: white !important; }
+
+        /* Short amber tick under each section rule. Drawn in CSS so it needs no
+           extra element and cannot be dropped by the print stylesheet. */
+        .pms-section-title::after {
+          content: '';
+          position: absolute;
+          left: 0;
+          bottom: -1px;
+          width: 40px;
+          height: 2px;
+          background: #D4842A;
+        }
+
+        /* Banding the rows is what makes a wide financial table readable across
+           the page. Kept to the warm paper tint so it survives greyscale. */
+        .pms-pdf-report tbody tr:nth-child(even) { background: #F8F6F1; }
+
+        .pms-stat-band > div:first-child { border-left: none; }
+
         @media print {
           .pms-pdf-section { page-break-inside: avoid; }
           .pms-pdf-transactions { page-break-before: always; }
           .pms-asset-class-section { page-break-inside: avoid; }
           .pms-asset-class-section:not(:first-child) { page-break-before: always; }
+          /* A table running past a page break repeats its navy header, so no
+             column is ever read without its label. */
+          .pms-pdf-report thead { display: table-header-group; }
+          .pms-pdf-report tr { page-break-inside: avoid; }
         }
         @page { margin: 1cm; }
       `}</style>
 
       <div style={styles.container} className="pms-pdf-report report-content">
-        {/* Header */}
+        {/* Masthead: the portfolio is the headline, the document type the
+            eyebrow above it. Logo right, amber rule beneath, then the facts
+            that qualify every figure in the report. */}
         <div style={styles.header}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div style={{ flex: 1 }}>
-              <h1 style={styles.title}>
-                <span style={{ marginRight: '0.5rem' }}>💼</span>
-                Portfolio Report
-              </h1>
-              <div style={styles.headerMeta}>
-                <span style={styles.metaItem}>Report date: {formatDate(new Date())}</span>
-                {asOfDate && (
-                  <span style={styles.metaItem}>Positions as of: {formatDate(asOfDate)}</span>
-                )}
-                <span style={styles.metaItem}>Reference currency: {portfolioCurrency}</span>
-                <span style={styles.metaItem}>Portfolio: {scopeLabel}</span>
-              </div>
-              {portfolioHasMixedCurrencies && (
-                <div style={styles.headerWarning}>
-                  This perimeter holds positions valued in more than one reference currency
-                  ({holdingsCurrencies.join(', ')}). Totals below add those values together and
-                  are shown as {portfolioCurrency} for reference only.
-                </div>
-              )}
-            </div>
-            <img
-              src="https://amberlakepartners.com/assets/logos/horizontal_logo2.png"
-              alt="Amberlake Partners"
-              style={{ height: '40px', width: 'auto', marginLeft: '1rem' }}
-            />
+          <div style={{ minWidth: 0 }}>
+            <div style={styles.eyebrow}>Portfolio Report</div>
+            <h1 style={styles.title}>{scopeLabel}</h1>
           </div>
+          <img
+            src="https://amberlakepartners.com/assets/logos/horizontal_logo2.png"
+            alt="Amberlake Partners"
+            style={styles.logo}
+          />
+        </div>
+        <div style={styles.mastheadRule} />
+
+        <div style={styles.headerMeta}>
+          <div style={styles.metaItem}>
+            <span style={styles.metaLabel}>Report date</span>
+            <span style={styles.metaValue}>{formatDate(new Date())}</span>
+          </div>
+          {asOfDate && (
+            <div style={styles.metaItem}>
+              <span style={styles.metaLabel}>Positions as of</span>
+              <span style={styles.metaValue}>{formatDate(asOfDate)}</span>
+            </div>
+          )}
+          <div style={styles.metaItem}>
+            <span style={styles.metaLabel}>Reference currency</span>
+            <span style={styles.metaValue}>{portfolioCurrency}</span>
+          </div>
+          {portfolioHasMixedCurrencies && (
+            <div style={styles.headerWarning}>
+              This perimeter holds positions valued in more than one reference currency
+              ({holdingsCurrencies.join(', ')}). Totals below add those values together and
+              are shown as {portfolioCurrency} for reference only.
+            </div>
+          )}
         </div>
 
         {/* Summary Section */}
         <div style={styles.section} className="pms-pdf-section">
-          <h2 style={styles.sectionTitle}>Portfolio Summary</h2>
-          <div style={styles.summaryGrid}>
+          <h2 style={styles.sectionTitle} className="pms-section-title">Portfolio Summary</h2>
+          <div style={styles.summaryGrid} className="pms-stat-band">
             <div style={styles.summaryCard}>
               <div style={styles.summaryLabel}>Total Portfolio Value</div>
-              <div style={styles.summaryValue}>{formatCurrency(totals.totalValue, portfolioCurrency)}</div>
+              <div style={styles.summaryValueLead}>{formatCurrency(totals.totalValue, portfolioCurrency)}</div>
               <div style={styles.summaryHint}>securities + cash, in {portfolioCurrency}</div>
             </div>
             <div style={styles.summaryCard}>
@@ -711,7 +749,7 @@ const PMSReportPDF = () => {
               <div style={styles.summaryLabel}>Unrealised Gain/Loss</div>
               <div style={{
                 ...styles.summaryValue,
-                color: totals.totalGainLoss >= 0 ? '#047857' : '#b91c1c'
+                color: totals.totalGainLoss >= 0 ? '#14724F' : '#B03C2F'
               }}>
                 {formatCurrency(totals.totalGainLoss, portfolioCurrency)}
                 <span style={{ fontSize: '0.9rem', marginLeft: '0.5rem' }}>
@@ -730,7 +768,7 @@ const PMSReportPDF = () => {
 
         {/* Positions Section */}
         <div style={styles.section} className="pms-pdf-section">
-          <h2 style={styles.sectionTitle}>Holdings by Asset Class</h2>
+          <h2 style={styles.sectionTitle} className="pms-section-title">Holdings by Asset Class</h2>
           <p style={styles.sectionNote}>
             <strong>Ccy</strong> is the currency the position trades in; prices and the first
             Market Value column are in that currency. The second Market Value column, Unrealised
@@ -784,7 +822,7 @@ const PMSReportPDF = () => {
                       )}
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontWeight: '600', fontSize: '0.85rem' }}>{holding.securityName || holding.ticker || '-'}</div>
-                        <div style={{ fontSize: '0.7rem', color: '#64748b', fontFamily: 'monospace' }}>
+                        <div style={{ fontSize: '0.68rem', color: '#767C88', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', letterSpacing: '0.01em' }}>
                           {holding.isin || (isCash ? 'Cash account' : '-')}
                           {holding.isin && !isPDFMode && (
                             <HoldingPriceChart
@@ -798,54 +836,58 @@ const PMSReportPDF = () => {
                     </div>
                   </td>
                   {/* Currency of the position */}
-                  <td style={{...styles.td, textAlign: 'center', fontFamily: 'monospace', fontSize: '0.8rem', width: '5%'}}>
+                  <td style={{...styles.td, textAlign: 'center', fontSize: '0.8rem', width: '5%'}}>
                     {localCurrency}
                   </td>
                   {/* Quantity — units held, or the balance for a cash account */}
-                  <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace', fontSize: '0.8rem', width: '9%'}}>
+                  <td style={{...styles.td, textAlign: 'right', fontSize: '0.8rem', width: '9%'}}>
                     {formatNumber(holding.quantity, isCash ? 2 : 0)}
                   </td>
                   {/* Average purchase price, per unit, in the position's currency */}
-                  <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace', fontSize: '0.8rem', color: '#64748b', width: '9%'}}>
+                  <td style={{...styles.td, textAlign: 'right', fontSize: '0.8rem', color: '#767C88', width: '9%'}}>
                     {isCash ? '—' : formatPrice(holding.costPrice)}
                   </td>
                   {/* Market price, per unit, in the position's currency */}
-                  <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace', fontSize: '0.8rem', width: '10%'}}>
+                  <td style={{...styles.td, textAlign: 'right', fontSize: '0.8rem', width: '10%'}}>
                     {isCash ? '—' : (
                       <>
-                        <div style={{ color: (holding.marketPrice || 0) >= (holding.costPrice || 0) ? '#047857' : '#b91c1c' }}>
+                        {/* Neutral on purpose. Colouring the price against cost
+                            put a green figure next to a red P&L on the same row
+                            whenever the two scales disagreed, and the P&L column
+                            already states the direction without ambiguity. */}
+                        <div style={{ color: BRAND.ink }}>
                           {formatPrice(holding.marketPrice)}
                         </div>
                         {holding.priceDate && (
-                          <div style={{ fontSize: '0.65rem', color: '#5c656d' }}>{formatDate(holding.priceDate)}</div>
+                          <div style={{ fontSize: '0.65rem', color: '#767C88' }}>{formatDate(holding.priceDate)}</div>
                         )}
                       </>
                     )}
                   </td>
                   {/* Market value in the position's own currency */}
-                  <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace', fontSize: '0.8rem', color: '#475569', width: '12%'}}>
+                  <td style={{...styles.td, textAlign: 'right', fontSize: '0.8rem', color: '#3D424D', width: '12%'}}>
                     {localValue != null ? formatCurrency(localValue, localCurrency) : '—'}
                   </td>
                   {/* Market value converted to the report's reference currency */}
-                  <td style={{...styles.td, textAlign: 'right', fontWeight: '600', fontFamily: 'monospace', width: '12%'}}>
+                  <td style={{...styles.td, textAlign: 'right', fontWeight: '600', width: '12%'}}>
                     {formatCurrency(holding.marketValue, portfolioCurrency)}
                   </td>
                   {/* Unrealised P&L in the reference currency */}
-                  <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace', width: '13%'}}>
-                    <div style={{ fontWeight: '700', fontSize: '0.85rem', color: gainLoss >= 0 ? '#047857' : '#b91c1c' }}>
+                  <td style={{...styles.td, textAlign: 'right', width: '13%'}}>
+                    <div style={{ fontWeight: '700', fontSize: '0.85rem', color: gainLoss >= 0 ? '#14724F' : '#B03C2F' }}>
                       {gainLoss >= 0 ? '+' : ''}{formatCurrency(gainLoss, portfolioCurrency)}
                     </div>
                     {/* A cash account has no purchase cost, so a return percentage against the
                         parsers' 1.00 placeholder would be meaningless — the amount is the
                         currency translation difference and stands on its own. */}
                     {!isCash && (
-                      <div style={{ fontSize: '0.72rem', fontWeight: '500', color: returnPct >= 0 ? '#047857' : '#b91c1c' }}>
+                      <div style={{ fontSize: '0.72rem', fontWeight: '500', color: returnPct >= 0 ? '#14724F' : '#B03C2F' }}>
                         {returnPct >= 0 ? '+' : ''}{returnPct.toFixed(2)}%
                       </div>
                     )}
                   </td>
                   {/* Weight in the total portfolio */}
-                  <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace', fontSize: '0.8rem', color: '#475569', width: '7%'}}>
+                  <td style={{...styles.td, textAlign: 'right', fontSize: '0.8rem', color: '#3D424D', width: '7%'}}>
                     {weight != null ? formatSignedPercent(weight) : '—'}
                   </td>
                 </tr>
@@ -866,16 +908,18 @@ const PMSReportPDF = () => {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
                     <div>
                       <div style={{ fontWeight: '600' }}>{getAssetClassLabel(assetClass)}</div>
-                      <div style={{ fontSize: '0.75rem', fontWeight: '400', opacity: 0.85 }}>
-                        {holdings.length} position{holdings.length !== 1 ? 's' : ''} • {groupPercent.toFixed(1)}%
+                      <div style={{ fontSize: '0.62rem', fontWeight: '400', color: '#E8D5A3', letterSpacing: '0.04em', marginTop: '0.1rem' }}>
+                        {holdings.length} position{holdings.length !== 1 ? 's' : ''} · {groupPercent.toFixed(1)}%
                       </div>
                     </div>
                     <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontWeight: '600' }}>{formatCurrency(groupTotal, portfolioCurrency)}</div>
+                      <div style={{ fontWeight: '600', fontSize: '0.85rem', letterSpacing: 'normal', textTransform: 'none' }}>{formatCurrency(groupTotal, portfolioCurrency)}</div>
                       <div style={{
-                        fontSize: '0.8rem',
+                        letterSpacing: 'normal',
+                        textTransform: 'none',
+                        fontSize: '0.7rem',
                         fontWeight: '500',
-                        color: groupGainLoss >= 0 ? '#86efac' : '#fca5a5'
+                        color: groupGainLoss >= 0 ? '#8CC9AE' : '#E0A39B'
                       }}>
                         {groupGainLoss >= 0 ? '+' : ''}{formatCurrency(groupGainLoss, portfolioCurrency)} {groupGainLossPercent >= 0 ? '+' : ''}{groupGainLossPercent.toFixed(1)}%
                       </div>
@@ -930,19 +974,19 @@ const PMSReportPDF = () => {
                               <td colSpan={9} style={{ padding: 0 }}>
                                 <div style={styles.subGroupHeader}>
                                   <div>
-                                    <span style={{ fontWeight: '500', fontSize: '0.85rem', color: '#1e293b' }}>{subClass}</span>
-                                    <span style={{ fontSize: '0.75rem', color: '#64748b', marginLeft: '0.5rem' }}>
+                                    <span style={{ fontWeight: '500', fontSize: '0.85rem', color: '#2D2D2D' }}>{subClass}</span>
+                                    <span style={{ fontSize: '0.75rem', color: '#767C88', marginLeft: '0.5rem' }}>
                                       {subHoldings.length} position{subHoldings.length !== 1 ? 's' : ''}
                                     </span>
                                   </div>
                                   <div style={{ textAlign: 'right' }}>
-                                    <span style={{ fontWeight: '600', fontSize: '0.85rem', color: '#1e293b' }}>
+                                    <span style={{ fontWeight: '600', fontSize: '0.85rem', color: '#2D2D2D' }}>
                                       {formatCurrency(subTotal, portfolioCurrency)}
                                     </span>
                                     <span style={{
                                       fontSize: '0.75rem',
                                       marginLeft: '0.5rem',
-                                      color: subGainLoss >= 0 ? '#047857' : '#b91c1c',
+                                      color: subGainLoss >= 0 ? '#14724F' : '#B03C2F',
                                       fontWeight: '500'
                                     }}>
                                       {subGainLoss >= 0 ? '+' : ''}{formatCurrency(subGainLoss, portfolioCurrency)}
@@ -964,17 +1008,17 @@ const PMSReportPDF = () => {
                     <tr style={styles.subtotalRow}>
                       <td colSpan={6} style={{...styles.td, fontWeight: '700'}}>
                         {getAssetClassLabel(assetClass)} Total
-                        <span style={{ fontWeight: '400', fontSize: '0.75rem', color: '#64748b', marginLeft: '0.5rem' }}>
+                        <span style={{ fontWeight: '400', fontSize: '0.75rem', color: '#767C88', marginLeft: '0.5rem' }}>
                           ({holdings.length} position{holdings.length !== 1 ? 's' : ''})
                         </span>
                       </td>
-                      <td style={{...styles.td, textAlign: 'right', fontWeight: '700', fontFamily: 'monospace'}}>
+                      <td style={{...styles.td, textAlign: 'right', fontWeight: '700'}}>
                         {formatCurrency(groupTotal, portfolioCurrency)}
                       </td>
-                      <td style={{...styles.td, textAlign: 'right', fontWeight: '700', fontFamily: 'monospace', color: groupGainLoss >= 0 ? '#047857' : '#b91c1c'}}>
+                      <td style={{...styles.td, textAlign: 'right', fontWeight: '700', color: groupGainLoss >= 0 ? '#14724F' : '#B03C2F'}}>
                         {groupGainLoss >= 0 ? '+' : ''}{formatCurrency(groupGainLoss, portfolioCurrency)}
                       </td>
-                      <td style={{...styles.td, textAlign: 'right', fontWeight: '700', fontFamily: 'monospace'}}>
+                      <td style={{...styles.td, textAlign: 'right', fontWeight: '700'}}>
                         {formatSignedPercent(groupPercent)}
                       </td>
                     </tr>
@@ -987,7 +1031,7 @@ const PMSReportPDF = () => {
 
         {/* Asset Allocation Section */}
         <div style={{...styles.section, pageBreakBefore: 'always'}} className="pms-pdf-section">
-          <h2 style={styles.sectionTitle}>Asset Allocation</h2>
+          <h2 style={styles.sectionTitle} className="pms-section-title">Asset Allocation</h2>
           <div style={{ display: 'flex', gap: '2rem', alignItems: 'center' }}>
             <div style={{ width: '300px', height: '300px' }}>
               <Doughnut
@@ -1028,20 +1072,20 @@ const PMSReportPDF = () => {
                           {row.label}
                         </div>
                       </td>
-                      <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>
+                      <td style={{...styles.td, textAlign: 'right'}}>
                         {formatCurrency(row.value, portfolioCurrency)}
                       </td>
-                      <td style={{...styles.td, textAlign: 'right', fontWeight: '600', fontFamily: 'monospace'}}>
+                      <td style={{...styles.td, textAlign: 'right', fontWeight: '600'}}>
                         {formatSignedPercent(row.percent)}
                       </td>
                     </tr>
                   ))}
                   <tr style={styles.subtotalRow}>
                     <td style={{...styles.td, fontWeight: '700'}}>Total Portfolio Value</td>
-                    <td style={{...styles.td, textAlign: 'right', fontWeight: '700', fontFamily: 'monospace'}}>
+                    <td style={{...styles.td, textAlign: 'right', fontWeight: '700'}}>
                       {formatCurrency(totals.totalValue, portfolioCurrency)}
                     </td>
-                    <td style={{...styles.td, textAlign: 'right', fontWeight: '700', fontFamily: 'monospace'}}>
+                    <td style={{...styles.td, textAlign: 'right', fontWeight: '700'}}>
                       100.00%
                     </td>
                   </tr>
@@ -1060,7 +1104,7 @@ const PMSReportPDF = () => {
         {/* Performance Section */}
         {performanceData && (
           <div style={styles.section} className="pms-pdf-section">
-            <h2 style={styles.sectionTitle}>Performance Metrics</h2>
+            <h2 style={styles.sectionTitle} className="pms-section-title">Performance Metrics</h2>
             <p style={styles.sectionNote}>
               Each period compares the portfolio's total value at the start and end of the period,
               in {portfolioCurrency}. <strong>Return</strong> is the change divided by the start
@@ -1091,17 +1135,16 @@ const PMSReportPDF = () => {
                   return (
                     <tr key={period}>
                       <td style={{...styles.td, fontWeight: '600'}}>{period === 'ALL' ? 'Since Inception' : period}</td>
-                      <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>
+                      <td style={{...styles.td, textAlign: 'right'}}>
                         {formatCurrency(data.startValue, portfolioCurrency)}
                       </td>
-                      <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>
+                      <td style={{...styles.td, textAlign: 'right'}}>
                         {formatCurrency(data.endValue, portfolioCurrency)}
                       </td>
                       <td style={{
                         ...styles.td,
                         textAlign: 'right',
-                        fontFamily: 'monospace',
-                        color: (data.change || 0) >= 0 ? '#047857' : '#b91c1c'
+                                                color: (data.change || 0) >= 0 ? '#14724F' : '#B03C2F'
                       }}>
                         {formatCurrency(data.change, portfolioCurrency)}
                       </td>
@@ -1111,8 +1154,8 @@ const PMSReportPDF = () => {
                           borderRadius: '4px',
                           fontSize: '0.8rem',
                           fontWeight: '600',
-                          background: (data.returnPercent || 0) >= 0 ? '#d1fae5' : '#fee2e2',
-                          color: (data.returnPercent || 0) >= 0 ? '#047857' : '#b91c1c'
+                          background: (data.returnPercent || 0) >= 0 ? '#E8F1EC' : '#F6E9E7',
+                          color: (data.returnPercent || 0) >= 0 ? '#14724F' : '#B03C2F'
                         }}>
                           {formatPercent(data.returnPercent || 0)}
                         </span>
@@ -1127,9 +1170,9 @@ const PMSReportPDF = () => {
 
         {/* Transactions Section - Current Year */}
         <div style={{...styles.section, pageBreakBefore: 'always'}} className="pms-pdf-section pms-pdf-transactions">
-          <h2 style={styles.sectionTitle}>
+          <h2 style={styles.sectionTitle} className="pms-section-title">
             Transactions - {new Date().getFullYear()}
-            <span style={{ fontSize: '0.85rem', fontWeight: '400', marginLeft: '1rem', color: '#64748b' }}>
+            <span style={{ fontSize: '0.85rem', fontWeight: '400', marginLeft: '1rem', color: '#767C88' }}>
               ({currentYearOperations.length} transactions)
             </span>
           </h2>
@@ -1174,13 +1217,13 @@ const PMSReportPDF = () => {
               <tbody>
                 {currentYearOperations.map((op, idx) => {
                   const typeColors = {
-                    'BUY': { bg: '#dbeafe', color: '#1e40af' },
-                    'SELL': { bg: '#fef3c7', color: '#b45309' },
-                    'DIVIDEND': { bg: '#d1fae5', color: '#047857' },
-                    'COUPON': { bg: '#d1fae5', color: '#047857' },
-                    'FEE': { bg: '#fee2e2', color: '#b91c1c' }
+                    'BUY': { bg: '#EAEFF6', color: '#1B2A4A' },
+                    'SELL': { bg: '#F7EEDF', color: '#8A5F0B' },
+                    'DIVIDEND': { bg: '#E8F1EC', color: '#14724F' },
+                    'COUPON': { bg: '#E8F1EC', color: '#14724F' },
+                    'FEE': { bg: '#F6E9E7', color: '#B03C2F' }
                   };
-                  const typeStyle = typeColors[op.operationType] || { bg: '#f3f4f6', color: '#374151' };
+                  const typeStyle = typeColors[op.operationType] || { bg: '#F1EDE2', color: '#3D424D' };
 
                   const name = getOperationName(op, metadataByIsin);
                   const price = getOperationPrice(op);
@@ -1205,26 +1248,26 @@ const PMSReportPDF = () => {
                       <td style={styles.td}>
                         <div style={{ fontWeight: '500' }}>{name.primary}</div>
                         {name.secondary && (
-                          <div style={{ fontSize: '0.7rem', color: '#64748b' }}>{name.secondary}</div>
+                          <div style={{ fontSize: '0.7rem', color: '#767C88' }}>{name.secondary}</div>
                         )}
                       </td>
-                      <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>
+                      <td style={{...styles.td, textAlign: 'right'}}>
                         {op.quantity ? formatNumber(op.quantity, Number.isInteger(op.quantity) ? 0 : 2) : '—'}
                       </td>
                       {opsHavePrice && (
-                        <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>
+                        <td style={{...styles.td, textAlign: 'right'}}>
                           {price != null ? formatNumber(price, 2) : '—'}
                         </td>
                       )}
                       {opsHaveFees && (
-                        <td style={{...styles.td, textAlign: 'right', fontFamily: 'monospace'}}>
+                        <td style={{...styles.td, textAlign: 'right'}}>
                           {fees ? formatCurrency(fees, opCurrency) : '—'}
                         </td>
                       )}
-                      <td style={{...styles.td, textAlign: 'center', fontFamily: 'monospace'}}>
+                      <td style={{...styles.td, textAlign: 'center'}}>
                         {opCurrency}
                       </td>
-                      <td style={{...styles.td, textAlign: 'right', fontWeight: '600', fontFamily: 'monospace'}}>
+                      <td style={{...styles.td, textAlign: 'right', fontWeight: '600'}}>
                         {formatCurrency(op.netAmount != null ? op.netAmount : op.grossAmount, opCurrency)}
                       </td>
                     </tr>
@@ -1233,7 +1276,7 @@ const PMSReportPDF = () => {
               </tbody>
             </table>
           ) : (
-            <div style={{ textAlign: 'center', padding: '2rem', color: '#64748b' }}>
+            <div style={{ textAlign: 'center', padding: '2rem', color: '#767C88' }}>
               No transactions recorded for {new Date().getFullYear()}
             </div>
           )}
@@ -1241,10 +1284,18 @@ const PMSReportPDF = () => {
 
         {/* Footer */}
         <div style={styles.footer}>
-          <p>Generated by Amberlake Partners - {new Date().toLocaleString()}</p>
-          <p style={{ fontSize: '0.75rem', color: '#5c656d', marginTop: '0.5rem' }}>
-            This report is for informational purposes only and does not constitute investment advice.
-          </p>
+          <div>
+            <div style={styles.footerBrand}>Amberlake Partners SAM · Confidential</div>
+            <div>38 Boulevard des Moulins, MC 98000 Monaco · amberlakepartners.com</div>
+            <div>SEC Registered · CCAF Regulated</div>
+          </div>
+          <div style={{ textAlign: 'right', maxWidth: '58ch' }}>
+            <div>Generated {new Date().toLocaleString()}</div>
+            <div style={{ marginTop: '0.2rem' }}>
+              This report is provided for informational purposes only and does not constitute
+              investment advice. Valuations are supplied by the custodian banks.
+            </div>
+          </div>
         </div>
       </div>
     </>
@@ -1252,196 +1303,280 @@ const PMSReportPDF = () => {
 };
 
 // Styles
+// ── Amberlake document design system ────────────────────────────────────────
+// Deep navy ink, amber accent, warm-white paper — the palette from the brand
+// guide, in the muted register the rest of the app uses. Nothing here is
+// decorative for its own sake: on paper, gradients and drop shadows read as
+// noise and cost ink, so the hierarchy is carried by type, rule weight and
+// whitespace instead.
+const BRAND = {
+  navy: '#1B2A4A',        // headings, table header rows
+  navyMid: '#33405C',     // secondary headings
+  amber: '#D4842A',       // accent rules, key figures
+  amberDeep: '#8A5F0B',   // accent text that must hold contrast on white
+  gold: '#E8D5A3',        // hairlines and micro-labels on navy
+  paper: '#FFFFFF',
+  warmWhite: '#F8F6F1',   // zebra rows, stat band, callouts
+  warmTint: '#FBF9F3',
+  ink: '#2D2D2D',         // body text
+  inkSoft: '#3D424D',
+  inkMuted: '#767C88',    // labels, hints
+  rule: '#DCD6C7',        // structural borders
+  ruleLight: '#ECE7DB',   // row separators
+  gain: '#14724F',
+  loss: '#B03C2F'
+};
+
+const FONT_STACK = "'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
+
+// Figures only line up in a column when the digits share a width. Without this
+// a table of currency amounts reads as ragged no matter how it is aligned.
+const NUMERIC = { fontVariantNumeric: 'tabular-nums', fontFeatureSettings: '"tnum" 1' };
+
+// Micro-label: the small uppercase caption above a value. Tracked out, because
+// uppercase at this size closes up and becomes hard to read.
+const MICRO_LABEL = {
+  fontSize: '0.56rem',
+  fontWeight: 600,
+  letterSpacing: '0.14em',
+  textTransform: 'uppercase',
+  color: BRAND.inkMuted
+};
+
 const styles = {
   container: {
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif',
-    fontSize: '10pt',
-    lineHeight: 1.4,
-    color: '#1e293b',
-    background: 'white',
-    padding: '2rem',
+    fontFamily: FONT_STACK,
+    fontSize: '9.5pt',
+    lineHeight: 1.45,
+    color: BRAND.ink,
+    background: BRAND.paper,
+    padding: '0 2rem 2rem',
     maxWidth: '297mm',
     margin: '0 auto',
-    minHeight: '100vh'
+    minHeight: '100vh',
+    ...NUMERIC
   },
   loading: {
+    fontFamily: FONT_STACK,
     padding: '2rem',
     textAlign: 'center',
-    color: '#64748b',
-    background: 'white',
+    color: BRAND.inkMuted,
+    background: BRAND.paper,
     minHeight: '100vh'
   },
+
+  // ── Masthead ──────────────────────────────────────────────────────────────
   header: {
-    borderBottom: '3px solid #1e3a5f',
-    paddingBottom: '1rem',
-    marginBottom: '1.5rem',
-    padding: '1.5rem',
-    marginTop: '-2rem',
-    marginLeft: '-2rem',
-    marginRight: '-2rem',
-    paddingLeft: '2rem',
-    paddingRight: '2rem'
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    gap: '2rem',
+    paddingTop: '1.5rem',
+    paddingBottom: '0.75rem'
+  },
+  eyebrow: {
+    ...MICRO_LABEL,
+    letterSpacing: '0.18em',
+    color: BRAND.amberDeep,
+    marginBottom: '0.3rem'
   },
   title: {
-    fontSize: '1.5rem',
-    fontWeight: 700,
-    color: '#0f172a',
+    fontSize: '1.55rem',
+    fontWeight: 600,
+    color: BRAND.navy,
     margin: 0,
-    display: 'flex',
-    alignItems: 'center'
+    lineHeight: 1.15,
+    letterSpacing: '-0.01em'
+  },
+  logo: {
+    height: '38px',
+    width: 'auto',
+    flexShrink: 0
+  },
+  // The one piece of colour at the top of the page. Thin, full width, amber.
+  mastheadRule: {
+    height: '2px',
+    background: BRAND.amber
   },
   headerMeta: {
     display: 'flex',
     flexWrap: 'wrap',
-    columnGap: '2rem',
-    rowGap: '0.25rem',
-    marginTop: '0.5rem',
-    fontSize: '0.9rem',
-    color: '#334155'
+    columnGap: '2.75rem',
+    rowGap: '0.6rem',
+    paddingTop: '0.85rem',
+    paddingBottom: '1.1rem',
+    borderBottom: `1px solid ${BRAND.ruleLight}`,
+    marginBottom: '1.5rem'
   },
   metaItem: {
-    color: '#334155',
-    fontWeight: 500
+    display: 'block'
+  },
+  metaLabel: {
+    ...MICRO_LABEL,
+    display: 'block',
+    marginBottom: '0.1rem'
+  },
+  metaValue: {
+    fontSize: '0.8rem',
+    fontWeight: 500,
+    color: BRAND.navy,
+    ...NUMERIC
   },
   headerWarning: {
-    marginTop: '0.5rem',
-    padding: '0.4rem 0.6rem',
-    background: '#fffbeb',
-    border: '1px solid #fcd34d',
-    borderRadius: '4px',
-    fontSize: '0.75rem',
-    color: '#92400e',
-    maxWidth: '70ch'
-  },
-  section: {
-    marginBottom: '1.5rem',
-    background: 'white'
-  },
-  sectionTitle: {
-    fontSize: '1.1rem',
-    fontWeight: 600,
-    color: '#0f172a',
-    marginBottom: '0.75rem',
-    borderBottom: '2px solid #1e3a5f',
-    paddingBottom: '0.5rem',
-    background: 'linear-gradient(90deg, #f1f5f9 0%, transparent 100%)',
-    padding: '0.5rem',
-    marginLeft: '-0.5rem',
-    paddingLeft: '0.5rem',
-    borderRadius: '4px 0 0 0'
-  },
-  summaryGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(4, 1fr)',
-    gap: '1rem',
-    marginBottom: '1rem'
-  },
-  summaryCard: {
-    background: '#f8fafc',
-    border: '1px solid #e2e8f0',
-    borderRadius: '8px',
-    padding: '1rem',
-    textAlign: 'center'
-  },
-  summaryLabel: {
-    fontSize: '0.75rem',
-    color: '#64748b',
-    textTransform: 'uppercase',
-    letterSpacing: '0.5px',
-    marginBottom: '0.5rem'
-  },
-  summaryValue: {
-    fontSize: '1.25rem',
-    fontWeight: 700,
-    color: '#1e293b'
-  },
-  summaryHint: {
-    fontSize: '0.7rem',
-    color: '#64748b',
+    width: '100%',
     marginTop: '0.35rem',
-    lineHeight: 1.3
+    padding: '0.5rem 0.75rem',
+    background: BRAND.warmWhite,
+    borderLeft: `2px solid ${BRAND.amber}`,
+    fontSize: '0.66rem',
+    lineHeight: 1.5,
+    color: BRAND.inkSoft
+  },
+
+  // ── Sections ──────────────────────────────────────────────────────────────
+  section: {
+    marginBottom: '1.7rem',
+    background: BRAND.paper
+  },
+  // The short amber tick under the rule is drawn by .pms-section-title::after,
+  // so it survives the print stylesheet without an extra wrapper element.
+  sectionTitle: {
+    fontSize: '0.92rem',
+    fontWeight: 600,
+    color: BRAND.navy,
+    margin: '0 0 0.75rem 0',
+    paddingBottom: '0.45rem',
+    borderBottom: `1px solid ${BRAND.rule}`,
+    position: 'relative'
   },
   sectionNote: {
-    fontSize: '0.75rem',
-    color: '#475569',
-    lineHeight: 1.5,
-    margin: '0 0 0.75rem 0',
-    padding: '0.5rem 0.7rem',
-    background: '#f8fafc',
-    borderLeft: '3px solid #cbd5e1',
-    borderRadius: '0 4px 4px 0'
+    fontSize: '0.62rem',
+    color: BRAND.inkMuted,
+    lineHeight: 1.6,
+    margin: '0 0 0.9rem 0',
+    padding: '0 0 0 0.7rem',
+    borderLeft: `1px solid ${BRAND.gold}`,
+    maxWidth: '150ch'
   },
-  groupHeader: {
-    background: 'linear-gradient(135deg, #1e3a5f 0%, #2d4a6f 100%)',
-    color: 'white',
-    padding: '0.75rem 1rem',
-    borderRadius: '4px 4px 0 0',
+
+  // ── Summary band ──────────────────────────────────────────────────────────
+  // One bordered band divided into cells, rather than four floating boxes:
+  // fewer edges on the page, and the figures line up as a single row.
+  summaryGrid: {
+    display: 'grid',
+    gridTemplateColumns: '1.35fr 1fr 1fr 1fr',
+    border: `1px solid ${BRAND.rule}`,
+    background: BRAND.warmTint
+  },
+  summaryCard: {
+    padding: '0.85rem 1rem',
+    borderLeft: `1px solid ${BRAND.ruleLight}`
+  },
+  summaryLabel: {
+    ...MICRO_LABEL,
+    marginBottom: '0.4rem'
+  },
+  summaryValue: {
+    fontSize: '1.05rem',
     fontWeight: 600,
-    fontSize: '0.95rem',
+    color: BRAND.navy,
+    lineHeight: 1.2,
+    ...NUMERIC
+  },
+  // The headline figure of the whole report.
+  summaryValueLead: {
+    fontSize: '1.5rem',
+    fontWeight: 600,
+    color: BRAND.navy,
+    lineHeight: 1.15,
+    letterSpacing: '-0.01em',
+    ...NUMERIC
+  },
+  summaryHint: {
+    fontSize: '0.6rem',
+    color: BRAND.inkMuted,
+    marginTop: '0.35rem',
+    lineHeight: 1.4
+  },
+
+  // ── Holdings groups ───────────────────────────────────────────────────────
+  groupHeader: {
+    background: BRAND.navy,
+    color: BRAND.paper,
+    padding: '0.6rem 0.85rem',
+    fontWeight: 600,
+    fontSize: '0.72rem',
     textTransform: 'uppercase',
-    letterSpacing: '0.5px'
+    letterSpacing: '0.1em'
   },
   subGroupHeader: {
-    background: 'rgba(16, 185, 129, 0.08)',
-    padding: '0.5rem 1rem',
-    paddingLeft: '1.5rem',
-    borderLeft: '3px solid rgba(16, 185, 129, 0.5)',
-    borderBottom: '1px solid #e5e7eb',
+    background: BRAND.warmWhite,
+    padding: '0.45rem 0.85rem',
+    borderLeft: `2px solid ${BRAND.gold}`,
+    borderBottom: `1px solid ${BRAND.ruleLight}`,
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center'
   },
+
+  // ── Tables ────────────────────────────────────────────────────────────────
   table: {
     width: '100%',
     borderCollapse: 'collapse',
-    fontSize: '0.85rem',
-    boxShadow: '0 1px 3px rgba(30, 58, 95, 0.1)'
+    fontSize: '0.72rem',
+    ...NUMERIC
   },
   th: {
-    background: '#f3f4f6',
-    padding: '0.5rem 0.6rem',
+    background: BRAND.navy,
+    padding: '0.5rem 0.55rem',
     textAlign: 'left',
     fontWeight: 600,
-    color: '#374151',
-    borderBottom: '2px solid #e5e7eb',
-    fontSize: '0.72rem',
+    color: BRAND.paper,
+    fontSize: '0.58rem',
     textTransform: 'uppercase',
-    letterSpacing: '0.4px',
-    verticalAlign: 'bottom'
+    letterSpacing: '0.09em',
+    verticalAlign: 'bottom',
+    lineHeight: 1.3
   },
-  // Unit / basis of the column, so no figure in the table is ambiguous about what it measures.
+  // Unit / basis of the column, so no figure in the table is ambiguous about
+  // what it measures. Gold rather than white so it reads as secondary on navy.
   thHint: {
     fontWeight: 400,
-    fontSize: '0.62rem',
+    fontSize: '0.54rem',
     textTransform: 'none',
     letterSpacing: 0,
-    color: '#64748b',
-    marginTop: '0.15rem'
+    color: BRAND.gold,
+    marginTop: '0.1rem'
   },
   td: {
-    padding: '0.45rem 0.6rem',
-    borderBottom: '1px solid #e5e7eb',
-    color: '#1e293b',
-    background: 'white'
+    padding: '0.42rem 0.55rem',
+    borderBottom: `1px solid ${BRAND.ruleLight}`,
+    color: BRAND.ink,
+    background: 'transparent'
   },
   subtotalRow: {
-    background: '#f1f5f9',
-    borderTop: '2px solid #cbd5e1'
+    background: BRAND.warmWhite,
+    borderTop: `1.5px solid ${BRAND.amber}`,
+    fontWeight: 600
   },
+
+  // ── Footer ────────────────────────────────────────────────────────────────
   footer: {
     marginTop: '2rem',
-    paddingTop: '1rem',
-    borderTop: '2px solid #1e3a5f',
-    textAlign: 'center',
-    color: '#475569',
-    fontSize: '0.85rem',
-    background: 'linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%)',
-    padding: '1rem',
-    marginLeft: '-2rem',
-    marginRight: '-2rem',
-    marginBottom: '-2rem',
-    paddingLeft: '2rem',
-    paddingRight: '2rem'
+    paddingTop: '0.8rem',
+    borderTop: `1px solid ${BRAND.rule}`,
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: '2.5rem',
+    fontSize: '0.62rem',
+    color: BRAND.inkMuted,
+    lineHeight: 1.55
+  },
+  footerBrand: {
+    fontWeight: 600,
+    color: BRAND.navy,
+    letterSpacing: '0.02em'
   }
 };
 

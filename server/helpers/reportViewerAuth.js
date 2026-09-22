@@ -1,5 +1,6 @@
 import { SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
+import { findUserByPdfAccessToken } from './pdfAccessTokens.js';
 
 /**
  * Authorises a viewer of product-level data (evaluation reports, chart data,
@@ -23,14 +24,10 @@ export async function isAuthorizedReportViewer(sessionId) {
   if (sessionId.startsWith(PDF_PREFIX)) {
     const pdfToken = sessionId.slice(PDF_PREFIX.length);
     if (!pdfToken) return false;
-    const user = await UsersCollection.findOneAsync(
-      { 'services.pdfAccess.token': pdfToken },
-      { fields: { 'services.pdfAccess.expiresAt': 1 } }
-    );
-    if (!user) return false;
-    const expiresAt = user.services?.pdfAccess?.expiresAt;
-    if (expiresAt && new Date(expiresAt) < new Date()) return false;
-    return true;
+    // Either token shape, expiry enforced in the selector — see
+    // server/helpers/pdfAccessTokens.js.
+    const user = await findUserByPdfAccessToken(null, pdfToken, { fields: { _id: 1 } });
+    return !!user;
   }
 
   // Normal path: a real, active, unexpired session (hashed lookup).

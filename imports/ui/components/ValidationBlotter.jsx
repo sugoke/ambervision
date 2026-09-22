@@ -9,6 +9,7 @@ import { useIsMobile } from '../hooks/useIsMobile.js';
 import { useProductTitles, withProductTitle } from '../hooks/useProductTitles.js';
 import { useOrderEmailDelivery } from '../hooks/useOrderEmailDelivery.js';
 import TracePreview from './TracePreview.jsx';
+import MailPickerModal from './MailPickerModal.jsx';
 import BulkValidationPanel from './BulkValidationPanel.jsx';
 
 /**
@@ -19,8 +20,9 @@ import BulkValidationPanel from './BulkValidationPanel.jsx';
  */
 const ValidationBlotter = ({ user, onOrderUpdate }) => {
   const isMobile = useIsMobile();
-  // Desktop gets the .eml draft; phones save the PDF and open a prefilled Outlook draft (see the hook).
-  const { deliverOrderEmail, orderEmailSheet } = useOrderEmailDelivery();
+  // With a mailbox connected the mail is sent from the app on any device; without
+  // one, desktop gets the .eml draft and phones the Outlook hand-off (see the hook).
+  const { deliverOrderEmail, orderEmailSheet, orderSendPreview, graphConnected } = useOrderEmailDelivery();
 
   /**
    * Sizing for the Validate / Reject / Request Modification buttons. On mobile they
@@ -76,6 +78,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
   // Validator attestation: required when no CLIENT_ORDER trace is attached at review time
   const [emailCompared, setEmailCompared] = useState(false);
   const [uploadingTrace, setUploadingTrace] = useState(false);
+  const [mailPicker, setMailPicker] = useState(null); // { orderId, traceType } — Outlook picker
   const [parsedEmails, setParsedEmails] = useState({});
   // Signed download URLs for order-trace files, keyed by storedFileName. The
   // /order_traces endpoint requires a capability token; these are minted when
@@ -549,7 +552,9 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
       // as a prefilled Outlook draft (Tip: right-click the download in Chrome → "Always open
       // files of this type"); phones cannot open .eml drafts, so they get the Outlook deep link.
       if (result.pdfData && result.emailData) {
-        if (!result.emailData.to) {
+        // With a connected mailbox the preview modal surfaces a missing
+        // recipient inline and lets it be typed, so the alert would be noise.
+        if (!result.emailData.to && !graphConnected) {
           alert(`No desk email is configured at ${result.emailData.bankName || 'this bank'} for ${order.assetTypeLabel || result.emailData.assetType || 'this asset type'} orders. The draft will open with an empty recipient — add the address in Bank Management.`);
         }
         deliverOrderEmail({
@@ -557,7 +562,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
           emailData: result.emailData,
           pdfData: result.pdfData,
           termsheet: result.termsheet
-        });
+        }, { orderId: order._id });
       }
       onOrderUpdate?.();
     } catch (err) {
@@ -777,6 +782,21 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
   return (
     <>
       {orderEmailSheet}
+      {orderSendPreview}
+      <MailPickerModal
+        open={Boolean(mailPicker)}
+        orderId={mailPicker?.orderId}
+        traceType={mailPicker?.traceType}
+        // Mails we sent are in Sent Items, not the inbox.
+        defaultFolder={
+          mailPicker?.traceType === EMAIL_TRACE_TYPES.ORDER_TO_BANK
+            || mailPicker?.traceType === EMAIL_TRACE_TYPES.ORDER_TO_ISSUER
+            ? 'sentitems'
+            : 'inbox'
+        }
+        onClose={() => setMailPicker(null)}
+        onAttached={() => { setMailPicker(null); onOrderUpdate?.(); }}
+      />
       <div style={styles.container}>
         <div style={styles.header}>
           <div style={styles.headerLeft}>
@@ -825,7 +845,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                     </div>
                   </div>
                   <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                    <span style={{ textTransform: 'uppercase', color: group.first.orderType === 'buy' ? 'var(--gain-color)' : 'var(--loss-color)' }}>{group.first.orderType}</span> {group.first.securityName}
+                    <span style={{ textTransform: 'uppercase', color: group.first.orderType === 'buy' ? 'var(--gain-color)' : 'var(--loss-color)' }}>{OrderFormatters.orderDirectionLabel(group.first)}</span> {group.first.securityName}
                   </div>
                   <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px' }}>
                     Total {group.totalQuantity.toLocaleString()}{group.first.quantityUnitLabel ? ` ${group.first.quantityUnitLabel}` : ''} · {group.first.createdByName}{own ? ' (you)' : ''} · {group.first.createdAtFormatted}
@@ -892,7 +912,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                       padding: '2px 6px', borderRadius: '4px',
                       background: order.orderType === 'buy' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)'
                     }}>
-                      {order.assetType === ASSET_TYPES.FX ? (order.fxDirectionFormatted || order.orderType) : order.orderType}
+                      {OrderFormatters.orderDirectionLabel(order)}
                     </span>
                     <span style={{ fontWeight: '600', fontSize: '14px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {order.securityName}
@@ -1027,7 +1047,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                                 padding: '2px 6px', borderRadius: '4px',
                                 background: f.orderType === 'buy' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)'
                               }}>
-                                {f.assetType === ASSET_TYPES.FX ? (f.fxDirectionFormatted || f.orderType) : f.orderType}
+                                {OrderFormatters.orderDirectionLabel(f)}
                               </span>
                             </td>
                             <td style={cell}>
@@ -1137,7 +1157,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                         padding: '2px 6px', borderRadius: '4px',
                         background: order.orderType === 'buy' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)'
                       }}>
-                        {order.assetType === ASSET_TYPES.FX ? (order.fxDirectionFormatted || order.orderType) : order.orderType}
+                        {OrderFormatters.orderDirectionLabel(order)}
                       </span>
                     </td>
                     <td style={styles.td}>
@@ -1211,7 +1231,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                     padding: '3px 10px', borderRadius: '4px',
                     background: reviewOrder.orderType === 'buy' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'
                   }}>
-                    {reviewOrder.assetType === ASSET_TYPES.FX ? (reviewOrder.fxDirectionFormatted || reviewOrder.orderType) : reviewOrder.orderType}
+                    {OrderFormatters.orderDirectionLabel(reviewOrder)}
                   </span>
                   <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
                     {reviewOrder.securityName}
@@ -1822,6 +1842,19 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                                 <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Not attached</div>
                               )}
                             </div>
+                            {!trace && graphConnected && (
+                              <button
+                                style={{
+                                  padding: '4px 10px', borderRadius: '4px', border: '1px solid var(--border-color)',
+                                  background: 'transparent', color: 'var(--text-secondary)', fontSize: '11px',
+                                  fontWeight: '600', cursor: uploadingTrace ? 'wait' : 'pointer', whiteSpace: 'nowrap'
+                                }}
+                                onClick={() => setMailPicker({ orderId: reviewOrder._id, traceType: type })}
+                                disabled={uploadingTrace}
+                              >
+                                Outlook
+                              </button>
+                            )}
                             {!trace && (
                               <button
                                 style={{

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import LiquidGlassCard from './components/LiquidGlassCard.jsx';
@@ -15,6 +15,8 @@ import { UsersCollection } from '/imports/api/users';
 import FormattedNumberInput from './components/FormattedNumberInput.jsx';
 import { useIsMobile } from './hooks/useIsMobile.js';
 import { useOrderEmailDelivery } from './hooks/useOrderEmailDelivery.js';
+import { useGraphConnection } from './hooks/useGraphConnection.js';
+import MailPickerModal from './components/MailPickerModal.jsx';
 
 /**
  * OrderBook - Main component for managing orders
@@ -152,8 +154,17 @@ const OrderBook = ({ user }) => {
   const { theme } = useTheme();
   const isMobile = useIsMobile();
   const getSessionId = () => localStorage.getItem('sessionId');
-  // Desktop gets the .eml draft; phones save the PDF and open a prefilled Outlook draft (see the hook).
-  const { deliverOrderEmail, orderEmailSheet } = useOrderEmailDelivery();
+  // With a mailbox connected the mail is sent from the app on any device; without
+  // one, desktop gets the .eml draft and phones the Outlook hand-off (see the hook).
+  const { deliverOrderEmail, orderEmailSheet, orderSendPreview, graphConnected } = useOrderEmailDelivery();
+  // Outlook picker: augments the drop zones, never replaces them. When no
+  // mailbox is connected the button is simply absent and drag-and-drop stands.
+  const graphConnection = useGraphConnection();
+  const [mailPicker, setMailPicker] = useState(null); // { orderId, traceType, fixedMessages?, heading?, emptyText? }
+  const [checkingReplies, setCheckingReplies] = useState(false);
+  // Picker in FILE mode, for the two zones that hold a File rather than writing
+  // straight to the order: the limit-change instruction and termsheet evidence.
+  const [filePicker, setFilePicker] = useState(null);
 
   // State
   const [orders, setOrders] = useState([]);
@@ -172,6 +183,9 @@ const OrderBook = ({ user }) => {
   // Health-check filter chosen from the summary bar: null (off),
   // HEALTH_FILTER_ANY (every incomplete order) or one missing-item name.
   const [healthFilter, setHealthFilter] = useState(null);
+  // Completeness counts for the whole filtered book, from orders.list — NOT
+  // derived from the loaded page, which only ever holds `pageSize` rows.
+  const [healthStats, setHealthStats] = useState(null);
   const [validators, setValidators] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [dateFrom, setDateFrom] = useState('');
@@ -419,6 +433,9 @@ const OrderBook = ({ user }) => {
       });
       setOrders(loadedOrders);
       setTotalOrders(result.total || 0);
+      // Whole-set completeness counts (the server computes them ignoring the
+      // health filter, so the banner does not move when its chips are clicked).
+      setHealthStats(result.healthStats || null);
 
       // Batch check booking status for all non-cancelled orders (including executed)
       const checkableIds = loadedOrders
@@ -574,6 +591,29 @@ const OrderBook = ({ user }) => {
     }
   };
 
+  /**
+   * The mail that went to the bank is already in the sender's Sent Items, so
+   * the "order to bank" trace does not need anyone to drag it back in: ask the
+   * server to find and file it. Silent by design — nothing found is the normal
+   * case for an order that was never mailed, and the drop zone stays as it was.
+   */
+  const autoAttachOrderToBank = useCallback(async (orderId) => {
+    if (!graphConnected || !orderId) return;
+    try {
+      const result = await Meteor.callAsync('orders.autoAttachOrderToBank', {
+        orderId,
+        sessionId: getSessionId()
+      });
+      if (result?.attached) {
+        const refreshed = await Meteor.callAsync('orders.get', { orderId, sessionId: getSessionId() });
+        setSelectedOrder(refreshed);
+        loadOrders();
+      }
+    } catch (err) {
+      console.warn('[OrderBook] Auto-attach of the bank mail failed:', err.reason || err.message);
+    }
+  }, [graphConnected]);
+
   const handleViewDetails = async (order) => {
     try {
       const sessionId = getSessionId();
@@ -581,6 +621,11 @@ const OrderBook = ({ user }) => {
       setSelectedOrder(result);
       setTraceError(null);
       setDetailModalOpen(true);
+
+      // No order-to-bank trace on file: try to pull the sent mail in by itself.
+      const hasOrderToBank = (result?.order?.emailTraces || [])
+        .some(t => t.traceType === EMAIL_TRACE_TYPES.ORDER_TO_BANK);
+      if (!hasOrderToBank) autoAttachOrderToBank(order._id);
 
       // Fetch booking status for this order if not already loaded
       if (!bookingResults[order._id] && order.status !== ORDER_STATUSES.CANCELLED) {
@@ -717,6 +762,38 @@ const OrderBook = ({ user }) => {
     }
   };
 
+  /**
+   * Pull the bank's replies to this order's thread and hand them to the picker
+   * for the user to confirm. Nothing is attached automatically: a bank
+   * confirmation advances the order to EXECUTED, and a reply is as often a
+   * question as a confirmation.
+   */
+  const handleCheckReplies = async (order) => {
+    setCheckingReplies(true);
+    setTraceError(null);
+    try {
+      const result = await Meteor.callAsync('orders.checkGraphReplies', {
+        orderId: order._id,
+        sessionId: localStorage.getItem('sessionId')
+      });
+      if (!result.replies?.length) {
+        setTraceError('No reply from the bank has arrived in this thread yet.');
+        return;
+      }
+      setMailPicker({
+        orderId: order._id,
+        traceType: EMAIL_TRACE_TYPES.BANK_CONFIRMATION,
+        fixedMessages: result.replies,
+        heading: `Replies on ${order.orderReference}`,
+        emptyText: 'No reply from the bank has arrived in this thread yet.'
+      });
+    } catch (err) {
+      setTraceError(err.reason || err.message || 'Could not check for replies');
+    } finally {
+      setCheckingReplies(false);
+    }
+  };
+
   const handleSendEmail = async (order) => {
     setLoadingEmail(order._id);
     try {
@@ -728,7 +805,9 @@ const OrderBook = ({ user }) => {
       // Desktop: .eml with PDF (and termsheet if present) attached, opens as a prefilled Outlook draft.
       // Phone: PDF saved to Files + Outlook compose deep link, since iOS cannot open a .eml as a draft.
       if (result.success && result.pdfData && result.emailData) {
-        if (!result.emailData.to) {
+        // With a connected mailbox the preview modal surfaces the missing
+        // recipient inline and lets it be typed, so the alert would be noise.
+        if (!result.emailData.to && !graphConnected) {
           alert(`No desk email is configured at ${result.emailData.bankName || 'this bank'} for ${order.assetTypeLabel || result.emailData.assetType || 'this asset type'} orders. The draft will open with an empty recipient — add the address in Bank Management.`);
         }
         deliverOrderEmail({
@@ -736,7 +815,7 @@ const OrderBook = ({ user }) => {
           emailData: result.emailData,
           pdfData: result.pdfData,
           termsheet: result.termsheet
-        });
+        }, { orderId: order._id });
       }
     } catch (err) {
       console.error('Error preparing email:', err);
@@ -1526,7 +1605,7 @@ const OrderBook = ({ user }) => {
 
         {/* Side + security */}
         <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', marginBottom: '2px' }}>
-          <span style={styles.orderTypeBadge(order.orderType)}>{order.orderType}</span>
+          <span style={styles.orderTypeBadge(order.orderType)}>{OrderFormatters.orderDirectionLabel(order)}</span>
           <span style={{
             fontWeight: '600',
             fontSize: '14px',
@@ -1614,6 +1693,62 @@ const OrderBook = ({ user }) => {
   return (
     <div style={styles.container}>
       {orderEmailSheet}
+      {orderSendPreview}
+      <MailPickerModal
+        open={Boolean(mailPicker)}
+        orderId={mailPicker?.orderId}
+        traceType={mailPicker?.traceType}
+        fixedMessages={mailPicker?.fixedMessages || null}
+        heading={mailPicker?.heading || 'Attach from Outlook'}
+        emptyText={mailPicker?.emptyText || 'No messages match these filters.'}
+        // Opening pre-filtered to the counterparty is the single biggest win:
+        // the desk's mail is usually the one being looked for.
+        defaultFromFilter={
+          mailPicker?.traceType === EMAIL_TRACE_TYPES.BANK_CONFIRMATION
+            ? (selectedOrder?.order?.sentTo || '')
+            : ''
+        }
+        // The order to the bank and the order from the client sit in opposite
+        // folders: one we sent, one we received.
+        defaultFolder={
+          mailPicker?.traceType === EMAIL_TRACE_TYPES.ORDER_TO_BANK
+            || mailPicker?.traceType === EMAIL_TRACE_TYPES.ORDER_TO_ISSUER
+            ? 'sentitems'
+            : 'inbox'
+        }
+        onClose={() => setMailPicker(null)}
+        onAttached={async () => {
+          setMailPicker(null);
+          setTraceError(null);
+          // The detail modal holds a one-shot copy of the order, so the tile
+          // stayed empty until it was closed and reopened. Re-read it — the
+          // same refresh the drag-and-drop upload path already does, since a
+          // trace can also advance the order's status.
+          const orderId = mailPicker?.orderId || selectedOrder?.order?._id;
+          if (!orderId) return;
+          try {
+            const refreshed = await Meteor.callAsync('orders.get', { orderId, sessionId: getSessionId() });
+            setSelectedOrder(refreshed);
+            loadOrders();
+          } catch (err) {
+            console.error('Error refreshing order after attaching from Outlook:', err);
+          }
+        }}
+      />
+      <MailPickerModal
+        open={Boolean(filePicker)}
+        heading="Pick from Outlook"
+        onClose={() => setFilePicker(null)}
+        onPickFile={(file) => {
+          if (filePicker === 'limitInstruction') {
+            setLimitInstructionFile(file);
+            setActionError(null);
+          } else if (filePicker?.kind === 'signedTermsheet') {
+            handleSignedTermsheetUpload(file, filePicker.orderId);
+          }
+          setFilePicker(null);
+        }}
+      />
       <LiquidGlassCard>
         <div style={{ padding: '1.5rem' }}>
           {/* Header */}
@@ -1800,25 +1935,32 @@ const OrderBook = ({ user }) => {
               setHealthFilter(prev => (prev === value ? null : value));
               setCurrentPage(1);
             };
-            const healthStats = displayOrders.reduce((acc, o) => {
+            // Server counts cover the whole filtered book; the page-derived
+            // fallback only matters if an older server answers without them.
+            const stats = healthStats || displayOrders.reduce((acc, o) => {
               const h = getOrderHealthCheck(o);
               if (h.max > 0 && h.score < h.max) {
                 acc.incomplete++;
                 h.missing.forEach(m => { acc.missingCounts[m] = (acc.missingCounts[m] || 0) + 1; });
               }
               if (h.max > 0 && h.score === h.max) acc.complete++;
-              acc.total++;
               return acc;
-            }, { incomplete: 0, complete: 0, total: 0, missingCounts: {} });
+            }, { incomplete: 0, complete: 0, missingCounts: {} });
 
-            const topMissing = Object.entries(healthStats.missingCounts)
+            const missingCounts = stats.missingCounts || {};
+            const topMissing = Object.entries(missingCounts)
               .sort((a, b) => b[1] - a[1])
               .slice(0, 5);
+            // The active chip always stays on screen, even when it falls out of
+            // the top five — it is how you switch the filter back off.
+            if (healthFilter && healthFilter !== HEALTH_FILTER_ANY && !topMissing.some(([name]) => name === healthFilter)) {
+              topMissing.push([healthFilter, missingCounts[healthFilter] || 0]);
+            }
 
             // With a filter on, every row shown is incomplete by construction, so
             // the bar stays in its warning colour even when the page is empty.
-            const isAllGood = healthStats.incomplete === 0 && !healthFilter;
-            const trackable = healthStats.complete + healthStats.incomplete;
+            const isAllGood = stats.incomplete === 0 && !healthFilter;
+            const trackable = stats.complete + stats.incomplete;
             const barColor = isAllGood ? 'var(--gain-color)' : 'var(--warning-color)';
             const chipStyle = (active) => ({
               padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600',
@@ -1843,7 +1985,7 @@ const OrderBook = ({ user }) => {
                   padding: '2px 8px', borderRadius: '10px',
                   background: `color-mix(in srgb, ${barColor} 25%, transparent)`, flexShrink: 0
                 }}>
-                  {healthStats.complete}/{trackable}
+                  {stats.complete}/{trackable}
                 </span>
                 {isAllGood ? (
                   <span style={{ fontWeight: '600', color: barColor, fontSize: '12px' }}>All orders complete</span>
@@ -1859,9 +2001,9 @@ const OrderBook = ({ user }) => {
                       border: healthFilter === HEALTH_FILTER_ANY ? `1px solid ${barColor}` : '1px solid transparent'
                     }}
                   >
-                    {healthFilter && healthFilter !== HEALTH_FILTER_ANY && healthStats.incomplete === 0
+                    {healthFilter && healthFilter !== HEALTH_FILTER_ANY && !missingCounts[healthFilter]
                       ? `No orders missing "${healthFilter}"`
-                      : `${healthStats.incomplete} order${healthStats.incomplete !== 1 ? 's' : ''} missing items`}
+                      : `${stats.incomplete} order${stats.incomplete !== 1 ? 's' : ''} missing items`}
                   </button>
                 )}
                 {topMissing.map(([name, count]) => {
@@ -2076,7 +2218,7 @@ const OrderBook = ({ user }) => {
                         </td>
                         <td style={styles.td}>
                           <span style={styles.orderTypeBadge(order.orderType)}>
-                            {order.orderType}
+                            {OrderFormatters.orderDirectionLabel(order)}
                           </span>
                         </td>
                         <td style={styles.td}>
@@ -2343,7 +2485,7 @@ const OrderBook = ({ user }) => {
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px' }}>
               <span style={styles.orderTypeBadge(selectedOrder.order.orderType)}>
-                {selectedOrder.order.orderType?.toUpperCase()}
+                {OrderFormatters.orderDirectionLabel(selectedOrder.order)}
               </span>
               <span style={styles.statusBadge(selectedOrder.order.status)}>
                 {selectedOrder.order.statusLabel}
@@ -3008,15 +3150,21 @@ const OrderBook = ({ user }) => {
                 surface traces captured before it died (read-only), but hide the section
                 entirely when there are none. */}
             {(() => {
-            // Trace management (drag & drop uploads, phone logs) is desktop-only.
-            if (isMobile) return null;
+            // Traces show on every device. This section used to be desktop-only
+            // because it is built around drag and drop — but what a phone mostly
+            // needs is to SEE the evidence on file, download it, and attach from
+            // Outlook, all of which work fine on touch. Only the drop zone is
+            // meaningless there, so it is worded as a tap instead.
             const isTerminal = isTerminalOrderStatus(selectedOrder.order.status);
             const existingTraces = selectedOrder.order.emailTraces || [];
             if (isTerminal && existingTraces.length === 0) return null;
             return (
             <div style={styles.detailSection}>
               <div style={styles.detailTitle}>Traces</div>
-              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              {/* Side by side on a desktop, one per row on a phone: three
+                  200px-minimum tiles on a 390px screen would each be a column
+                  of broken words. */}
+              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', flexDirection: isMobile ? 'column' : 'row' }}>
                 {Object.values(EMAIL_TRACE_TYPES)
                   .filter(traceType => {
                     const isStructuredProduct = selectedOrder.order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT;
@@ -3051,8 +3199,8 @@ const OrderBook = ({ user }) => {
                     <div
                       key={traceType}
                       style={{
-                        flex: '1 1 0',
-                        minWidth: '200px',
+                        flex: isMobile ? '0 0 auto' : '1 1 0',
+                        minWidth: isMobile ? 0 : '200px',
                         border: trace ? '2px solid var(--gain-color)' : '2px dashed var(--border-color)',
                         borderRadius: '8px',
                         padding: '12px',
@@ -3120,7 +3268,7 @@ const OrderBook = ({ user }) => {
                             )}
                             <div style={{ display: 'flex', gap: '4px', justifyContent: 'center' }}>
                               <button
-                                style={{ padding: '3px 8px', fontSize: '10px', border: '1px solid var(--loss-color)', borderRadius: '4px', background: 'transparent', color: 'var(--loss-color)', cursor: 'pointer' }}
+                                style={{ padding: isMobile ? '8px 14px' : '3px 8px', fontSize: isMobile ? '13px' : '10px', border: '1px solid var(--loss-color)', borderRadius: '4px', background: 'transparent', color: 'var(--loss-color)', cursor: 'pointer' }}
                                 onClick={(e) => { e.stopPropagation(); handleDeleteTrace(selectedOrder.order._id, trace._id); }}
                               >
                                 Remove
@@ -3144,13 +3292,13 @@ const OrderBook = ({ user }) => {
                             )}
                             <div style={{ display: 'flex', gap: '4px', justifyContent: 'center' }}>
                               <button
-                                style={{ padding: '3px 8px', fontSize: '10px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-secondary)', cursor: 'pointer' }}
+                                style={{ padding: isMobile ? '8px 14px' : '3px 8px', fontSize: isMobile ? '13px' : '10px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-secondary)', cursor: 'pointer' }}
                                 onClick={(e) => { e.stopPropagation(); handleDownloadTrace(selectedOrder.order._id, trace._id, trace.fileName); }}
                               >
                                 Download
                               </button>
                               <button
-                                style={{ padding: '3px 8px', fontSize: '10px', border: '1px solid var(--loss-color)', borderRadius: '4px', background: 'transparent', color: 'var(--loss-color)', cursor: 'pointer' }}
+                                style={{ padding: isMobile ? '8px 14px' : '3px 8px', fontSize: isMobile ? '13px' : '10px', border: '1px solid var(--loss-color)', borderRadius: '4px', background: 'transparent', color: 'var(--loss-color)', cursor: 'pointer' }}
                                 onClick={(e) => { e.stopPropagation(); handleDeleteTrace(selectedOrder.order._id, trace._id); }}
                               >
                                 Remove
@@ -3224,31 +3372,59 @@ const OrderBook = ({ user }) => {
                             <div>
                               <div style={{ fontSize: '22px', marginBottom: '4px', opacity: 0.3 }}>&#128233;</div>
                               <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '6px' }}>
-                                {isTermsheetTile ? 'Drop the signed termsheet here — sets TS status to Signed' : 'Drop file here'}
+                                {isMobile
+                                  ? (isTermsheetTile ? 'Attach the signed termsheet — sets TS status to Signed' : 'Nothing on file yet')
+                                  : (isTermsheetTile ? 'Drop the signed termsheet here — sets TS status to Signed' : 'Drop file here')}
                               </div>
-                              <label style={{
-                                padding: '4px 14px', fontSize: '11px', fontWeight: '500',
-                                border: '1px solid #0ea5e9', borderRadius: '4px',
-                                background: 'rgba(14, 165, 233, 0.1)', color: '#0ea5e9',
-                                cursor: 'pointer', display: 'inline-block'
-                              }}>
-                                Browse
-                                <input
-                                  type="file"
-                                  accept={isTermsheetTile ? TERMSHEET_EVIDENCE_TYPES.join(',') : ".msg,.eml,.pdf,.jpg,.jpeg,.png,.gif,.html"}
-                                  style={{ display: 'none' }}
-                                  onChange={(e) => {
-                                    if (e.target.files && e.target.files.length > 0) {
-                                      if (isTermsheetTile) {
-                                        handleSignedTermsheetUpload(e.target.files[0], selectedOrder.order._id);
-                                      } else {
-                                        handleTraceFile(e.target.files[0], traceType, selectedOrder.order._id);
+                              <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', flexWrap: 'wrap' }}>
+                                <label style={{
+                                  padding: isMobile ? '9px 18px' : '4px 14px', fontSize: isMobile ? '13px' : '11px', fontWeight: '500',
+                                  border: '1px solid #0ea5e9', borderRadius: '4px',
+                                  background: 'rgba(14, 165, 233, 0.1)', color: '#0ea5e9',
+                                  cursor: 'pointer', display: 'inline-block'
+                                }}>
+                                  Browse
+                                  <input
+                                    type="file"
+                                    accept={isTermsheetTile ? TERMSHEET_EVIDENCE_TYPES.join(',') : ".msg,.eml,.pdf,.jpg,.jpeg,.png,.gif,.html"}
+                                    style={{ display: 'none' }}
+                                    onChange={(e) => {
+                                      if (e.target.files && e.target.files.length > 0) {
+                                        if (isTermsheetTile) {
+                                          handleSignedTermsheetUpload(e.target.files[0], selectedOrder.order._id);
+                                        } else {
+                                          handleTraceFile(e.target.files[0], traceType, selectedOrder.order._id);
+                                        }
+                                        e.target.value = '';
                                       }
-                                      e.target.value = '';
-                                    }
-                                  }}
-                                />
-                              </label>
+                                    }}
+                                  />
+                                </label>
+                                {graphConnection.connected && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      // Termsheet evidence goes through its own
+                                      // status-advancing method, which takes a File —
+                                      // so the picker runs in file mode there and in
+                                      // attach-to-order mode for the mail traces.
+                                      if (isTermsheetTile) {
+                                        setFilePicker({ kind: 'signedTermsheet', orderId: selectedOrder.order._id });
+                                      } else {
+                                        setMailPicker({ orderId: selectedOrder.order._id, traceType });
+                                      }
+                                    }}
+                                    style={{
+                                      padding: isMobile ? '9px 18px' : '4px 14px', fontSize: isMobile ? '13px' : '11px', fontWeight: '500',
+                                      border: '1px solid var(--border-color)', borderRadius: '4px',
+                                      background: 'transparent', color: 'var(--text-secondary)',
+                                      cursor: 'pointer'
+                                    }}
+                                  >
+                                    From Outlook
+                                  </button>
+                                )}
+                              </div>
                             </div>
                           )}
                         </div>
@@ -3257,6 +3433,28 @@ const OrderBook = ({ user }) => {
                   );
                 })}
               </div>
+              {/* Only the mailbox that sent the order can see its thread —
+                  conversationId is mailbox-scoped. */}
+              {graphConnected && selectedOrder?.order?.graphSend?.conversationId && (
+                <div style={{ marginTop: '10px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    disabled={checkingReplies}
+                    onClick={() => handleCheckReplies(selectedOrder.order)}
+                    style={{
+                      padding: '5px 14px', fontSize: '11px', fontWeight: 500,
+                      border: '1px solid var(--border-color)', borderRadius: '4px',
+                      background: 'transparent', color: 'var(--text-secondary)',
+                      cursor: checkingReplies ? 'wait' : 'pointer'
+                    }}
+                  >
+                    {checkingReplies ? 'Checking…' : 'Check for bank reply'}
+                  </button>
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                    Searches the thread this order was sent in.
+                  </span>
+                </div>
+              )}
               {traceError && (
                 <div style={{ marginTop: '8px', padding: '8px 12px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: 'var(--loss-color)', fontSize: '12px' }}>
                   {traceError}
@@ -3569,7 +3767,7 @@ const OrderBook = ({ user }) => {
             <div style={{ padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', marginBottom: '16px' }}>
               <div style={{ fontWeight: '600', fontFamily: 'monospace' }}>{selectedOrder.order.orderReference}</div>
               <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                {selectedOrder.order.orderType?.toUpperCase()} - {selectedOrder.order.securityName}
+                {OrderFormatters.orderDirectionLabel(selectedOrder.order)} - {selectedOrder.order.securityName}
               </div>
             </div>
           )}
@@ -3626,7 +3824,7 @@ const OrderBook = ({ user }) => {
             <div style={{ padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', marginBottom: '16px' }}>
               <div style={{ fontWeight: '600', fontFamily: 'monospace' }}>{selectedOrder.order.orderReference}</div>
               <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                {selectedOrder.order.orderType?.toUpperCase()} - {selectedOrder.order.securityName}
+                {OrderFormatters.orderDirectionLabel(selectedOrder.order)} - {selectedOrder.order.securityName}
               </div>
             </div>
           )}
@@ -3849,6 +4047,19 @@ const OrderBook = ({ user }) => {
                     <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                       .pdf, .jpg, .png, .eml, .msg, .html
                     </div>
+                    {graphConnected && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setFilePicker('limitInstruction'); }}
+                        style={{
+                          marginTop: '8px', padding: '4px 14px', fontSize: '11px', fontWeight: 500,
+                          border: '1px solid #0ea5e9', borderRadius: '4px',
+                          background: 'rgba(14, 165, 233, 0.1)', color: '#0ea5e9', cursor: 'pointer'
+                        }}
+                      >
+                        Pick from Outlook
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

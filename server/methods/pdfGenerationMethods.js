@@ -6,6 +6,9 @@ import fs from 'fs';
 import path from 'path';
 import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
+import { storePdfExport, sweepPdfExports } from '../pdfExportStore.js';
+import { issueDocumentToken } from '../documentAccess.js';
+import { issuePdfAccessToken, revokePdfAccessToken } from '../helpers/pdfAccessTokens.js';
 
 /**
  * PDF Generation Methods
@@ -13,6 +16,15 @@ import { UsersCollection } from '../../imports/api/users.js';
  * Server-side methods for generating high-quality PDFs from HTML content
  * using Puppeteer for accurate rendering and proper page breaks.
  */
+
+/**
+ * How long Chrome may take to lay out and print the document. Puppeteer's
+ * default is 30 seconds, which the consolidated PMS report — every client, 500+
+ * holdings, 2,400+ operations — blows through: it failed with "Timed out after
+ * waiting 30000ms" and nothing reached the browser. Generation is a background
+ * job behind a spinner, so waiting is cheaper than failing.
+ */
+const PDF_RENDER_TIMEOUT_MS = 4 * 60 * 1000;
 
 /**
  * Validate session and return user info
@@ -221,7 +233,9 @@ Meteor.methods({
    * @param {String} params.sessionId - Session ID for authentication
    * @param {String} params.lang - Language code for report (en/fr)
    * @param {Object} params.options - PDF generation options
-   * @returns {String} - Base64 encoded PDF data
+   * @returns {Object} - { downloadUrl, fileName, fileSize } — a short-lived,
+   *   token-gated URL the browser streams. The PDF is NOT returned inline:
+   *   see server/pdfExportStore.js for why that crashed the server.
    */
   async 'pdf.generateReport'({ reportId, reportType, sessionId, lang = 'en', options = {} }) {
     check(reportId, String);
@@ -230,28 +244,26 @@ Meteor.methods({
     check(lang, String);
     check(options, Object);
 
+    // Deliberately NOT unblocked: the Puppeteer page authenticates with a
+    // single `services.pdfAccess` token on the user document, so two
+    // generations running at once for one user would clobber each other's
+    // token. Meteor's per-connection method queue keeps them sequential.
+
     // Validate session
     const { user, userId } = await validateSession(sessionId);
 
     console.log('[PDF] Generating report PDF:', reportType, reportId, 'for user:', userId, 'language:', lang);
 
     let browser = null;
+    // Hoisted: the catch below revokes it, and only this call's own token.
+    let tempToken = null;
 
     try {
-      // Create a temporary access token for PDF generation (expires in 5 minutes)
-      const crypto = await import('crypto');
-      const tempToken = crypto.randomBytes(32).toString('hex');
-      const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
-
-      // Store temporary token in user document
-      await UsersCollection.updateAsync(userId, {
-        $set: {
-          'services.pdfAccess': {
-            token: tempToken,
-            expiresAt: expiresAt
-          }
-        }
-      });
+      // One token per generation, held in a list — see server/helpers/pdfAccessTokens.js.
+      // A single shared slot meant a retry's cleanup deleted the live run's
+      // token and its page failed to authenticate. The TTL covers the whole
+      // render, which for a consolidated PMS report runs into minutes.
+      ({ token: tempToken } = await issuePdfAccessToken(userId, PDF_RENDER_TIMEOUT_MS + 60 * 1000));
 
       console.log('[PDF] Temporary PDF access token created for user:', userId);
 
@@ -480,19 +492,67 @@ Meteor.methods({
       });
       console.log('[PDF] Injected white background styles');
 
+      // Never print a page that is still loading or has failed to authenticate.
+      // The report shell renders its own error state, which satisfies the
+      // "has report content" check — so a failed run came back as a perfectly
+      // valid PDF reading "Authentication failed: Invalid or expired token",
+      // which is worse than an error: it looks like a report.
+      const blocked = await page.evaluate(() => {
+        const text = document.body?.innerText || '';
+        if (/Authentication failed/i.test(text)) return 'authentication';
+        if (document.querySelector('#pdf-loading-state') && !document.body?.dataset?.pdfReady) return 'loading';
+        return null;
+      });
+      if (blocked === 'authentication') {
+        throw new Meteor.Error('pdf-auth-failed',
+          'The report page could not authenticate. Please try generating the report again.');
+      }
+      if (blocked === 'loading') {
+        throw new Meteor.Error('pdf-loading-timeout',
+          'The report was still loading when the PDF was due. Please try again.');
+      }
+
       // Generate PDF - try simple approach first
       // Use landscape mode for better table display
       // Determine if this report should be landscape
       // PMS reports need landscape for wide tables
       const useLandscape = reportType === 'pms' || reportType === 'portfolio-review';
 
+      // Running footer. The client-facing portfolio report carries the firm's
+      // confidentiality marking and page count on every sheet, per the brand
+      // guide's document footer; other report types keep the plain page count.
+      // Puppeteer renders this template in its own document, so it inherits no
+      // page styles and must carry its own font stack (web fonts are not
+      // available here, hence the system stack rather than Poppins).
+      const brandedFooter = `
+        <div style="width: 100%; font-family: Helvetica, Arial, sans-serif; font-size: 7.5px; color: #767C88; padding: 0 10mm;">
+          <div style="border-top: 0.5px solid #E8D5A3; padding-top: 4px; display: flex; justify-content: space-between; align-items: center;">
+            <span style="color: #1B2A4A; font-weight: 600;">Amberlake Partners SAM &middot; Confidential</span>
+            <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span>
+          </div>
+        </div>
+      `;
+      const plainFooter = `
+        <div style="width: 100%; font-size: 9px; padding: 5px 10mm; color: #666; text-align: center;">
+          <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span>
+        </div>
+      `;
+      const runningFooter = reportType === 'pms' ? brandedFooter : plainFooter;
+
       let pdfBuffer;
+      const renderStartedAt = Date.now();
       try {
         pdfBuffer = await page.pdf({
           format: 'A4',
           landscape: useLandscape,
           printBackground: true,
           preferCSSPageSize: false, // Ensure Puppeteer settings override CSS @page rules
+          // Puppeteer defaults to a 30s protocol timeout, which a consolidated
+          // PMS report (500+ holdings, 2,400+ operations, hundreds of pages)
+          // exceeds while Chrome is still laying out the print document — the
+          // report then failed with "Timed out after waiting 30000ms" and the
+          // desk saw nothing happen at all.
+          timeout: PDF_RENDER_TIMEOUT_MS,
           margin: {
             top: '15mm',
             right: '10mm',
@@ -503,11 +563,7 @@ Meteor.methods({
           headerTemplate: `
             <div style="width: 100%; height: 1px;"></div>
           `,
-          footerTemplate: `
-            <div style="width: 100%; font-size: 9px; padding: 5px 10mm; color: #666; text-align: center;">
-              <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span>
-            </div>
-          `
+          footerTemplate: runningFooter
         });
       } catch (pdfError) {
         console.error('[PDF] PDF generation with headers failed:', pdfError.message);
@@ -518,6 +574,7 @@ Meteor.methods({
           landscape: useLandscape,
           printBackground: true,
           preferCSSPageSize: false,
+          timeout: PDF_RENDER_TIMEOUT_MS,
           margin: {
             top: '10mm',
             right: '10mm',
@@ -530,14 +587,10 @@ Meteor.methods({
       await browser.close();
       browser = null;
 
-      // Clean up temporary token
-      await UsersCollection.updateAsync(userId, {
-        $unset: {
-          'services.pdfAccess': ''
-        }
-      });
+      // Clean up this run's token — never anyone else's.
+      await revokePdfAccessToken(userId, tempToken);
 
-      console.log('[PDF] Report PDF generated, size:', pdfBuffer?.length, 'bytes');
+      console.log(`[PDF] Report PDF generated, size: ${pdfBuffer?.length} bytes, rendered in ${Math.round((Date.now() - renderStartedAt) / 1000)}s`);
       console.log('[PDF] pdfBuffer type:', typeof pdfBuffer, 'isBuffer:', Buffer.isBuffer(pdfBuffer), 'isUint8Array:', pdfBuffer instanceof Uint8Array);
 
       // Validate the PDF buffer
@@ -580,19 +633,23 @@ Meteor.methods({
 
       console.log('[PDF] Valid PDF header confirmed');
 
-      // Convert to base64
-      const base64String = pdfBuffer.toString('base64');
-      console.log('[PDF] Base64 length:', base64String.length);
-      console.log('[PDF] Base64 first 50 chars:', base64String.substring(0, 50));
+      // Hand the file over as a URL, never as method result data. A 13 MB PMS
+      // report became a 17 MB base64 string plus the copies DDP makes framing
+      // the reply, and the server was OOM-killed mid-send — which made the
+      // client re-send the method on reconnect and regenerate forever.
+      const stored = storePdfExport(pdfBuffer, options.title || `${reportType}-report`);
+      pdfBuffer = null;
 
-      // Validate base64 starts with PDF signature (JVBERi = %PDF-)
-      if (!base64String.startsWith('JVBERi')) {
-        console.error('[PDF] Base64 does not start with PDF signature');
-        throw new Meteor.Error('pdf-encoding-error', 'PDF encoding failed');
-      }
+      const token = await issueDocumentToken(stored.publicPath, userId);
+      sweepPdfExports();
 
-      // Return the base64 string
-      return base64String;
+      console.log('[PDF] Export ready:', stored.storedFileName, `(${stored.fileSize} bytes)`);
+
+      return {
+        downloadUrl: `${stored.publicPath}?dl=${token}`,
+        fileName: stored.storedFileName,
+        fileSize: stored.fileSize
+      };
 
     } catch (error) {
       // Clean up browser and temp token on error
@@ -600,13 +657,11 @@ Meteor.methods({
         await browser.close();
       }
 
-      // Clean up temp token
+      // Clean up this run's token. Scoped to the token this call minted: the
+      // unscoped version deleted whatever was in the slot, so a failed run
+      // pulled the rug from under a retry that had already started.
       try {
-        await UsersCollection.updateAsync(userId, {
-          $unset: {
-            'services.pdfAccess': ''
-          }
-        });
+        if (tempToken) await revokePdfAccessToken(userId, tempToken);
       } catch (cleanupError) {
         console.error('[PDF] Error cleaning up temp token:', cleanupError);
       }

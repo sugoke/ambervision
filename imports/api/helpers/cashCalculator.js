@@ -164,6 +164,49 @@ export const buildRatesMap = (currencyRates) => {
 };
 
 /**
+ * What counts as cash, in one place.
+ *
+ * These predicates are the ONLY way to decide whether a holding is cash — the
+ * cash monitor, the negative-cash notifications and the order-entry cash check
+ * all go through them, so the three can never disagree. Classification is by
+ * securityType / assetClass (set by the bank parsers), never by the security's
+ * NAME: the order modal used to match /cash|liquidity/ on the name and so
+ * counted a €1.5M "Amundi Euro Liquidity-Rated" money-market fund as spendable
+ * cash, while the PMS correctly showed it as a monetary-products position.
+ */
+export const isPureCashHolding = (holding) =>
+  holding.securityType === 'CASH' ||
+  holding.securityType === SECURITY_TYPES.CASH ||
+  (holding.securityType && /cash/i.test(holding.securityType)) ||
+  holding.assetClass === 'cash' ||
+  holding.assetClass === ASSET_CLASSES.CASH ||
+  (holding.assetClass && /^cash$/i.test(holding.assetClass));
+
+export const isTermDepositHolding = (holding) =>
+  holding.securityType === 'TERM_DEPOSIT' ||
+  holding.securityType === SECURITY_TYPES.TERM_DEPOSIT ||
+  holding.assetClass === 'time_deposit' ||
+  holding.assetClass === ASSET_CLASSES.TIME_DEPOSIT;
+
+export const isMoneyMarketHolding = (holding) =>
+  holding.securityType === 'MONEY_MARKET' ||
+  holding.securityType === SECURITY_TYPES.MONEY_MARKET ||
+  holding.assetClass === 'monetary_products' ||
+  holding.assetClass === ASSET_CLASSES.MONETARY_PRODUCTS;
+
+/**
+ * Cash or near-cash: money market funds and term deposits are liquidity, but
+ * they are not a balance you can settle from — they have to be sold first.
+ * `cashEquivalentISINs` carries the ISINs classified as monetary_products /
+ * time_deposit in securities metadata, for holdings whose own fields say nothing.
+ */
+export const isCashEquivalentHolding = (holding, cashEquivalentISINs = new Set()) =>
+  isPureCashHolding(holding) ||
+  isTermDepositHolding(holding) ||
+  isMoneyMarketHolding(holding) ||
+  !!(holding.isin && cashEquivalentISINs.has(holding.isin));
+
+/**
  * Calculate cash values for a set of holdings
  * Uses dual-path logic:
  * - pureCashEUR: Only pure CASH holdings (for negative balance detection)
@@ -188,31 +231,11 @@ export const calculateCashForHoldings = (holdings, ratesMap, cashEquivalentISINs
   const cashByCurrency = {};
 
   for (const holding of holdings) {
-    // Check if pure cash (for negative cash alerts)
-    const isPureCash = holding.securityType === 'CASH' ||
-      holding.securityType === SECURITY_TYPES.CASH ||
-      (holding.securityType && /cash/i.test(holding.securityType)) ||
-      holding.assetClass === 'cash' ||
-      holding.assetClass === ASSET_CLASSES.CASH ||
-      (holding.assetClass && /^cash$/i.test(holding.assetClass));
-
-    // Check if term deposit or money market fund (for high cash - includes products without ISINs)
-    const isTermDeposit = holding.securityType === 'TERM_DEPOSIT' ||
-      holding.securityType === SECURITY_TYPES.TERM_DEPOSIT ||
-      holding.assetClass === 'time_deposit' ||
-      holding.assetClass === ASSET_CLASSES.TIME_DEPOSIT;
-
-    const isMoneyMarket = holding.securityType === 'MONEY_MARKET' ||
-      holding.securityType === SECURITY_TYPES.MONEY_MARKET ||
-      holding.assetClass === 'monetary_products' ||
-      holding.assetClass === ASSET_CLASSES.MONETARY_PRODUCTS;
-
-    // Check if cash equivalent (for high cash alerts - includes money market funds, time deposits)
-    // Matches by: pure cash OR securityType/assetClass OR ISIN lookup in metadata
-    const isCashEquivalent = isPureCash ||
-      isTermDeposit ||
-      isMoneyMarket ||
-      (holding.isin && cashEquivalentISINs.has(holding.isin));
+    // Pure cash (for negative cash alerts) vs near-cash (for high cash alerts).
+    const isPureCash = isPureCashHolding(holding);
+    const isTermDeposit = isTermDepositHolding(holding);
+    const isMoneyMarket = isMoneyMarketHolding(holding);
+    const isCashEquivalent = isCashEquivalentHolding(holding, cashEquivalentISINs);
 
     if (isPureCash || isCashEquivalent) {
       // Use marketValue (already in portfolio currency) or quantity for cash

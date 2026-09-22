@@ -131,10 +131,23 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
 
   const handleViewReport = () => {};
 
+  /**
+   * Where a product report was opened from, so its back button returns there.
+   * It used to go to the dashboard unconditionally, which threw away the list
+   * — and the scroll position in it — that the report was opened from.
+   */
+  const [reportOrigin, setReportOrigin] = useState(null);
+
+  const openProductReport = useCallback((productId, origin = null) => {
+    if (!productId) return;
+    setReportOrigin(origin || currentSection || null);
+    setCurrentSection('report', productId);
+  }, [setCurrentSection, currentSection]);
+
   const handleViewProductReport = useCallback((product) => {
     console.log('MainContent: Navigating to product report for:', product._id);
-    setCurrentSection('report', product._id);
-  }, [setCurrentSection]);
+    openProductReport(product._id);
+  }, [openProductReport]);
 
   const handleAllocateProduct = (product) => {
     setAllocatingProduct(product);
@@ -183,7 +196,7 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
             user={user}
             onNavigate={(section, params) => {
               if (section === 'report' && params?.productId) {
-                setCurrentSection('report', params.productId);
+                openProductReport(params.productId, 'dashboard');
               } else if (section === 'client' && params?.clientId) {
                 // Navigate to user details or profile
                 setCurrentSection('user-management');
@@ -274,10 +287,14 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
           );
         }
         return (
-          <TemplateProductReport 
+          <TemplateProductReport
             productId={currentRoute.productId}
             user={user}
-            onNavigateBack={() => handleNavigate('dashboard')}
+            // Back goes where the report was opened from — the PMS, the product
+            // list, the dashboard — and only falls back to the dashboard when
+            // the report was reached directly by URL.
+            onNavigateBack={() => handleNavigate(reportOrigin || 'dashboard')}
+            backLabel={reportOrigin === 'pms' ? 'Back to Portfolio' : undefined}
             onEditProduct={handleEditProduct}
             onAllocateProduct={handleAllocateProduct}
           />
@@ -299,7 +316,14 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
       
       case 'pms':
         if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
-        return <PortfolioManagementSystem user={user} />;
+        return (
+          <PortfolioManagementSystem
+            user={user}
+            // Opening a structured product's report from a position: in-app, so
+            // the PMS is still behind it and its back button returns here.
+            onOpenProductReport={(productId) => openProductReport(productId, 'pms')}
+          />
+        );
 
       case 'market-news':
         if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;

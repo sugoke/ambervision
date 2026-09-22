@@ -3,6 +3,7 @@
 
 import { check } from 'meteor/check';
 import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
+import { findUserByPdfAccessToken } from '../helpers/pdfAccessTokens.js';
 import { ProductsCollection } from '/imports/api/products';
 import { AllocationsCollection } from '/imports/api/allocations';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
@@ -215,16 +216,12 @@ Meteor.publish("products.single", async function (productId, sessionId = null) {
       // Check if this is a PDF temporary session
       if (effectiveSessionId.startsWith('pdf-temp-')) {
         const pdfToken = effectiveSessionId.replace('pdf-temp-', '');
-        // Find user with this PDF token
-        const userWithToken = await UsersCollection.findOneAsync({
-          'services.pdfAccess.token': pdfToken
-        });
+        // Find the user holding this PDF token, in either shape, unexpired —
+        // see server/helpers/pdfAccessTokens.js.
+        const userWithToken = await findUserByPdfAccessToken(null, pdfToken);
         if (userWithToken) {
-          const expiresAt = userWithToken.services?.pdfAccess?.expiresAt;
-          if (!expiresAt || new Date(expiresAt) >= new Date()) {
-            currentUser = userWithToken;
-            console.log('[products.single] PDF auth successful for user:', currentUser._id);
-          }
+          currentUser = userWithToken;
+          console.log('[products.single] PDF auth successful for user:', currentUser._id);
         }
       } else {
         // Normal session validation
