@@ -748,9 +748,9 @@ Meteor.methods({
 
       // Exclude non-investment accounts (credit lines, credit cards, spending accounts)
       // Only investment accounts should count toward AUM
-      const NON_INVESTMENT_COMMENTS = ['Credit line', 'Credit Card', 'Credit account', 'Spending'];
+      // Same rule as isInvestmentAccount (any 'credit...' or 'spending' description, any case)
       const nonInvestmentAccounts = await BankAccountsCollection.find({
-        comment: { $in: NON_INVESTMENT_COMMENTS }
+        comment: { $regex: /credit|^\s*spending\s*$/i }
       }, { fields: { accountNumber: 1, bankId: 1 } }).fetchAsync();
       const excludedPortfolioCodes = nonInvestmentAccounts.map(a => a.accountNumber);
 
@@ -1268,7 +1268,7 @@ Meteor.methods({
       // +3% of AUM, reading as a one-day rally that never happened). Resolve the
       // exclusion once and apply it to both sides so the whole line is one basis.
       const nonInvestmentAccounts = await BankAccountsCollection.find(
-        { comment: { $in: ['Credit line', 'Credit Card', 'Credit account', 'Spending'] } },
+        { comment: { $regex: /credit|^\s*spending\s*$/i } },
         { fields: { accountNumber: 1 } }
       ).fetchAsync();
       const excludedPortfolioCodes = nonInvestmentAccounts.map(a => a.accountNumber);

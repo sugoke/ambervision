@@ -1834,9 +1834,13 @@ Meteor.methods({
    * file (ignoring the seen-file markers), clears the bank's existing operations, and
    * re-imports with the corrected per-transaction key. Positions/holdings are untouched.
    */
-  async 'bankPositions.reprocessOperations'({ connectionId, sessionId }) {
+  async 'bankPositions.reprocessOperations'({ connectionId, sessionId, clearExisting = true }) {
     check(connectionId, String);
     check(sessionId, String);
+    // clearExisting=false re-reads every file and updates operations IN PLACE (same
+    // uniqueKey -> same _id), adding only rows the parser used to drop. Records keep
+    // their ids, so reviews referencing them (sizeable transactions) are untouched.
+    check(clearExisting, Boolean);
     this.unblock();
 
     // Superadmin only — this rebuilds a bank's whole transaction history.
@@ -1878,7 +1882,9 @@ Meteor.methods({
     const operations = parseResult.operations || [];
 
     // 2. Clear the bank's existing operations (stored under the old collapsed key).
-    const cleared = await PMSOperationsCollection.removeAsync({ bankId: connection.bankId });
+    const cleared = clearExisting
+      ? await PMSOperationsCollection.removeAsync({ bankId: connection.bankId })
+      : 0;
 
     // 3. Re-import with entity/userId matching and the corrected unique key.
     const portfolioEntityMap = await buildPortfolioEntityMap(connection.bankId);
