@@ -9,6 +9,7 @@ import MarketWatch from './MarketWatch.jsx';
 import RecentActivityCard from './RecentActivityCard.jsx';
 import CashMonitoringCard from './CashMonitoringCard.jsx';
 import AUMMiniChart from './AUMMiniChart.jsx';
+import ComplianceQuestionsCard from './ComplianceQuestionsCard.jsx';
 import { useViewAs } from '../../ViewAsContext.jsx';
 
 const RMDashboard = ({ user, onNavigate }) => {
@@ -369,6 +370,12 @@ const RMDashboard = ({ user, onNavigate }) => {
             onAlertClick={handleAlertClick}
           />
         </div>
+
+        {/* Compliance questions on sizeable transactions — renders only when
+            compliance has questioned this user */}
+        {!isClient && (
+          <ComplianceQuestionsCard onOpenClient={(entityId) => onNavigate?.('client', { entityId })} />
+        )}
 
         <div className="av-col-4">
           <UpcomingEventsCard

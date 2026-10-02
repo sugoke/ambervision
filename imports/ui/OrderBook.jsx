@@ -1701,11 +1701,19 @@ const OrderBook = ({ user }) => {
         fixedMessages={mailPicker?.fixedMessages || null}
         heading={mailPicker?.heading || 'Attach from Outlook'}
         emptyText={mailPicker?.emptyText || 'No messages match these filters.'}
-        // Opening pre-filtered to the counterparty is the single biggest win:
-        // the desk's mail is usually the one being looked for.
-        defaultFromFilter={
-          mailPicker?.traceType === EMAIL_TRACE_TYPES.BANK_CONFIRMATION
-            ? (selectedOrder?.order?.sentTo || '')
+        // The order reference is in the subject of every mail we send for an
+        // order, and replies keep it, so searching on it puts the right mail
+        // first. It replaces the sender filter for the bank's reply: ANDed
+        // with the desk address, a confirmation sent from a trader's own
+        // mailbox would be filtered out. The client's order predates the
+        // reference, so that picker opens unfiltered.
+        defaultQuery={
+          [
+            EMAIL_TRACE_TYPES.ORDER_TO_BANK,
+            EMAIL_TRACE_TYPES.ORDER_TO_ISSUER,
+            EMAIL_TRACE_TYPES.BANK_CONFIRMATION
+          ].includes(mailPicker?.traceType)
+            ? (selectedOrder?.order?.orderReference || '')
             : ''
         }
         // The order to the bank and the order from the client sit in opposite

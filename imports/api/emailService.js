@@ -102,7 +102,7 @@ export const emailShell = ({
   bodyHtml,
   sectionsHtml = '',
   footerNote = 'This is an automated email. Please do not reply to this message.',
-  signatureName = 'Amber Lake Partners Team'
+  signatureName = 'Amberlake Partners Team'
 }) => `
 <!DOCTYPE html>
 <html>
@@ -124,7 +124,7 @@ export const emailShell = ({
           <!-- Masthead -->
           <tr>
             <td style="background-color: ${EMAIL.headerBg}; padding: 32px 40px 28px; text-align: center;">
-              <p style="margin: 0 0 12px; color: ${EMAIL.headerMuted}; font-size: 11px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase;">Amber Lake Partners</p>
+              <p style="margin: 0 0 12px; color: ${EMAIL.headerMuted}; font-size: 11px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase;">Amberlake Partners</p>
               <h1 style="margin: 0; color: ${EMAIL.headerText}; font-family: ${EMAIL.serif}; font-size: 26px; font-weight: 500; letter-spacing: 0.3px;">${title}</h1>
               ${subtitle ? `<p style="margin: 10px 0 0; color: ${EMAIL.headerMuted}; font-size: 13px;">${subtitle}</p>` : ''}${headerExtraHtml}
             </td>
@@ -167,6 +167,10 @@ export const EmailService = {
       }
 
       const config = {
+        // A SendPulse API key (sp_apikey_...) is sent as the bearer token as-is.
+        // The older ID + secret pair goes through the OAuth exchange instead;
+        // it stays supported so either form of credential works.
+        apiKey: settings.SENDPULSE_API_KEY,
         clientId: settings.SENDPULSE_CLIENT_ID,
         clientSecret: settings.SENDPULSE_CLIENT_SECRET,
         fromEmail: settings.SENDPULSE_FROM_EMAIL,
@@ -176,10 +180,10 @@ export const EmailService = {
       };
 
       // Validate required fields
-      if (!config.clientId) {
-        throw new Meteor.Error('config-missing', 'SENDPULSE_CLIENT_ID not configured in settings');
+      if (!config.apiKey && !config.clientId) {
+        throw new Meteor.Error('config-missing', 'SENDPULSE_API_KEY (or SENDPULSE_CLIENT_ID) not configured in settings');
       }
-      if (!config.clientSecret) {
+      if (!config.apiKey && !config.clientSecret) {
         throw new Meteor.Error('config-missing', 'SENDPULSE_CLIENT_SECRET not configured in settings');
       }
       if (!config.fromEmail) {
@@ -199,6 +203,9 @@ export const EmailService = {
    */
   async getAccessToken() {
     const config = this.getConfig();
+
+    // An API key needs no exchange: it is the bearer token.
+    if (config.apiKey) return config.apiKey;
 
     // Return cached token if still valid (with 5-min buffer)
     if (cachedToken && tokenExpiry && Date.now() < tokenExpiry - 300000) {
@@ -345,7 +352,7 @@ export const EmailService = {
       const htmlContent = emailShell({
         title: 'Reset Your Password',
         bodyHtml: `${emailGreeting(userName)}${emailParagraph(
-          'You recently requested to reset your password for your <strong>Amber Lake Partners</strong> account.'
+          'You recently requested to reset your password for your <strong>Amberlake Partners</strong> account.'
         )}${emailParagraph('Click the button below to reset your password:')}${emailButton(resetUrl, 'Reset Password')}
               <p style="margin: 20px 0 10px; color: ${EMAIL.muted}; font-size: 13px; line-height: 1.6;">Or copy and paste this URL into your browser:</p>
               <table width="100%" cellpadding="0" cellspacing="0" style="margin: 0 0 8px;">
@@ -365,7 +372,7 @@ Reset Your Password
 
 Hello${userName ? ` ${userName}` : ''},
 
-You recently requested to reset your password for your Amber Lake Partners account.
+You recently requested to reset your password for your Amberlake Partners account.
 
 Click the link below to reset your password:
 ${resetUrl}
@@ -375,14 +382,14 @@ ${resetUrl}
 If you didn't request this password reset, please ignore this email. Your password will remain unchanged.
 
 Best regards,
-Amber Lake Partners Team
+Amberlake Partners Team
 
 This is an automated email. Please do not reply to this message.
       `;
 
       // Send email via SendPulse
       const response = await this.sendEmail({
-        subject: 'Reset Your Amber Lake Partners Password',
+        subject: 'Reset Your Amberlake Partners Password',
         html: htmlContent,
         text: textContent,
         to: recipients
@@ -423,7 +430,7 @@ This is an automated email. Please do not reply to this message.
       const htmlContent = emailShell({
         title: 'Password Changed',
         bodyHtml: `${emailGreeting(userName)}${emailParagraph(
-          'This is a confirmation that your password for your <strong>Amber Lake Partners</strong> account has been successfully changed.'
+          'This is a confirmation that your password for your <strong>Amberlake Partners</strong> account has been successfully changed.'
         )}${emailNotice('success', '✓ All Set!', 'Your password has been updated and all active sessions have been logged out for security.')}${emailMutedNote(
           "If you didn't make this change, please contact our support team immediately."
         )}`
@@ -434,14 +441,14 @@ Password Changed Successfully
 
 Hello${userName ? ` ${userName}` : ''},
 
-This is a confirmation that your password for your Amber Lake Partners account has been successfully changed.
+This is a confirmation that your password for your Amberlake Partners account has been successfully changed.
 
 All active sessions have been logged out for security.
 
 If you didn't make this change, please contact our support team immediately.
 
 Best regards,
-Amber Lake Partners Team
+Amberlake Partners Team
       `;
 
       // Send email via SendPulse
@@ -516,7 +523,7 @@ Basket Level: ${event.data.basketLevelFormatted}
 View product details: ${productUrl}
 
 Best regards,
-Amber Lake Partners Team
+Amberlake Partners Team
 `;
 
       // Send email via SendPulse
@@ -580,7 +587,7 @@ The product will be redeemed early as the autocall condition has been met.
 View product details: ${productUrl}
 
 Best regards,
-Amber Lake Partners Team
+Amberlake Partners Team
 `;
 
       // Send email via SendPulse
@@ -644,7 +651,7 @@ Current Price: ${event.data.currentPriceFormatted}
 View product details: ${productUrl}
 
 Best regards,
-Amber Lake Partners Team
+Amberlake Partners Team
 `;
 
       // Send email via SendPulse
@@ -706,7 +713,7 @@ Distance to Barrier: ${event.data.distanceToBarrierFormatted}
 View product details: ${productUrl}
 
 Best regards,
-Amber Lake Partners Team
+Amberlake Partners Team
 `;
 
       // Send email via SendPulse
@@ -768,7 +775,7 @@ The product will mature shortly. Final settlement details will be provided.
 View product details: ${productUrl}
 
 Best regards,
-Amber Lake Partners Team
+Amberlake Partners Team
 `;
 
       // Send email via SendPulse
@@ -822,7 +829,7 @@ Final redemption proceeds have been calculated and will be settled according to 
 View product details: ${productUrl}
 
 Best regards,
-Amber Lake Partners Team
+Amberlake Partners Team
 `;
 
       // Send email via SendPulse
@@ -884,7 +891,7 @@ Coupons in memory will be paid when the product meets coupon payment conditions 
 View product details: ${productUrl}
 
 Best regards,
-Amber Lake Partners Team
+Amberlake Partners Team
 `;
 
       // Send email via SendPulse
@@ -946,7 +953,7 @@ Distance to Barrier: ${event.data.distanceToBarrierFormatted}
 View product details: ${productUrl}
 
 Best regards,
-Amber Lake Partners Team
+Amberlake Partners Team
 `;
 
       // Send email via SendPulse
@@ -1161,7 +1168,7 @@ Clients: ${firstNotif.allocation?.clientCount || 0}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Best regards,
-Amber Lake Partners Team
+Amberlake Partners Team
 
 This is an automated daily digest. Please do not reply to this email.
       `;
@@ -1479,7 +1486,7 @@ CONNECTION DETAILS
 
       textContent += `
 --
-Ambervision - Amber Lake Partners
+Ambervision - Amberlake Partners
 This is an automated bank sync report.
       `;
 

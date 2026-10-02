@@ -1,8 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { Meteor } from 'meteor/meteor';
-import { useTracker } from 'meteor/react-meteor-data';
-import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
+import { USER_ROLES } from '/imports/api/users';
 import { useTheme } from './ThemeContext.jsx';
+
+// Staff roles that have a client perimeter (mirrors 'birthdays.getCalendar')
+const ALLOWED_ROLES = [
+  USER_ROLES.ADMIN,
+  USER_ROLES.SUPERADMIN,
+  USER_ROLES.COMPLIANCE,
+  USER_ROLES.RELATIONSHIP_MANAGER,
+  USER_ROLES.ASSISTANT
+];
 
 const BirthdayCalendar = () => {
   const { theme } = useTheme();
@@ -23,166 +31,85 @@ const BirthdayCalendar = () => {
     return () => window.removeEventListener('resize', checkScreenSize);
   }, []);
 
-  // Get current user and all users with birthdays
-  const { currentUser, usersWithBirthdays, isLoading } = useTracker(() => {
-    const sessionId = localStorage.getItem('sessionId');
-    const usersSub = Meteor.subscribe('customUsers', sessionId);
-    
-    // Note: We'll get the current user via Meteor method call in useEffect
-    // This is just for subscribing to the users data
-    const users = UsersCollection.find({
-      'profile.birthday': { $exists: true, $ne: null }
-    }).fetch();
-
-    return {
-      currentUser: null, // Will be set by useEffect
-      usersWithBirthdays: users,
-      isLoading: !usersSub.ready()
-    };
-  }, []);
-
-  // Get current user via method call
-  const [currentUserState, setCurrentUserState] = useState(null);
-  const [authLoading, setAuthLoading] = useState(true);
+  // Current user (for the access check) and the birthdays of the contacts in their
+  // perimeter, from the contacts database (see server/methods/birthdayMethods.js)
+  const [actualCurrentUser, setCurrentUserState] = useState(null);
+  const [people, setPeople] = useState([]);
+  const [contactsInPerimeter, setContactsInPerimeter] = useState(0);
+  const [actualIsLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     const sessionId = localStorage.getItem('sessionId');
     if (!sessionId) {
-      setAuthLoading(false);
+      setIsLoading(false);
       return;
     }
 
-    Meteor.call('auth.getCurrentUser', sessionId, (err, user) => {
-      if (!err && user) {
-        setCurrentUserState(user);
+    (async () => {
+      try {
+        const user = await Meteor.callAsync('auth.getCurrentUser', sessionId);
+        setCurrentUserState(user || null);
+        if (user && ALLOWED_ROLES.includes(user.role)) {
+          const res = await Meteor.callAsync('birthdays.getCalendar', sessionId);
+          setPeople(res?.people || []);
+          setContactsInPerimeter(res?.contactsInPerimeter || 0);
+        }
+      } catch (err) {
+        console.error('[BirthdayCalendar] Could not load birthdays:', err);
+      } finally {
+        setIsLoading(false);
       }
-      setAuthLoading(false);
-    });
+    })();
   }, []);
 
-  const actualCurrentUser = currentUserState;
-  const actualIsLoading = isLoading || authLoading;
-
-  // Filter users based on current user's role
-  const getFilteredUsers = () => {
-    if (!actualCurrentUser) {
-      return [];
-    }
-    
-    const allUsers = usersWithBirthdays;
-    
-    // Admin and SuperAdmin see everyone
-    if (actualCurrentUser.role === USER_ROLES.ADMIN || actualCurrentUser.role === USER_ROLES.SUPERADMIN) {
-      return allUsers;
-    }
-    
-    // Relationship Manager / Assistant sees only their assigned clients
-    if (actualCurrentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || actualCurrentUser.role === USER_ROLES.ASSISTANT) {
-      const rmIds = UserHelpers.getEffectiveRmIds(actualCurrentUser);
-      return allUsers.filter(user =>
-        user.role === USER_ROLES.CLIENT && rmIds.includes(user.relationshipManagerId)
-      );
-    }
-    
-    // Other roles have no access
-    return [];
-  };
-
-  // Process birthdays for display (includes family members)
+  // Process birthdays for display (contacts, their family members, team)
   const processBirthdays = () => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    
-    const filteredUsers = getFilteredUsers();
-    const allBirthdays = [];
-    
-    // Process user birthdays
-    filteredUsers.forEach(user => {
-      if (user.profile.birthday) {
-        const birthday = new Date(user.profile.birthday);
-        const birthMonth = birthday.getMonth();
-        const birthDay = birthday.getDate();
-        
-        // Calculate age
-        const age = today.getFullYear() - birthday.getFullYear() - 
-          (today.getMonth() < birthMonth || 
-           (today.getMonth() === birthMonth && today.getDate() < birthDay) ? 1 : 0);
-        
-        // Calculate next birthday
-        const nextBirthday = new Date(today.getFullYear(), birthMonth, birthDay);
-        if (nextBirthday < today) {
-          nextBirthday.setFullYear(today.getFullYear() + 1);
-        }
-        
-        // Calculate days until birthday
-        const daysUntil = Math.ceil((nextBirthday - today) / (1000 * 60 * 60 * 24));
-        
-        allBirthdays.push({
-          ...user,
-          age,
-          nextBirthday,
-          daysUntil,
-          birthMonth,
-          birthDay,
-          isToday: daysUntil === 0,
-          isThisWeek: daysUntil > 0 && daysUntil <= 7,
-          isThisMonth: daysUntil > 0 && daysUntil <= 30,
-          isFamilyMember: false,
-          familyRelationship: null,
-          clientName: `${user.profile.firstName} ${user.profile.lastName}`
-        });
+
+    return people.map(person => {
+      // Birthdays arrive as calendar dates ('YYYY-MM-DD'), read without time zone shifts
+      const [year, month, day] = person.birthday.split('-').map(Number);
+      const birthMonth = month - 1;
+      const birthDay = day;
+
+      // Calculate age
+      const age = today.getFullYear() - year -
+        (today.getMonth() < birthMonth ||
+         (today.getMonth() === birthMonth && today.getDate() < birthDay) ? 1 : 0);
+
+      // Calculate next birthday
+      const nextBirthday = new Date(today.getFullYear(), birthMonth, birthDay);
+      if (nextBirthday < today) {
+        nextBirthday.setFullYear(today.getFullYear() + 1);
       }
-      
-      // Process family members birthdays
-      if (user.profile.familyMembers && user.profile.familyMembers.length > 0) {
-        user.profile.familyMembers.forEach(familyMember => {
-          if (familyMember.birthday) {
-            const birthday = new Date(familyMember.birthday);
-            const birthMonth = birthday.getMonth();
-            const birthDay = birthday.getDate();
-            
-            // Calculate age (birth year is from birthday)
-            const age = today.getFullYear() - birthday.getFullYear() - 
-              (today.getMonth() < birthMonth || 
-               (today.getMonth() === birthMonth && today.getDate() < birthDay) ? 1 : 0);
-            
-            // Calculate next birthday
-            const nextBirthday = new Date(today.getFullYear(), birthMonth, birthDay);
-            if (nextBirthday < today) {
-              nextBirthday.setFullYear(today.getFullYear() + 1);
-            }
-            
-            // Calculate days until birthday
-            const daysUntil = Math.ceil((nextBirthday - today) / (1000 * 60 * 60 * 24));
-            
-            allBirthdays.push({
-              _id: `${user._id}-family-${familyMember._id}`,
-              username: familyMember.name,
-              email: user.email, // Reference parent's email
-              role: user.role,
-              profile: {
-                firstName: familyMember.name.split(' ')[0] || familyMember.name,
-                lastName: familyMember.name.split(' ').slice(1).join(' ') || '',
-                birthday: familyMember.birthday
-              },
-              age,
-              nextBirthday,
-              daysUntil,
-              birthMonth,
-              birthDay,
-              isToday: daysUntil === 0,
-              isThisWeek: daysUntil > 0 && daysUntil <= 7,
-              isThisMonth: daysUntil > 0 && daysUntil <= 30,
-              isFamilyMember: true,
-              familyRelationship: familyMember.relationship,
-              clientName: `${user.profile.firstName} ${user.profile.lastName}`
-            });
-          }
-        });
-      }
-    });
-    
-    return allBirthdays.sort((a, b) => a.daysUntil - b.daysUntil);
+
+      // Calculate days until birthday
+      const daysUntil = Math.round((nextBirthday - today) / (1000 * 60 * 60 * 24));
+      const isFamilyMember = person.kind === 'family';
+
+      return {
+        _id: person.id,
+        username: person.subtitle || '',
+        role: person.kind === 'team' ? person.role : USER_ROLES.CLIENT,
+        profile: {
+          firstName: person.name,
+          lastName: '',
+          birthday: person.birthday
+        },
+        age,
+        nextBirthday,
+        daysUntil,
+        birthMonth,
+        birthDay,
+        isToday: daysUntil === 0,
+        isThisWeek: daysUntil > 0 && daysUntil <= 7,
+        isThisMonth: daysUntil > 0 && daysUntil <= 30,
+        isFamilyMember,
+        familyRelationship: isFamilyMember ? (person.relationship || 'Family') : null,
+        clientName: isFamilyMember ? person.relatedTo : person.name
+      };
+    }).sort((a, b) => a.daysUntil - b.daysUntil);
   };
 
   const birthdays = processBirthdays();
@@ -213,6 +140,9 @@ const BirthdayCalendar = () => {
       case USER_ROLES.SUPERADMIN: return 'Super Admin';
       case USER_ROLES.ADMIN: return 'Admin';
       case USER_ROLES.RELATIONSHIP_MANAGER: return 'Relationship Manager';
+      case USER_ROLES.ASSISTANT: return 'Assistant';
+      case USER_ROLES.COMPLIANCE: return 'Compliance';
+      case USER_ROLES.INTRODUCER: return 'Introducer';
       case USER_ROLES.CLIENT: return 'Client';
       default: return role;
     }
@@ -232,11 +162,7 @@ const BirthdayCalendar = () => {
     );
   }
 
-  if (!actualCurrentUser || (
-    actualCurrentUser.role !== USER_ROLES.ADMIN && 
-    actualCurrentUser.role !== USER_ROLES.SUPERADMIN && 
-    actualCurrentUser.role !== USER_ROLES.RELATIONSHIP_MANAGER
-  )) {
+  if (!actualCurrentUser || !ALLOWED_ROLES.includes(actualCurrentUser.role)) {
     return (
       <div style={{
         textAlign: 'center',
@@ -302,7 +228,7 @@ const BirthdayCalendar = () => {
             color: 'var(--text-secondary)',
             fontSize: isMobile ? '0.9rem' : '1rem'
           }}>
-            Track and celebrate team and client birthdays
+            Birthdays of the contacts in your perimeter and their families
           </p>
         </div>
       </div>
@@ -664,7 +590,8 @@ const BirthdayCalendar = () => {
                     {new Date(birthday.profile.birthday).toLocaleDateString('en-US', {
                       month: 'long',
                       day: 'numeric',
-                      year: 'numeric'
+                      year: 'numeric',
+                      timeZone: 'UTC'
                     })}
                   </td>
                   <td style={{ 
@@ -833,7 +760,7 @@ const BirthdayCalendar = () => {
             letterSpacing: '0.5px',
             order: isMobile ? 1 : 2
           }}>
-            Total Users
+            Contacts in Perimeter
           </div>
           <div style={{
             fontSize: isMobile ? '1.1rem' : '1.3rem',
@@ -842,7 +769,7 @@ const BirthdayCalendar = () => {
             marginBottom: isMobile ? '0' : '0.5rem',
             order: isMobile ? 2 : 1
           }}>
-            {getFilteredUsers().length}
+            {contactsInPerimeter}
           </div>
         </div>
       </div>

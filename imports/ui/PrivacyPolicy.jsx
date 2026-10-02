@@ -17,7 +17,7 @@ const PrivacyPolicy = () => {
 
         <h2 style={styles.h2}>Who we are</h2>
         <p style={styles.p}>
-          Ambervision is operated by Amber Lake Partners, which acts as data controller for the
+          Ambervision is operated by Amberlake Partners, which acts as data controller for the
           personal data processed on this platform. Contact: <a href="mailto:mf@amberlakepartners.com" style={styles.a}>mf@amberlakepartners.com</a>.
         </p>
 

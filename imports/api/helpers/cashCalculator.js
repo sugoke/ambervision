@@ -22,6 +22,10 @@ export const extractBankFxRates = (holdings) => {
   const bankRates = {};
 
   for (const holding of holdings) {
+    // A bank's rates are quoted against the ACCOUNT's currency (CMB's USD
+    // portfolio carries "AED per USD"). Only EUR-denominated accounts give
+    // per-EUR rates; reading the others as such mixed USD quotes into EUR.
+    if (holding.portfolioCurrency && holding.portfolioCurrency !== 'EUR') continue;
     if (holding.bankFxRates && typeof holding.bankFxRates === 'object') {
       for (const [currency, rate] of Object.entries(holding.bankFxRates)) {
         // Skip if already have a rate for this currency or if rate is invalid

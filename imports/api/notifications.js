@@ -25,7 +25,14 @@ import { check, Match } from 'meteor/check';
  *   sentToUsers: [String],           // Array of user IDs who received this
  *   sentToEmails: [String],          // Array of emails sent to
  *   emailSentAt: Date,               // When emails were sent
- *   emailStatus: String,             // 'pending', 'sent', 'failed'
+ *   emailStatus: String,             // 'pending', 'sent', 'failed' (daily digest)
+ *   instantEmail: {                  // Instant alert emails (see notificationEmailDispatcher.js)
+ *     sentTo: [String],              // User IDs emailed on creation (opted in via Profile > Notifications)
+ *     sentToEmails: [String],
+ *     sentAt: Date,
+ *     lastAttemptAt: Date,
+ *     failures: [{ userId, error }]
+ *   },
  *
  *   readBy: [String],                // Array of user IDs who have read this
  *
@@ -58,7 +65,10 @@ export const EVENT_TYPES = {
   // Order validation events (four-eyes principle)
   ORDER_PENDING_VALIDATION: 'order_pending_validation',
   ORDER_VALIDATED: 'order_validated',
-  ORDER_REJECTED: 'order_rejected'
+  ORDER_REJECTED: 'order_rejected',
+  // Compliance questions to RMs (sizeable transactions)
+  COMPLIANCE_QUERY: 'compliance_query',
+  COMPLIANCE_QUERY_ANSWERED: 'compliance_query_answered'
 };
 
 // Event type display names
@@ -82,7 +92,10 @@ export const EVENT_TYPE_NAMES = {
   // Order validation event names
   [EVENT_TYPES.ORDER_PENDING_VALIDATION]: 'Order Pending Validation',
   [EVENT_TYPES.ORDER_VALIDATED]: 'Order Validated',
-  [EVENT_TYPES.ORDER_REJECTED]: 'Order Rejected'
+  [EVENT_TYPES.ORDER_REJECTED]: 'Order Rejected',
+  // Compliance question event names
+  [EVENT_TYPES.COMPLIANCE_QUERY]: 'Compliance Question',
+  [EVENT_TYPES.COMPLIANCE_QUERY_ANSWERED]: 'Compliance Question Answered'
 };
 
 // Event priority levels (for UI display and sorting)
@@ -105,7 +118,10 @@ export const EVENT_PRIORITY = {
   // Order validation priorities
   [EVENT_TYPES.ORDER_PENDING_VALIDATION]: 2,
   [EVENT_TYPES.ORDER_VALIDATED]: 3,
-  [EVENT_TYPES.ORDER_REJECTED]: 2
+  [EVENT_TYPES.ORDER_REJECTED]: 2,
+  // Compliance question priorities
+  [EVENT_TYPES.COMPLIANCE_QUERY]: 2,
+  [EVENT_TYPES.COMPLIANCE_QUERY_ANSWERED]: 3
 };
 
 if (Meteor.isServer) {
@@ -138,6 +154,18 @@ if (Meteor.isServer) {
     }
   }, 24 * 60 * 60 * 1000); // Once per day
 }
+
+/**
+ * Hand a freshly inserted notification to the instant email dispatcher, which
+ * emails recipients who opted into this alert type (Profile > Notifications).
+ * Dynamic import avoids a circular dependency (the dispatcher imports this file).
+ */
+const queueInstantEmail = (notificationId) => {
+  if (!Meteor.isServer) return;
+  import('./notificationEmailDispatcher')
+    .then(({ NotificationEmailDispatcher }) => NotificationEmailDispatcher.queue(notificationId))
+    .catch(error => console.error('[Notification] Failed to queue instant email:', error));
+};
 
 export const NotificationHelpers = {
   /**
@@ -201,6 +229,7 @@ export const NotificationHelpers = {
 
     const notificationId = await NotificationsCollection.insertAsync(notification);
     console.log(`[Notification] Created ${eventType} for product ${productId}`);
+    queueInstantEmail(notificationId);
 
     return notificationId;
   },
@@ -266,6 +295,7 @@ export const NotificationHelpers = {
 
     const notificationId = await NotificationsCollection.insertAsync(notification);
     console.log(`[Notification] Created user notification: ${title} for user ${userId}`);
+    queueInstantEmail(notificationId);
 
     return notificationId;
   },
@@ -502,6 +532,7 @@ export const NotificationHelpers = {
 
     const notificationId = await NotificationsCollection.insertAsync(notification);
     console.log(`[Notification] Created user notification: ${title} for ${userIds.length} users`);
+    queueInstantEmail(notificationId);
 
     return notificationId;
   },
@@ -766,6 +797,98 @@ if (Meteor.isServer) {
         total,
         hasMore: total > skip + notifications.length
       };
+    },
+
+    /**
+     * Get the current user's email alert preferences
+     */
+    async 'notificationPreferences.get'(sessionId) {
+      check(sessionId, String);
+
+      const { SessionHelpers } = await import('./sessions');
+      const session = await SessionHelpers.validateSession(sessionId);
+      if (!session) {
+        throw new Meteor.Error('not-authorized', 'Invalid session');
+      }
+
+      const { UsersCollection } = await import('./users');
+      const user = await UsersCollection.findOneAsync(
+        { _id: session.userId },
+        { fields: { username: 1, role: 1, notificationPreferences: 1 } }
+      );
+
+      const { NotificationEmailDispatcher } = await import('./notificationEmailDispatcher');
+      const { NOTIFICATION_PREFERENCE_KEYS, isPreferenceEnabled } = await import('/imports/constants/notificationPreferences');
+
+      return {
+        // Effective values: a preference never set takes the role default (on for staff)
+        email: Object.fromEntries(NOTIFICATION_PREFERENCE_KEYS.map(key => [key, isPreferenceEnabled(user, key)])),
+        updatedAt: user?.notificationPreferences?.updatedAt || null,
+        deliveryAddress: user?.username || null,
+        deliveryEnabled: NotificationEmailDispatcher.isEnabled()
+      };
+    },
+
+    /**
+     * Save the current user's email alert preferences
+     * @param {Object} emailPrefs - { [preferenceKey]: Boolean }
+     */
+    async 'notificationPreferences.update'(emailPrefs, sessionId) {
+      check(emailPrefs, Object);
+      check(sessionId, String);
+
+      const { SessionHelpers } = await import('./sessions');
+      const session = await SessionHelpers.validateSession(sessionId);
+      if (!session) {
+        throw new Meteor.Error('not-authorized', 'Invalid session');
+      }
+
+      const { NOTIFICATION_PREFERENCE_GROUPS } = await import('/imports/constants/notificationPreferences');
+      const email = {};
+      NOTIFICATION_PREFERENCE_GROUPS.forEach(group => group.preferences.forEach(pref => {
+        if (pref.alwaysEmailed) return;
+        email[pref.key] = emailPrefs[pref.key] === true;
+      }));
+
+      const { UsersCollection } = await import('./users');
+      await UsersCollection.updateAsync(
+        { _id: session.userId },
+        { $set: { 'notificationPreferences.email': email, 'notificationPreferences.updatedAt': new Date() } }
+      );
+
+      console.log(`[Notification] User ${session.userId} updated email alert preferences (${Object.values(email).filter(Boolean).length} enabled)`);
+      return { success: true };
+    },
+
+    /**
+     * Send a test alert email to the current user's address
+     */
+    async 'notificationPreferences.sendTest'(sessionId) {
+      check(sessionId, String);
+
+      const { SessionHelpers } = await import('./sessions');
+      const session = await SessionHelpers.validateSession(sessionId);
+      if (!session) {
+        throw new Meteor.Error('not-authorized', 'Invalid session');
+      }
+
+      const { UsersCollection } = await import('./users');
+      const user = await UsersCollection.findOneAsync(
+        { _id: session.userId },
+        { fields: { username: 1, email: 1, emails: 1, profile: 1 } }
+      );
+      const { NotificationEmailDispatcher, userEmailAddress } = await import('./notificationEmailDispatcher');
+      const address = userEmailAddress(user);
+      if (!address) {
+        throw new Meteor.Error('no-email', 'No email address on this account');
+      }
+
+      try {
+        await NotificationEmailDispatcher.sendTest(user);
+      } catch (error) {
+        throw new Meteor.Error('email-failed', `Test email could not be sent: ${error.reason || error.message}`);
+      }
+      return { success: true, sentTo: address };
     },
 
     /**

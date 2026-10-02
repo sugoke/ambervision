@@ -447,7 +447,7 @@ const Login = ({ onUserChange, compact = false }) => {
           }}>
             <img
               src="https://amberlakepartners.com/assets/logos/horizontal_logo2.png"
-              alt="Amber Lake Partners"
+              alt="Amberlake Partners"
               style={{
                 height: '56px',
                 width: 'auto',
@@ -461,7 +461,7 @@ const Login = ({ onUserChange, compact = false }) => {
                 fallback.style.fontSize = '1.5rem';
                 fallback.style.fontWeight = '500';
                 fallback.style.color = 'var(--text-primary)';
-                fallback.textContent = 'Amber Lake Partners';
+                fallback.textContent = 'Amberlake Partners';
                 e.target.parentNode.appendChild(fallback);
               }}
             />

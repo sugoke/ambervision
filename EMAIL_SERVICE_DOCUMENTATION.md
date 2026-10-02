@@ -129,7 +129,7 @@ async sendMyNewEmail(recipientEmail, data) {
           <tr>
             <td style="padding: 32px; background-color: #f9fafb; border-radius: 0 0 12px 12px;">
               <p style="margin: 0; color: #6b7280; font-size: 14px; text-align: center;">
-                <strong>Amber Lake Partners</strong>
+                <strong>Amberlake Partners</strong>
               </p>
             </td>
           </tr>

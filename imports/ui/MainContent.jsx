@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import Dashboard from './Dashboard.jsx';
-import RMDashboard from './components/dashboard/RMDashboard.jsx';
+import DashboardSwitcher from './components/dashboard/DashboardSwitcher.jsx';
 import StructuredProductInterface from './StructuredProductInterface.jsx';
 import { ProductForm } from './ProductForm.jsx';
 import { ProductList } from './ProductList.jsx';
@@ -34,6 +34,9 @@ import GenericProductsPage from './generic/GenericProductsPage.jsx';
 const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibraryStateChange, currentRoute, isMenuOpen, setIsMenuOpen, isSettingsOpen, setIsSettingsOpen, isMobile }) => {
   // Use lifted menu and settings state from App.jsx (for mobile header integration)
   const { dialogState, showConfirm, showError, hideDialog } = useDialog();
+
+  // Client file to open when arriving on the Clients section from a dashboard link
+  const [pendingClientEntityId, setPendingClientEntityId] = useState(null);
   
   // Persist editing product across page refreshes
   const [editingProduct, setEditingProduct] = useState(() => {
@@ -189,14 +192,18 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
   const renderContent = () => {
     switch (currentSection) {
       case 'dashboard':
-        // Show RMDashboard for all roles (rm, admin, superadmin, compliance, client)
-        // RMDashboard handles role-specific content display internally
+        // RMDashboard for every role; compliance and superadmin can switch to
+        // the compliance dashboard (DashboardSwitcher)
         return (
-          <RMDashboard
+          <DashboardSwitcher
             user={user}
             onNavigate={(section, params) => {
               if (section === 'report' && params?.productId) {
                 openProductReport(params.productId, 'dashboard');
+              } else if (section === 'client' && params?.entityId) {
+                // Open that client's file in the Clients section
+                setPendingClientEntityId(params.entityId);
+                setCurrentSection('clients');
               } else if (section === 'client' && params?.clientId) {
                 // Navigate to user details or profile
                 setCurrentSection('user-management');
@@ -342,8 +349,14 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
         return <Intranet user={user} />;
 
       case 'clients':
-        if (!isNonClient()) return <div>Access denied</div>;
-        return <ClientsSection user={user} />;
+        if (!isNonClient() || user?.role === USER_ROLES.RELATIONSHIP_MANAGER) return <div>Access denied</div>;
+        return (
+          <ClientsSection
+            user={user}
+            initialEntityId={pendingClientEntityId}
+            onInitialEntityConsumed={() => setPendingClientEntityId(null)}
+          />
+        );
 
       case 'order-book':
         if (!isNonClient()) return <div>Access denied</div>;

@@ -14,7 +14,7 @@ import { WebApp } from 'meteor/webapp';
  * need 'unsafe-inline' (Meteor's inline bootstrap + pervasive React inline styles);
  * 'unsafe-eval' is added ONLY in development (Meteor HMR uses eval — production does not).
  */
-function buildCsp() {
+function buildCsp({ allowSameOriginFraming = false, allowDataFonts = false } = {}) {
   const scriptEval = Meteor.isDevelopment ? " 'unsafe-eval'" : '';
   return [
     "default-src 'self'",
@@ -22,7 +22,7 @@ function buildCsp() {
     // and counter.dev analytics was removed — no third-party script/style/font origins remain.
     `script-src 'self' 'unsafe-inline'${scriptEval}`,
     "style-src 'self' 'unsafe-inline'",
-    "font-src 'self'",
+    `font-src 'self'${allowDataFonts ? ' data:' : ''}`,
     "img-src 'self' data: blob: https://amberlakepartners.com https://financialmodelingprep.com https://eodhistoricaldata.com",
     "connect-src 'self'",
     "frame-src 'self' blob: https://infine.eu.meteorapp.com",
@@ -30,20 +30,26 @@ function buildCsp() {
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
-    "frame-ancestors 'none'"
+    allowSameOriginFraming ? "frame-ancestors 'self'" : "frame-ancestors 'none'"
   ].join('; ');
 }
 
 const CSP = buildCsp();
 
+// Intranet > Product Explainers: self-contained HTML decks under /public/explainers/
+// are embedded in a same-origin iframe and ship their fonts inline as data: URIs.
+const EXPLAINERS_PATH_PREFIX = '/explainers/';
+const EXPLAINERS_CSP = buildCsp({ allowSameOriginFraming: true, allowDataFonts: true });
+
 function applySecurityHeaders(req, res, next) {
   try {
-    res.setHeader('X-Frame-Options', 'DENY');
+    const isExplainer = (req.url || '').startsWith(EXPLAINERS_PATH_PREFIX);
+    res.setHeader('X-Frame-Options', isExplainer ? 'SAMEORIGIN' : 'DENY');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-XSS-Protection', '0');
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-    res.setHeader('Content-Security-Policy', CSP);
+    res.setHeader('Content-Security-Policy', isExplainer ? EXPLAINERS_CSP : CSP);
   } catch (e) { /* never hang a request over a header */ }
   next();
 }

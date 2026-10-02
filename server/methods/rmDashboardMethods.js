@@ -1663,10 +1663,15 @@ Meteor.methods({
 
     // Sort by date (soonest first); dedupe the same person appearing via both their
     // legacy user record and their entity record (name + date identifies them).
+    // Names are compared without accents, case or extra spaces: the two records
+    // are often typed differently ("Aurélia" on the login, "Aurelia" on the entity).
+    const normalizeName = (name) => String(name || '')
+      .normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .toLowerCase().replace(/\s+/g, ' ').trim();
     birthdays.sort((a, b) => a.date - b.date);
     const seen = new Set();
     const unique = birthdays.filter(b => {
-      const key = `${b.name}|${b.date.toDateString()}`;
+      const key = `${normalizeName(b.name)}|${b.date.toDateString()}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;

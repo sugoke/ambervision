@@ -5,6 +5,7 @@ import BirthdayCalendar from './BirthdayCalendar.jsx';
 import BondPriceQuery from './components/BondPriceQuery.jsx';
 import MeetingReports from './MeetingReports.jsx';
 import ResearchLibrary from './ResearchLibrary.jsx';
+import ProductExplainers from './ProductExplainers.jsx';
 
 // Mini-app: Email Tester
 const EmailTester = ({ isDark }) => {
@@ -246,7 +247,7 @@ const PitchManager = ({ isDark }) => {
       description: 'Pitch for partnering with real estate agents',
       content: `Dear [Agent Name],
 
-I hope this message finds you well. I am reaching out from Amber Lake Partners to explore a potential partnership opportunity.
+I hope this message finds you well. I am reaching out from Amberlake Partners to explore a potential partnership opportunity.
 
 We specialize in structured financial products and have a strong track record of working with high-net-worth individuals in the real estate sector. Our clients often require sophisticated investment solutions that complement their property portfolios.
 
@@ -256,7 +257,7 @@ Would you be available for a brief call next week to explore this further?
 
 Best regards,
 [Your Name]
-Amber Lake Partners`
+Amberlake Partners`
     },
     {
       id: 2,
@@ -265,7 +266,7 @@ Amber Lake Partners`
       description: 'Initial outreach to banking institutions',
       content: `Dear [Bank Representative],
 
-I am writing to introduce Amber Lake Partners and explore potential collaboration opportunities in the structured products space.
+I am writing to introduce Amberlake Partners and explore potential collaboration opportunities in the structured products space.
 
 Our firm specializes in designing and managing bespoke structured financial products for institutional and private clients. We have extensive experience with:
 - Autocallable products
@@ -279,7 +280,7 @@ Could we schedule a meeting to explore this further?
 
 Best regards,
 [Your Name]
-Amber Lake Partners`
+Amberlake Partners`
     },
     {
       id: 3,
@@ -288,7 +289,7 @@ Amber Lake Partners`
       description: 'Welcome message for onboarding new clients',
       content: `Dear [Client Name],
 
-Welcome to Amber Lake Partners! We are delighted to have you as a client and look forward to working with you.
+Welcome to Amberlake Partners! We are delighted to have you as a client and look forward to working with you.
 
 Your dedicated relationship manager is [RM Name], who will be your primary point of contact. [He/She] will reach out shortly to schedule an introductory meeting and discuss your investment objectives.
 
@@ -298,7 +299,7 @@ We look forward to a successful partnership.
 
 Warm regards,
 [Your Name]
-Amber Lake Partners`
+Amberlake Partners`
     },
     {
       id: 4,
@@ -324,7 +325,7 @@ I have attached a detailed termsheet for your review. Would you be available for
 
 Best regards,
 [Your Name]
-Amber Lake Partners`
+Amberlake Partners`
     },
     {
       id: 5,
@@ -346,7 +347,7 @@ Looking forward to hearing from you.
 
 Best regards,
 [Your Name]
-Amber Lake Partners`
+Amberlake Partners`
     },
     {
       id: 6,
@@ -595,6 +596,12 @@ const Intranet = ({ user }) => {
       description: 'Monthly report, equity recommended list, stock research'
     },
     {
+      id: 'product-explainers',
+      label: 'Product Explainers',
+      icon: '🎯',
+      description: 'Interactive product explainers to present to clients'
+    },
+    {
       id: 'pitch-manager',
       label: 'Pitch Manager',
       icon: '📝',
@@ -633,6 +640,8 @@ const Intranet = ({ user }) => {
         return <MeetingReports user={user} />;
       case 'research':
         return <ResearchLibrary user={user} />;
+      case 'product-explainers':
+        return <ProductExplainers isDark={isDark} />;
       case 'pitch-manager':
         return <PitchManager isDark={isDark} />;
       case 'birthday-calendar':

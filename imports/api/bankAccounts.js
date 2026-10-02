@@ -4,6 +4,52 @@ import { check } from 'meteor/check';
 // Bank Accounts collection
 export const BankAccountsCollection = new Mongo.Collection('bankAccounts');
 
+/**
+ * What the firm may do on an account: act under a power of attorney (place
+ * orders), or only view it. An account with no value recorded predates the
+ * setting and is treated as ordering-enabled until someone sets it.
+ */
+export const ACCOUNT_ACCESS_RIGHTS = {
+  POWER_OF_ATTORNEY: 'power_of_attorney',
+  VIEW_ONLY: 'view_only'
+};
+
+export const ACCOUNT_ACCESS_RIGHTS_LABELS = {
+  [ACCOUNT_ACCESS_RIGHTS.POWER_OF_ATTORNEY]: 'Power of attorney',
+  [ACCOUNT_ACCESS_RIGHTS.VIEW_ONLY]: 'View only'
+};
+
+/**
+ * Investment account, as opposed to a credit line, credit card or spending
+ * account. The account's description (comment) carries its purpose; same
+ * classification as the AUM figures.
+ */
+export function isInvestmentAccount(account) {
+  const purpose = (account?.comment || '').trim().toLowerCase();
+  return !purpose.includes('credit') && purpose !== 'spending';
+}
+
+/**
+ * A client's reference currency: the currency of their investment accounts.
+ * The currency set on the client file only decides when the investment
+ * accounts are in several currencies, or when there is none yet.
+ *
+ * @returns {{ currency: String, source: 'accounts'|'client', mixed: Boolean }}
+ */
+export function getClientReferenceCurrency(entity, accounts) {
+  const manual = entity?.referenceCurrency || entity?.profile?.referenceCurrency || null;
+  const currencies = [...new Set((accounts || [])
+    .filter(a => a && a.isActive !== false && isInvestmentAccount(a) && a.referenceCurrency)
+    .map(a => a.referenceCurrency.toUpperCase()))];
+  if (currencies.length === 1) return { currency: currencies[0], source: 'accounts', mixed: false };
+  return { currency: manual || currencies[0] || 'EUR', source: 'client', mixed: currencies.length > 1 };
+}
+
+/** Whether orders may be placed on this account. */
+export function accountAllowsOrders(account) {
+  return account?.accessRights !== ACCOUNT_ACCESS_RIGHTS.VIEW_ONLY;
+}
+
 // Shared validators for authorized contact fields
 export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export const E164_PHONE_REGEX = /^\+[1-9]\d{1,14}$/;
@@ -70,6 +116,8 @@ function normalizeAuthorizedEmails(list) {
 //   authorizedCcEmails: [String] (legacy CC list, folded into authorizedEmails on the next save;
 //     always read contacts through getAuthorizedEmails()),
 //   authorizedPhone: String (optional, authorized phone number in E.164 format, e.g. +33612345678),
+//   accessRights: String (optional, 'power_of_attorney' | 'view_only' — view-only accounts
+//     cannot receive orders; absent = not yet specified, ordering allowed. See accountAllowsOrders),
 //   kycRiskScore: Object (optional, the KYC risk assessment for THIS banking relationship —
 //     { assessmentDate, assessedBy, clientProspect/beneficialOwner/businessRelationship:
 //       { criteria, totalScore, riskLevel }, comments, nextReviewDate }),
@@ -254,7 +302,7 @@ export const BankAccountHelpers = {
   },
 
   // Add a new bank account for a client entity
-  async addEntityBankAccount(entityId, bankId, accountNumber, referenceCurrency, accountType = 'personal', accountStructure = 'direct', { name = null, lifeInsuranceCompany = null, relationshipManagerId = null, backupRmIds = null, beneficialOwnerIds = null, authorizedOverdraft = null, comment = null, authorizedEmails = null, authorizedEmail = null, authorizedCcEmails = null, authorizedPhone = null } = {}) {
+  async addEntityBankAccount(entityId, bankId, accountNumber, referenceCurrency, accountType = 'personal', accountStructure = 'direct', { name = null, lifeInsuranceCompany = null, relationshipManagerId = null, backupRmIds = null, beneficialOwnerIds = null, authorizedOverdraft = null, comment = null, authorizedEmails = null, authorizedEmail = null, authorizedCcEmails = null, authorizedPhone = null, accessRights = null } = {}) {
     check(entityId, String);
     check(bankId, String);
     check(accountNumber, String);
@@ -283,6 +331,12 @@ export const BankAccountHelpers = {
     };
 
     if (name) { accountData.name = name; }
+    if (accessRights) {
+      if (!Object.values(ACCOUNT_ACCESS_RIGHTS).includes(accessRights)) {
+        throw new Error(`Invalid accessRights: ${accessRights}`);
+      }
+      accountData.accessRights = accessRights;
+    }
     if (accountStructure === 'life_insurance' && lifeInsuranceCompany) {
       accountData.lifeInsuranceCompany = lifeInsuranceCompany;
     }
@@ -329,7 +383,7 @@ export const BankAccountHelpers = {
     check(accountId, String);
     check(updates, Object);
 
-    const allowedFields = ['name', 'bankId', 'accountNumber', 'referenceCurrency', 'accountType', 'accountStructure', 'lifeInsuranceCompany', 'relationshipManagerId', 'backupRmIds', 'beneficialOwnerIds', 'authorizedOverdraft', 'comment', 'introducerId', 'authorizedEmails', 'authorizedEmail', 'authorizedCcEmails', 'authorizedPhone', 'holderEntityIds'];
+    const allowedFields = ['name', 'bankId', 'accountNumber', 'referenceCurrency', 'accountType', 'accountStructure', 'lifeInsuranceCompany', 'relationshipManagerId', 'backupRmIds', 'beneficialOwnerIds', 'authorizedOverdraft', 'comment', 'introducerId', 'authorizedEmails', 'authorizedEmail', 'authorizedCcEmails', 'authorizedPhone', 'holderEntityIds', 'accessRights'];
     const filteredUpdates = {};
 
     allowedFields.forEach(field => {
@@ -369,6 +423,10 @@ export const BankAccountHelpers = {
       filteredUpdates.authorizedEmail = emails[0] || '';
       delete filteredUpdates.authorizedCcEmails;
       unsetFields = { authorizedCcEmails: '' };
+    }
+    if (filteredUpdates.accessRights !== undefined
+        && !Object.values(ACCOUNT_ACCESS_RIGHTS).includes(filteredUpdates.accessRights)) {
+      throw new Error(`Invalid accessRights: ${filteredUpdates.accessRights}`);
     }
     if (filteredUpdates.authorizedPhone !== undefined) {
       const phone = typeof filteredUpdates.authorizedPhone === 'string'

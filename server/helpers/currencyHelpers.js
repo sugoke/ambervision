@@ -69,6 +69,36 @@ export function convertToEUR(amount, fromCurrency, ratesMap) {
   return amountUSD / eurUsdRate;
 }
 
+/**
+ * Value of 1 unit of `currency` in EUR, from the cached FOREX pairs (direct,
+ * inverse, or via USD). Null when no rate is available.
+ */
+function eurPerUnit(currency, ratesMap) {
+  if (currency === 'EUR') return 1;
+  if (ratesMap.get(`EUR${currency}.FOREX`)) return 1 / ratesMap.get(`EUR${currency}.FOREX`);
+  if (ratesMap.get(`${currency}EUR.FOREX`)) return ratesMap.get(`${currency}EUR.FOREX`);
+  const eurUsd = ratesMap.get('EURUSD.FOREX');
+  if (!eurUsd) return null;
+  if (currency === 'USD') return 1 / eurUsd;
+  if (ratesMap.get(`${currency}USD.FOREX`)) return ratesMap.get(`${currency}USD.FOREX`) / eurUsd;
+  if (ratesMap.get(`USD${currency}.FOREX`)) return 1 / ratesMap.get(`USD${currency}.FOREX`) / eurUsd;
+  return null;
+}
+
+/**
+ * Convert between any two currencies at the cached spot rates. Returns null
+ * (never the unconverted amount) when either rate is missing, so a caller
+ * cannot silently print one currency's number under another's label.
+ */
+export function convertCurrency(amount, fromCurrency, toCurrency, ratesMap) {
+  if (amount === null || amount === undefined) return amount;
+  if (!fromCurrency || !toCurrency || fromCurrency === toCurrency) return amount;
+  const fromEur = eurPerUnit(fromCurrency, ratesMap);
+  const toEur = eurPerUnit(toCurrency, ratesMap);
+  if (!fromEur || !toEur) return null;
+  return amount * fromEur / toEur;
+}
+
 export async function buildEURRatesMap() {
   const currencyRates = await CurrencyRateCacheCollection.find({}).fetchAsync();
   return buildRatesMap(currencyRates);

@@ -1,4 +1,4 @@
-import { MARKET_HOLIDAYS } from '/imports/constants/marketHolidays.js';
+import { isHolidayISO } from '/imports/utils/holidayCalendars.js';
 
 // Market holiday utility functions
 export const formatDateToISO = (date) => {
@@ -17,11 +17,9 @@ export const isWeekend = (date) => {
   return day === 0 || day === 6; // Sunday or Saturday
 };
 
+// Rule-based calendars (see holidayCalendars.js) cover every year, not only listed ones
 export const isMarketHoliday = (date, markets = ['US']) => {
-  const isoDate = formatDateToISO(date);
-  return markets.some(market => 
-    MARKET_HOLIDAYS[market] && MARKET_HOLIDAYS[market].includes(isoDate)
-  );
+  return isHolidayISO(formatDateToISO(date), markets);
 };
 
 export const getNextTradingDay = (date, markets = ['US']) => {

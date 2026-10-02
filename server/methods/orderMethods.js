@@ -10,11 +10,11 @@ import { promoteOrderTermsheetToProduct, TERMSHEET_SOURCES as PRODUCT_TERMSHEET_
 import { generatePDFFromHTML } from '../helpers/pdfHelper.js';
 import { UsersCollection, UserHelpers } from '../../imports/api/users.js';
 import { BanksCollection, BankHelpers } from '../../imports/api/banks.js';
-import { BankAccountsCollection, getAuthorizedEmails } from '../../imports/api/bankAccounts.js';
+import { BankAccountsCollection, getAuthorizedEmails, accountAllowsOrders } from '../../imports/api/bankAccounts.js';
 import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
 import { ProductsCollection } from '../../imports/api/products.js';
 import { PMSOperationsCollection } from '../../imports/api/pmsOperations.js';
-import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, ORDER_SOURCE_TYPES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, FX_SUBTYPES, TERM_DEPOSIT_TENORS, EXECUTION_TYPE_LABELS, OPTION_TYPES, DEFAULT_OPTION_CONTRACT_SIZE, TERMINAL_ORDER_STATUSES, isPlaceholderIsin, OrderHelpers, OrderFormatters, quotesPriceAsPercent, isShortCall, computeShortCallCoverage, optionContractDescription, getOrderHealthCheck, HEALTH_FILTER_ANY } from '../../imports/api/orders.js';
+import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, ORDER_SOURCE_TYPES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, FX_SUBTYPES, TERM_DEPOSIT_TENORS, EXECUTION_TYPE_LABELS, OPTION_TYPES, DEFAULT_OPTION_CONTRACT_SIZE, TERMINAL_ORDER_STATUSES, isPlaceholderIsin, OrderHelpers, OrderFormatters, quotesPriceAsPercent, isShortCall, computeShortCallCoverage, computeOrderEstimatedValue, optionContractDescription, getOrderHealthCheck, HEALTH_FILTER_ANY } from '../../imports/api/orders.js';
 import { EODApiHelpers } from '../../imports/api/eodApi.js';
 import { AuditLog } from '/imports/api/auditLog';
 import { OrderCountersCollection, OrderCounterHelpers } from '../../imports/api/orderCounters.js';
@@ -54,7 +54,9 @@ import { createRateLimiter } from '../mcp/rateLimit.js';
  */
 const CREATION_TRACE_TYPES = [
   EMAIL_TRACE_TYPES.CLIENT_ORDER,
-  EMAIL_TRACE_TYPES.INITIAL_TERMSHEET
+  EMAIL_TRACE_TYPES.INITIAL_TERMSHEET,
+  // Structured products: the order as sent to the issuer, checked at four-eyes review
+  EMAIL_TRACE_TYPES.ORDER_TO_ISSUER
 ];
 
 const creationAttachmentPattern = Match.Maybe([{
@@ -67,10 +69,10 @@ const creationAttachmentPattern = Match.Maybe([{
 /**
  * Evidence shared by every order of a bulk. A client instruction is never shared:
  * it belongs to exactly one client, so each row names its own file. Only the
- * termsheet (identical for the whole block) may ride here.
+ * termsheet and the order to the issuer (identical for the whole block) may ride here.
  */
 const sharedCreationAttachmentPattern = Match.Maybe([{
-  traceType: Match.Where(x => x === EMAIL_TRACE_TYPES.INITIAL_TERMSHEET),
+  traceType: Match.Where(x => x === EMAIL_TRACE_TYPES.INITIAL_TERMSHEET || x === EMAIL_TRACE_TYPES.ORDER_TO_ISSUER),
   fileName: String,
   base64Data: String,
   mimeType: Match.Maybe(String)
@@ -378,6 +380,16 @@ async function validateOrderAccess(order, user) {
 
   // Admins, superadmins, and compliance can access all orders
   if (user.role === 'admin' || user.role === 'superadmin' || user.role === 'compliance') {
+    return true;
+  }
+
+  // 'Can validate any order': a validator may review and validate an order awaiting
+  // validation for ANY client, not only those they manage. This only opens orders
+  // that are in the four-eyes queue - it gives no other rights on other RMs' orders.
+  const AWAITING_VALIDATION = [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING_MODIFICATION];
+  if (user.canValidateAnyOrder === true
+      && (user.canValidateOrders === true || user.role === 'compliance')
+      && AWAITING_VALIDATION.includes(order.status)) {
     return true;
   }
 
@@ -693,6 +705,10 @@ Meteor.methods({
     if (!bankAccount) {
       throw new Meteor.Error('invalid-account', 'Bank account not found');
     }
+    // Without a power of attorney the firm may only view the account.
+    if (!accountAllowsOrders(bankAccount)) {
+      throw new Meteor.Error('view-only-account', 'This account is view only: no power of attorney to place orders on it');
+    }
 
     // Resolve client: try user first, then entity (via bank account's entityId or direct lookup)
     const { ClientEntitiesCollection: EntCol } = require('../../imports/api/clientEntities.js');
@@ -795,7 +811,12 @@ Meteor.methods({
       quantity: orderData.quantity,
       priceType: orderData.priceType,
       limitPrice: hasLimitPrice ? orderData.limitPrice : null,
-      estimatedValue: orderData.estimatedValue || null,
+      // Typed or computed in the ticket; when the ticket sent none, derive it from
+      // the order's own nominal and limit price so every priced order carries one.
+      estimatedValue: orderData.estimatedValue || computeOrderEstimatedValue({
+        ...orderData,
+        limitPrice: hasLimitPrice ? orderData.limitPrice : null
+      }),
       clientId: client._id,
       entityId: resolvedEntityId,
       clientName: client.profile?.companyName || `${client.profile?.firstName || ''} ${client.profile?.lastName || ''}`.trim() || 'Unknown',
@@ -1697,6 +1718,15 @@ ${userDisplayName}
     // Leaving the original snapshot would show the validator cover for a
     // contract count that no longer exists.
     const revised = { ...order, ...updateFields };
+
+    // Keep the estimated value in line with a revised nominal or price - the
+    // ticket, the PDFs and the allocation check all read it.
+    const valueInputsChanged = ['quantity', 'limitPrice', 'priceType', 'assetType', 'optionContractSize']
+      .some(key => updateData[key] !== undefined);
+    if (valueInputsChanged) {
+      const recomputed = computeOrderEstimatedValue(revised);
+      if (recomputed !== null) updateFields.estimatedValue = recomputed;
+    }
     const coverInputsChanged = updateData.quantity !== undefined
       || updateData.optionContractSize !== undefined
       || updateData.optionType !== undefined;
@@ -2440,7 +2470,8 @@ ${userDisplayName}
         firstName: client.profile?.firstName,
         lastName: client.profile?.lastName,
         companyName: client.profile?.companyName,
-        email: client.username
+        // Logins carry the address in `email`; entity-only clients in profile.email
+        email: client.email || client.profile?.email || client.username
       } : (order.clientName ? { _id: order.clientId, firstName: order.clientName, lastName: '', email: null } : null),
       bankAccount: bankAccount ? {
         _id: bankAccount._id,
@@ -2922,7 +2953,7 @@ ${userDisplayName}
       bodyHtml: `${emailKvTable(confirmationRows)}${issuerContactHtml}
               <p style="margin: 20px 0 0; color: ${EMAIL.muted}; font-size: 13px; text-align: center;">Please find the full order confirmation attached as PDF.</p>`,
       signatureName: userDisplayName,
-      footerNote: 'This order confirmation was sent via Ambervision by Amber Lake Partners.'
+      footerNote: 'This order confirmation was sent via Ambervision by Amberlake Partners.'
     });
 
     // Same rows as the HTML, stripped of markup, so the plain-text part of the
@@ -3310,6 +3341,12 @@ ${userDisplayName}
 
     if (order.status !== ORDER_STATUSES.PENDING_VALIDATION) {
       throw new Meteor.Error('invalid-operation', 'Order is not pending validation');
+    }
+
+    // The account may have been switched to view only after the order was entered.
+    const validationAccount = await BankAccountsCollection.findOneAsync(order.bankAccountId);
+    if (validationAccount && !accountAllowsOrders(validationAccount)) {
+      throw new Meteor.Error('view-only-account', 'This account is view only: no power of attorney to place orders on it');
     }
 
     // RMs/Assistants can only validate orders for their own clients
@@ -5333,6 +5370,82 @@ Meteor.methods({
   /**
    * Parse an .eml email trace and return its HTML/text content for inline preview
    */
+  /**
+   * Position check for the four-eyes review of a sell: what the account holds,
+   * what other open sells already take from it, and what is left after this
+   * one - so a validator can see the order does not sell more than is held.
+   * Held quantity comes from the latest bank file; when the position is not
+   * found there, the snapshot taken at order entry is used and labelled so.
+   */
+  async 'orders.getPostSalePosition'({ orderId, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+
+    const { user } = await validateSession(sessionId);
+    const order = await OrdersCollection.findOneAsync(orderId);
+    await validateOrderAccess(order, user);
+
+    if (order.orderType !== 'sell' || !order.isin || !order.bankAccountId) return null;
+
+    let heldQuantity = null;
+    let heldSource = null;
+    let heldAsOf = null;
+    const bankAccount = await BankAccountsCollection.findOneAsync(order.bankAccountId);
+    if (bankAccount?.accountNumber) {
+      const resolved = await resolveClientId(order.clientId);
+      const holdings = await findAccountHoldings(resolved, bankAccount);
+      const matches = holdings.filter(h => (h.isin || '').toUpperCase() === order.isin.toUpperCase());
+      if (matches.length > 0) {
+        heldQuantity = matches.reduce((sum, h) => sum + (Number(h.quantity) || 0), 0);
+        heldSource = 'bank_file';
+        heldAsOf = matches.map(h => h.snapshotDate).filter(Boolean)
+          .reduce((latest, d) => (!latest || new Date(d) > new Date(latest) ? d : latest), null);
+      }
+    }
+    if (heldQuantity === null && typeof order.sourcePositionQuantity === 'number') {
+      heldQuantity = order.sourcePositionQuantity;
+      heldSource = 'order_entry';
+      heldAsOf = order.createdAt || null;
+    }
+    if (heldQuantity === null) return { found: false };
+
+    // Sells on the same position that are live but not executed yet: the bank
+    // file does not reflect them, so they still come out of what is held.
+    const openStatuses = [
+      ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING, ORDER_STATUSES.PENDING_MODIFICATION,
+      ORDER_STATUSES.REVISION_REQUESTED, ORDER_STATUSES.TRANSMITTED, ORDER_STATUSES.SENT,
+      ORDER_STATUSES.PARTIALLY_EXECUTED
+    ];
+    const otherSells = await OrdersCollection.find({
+      _id: { $ne: order._id },
+      bankAccountId: order.bankAccountId,
+      isin: order.isin,
+      orderType: 'sell',
+      status: { $in: openStatuses }
+    }, { fields: { orderReference: 1, quantity: 1, executedQuantity: 1, status: 1 } }).fetchAsync();
+    const otherOpenSellQuantity = otherSells.reduce(
+      (sum, o) => sum + Math.max((Number(o.quantity) || 0) - (Number(o.executedQuantity) || 0), 0), 0
+    );
+
+    const orderQuantity = Math.max((Number(order.quantity) || 0) - (Number(order.executedQuantity) || 0), 0);
+    const remainingQuantity = heldQuantity - otherOpenSellQuantity - orderQuantity;
+    const fmt = (q) => OrderFormatters.formatQuantity(q);
+
+    return {
+      found: true,
+      heldSource,
+      heldAsOf,
+      heldQuantityFormatted: fmt(heldQuantity),
+      heldSourceLabel: heldSource === 'bank_file' ? 'Latest bank file' : 'Snapshot at order entry',
+      otherOpenSellQuantityFormatted: otherOpenSellQuantity > 0 ? fmt(otherOpenSellQuantity) : null,
+      otherOpenSellRefs: otherSells.map(o => o.orderReference),
+      orderQuantityFormatted: fmt(orderQuantity),
+      remainingQuantityFormatted: fmt(remainingQuantity),
+      isFullExit: remainingQuantity === 0,
+      exceedsPosition: remainingQuantity < 0
+    };
+  },
+
   async 'orders.parseEmailTrace'({ orderId, traceId, sessionId }) {
     check(orderId, String);
     check(traceId, String);
@@ -5584,10 +5697,10 @@ FX ORDER SEMANTICS (this order is an FX conversion — READ CAREFULLY):
 - Clients describe the economic intent ("convert X to Y", "sell X", "buy Y") rather than the pair. Only flag a Direction mismatch if the client's intent is the OPPOSITE of the entered legs.`;
     }
 
-    const prompt = `You are a compliance officer at Amber Lake Partners, a wealth-management advisory firm. Amber Lake proposes investments to clients by email; clients then reply with their approval, often briefly ("ok", "ok pour moi", "yes", "accepted", "go", "perfect"). You must compare the client's instruction against the order that was entered into the system and identify real discrepancies.
+    const prompt = `You are a compliance officer at Amberlake Partners, a wealth-management advisory firm. Amberlake proposes investments to clients by email; clients then reply with their approval, often briefly ("ok", "ok pour moi", "yes", "accepted", "go", "perfect"). You must compare the client's instruction against the order that was entered into the system and identify real discrepancies.
 
 KEY CONTEXT — READ CAREFULLY:
-- Amber Lake Partners IS the firm running this system. Emails sent FROM @amberlakepartners.com to the client are Amber Lake's advisory proposals, NOT third-party intermediary issues. Do not flag "is Amber Lake authorized" — Amber Lake is the advisor and the question is moot.
+- Amberlake Partners IS the firm running this system. Emails sent FROM @amberlakepartners.com to the client are Amberlake's advisory proposals, NOT third-party intermediary issues. Do not flag "is Amberlake authorized" — Amberlake is the advisor and the question is moot.
 - The client typically replies on top of a long email thread (their reply is usually short and the proposal details are in quoted text BELOW their reply, or earlier in the thread). You MUST read the whole thread, including quoted/forwarded portions, before judging completeness. A short "ok" approving a fully-detailed proposal earlier in the thread IS a complete instruction, not a vague approval.
 - Authorized signatories for the account are configured separately on the bank account (authorizedEmails / authorizedPhone). A separate deterministic check already verifies the sender against those fields — do NOT re-flag the authorized-email match in your output (it will be added automatically).
 - Price for structured products is in % of par (e.g., 100 means 100% of nominal), not in currency units.
@@ -5636,7 +5749,7 @@ Analyze and respond with a JSON object (no markdown, just raw JSON):
 Important:
 - Read the FULL thread before judging. Look in quoted/forwarded portions for the proposal details that the client is approving.
 - Do NOT include an "Authorized email" check — that is added separately.
-- Do NOT question whether Amber Lake Partners is an authorized intermediary — Amber Lake IS the firm.
+- Do NOT question whether Amberlake Partners is an authorized intermediary — Amberlake IS the firm.
 - Do NOT flag a mismatch because the email references additional securities/orders other than this one — multi-order emails are normal.
 ${isFx
   ? '- Compare direction (which currency is bought and which is sold), currency pair, amount (and the currency it is denominated in), rate if stated, and value date. FX orders have no ISIN — never flag one as missing. Missing fields → warning, not mismatch.'

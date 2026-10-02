@@ -17,6 +17,87 @@ export const PMSHoldingsCollection = new Mongo.Collection('pmsHoldings');
  * - userId: String (DEPRECATED - kept for backward compat during entity migration)
  */
 
+/**
+ * Cost basis for shares delivered by a structured product, when the bank sends none.
+ *
+ * A bank cost price always wins (Julius Baer books some deliveries at the
+ * conversion price, e.g. Capgemini at 133). Others arrive as a plain transfer
+ * at price 0, which leaves the position with no cost and no P&L. The fallback
+ * is the underlying's market close on the delivering product's final
+ * observation date — the fixing that triggered the delivery.
+ *
+ * Only acts when the delivering product is unambiguous: a matured product with
+ * this ISIN as an underlying, held by the SAME portfolio at the same bank, with
+ * a close on record in the position's currency. Anything else is left untouched
+ * rather than guessed.
+ */
+async function fillDeliveredCostBasis(holdingData) {
+  const hasCost = typeof holdingData.costPrice === 'number' && holdingData.costPrice > 0;
+  if (hasCost || !holdingData.isin || !(holdingData.quantity > 0)) return;
+  if (holdingData.priceType === 'percentage') return; // bonds / notes are not delivered shares
+
+  const { ProductsCollection } = await import('./products.js');
+  const candidates = await ProductsCollection.find(
+    { productStatus: 'matured', 'underlyings.isin': holdingData.isin },
+    { fields: { isin: 1, underlyings: 1, finalObservation: 1, finalObservationDate: 1 } }
+  ).fetchAsync();
+  if (candidates.length === 0) return;
+
+  // Keep the products this portfolio actually held.
+  const heldIsins = await PMSHoldingsCollection.rawCollection().distinct('isin', {
+    bankId: holdingData.bankId,
+    portfolioCode: holdingData.portfolioCode,
+    isin: { $in: candidates.map(p => p.isin).filter(Boolean) }
+  });
+  const delivering = candidates.filter(p => heldIsins.includes(p.isin));
+  if (delivering.length !== 1) return;
+
+  const product = delivering[0];
+  const underlying = product.underlyings.find(u => u.isin === holdingData.isin);
+  const finalObs = product.finalObservationDate || product.finalObservation;
+  const fullTicker = underlying?.securityData?.ticker
+    || (underlying?.ticker && underlying?.securityData?.exchange ? `${underlying.ticker}.${underlying.securityData.exchange}` : null);
+  if (!finalObs || !fullTicker) return;
+
+  // Close on the final observation date, or the last close before it when
+  // that day was not a trading day.
+  const { MarketDataCacheCollection } = await import('./marketDataCache.js');
+  const cache = await MarketDataCacheCollection.findOneAsync(
+    { fullTicker },
+    { fields: { currency: 1, history: 1 } }
+  );
+  if (!cache?.history?.length) return;
+  if (cache.currency && holdingData.currency && cache.currency !== holdingData.currency) return;
+  const obsDay = new Date(finalObs).toISOString().slice(0, 10);
+  const record = cache.history
+    .filter(h => h?.date && new Date(h.date).toISOString().slice(0, 10) <= obsDay)
+    .sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+  const costPrice = Number(record?.close);
+  if (!(costPrice > 0)) return;
+
+  const costBasisOriginalCurrency = holdingData.quantity * costPrice;
+
+  // Into portfolio currency: the bank's cost-date rate when it sent one (divide
+  // format), otherwise the rate implied by today's two market values.
+  const costRate = Number(holdingData.bankSpecificData?.exchangeRates?.costExchangeRate);
+  const impliedRate = holdingData.marketValue && holdingData.marketValueOriginalCurrency
+    ? holdingData.marketValueOriginalCurrency / holdingData.marketValue
+    : null;
+  const rate = costRate > 0 ? costRate : (impliedRate > 0 ? impliedRate : 1);
+  const costBasisPortfolioCurrency = costBasisOriginalCurrency / rate;
+
+  holdingData.costPrice = costPrice;
+  holdingData.costBasisOriginalCurrency = costBasisOriginalCurrency;
+  holdingData.costBasisPortfolioCurrency = costBasisPortfolioCurrency;
+  if (typeof holdingData.marketValue === 'number') {
+    holdingData.unrealizedPnL = holdingData.marketValue - costBasisPortfolioCurrency;
+    holdingData.unrealizedPnLPercent = (holdingData.unrealizedPnL / costBasisPortfolioCurrency) * 100;
+  }
+  holdingData.costPriceSource = 'product_final_observation';
+  holdingData.costPriceDate = new Date(record.date);
+  holdingData.deliveredFromProductIsin = product.isin;
+}
+
 // Helper functions for PMS Holdings management
 export const PMSHoldingsHelpers = {
   /**
@@ -514,6 +595,13 @@ export const PMSHoldingsHelpers = {
     check(holdingData.bankId, String);
     check(holdingData.portfolioCode, String);
     check(holdingData.fileDate, Date);
+
+    // Shares delivered by a structured product often arrive with no cost price.
+    try {
+      await fillDeliveredCostBasis(holdingData);
+    } catch (err) {
+      console.error(`[PMS_HOLDINGS] Delivered cost fallback failed for ${holdingData.isin}:`, err.message);
+    }
 
     // IMPORTANT: Derive assetClass from securityType if not already set
     // This ensures all holdings have a valid assetClass for UI filtering

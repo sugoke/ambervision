@@ -149,6 +149,14 @@ const ProductDetailsCard = ({ productDetails, onUpdateProductDetails, onRegenera
     }
   };
 
+  // Commit a field still being edited when the card unmounts (switching tabs before the
+  // input lost focus, or a scripted click that never moves focus)
+  const pendingSaveRef = useRef(null);
+  pendingSaveRef.current = editingField ? () => handleSave(editingField) : null;
+  useEffect(() => () => {
+    if (pendingSaveRef.current) pendingSaveRef.current();
+  }, []);
+
   // Date calculation helpers
   const parseDuration = (duration) => {
     if (!duration) return null;

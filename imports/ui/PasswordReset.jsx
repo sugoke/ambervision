@@ -298,7 +298,7 @@ const PasswordReset = ({ token, onComplete }) => {
           }}>
             <img
               src="https://amberlakepartners.com/assets/logos/horizontal_logo2.png"
-              alt="Amber Lake Partners"
+              alt="Amberlake Partners"
               style={{
                 height: '50px',
                 width: 'auto',

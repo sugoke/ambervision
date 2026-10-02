@@ -24,20 +24,8 @@ import {
   isOptionalDocumentType
 } from '/imports/api/clientDocuments.js';
 
-// Document types shown in the Documents tab (KYC files live in the KYC tab).
-// Corporate documents (trade register, UBO register, articles, signatory powers)
-// only apply to companies, so they are appended for company entities only —
-// otherwise every individual would show four permanently missing documents.
-const getDocumentTabTypes = (isCompany) => [
-  ...getDocumentsByCategory('compliance'),
-  ...getDocumentsByCategory('amberlake'),
-  ...getDocumentsByCategory('bank'),
-  ...(isCompany ? getDocumentsByCategory('corporate') : [])
-];
-
-// Types that count towards the "N missing" badge — catch-all buckets don't.
-const getExpectedDocumentTypes = (isCompany) =>
-  getDocumentTabTypes(isCompany).filter(type => !isOptionalDocumentType(type));
+// Documents-tab and expected types are shared with the compliance dashboard.
+import { getDocumentTabTypes, getExpectedDocumentTypes } from '/imports/api/complianceChecks.js';
 
 const IMAGE_PDF_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/gif'];
 const WORD_TYPES = [
@@ -129,7 +117,8 @@ const smallLabel = {
 const dateFieldLabel = { ...smallLabel, minWidth: '96px' };
 
 // One uploaded file for a document type
-const DocumentFileRow = ({ document, config, onUploadComplete }) => {
+const DocumentFileRow = ({ document, config, onUploadComplete, accountOptions = [] }) => {
+  const [bankAccountId, setBankAccountId] = useState(document?.bankAccountId || '');
   const [expirationDate, setExpirationDate] = useState(
     document?.expirationDate ? new Date(document.expirationDate).toISOString().split('T')[0] : ''
   );
@@ -186,6 +175,19 @@ const DocumentFileRow = ({ document, config, onUploadComplete }) => {
     }
   };
 
+  const handleBankAccountChange = async (e) => {
+    const newAccountId = e.target.value;
+    setBankAccountId(newAccountId);
+    try {
+      const sessionId = localStorage.getItem('sessionId');
+      await Meteor.callAsync('clientDocuments.updateDetails', document._id, { bankAccountId: newAccountId || null }, sessionId);
+    } catch (error) {
+      console.error('Update portfolio error:', error);
+      alert('Failed to update portfolio: ' + error.message);
+      setBankAccountId(document?.bankAccountId || '');
+    }
+  };
+
   const handleIssuanceDateChange = async (e) => {
     const newDate = e.target.value;
     setIssuanceDate(newDate);
@@ -235,6 +237,15 @@ const DocumentFileRow = ({ document, config, onUploadComplete }) => {
             <input type="text" value={documentNumber} onChange={handleDocumentNumberChange} placeholder="ID/Passport number" style={{ ...smallInput, flex: 1 }} />
           </div>
         )}
+        {config.requiresBankAccount && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <label style={dateFieldLabel}>Portfolio:</label>
+            <select value={bankAccountId} onChange={handleBankAccountChange} style={{ ...smallInput, color: bankAccountId ? undefined : 'var(--loss-color)' }}>
+              <option value="">Choose the portfolio…</option>
+              {accountOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+            </select>
+          </div>
+        )}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <label style={dateFieldLabel}>{config.dateLabel || 'Document date'}:</label>
           <input type="date" value={issuanceDate} onChange={handleIssuanceDateChange} style={smallInput} />
@@ -251,7 +262,8 @@ const DocumentFileRow = ({ document, config, onUploadComplete }) => {
 };
 
 // Dropzone to add a NEW file for a document type
-const AddDocumentDropzone = ({ documentType, config, userId, familyMemberIndex, onUploadComplete }) => {
+const AddDocumentDropzone = ({ documentType, config, userId, familyMemberIndex, onUploadComplete, accountOptions = [] }) => {
+  const [bankAccountId, setBankAccountId] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [expirationDate, setExpirationDate] = useState('');
@@ -274,6 +286,10 @@ const AddDocumentDropzone = ({ documentType, config, userId, familyMemberIndex, 
       alert('File size must be less than 10MB');
       return;
     }
+    if (config.requiresBankAccount && !bankAccountId) {
+      alert('Please choose the portfolio this file signs before adding it');
+      return;
+    }
 
     setIsUploading(true);
     try {
@@ -289,12 +305,14 @@ const AddDocumentDropzone = ({ documentType, config, userId, familyMemberIndex, 
         expirationDate: expirationDate ? new Date(expirationDate) : null,
         documentNumber: documentNumber || null,
         issuanceDate: issuanceDate ? new Date(issuanceDate) : null,
+        bankAccountId: config.requiresBankAccount ? bankAccountId : null,
         sessionId
       });
       // Reset per-upload metadata
       setExpirationDate('');
       setDocumentNumber('');
       setIssuanceDate('');
+      setBankAccountId('');
       if (onUploadComplete) onUploadComplete();
     } catch (error) {
       console.error('[DocumentUpload] Upload error:', error);
@@ -302,7 +320,7 @@ const AddDocumentDropzone = ({ documentType, config, userId, familyMemberIndex, 
     } finally {
       setIsUploading(false);
     }
-  }, [userId, familyMemberIndex, documentType, expirationDate, documentNumber, issuanceDate, onUploadComplete, mimeTypes, help]);
+  }, [userId, familyMemberIndex, documentType, expirationDate, documentNumber, issuanceDate, bankAccountId, config, onUploadComplete, mimeTypes, help]);
 
   const handleDrop = (e) => {
     e.preventDefault();
@@ -365,6 +383,15 @@ const AddDocumentDropzone = ({ documentType, config, userId, familyMemberIndex, 
                 <input type="text" value={documentNumber} onChange={(e) => setDocumentNumber(e.target.value)} placeholder="ID/Passport #" style={{ ...smallInput, fontSize: '0.75rem', width: '120px' }} />
               </div>
             )}
+            {config.requiresBankAccount && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
+                <label style={{ ...smallLabel, fontSize: '0.75rem' }}>Portfolio:</label>
+                <select value={bankAccountId} onChange={(e) => setBankAccountId(e.target.value)} style={{ ...smallInput, fontSize: '0.75rem' }}>
+                  <option value="">Choose the portfolio…</option>
+                  {accountOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                </select>
+              </div>
+            )}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
               <label style={{ ...smallLabel, fontSize: '0.75rem' }}>{config.dateLabel || 'Document date'}:</label>
               <input type="date" value={issuanceDate} onChange={(e) => setIssuanceDate(e.target.value)} style={{ ...smallInput, fontSize: '0.75rem' }} />
@@ -385,7 +412,7 @@ const AddDocumentDropzone = ({ documentType, config, userId, familyMemberIndex, 
 };
 
 // A document type: header + list of files + add control
-export const DocumentTypeSection = ({ documentType, documents, userId, familyMemberIndex, onUploadComplete }) => {
+export const DocumentTypeSection = ({ documentType, documents, userId, familyMemberIndex, onUploadComplete, accountOptions }) => {
   const config = DOCUMENT_TYPE_CONFIG[documentType];
   if (!config) return null;
 
@@ -408,7 +435,7 @@ export const DocumentTypeSection = ({ documentType, documents, userId, familyMem
       )}
 
       {documents.map(doc => (
-        <DocumentFileRow key={doc._id} document={doc} config={config} onUploadComplete={onUploadComplete} />
+        <DocumentFileRow key={doc._id} document={doc} config={config} onUploadComplete={onUploadComplete} accountOptions={accountOptions} />
       ))}
 
       <AddDocumentDropzone
@@ -417,6 +444,7 @@ export const DocumentTypeSection = ({ documentType, documents, userId, familyMem
         userId={userId}
         familyMemberIndex={familyMemberIndex}
         onUploadComplete={onUploadComplete}
+        accountOptions={accountOptions}
       />
     </div>
   );
@@ -619,7 +647,8 @@ const ClientDocumentManager = ({ userId, familyMembers = [], isCompany = false }
  * Uploader for ONE document type, rendered inline in a tab rather than in the
  * Documents grid. Used for the KYC files and the periodic review file.
  */
-export const SingleTypeDocumentManager = ({ userId, documentType, title, bordered = true }) => {
+// accountOptions: [{ value: bankAccountId, label }] for types bound to a portfolio
+export const SingleTypeDocumentManager = ({ userId, documentType, title, bordered = true, accountOptions = [] }) => {
   const sessionId = localStorage.getItem('sessionId');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const isLoading = useSubscribe('clientDocuments', userId, sessionId);
@@ -649,6 +678,7 @@ export const SingleTypeDocumentManager = ({ userId, documentType, title, bordere
           userId={userId}
           familyMemberIndex={null}
           onUploadComplete={handleUploadComplete}
+          accountOptions={accountOptions}
         />
       )}
     </div>

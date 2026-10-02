@@ -408,8 +408,8 @@ const PositionCardMobile = ({
             </button>
           )}
 
-          {/* Actions - RM/Admin only */}
-          {canTrade && (
+          {/* Actions - Buy/Sell for RM/Admin, Reclassify for Admin/Compliance */}
+          {(canTrade || canReclassify) && (
             <div style={{
               display: 'grid',
               gridTemplateColumns: '1fr 1fr',
@@ -418,18 +418,22 @@ const PositionCardMobile = ({
               paddingTop: '0.875rem',
               borderTop: '1px solid var(--border-color)'
             }}>
-              <button
-                onClick={(e) => { e.stopPropagation(); onBuy(position); }}
-                style={actionButtonStyle(POSITIVE, 'rgba(16, 185, 129, 0.15)')}
-              >
-                Buy More
-              </button>
-              <button
-                onClick={(e) => { e.stopPropagation(); onSell(position); }}
-                style={actionButtonStyle(NEGATIVE, 'rgba(239, 68, 68, 0.15)')}
-              >
-                Sell
-              </button>
+              {canTrade && (
+                <>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onBuy(position); }}
+                    style={actionButtonStyle(POSITIVE, 'rgba(16, 185, 129, 0.15)')}
+                  >
+                    Buy More
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onSell(position); }}
+                    style={actionButtonStyle(NEGATIVE, 'rgba(239, 68, 68, 0.15)')}
+                  >
+                    Sell
+                  </button>
+                </>
+              )}
               {canReclassify && (
                 <button
                   onClick={(e) => { e.stopPropagation(); onReclassify(position); }}

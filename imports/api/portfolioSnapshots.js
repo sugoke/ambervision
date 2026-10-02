@@ -721,9 +721,13 @@ export const PortfolioSnapshotHelpers = {
   /**
    * Get portfolio snapshots for a date range
    */
-  async getSnapshots({ userId, portfolioCode = null, startDate, endDate }) {
-    // Support both userId and entityId for entity-based architecture
-    const query = { $or: [{ userId }, { entityId: userId }] };
+  async getSnapshots({ userId, portfolioCode = null, bankId = null, startDate, endDate }) {
+    // One bank account (bankId + code) is identified on its own: older snapshots
+    // carry only the legacy userId, newer ones the entityId too. Otherwise support
+    // both userId and entityId for entity-based architecture.
+    const query = (portfolioCode && bankId)
+      ? { bankId }
+      : { $or: [{ userId }, { entityId: userId }] };
 
     if (portfolioCode) {
       query.portfolioCode = portfolioCode;
@@ -949,8 +953,8 @@ export const PortfolioSnapshotHelpers = {
   /**
    * Calculate performance metrics for a date range
    */
-  async calculatePerformance({ userId, portfolioCode = null, startDate, endDate }) {
-    const snapshots = await this.getSnapshots({ userId, portfolioCode, startDate, endDate });
+  async calculatePerformance({ userId, portfolioCode = null, bankId = null, startDate, endDate }) {
+    const snapshots = await this.getSnapshots({ userId, portfolioCode, bankId, startDate, endDate });
 
     if (snapshots.length === 0) {
       return null;

@@ -2015,6 +2015,8 @@ const StructuredProductInterface = ({
         payoffStructure: payoffStructure,
         underlyings: underlyings,
         observationSchedule: observationSchedule,
+        // Saved so frequency, step-down, floor, lag and calendars reload as configured
+        scheduleConfig: scheduleConfig,
         finalObservation: finalObservationDate,
         finalObservationDate: finalObservationDate, // Save both field names for compatibility
         // Save structure parameters
@@ -2226,6 +2228,7 @@ const StructuredProductInterface = ({
             droppedItems={droppedItems}
             basketMode={basketMode}
             structureParams={structureParams}
+            scheduleConfig={scheduleConfig}
             onSaveProduct={handleSaveProduct}
             editingProduct={editingProduct}
           />

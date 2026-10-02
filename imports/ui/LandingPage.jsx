@@ -233,7 +233,7 @@ const LandingPage = () => {
               style={{ marginTop: '2px' }}
             />
             <span>
-              I agree that Amber Lake Partners stores my contact details to get back to me, as described in the{' '}
+              I agree that Amberlake Partners stores my contact details to get back to me, as described in the{' '}
               <a href="/#privacy" target="_blank" rel="noopener noreferrer" style={{ color: '#DD772A' }}>privacy policy</a>.
             </span>
           </label>

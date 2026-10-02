@@ -18,3 +18,6 @@ describe("meteor-app", function () {
     });
   }
 });
+
+import "./productSchedule.test.js";
+import "./termSheetTextChecks.test.js";

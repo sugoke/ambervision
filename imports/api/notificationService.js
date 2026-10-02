@@ -12,6 +12,48 @@ import { EmailService } from './emailService';
  * for structured product events.
  */
 
+/**
+ * Relationship managers of the given clients / accounts - the only RMs an alert
+ * about them may reach. Resolved from every place a client's RM is recorded:
+ * the bank account (RM and backup RMs), the client entity (assignedUserIds,
+ * legacy relationshipManagerId) and legacy client logins. Only users with the
+ * RM role are returned.
+ */
+export async function resolveClientRmIds({ clientIds = [], bankAccountIds = [] }) {
+  const { BankAccountsCollection } = await import('./bankAccounts');
+  const { ClientEntitiesCollection } = await import('./clientEntities');
+  const ids = [...new Set(clientIds.filter(Boolean))];
+  const accountIds = [...new Set(bankAccountIds.filter(Boolean))];
+  const candidates = new Set();
+
+  if (accountIds.length > 0) {
+    const accounts = await BankAccountsCollection.find(
+      { _id: { $in: accountIds } },
+      { fields: { relationshipManagerId: 1, backupRmIds: 1 } }
+    ).fetchAsync();
+    accounts.forEach(a => [a.relationshipManagerId, ...(a.backupRmIds || [])].forEach(id => id && candidates.add(id)));
+  }
+  if (ids.length > 0) {
+    const entities = await ClientEntitiesCollection.find(
+      { $or: [{ _id: { $in: ids } }, { migratedFromUserId: { $in: ids } }] },
+      { fields: { assignedUserIds: 1, relationshipManagerId: 1 } }
+    ).fetchAsync();
+    entities.forEach(e => [...(e.assignedUserIds || []), e.relationshipManagerId].forEach(id => id && candidates.add(id)));
+    const legacyClients = await UsersCollection.find(
+      { _id: { $in: ids } },
+      { fields: { relationshipManagerId: 1 } }
+    ).fetchAsync();
+    legacyClients.forEach(u => u.relationshipManagerId && candidates.add(u.relationshipManagerId));
+  }
+  if (candidates.size === 0) return [];
+
+  const rms = await UsersCollection.find(
+    { _id: { $in: [...candidates] }, role: USER_ROLES.RELATIONSHIP_MANAGER },
+    { fields: { _id: 1 } }
+  ).fetchAsync();
+  return rms.map(u => u._id);
+}
+
 export const NotificationService = {
   /**
    * Process events and create notifications (email sending handled by daily digest)
@@ -116,28 +158,18 @@ export const NotificationService = {
       ]
     }).fetchAsync();
 
-    const clientIds = [...new Set(allocations.map(a => a.clientId))];
-
-    // 4. Get relationship managers for these clients
-    if (clientIds.length > 0) {
-      const clients = await UsersCollection.find({
-        _id: { $in: clientIds },
-        relationshipManagerId: { $exists: true, $ne: null }
-      }).fetchAsync();
-
-      const rmIds = [...new Set(clients.map(c => c.relationshipManagerId))];
-
-      if (rmIds.length > 0) {
-        const rms = await UsersCollection.find({
-          _id: { $in: rmIds },
-          role: USER_ROLES.RELATIONSHIP_MANAGER
-        }).fetchAsync();
-
-        rms.forEach(rm => {
-          affectedUsers.add(rm);
-          affectedEmails.add(rm.username);
-        });
-      }
+    // 4. Relationship managers of the clients holding the product - entity-era
+    // clients record their RMs on the entity and the account, not on a login
+    const rmIds = await resolveClientRmIds({
+      clientIds: allocations.flatMap(a => [a.clientId, a.entityId]),
+      bankAccountIds: allocations.map(a => a.bankAccountId)
+    });
+    if (rmIds.length > 0) {
+      const rms = await UsersCollection.find({ _id: { $in: rmIds } }).fetchAsync();
+      rms.forEach(rm => {
+        affectedUsers.add(rm);
+        affectedEmails.add(rm.username);
+      });
     }
 
     return {

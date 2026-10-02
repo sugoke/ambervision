@@ -949,12 +949,17 @@ export const CMBMonacoParser = {
     // ISIN). Collapse to one row per Order, preferring the security leg so the transaction
     // shows the instrument bought/sold. Rows without an Order (or single-row events like
     // fees/FX) pass through unchanged.
+    //
+    // Legs are merged within ONE portfolio only: a transfer between two of the client's
+    // portfolios (credit line -> investment account) carries the same Order on both
+    // sides, and each side is a real movement of its own account.
     const isRealIsin = (v) => /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(String(v || '').trim());
     const byOrder = new Map();
     const passthrough = [];
     for (const row of rows) {
-      const order = row.Order && String(row.Order).trim();
-      if (!order) { passthrough.push(row); continue; }
+      const orderRef = row.Order && String(row.Order).trim();
+      if (!orderRef) { passthrough.push(row); continue; }
+      const order = `${orderRef}|${String(row.Portfolio_Number || '').trim()}`;
       const existing = byOrder.get(order);
       if (!existing) { byOrder.set(order, row); continue; }
       // Prefer the security leg (real ISIN) over the cash-account leg.
@@ -977,6 +982,28 @@ export const CMBMonacoParser = {
    */
   mapOperationToSchema(row, bankId, bankName, sourceFile, fileDate, userId) {
     const transactionDate = this.parseDate(row.Transaction_Date);
+    const netAmount = this.parseNumber(row.Net_amount);
+    const grossAmount = this.parseNumber(row.Gross_Amount);
+    const quantity = this.parseNumber(row.Quantity);
+    const signedAmount = netAmount || grossAmount || 0;
+    const mappedType = mapCMBOperationType(row.Order_Type_ID, row.Meta_Type_ID, signedAmount);
+    // CMB's amounts are signed (a debit is negative) and win over the booking code:
+    // its files carry "transfer out" lines that credit the account.
+    const directionalPairs = {
+      [OPERATION_TYPES.TRANSFER_IN]: [OPERATION_TYPES.TRANSFER_IN, OPERATION_TYPES.TRANSFER_OUT],
+      [OPERATION_TYPES.TRANSFER_OUT]: [OPERATION_TYPES.TRANSFER_IN, OPERATION_TYPES.TRANSFER_OUT],
+      [OPERATION_TYPES.PAYMENT_IN]: [OPERATION_TYPES.PAYMENT_IN, OPERATION_TYPES.PAYMENT_OUT],
+      [OPERATION_TYPES.PAYMENT_OUT]: [OPERATION_TYPES.PAYMENT_IN, OPERATION_TYPES.PAYMENT_OUT]
+    };
+    const pair = directionalPairs[mappedType];
+    const operationType = pair && signedAmount !== 0 ? (signedAmount > 0 ? pair[0] : pair[1]) : mappedType;
+    // Cash bookings without an instrument (interest, fees) leave Net/Gross empty and
+    // carry the amount in Quantity
+    const isCashBooking = !/^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(String(row.ISIN || '').trim());
+    const effectiveNetAmount = (netAmount == null || netAmount === 0) && (grossAmount == null || grossAmount === 0)
+      && isCashBooking && [OPERATION_TYPES.INTEREST, OPERATION_TYPES.FEE].includes(operationType)
+      ? quantity
+      : netAmount;
     const valueDate = this.parseDate(row.Value_Date);
     const verificationDate = this.parseDate(row.Verification_Date);
 
@@ -1007,11 +1034,7 @@ export const CMBMonacoParser = {
 
       // Transaction Details
       // Map raw CMB codes to standardized Ambervision operation types
-      operationType: mapCMBOperationType(
-        row.Order_Type_ID,
-        row.Meta_Type_ID,
-        this.parseNumber(row.Net_amount) || this.parseNumber(row.Gross_Amount) || 0
-      ),
+      operationType,
       operationTypeName: row.Internal_Booking_Text || row.Order_Type || null,
       transactionCategory: row.Meta_Type_ID || null,
       transactionCategoryName: row.Meta_Type || null,
@@ -1030,7 +1053,7 @@ export const CMBMonacoParser = {
       currency: row.Transaction_Currency || null,
       accountCurrency: row.Account_Currency || null,
       grossAmount: this.parseNumber(row.Gross_Amount),
-      netAmount: this.parseNumber(row.Net_amount),
+      netAmount: effectiveNetAmount,
       fees: this.parseNumber(row.Costs),
       exchangeRate: this.parseNumber(row.Exchange_Rate),
       securityPrice: this.parseNumber(row.Security_Market_Price),

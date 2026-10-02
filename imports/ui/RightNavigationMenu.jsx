@@ -121,6 +121,8 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
   const visibleItems = menuItems.filter(item => {
     if (getRoleLevel(item.role) > userRoleLevel) return false;
     if ((userRole === 'rm' || userRole === 'assistant') && rmExcludedItems.includes(item.id)) return false;
+    // Contacts is not available to RMs
+    if (userRole === 'rm' && item.id === 'clients') return false;
     return true;
   });
   
@@ -169,7 +171,10 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
       {/* Menu Toggle Button - Hidden on mobile (button is in header instead) */}
       {!isMobile && (
         <button
+          type="button"
           onClick={onToggle}
+          aria-label={isOpen ? 'Close menu' : 'Open menu'}
+          aria-expanded={isOpen}
           style={{
             position: 'fixed',
             top: '50%',
@@ -284,7 +289,9 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
             {isDark ? '🌙' : '☀️'} {isDark ? 'Dark' : 'Light'} Mode
           </span>
           <button
+            type="button"
             onClick={toggleTheme}
+            aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
             style={{
               width: '50px',
               height: '26px',
@@ -317,20 +324,27 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
           </button>
         </div>
 
-        {/* Menu Items */}
-        <div style={{
+        {/* Menu Items: real buttons so each entry has a role and an accessible name */}
+        <nav aria-label="Main navigation" style={{
           flex: 1,
           padding: '1rem 0',
           overflowY: 'auto'
         }}>
           {visibleItems.map((item) => (
-            <div
+            <button
+              type="button"
               key={item.id}
+              aria-label={item.label}
+              aria-current={currentSection === item.id ? 'page' : undefined}
               onClick={() => {
                 onNavigate(item.id);
                 onToggle();
               }}
               style={{
+                display: 'block',
+                width: 'calc(100% - 2rem)',
+                textAlign: 'left',
+                font: 'inherit',
                 margin: '0.5rem 1rem',
                 padding: '0.75rem 1rem',
                 borderRadius: '10px',
@@ -364,7 +378,7 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
                 alignItems: 'center',
                 gap: '12px'
               }}>
-                <span style={{
+                <span aria-hidden="true" style={{
                   fontSize: '1.1rem',
                   opacity: currentSection === item.id ? 1 : 0.8
                 }}>
@@ -378,9 +392,9 @@ const RightNavigationMenu = ({ isOpen, onToggle, onNavigate, currentSection, use
                   {item.label}
                 </span>
               </div>
-            </div>
+            </button>
           ))}
-        </div>
+        </nav>
 
         {/* Menu Footer — bottom padding clears the iOS home indicator */}
         <div style={{

@@ -1,5 +1,6 @@
 import React from 'react';
 import { BUILT_IN_TEMPLATES } from '/imports/api/templates';
+import { formatPerPeriodCouponLabel } from '/imports/utils/couponLabel.js';
 
 const SummaryModule = ({ 
   selectedTemplateId, 
@@ -9,6 +10,7 @@ const SummaryModule = ({
   droppedItems,
   basketMode,
   structureParams,
+  scheduleConfig,
   onSaveProduct,
   editingProduct
 }) => {
@@ -180,11 +182,17 @@ const SummaryModule = ({
             </h4>
             <div style={infoRowStyle}>
               <span style={labelStyle}>Coupon Rate:</span>
-              <span style={valueStyle}>{config.couponRate}% p.a.</span>
+              {/* The Phoenix coupon is entered per observation period (Structure tab) */}
+              <span style={valueStyle}>
+                {formatPerPeriodCouponLabel(
+                  config.couponRate,
+                  structureParams?.couponFrequency || scheduleConfig?.frequency || config.frequency
+                )}
+              </span>
             </div>
             <div style={infoRowStyle}>
               <span style={labelStyle}>Autocall Level:</span>
-              <span style={valueStyle}>{config.autocallBarrier}% (Step-down)</span>
+              <span style={valueStyle}>{scheduleConfig?.initialAutocallLevel ?? config.autocallBarrier}% (Step-down)</span>
             </div>
             <div style={infoRowStyle}>
               <span style={labelStyle}>Protection Barrier:</span>

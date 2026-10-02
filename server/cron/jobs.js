@@ -110,6 +110,7 @@ let cronJobs = {
   marketTickerUpdate: null,
   bankFileSync: null,
   cmbFileSync: null,  // CMB-specific sync (runs later due to late file uploads)
+  cmbFileSyncRetry: null,  // Hourly CMB catch-up while its data is stale
   priceTrackerScrape: null,  // Manual price tracker scrape for securities without EOD coverage
   settlementCheck: null,     // Daily settlement reconciliation for executed orders
   dataRetention: null,       // GDPR retention: purge expired logs, leads, sessions, old bank files
@@ -474,10 +475,26 @@ async function productRevaluationJob(options = {}) {
           console.log(`[CRON] Test email configured, routing all notifications to: ${testEmail}`);
           digestsByRecipient.set(testEmail, notifications.slice());
         } else {
+          // Recipients who opted into instant emails for an alert type get it
+          // the moment it is created (NotificationEmailDispatcher), so it is
+          // left out of their digest to avoid sending it twice.
+          const { NotificationEmailDispatcher } = await import('/imports/api/notificationEmailDispatcher.js');
+          const { isEmailEnabledForEventType } = await import('/imports/constants/notificationPreferences.js');
+          const usersByEmail = new Map();
+          if (NotificationEmailDispatcher.isEnabled()) {
+            const allEmails = [...new Set(notifications.flatMap(n => n.sentToEmails || []).filter(Boolean))];
+            const digestUsers = await UsersCollection.find(
+              { username: { $in: allEmails } },
+              { fields: { username: 1, role: 1, notificationPreferences: 1 } }
+            ).fetchAsync();
+            digestUsers.forEach(u => usersByEmail.set(u.username, u));
+          }
+
           for (const notification of notifications) {
             const recipientEmails = notification.sentToEmails || [];
             for (const email of recipientEmails) {
               if (!email) continue;
+              if (isEmailEnabledForEventType(usersByEmail.get(email), notification.eventType)) continue;
               if (!digestsByRecipient.has(email)) {
                 digestsByRecipient.set(email, []);
               }
@@ -845,7 +862,8 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
         );
 
         if (processResult.success) {
-          const posCount = processResult.positions?.newRecords || 0;
+          // New AND updated holdings: a day's file mostly updates existing records
+          const posCount = (processResult.positions?.newRecords || 0) + (processResult.positions?.updatedRecords || 0);
           const opCount = processResult.operations?.newRecords || 0;
           results.positionsProcessed += posCount;
           results.operationsProcessed += opCount;
@@ -982,7 +1000,7 @@ async function bankFileSyncJob(triggerSource = 'cron', options = {}) {
  * This job runs at 09:00 CET to catch CMB files that weren't available during the main sync.
  * Only processes the CMB connection, skips all others.
  */
-async function cmbFileSyncJob(triggerSource = 'cron') {
+async function cmbFileSyncJob(triggerSource = 'cron', alreadyDownloadedFiles = []) {
   // Keep the CMB reference-currency overrides fresh before parsing
   await refreshReferenceCurrencyOverrides();
 
@@ -1039,8 +1057,10 @@ async function cmbFileSyncJob(triggerSource = 'cron') {
       );
 
       if (downloadResult.success) {
-        results.filesDownloaded += downloadResult.newFiles?.length || 0;
-        connectionFileDetails.downloadedFiles = downloadResult.newFiles || [];
+        // Files the hourly retry already fetched before handing over count as this run's downloads
+        const newFiles = [...alreadyDownloadedFiles, ...(downloadResult.newFiles || [])];
+        results.filesDownloaded += newFiles.length;
+        connectionFileDetails.downloadedFiles = newFiles;
         connectionFileDetails.skippedFiles = downloadResult.skippedFiles || [];
         connectionFileDetails.failedFiles = downloadResult.failedFiles || [];
         console.log(`[CRON-CMB] Downloaded ${downloadResult.newFiles?.length || 0} new files: ${(downloadResult.newFiles || []).join(', ') || 'none'}`);
@@ -1068,7 +1088,8 @@ async function cmbFileSyncJob(triggerSource = 'cron') {
       );
 
       if (processResult.success) {
-        const posCount = processResult.positions?.newRecords || 0;
+        // New AND updated holdings: a day's file mostly updates existing records
+          const posCount = (processResult.positions?.newRecords || 0) + (processResult.positions?.updatedRecords || 0);
         const opCount = processResult.operations?.newRecords || 0;
         results.positionsProcessed += posCount;
         results.operationsProcessed += opCount;
@@ -1188,8 +1209,9 @@ async function cmbFileSyncJob(triggerSource = 'cron') {
       }
     }
 
-    // Send email notification if new files were processed
-    if (results.filesDownloaded > 0 || results.positionsProcessed > 0) {
+    // Send email notification when new files arrived (re-processing the same
+    // file every morning updates a few holdings but is not news)
+    if (results.filesDownloaded > 0) {
       try {
         await EmailService.sendBankSyncCompletionEmail(
           'mf@amberlakepartners.com',
@@ -1228,6 +1250,36 @@ async function cmbFileSyncJob(triggerSource = 'cron') {
     await CronJobLogHelpers.failJob(logId, error);
     throw error;
   }
+}
+
+/**
+ * Hourly CMB catch-up (10:00-17:00): when CMB's data is not current, look for
+ * new files on CMB's SFTP and, if any arrived, run the full CMB sync. Fresh
+ * data or an empty listing ends the check without logging a job run.
+ */
+async function cmbFileSyncRetryJob() {
+  const cmbConnection = await BankConnectionsCollection.findOneAsync({ connectionName: 'CMB', isActive: true });
+  if (!cmbConnection) return { skipped: true, reason: 'No active CMB connection' };
+
+  const latestHolding = await PMSHoldingsCollection.findOneAsync(
+    { bankId: cmbConnection.bankId, isLatest: true },
+    { sort: { snapshotDate: -1 }, fields: { snapshotDate: 1, fileDate: 1 } }
+  );
+  const freshness = checkDataFreshness(latestHolding?.snapshotDate || latestHolding?.fileDate);
+  if (freshness.status === 'fresh') return { skipped: true, reason: 'CMB data is current' };
+
+  const downloadResult = await Meteor.callAsync(
+    'bankConnections.downloadAllFiles',
+    { connectionId: cmbConnection._id, sessionId: SYSTEM_CRON_TOKEN }
+  );
+  const newFiles = downloadResult?.newFiles || [];
+  if (newFiles.length === 0) {
+    console.log(`[CRON-CMB] Retry: CMB data ${freshness.message}, no new file yet`);
+    return { skipped: true, reason: 'No new CMB file yet' };
+  }
+
+  console.log(`[CRON-CMB] Retry: ${newFiles.length} new CMB file(s) (${newFiles.join(', ')}) - running CMB sync`);
+  return cmbFileSyncJob('cron-retry', newFiles);
 }
 
 /**
@@ -1648,6 +1700,16 @@ async function settlementCheckJob(triggerSource = 'cron') {
       }
     }
 
+    // Sizeable transactions (AML): flag large client money flows from the
+    // operations just imported, so compliance sees them without opening the
+    // modal. A failure here must not fail the settlement check.
+    try {
+      const { scanSizeableTransactions } = require('../methods/sizeableTransactionMethods.js');
+      await scanSizeableTransactions({ force: true });
+    } catch (err) {
+      console.error('[SETTLEMENT] Sizeable transaction scan failed:', err.message);
+    }
+
     const summary = `Checked ${checked}/${pendingOrders.length} orders, ${settled} confirmed settled`;
     console.log(`[SETTLEMENT] ${summary}`);
 
@@ -1936,6 +1998,24 @@ export async function initializeCronJobs() {
   });
 
   console.log('✓ CMB File Sync scheduled for 09:00 CET Mon-Fri (skip weekends)');
+
+  // CMB sometimes uploads its positions file after 09:00 (30/09/2026: the FX
+  // file was there at 09:00, the positions only in the evening), which left the
+  // data a day behind until someone synced by hand. Check again every hour
+  // while CMB data is not current; a check that finds nothing new costs one
+  // SFTP listing, and the full sync only runs once a new file has arrived.
+  cronJobs.cmbFileSyncRetry = cron.schedule('0 10-17 * * 1-5', Meteor.bindEnvironment(async () => {
+    try {
+      await cmbFileSyncRetryJob();
+    } catch (error) {
+      console.error('[CRON] CMB File Sync retry error:', error);
+    }
+  }), {
+    scheduled: true,
+    timezone: "Europe/Zurich"
+  });
+
+  console.log('✓ CMB File Sync retry scheduled hourly 10:00-17:00 CET Mon-Fri (only while CMB data is stale)');
 
   // Schedule Price Tracker Scrape - Daily at 09:15 CET Mon-Fri
   cronJobs.priceTrackerScrape = cron.schedule('15 9 * * 1-5', Meteor.bindEnvironment(async () => {

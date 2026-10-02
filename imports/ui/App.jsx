@@ -31,6 +31,8 @@ import { ViewAsProvider, useViewAs } from './ViewAsContext.jsx';
 // mounting is already deferred 2s after auth via showMarketTicker, so the initial
 // render cost is unchanged.
 import MarketTicker from './MarketTicker.jsx';
+import GlobalIsinCopy from './components/GlobalIsinCopy.jsx';
+import { setPendingSizeableReviewId } from './components/compliance/SizeableTransactionsModal.jsx';
 
 const AppContent = () => {
   const { theme } = useTheme();
@@ -556,6 +558,9 @@ const AppContent = () => {
                 {/* Burger Menu Button - Mobile only, left of logo */}
                 {isMobile && currentSection !== 'intranet' && (
                   <button
+                    type="button"
+                    aria-label={isMenuOpen ? 'Close menu' : 'Open menu'}
+                    aria-expanded={isMenuOpen}
                     onClick={() => setIsMenuOpen(!isMenuOpen)}
                     style={{
                       width: '38px',
@@ -594,7 +599,7 @@ const AppContent = () => {
                 >
                   <img
                     src="https://amberlakepartners.com/assets/logos/horizontal_logo2.png"
-                    alt="Amber Lake Partners"
+                    alt="Amberlake Partners"
                     style={{
                       height: isMobile ? '24px' : '32px',
                       width: 'auto',
@@ -762,6 +767,11 @@ const AppContent = () => {
                   onNotificationClick={(notification) => {
                     if (notification.productId) {
                       handleSectionChange('report', notification.productId);
+                    } else if (notification.metadata?.sizeableReviewId) {
+                      // Compliance question on a sizeable transaction: the dashboard
+                      // (compliance modal or RM questions card) opens the item
+                      handleSectionChange('dashboard');
+                      setPendingSizeableReviewId(notification.metadata.sizeableReviewId);
                     }
                   }}
                 />
@@ -1283,6 +1293,8 @@ export const App = () => {
     <ThemeProvider>
       <ViewAsProvider>
         <AppContent />
+        {/* Click any ISIN anywhere in the app to copy it */}
+        <GlobalIsinCopy />
       </ViewAsProvider>
     </ThemeProvider>
   );

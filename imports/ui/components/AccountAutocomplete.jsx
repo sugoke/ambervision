@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Meteor } from 'meteor/meteor';
+import { accountAllowsOrders } from '/imports/api/bankAccounts';
 
 /**
  * Autocomplete that searches clients by name, account name, or account number.
@@ -11,8 +12,15 @@ import { Meteor } from 'meteor/meteor';
  *   placeholder
  *   disabled
  *   style — input style override
+ *   allowContactOnly — also let the user pick the client itself (no specific account),
+ *                      which is the only option for a contact without a bank account
+ *                      (e.g. a prospect). onSelect then gets bankAccountId: null.
+ *   dropDown — open the results below the field (default: above, for pickers placed
+ *              at the bottom of a modal)
+ *   ordersOnly — the account will receive an order: view-only accounts (no power of
+ *                attorney) are listed but cannot be picked
  */
-export default function AccountAutocomplete({ onSelect, value = '', placeholder = 'Search client or account...', disabled = false, style = {} }) {
+export default function AccountAutocomplete({ onSelect, value = '', placeholder = 'Search client or account...', disabled = false, style = {}, allowContactOnly = false, dropDown = false, ordersOnly = false }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
   const [isOpen, setIsOpen] = useState(false);
@@ -77,6 +85,27 @@ export default function AccountAutocomplete({ onSelect, value = '', placeholder 
     });
   };
 
+  const entityDisplayName = (entity) => entity.profile?.companyName
+    || `${entity.profile?.firstName || ''} ${entity.profile?.lastName || ''}`.trim()
+    || 'Unknown';
+
+  const handleSelectContact = (entity) => {
+    const entityName = entityDisplayName(entity);
+    setQuery('');
+    setIsOpen(false);
+    setResults([]);
+    onSelect({
+      clientId: entity.migratedFromUserId || null,
+      entityId: entity._id,
+      bankAccountId: null,
+      clientName: entityName,
+      accountLabel: entityName
+    });
+  };
+
+  // Contacts that can be shown: with accounts, or any contact when picking a contact alone is allowed
+  const visibleResults = results.filter(entity => allowContactOnly || (entity.accounts || []).length > 0);
+
   const handleClear = () => {
     setQuery('');
     setResults([]);
@@ -124,23 +153,23 @@ export default function AccountAutocomplete({ onSelect, value = '', placeholder 
 
       {isOpen && (
         <div style={{
-          position: 'absolute', bottom: '100%', left: 0, right: 0,
+          position: 'absolute', left: 0, right: 0,
+          ...(dropDown
+            ? { top: '100%', borderRadius: '0 0 6px 6px', boxShadow: '0 4px 16px rgba(0,0,0,0.2)' }
+            : { bottom: '100%', borderRadius: '6px 6px 0 0', boxShadow: '0 -4px 16px rgba(0,0,0,0.2)' }),
           background: 'var(--bg-primary)', border: '1px solid var(--border-color)',
-          borderRadius: '6px 6px 0 0', maxHeight: '300px', overflowY: 'auto',
-          zIndex: 200, boxShadow: '0 -4px 16px rgba(0,0,0,0.2)'
+          maxHeight: '300px', overflowY: 'auto',
+          zIndex: 200
         }}>
           {isSearching && (
             <div style={{ padding: '10px 14px', fontSize: '12px', color: 'var(--text-muted)' }}>Searching...</div>
           )}
-          {!isSearching && results.length === 0 && query.length >= 2 && (
+          {!isSearching && visibleResults.length === 0 && query.length >= 2 && (
             <div style={{ padding: '10px 14px', fontSize: '12px', color: 'var(--text-muted)' }}>No results</div>
           )}
-          {results.map(entity => {
-            const entityName = entity.profile?.companyName
-              || `${entity.profile?.firstName || ''} ${entity.profile?.lastName || ''}`.trim()
-              || 'Unknown';
+          {visibleResults.map(entity => {
+            const entityName = entityDisplayName(entity);
             const accounts = entity.accounts || [];
-            if (accounts.length === 0) return null;
 
             return (
               <div key={entity._id}>
@@ -148,16 +177,36 @@ export default function AccountAutocomplete({ onSelect, value = '', placeholder 
                   {entityName}
                   {entity.type === 'company' && <span style={{ marginLeft: '6px', fontSize: '10px', padding: '1px 6px', borderRadius: '3px', background: 'rgba(99,102,241,0.15)', color: '#6366f1' }}>Company</span>}
                 </div>
-                {accounts.map(account => (
+                {allowContactOnly && (
                   <div
-                    key={account._id}
-                    onClick={() => handleSelect(entity, account)}
+                    onClick={() => handleSelectContact(entity)}
                     style={{
                       padding: '8px 14px 8px 24px', cursor: 'pointer', fontSize: '13px',
-                      color: 'var(--text-primary)', transition: 'background 0.1s',
-                      borderBottom: '1px solid var(--border-color)'
+                      color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)'
                     }}
                     onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-secondary)'}
+                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                  >
+                    <span style={{ fontWeight: '500' }}>{entityName}</span>
+                    <span style={{ marginLeft: '8px', fontSize: '11px', color: 'var(--text-muted)' }}>
+                      {accounts.length === 0 ? 'Contact, no bank account' : 'Client (no specific account)'}
+                    </span>
+                  </div>
+                )}
+                {accounts.map(account => {
+                  const blocked = ordersOnly && !accountAllowsOrders(account);
+                  return (
+                  <div
+                    key={account._id}
+                    onClick={() => { if (!blocked) handleSelect(entity, account); }}
+                    title={blocked ? 'View only: no power of attorney to place orders on this account' : undefined}
+                    style={{
+                      padding: '8px 14px 8px 24px', cursor: blocked ? 'not-allowed' : 'pointer', fontSize: '13px',
+                      color: 'var(--text-primary)', transition: 'background 0.1s',
+                      borderBottom: '1px solid var(--border-color)',
+                      opacity: blocked ? 0.55 : 1
+                    }}
+                    onMouseEnter={(e) => { if (!blocked) e.currentTarget.style.background = 'var(--bg-secondary)'; }}
                     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                   >
                     <span style={{ fontWeight: '500' }}>{account.bankName || ''}</span>
@@ -165,8 +214,10 @@ export default function AccountAutocomplete({ onSelect, value = '', placeholder 
                     {account.name && account.name !== entityName && <span style={{ marginLeft: '6px', color: 'var(--text-muted)', fontSize: '12px' }}>({account.name})</span>}
                     <span style={{ marginLeft: '8px', fontSize: '11px', padding: '1px 5px', borderRadius: '3px', background: 'rgba(79,166,255,0.1)', color: 'var(--accent-color)' }}>{account.referenceCurrency || ''}</span>
                     {account.ownerName && <span style={{ marginLeft: '6px', fontSize: '11px', color: 'var(--warning-color)' }}>via {account.ownerName}</span>}
+                    {blocked && <span style={{ marginLeft: '8px', fontSize: '11px', fontWeight: '600', color: 'var(--loss-color)' }}>View only — no orders</span>}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             );
           })}

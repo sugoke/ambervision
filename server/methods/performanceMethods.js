@@ -6,6 +6,31 @@ import { PortfolioSnapshotHelpers, filterSnapshotsByBankStartDate } from '../../
 import { getAssetClassLabel, getGranularCategoryLabel } from '../../imports/api/securitiesMetadata.js';
 import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
 import { getHeldProductIdsForScope } from '../helpers/holdingsScope.js';
+import { buildEURRatesMap, convertCurrency } from '../helpers/currencyHelpers.js';
+
+// Snapshot amounts, each stored in its snapshot's own currency (snapshot.currency)
+const SNAPSHOT_AMOUNT_FIELDS = ['totalAccountValue', 'cashBalance', 'totalMarketValue', 'totalCostBasis', 'totalCapitalInvested', 'unrealizedPnL'];
+
+/**
+ * Express snapshots in `currency` at current spot rates, before any summing
+ * across accounts. Returns null when a rate is missing, so the caller keeps the
+ * original currencies rather than mislabelling unconverted amounts.
+ */
+async function convertSnapshots(snapshots, currency) {
+  const ratesMap = await buildEURRatesMap();
+  const converted = [];
+  for (const snap of snapshots) {
+    const out = { ...snap, currency };
+    for (const field of SNAPSHOT_AMOUNT_FIELDS) {
+      if (snap[field] === null || snap[field] === undefined) continue;
+      const value = convertCurrency(snap[field], snap.currency, currency, ratesMap);
+      if (value === null) return null;
+      out[field] = value;
+    }
+    converted.push(out);
+  }
+  return converted;
+}
 
 /**
  * Validate session and get user
@@ -372,8 +397,11 @@ Meteor.methods({
   /**
    * Get portfolio value chart data
    */
-  async 'performance.getChartData'({ sessionId, portfolioCode = null, startDate = null, endDate = null, viewAsFilter = null }) {
+  async 'performance.getChartData'({ sessionId, portfolioCode = null, startDate = null, endDate = null, viewAsFilter = null, currency = null }) {
     check(sessionId, String);
+    // Display currency: every snapshot is converted to it (current spot) before
+    // accounts are summed. Without it, amounts stay in the snapshots' currencies.
+    check(currency, Match.OneOf(String, null, undefined));
     check(portfolioCode, Match.OneOf(String, null, undefined));
     check(startDate, Match.OneOf(String, Date, null, undefined));
     check(endDate, Match.OneOf(String, Date, null, undefined));
@@ -391,6 +419,7 @@ Meteor.methods({
     const end = endDate ? new Date(endDate) : null;
 
     let snapshots;
+    let convertedAtSpot = false;
 
     // Admin/SuperAdmin without filter = aggregate ALL clients
     if ((user.role === 'admin' || user.role === 'superadmin') && !viewAsFilter) {
@@ -454,7 +483,17 @@ Meteor.methods({
 
         const fetchedSnapshots = await PortfolioSnapshotsCollection.find(snapshotQuery, { sort: { snapshotDate: 1 } }).fetchAsync();
         // Exclude snapshots from banks with known bad historical pricing (e.g. CMB before 2026-01-09)
-        const rawSnapshots = filterSnapshotsByBankStartDate(fetchedSnapshots);
+        let rawSnapshots = filterSnapshotsByBankStartDate(fetchedSnapshots);
+
+        if (currency && rawSnapshots.some(snap => snap.currency && snap.currency !== currency)) {
+          const converted = await convertSnapshots(rawSnapshots, currency);
+          if (converted) {
+            rawSnapshots = converted;
+            convertedAtSpot = true;
+          } else {
+            console.warn(`[PERFORMANCE] Missing FX rate to show chart in ${currency}; keeping snapshot currencies`);
+          }
+        }
 
         if (targetPortfolioCodes.length > 1 && rawSnapshots.length > 0) {
           const byDate = {};
@@ -524,9 +563,17 @@ Meteor.methods({
     const labels = snapshots.map(s => s.snapshotDate.toISOString().split('T')[0]);
     const values = snapshots.map(s => s.totalAccountValue);
 
+    // The currency the amounts are in: the requested one once converted, else
+    // the snapshots' own currency when they agree, else unknown (mixed).
+    const snapshotCurrencies = [...new Set(snapshots.map(s => s.currency).filter(Boolean))];
+    const valueCurrency = convertedAtSpot ? currency
+      : snapshotCurrencies.length === 1 ? snapshotCurrencies[0] : null;
+
     return {
       hasData: true,
       labels,
+      valueCurrency,
+      convertedAtSpot,
       datasets: [
         {
           label: 'Portfolio Value',
@@ -682,9 +729,10 @@ Meteor.methods({
    * Returns pre-formatted data for all periods (1M, 3M, 6M, YTD, 1Y, ALL)
    * plus chart data rebased to 100.
    */
-  async 'performance.calculateTWR'({ sessionId, portfolioCode = null, viewAsFilter = null }) {
+  async 'performance.calculateTWR'({ sessionId, portfolioCode = null, viewAsFilter = null, currency = null }) {
     check(sessionId, String);
     check(portfolioCode, Match.OneOf(String, null, undefined));
+    check(currency, Match.OneOf(String, null, undefined));
     check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
       type: String,
       id: String
@@ -737,249 +785,332 @@ Meteor.methods({
       targetPortfolioCodes = ownAccounts.map(a => a.accountNumber);
     }
 
-    console.log(`[TWR] Calculating for user: ${user.username}, portfolioCodes: ${targetPortfolioCodes?.join(',') || 'ALL'}, adminAll: ${isAdminAllClients}`);
-
-    // 1. Fetch snapshots by portfolio codes (account-centric)
-    let snapshots;
-    if (isAdminAllClients) {
-      snapshots = await PortfolioSnapshotHelpers.getAggregatedSnapshots({
-        startDate: null,
-        endDate: now
-      });
-    } else if (targetPortfolioCodes && targetPortfolioCodes.length > 0) {
-      const snapshotQuery = {};
-      if (targetPortfolioCodes.length === 1) {
-        snapshotQuery.portfolioCode = targetPortfolioCodes[0];
-      } else {
-        snapshotQuery.portfolioCode = { $in: targetPortfolioCodes };
-      }
-      if (now) snapshotQuery.snapshotDate = { $lte: now };
-
-      console.log(`[TWR] Snapshot query: ${JSON.stringify(snapshotQuery)}`);
-
-      const fetchedSnapshots = await PortfolioSnapshotsCollection.find(snapshotQuery, {
-        sort: { snapshotDate: 1 }
-      }).fetchAsync();
-
-      // Exclude snapshots from banks with known bad historical pricing (e.g. CMB before 2026-01-09)
-      const rawSnapshots = filterSnapshotsByBankStartDate(fetchedSnapshots);
-
-      console.log(`[TWR] Found ${rawSnapshots.length} raw snapshots (filtered from ${fetchedSnapshots.length})`);
-
-      // Aggregate by date if multiple accounts
-      if (targetPortfolioCodes.length > 1 && rawSnapshots.length > 0) {
-        const byDate = {};
-        for (const snap of rawSnapshots) {
-          const dateKey = snap.snapshotDate.toISOString().split('T')[0];
-          if (!byDate[dateKey]) {
-            byDate[dateKey] = { ...snap, _aggregated: true };
-          } else {
-            byDate[dateKey].totalAccountValue = (byDate[dateKey].totalAccountValue || 0) + (snap.totalAccountValue || 0);
-            byDate[dateKey].cashBalance = (byDate[dateKey].cashBalance || 0) + (snap.cashBalance || 0);
-            byDate[dateKey].totalMarketValue = (byDate[dateKey].totalMarketValue || 0) + (snap.totalMarketValue || 0);
-          }
-        }
-        snapshots = Object.values(byDate);
-      } else {
-        snapshots = rawSnapshots;
-      }
-    } else {
-      snapshots = [];
-    }
-
-    const emptyResponse = {
-      hasData: false,
-      periods: {},
-      chartData: { labels: [], datasets: [] },
-      metadata: { calculatedAt: new Date() }
-    };
-
-    if (!snapshots || snapshots.length < 2) {
-      console.log(`[TWR] Insufficient snapshots (${snapshots?.length || 0}), need at least 2`);
-      return emptyResponse;
-    }
-
-    // 2. Fetch external cash flow operations
-    const { PMSOperationsCollection } = await import('../../imports/api/pmsOperations.js');
-    const { OPERATION_TYPES } = await import('../../imports/api/constants/operationTypes.js');
-
-    const externalFlowTypes = [
-      OPERATION_TYPES.TRANSFER_IN,
-      OPERATION_TYPES.TRANSFER_OUT,
-      OPERATION_TYPES.PAYMENT_IN,
-      OPERATION_TYPES.PAYMENT_OUT
-    ];
-
-    const opsQuery = {
-      operationType: { $in: externalFlowTypes }
-    };
-
-    if (!isAdminAllClients && targetPortfolioCodes && targetPortfolioCodes.length > 0) {
-      opsQuery.portfolioCode = targetPortfolioCodes.length === 1
-        ? targetPortfolioCodes[0]
-        : { $in: targetPortfolioCodes };
-    }
-
-    const operations = await PMSOperationsCollection.find(opsQuery, {
-      sort: { operationDate: 1 }
-    }).fetchAsync();
-
-    console.log(`[TWR] Found ${snapshots.length} snapshots, ${operations.length} external flows`);
-
-    // 3. Build FX rates map
-    const { CurrencyRateCacheCollection } = await import('../../imports/api/currencyCache.js');
-    const { buildRatesMap, extractBankFxRates, mergeRatesMaps } = await import('../../imports/api/helpers/cashCalculator.js');
-
-    const currencyRates = await CurrencyRateCacheCollection.find({}).fetchAsync();
-    const eodRatesMap = buildRatesMap(currencyRates);
-
-    // Get bank FX rates from recent holdings
-    const { PMSHoldingsCollection } = await import('../../imports/api/pmsHoldings.js');
-    const holdingsQuery = {};
-    if (!isAdminAllClients && targetPortfolioCodes && targetPortfolioCodes.length > 0) {
-      holdingsQuery.portfolioCode = targetPortfolioCodes.length === 1
-        ? targetPortfolioCodes[0]
-        : { $in: targetPortfolioCodes };
-    }
-    const recentHoldings = await PMSHoldingsCollection.find(holdingsQuery, {
-      limit: 100,
-      sort: { updatedAt: -1 }
-    }).fetchAsync();
-
-    const bankRates = extractBankFxRates(recentHoldings);
-    const ratesMap = mergeRatesMaps(eodRatesMap, bankRates);
-
-    // 4. Calculate TWR
-    const {
-      buildDailyValuesFromSnapshots,
-      buildDailyFlowsFromOperations,
-      calculateDailyTWR,
-      annualizeTWR
-    } = await import('../../imports/api/helpers/twrCalculator.js');
-
-    const dailyValues = buildDailyValuesFromSnapshots(snapshots);
-    const dailyFlows = buildDailyFlowsFromOperations(operations, ratesMap);
-    const twrSeries = calculateDailyTWR(dailyValues, dailyFlows);
-
-    if (twrSeries.length === 0) {
-      console.log(`[TWR] No TWR data points generated`);
-      return emptyResponse;
-    }
-
-    // 5. Calculate period TWRs
-    const lastEntry = twrSeries[twrSeries.length - 1];
-    const firstDate = new Date(dailyValues[0].date);
-    const lastDate = new Date(lastEntry.date);
-    const totalDays = Math.ceil((lastDate - firstDate) / (1000 * 60 * 60 * 24));
-
-    const periodDefs = {
-      '1M': new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
-      '3M': new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000),
-      '6M': new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000),
-      'YTD': new Date(now.getFullYear(), 0, 1),
-      '1Y': new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000),
-      'ALL': null
-    };
-
-    const formatTWR = (value) => `${value >= 0 ? '+' : ''}${(value * 100).toFixed(2)}%`;
-
-    const periods = {};
-
-    for (const [periodName, periodStart] of Object.entries(periodDefs)) {
-      // ALL period: use total cumulative TWR
-      if (periodName === 'ALL') {
-        const twr = lastEntry.cumulativeTWR;
-        const annualized = annualizeTWR(twr, totalDays);
-
-        periods.ALL = {
-          hasData: true,
-          twr,
-          twrFormatted: formatTWR(twr),
-          startDate: dailyValues[0].date,
-          endDate: lastEntry.date,
-          dataPoints: twrSeries.length,
-          isAnnualized: annualized !== null,
-          twrAnnualized: annualized,
-          twrAnnualizedFormatted: annualized !== null
-            ? `${formatTWR(annualized).replace('%', '% (ann.)')}`
-            : null
-        };
-        continue;
-      }
-
-      const periodStartStr = periodStart.toISOString().split('T')[0];
-
-      // Find the TWR entry closest to (but not after) the period start
-      let startTWR = 0; // Default: reference point at the very beginning
-
-      // Look for an entry at or before the period start date
-      for (let i = twrSeries.length - 1; i >= 0; i--) {
-        if (twrSeries[i].date <= periodStartStr) {
-          startTWR = twrSeries[i].cumulativeTWR;
-          break;
-        }
-      }
-
-      // Check if we have any data in this period range
-      const dataPointsInPeriod = twrSeries.filter(e => e.date >= periodStartStr).length;
-
-      if (dataPointsInPeriod === 0) {
-        periods[periodName] = {
-          hasData: false,
-          twr: 0,
-          twrFormatted: 'N/A',
-          startDate: periodStartStr,
-          endDate: lastEntry.date,
-          dataPoints: 0
-        };
-        continue;
-      }
-
-      // Chain-link: period TWR = (1 + endTWR) / (1 + startTWR) - 1
-      const endTWR = lastEntry.cumulativeTWR;
-      const periodTWR = (1 + endTWR) / (1 + startTWR) - 1;
-
-      periods[periodName] = {
-        hasData: true,
-        twr: periodTWR,
-        twrFormatted: formatTWR(periodTWR),
-        startDate: periodStartStr,
-        endDate: lastEntry.date,
-        dataPoints: dataPointsInPeriod
-      };
-    }
-
-    // 6. Build chart data (rebased to 100 from inception)
-    const chartLabels = [dailyValues[0].date, ...twrSeries.map(r => r.date)];
-    const chartValues = [100, ...twrSeries.map(r => 100 * (1 + r.cumulativeTWR))];
-
-    const chartData = {
-      labels: chartLabels,
-      datasets: [{
-        label: 'TWR Performance',
-        data: chartValues,
-        borderColor: '#10b981',
-        backgroundColor: 'rgba(16, 185, 129, 0.1)',
-        fill: true,
-        borderWidth: 2,
-        pointRadius: 0,
-        tension: 0.1
-      }]
-    };
-
-    console.log(`[TWR] Complete: ${twrSeries.length} data points, ALL TWR: ${formatTWR(lastEntry.cumulativeTWR)}, ${operations.length} external flows`);
-
-    return {
-      hasData: true,
-      periods,
-      chartData,
-      metadata: {
-        calculatedAt: new Date(),
-        totalDays,
-        firstSnapshotDate: dailyValues[0].date,
-        lastSnapshotDate: lastEntry.date,
-        externalFlowCount: operations.length
-      }
-    };
+    return computeTWR({
+      codes: targetPortfolioCodes,
+      portfolioCode,
+      isAdminAllClients,
+      currency,
+      now,
+      label: user.username
+    });
   }
 });
+
+/**
+ * Time-weighted return of a set of accounts, in one currency.
+ * Shared by the PMS Performance tab (performance.calculateTWR) and the PDF
+ * report, so both always show the same figures.
+ *
+ * @param {Array<String>} codes - portfolio codes (account numbers) of the perimeter
+ * @param {String} portfolioCode - set when ONE account was picked explicitly:
+ *        it is then measured even if it is not an investment account
+ * @param {Boolean} isAdminAllClients - firm-wide aggregate
+ * @param {String} currency - currency to express the return in
+ */
+export async function computeTWR({ codes, portfolioCode = null, isAdminAllClients = false, currency = null, now = new Date(), label = '' }) {
+  const { BankAccountsCollection } = await import('../../imports/api/bankAccounts.js');
+  const { PortfolioSnapshotsCollection } = await import('../../imports/api/portfolioSnapshots.js');
+  let targetPortfolioCodes = codes ? [...codes] : null;
+  // A client's performance is that of its investment accounts. Credit lines,
+  // card and spending accounts carry no performance of their own, and their
+  // card settlements and drawdowns would read as gains or losses. One account
+  // picked explicitly (portfolioCode) is measured as asked.
+  let perimeterAccounts = [];
+  if (!isAdminAllClients && targetPortfolioCodes && targetPortfolioCodes.length > 0) {
+    const { isInvestmentAccount } = await import('../../imports/api/bankAccounts.js');
+    perimeterAccounts = await BankAccountsCollection.find(
+      { accountNumber: { $in: targetPortfolioCodes }, isActive: true },
+      { fields: { accountNumber: 1, comment: 1, referenceCurrency: 1, bankId: 1 } }
+    ).fetchAsync();
+    if (!portfolioCode) {
+      const investmentCodes = perimeterAccounts.filter(isInvestmentAccount).map(a => a.accountNumber);
+      if (investmentCodes.length > 0) targetPortfolioCodes = [...new Set(investmentCodes)];
+    }
+  }
+
+  console.log(`[TWR] Calculating for user: ${label}, portfolioCodes: ${targetPortfolioCodes?.join(',') || 'ALL'}, adminAll: ${isAdminAllClients}`);
+
+  // 1. Fetch snapshots by portfolio codes (account-centric)
+  let snapshots;
+  let rawSnapshotsForTWR = [];
+  if (isAdminAllClients) {
+    snapshots = await PortfolioSnapshotHelpers.getAggregatedSnapshots({
+      startDate: null,
+      endDate: now
+    });
+  } else if (targetPortfolioCodes && targetPortfolioCodes.length > 0) {
+    const snapshotQuery = {};
+    if (targetPortfolioCodes.length === 1) {
+      snapshotQuery.portfolioCode = targetPortfolioCodes[0];
+    } else {
+      snapshotQuery.portfolioCode = { $in: targetPortfolioCodes };
+    }
+    if (now) snapshotQuery.snapshotDate = { $lte: now };
+
+    console.log(`[TWR] Snapshot query: ${JSON.stringify(snapshotQuery)}`);
+
+    const fetchedSnapshots = await PortfolioSnapshotsCollection.find(snapshotQuery, {
+      sort: { snapshotDate: 1 }
+    }).fetchAsync();
+
+    // Exclude snapshots from banks with known bad historical pricing (e.g. CMB before 2026-01-09)
+    const rawSnapshots = filterSnapshotsByBankStartDate(fetchedSnapshots);
+
+    console.log(`[TWR] Found ${rawSnapshots.length} raw snapshots (filtered from ${fetchedSnapshots.length})`);
+
+    rawSnapshotsForTWR = rawSnapshots;
+
+    // Aggregate by date if multiple accounts
+    if (targetPortfolioCodes.length > 1 && rawSnapshots.length > 0) {
+      const byDate = {};
+      for (const snap of rawSnapshots) {
+        const dateKey = snap.snapshotDate.toISOString().split('T')[0];
+        if (!byDate[dateKey]) {
+          byDate[dateKey] = { ...snap, _aggregated: true };
+        } else {
+          byDate[dateKey].totalAccountValue = (byDate[dateKey].totalAccountValue || 0) + (snap.totalAccountValue || 0);
+          byDate[dateKey].cashBalance = (byDate[dateKey].cashBalance || 0) + (snap.cashBalance || 0);
+          byDate[dateKey].totalMarketValue = (byDate[dateKey].totalMarketValue || 0) + (snap.totalMarketValue || 0);
+        }
+      }
+      snapshots = Object.values(byDate);
+    } else {
+      snapshots = rawSnapshots;
+    }
+  } else {
+    snapshots = [];
+  }
+
+  const emptyResponse = {
+    hasData: false,
+    periods: {},
+    chartData: { labels: [], datasets: [] },
+    metadata: { calculatedAt: new Date() }
+  };
+
+  if (!snapshots || snapshots.length < 2) {
+    console.log(`[TWR] Insufficient snapshots (${snapshots?.length || 0}), need at least 2`);
+    return emptyResponse;
+  }
+
+  // 2. Fetch external cash flow operations
+  const { PMSOperationsCollection } = await import('../../imports/api/pmsOperations.js');
+  const { OPERATION_TYPES } = await import('../../imports/api/constants/operationTypes.js');
+
+  const { PERIMETER_FLOW_TYPE_LIST } = await import('../../imports/api/helpers/twrCalculator.js');
+  const externalFlowTypes = PERIMETER_FLOW_TYPE_LIST;
+
+  const opsQuery = {
+    operationType: { $in: externalFlowTypes }
+  };
+
+  if (!isAdminAllClients && targetPortfolioCodes && targetPortfolioCodes.length > 0) {
+    opsQuery.portfolioCode = targetPortfolioCodes.length === 1
+      ? targetPortfolioCodes[0]
+      : { $in: targetPortfolioCodes };
+  }
+
+  const operations = await PMSOperationsCollection.find(opsQuery, {
+    sort: { operationDate: 1 }
+  }).fetchAsync();
+
+  console.log(`[TWR] Found ${snapshots.length} snapshots, ${operations.length} external flows`);
+
+  // 3. Build FX rates map
+  const { CurrencyRateCacheCollection } = await import('../../imports/api/currencyCache.js');
+  const { buildRatesMap, extractBankFxRates, mergeRatesMaps } = await import('../../imports/api/helpers/cashCalculator.js');
+
+  const currencyRates = await CurrencyRateCacheCollection.find({}).fetchAsync();
+  const eodRatesMap = buildRatesMap(currencyRates);
+
+  // Get bank FX rates from recent holdings
+  const { PMSHoldingsCollection } = await import('../../imports/api/pmsHoldings.js');
+  const holdingsQuery = {};
+  if (!isAdminAllClients && targetPortfolioCodes && targetPortfolioCodes.length > 0) {
+    holdingsQuery.portfolioCode = targetPortfolioCodes.length === 1
+      ? targetPortfolioCodes[0]
+      : { $in: targetPortfolioCodes };
+  }
+  const recentHoldings = await PMSHoldingsCollection.find(holdingsQuery, {
+    limit: 100,
+    sort: { updatedAt: -1 }
+  }).fetchAsync();
+
+  const bankRates = extractBankFxRates(recentHoldings);
+  const ratesMap = mergeRatesMaps(eodRatesMap, bankRates);
+
+  // 4. Calculate TWR in ONE currency: the one asked for, else the accounts'
+  // common currency, else the most frequent snapshot currency.
+  const {
+    buildConsolidatedDailyValues,
+    buildConsolidatedDailyFlows,
+    calculateDailyTWR,
+    annualizeTWR
+  } = await import('../../imports/api/helpers/twrCalculator.js');
+
+  const snapshotCurrencyCounts = snapshots.reduce((acc, snap) => {
+    if (snap.currency) acc[snap.currency] = (acc[snap.currency] || 0) + 1;
+    return acc;
+  }, {});
+  const twrCurrency = currency
+    || Object.entries(snapshotCurrencyCounts).sort((a, b) => b[1] - a[1])[0]?.[0]
+    || 'EUR';
+  // ratesMap: currency -> EUR multiplier
+  const eurPerUnit = (ccy) => (ccy === 'EUR' ? 1 : (ratesMap[ccy] || null));
+  const convert = (amount, fromCurrency) => {
+    if (!fromCurrency || fromCurrency === twrCurrency) return amount;
+    const from = eurPerUnit(fromCurrency);
+    const to = eurPerUnit(twrCurrency);
+    return from && to ? amount * from / to : null;
+  };
+
+  // Banks that book signed amounts: their sign gives a flow's direction
+  const flowBankIds = [...new Set(operations.map(op => op.bankId).filter(Boolean))];
+  const signedBankIds = new Set();
+  for (const bankId of flowBankIds) {
+    const negative = await PMSOperationsCollection.findOneAsync(
+      { bankId, operationType: { $in: externalFlowTypes }, netAmount: { $lt: 0 } },
+      { fields: { _id: 1 } }
+    );
+    if (negative) signedBankIds.add(bankId);
+  }
+
+  const valuesResult = buildConsolidatedDailyValues(isAdminAllClients ? snapshots : rawSnapshotsForTWR, convert);
+  const flowsResult = buildConsolidatedDailyFlows(operations, convert, signedBankIds);
+  if (valuesResult.missingRate || flowsResult.missingRate) {
+    console.warn(`[TWR] No FX rate for ${valuesResult.missingRate || flowsResult.missingRate} -> ${twrCurrency}`);
+    return { ...emptyResponse, metadata: { ...emptyResponse.metadata, missingRate: valuesResult.missingRate || flowsResult.missingRate } };
+  }
+  const dailyValues = valuesResult.dailyValues;
+  const dailyFlows = { ...flowsResult.dailyFlows };
+  for (const [date, amount] of Object.entries(valuesResult.structuralFlows)) {
+    dailyFlows[date] = (dailyFlows[date] || 0) + amount;
+  }
+  const twrSeries = calculateDailyTWR(dailyValues, dailyFlows);
+
+  if (twrSeries.length === 0) {
+    console.log(`[TWR] No TWR data points generated`);
+    return emptyResponse;
+  }
+
+  // 5. Calculate period TWRs
+  const lastEntry = twrSeries[twrSeries.length - 1];
+  const firstDate = new Date(dailyValues[0].date);
+  const lastDate = new Date(lastEntry.date);
+  const totalDays = Math.ceil((lastDate - firstDate) / (1000 * 60 * 60 * 24));
+
+  const periodDefs = {
+    '1M': new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
+    '3M': new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000),
+    '6M': new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000),
+    'YTD': new Date(now.getFullYear(), 0, 1),
+    '1Y': new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000),
+    'ALL': null
+  };
+
+  const formatTWR = (value) => `${value >= 0 ? '+' : ''}${(value * 100).toFixed(2)}%`;
+
+  const periods = {};
+
+  for (const [periodName, periodStart] of Object.entries(periodDefs)) {
+    // ALL period: use total cumulative TWR
+    if (periodName === 'ALL') {
+      const twr = lastEntry.cumulativeTWR;
+      const annualized = annualizeTWR(twr, totalDays);
+
+      periods.ALL = {
+        hasData: true,
+        twr,
+        twrFormatted: formatTWR(twr),
+        startDate: dailyValues[0].date,
+        endDate: lastEntry.date,
+        dataPoints: twrSeries.length,
+        isAnnualized: annualized !== null,
+        twrAnnualized: annualized,
+        twrAnnualizedFormatted: annualized !== null
+          ? `${formatTWR(annualized).replace('%', '% (ann.)')}`
+          : null
+      };
+      continue;
+    }
+
+    const periodStartStr = periodStart.toISOString().split('T')[0];
+
+    // Find the TWR entry closest to (but not after) the period start
+    let startTWR = 0; // Default: reference point at the very beginning
+
+    // Look for an entry at or before the period start date
+    for (let i = twrSeries.length - 1; i >= 0; i--) {
+      if (twrSeries[i].date <= periodStartStr) {
+        startTWR = twrSeries[i].cumulativeTWR;
+        break;
+      }
+    }
+
+    // Check if we have any data in this period range
+    const dataPointsInPeriod = twrSeries.filter(e => e.date >= periodStartStr).length;
+
+    if (dataPointsInPeriod === 0) {
+      periods[periodName] = {
+        hasData: false,
+        twr: 0,
+        twrFormatted: 'N/A',
+        startDate: periodStartStr,
+        endDate: lastEntry.date,
+        dataPoints: 0
+      };
+      continue;
+    }
+
+    // Chain-link: period TWR = (1 + endTWR) / (1 + startTWR) - 1
+    const endTWR = lastEntry.cumulativeTWR;
+    const periodTWR = (1 + endTWR) / (1 + startTWR) - 1;
+
+    periods[periodName] = {
+      hasData: true,
+      twr: periodTWR,
+      twrFormatted: formatTWR(periodTWR),
+      startDate: periodStartStr,
+      endDate: lastEntry.date,
+      dataPoints: dataPointsInPeriod
+    };
+  }
+
+  // 6. Build chart data (rebased to 100 from inception)
+  const chartLabels = [dailyValues[0].date, ...twrSeries.map(r => r.date)];
+  const chartValues = [100, ...twrSeries.map(r => 100 * (1 + r.cumulativeTWR))];
+
+  const chartData = {
+    labels: chartLabels,
+    datasets: [{
+      label: 'TWR Performance',
+      data: chartValues,
+      borderColor: '#10b981',
+      backgroundColor: 'rgba(16, 185, 129, 0.1)',
+      fill: true,
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.1
+    }]
+  };
+
+  console.log(`[TWR] Complete: ${twrSeries.length} data points, ALL TWR: ${formatTWR(lastEntry.cumulativeTWR)}, ${operations.length} external flows`);
+
+  return {
+    hasData: true,
+    periods,
+    chartData,
+    metadata: {
+      calculatedAt: new Date(),
+      totalDays,
+      firstSnapshotDate: dailyValues[0].date,
+      lastSnapshotDate: lastEntry.date,
+      externalFlowCount: operations.length,
+      currency: twrCurrency,
+      // Accounts of the perimeter left out of the measure (credit lines, cards, spending)
+      excludedAccounts: perimeterAccounts
+        .filter(a => !targetPortfolioCodes?.includes(a.accountNumber))
+        .map(a => ({ accountNumber: a.accountNumber, comment: a.comment || null }))
+    }
+  };
+}

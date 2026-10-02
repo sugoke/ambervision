@@ -3,6 +3,7 @@ import { Meteor } from 'meteor/meteor';
 import { USER_ROLES } from '/imports/api/users';
 import { ClientEntityHelpers, ENTITY_TYPES, ENTITY_STATUSES } from '/imports/api/clientEntities';
 import { useViewAs } from '../ViewAsContext.jsx';
+import { getClientReferenceCurrency } from '/imports/api/bankAccounts';
 
 const ViewAsFilter = ({ currentUser, onSelect }) => {
   const { viewAsFilter, setFilter, clearFilter, favorites, addFavorite, removeFavorite, isFavorite } = useViewAs();
@@ -364,8 +365,8 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                         </span>
                       )}
 
-                      {/* Currency */}
-                      {entity.referenceCurrency && (
+                      {/* Currency - the client's investment accounts decide, as on the client file */}
+                      {(entity.referenceCurrency || (entity.accounts || []).length > 0) && (
                         <span style={{
                           fontSize: '0.6rem',
                           padding: '0.1rem 0.35rem',
@@ -374,7 +375,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
                           color: 'var(--text-muted)',
                           fontWeight: '600'
                         }}>
-                          {entity.referenceCurrency}
+                          {getClientReferenceCurrency(entity, entity.accounts).currency}
                         </span>
                       )}
 

@@ -341,10 +341,13 @@ function Editor({ initial, t, onCancel, onSaved }) {
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
         <Field label={t.client}>
+          {/* A meeting can be with any contact, including a prospect without an account */}
           <AccountAutocomplete
             onSelect={handleClientSelect}
             value={client.label}
             placeholder={t.pickClient}
+            allowContactOnly
+            dropDown
           />
         </Field>
         <Field label={t.date}>

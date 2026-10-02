@@ -12,6 +12,7 @@ import { ProductsCollection } from '/imports/api/products';
 import { AllocationsCollection } from '/imports/api/allocations';
 import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
 import { getHeldProductIdsForScope } from '/server/helpers/holdingsScope';
+import { clientAllocationSelector } from '/server/helpers/clientAllocationScope';
 
 // Publication that aggregates all observations from live products
 Meteor.publish("schedule.observations", async function (sessionId = null, viewAsFilter = null) {
@@ -243,10 +244,11 @@ Meteor.publish("schedule.observations", async function (sessionId = null, viewAs
     productQuery = { _id: { $in: productIds } };
     scopedAllocations = clientAllocations;
   } else if (currentUser.role === USER_ROLES.CLIENT) {
-    // Client sees only products they have allocations in
-    const userAllocations = await AllocationsCollection.find({
-      clientId: currentUser._id
-    }).fetchAsync();
+    // Client sees only products they have allocations in — keyed by login,
+    // entity or bank account (see server/helpers/clientAllocationScope.js)
+    const selector = await clientAllocationSelector(currentUser);
+    if (!selector) return this.ready();
+    const userAllocations = await AllocationsCollection.find(selector).fetchAsync();
 
     const productIds = [...new Set(userAllocations.map(alloc => alloc.productId))];
     if (productIds.length === 0) {

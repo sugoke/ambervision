@@ -1322,10 +1322,10 @@ Meteor.methods({
               }).fetchAsync();
               adminUsers.forEach(admin => recipientIds.add(admin._id));
 
-              // Add the relationship manager if assigned
-              if (clientForCash?.relationshipManagerId) {
-                recipientIds.add(clientForCash.relationshipManagerId);
-              }
+              // Add the client's relationship managers (account, entity or legacy login)
+              const { resolveClientRmIds } = await import('/imports/api/notificationService.js');
+              (await resolveClientRmIds({ clientIds: [portfolioUserId, bankAccount.entityId], bankAccountIds: [bankAccount._id] }))
+                .forEach(id => recipientIds.add(id));
 
               // Create ONE notification for all relevant users
               if (recipientIds.size > 0) {
@@ -1421,9 +1421,13 @@ Meteor.methods({
             });
 
             // Also notify the relationship manager if one is assigned
-            if (client?.relationshipManagerId && client.relationshipManagerId !== user._id) {
+            // Also notify the client's relationship managers (account, entity or legacy login)
+            const { resolveClientRmIds } = await import('/imports/api/notificationService.js');
+            const breachRmIds = (await resolveClientRmIds({ clientIds: [portfolioUserId, bankAccount.entityId], bankAccountIds: [bankAccount._id] }))
+              .filter(id => id !== user._id);
+            for (const rmId of breachRmIds) {
               await NotificationHelpers.create({
-                userId: client.relationshipManagerId,
+                userId: rmId,
                 type: 'warning',
                 title: 'Allocation Limit Breached',
                 message: `${clientName}'s account ${bank.name} ${bankAccount.accountNumber} exceeds investment profile limits.\n\n${breachDetails}`,
@@ -2871,9 +2875,13 @@ Meteor.methods({
               eventType: 'allocation_breach'
             });
 
-            if (client?.relationshipManagerId && client.relationshipManagerId !== user._id) {
+            // Also notify the client's relationship managers (account, entity or legacy login)
+            const { resolveClientRmIds } = await import('/imports/api/notificationService.js');
+            const breachRmIds = (await resolveClientRmIds({ clientIds: [portfolioUserId, testBankAccount.entityId], bankAccountIds: [testBankAccount._id] }))
+              .filter(id => id !== user._id);
+            for (const rmId of breachRmIds) {
               await NotificationHelpers.create({
-                userId: client.relationshipManagerId,
+                userId: rmId,
                 type: 'warning',
                 title: 'Allocation Limit Breached',
                 message: `${clientName}'s account Julius Baer ${testBankAccount.accountNumber} exceeds investment profile limits.\n\n${breachDetails}`,

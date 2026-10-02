@@ -1,14 +1,31 @@
 import React, { useState, useEffect } from 'react';
-import { formatDateToISO, formatDateToDDMMYYYY, isWeekend, isMarketHoliday, getNextTradingDay } from '/imports/utils/dateUtils.js';
+import { HOLIDAY_CALENDARS, rollFollowingISO } from '/imports/utils/holidayCalendars.js';
+import {
+  generateSchedule,
+  applyLevelConfig,
+  markManualEdit,
+  countManualDateEdits,
+  isDateConfigField,
+  resolveCalendars,
+  resolvePaymentLag,
+  paymentDateFor,
+  addMonthsISO,
+  shouldAutoBuildSchedule
+} from '/imports/utils/scheduleGenerator.js';
 
+// Schedule tab. The stored schedule rows (existingSchedule, owned by the parent) are the
+// source of truth: they are displayed exactly as saved or extracted from the term sheet
+// and are never rebuilt on mount or load. A rebuild happens only when the user changes
+// a Schedule Configuration field or clicks "Regenerate schedule", and date rebuilds ask
+// for confirmation first. Hand edits in the table are flagged (manualOverride /
+// manualFields) so level-only rebuilds keep them.
 const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onConfigChange, selectedTemplateId, underlyings, existingSchedule }) => {
-  const [schedule, setSchedule] = useState(existingSchedule || []);
+  const schedule = existingSchedule || [];
   const [stepDownInput, setStepDownInput] = useState('');
-  const [hasLoadedExistingSchedule, setHasLoadedExistingSchedule] = useState(false);
-  const [allowRegeneration, setAllowRegeneration] = useState(false);
 
   // Check if this is a participation note
   const isParticipationNote = selectedTemplateId === 'participation_note';
+  const isHimalaya = selectedTemplateId === 'himalaya';
 
   // Use props for configuration, fallback to defaults if not provided
   const frequency = scheduleConfig?.frequency || 'quarterly';
@@ -16,211 +33,116 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
   const stepDownValue = scheduleConfig?.stepDownValue ?? -5;
   const initialAutocallLevel = scheduleConfig?.initialAutocallLevel ?? 100;
   const initialCouponBarrier = scheduleConfig?.initialCouponBarrier ?? 70;
+  const autocallFloor = scheduleConfig?.autocallFloor ?? '';
+
+  const { observationCalendars, paymentCalendars, unmappedExchanges } = resolveCalendars({
+    scheduleConfig, underlyings, currency: productDetails?.currency
+  });
+  const paymentLag = resolvePaymentLag(scheduleConfig || {}, productDetails || {}, paymentCalendars);
 
   // Initialize local input state from prop
   useEffect(() => {
     setStepDownInput(String(stepDownValue));
   }, []);
 
-  // Load existing schedule from term sheet extraction
-  useEffect(() => {
-    if (existingSchedule && existingSchedule.length > 0 && !hasLoadedExistingSchedule) {
-      console.log('[ScheduleBuilder] Loading existing schedule from term sheet:', existingSchedule.length, 'observations');
+  const buildSchedule = (config) => generateSchedule({
+    productDetails,
+    scheduleConfig: config,
+    underlyings,
+    isParticipationNote,
+    previousSchedule: schedule
+  });
 
-      // Log rebateAmount values for debugging
-      if (isParticipationNote) {
-        console.log('[ScheduleBuilder] Participation Note schedule with rebateAmount:',
-          existingSchedule.map(obs => ({
-            id: obs.id,
-            observationDate: obs.observationDate,
-            rebateAmount: obs.rebateAmount
-          }))
-        );
-      }
-
-      setSchedule(existingSchedule);
-      setHasLoadedExistingSchedule(true);
-      setAllowRegeneration(false); // Don't allow regeneration immediately after term sheet load
-      if (onUpdateSchedule) {
-        onUpdateSchedule(existingSchedule);
-      }
-    }
-  }, [existingSchedule]);
-
-  // Track configuration changes - when user changes config, allow regeneration
-  useEffect(() => {
-    if (hasLoadedExistingSchedule && schedule.length > 0) {
-      // User has changed a configuration value, enable regeneration
-      setAllowRegeneration(true);
-    }
-  }, [frequency, coolOffPeriods, stepDownValue, initialAutocallLevel, initialCouponBarrier]);
-
-  // Calculate delay days from setup tab (difference between trade date and value date)
-  const getDelayDays = () => {
-    if (productDetails?.tradeDate && productDetails?.valueDate) {
-      const tradeDate = new Date(productDetails.tradeDate);
-      const valueDate = new Date(productDetails.valueDate);
-      const diffTime = valueDate.getTime() - tradeDate.getTime();
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      return diffDays > 0 ? diffDays : 14; // Default to 14 if negative or zero
-    }
-    return 14; // Default delay
+  const commitSchedule = (rows) => {
+    if (onUpdateSchedule) onUpdateSchedule(rows);
   };
 
-  // Generate observation dates based on frequency
-  const generateObservationDates = () => {
-    if (!productDetails?.tradeDate || !productDetails?.finalObservation) {
-      return [];
-    }
-
-    const tradeDate = new Date(productDetails.tradeDate);
-    const finalDate = new Date(productDetails.finalObservation);
-    const dates = [];
-    let currentDate = new Date(tradeDate);
-
-    // Calculate interval based on frequency
-    let monthsInterval;
-    switch (frequency) {
-      case 'monthly': monthsInterval = 1; break;
-      case 'quarterly': monthsInterval = 3; break;
-      case 'semi-annually': monthsInterval = 6; break;
-      case 'annually': monthsInterval = 12; break;
-      default: monthsInterval = 3;
-    }
-
-    // Generate dates until final observation
-    let periodIndex = 0;
-    while (currentDate <= finalDate) {
-      // Move to next period
-      currentDate = new Date(tradeDate);
-      currentDate.setMonth(currentDate.getMonth() + (periodIndex + 1) * monthsInterval);
-
-      // Don't go beyond final observation
-      if (currentDate > finalDate) {
-        currentDate = new Date(finalDate);
-      }
-
-      // Adjust for weekends and holidays
-      while (isWeekend(currentDate) || isMarketHoliday(currentDate, ['US', 'EU', 'GB'])) {
-        currentDate = getNextTradingDay(currentDate, ['US', 'EU', 'GB']);
-      }
-
-      dates.push(new Date(currentDate));
-      
-      // Break if we've reached the final date
-      if (currentDate.getTime() >= finalDate.getTime()) {
-        break;
-      }
-      
-      periodIndex++;
-    }
-
-    return dates;
-  };
-
-  // Generate value dates (observation date + delay)
-  const generateValueDate = (observationDate) => {
-    const delayDays = getDelayDays();
-    let valueDate = new Date(observationDate);
-    valueDate.setDate(valueDate.getDate() + delayDays);
-
-    // Adjust for weekends and holidays
-    while (isWeekend(valueDate) || isMarketHoliday(valueDate, ['US', 'EU', 'GB'])) {
-      valueDate = getNextTradingDay(valueDate, ['US', 'EU', 'GB']);
-    }
-
-    return valueDate;
-  };
-
-  // Generate schedule when dependencies change
+  // Initial build only: a new product with dates set but no schedule yet
   useEffect(() => {
-    // Safety check for productDetails
-    if (!productDetails) return;
+    if (isHimalaya || !shouldAutoBuildSchedule(schedule, productDetails)) return;
+    const rows = buildSchedule(scheduleConfig || {});
+    if (rows.length > 0) commitSchedule(rows);
+  }, [productDetails?.tradeDate, productDetails?.finalObservation, isHimalaya]);
 
-    // IMPORTANT: If schedule exists from term sheet and user hasn't changed config, preserve it
-    // But allow regeneration if user has explicitly changed configuration values
-    if (schedule && schedule.length > 0 && hasLoadedExistingSchedule && !allowRegeneration) {
-      console.log('[ScheduleBuilder] Schedule from term sheet, config unchanged - preserving exact dates');
-      return;
+  const confirmDateRebuild = () => {
+    if (schedule.length === 0) return true;
+    // Dates that are exactly what the current configuration generates can be rebuilt
+    // silently; anything else (term sheet dates, hand edits) needs confirmation.
+    const generated = buildSchedule(scheduleConfig || {});
+    const onlyGeneratedDates = countManualDateEdits(schedule) === 0 &&
+      generated.length === schedule.length &&
+      generated.every((row, i) =>
+        row.observationDate === schedule[i].observationDate && row.valueDate === schedule[i].valueDate);
+    if (onlyGeneratedDates) return true;
+
+    const manual = countManualDateEdits(schedule);
+    const detail = manual > 0
+      ? `${manual} row(s) have dates edited by hand.`
+      : 'Current dates (including term sheet dates) will be replaced.';
+    return window.confirm(`This will regenerate all observation and payment dates and overwrite manual date edits.\n\n${detail}\n\nContinue?`);
+  };
+
+  // Config change from the Schedule Configuration panel: this is the only automatic rebuild
+  const handleConfigChange = (param, value) => {
+    const nextConfig = { ...(scheduleConfig || {}), [param]: value };
+    if (isDateConfigField(param)) {
+      if (!confirmDateRebuild()) return;
+      onConfigChange && onConfigChange(param, value);
+      commitSchedule(buildSchedule(nextConfig));
+    } else {
+      onConfigChange && onConfigChange(param, value);
+      if (schedule.length > 0) commitSchedule(applyLevelConfig(schedule, nextConfig));
     }
+  };
 
-    const observationDates = generateObservationDates();
-    const newSchedule = observationDates.map((obsDate, index) => {
-      const isCallable = index >= coolOffPeriods;
-      // Calculate autocall level: N/A for non-call periods, start at initial level for first callable period
-      let autocallLevel;
-      if (!isCallable) {
-        autocallLevel = null; // N/A for non-call periods
-      } else {
-        // For callable periods, start at initial level and apply step-down from first callable period
-        const callablePeriodIndex = index - coolOffPeriods;
-        autocallLevel = initialAutocallLevel + (stepDownValue * callablePeriodIndex);
-      }
+  const regenerateSchedule = () => {
+    if (!confirmDateRebuild()) return;
+    commitSchedule(buildSchedule(scheduleConfig || {}));
+  };
 
-      // Preserve rebateAmount from existingSchedule if available (from term sheet extraction)
-      const existingObs = existingSchedule && existingSchedule[index];
-      const rebateAmountValue = isParticipationNote
-        ? (existingObs?.rebateAmount !== undefined && existingObs?.rebateAmount !== null
-            ? existingObs.rebateAmount
-            : 0)
-        : null;
-
-      return {
-        id: `period_${index}`,
-        observationDate: formatDateToISO(obsDate),
-        valueDate: formatDateToISO(generateValueDate(obsDate)),
-        autocallLevel: autocallLevel,
-        isCallable: isCallable,
-        couponBarrier: initialCouponBarrier,
-        periodIndex: index + 1,
-        rebateAmount: rebateAmountValue  // Preserve term sheet data or default to 0
-      };
-    });
-
-    setSchedule(newSchedule);
-    if (onUpdateSchedule) {
-      onUpdateSchedule(newSchedule);
-    }
-  }, [
-    frequency,
-    productDetails?.tradeDate,
-    productDetails?.finalObservation,
-    productDetails?.valueDate,
-    coolOffPeriods,
-    stepDownValue,
-    initialAutocallLevel,
-    initialCouponBarrier,
-    allowRegeneration  // Include this so schedule regenerates when user changes config
-  ]);
-
-  // Update schedule item
+  // Update schedule item (hand edit in the table)
   const updateScheduleItem = (id, field, value) => {
-    const updatedSchedule = schedule.map(item =>
-      item.id === id ? { ...item, [field]: value } : item
-    );
-    setSchedule(updatedSchedule);
-    if (onUpdateSchedule) {
-      onUpdateSchedule(updatedSchedule);
-    }
+    commitSchedule(schedule.map(item => (item.id === id ? markManualEdit(item, field, value) : item)));
   };
 
   // Delete schedule row
   const deleteScheduleRow = (id) => {
-    const updatedSchedule = schedule.filter(item => item.id !== id);
-
-    // Reindex periods after deletion
-    const reindexedSchedule = updatedSchedule.map((item, index) => ({
-      ...item,
-      periodIndex: index + 1,
-      id: `period_${index}` // Also update IDs to maintain consistency
-    }));
-
-    setSchedule(reindexedSchedule);
-    if (onUpdateSchedule) {
-      onUpdateSchedule(reindexedSchedule);
-    }
-    console.log('[ScheduleBuilder] Deleted row, remaining observations:', reindexedSchedule.length);
+    const reindexedSchedule = schedule
+      .filter(item => item.id !== id)
+      .map((item, index) => ({
+        ...item,
+        periodIndex: index + 1,
+        id: `period_${index}` // Also update IDs to maintain consistency
+      }));
+    commitSchedule(reindexedSchedule);
   };
+
+  // Himalaya: one observation per underlying. Generated only when the number of
+  // underlyings no longer matches the stored schedule, so saved dates survive reloads.
+  const numberOfUnderlyings = underlyings?.length || 0;
+  useEffect(() => {
+    if (!isHimalaya) return;
+    if (numberOfUnderlyings === 0 || schedule.length === numberOfUnderlyings) return;
+    if (!productDetails?.tradeDate || !productDetails?.finalObservation) return;
+
+    const start = new Date(productDetails.tradeDate);
+    const end = new Date(productDetails.finalObservation);
+    const intervalDays = (end - start) / (1000 * 60 * 60 * 24) / numberOfUnderlyings;
+    const rows = [];
+    for (let i = 1; i <= numberOfUnderlyings; i++) {
+      const raw = new Date(start);
+      raw.setUTCDate(raw.getUTCDate() + Math.round(intervalDays * i));
+      const observationDate = rollFollowingISO(raw.toISOString().slice(0, 10), observationCalendars);
+      rows.push({
+        id: `himalaya_obs_${i}`,
+        observationDate,
+        valueDate: paymentDateFor(observationDate, paymentLag.lag, paymentCalendars),
+        observationNumber: i,
+        periodIndex: i
+      });
+    }
+    commitSchedule(rows);
+  }, [isHimalaya, numberOfUnderlyings, productDetails?.tradeDate, productDetails?.finalObservation]);
 
   // Get non-call helper text
   const getCoolOffHelperText = () => {
@@ -246,6 +168,16 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
     cursor: 'pointer'
   };
 
+  const configLabelStyle = {
+    display: 'block',
+    marginBottom: '0.5rem',
+    fontWeight: '600',
+    color: 'var(--text-primary)',
+    fontSize: '0.9rem'
+  };
+
+  const helperStyle = { color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '4px', display: 'block' };
+
   if (!productDetails?.tradeDate || !productDetails?.finalObservation) {
     return (
       <div style={{
@@ -267,62 +199,16 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
   }
 
   // Himalaya-specific simple schedule (dates auto-generated based on # of underlyings)
-  if (selectedTemplateId === 'himalaya') {
-    const numberOfUnderlyings = underlyings?.length || 0;
+  if (isHimalaya) {
     const numberOfObservations = numberOfUnderlyings;
 
-    useEffect(() => {
-      if (numberOfObservations > 0 && productDetails?.tradeDate && productDetails?.finalObservation) {
-        const tradeDate = new Date(productDetails.tradeDate);
-        const finalDate = new Date(productDetails.finalObservation);
-        const totalDays = (finalDate - tradeDate) / (1000 * 60 * 60 * 24);
-        const intervalDays = totalDays / numberOfObservations;
-
-        const himalayaSchedule = [];
-        for (let i = 1; i <= numberOfObservations; i++) {
-          let obsDate = new Date(tradeDate);
-          obsDate.setDate(obsDate.getDate() + Math.round(intervalDays * i));
-
-          // Adjust for weekends and holidays
-          while (isWeekend(obsDate) || isMarketHoliday(obsDate, ['US', 'EU', 'GB'])) {
-            obsDate = getNextTradingDay(obsDate, ['US', 'EU', 'GB']);
-          }
-
-          himalayaSchedule.push({
-            id: `himalaya_obs_${i}`,
-            observationDate: formatDateToISO(obsDate),
-            valueDate: formatDateToISO(generateValueDate(obsDate)),
-            observationNumber: i,
-            periodIndex: i
-          });
-        }
-
-        setSchedule(himalayaSchedule);
-        if (onUpdateSchedule) {
-          onUpdateSchedule(himalayaSchedule);
-        }
-      }
-    }, [numberOfObservations, productDetails?.tradeDate, productDetails?.finalObservation]);
-
-    // Handler to update observation date
+    // Hand edit of an observation date: the payment date follows with the issuer lag
     const updateHimalayaDate = (id, newDate) => {
-      const updatedSchedule = schedule.map(item => {
-        if (item.id === id) {
-          // Recalculate value date based on new observation date
-          const obsDate = new Date(newDate);
-          return {
-            ...item,
-            observationDate: newDate,
-            valueDate: formatDateToISO(generateValueDate(obsDate))
-          };
-        }
-        return item;
-      });
-
-      setSchedule(updatedSchedule);
-      if (onUpdateSchedule) {
-        onUpdateSchedule(updatedSchedule);
-      }
+      commitSchedule(schedule.map(item => {
+        if (item.id !== id) return item;
+        const edited = markManualEdit(item, 'observationDate', newDate);
+        return newDate ? { ...edited, valueDate: paymentDateFor(newDate, paymentLag.lag, paymentCalendars) } : edited;
+      }));
     };
 
     return (
@@ -458,6 +344,23 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
         borderBottom: '1px solid var(--border-color)'
       }}>
         <h2 style={{ margin: 0, color: 'var(--text-primary)' }}>Schedule Builder</h2>
+        <button
+          type="button"
+          onClick={regenerateSchedule}
+          title="Rebuild all dates and levels from the Schedule Configuration"
+          style={{
+            padding: '0.5rem 1rem',
+            background: 'transparent',
+            color: 'var(--text-primary)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            fontSize: '0.85rem',
+            fontWeight: '600'
+          }}
+        >
+          ↻ Regenerate schedule
+        </button>
       </div>
 
       {/* Configuration Panel */}
@@ -492,7 +395,7 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
             </label>
             <select
               value={frequency}
-              onChange={(e) => onConfigChange && onConfigChange('frequency', e.target.value)}
+              onChange={(e) => handleConfigChange('frequency', e.target.value)}
               style={selectStyle}
             >
               <option value="monthly">Monthly</option>
@@ -523,13 +426,13 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                 const numValue = value === '' ? 0 : parseInt(value, 10);
                 const maxValue = schedule.length || 99;
                 const finalValue = Math.min(Math.max(0, numValue), maxValue);
-                onConfigChange && onConfigChange('coolOffPeriods', finalValue);
+                handleConfigChange('coolOffPeriods', finalValue);
               }}
               onBlur={(e) => {
                 // Ensure value is valid on blur
                 if (e.target.value === '') {
                   e.target.value = '0';
-                  onConfigChange && onConfigChange('coolOffPeriods', 0);
+                  handleConfigChange('coolOffPeriods', 0);
                 }
               }}
               style={{...inputStyle, width: '80px'}}
@@ -564,7 +467,7 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                 max="150"
                 step="1"
                 value={initialAutocallLevel}
-                onChange={(e) => onConfigChange && onConfigChange('initialAutocallLevel', parseFloat(e.target.value) || 100)}
+                onChange={(e) => handleConfigChange('initialAutocallLevel', parseFloat(e.target.value) || 100)}
                 style={{...inputStyle, width: '80px'}}
               />
             </div>
@@ -596,7 +499,7 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                     if (value && value !== '-' && value !== '.' && value !== '-.') {
                       const numValue = parseFloat(value);
                       if (!isNaN(numValue) && onConfigChange) {
-                        onConfigChange('stepDownValue', numValue);
+                        handleConfigChange('stepDownValue', numValue);
                       }
                     }
                   }
@@ -606,7 +509,7 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                   if (stepDownInput === '' || stepDownInput === '-' || stepDownInput === '.' || stepDownInput === '-.') {
                     setStepDownInput('0');
                     if (onConfigChange) {
-                      onConfigChange('stepDownValue', 0);
+                      handleConfigChange('stepDownValue', 0);
                     }
                   }
                 }}
@@ -636,11 +539,89 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                 max="100"
                 step="1"
                 value={initialCouponBarrier}
-                onChange={(e) => onConfigChange && onConfigChange('initialCouponBarrier', parseFloat(e.target.value) || 70)}
+                onChange={(e) => handleConfigChange('initialCouponBarrier', parseFloat(e.target.value) || 70)}
                 style={{...inputStyle, width: '80px'}}
               />
             </div>
           )}
+
+          {/* Autocall floor: the step-down stops at this level */}
+          {!isParticipationNote && (
+            <div>
+              <label style={configLabelStyle}>Autocall Floor (%)</label>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={autocallFloor}
+                placeholder="None"
+                onChange={(e) => {
+                  const raw = e.target.value.replace(',', '.');
+                  if (raw === '') { handleConfigChange('autocallFloor', null); return; }
+                  const num = parseFloat(raw);
+                  if (!isNaN(num)) handleConfigChange('autocallFloor', num);
+                }}
+                style={{...inputStyle, width: '80px'}}
+              />
+              <small style={helperStyle}>Lowest autocall level reached by the step-down</small>
+            </div>
+          )}
+
+          {/* Payment lag in business days after each observation */}
+          <div>
+            <label style={configLabelStyle}>Payment Lag (business days)</label>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={scheduleConfig?.paymentLagBusinessDays ?? ''}
+              placeholder={String(paymentLag.lag)}
+              onChange={(e) => {
+                const raw = e.target.value.replace(/[^0-9]/g, '');
+                handleConfigChange('paymentLagBusinessDays', raw === '' ? null : parseInt(raw, 10));
+              }}
+              style={{...inputStyle, width: '80px'}}
+            />
+            <small style={helperStyle}>
+              {paymentLag.source === 'config'
+                ? 'Set manually'
+                : paymentLag.source === 'issueDate'
+                  ? `Default ${paymentLag.lag}: trade date → issue date`
+                  : `Default ${paymentLag.lag}: no issue date set`}
+            </small>
+          </div>
+
+          {/* Holiday calendar for observation dates */}
+          <div>
+            <label style={configLabelStyle}>Observation Calendar</label>
+            <select
+              value={scheduleConfig?.observationCalendar || 'underlyings'}
+              onChange={(e) => handleConfigChange('observationCalendar', e.target.value)}
+              style={selectStyle}
+            >
+              <option value="underlyings">Underlying exchanges</option>
+              {Object.entries(HOLIDAY_CALENDARS).map(([code, label]) => (
+                <option key={code} value={code}>{label}</option>
+              ))}
+            </select>
+            <small style={helperStyle}>
+              Using: {observationCalendars.join(' + ')}
+              {unmappedExchanges.length > 0 && ` (no calendar for ${unmappedExchanges.join(', ')}: weekends only)`}
+            </small>
+          </div>
+
+          {/* Holiday calendar for payment dates */}
+          <div>
+            <label style={configLabelStyle}>Payment Calendar</label>
+            <select
+              value={scheduleConfig?.paymentCalendar || ''}
+              onChange={(e) => handleConfigChange('paymentCalendar', e.target.value || null)}
+              style={selectStyle}
+            >
+              <option value="">Product currency ({paymentCalendars[0]})</option>
+              {Object.entries(HOLIDAY_CALENDARS).map(([code, label]) => (
+                <option key={code} value={code}>{label}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
       </div>
@@ -714,6 +695,14 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                   }}>
                     <td style={{ padding: '12px', fontWeight: '600', color: 'var(--text-secondary)' }}>
                       {String(item.periodIndex)}
+                      {item.manualOverride && (
+                        <span
+                          title={`Edited by hand: ${(item.manualFields || []).join(', ')}`}
+                          style={{ marginLeft: '6px', fontSize: '0.75rem', color: 'var(--accent-color)' }}
+                        >
+                          ✎
+                        </span>
+                      )}
                     </td>
                     <td style={{ padding: '12px' }}>
                       <input
@@ -881,10 +870,11 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                 <strong>Total Periods:</strong> {schedule.length} | 
                 <strong> Callable Periods:</strong> {schedule.filter(item => item.isCallable).length} |
                 <strong> Non-call Periods:</strong> {schedule.filter(item => !item.isCallable).length} |
-                <strong> Delay Days:</strong> {getDelayDays()}
+                <strong> Payment Lag:</strong> {paymentLag.lag} business days
+                {countManualDateEdits(schedule) > 0 && <> | <strong> Edited by hand:</strong> {countManualDateEdits(schedule)}</>}
               </div>
               <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                💡 All dates automatically avoid weekends and major holidays (US/EU)
+                💡 Saved dates are kept as entered. Regenerated dates use {observationCalendars.join(' + ')} for observations and {paymentCalendars.join(' + ')} for payments
               </div>
             </div>
           </div>
@@ -909,36 +899,22 @@ const ScheduleBuilder = ({ productDetails, scheduleConfig, onUpdateSchedule, onC
                   return;
                 }
 
-                // Calculate next observation date based on frequency
-                const newObsDate = new Date(lastObsDate);
-                let monthsInterval;
-                switch (frequency) {
-                  case 'monthly': monthsInterval = 1; break;
-                  case 'quarterly': monthsInterval = 3; break;
-                  case 'semi-annually': monthsInterval = 6; break;
-                  case 'annually': monthsInterval = 12; break;
-                  default: monthsInterval = 3;
-                }
-                newObsDate.setMonth(newObsDate.getMonth() + monthsInterval);
+                // Next observation one period after the last one, rolled to a trading day
+                const months = { monthly: 1, quarterly: 3, 'semi-annually': 6, annually: 12 }[frequency] || 3;
+                const observationDate = rollFollowingISO(addMonthsISO(lastObsDate, months), observationCalendars);
 
-                // Create new observation
-                const newObs = {
+                // Added rows are hand edits: regeneration asks before overwriting them
+                const newObs = markManualEdit({
                   id: `period_${schedule.length}`,
-                  observationDate: formatDateToISO(newObsDate),
-                  valueDate: formatDateToISO(generateValueDate(newObsDate)),
+                  valueDate: paymentDateFor(observationDate, paymentLag.lag, paymentCalendars),
                   autocallLevel: initialAutocallLevel,
                   isCallable: true,
                   couponBarrier: initialCouponBarrier,
                   periodIndex: schedule.length + 1,
                   rebateAmount: isParticipationNote ? 0 : null
-                };
+                }, 'observationDate', observationDate);
 
-                const updatedSchedule = [...schedule, newObs];
-                setSchedule(updatedSchedule);
-                if (onUpdateSchedule) {
-                  onUpdateSchedule(updatedSchedule);
-                }
-                console.log('[ScheduleBuilder] Added new observation period');
+                commitSchedule([...schedule, newObs]);
               }}
               style={{
                 padding: '0.75rem 1.5rem',

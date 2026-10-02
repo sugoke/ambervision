@@ -3,6 +3,7 @@ import UserInfoDisplay from './UserInfoDisplay.jsx';
 import UserProfileForm from './UserProfileForm.jsx';
 import McpApiTokens from './components/McpApiTokens.jsx';
 import OutlookConnection from './components/OutlookConnection.jsx';
+import NotificationPreferences from './components/NotificationPreferences.jsx';
 import { useTheme } from './ThemeContext.jsx';
 
 const ProfileManagement = ({ user, currentSection }) => {
@@ -190,6 +191,12 @@ const ProfileManagement = ({ user, currentSection }) => {
           />
         </div>
       )
+    },
+    {
+      id: 'notifications',
+      label: 'Notifications',
+      icon: '🔔',
+      component: <NotificationPreferences />
     },
     {
       id: 'mailbox',

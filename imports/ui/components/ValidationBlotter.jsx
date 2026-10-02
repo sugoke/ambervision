@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, OrderFormatters, OrderHelpers, EXECUTION_TYPES, EXECUTION_TYPE_LABELS, TERMSHEET_TRACE_TYPES } from '/imports/api/orders';
@@ -40,6 +41,20 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
   const [deleteModalOrder, setDeleteModalOrder] = useState(null);
   const [isActioning, setIsActioning] = useState(null);
   const [reviewOrder, setReviewOrder] = useState(null);
+  // Sell under review: held position and what is left after it (server-computed)
+  const [postSalePosition, setPostSalePosition] = useState(null);
+  const reviewOrderId = reviewOrder?._id;
+  const reviewOrderIsSell = reviewOrder?.orderType === 'sell';
+  const reviewOrderQuantity = reviewOrder?.quantity;
+  useEffect(() => {
+    setPostSalePosition(null);
+    if (!reviewOrderId || !reviewOrderIsSell) return undefined;
+    let cancelled = false;
+    Meteor.callAsync('orders.getPostSalePosition', { orderId: reviewOrderId, sessionId: getSessionId() })
+      .then(result => { if (!cancelled) setPostSalePosition(result); })
+      .catch(err => console.warn('[ValidationBlotter] Post-sale position unavailable:', err.reason || err.message));
+    return () => { cancelled = true; };
+  }, [reviewOrderId, reviewOrderIsSell, reviewOrderQuantity]);
   // A bulk under review: { groupId, lockedByOther }. Exclusive with reviewOrder.
   const [reviewGroup, setReviewGroup] = useState(null);
   // Inline-edit state for a sent-back order being revised by its creator
@@ -770,9 +785,17 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
     }
   };
 
-  // Don't render if not staff or no orders pending
-  if (!isStaff || (!isLoading && displayOrders.length === 0)) {
-    return null;
+  // Don't render if not staff or no orders pending — but validating the last
+  // pending order empties the list at the very moment it hands over the bank
+  // email, so the email preview and an open bulk review must outlive the list.
+  if (!isStaff) return null;
+  if (!isLoading && displayOrders.length === 0 && !reviewGroup) {
+    return (
+      <>
+        {orderEmailSheet}
+        {orderSendPreview}
+      </>
+    );
   }
 
   const canValidate = user?.canValidateOrders === true || user?.role === 'compliance';
@@ -1196,7 +1219,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
       </div>
 
       {/* Review & Validate Modal */}
-      {reviewOrder && (
+      {reviewOrder && createPortal((
         <div
           style={{
             ...styles.modalOverlay,
@@ -1398,6 +1421,43 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                 {reviewOrder.assetType === ASSET_TYPES.FX && reviewOrder.fxAmountCurrencyFormatted ? ` ${reviewOrder.fxAmountCurrencyFormatted}` : ''}
                 {reviewOrder.quantityUnitLabel ? <span style={{ fontSize: '11px', fontWeight: '500', color: 'var(--text-muted)' }}> {reviewOrder.quantityUnitLabel}</span> : null}
               </div></div>
+              {reviewOrder.orderType === 'sell' && postSalePosition?.found && (
+                <div style={{
+                  gridColumn: '1 / -1',
+                  padding: '10px 12px',
+                  borderRadius: '8px',
+                  border: `1px solid ${postSalePosition.exceedsPosition ? 'var(--loss-color)' : 'var(--border-color)'}`,
+                  background: postSalePosition.exceedsPosition ? 'rgba(239, 68, 68, 0.08)' : 'var(--bg-primary)'
+                }}>
+                  <span style={styles.reviewLabel}>Position after this sale</span>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '6px 14px', marginTop: '4px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                    <span>Held <strong style={{ color: 'var(--text-primary)' }}>{postSalePosition.heldQuantityFormatted}</strong></span>
+                    {postSalePosition.otherOpenSellQuantityFormatted && (
+                      <span title={postSalePosition.otherOpenSellRefs.join(', ')}>
+                        − other open sells <strong style={{ color: 'var(--text-primary)' }}>{postSalePosition.otherOpenSellQuantityFormatted}</strong> ({postSalePosition.otherOpenSellRefs.join(', ')})
+                      </span>
+                    )}
+                    <span>− this order <strong style={{ color: 'var(--text-primary)' }}>{postSalePosition.orderQuantityFormatted}</strong></span>
+                    <span>=
+                      <strong style={{
+                        marginLeft: '6px', fontSize: '15px',
+                        color: postSalePosition.exceedsPosition ? 'var(--loss-color)' : 'var(--text-primary)'
+                      }}>
+                        {postSalePosition.remainingQuantityFormatted}
+                      </strong>
+                      {postSalePosition.isFullExit && <span style={{ marginLeft: '6px', fontSize: '11px', color: 'var(--text-muted)' }}>(full exit)</span>}
+                    </span>
+                  </div>
+                  {postSalePosition.exceedsPosition && (
+                    <div style={{ marginTop: '6px', fontSize: '12px', fontWeight: '600', color: 'var(--loss-color)' }}>
+                      This sells more than the account holds.
+                    </div>
+                  )}
+                  <div style={{ marginTop: '4px', fontSize: '11px', color: 'var(--text-muted)' }}>
+                    Held quantity: {postSalePosition.heldSourceLabel}
+                  </div>
+                </div>
+              )}
               <div><span style={styles.reviewLabel}>Order Type</span><div style={styles.reviewValue}>{reviewOrder.priceTypeLabel || 'Market'}</div></div>
               {(reviewOrder.priceType === 'limit' || reviewOrder.priceType === 'stop_limit') && reviewOrder.limitPrice && (
                 <div><span style={styles.reviewLabel}>Limit Price</span><div style={{ ...styles.reviewValue, fontWeight: '700', color: '#0ea5e9' }}>{reviewOrder.limitPriceFormatted}</div></div>
@@ -1763,6 +1823,11 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
 
               const traceSlots = [
                 { type: EMAIL_TRACE_TYPES.CLIENT_ORDER, label: 'Client Order', icon: '📋', color: '#f97316', statusHint: null },
+                // A structured product is agreed with the issuer before the ticket:
+                // the validator checks the ticket against what was sent to them.
+                ...(reviewOrder.assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? [
+                  { type: EMAIL_TRACE_TYPES.ORDER_TO_ISSUER, label: 'Order to Issuer', icon: '🏦', color: '#8b5cf6', statusHint: null },
+                ] : []),
                 // Only show Order to Bank and Bank Confirmation for orders past validation
                 ...(reviewOrder.status !== ORDER_STATUSES.PENDING_VALIDATION && reviewOrder.status !== 'pending_modification' ? [
                   { type: EMAIL_TRACE_TYPES.ORDER_TO_BANK, label: 'Order to Bank', icon: '📤', color: '#0ea5e9', statusHint: 'Transmitted' },
@@ -2401,10 +2466,10 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
             </div>
           </div>
         </div>
-      )}
+      ), document.body)}
 
       {/* Bulk review: one panel for every client of a block */}
-      {reviewGroup && (
+      {reviewGroup && createPortal((
         <BulkValidationPanel
           groupId={reviewGroup.groupId}
           lockedByOther={reviewGroup.lockedByOther}
@@ -2415,10 +2480,10 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
           onRejectClient={(member) => { setRejectModalOrder(member); setRejectionReason(''); }}
           onRequestRevision={(member) => { setRevisionModalOrder(member); setRevisionReason(''); }}
         />
-      )}
+      ), document.body)}
 
       {/* Reject Reason Modal */}
-      {rejectModalOrder && (
+      {rejectModalOrder && createPortal((
         <div style={styles.modalOverlay} onClick={() => setRejectModalOrder(null)}>
           <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>
@@ -2462,9 +2527,9 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
             </div>
           </div>
         </div>
-      )}
+      ), document.body)}
       {/* Revision Reason Modal */}
-      {revisionModalOrder && (
+      {revisionModalOrder && createPortal((
         <div style={styles.modalOverlay} onClick={() => setRevisionModalOrder(null)}>
           <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>
@@ -2510,9 +2575,9 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
             </div>
           </div>
         </div>
-      )}
+      ), document.body)}
       {/* Delete Confirmation Modal */}
-      {deleteModalOrder && (
+      {deleteModalOrder && createPortal((
         <div style={styles.modalOverlay} onClick={() => setDeleteModalOrder(null)}>
           <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>Delete Order {deleteModalOrder.orderReference}</h3>
@@ -2533,7 +2598,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
             </div>
           </div>
         </div>
-      )}
+      ), document.body)}
       {/* Confirm Transmitted Modal */}
     </>
   );

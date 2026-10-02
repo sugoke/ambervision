@@ -8,6 +8,7 @@ import { BUILT_IN_TEMPLATES } from './templates';
 import { SecuritiesMetadataHelpers } from './securitiesMetadata';
 import { normalizeExchangeForEOD } from '/imports/utils/tickerUtils';
 import { validateISIN, cleanISIN } from '/imports/utils/isinValidator';
+import { detectStrikePercent, detectMemoryAutocall, normalizeNonCallableRows, applyAutocallTableDates } from './termSheetTextChecks';
 import {
   TERMSHEET_SOURCES,
   buildTermsheetFilename,
@@ -899,7 +900,13 @@ EXTRACTION RULES:
        goes in structureParams.strike. So if all three rows say "(75.00%*)", set structureParams.strike = 75.
        Do NOT default to 100 just because there's no separate product-level "Strike Level = X%" line — the
        per-underlying parenthetical IS the strike level when the percentages match across all underlyings.
-     * Default to 100 only if NO strike percentage information appears anywhere — including the per-underlying parentheticals.
+    * SAME PATTERN, OTHER WORDING: "Strike Price  ABI - 47.3760 (70% of Share1 Initial)" / "(70% of Initial Price)" /
+      "70% x Share Initial". The percentage in the Strike row is structureParams.strike (here 70). The absolute
+      number (47.3760) is NOT the initial reference: use the "Share Initial" / "Initial Price" column instead.
+      It may coincide with the coupon barrier price; that does not make the strike 100.
+    * GEARED PUT: a final redemption formula dividing by a percentage of the initial level, e.g.
+      "N x [100% + min(0%, WO Share Final / (70% x WO Share Initial) - 1)]", means structureParams.strike = 70.
+    * Default to 100 only if NO strike percentage information appears anywhere — including the per-underlying parentheticals.
    - Autocall Level: Extract into scheduleConfig.initialAutocallLevel (e.g., if term sheet shows "100%", use 100)
    - Coupon Barrier: Extract into scheduleConfig.initialCouponBarrier (e.g., if term sheet shows "70%", use 70)
    - Knock-In Threshold (Bonus Certificate only): Extract into structureParams.barrierLevel (e.g., if term sheet shows "Knock-In Threshold = 60% × S(0)" or "Barrier Level: 60%", use 60)
@@ -981,7 +988,7 @@ EXTRACTION RULES:
       where T counts coupon dates since the last paid coupon. That cumulative factor IS a memory coupon.
     For guaranteed coupon: detect from term sheet language (e.g., "guaranteed", "unconditional", "paid regardless of performance", "coupon paid at each observation", "fixed coupon")
 12. For issuer: MUST select the closest match from the VALID ISSUERS LIST provided above (use exact name from list)
-13. For observationSchedule: calculate dates based on frequency (quarterly, monthly, etc.)
+13. For observationSchedule: COPY the observation dates and payment dates EXACTLY as printed in the term sheet schedule table (do not recompute or adjust them). Only calculate dates from the frequency when the term sheet has no dated schedule.
 14. Generate appropriate schedule IDs as "period_0", "period_1", etc.
 15. For scheduleConfig.stepDownValue - CRITICAL CALCULATION:
     - This is the CHANGE PER PERIOD (not total change)
@@ -1006,6 +1013,10 @@ EXTRACTION RULES:
     - Count consecutive non-callable observations at the START of the schedule
     - Set scheduleConfig.coolOffPeriods to this count
     - In observationSchedule array: set isCallable = false for non-call periods
+    - A coupon observation date that does NOT appear in the autocall / early redemption table is NOT callable
+      (isCallable = false, autocallLevel = null). This includes the FINAL observation when the autocall table
+      ends before it: e.g. autocall rows for periods 2-7 only -> period 8 (redemption valuation date) is
+      isCallable = false; its payoff is the final redemption, not an autocall.
     - EXAMPLE 1: If term sheet shows:
       * Observation 1: Coupon Yes, Autocall No
       * Observation 2: Coupon Yes, Autocall Yes
@@ -1041,8 +1052,15 @@ EXTRACTION RULES:
       * Example: For Intel on NYSE → "ticker": "INTC.US"
       * Example: For Tencent on Hong Kong → "ticker": "0700.HK" (note the zero-padding)
 19. For observationSchedule array - CRITICAL - MUST GENERATE COMPLETE ARRAY WITH ALL PERIODS:
-    - Generate ALL observation periods from trade date to final observation based on scheduleConfig.frequency
-    - Calculate observation dates based on frequency:
+    - TERM SHEET DATES ALWAYS WIN: when the term sheet lists observation/valuation dates and payment/redemption dates,
+      use them verbatim, row by row (e.g. "28/12/2026" -> "2026-12-28"). Issuers apply their own business-day and
+      holiday conventions; never replace a printed date with a calculated one.
+    - valueDate = the payment date printed on the same row (coupon payment / early redemption date).
+    - autocallLevel = the autocall/early redemption level printed on the same row. If the step-down stops at a floor,
+      also set scheduleConfig.autocallFloor to that lowest level (e.g. 100%, 95% ... 75%, 75% -> autocallFloor = 75).
+    - If the term sheet states the payment lag (e.g. "10 Business Days after the Observation Date"), set
+      scheduleConfig.paymentLagBusinessDays to that number.
+    - ONLY when no dated schedule is printed, generate the periods from trade date to final observation:
       * "quarterly": Every 3 months from trade date
       * "monthly": Every 1 month from trade date
       * "semi-annual": Every 6 months from trade date
@@ -1051,8 +1069,8 @@ EXTRACTION RULES:
     - Each observation MUST include these EXACT fields:
       * id: String - Sequential ID starting from "period_0", then "period_1", "period_2", etc.
       * observationDate: String - Market observation date in ISO format "YYYY-MM-DD"
-      * valueDate: String - Settlement date (typically 14 calendar days after observationDate) in ISO format "YYYY-MM-DD"
-      * autocallLevel: Number - Calculated as initialAutocallLevel + (periodIndex - 1) * stepDownValue
+      * valueDate: String - Payment date from the term sheet row, in ISO format "YYYY-MM-DD" (only if not printed: observationDate + the stated payment lag in business days)
+      * autocallLevel: Number - Level printed in the term sheet row (only if not printed: initialAutocallLevel + (periodIndex - 1) * stepDownValue, never below scheduleConfig.autocallFloor)
       * isCallable: Boolean - CRITICAL: Set based on coolOffPeriods
         - If periodIndex <= coolOffPeriods: isCallable = false (non-call period)
         - If periodIndex > coolOffPeriods: isCallable = true (callable period)
@@ -1062,7 +1080,7 @@ EXTRACTION RULES:
     - IMPORTANT: periodIndex starts at 1 (not 0), but id starts at "period_0"
     - CRITICAL: You MUST generate ALL periods from start to maturity - do not omit any observations
     - For term sheets showing observation dates in a table: extract all dates and generate the array
-    - For term sheets with only frequency and dates: calculate all observation dates programmatically
+    - For term sheets with only frequency and start/end dates (no dated table): calculate the observation dates
     - EXAMPLE CALCULATION for quarterly product from 2024-02-08 to 2026-04-30:
       * Period 0: observationDate="2024-02-08", periodIndex=1
       * Period 1: observationDate="2024-05-08", periodIndex=2
@@ -1626,6 +1644,39 @@ CRITICAL: Return ONLY the JSON object with no additional text, explanations, or 
 
         console.log('[TermSheetExtractor] Successfully parsed extracted data');
 
+        // Term sheet text layer, used to check values the model may have missed
+        let termSheetText = null;
+        try {
+          const { PDFParse } = await import('pdf-parse');
+          const parser = new PDFParse({ data: Buffer.from(pdfBase64, 'base64') });
+          termSheetText = (await parser.getText()).text || null;
+          if (parser.destroy) await parser.destroy();
+        } catch (textError) {
+          console.warn('[TermSheetExtractor] Could not read PDF text layer, skipping text checks:', textError.message);
+        }
+
+        // POST-PROCESSING: Strike % read from the term sheet's Strike row(s), e.g.
+        // "Strike Price  ABI - 47.3760 (70% of Share Initial)". The document wins over the model.
+        const textStrike = detectStrikePercent(termSheetText);
+        if (textStrike !== null && extractedData.structureParams &&
+            ('strike' in extractedData.structureParams || extractedData.templateId === 'phoenix_autocallable') &&
+            Number(extractedData.structureParams.strike) !== textStrike) {
+          console.warn(`[TermSheetExtractor] 🎯 POST-PROCESSING: Strike row in term sheet says % but model returned . Using .`);
+          extractedData.structureParams.strike = textStrike;
+        }
+
+        // POST-PROCESSING: observations missing from the autocall table cannot autocall
+        // (typically the final redemption valuation date), then a non-callable
+        // observation has no autocall level
+        if (Array.isArray(extractedData.observationSchedule)) {
+          const autocallCheck = applyAutocallTableDates(extractedData.observationSchedule, termSheetText);
+          if (autocallCheck.changed.length > 0) {
+            console.warn(`[TermSheetExtractor] 📅 POST-PROCESSING: ${autocallCheck.changed.join(', ')} not in the autocall table. Marked non-callable.`);
+            extractedData.observationSchedule = autocallCheck.schedule;
+          }
+          extractedData.observationSchedule = normalizeNonCallableRows(extractedData.observationSchedule);
+        }
+
         // POST-PROCESSING: Validate basket type detection
         if (extractedData.structureParams?.referencePerformance) {
           console.log('[TermSheetExtractor] POST-PROCESSING: Validating basket type...');
@@ -1661,32 +1712,37 @@ CRITICAL: Return ONLY the JSON object with no additional text, explanations, or 
         }
 
         // POST-PROCESSING: Memory autocall / memory coupon safeguard.
-        // The "Snowball" family describes memory autocall without ever using the word
-        // "memory" (each underlying may satisfy its level on the current OR any preceding
-        // observation date). Rather than rely solely on the model flipping the flag, also
-        // detect it from the extracted title and the model's own reasoning, and only ever
-        // promote false -> true (never override an explicit true).
+        // Memory autocall comes from the term sheet's autocall condition (see below).
+        // Memory coupon is only ever promoted false -> true from title/reasoning signals.
         if (extractedData.structureParams &&
             (extractedData.structureParams.memoryAutocall !== undefined ||
              extractedData.structureParams.memoryCoupon !== undefined)) {
           const titleLower = (extractedData.title || '').toLowerCase();
 
-          const memoryAutocallSignal =
-            titleLower.includes('snowball') ||
-            titleLower.includes('memory') ||
-            thinkingLower.includes('snowball') ||
-            thinkingLower.includes('memory autocall') ||
-            thinkingLower.includes('which precede') ||
-            thinkingLower.includes('preceding valuation') ||
-            thinkingLower.includes('preceding observation') ||
-            thinkingLower.includes('any previous valuation') ||
-            thinkingLower.includes('or any of the') ||
-            thinkingLower.includes('lock-in') ||
-            thinkingLower.includes('lock in');
+          // Memory autocall is decided by the wording of the autocall condition in the
+          // document itself ("... on such date or any preceding date", "lock-in"). A
+          // "Snowball"/"Memory" title is not enough: BNP's "Phoenix Snowball" is a
+          // snowball COUPON, N x Rate x (1 + T), with a same-day autocall condition.
+          const textMemoryAutocall = detectMemoryAutocall(termSheetText);
+          if (textMemoryAutocall !== null) {
+            if (Boolean(extractedData.structureParams.memoryAutocall) !== textMemoryAutocall) {
+              console.warn(`[TermSheetExtractor] 🔁 POST-PROCESSING: Autocall condition in term sheet ${textMemoryAutocall ? 'refers to preceding dates' : 'is same-date only'}. Setting memoryAutocall = ${textMemoryAutocall}.`);
+            }
+            extractedData.structureParams.memoryAutocall = textMemoryAutocall;
+          } else {
+            // No readable autocall section: fall back to phrases in the model's reasoning
+            const memoryAutocallSignal =
+              thinkingLower.includes('which precede') ||
+              thinkingLower.includes('preceding valuation') ||
+              thinkingLower.includes('preceding observation') ||
+              thinkingLower.includes('any previous valuation') ||
+              thinkingLower.includes('lock-in') ||
+              thinkingLower.includes('lock in');
 
-          if (memoryAutocallSignal && !extractedData.structureParams.memoryAutocall) {
-            console.warn('[TermSheetExtractor] 🔁 POST-PROCESSING: Memory/Snowball autocall signal detected (title/thinking) but memoryAutocall was false. Forcing memoryAutocall = true.');
-            extractedData.structureParams.memoryAutocall = true;
+            if (memoryAutocallSignal && !extractedData.structureParams.memoryAutocall) {
+              console.warn('[TermSheetExtractor] 🔁 POST-PROCESSING: Memory autocall wording found in model reasoning but memoryAutocall was false. Forcing memoryAutocall = true.');
+              extractedData.structureParams.memoryAutocall = true;
+            }
           }
 
           const memoryCouponSignal =

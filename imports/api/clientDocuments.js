@@ -40,6 +40,10 @@ export const DOCUMENT_TYPES = {
   PERIODIC_REVIEW: 'periodic_review',
   // Client visit report — one per year, filed from the KYC tab.
   VISIT_REPORT: 'visit_report',
+  // Signed portfolio (portfolio statement countersigned by the client) — one per
+  // portfolio per year. Each file is bound to a bank account via bankAccountId,
+  // since a client can hold several portfolios signed on different dates.
+  SIGNED_PORTFOLIO: 'signed_portfolio',
   // Identity media for physical persons (Entity Profile tab): one photo and
   // one specimen signature. Images only; never listed in the Documents tab.
   CLIENT_PHOTO: 'client_photo',
@@ -61,6 +65,18 @@ export const computeNextReviewDate = (reviewDate, riskLevel) => {
 
 // Client visits happen once a year whatever the risk level.
 export const VISIT_INTERVAL_YEARS = 1;
+
+// Each portfolio is signed by the client once a year.
+export const SIGNED_PORTFOLIO_INTERVAL_YEARS = 1;
+
+/** The next signature due date for a portfolio signed on `signedDate`. */
+export const computeNextPortfolioSignatureDate = (signedDate) => {
+  if (!signedDate) return null;
+  const d = new Date(signedDate);
+  if (Number.isNaN(d.getTime())) return null;
+  d.setFullYear(d.getFullYear() + SIGNED_PORTFOLIO_INTERVAL_YEARS);
+  return d;
+};
 
 /** The next visit due date for a visit carried out on `visitDate`. */
 export const computeNextVisitDate = (visitDate) => {
@@ -235,6 +251,18 @@ export const DOCUMENT_TYPE_CONFIG = {
     icon: '🤝',
     category: 'review',
     allowsWord: true
+  },
+  [DOCUMENT_TYPES.SIGNED_PORTFOLIO]: {
+    label: 'Signed Portfolio',
+    requiresExpiration: false,
+    dateLabel: 'Signed on',
+    // Recency is tracked per portfolio from the signature date, like the reviews.
+    stalesAfterMonths: null,
+    icon: '✍️',
+    category: 'review',
+    allowsWord: true,
+    // Every file names the portfolio (bank account) it signs
+    requiresBankAccount: true
   },
   // Identity media — one image each, shown inline on the Entity Profile tab.
   [DOCUMENT_TYPES.CLIENT_PHOTO]: {

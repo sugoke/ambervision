@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
 /**
@@ -14,19 +14,39 @@ import { createPortal } from 'react-dom';
  * position:fixed descendants.
  */
 export default function OrderSentToast({ notice, onDismiss }) {
+  // Callers pass an inline arrow, so onDismiss changes on every render of the
+  // (reactive) order book. Depending on it restarted the timer each time and the
+  // toast never left; read it through a ref instead.
+  const dismissRef = useRef(onDismiss);
+  dismissRef.current = onDismiss;
+  const toastRef = useRef(null);
+
   useEffect(() => {
     if (!notice) return undefined;
-    const timer = setTimeout(() => onDismiss?.(), 6000);
-    return () => clearTimeout(timer);
-  }, [notice, onDismiss]);
+    const dismiss = () => dismissRef.current?.();
+    const timer = setTimeout(dismiss, 6000);
+    // A click anywhere outside the toast dismisses it too.
+    const onPointerDown = (e) => {
+      if (toastRef.current && !toastRef.current.contains(e.target)) dismiss();
+    };
+    const onKey = (e) => { if (e.key === 'Escape') dismiss(); };
+    document.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [notice]);
 
   if (!notice) return null;
 
   const toast = (
     <div
+      ref={toastRef}
       role="status"
       aria-live="polite"
-      onClick={onDismiss}
+      onClick={() => dismissRef.current?.()}
       style={{
         position: 'fixed', zIndex: 20002,
         left: '50%', transform: 'translateX(-50%)',
@@ -56,6 +76,18 @@ export default function OrderSentToast({ notice, onDismiss }) {
           A copy is in your Sent Items and is being filed as the order-to-bank trace.
         </div>
       </div>
+      <button
+        type="button"
+        aria-label="Dismiss"
+        onClick={(e) => { e.stopPropagation(); dismissRef.current?.(); }}
+        style={{
+          marginLeft: 'auto', flexShrink: 0,
+          background: 'none', border: 'none', padding: '0 2px',
+          fontSize: '16px', lineHeight: 1, color: 'var(--text-muted)', cursor: 'pointer'
+        }}
+      >
+        ×
+      </button>
     </div>
   );
 

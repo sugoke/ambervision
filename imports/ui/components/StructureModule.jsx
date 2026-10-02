@@ -4,6 +4,16 @@ import { BUILT_IN_TEMPLATES } from '/imports/api/templates';
 // Structure Module Component - Configuration parameters for selected templates
 const StructureModule = ({ selectedTemplateId, structureParams, onParamChange }) => {
 
+  // Commit numeric fields on every keystroke, not only on blur, so switching tabs
+  // (or a scripted click that never moves focus) cannot drop an uncommitted edit.
+  // The onBlur handlers still normalise/reset invalid input.
+  const commitOnChange = (param) => (e) => {
+    const numValue = parseFloat(String(e.target.value).replace(',', '.'));
+    if (!isNaN(numValue) && onParamChange) {
+      onParamChange(param, numValue);
+    }
+  };
+
   // Product-specific parameter configuration based on selected template
   const renderParameterScreen = () => {
     if (!selectedTemplateId) {
@@ -125,6 +135,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                     type="text"
                     inputMode="decimal"
                     defaultValue={structureParams?.couponRate !== undefined ? structureParams.couponRate : 8.5}
+                    onChange={commitOnChange('couponRate')}
                     style={numberInputStyle}
                     onFocus={handleInputFocus}
                     onBlur={(e) => {
@@ -175,8 +186,8 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                   <input
                     type="text"
                     inputMode="decimal"
-                    key={`phoenix-strike-${structureParams?.strike ?? 100}`}
                     defaultValue={structureParams?.strike !== undefined ? structureParams.strike : 100}
+                    onChange={commitOnChange('strike')}
                     min="50"
                     max="150"
                     step="1"
@@ -520,6 +531,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                     type="text"
                     inputMode="decimal"
                     defaultValue={structureParams?.participationRate !== undefined ? structureParams.participationRate : 100}
+                    onChange={commitOnChange('participationRate')}
                     min="0"
                     max="500"
                     step="1"
@@ -546,6 +558,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                     type="text"
                     inputMode="decimal"
                     defaultValue={structureParams?.strike !== undefined ? structureParams.strike : 100}
+                    onChange={commitOnChange('strike')}
                     min="50"
                     max="150"
                     step="1"
@@ -572,6 +585,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                     type="text"
                     inputMode="decimal"
                     defaultValue={structureParams?.cap !== undefined ? structureParams.cap : 0}
+                    onChange={commitOnChange('cap')}
                     min="0"
                     max="500"
                     step="5"
@@ -598,6 +612,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                     type="text"
                     inputMode="decimal"
                     defaultValue={structureParams?.capitalGuarantee !== undefined ? structureParams.capitalGuarantee : 100}
+                    onChange={commitOnChange('capitalGuarantee')}
                     min="0"
                     max="100"
                     step="1"
@@ -774,6 +789,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                         type="text"
                         inputMode="decimal"
                         defaultValue={structureParams?.issuerCallRebate !== undefined ? structureParams.issuerCallRebate : 0}
+                        onChange={commitOnChange('issuerCallRebate')}
                         min="0"
                         max="20"
                         step="0.5"
@@ -866,6 +882,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                     type="text"
                     inputMode="decimal"
                     defaultValue={structureParams?.couponRate !== undefined ? structureParams.couponRate : 3.5}
+                    onChange={commitOnChange('couponRate')}
                     style={numberInputStyle}
                     onFocus={handleInputFocus}
                     onBlur={(e) => {
@@ -924,8 +941,8 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                   <input
                     type="text"
                     inputMode="decimal"
-                    key={`phoenix2-strike-${structureParams?.strike ?? 100}`}
                     defaultValue={structureParams?.strike !== undefined ? structureParams.strike : 100}
+                    onChange={commitOnChange('strike')}
                     min="50"
                     max="150"
                     step="1"
@@ -1084,6 +1101,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                     type="text"
                     inputMode="decimal"
                     defaultValue={structureParams?.couponRate !== undefined ? structureParams.couponRate : 5.0}
+                    onChange={commitOnChange('couponRate')}
                     style={numberInputStyle}
                     onFocus={handleInputFocus}
                     onBlur={(e) => {
@@ -1109,6 +1127,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                       type="text"
                       inputMode="decimal"
                       defaultValue={structureParams?.strikeLevel !== undefined ? structureParams.strikeLevel : 100}
+                      onChange={commitOnChange('strikeLevel')}
                       style={numberInputStyle}
                       onFocus={handleInputFocus}
                       onBlur={(e) => {
@@ -1143,6 +1162,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                     type="text"
                     inputMode="decimal"
                     defaultValue={structureParams?.denomination !== undefined ? structureParams.denomination : 1000}
+                    onChange={commitOnChange('denomination')}
                     style={numberInputStyle}
                     onFocus={handleInputFocus}
                     onBlur={(e) => {
@@ -1167,6 +1187,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                     type="text"
                     inputMode="decimal"
                     defaultValue={structureParams?.parAmount !== undefined ? structureParams.parAmount : 1000}
+                    onChange={commitOnChange('parAmount')}
                     style={numberInputStyle}
                     onFocus={handleInputFocus}
                     onBlur={(e) => {
@@ -1191,6 +1212,7 @@ const StructureModule = ({ selectedTemplateId, structureParams, onParamChange })
                     type="text"
                     inputMode="decimal"
                     defaultValue={structureParams?.accruedInterestAtRedemption !== undefined ? structureParams.accruedInterestAtRedemption : 0}
+                    onChange={commitOnChange('accruedInterestAtRedemption')}
                     style={numberInputStyle}
                     onFocus={handleInputFocus}
                     onBlur={(e) => {

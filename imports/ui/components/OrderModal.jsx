@@ -7,6 +7,7 @@ import ActionButton from './common/ActionButton.jsx';
 import { ASSET_TYPES, PRICE_TYPES, TRADE_MODES, FX_SUBTYPES, VALIDITY_TYPES, TERM_DEPOSIT_TENORS, EMAIL_TRACE_TYPES, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, ORDER_SOURCE_TYPES, EXECUTION_TYPES, EXECUTION_TYPE_LABELS, FUND_QUANTITY_MODES, OPTION_TYPES, DEFAULT_OPTION_CONTRACT_SIZE, OrderFormatters, assetTypeForAssetClass, quotesPriceAsPercent, computeShortCallCoverage } from '/imports/api/orders';
 import { IssuersCollection } from '/imports/api/issuers';
 import FormattedNumberInput from './FormattedNumberInput.jsx';
+import { getAuthorizedEmails, accountAllowsOrders } from '/imports/api/bankAccounts';
 import AccountAutocomplete from './AccountAutocomplete.jsx';
 import { useIsMobile } from '../hooks/useIsMobile.js';
 import { useGraphConnection } from '../hooks/useGraphConnection.js';
@@ -97,7 +98,7 @@ const OrderModal = ({
 
   const isMobile = useIsMobile();
   const graphConnection = useGraphConnection();
-  // 'single' | 'bulk' — the order does not exist yet here, so the picker runs in
+  // 'single' | 'bulk' | 'issuer' — the order does not exist yet here, so the picker runs in
   // file mode and hands back a File for the existing attachment state.
   const [outlookPicker, setOutlookPicker] = useState(null);
 
@@ -270,6 +271,9 @@ const OrderModal = ({
 
   // Client order email attachment (single mode)
   const [clientOrderFile, setClientOrderFile] = useState(null);
+  // Structured products: the order as sent to the issuer, so the validator can
+  // check the ticket against what was actually agreed with the counterparty.
+  const [issuerOrderFile, setIssuerOrderFile] = useState(null);
   // Creator attests they will attach the client order later (mobile / technical-issue bypass).
   // Validator must then tick a paired attestation in the four-eyes review.
   const [deferAttachment, setDeferAttachment] = useState(false);
@@ -301,6 +305,7 @@ const OrderModal = ({
     if (selectedClientId || selectedBankAccountId) return true;
     if (fxBuyCurrency || fxSellCurrency || fxRate) return true;
     if (clientOrderFile) return true;
+    if (issuerOrderFile) return true;
     return false;
   };
 
@@ -585,6 +590,7 @@ const OrderModal = ({
       setBulkAccountsMap({});
       setBulkAccountsLoading({});
       setBulkTraceFiles({});
+      setIssuerOrderFile(null);
       setEstimatedValueManuallyEdited(false);
       // Reset FX fields
       setFxSubtype(FX_SUBTYPES.SPOT);
@@ -925,6 +931,12 @@ const OrderModal = ({
     if (!optionExchange) setOptionExchange('US');
   };
 
+  // Currency the security is quoted in. Never guessed: when the search result carries no
+  // currency (e.g. a metadata-only hit), fall back to the price/settlement currency the
+  // form resolved (from the product record), and block the order if none is known.
+  const resolveSecurityCurrency = () =>
+    selectedSecurity?.currency || indicativePriceCurrency || settlementCurrency || null;
+
   // Look up Ambervision product data by ISIN to enrich order fields
   const enrichFromProduct = async (isin) => {
     if (!isin) return;
@@ -935,6 +947,9 @@ const OrderModal = ({
         if (product.issuer) setBroker(product.issuer);
         if (product.currency) setSettlementCurrency(product.currency);
         if (product.currency) setIndicativePriceCurrency(product.currency);
+        if (product.currency) {
+          setSelectedSecurity(prev => (prev && !prev.currency ? { ...prev, currency: product.currency } : prev));
+        }
         if (typeof product.capitalProtected === 'boolean') setCapitalProtected(product.capitalProtected);
       }
     } catch (err) {
@@ -1036,6 +1051,12 @@ const OrderModal = ({
             setError('Please select a bank account');
             return false;
           }
+          // A prefilled account bypasses the picker's view-only guard
+          const selectedAccount = clientBankAccounts.find(a => a._id === selectedBankAccountId);
+          if (selectedAccount && !accountAllowsOrders(selectedAccount)) {
+            setError('This account is view only: we have no power of attorney to place orders on it.');
+            return false;
+          }
         }
         return true;
 
@@ -1066,6 +1087,10 @@ const OrderModal = ({
           setError(assetType === ASSET_TYPES.OPTION
             ? 'Pick the underlying first: type its name, ISIN or ticker in the Underlying box and choose it from the list. The strike, expiry and contract size appear once it is chosen.'
             : 'Please select a security with a valid ISIN');
+          return false;
+        }
+        if (assetType !== ASSET_TYPES.OPTION && !resolveSecurityCurrency()) {
+          setError('The currency of this security is unknown. Please choose the settlement currency.');
           return false;
         }
         if (assetType === ASSET_TYPES.OPTION) {
@@ -1164,6 +1189,12 @@ const OrderModal = ({
             return false;
           }
         }
+        // Structured products are agreed with the issuer before the ticket is
+        // written: the order sent to the issuer is part of the four-eyes evidence.
+        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && !issuerOrderFile) {
+          setError('Please attach the order sent to the issuer for this structured product.');
+          return false;
+        }
         // Client instruction is mandatory (email attachment or phone confirmation).
         // Single-order mode allows a defer-attach attestation when a file can't be
         // attached now (mobile/technical issue); bulk mode still requires real files.
@@ -1216,7 +1247,7 @@ const OrderModal = ({
               assetType,
               estimatedValue: ev,
               orderType: mode,
-              capitalProtected: assetType === ASSET_TYPES.STRUCTURED_PRODUCT ? capitalProtected : undefined,
+              capitalProtected: assetType === ASSET_TYPES.STRUCTURED_PRODUCT && mode === 'buy' ? capitalProtected : undefined,
               sessionId: getSessionId()
             });
             setAllocationCheck(result);
@@ -1276,6 +1307,22 @@ const OrderModal = ({
    * the order gets its own evidence file — the stored copy is fetched, not
    * referenced, so deleting it later can't hollow out the order's trace.
    */
+  /** Validate and keep the issuer-order evidence file (same rules as the client instruction). */
+  const acceptIssuerOrderFile = (file) => {
+    if (!file) return;
+    const ext = '.' + file.name.split('.').pop().toLowerCase();
+    if (!EMAIL_TRACE_ACCEPTED_TYPES.includes(ext)) {
+      setError(`File type ${ext} not accepted. Use: ${EMAIL_TRACE_ACCEPTED_TYPES.join(', ')}`);
+      return;
+    }
+    if (file.size > EMAIL_TRACE_MAX_SIZE) {
+      setError(`${file.name} exceeds maximum size of 15MB`);
+      return;
+    }
+    setIssuerOrderFile(file);
+    setError(null);
+  };
+
   const buildTermsheetAttachment = async () => {
     if (termsheetFile) {
       return readAttachment(termsheetFile, EMAIL_TRACE_TYPES.INITIAL_TERMSHEET, 'application/pdf');
@@ -1330,7 +1377,7 @@ const OrderModal = ({
         } else {
           bulkIsin = selectedSecurity.isin;
           bulkSecurityName = selectedSecurity.name || selectedSecurity.ticker;
-          bulkCurrency = selectedSecurity.currency || 'USD';
+          bulkCurrency = resolveSecurityCurrency();
         }
 
         // Evidence travels with the create call so no order in the block is queued
@@ -1341,6 +1388,8 @@ const OrderModal = ({
         if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT) {
           const termsheetAttachment = await buildTermsheetAttachment();
           if (termsheetAttachment) sharedAttachments.push(termsheetAttachment);
+          // One order to the issuer covers the whole block
+          if (issuerOrderFile) sharedAttachments.push(await readAttachment(issuerOrderFile, EMAIL_TRACE_TYPES.ORDER_TO_ISSUER));
         }
 
         const isPhone = orderSource === ORDER_SOURCE_TYPES.PHONE;
@@ -1392,7 +1441,7 @@ const OrderModal = ({
         if (mode === 'buy' && parseFloat(estimatedValue) > 0) {
           bulkOrderData.estimatedValue = parseFloat(estimatedValue);
         }
-        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && capitalProtected) {
+        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && mode === 'buy' && capitalProtected) {
           bulkOrderData.capitalProtected = true;
         }
         if (notes && notes.trim()) {
@@ -1497,7 +1546,7 @@ const OrderModal = ({
         } else {
           orderIsin = selectedSecurity.isin;
           orderSecurityName = selectedSecurity.name || selectedSecurity.ticker;
-          orderCurrency = selectedSecurity.currency || 'USD';
+          orderCurrency = resolveSecurityCurrency();
         }
 
         // Note: Match.Maybe accepts undefined but NOT null, so we use undefined for optional fields
@@ -1607,7 +1656,7 @@ const OrderModal = ({
           orderData.coverageJustification = coverageJustification.trim();
         }
         // Capital protected flag for structured products
-        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && capitalProtected) {
+        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && mode === 'buy' && capitalProtected) {
           orderData.capitalProtected = true;
         }
         // Fund quantity mode (units vs nominal cash amount)
@@ -1636,11 +1685,12 @@ const OrderModal = ({
           }
         }
 
-        // Add attached TP/SL info so server creates linked orders
-        if (attachedTakeProfit) {
+        // Add attached TP/SL info so server creates linked orders (not on a sale)
+        const attachesLegs = mode === 'buy' || assetType === ASSET_TYPES.FX;
+        if (attachesLegs && attachedTakeProfit) {
           orderData.attachedTakeProfit = parseFloat(attachedTakeProfit);
         }
-        if (attachedStopLoss) {
+        if (attachesLegs && attachedStopLoss) {
           orderData.attachedStopLoss = parseFloat(attachedStopLoss);
         }
 
@@ -1659,6 +1709,7 @@ const OrderModal = ({
         if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT) {
           const termsheetAttachment = await buildTermsheetAttachment();
           if (termsheetAttachment) attachments.push(termsheetAttachment);
+          if (issuerOrderFile) attachments.push(await readAttachment(issuerOrderFile, EMAIL_TRACE_TYPES.ORDER_TO_ISSUER));
         }
 
         const result = await Meteor.callAsync('orders.create', {
@@ -3309,8 +3360,9 @@ const OrderModal = ({
             </div>
           )}
 
-          {/* Attached Take Profit / Stop Loss legs - only for equities, ETFs, FX with market/limit orders */}
-          {(assetType === ASSET_TYPES.EQUITY || assetType === ASSET_TYPES.ETF || assetType === ASSET_TYPES.FX) && priceType !== PRICE_TYPES.STOP_LOSS && priceType !== PRICE_TYPES.STOP_LIMIT && (
+          {/* Attached Take Profit / Stop Loss legs - equities/ETFs bought (they protect the position
+              being opened; a sale closes it, so there is nothing to attach) and FX, with market/limit orders */}
+          {(((assetType === ASSET_TYPES.EQUITY || assetType === ASSET_TYPES.ETF) && mode === 'buy') || assetType === ASSET_TYPES.FX) && priceType !== PRICE_TYPES.STOP_LOSS && priceType !== PRICE_TYPES.STOP_LIMIT && (
             <div style={{
               background: 'var(--bg-secondary)',
               borderRadius: '8px',
@@ -3416,8 +3468,9 @@ const OrderModal = ({
         </div>
       )}
 
-      {/* Capital Protected toggle for structured products */}
-      {assetType === ASSET_TYPES.STRUCTURED_PRODUCT && (
+      {/* Capital Protected toggle for structured products - buy side only: it
+          classifies a new position for profile allocation, which a sell does not need */}
+      {assetType === ASSET_TYPES.STRUCTURED_PRODUCT && mode === 'buy' && (
         <div style={{
           display: 'flex',
           alignItems: 'center',
@@ -4174,6 +4227,75 @@ const OrderModal = ({
         )}
       </div>
 
+      {assetType === ASSET_TYPES.STRUCTURED_PRODUCT && (
+        <div style={styles.formGroup}>
+          <label style={styles.label}>Order to Issuer *</label>
+          {issuerOrderFile ? (
+            <div style={{
+              border: '2px solid var(--gain-color)', background: 'rgba(16, 185, 129, 0.08)',
+              borderRadius: '8px', padding: '10px 12px', display: 'flex', alignItems: 'center', gap: '8px'
+            }}>
+              <span style={{ fontSize: '18px' }}>🏦</span>
+              <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--gain-color)', flex: 1, wordBreak: 'break-all' }}>{issuerOrderFile.name}</span>
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>({(issuerOrderFile.size / 1024).toFixed(0)} KB)</span>
+              <button
+                type="button"
+                style={{ background: 'none', border: 'none', color: 'var(--loss-color)', cursor: 'pointer', fontSize: '14px', padding: '2px 6px' }}
+                onClick={() => setIssuerOrderFile(null)}
+                title="Remove file"
+              >
+                x
+              </button>
+            </div>
+          ) : (
+            <div
+              style={{
+                border: '2px dashed var(--border-color)', borderRadius: '8px', padding: '16px',
+                textAlign: 'center', cursor: 'pointer', background: 'var(--bg-secondary)'
+              }}
+              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const file = e.dataTransfer.files?.[0];
+                if (!file) {
+                  setError('No file received. Dragging directly from Outlook is not supported by the browser — first drag the email to your desktop, then drop that file here, or click to browse.');
+                  return;
+                }
+                acceptIssuerOrderFile(file);
+              }}
+              onClick={() => {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = EMAIL_TRACE_ACCEPTED_TYPES.join(',');
+                input.onchange = (e) => acceptIssuerOrderFile(e.target.files?.[0]);
+                input.click();
+              }}
+            >
+              <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                Drop the order sent to the issuer here, or click to browse
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                .msg, .eml, .pdf — Visible to validators for four-eyes check
+              </div>
+              {graphConnection.connected && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setOutlookPicker('issuer'); }}
+                  style={{
+                    marginTop: '8px', padding: '4px 14px', fontSize: '11px', fontWeight: 500,
+                    border: '1px solid #0ea5e9', borderRadius: '4px',
+                    background: 'rgba(14, 165, 233, 0.1)', color: '#0ea5e9', cursor: 'pointer'
+                  }}
+                >
+                  Pick from Outlook
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Execution Type Toggle */}
       <div style={styles.formGroup}>
         <label style={styles.label}>Execution Type</label>
@@ -4260,6 +4382,7 @@ const OrderModal = ({
           <div style={{ ...styles.formGroup, marginBottom: 0 }}>
             <label style={styles.label}>Client & Account</label>
             <AccountAutocomplete
+              ordersOnly
               value={selectedAccountLabel}
               disabled={!!prefillData?.clientId}
               onSelect={({ clientId, entityId, bankAccountId, accountLabel }) => {
@@ -4304,6 +4427,7 @@ const OrderModal = ({
                     )}
                   </div>
                   <AccountAutocomplete
+                    ordersOnly
                     value={order.accountLabel || ''}
                     onSelect={({ clientId, entityId, bankAccountId, accountLabel }) => {
                       // Set all fields at once to avoid the clientId change handler resetting bankAccountId
@@ -4836,7 +4960,7 @@ const OrderModal = ({
           )}
         </div>
 
-        {(attachedTakeProfit || attachedStopLoss) && (
+        {(attachedTakeProfit || attachedStopLoss) && (mode === 'buy' || assetType === ASSET_TYPES.FX) && (
           <div style={styles.reviewSection}>
             <div style={styles.reviewTitle}>Linked Orders</div>
             <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
@@ -5510,9 +5634,18 @@ const OrderModal = ({
     <MailPickerModal
       open={Boolean(outlookPicker)}
       onClose={() => setOutlookPicker(null)}
-      heading="Pick the client instruction from Outlook"
+      heading={outlookPicker === 'issuer' ? 'Pick the order sent to the issuer' : 'Pick the client instruction from Outlook'}
+      // The order to the issuer is a mail we sent, and it names the product.
+      defaultFolder={outlookPicker === 'issuer' ? 'sentitems' : 'inbox'}
+      defaultQuery={outlookPicker === 'issuer' ? (selectedSecurity?.isin || prefillData?.isin || '') : ''}
+      // The client instruction comes from an address authorized on the account,
+      // so open filtered on it. Bulk rows span several accounts: no single sender.
+      defaultFromFilter={outlookPicker === 'single'
+        ? (getAuthorizedEmails(clientBankAccounts.find(a => a._id === selectedBankAccountId))[0] || '')
+        : ''}
       onPickFile={(file) => {
         if (outlookPicker === 'bulk') addTraceFiles([file]);
+        else if (outlookPicker === 'issuer') setIssuerOrderFile(file);
         else setClientOrderFile(file);
         setError(null);
         setOutlookPicker(null);
@@ -5521,6 +5654,9 @@ const OrderModal = ({
     <Modal
       isOpen={isOpen}
       onClose={handleClose}
+      // A stray click outside must not interrupt an order being entered; close
+      // only via the close button, Cancel or Esc (all confirm first)
+      closeOnOverlayClick={false}
       title={
         currentStep < 2
           ? (isBulkMode ? 'Bulk Order' : 'New Order')

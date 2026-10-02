@@ -14,6 +14,25 @@ import { SessionsCollection, SessionHelpers } from '/imports/api/sessions.js';
 import { UsersCollection } from '/imports/api/users.js';
 import { issueDocumentToken } from '../documentAccess.js';
 import { getFichierCentralDir } from '/imports/api/documentStorage.js';
+import { BankAccountsCollection, accountHolderSelector } from '/imports/api/bankAccounts.js';
+
+// A document bound to a portfolio (e.g. a signed portfolio) may only name a bank
+// account that belongs to the document's subject: as holder or co-holder (same
+// rule as the client's account list) or as beneficial owner.
+async function assertAccountOfSubject(bankAccountId, subjectId) {
+  if (!bankAccountId) return;
+  const account = await BankAccountsCollection.findOneAsync({
+    _id: bankAccountId,
+    $or: [
+      accountHolderSelector([subjectId]),
+      { beneficialOwnerIds: subjectId },
+      { beneficialOwnerId: subjectId }
+    ]
+  }, { fields: { _id: 1 } });
+  if (!account) {
+    throw new Meteor.Error('invalid-argument', 'This portfolio does not belong to the client');
+  }
+}
 
 /**
  * Validate session and get user
@@ -126,7 +145,8 @@ Meteor.methods({
    * @param {Date} params.issuanceDate - Date when document was issued
    * @param {string} params.sessionId - Session ID for authentication
    */
-  async 'clientDocuments.upload'({ userId, familyMemberIndex, documentType, fileName, base64Data, mimeType, expirationDate, documentNumber, issuanceDate, sessionId }) {
+  async 'clientDocuments.upload'({ userId, familyMemberIndex, documentType, fileName, base64Data, mimeType, expirationDate, documentNumber, issuanceDate, bankAccountId, sessionId }) {
+    check(bankAccountId, Match.Maybe(Match.OneOf(String, null)));
     check(userId, String);
     check(familyMemberIndex, Match.Maybe(Match.OneOf(Number, null)));
     check(documentType, Match.OneOf(...Object.values(DOCUMENT_TYPES)));
@@ -146,6 +166,7 @@ Meteor.methods({
     // with an arbitrary (traversal-capable) userId.
     assertSafeSubjectId(userId);
     authorizeDocumentSubject(currentUser, userId);
+    await assertAccountOfSubject(bankAccountId, userId);
 
     // SECURITY: restrict stored file type (extension + mime) and size. The extension
     // is derived ONLY from an allowlist, never trusted from the client filename, so a
@@ -224,7 +245,8 @@ Meteor.methods({
       uploadedBy: currentUser._id,
       expirationDate: parsedExpirationDate,
       documentNumber: documentNumber || null,
-      issuanceDate: parsedIssuanceDate
+      issuanceDate: parsedIssuanceDate,
+      bankAccountId: bankAccountId || null
     });
 
     console.log(`Document record created: ${docId}`);
@@ -313,7 +335,8 @@ Meteor.methods({
     check(documentId, String);
     check(details, {
       documentNumber: Match.Maybe(Match.OneOf(String, null)),
-      issuanceDate: Match.Maybe(Match.OneOf(Date, String, null))
+      issuanceDate: Match.Maybe(Match.OneOf(Date, String, null)),
+      bankAccountId: Match.Maybe(Match.OneOf(String, null))
     });
     check(sessionId, String);
 
@@ -337,6 +360,11 @@ Meteor.methods({
         parsedDate = typeof details.issuanceDate === 'string' ? new Date(details.issuanceDate) : details.issuanceDate;
       }
       updateFields.issuanceDate = parsedDate;
+    }
+
+    if (details.bankAccountId !== undefined) {
+      await assertAccountOfSubject(details.bankAccountId, doc.userId);
+      updateFields.bankAccountId = details.bankAccountId || null;
     }
 
     if (Object.keys(updateFields).length > 0) {

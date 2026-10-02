@@ -331,7 +331,8 @@ Meteor.methods({
         authorizedEmails: accountData.authorizedEmails,
         authorizedEmail: accountData.authorizedEmail,
         authorizedCcEmails: accountData.authorizedCcEmails,
-        authorizedPhone: accountData.authorizedPhone
+        authorizedPhone: accountData.authorizedPhone,
+        accessRights: accountData.accessRights || null
       }
     );
 

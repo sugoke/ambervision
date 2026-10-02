@@ -1,16 +1,16 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useTracker } from 'meteor/react-meteor-data';
+import { useTracker, useFind } from 'meteor/react-meteor-data';
 import { Meteor } from 'meteor/meteor';
 import { UsersCollection, USER_ROLES } from '../api/users.js';
 import { ClientEntitiesCollection, ClientEntityHelpers, ENTITY_TYPES, ENTITY_STATUSES } from '../api/clientEntities.js';
 import { UserEntityAccessCollection, ACCESS_LEVELS } from '../api/userEntityAccess.js';
-import { BankAccountsCollection, accountHolderSelector, getAccountHolderIds, isJointAccount, buildJointAccountName, getAuthorizedEmails } from '../api/bankAccounts.js';
+import { BankAccountsCollection, accountHolderSelector, getAccountHolderIds, isJointAccount, buildJointAccountName, getAuthorizedEmails, ACCOUNT_ACCESS_RIGHTS, ACCOUNT_ACCESS_RIGHTS_LABELS, getClientReferenceCurrency } from '../api/bankAccounts.js';
 import { BanksCollection } from '../api/banks.js';
 import { AccountProfilesCollection, PROFILE_TEMPLATES, PROFILE_CATEGORIES, PROFILE_LIMIT_FIELDS, getProfileLimit, aggregateToFourCategories } from '../api/accountProfiles.js';
 import { PortfolioSnapshotsCollection } from '../api/portfolioSnapshots.js';
 import LiquidGlassCard from './components/LiquidGlassCard.jsx';
 import ClientDocumentManager, { KycDocumentManager, SingleTypeDocumentManager, IdentityImageSlot } from './components/ClientDocumentManager.jsx';
-import { DOCUMENT_TYPES, REVIEW_YEARS_BY_RISK, computeNextReviewDate, computeNextVisitDate, VISIT_INTERVAL_YEARS } from '../api/clientDocuments.js';
+import { ClientDocumentsCollection, DOCUMENT_TYPES, REVIEW_YEARS_BY_RISK, computeNextReviewDate, computeNextVisitDate, VISIT_INTERVAL_YEARS, computeNextPortfolioSignatureDate, SIGNED_PORTFOLIO_INTERVAL_YEARS } from '../api/clientDocuments.js';
 import Dialog from './Dialog.jsx';
 import { useDialog } from './useDialog.js';
 import { useTheme } from './ThemeContext.jsx';
@@ -22,9 +22,41 @@ import { openDocumentWindow } from './utils/openDocument.js';
 // deployed app while working locally. Never lazy-load in this app's client code.
 import html2pdf from 'html2pdf.js';
 
+// Power of attorney (orders allowed) vs view-only (no orders) for a bank account.
+const AccessRightsPicker = ({ value, onChange, readOnly = false }) => (
+  <div>
+    <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Mandate on this account{readOnly ? '' : ' *'}</label>
+    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+      {[
+        { id: ACCOUNT_ACCESS_RIGHTS.POWER_OF_ATTORNEY, hint: 'We can place orders' },
+        { id: ACCOUNT_ACCESS_RIGHTS.VIEW_ONLY, hint: 'Consultation only — no orders' }
+      ].map(opt => {
+        const active = value === opt.id;
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            disabled={readOnly}
+            onClick={readOnly ? undefined : () => onChange(opt.id)}
+            style={{
+              flex: '1 1 180px', textAlign: 'left', padding: '8px 12px', borderRadius: '6px', cursor: readOnly ? 'default' : 'pointer',
+              border: `1px solid ${active ? 'var(--accent-color)' : 'var(--border-color)'}`,
+              background: active ? 'var(--bg-tertiary)' : 'var(--bg-primary)',
+              color: 'var(--text-primary)'
+            }}
+          >
+            <div style={{ fontSize: '0.85rem', fontWeight: active ? '700' : '500' }}>{ACCOUNT_ACCESS_RIGHTS_LABELS[opt.id]}</div>
+            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>{opt.hint}</div>
+          </button>
+        );
+      })}
+    </div>
+  </div>
+);
+
 // Percentage input used by the investment profile editor.
 // Keeps the "%" inside the field so the value always reads as a percentage.
-const PercentInput = ({ value, onChange, invalid, ariaLabel }) => (
+const PercentInput = ({ value, onChange, invalid, ariaLabel, readOnly = false }) => (
   <div style={{
     display: 'flex',
     alignItems: 'center',
@@ -42,8 +74,9 @@ const PercentInput = ({ value, onChange, invalid, ariaLabel }) => (
       step="1"
       aria-label={ariaLabel}
       value={value}
-      onChange={e => onChange(e.target.value)}
-      onFocus={e => e.target.select()}
+      readOnly={readOnly}
+      onChange={readOnly ? undefined : e => onChange(e.target.value)}
+      onFocus={readOnly ? undefined : e => e.target.select()}
       style={{
         width: '100%',
         minWidth: 0,
@@ -120,14 +153,32 @@ const getBankLogoPath = (bankName) => {
 const entityFieldLabelStyle = { display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' };
 const entityFieldInputStyle = { width: '100%', padding: '10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '0.9rem', boxSizing: 'border-box' };
 
-// Label + value in display mode, label + input in edit mode
+// Read-only counterpart of an input: same box as the edit-mode field, so the
+// profile always reads as a form. `size="sm"` matches the compact inputs of the
+// bank account and family editors.
+const readOnlyFieldStyle = {
+  ...entityFieldInputStyle,
+  minHeight: '39px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px',
+  cursor: 'default', overflowWrap: 'anywhere'
+};
+const readOnlyFieldSmStyle = {
+  ...readOnlyFieldStyle,
+  padding: '7px', minHeight: '32px', fontSize: '0.82rem', background: 'var(--bg-primary)'
+};
+const ReadOnlyField = ({ children, size = 'md', style }) => (
+  <div style={{ ...(size === 'sm' ? readOnlyFieldSmStyle : readOnlyFieldStyle), ...style }}>
+    {children === null || children === undefined || children === '' ? ' ' : children}
+  </div>
+);
+
+// Label + input; in display mode the input is shown read-only
 const EntityField = ({ label, editing, value, display, onChange, type = 'text', placeholder = '', span = false }) => (
   <div style={span ? { gridColumn: '1 / -1' } : undefined}>
     <label style={entityFieldLabelStyle}>{label}</label>
     {editing ? (
       <input type={type} value={value || ''} placeholder={placeholder} onChange={e => onChange(e.target.value)} style={entityFieldInputStyle} />
     ) : (
-      <div style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>{display || '-'}</div>
+      <ReadOnlyField>{display}</ReadOnlyField>
     )}
   </div>
 );
@@ -182,26 +233,17 @@ const YesNoField = ({ label, sublabel, editing, value, onChange }) => (
       <div style={{ fontSize: '0.92rem', fontWeight: '600', color: 'var(--text-primary)' }}>{label}</div>
       {sublabel && <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>{sublabel}</div>}
     </div>
-    {editing ? (
-      <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
-        {[{ v: true, text: 'Yes' }, { v: false, text: 'No' }].map(opt => (
-          <button key={opt.text} onClick={() => onChange(value === opt.v ? null : opt.v)} style={{
-            padding: '6px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.82rem', fontWeight: '600',
-            border: value === opt.v ? 'none' : '1px solid var(--border-color)',
-            background: value === opt.v ? (opt.v ? 'var(--loss-color)' : 'var(--gain-color)') : 'var(--bg-secondary)',
-            color: value === opt.v ? 'white' : 'var(--text-secondary)', transition: 'all 0.15s ease'
-          }}>{opt.text}</button>
-        ))}
-      </div>
-    ) : (
-      <span style={{
-        padding: '3px 12px', borderRadius: '6px', fontSize: '0.8rem', fontWeight: '700', flexShrink: 0,
-        background: value === true ? 'rgba(239, 68, 68, 0.12)' : value === false ? 'rgba(16, 185, 129, 0.12)' : 'var(--bg-secondary)',
-        color: value === true ? 'var(--loss-color)' : value === false ? 'var(--gain-color)' : 'var(--text-muted)'
-      }}>
-        {value === true ? 'Yes' : value === false ? 'No' : '—'}
-      </span>
-    )}
+    {/* Same Yes / No selector in both modes; locked outside edit mode */}
+    <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+      {[{ v: true, text: 'Yes' }, { v: false, text: 'No' }].map(opt => (
+        <button key={opt.text} type="button" disabled={!editing} onClick={editing ? () => onChange(value === opt.v ? null : opt.v) : undefined} style={{
+          padding: '6px 16px', borderRadius: '6px', cursor: editing ? 'pointer' : 'default', fontSize: '0.82rem', fontWeight: '600',
+          border: value === opt.v ? 'none' : '1px solid var(--border-color)',
+          background: value === opt.v ? (opt.v ? 'var(--loss-color)' : 'var(--gain-color)') : 'var(--bg-secondary)',
+          color: value === opt.v ? 'white' : 'var(--text-secondary)', transition: 'all 0.15s ease'
+        }}>{opt.text}</button>
+      ))}
+    </div>
   </div>
 );
 
@@ -228,11 +270,12 @@ const ChoiceField = ({ label, editing, value, onChange, options }) => (
   <div style={{ padding: '12px 0', borderBottom: '1px solid var(--border-color)' }}>
     <div style={{ fontSize: '0.92rem', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '8px' }}>{label}</div>
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-      {editing ? options.map(opt => {
+      {/* Same band selector in both modes; locked outside edit mode */}
+      {options.map(opt => {
         const selected = value === opt.value;
         return (
-          <button key={opt.value} onClick={() => onChange(selected ? null : opt.value)} style={{
-            padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', textAlign: 'center',
+          <button key={opt.value} type="button" disabled={!editing} onClick={editing ? () => onChange(selected ? null : opt.value) : undefined} style={{
+            padding: '8px 12px', borderRadius: '8px', cursor: editing ? 'pointer' : 'default', textAlign: 'center',
             border: selected ? '1.5px solid var(--accent-color)' : '1px solid var(--border-color)',
             background: selected ? 'rgba(59, 130, 246, 0.1)' : 'var(--bg-secondary)',
             color: selected ? 'var(--accent-color)' : 'var(--text-secondary)',
@@ -242,15 +285,7 @@ const ChoiceField = ({ label, editing, value, onChange, options }) => (
             {opt.sublabel && <div style={{ fontSize: '0.68rem', opacity: 0.75, marginTop: '2px' }}>{opt.sublabel}</div>}
           </button>
         );
-      }) : (() => {
-        const selected = options.find(o => o.value === value);
-        if (!selected) return <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>—</span>;
-        return (
-          <span style={{ padding: '6px 12px', borderRadius: '8px', background: 'rgba(59, 130, 246, 0.1)', color: 'var(--accent-color)', fontSize: '0.82rem', fontWeight: '700' }}>
-            {selected.label}{selected.sublabel ? ` (${selected.sublabel})` : ''}
-          </span>
-        );
-      })()}
+      })}
     </div>
   </div>
 );
@@ -350,7 +385,8 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
     beneficialOwnerIds: [],
     comment: '',
     authorizedEmails: [],
-    authorizedPhone: ''
+    authorizedPhone: '',
+    accessRights: ''
   });
   const [newAccountEmailInput, setNewAccountEmailInput] = useState('');
   const [editAccountEmailInput, setEditAccountEmailInput] = useState('');
@@ -410,6 +446,35 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
   const [familyDraft, setFamilyDraft] = useState([]);
 
   // KYC Risk Score state
+  // Dated review / visit files. The latest file date stands in for the last
+  // review or visit date when none was typed, so the uploaded files drive the
+  // next due date. Same reactive read as the file lists themselves
+  // (SingleTypeDocumentManager in the KYC tab holds the subscription).
+  const datedReviewFiles = useFind(
+    () => ClientDocumentsCollection.find({
+      userId: entityId || '__none__',
+      documentType: { $in: [DOCUMENT_TYPES.PERIODIC_REVIEW, DOCUMENT_TYPES.VISIT_REPORT, DOCUMENT_TYPES.SIGNED_PORTFOLIO] }
+    }),
+    [entityId]
+  );
+  const latestFileDate = (documentType) => datedReviewFiles
+    .filter(d => d.documentType === documentType && d.issuanceDate)
+    .map(d => new Date(d.issuanceDate))
+    .filter(d => !Number.isNaN(d.getTime()))
+    .sort((a, b) => b - a)[0] || null;
+  const latestReviewFileDate = latestFileDate(DOCUMENT_TYPES.PERIODIC_REVIEW);
+  const latestVisitFileDate = latestFileDate(DOCUMENT_TYPES.VISIT_REPORT);
+  // Latest signature date per portfolio (bank account) from the signed-portfolio files
+  const lastPortfolioSignatureByAccount = datedReviewFiles
+    .filter(d => d.documentType === DOCUMENT_TYPES.SIGNED_PORTFOLIO && d.bankAccountId && d.issuanceDate)
+    .reduce((acc, d) => {
+      const signed = new Date(d.issuanceDate);
+      if (!Number.isNaN(signed.getTime()) && (!acc[d.bankAccountId] || signed > acc[d.bankAccountId])) {
+        acc[d.bankAccountId] = signed;
+      }
+      return acc;
+    }, {});
+
   const [editingRiskScore, setEditingRiskScore] = useState(false);
   const [savingRiskScore, setSavingRiskScore] = useState(false);
   const [riskScoreModalOpen, setRiskScoreModalOpen] = useState(false);
@@ -741,7 +806,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
   };
 
   const handleAddBankAccount = async () => {
-    if (!newAccount.bankId || !newAccount.accountNumber) {
+    if (!newAccount.bankId || !newAccount.accountNumber || !newAccount.accessRights) {
       return;
     }
 
@@ -772,7 +837,8 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
           beneficialOwnerIds: (newAccount.beneficialOwnerIds || []).filter(id => id),
           comment: newAccount.comment || null,
           authorizedEmails: cleanedEmails,
-          authorizedPhone: trimmedPhone || null
+          authorizedPhone: trimmedPhone || null,
+          accessRights: newAccount.accessRights
         }, sessionId);
       } else {
         // Legacy user mode
@@ -797,7 +863,8 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
         beneficialOwnerIds: [],
         comment: '',
         authorizedEmails: [],
-        authorizedPhone: ''
+        authorizedPhone: '',
+        accessRights: ''
       });
       setNewAccountEmailInput('');
       setShowAddAccount(false);
@@ -836,7 +903,8 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
       name: account.name || '',
       accountNumber: account.accountNumber || '',
       authorizedEmails: getAuthorizedEmails(account),
-      authorizedPhone: account.authorizedPhone || ''
+      authorizedPhone: account.authorizedPhone || '',
+      accessRights: account.accessRights || ''
     });
     setEditAccountEmailInput('');
   };
@@ -873,7 +941,8 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
             ? (editBankAccountData.lifeInsuranceCompany || null)
             : null,
           authorizedEmails: cleanedEmails,
-          authorizedPhone: trimmedPhone
+          authorizedPhone: trimmedPhone,
+          ...(editBankAccountData.accessRights ? { accessRights: editBankAccountData.accessRights } : {})
         },
         sessionId
       });
@@ -2109,6 +2178,47 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                 );
               })()}
 
+              {/* Can Validate Any Order - validate orders of clients the user does not manage */}
+              {hasUser && [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.RELATIONSHIP_MANAGER, USER_ROLES.COMPLIANCE, USER_ROLES.STAFF].includes(user.role) && (() => {
+                const canToggle = currentUser?.role === USER_ROLES.SUPERADMIN;
+                const isEnabled = user.canValidateAnyOrder === true;
+                return (
+                  <button
+                    onClick={async () => {
+                      if (!canToggle) return;
+                      try {
+                        await Meteor.callAsync('users.updateCanValidateAnyOrder', user._id, !isEnabled, sessionId);
+                      } catch (err) {
+                        console.error('Error updating canValidateAnyOrder:', err);
+                        alert(err.reason || 'Failed to update permission');
+                      }
+                    }}
+                    disabled={!canToggle}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '6px 14px',
+                      borderRadius: '20px',
+                      background: isEnabled ? 'rgba(16, 185, 129, 0.15)' : 'rgba(107, 114, 128, 0.15)',
+                      border: `1px solid ${isEnabled ? 'rgba(16, 185, 129, 0.3)' : 'rgba(107, 114, 128, 0.3)'}`,
+                      color: isEnabled ? 'var(--gain-color)' : '#6b7280',
+                      fontSize: '0.75rem',
+                      fontWeight: '600',
+                      cursor: canToggle ? 'pointer' : 'default',
+                      transition: 'all 0.2s ease',
+                      userSelect: 'none',
+                      outline: 'none'
+                    }}
+                    title={canToggle
+                      ? `Click to ${isEnabled ? 'restrict validation to this user\'s own clients' : 'allow this user to validate orders of any client'} (enabling it also grants order validation)`
+                      : 'Validate orders of clients the user does not manage'}
+                  >
+                    Can Validate Any Order: {isEnabled ? 'Yes' : 'No'}
+                  </button>
+                );
+              })()}
+
               {/* Archive / Reactivate buttons (admin, superadmin, compliance) */}
               {isEntityMode && entity && [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.COMPLIANCE].includes(currentUser?.role) && (
                 <>
@@ -2188,7 +2298,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
               {isEntityMode && entity && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
                   <span>💰</span>
-                  <span>{entity.referenceCurrency || 'EUR'}</span>
+                  <span>{getClientReferenceCurrency(entity, bankAccounts).currency}</span>
                 </div>
               )}
             </div>
@@ -2317,29 +2427,38 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
             marginBottom: '20px',
             flexWrap: 'wrap'
           }}>
-            {visibleTabs.map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                style={{
-                  padding: '10px 20px',
-                  border: 'none',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  backgroundColor: activeTab === tab.id ? 'var(--accent-color)' : 'var(--bg-secondary)',
-                  color: activeTab === tab.id ? 'white' : 'var(--text-primary)',
-                  fontWeight: activeTab === tab.id ? '600' : '400',
-                  transition: 'all 0.2s ease',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  fontSize: '0.9rem'
-                }}
-              >
-                <span>{tab.icon}</span>
-                {tab.label}
-              </button>
-            ))}
+            {visibleTabs.map(tab => {
+              // A client declared "not a US person" has nothing more in this
+              // tab, so it is greyed out. It stays clickable: the declaration
+              // itself lives here and must remain editable.
+              const muted = tab.id === 'usPerson' && entity?.usPerson?.isUsPerson === false && activeTab !== tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  title={muted ? 'Not a US person' : undefined}
+                  style={{
+                    padding: '10px 20px',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    backgroundColor: activeTab === tab.id ? 'var(--accent-color)' : 'var(--bg-secondary)',
+                    color: activeTab === tab.id ? 'white' : muted ? 'var(--text-muted)' : 'var(--text-primary)',
+                    opacity: muted ? 0.5 : 1,
+                    filter: muted ? 'grayscale(1)' : 'none',
+                    fontWeight: activeTab === tab.id ? '600' : '400',
+                    transition: 'all 0.2s ease',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    fontSize: '0.9rem'
+                  }}
+                >
+                  <span>{tab.icon}</span>
+                  {tab.label}
+                </button>
+              );
+            })}
           </div>
         );
       })()}
@@ -2448,7 +2567,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   entity record, and editable outside the Edit mode since a
                   drop replaces the image in one step. */}
               {entity.type === ENTITY_TYPES.PHYSICAL_PERSON && (
-                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : '160px 320px', gap: '16px', marginBottom: '20px', alignItems: 'start' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '120px 240px', gap: '16px', marginBottom: '20px', alignItems: 'start' }}>
                   <IdentityImageSlot
                     userId={entityId}
                     documentType={DOCUMENT_TYPES.CLIENT_PHOTO}
@@ -2486,7 +2605,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                           {MARITAL_STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                         </select>
                       ) : (
-                        <div style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>{MARITAL_STATUS_LABELS[entity.profile?.maritalStatus] || '-'}</div>
+                        <ReadOnlyField>{MARITAL_STATUS_LABELS[entity.profile?.maritalStatus]}</ReadOnlyField>
                       )}
                     </div>
                   </>
@@ -2503,9 +2622,12 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                           </label>
                         </div>
                       ) : (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <span style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>{entity.profile?.companyName || '-'}</span>
-                          {entity.isInsurance && <span style={{ padding: '2px 8px', borderRadius: '5px', fontSize: '0.7rem', fontWeight: '600', background: 'rgba(20, 184, 166, 0.12)', color: '#14b8a6' }}>Insurance</span>}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          <ReadOnlyField>{entity.profile?.companyName}</ReadOnlyField>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                            <input type="checkbox" checked={!!entity.isInsurance} disabled readOnly style={{ width: '16px', height: '16px' }} />
+                            Life Insurance Company
+                          </label>
                         </div>
                       )}
                     </div>
@@ -2522,8 +2644,16 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                       {['EUR', 'USD', 'GBP', 'CHF', 'JPY', 'CAD', 'AUD'].map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
                   ) : (
-                    <div style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>{entity.referenceCurrency || 'EUR'}</div>
+                    <ReadOnlyField>{getClientReferenceCurrency(entity, bankAccounts).currency}</ReadOnlyField>
                   )}
+                  {(() => {
+                    // The investment accounts decide; this setting only breaks a tie
+                    const ref = getClientReferenceCurrency(entity, bankAccounts);
+                    const hint = ref.source === 'accounts'
+                      ? 'From the investment accounts'
+                      : ref.mixed ? 'Investment accounts in several currencies: this setting decides' : 'No investment account yet: this setting applies';
+                    return <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>{hint}</div>;
+                  })()}
                 </div>
                 <div>
                   <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '6px' }}>Language</label>
@@ -2536,7 +2666,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                       <option value="es">Spanish</option>
                     </select>
                   ) : (
-                    <div style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>{{'en':'English','fr':'French','de':'German','it':'Italian','es':'Spanish'}[entity.profile?.preferredLanguage] || entity.profile?.preferredLanguage || '-'}</div>
+                    <ReadOnlyField>{{'en':'English','fr':'French','de':'German','it':'Italian','es':'Spanish'}[entity.profile?.preferredLanguage] || entity.profile?.preferredLanguage}</ReadOnlyField>
                   )}
                 </div>
                 </>}
@@ -3070,144 +3200,86 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   </button>
                 </div>
               </div>
-            ) : (
+            ) : (() => {
+              // Read-only view laid out like the edit form above
+              const userFieldLabel = { display: 'block', marginBottom: '8px', color: 'var(--text-secondary)', fontSize: '0.8rem', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' };
+              const userFieldBox = { padding: '12px', border: '2px solid var(--border-color)', fontSize: '0.95rem', minHeight: '46px' };
+              const isCompanyClient = user.role === USER_ROLES.CLIENT && user.profile?.clientType === 'company';
+              const languageLabels = { en: 'English', fr: 'French', de: 'German', es: 'Spanish', it: 'Italian' };
+              const currencyLabels = { USD: 'USD - US Dollar', EUR: 'EUR - Euro', GBP: 'GBP - British Pound', CHF: 'CHF - Swiss Franc', ILS: 'ILS - Israeli Shekel' };
+              const currency = user.profile?.referenceCurrency || 'EUR';
+              const language = user.profile?.preferredLanguage || 'en';
+              return (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '20px' }}>
-                <div style={{
-                  padding: '1rem',
-                  background: 'var(--bg-tertiary)',
-                  borderRadius: '10px',
-                  border: '1px solid var(--border-color)'
-                }}>
-                  <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    Email
-                  </p>
-                  <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: '500' }}>
-                    {user.email || user.username}
-                  </p>
+                <div>
+                  <label style={userFieldLabel}>Email</label>
+                  <ReadOnlyField style={userFieldBox}>{user.email || user.username}</ReadOnlyField>
                 </div>
 
-                {user.profile?.clientType === 'company' ? (
-                  <div style={{
-                    padding: '1rem',
-                    background: 'var(--bg-tertiary)',
-                    borderRadius: '10px',
-                    border: '1px solid var(--border-color)'
-                  }}>
-                    <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Company Name
-                    </p>
-                    <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: '500' }}>
-                      {user.profile?.companyName || <span style={{ color: 'var(--text-secondary)' }}>Not set</span>}
-                    </p>
+                {user.role === USER_ROLES.CLIENT && (
+                  <div>
+                    <label style={userFieldLabel}>Client Type</label>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      {[{ v: 'natural', text: 'Natural Person' }, { v: 'company', text: 'Company' }].map(opt => {
+                        const selected = (user.profile?.clientType || 'natural') === opt.v;
+                        return (
+                          <button key={opt.v} type="button" disabled style={{
+                            flex: 1, padding: '10px', borderRadius: '6px', cursor: 'default', fontWeight: '500', fontSize: '0.9rem',
+                            border: `2px solid ${selected ? 'var(--accent-color)' : 'var(--border-color)'}`,
+                            background: selected ? 'rgba(99, 102, 241, 0.1)' : 'var(--bg-secondary)',
+                            color: selected ? 'var(--accent-color)' : 'var(--text-secondary)'
+                          }}>{opt.text}</button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {isCompanyClient ? (
+                  <div>
+                    <label style={userFieldLabel}>Company Name</label>
+                    <ReadOnlyField style={userFieldBox}>{user.profile?.companyName}</ReadOnlyField>
                   </div>
                 ) : (
-                  <div style={{
-                    padding: '1rem',
-                    background: 'var(--bg-tertiary)',
-                    borderRadius: '10px',
-                    border: '1px solid var(--border-color)'
-                  }}>
-                    <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Full Name
-                    </p>
-                    <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: '500' }}>
-                      {fullName}
-                    </p>
-                  </div>
+                  <>
+                    <div>
+                      <label style={userFieldLabel}>First Name</label>
+                      <ReadOnlyField style={userFieldBox}>{user.profile?.firstName}</ReadOnlyField>
+                    </div>
+                    <div>
+                      <label style={userFieldLabel}>Last Name</label>
+                      <ReadOnlyField style={userFieldBox}>{user.profile?.lastName}</ReadOnlyField>
+                    </div>
+                    <div>
+                      <label style={userFieldLabel}>Date of Birth</label>
+                      <ReadOnlyField style={userFieldBox}>
+                        {user.profile?.birthday && (
+                          <>
+                            🎂 {new Date(user.profile.birthday).toLocaleDateString()}
+                            {calculateAge(user.profile.birthday) && (
+                              <span style={{ marginLeft: '8px', color: 'var(--text-secondary)', fontSize: '13px' }}>
+                                ({calculateAge(user.profile.birthday)} years)
+                              </span>
+                            )}
+                          </>
+                        )}
+                      </ReadOnlyField>
+                    </div>
+                  </>
                 )}
 
-                {/* Date of Birth - hide for company clients */}
-                {user.profile?.clientType !== 'company' && (
-                  <div style={{
-                    padding: '1rem',
-                    background: 'var(--bg-tertiary)',
-                    borderRadius: '10px',
-                    border: '1px solid var(--border-color)'
-                  }}>
-                    <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Date of Birth
-                    </p>
-                    <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: '500' }}>
-                      {user.profile?.birthday ? (
-                        <>
-                          {new Date(user.profile.birthday).toLocaleDateString()}
-                          {calculateAge(user.profile.birthday) && (
-                            <span style={{ marginLeft: '8px', color: 'var(--text-secondary)', fontSize: '13px' }}>
-                              ({calculateAge(user.profile.birthday)} years)
-                            </span>
-                          )}
-                        </>
-                      ) : (
-                        <span style={{ color: 'var(--text-secondary)' }}>Not set</span>
-                      )}
-                    </p>
-                  </div>
-                )}
-
-                <div style={{
-                  padding: '1rem',
-                  background: 'var(--bg-tertiary)',
-                  borderRadius: '10px',
-                  border: '1px solid var(--border-color)'
-                }}>
-                  <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    Language
-                  </p>
-                  <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: '500' }}>
-                    {user.profile?.preferredLanguage?.toUpperCase() || 'EN'}
-                  </p>
+                <div>
+                  <label style={userFieldLabel}>Preferred Language</label>
+                  <ReadOnlyField style={userFieldBox}>🌐 {languageLabels[language] || language.toUpperCase()}</ReadOnlyField>
                 </div>
 
-                {/* Reference Currency */}
-                <div style={{
-                  padding: '1rem',
-                  background: 'var(--bg-tertiary)',
-                  borderRadius: '10px',
-                  border: '1px solid var(--border-color)'
-                }}>
-                  <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    Reference Currency
-                  </p>
-                  <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: '500' }}>
-                    {user.profile?.referenceCurrency || 'EUR'}
-                  </p>
+                <div>
+                  <label style={userFieldLabel}>Reference Currency</label>
+                  <ReadOnlyField style={userFieldBox}>💱 {currencyLabels[currency] || currency}</ReadOnlyField>
                 </div>
-
-                {/* Client Type */}
-                {user.role === USER_ROLES.CLIENT && (
-                  <div style={{
-                    padding: '1rem',
-                    background: 'var(--bg-tertiary)',
-                    borderRadius: '10px',
-                    border: '1px solid var(--border-color)'
-                  }}>
-                    <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Client Type
-                    </p>
-                    <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: '500' }}>
-                      {user.profile?.clientType === 'company' ? 'Company' : 'Natural Person'}
-                    </p>
-                  </div>
-                )}
-
-                {/* Company Name */}
-                {user.role === USER_ROLES.CLIENT && user.profile?.clientType === 'company' && user.profile?.companyName && (
-                  <div style={{
-                    padding: '1rem',
-                    background: 'var(--bg-tertiary)',
-                    borderRadius: '10px',
-                    border: '1px solid var(--border-color)'
-                  }}>
-                    <p style={{ margin: '0 0 6px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Company Name
-                    </p>
-                    <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: '500' }}>
-                      {user.profile.companyName}
-                    </p>
-                  </div>
-                )}
               </div>
-            )}
+              );
+            })()}
           </LiquidGlassCard>
           )}
 
@@ -3642,6 +3714,10 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                     )}
                   </div>
 
+                  <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px dashed var(--border-color)' }}>
+                    <AccessRightsPicker value={newAccount.accessRights} onChange={v => setNewAccount(prev => ({ ...prev, accessRights: v }))} />
+                  </div>
+
                   {/* Authorized contacts for order communication */}
                   {(() => {
                     const addPhoneValid = !newAccount.authorizedPhone || E164_PHONE_REGEX.test(newAccount.authorizedPhone.trim());
@@ -3695,12 +3771,12 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   })()}
 
                   <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '12px' }}>
-                    <button onClick={() => { setShowAddAccount(false); setNewAccount({ name: '', bankId: '', accountNumber: '', referenceCurrency: 'USD', accountType: 'personal', accountStructure: 'direct', lifeInsuranceCompany: '', relationshipManagerId: '', backupRmIds: [], beneficialOwnerIds: [], comment: '', authorizedEmails: [], authorizedPhone: '' }); setNewAccountEmailInput(''); }}
+                    <button onClick={() => { setShowAddAccount(false); setNewAccount({ name: '', bankId: '', accountNumber: '', referenceCurrency: 'USD', accountType: 'personal', accountStructure: 'direct', lifeInsuranceCompany: '', relationshipManagerId: '', backupRmIds: [], beneficialOwnerIds: [], comment: '', authorizedEmails: [], authorizedPhone: '', accessRights: '' }); setNewAccountEmailInput(''); }}
                       style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}>Cancel</button>
                     {(() => {
                       const addEmailOk = !newAccountEmailInput.trim() || AUTHORIZED_EMAIL_REGEX.test(newAccountEmailInput.trim());
                       const addPhoneOk = !newAccount.authorizedPhone || E164_PHONE_REGEX.test(newAccount.authorizedPhone.trim());
-                      const canAdd = newAccount.bankId && newAccount.accountNumber && addEmailOk && addPhoneOk;
+                      const canAdd = newAccount.bankId && newAccount.accountNumber && newAccount.accessRights && addEmailOk && addPhoneOk;
                       return (
                         <button onClick={handleAddBankAccount}
                           disabled={!canAdd}
@@ -3729,6 +3805,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                         <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: '600', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1.5px solid var(--border-color)' }}>Type</th>
                         {entity?.isInsurance && <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: '600', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1.5px solid var(--border-color)' }}>UBO</th>}
                         <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: '600', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1.5px solid var(--border-color)' }}>Profile</th>
+                        <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: '600', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1.5px solid var(--border-color)' }}>Risk</th>
                         <th style={{ padding: '10px 14px', textAlign: 'center', color: 'var(--text-muted)', fontWeight: '600', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1.5px solid var(--border-color)', width: '40px' }}></th>
                       </tr>
                     </thead>
@@ -3763,6 +3840,15 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                     Joint with {coHolders.map(h => ClientEntityHelpers.getEntityDisplayName(h)).join(', ')}
                                   </div>
                                 )}
+                                <div style={{ marginTop: '3px' }}>
+                                  {account.accessRights === ACCOUNT_ACCESS_RIGHTS.VIEW_ONLY ? (
+                                    <span title="No power of attorney: orders cannot be placed on this account" style={{ padding: '1px 6px', borderRadius: '4px', fontSize: '0.68rem', fontWeight: '600', background: 'rgba(239, 68, 68, 0.1)', color: 'var(--loss-color)' }}>View only — no orders</span>
+                                  ) : account.accessRights === ACCOUNT_ACCESS_RIGHTS.POWER_OF_ATTORNEY ? (
+                                    <span style={{ padding: '1px 6px', borderRadius: '4px', fontSize: '0.68rem', fontWeight: '600', background: 'rgba(16, 185, 129, 0.1)', color: 'var(--gain-color)' }}>Power of attorney</span>
+                                  ) : (
+                                    <span title="Edit the account to record whether we hold a power of attorney" style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Mandate not set</span>
+                                  )}
+                                </div>
                               </td>
                               <td style={{ padding: '10px 14px', fontFamily: "'Roboto Mono', monospace", fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{account.accountNumber}</td>
                               <td style={{ padding: '10px 14px', textAlign: 'center' }}>
@@ -3777,13 +3863,26 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                   <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>-</span>
                                 )}
                               </td>
+                              {/* The account's KYC risk (business-relationship level). */}
+                              <td style={{ padding: '10px 14px' }}>
+                                {(() => {
+                                  const level = account.kycRiskScore?.businessRelationship?.riskLevel;
+                                  if (!level) return <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Not assessed</span>;
+                                  const risk = getRiskLevelDisplay(level);
+                                  return (
+                                    <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: '600', whiteSpace: 'nowrap', background: `color-mix(in srgb, ${risk.color} 10%, transparent)`, color: risk.color }}>
+                                      {risk.emoji} {risk.labelEn}
+                                    </span>
+                                  );
+                                })()}
+                              </td>
                               <td style={{ padding: '10px 14px', textAlign: 'center', fontSize: '0.8rem' }}>{isExpanded ? '▲' : '▼'}</td>
                             </tr>
 
                             {/* Expanded detail row */}
                             {isExpanded && (
                               <tr style={{ background: 'var(--bg-tertiary)' }}>
-                                <td colSpan={entity?.isInsurance ? 8 : 7} style={{ padding: '16px 20px', borderTop: '1px solid var(--border-color)' }}>
+                                <td colSpan={entity?.isInsurance ? 9 : 8} style={{ padding: '16px 20px', borderTop: '1px solid var(--border-color)' }}>
                                   <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '12px' }}>
                                     {/* Left: Account Details & Edit */}
                                     <div style={{ padding: '16px', background: 'var(--bg-secondary)', borderRadius: '10px', border: '1px solid var(--border-color)', gridColumn: isEditing && !isMobile ? '1 / -1' : 'auto' }}>
@@ -3919,8 +4018,14 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                               {relationshipManagers.filter(rm => rm._id !== editBankAccountData.relationshipManagerId && !(editBankAccountData.backupRmIds || []).includes(rm._id)).map(rm => <option key={rm._id} value={rm._id}>{rm.profile?.firstName} {rm.profile?.lastName}</option>)}
                                             </select>
                                           </div>
+                                          <div style={{ gridColumn: '1 / -1', marginTop: '8px', paddingTop: '10px', borderTop: '1px dashed var(--border-color)' }}>
+                                            <AccessRightsPicker value={editBankAccountData.accessRights} onChange={v => setEditBankAccountData(prev => ({ ...prev, accessRights: v }))} />
+                                            {!editBankAccountData.accessRights && (
+                                              <div style={{ fontSize: '0.7rem', color: 'var(--warning-color)', marginTop: '4px' }}>Not specified yet — orders are allowed until it is set.</div>
+                                            )}
+                                          </div>
                                           {(() => {
-                                            const editPhoneValid = !editBankAccountData.authorizedPhone || E164_PHONE_REGEX.test((editBankAccountData.authorizedPhone || '').trim());
+                                            const editPhoneValid =!editBankAccountData.authorizedPhone || E164_PHONE_REGEX.test((editBankAccountData.authorizedPhone || '').trim());
                                             const emailInputValid = !editAccountEmailInput.trim() || AUTHORIZED_EMAIL_REGEX.test(editAccountEmailInput.trim());
                                             const handleAddEmail = () => {
                                               const val = editAccountEmailInput.trim();
@@ -3976,55 +4081,99 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                           </div>
                                         </div>
                                       ) : (() => {
+                                        // Read-only view laid out like the edit form above
                                         const rm = account.relationshipManagerId ? relationshipManagers.find(r => r._id === account.relationshipManagerId) : null;
                                         const intro = account.introducerId ? introducers.find(i => i._id === account.introducerId) : null;
+                                        const accLabel = { display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' };
+                                        const chip = (color, bg) => ({ display: 'inline-flex', alignItems: 'center', padding: '2px 8px', borderRadius: '5px', fontSize: '0.72rem', fontWeight: '600', background: bg, color });
+                                        const backupRms = (account.backupRmIds || []).map(id => relationshipManagers.find(r => r._id === id)).filter(Boolean);
+                                        const authorizedEmails = account.authorizedEmails || [];
                                         return (
-                                        <div>
-                                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px 24px' }}>
-                                            <div>
-                                              <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Currency</div>
-                                              <div style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--accent-color)' }}>{account.referenceCurrency}</div>
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                          <div>
+                                            <label style={accLabel}>Name</label>
+                                            <ReadOnlyField size="sm">{account.name || buildJointAccountName(holders) || fullName}</ReadOnlyField>
+                                          </div>
+                                          <div>
+                                            <label style={accLabel}>Account Number</label>
+                                            <ReadOnlyField size="sm" style={{ fontFamily: "'Roboto Mono', monospace" }}>{account.accountNumber}</ReadOnlyField>
+                                          </div>
+                                          <div>
+                                            <label style={accLabel}>Currency</label>
+                                            <ReadOnlyField size="sm">{account.referenceCurrency}</ReadOnlyField>
+                                          </div>
+                                          <div>
+                                            <label style={accLabel}>Description</label>
+                                            <ReadOnlyField size="sm">{account.comment || account.accountType}</ReadOnlyField>
+                                          </div>
+                                          <div>
+                                            <label style={accLabel}>Credit Line</label>
+                                            <ReadOnlyField size="sm">{account.authorizedOverdraft > 0 ? `${account.referenceCurrency} ${account.authorizedOverdraft.toLocaleString()}` : ''}</ReadOnlyField>
+                                          </div>
+                                          <div>
+                                            <label style={accLabel}>Introducer</label>
+                                            <ReadOnlyField size="sm">{intro ? `${intro.profile?.firstName || ''} ${intro.profile?.lastName || ''}`.trim() : 'No Introducer'}</ReadOnlyField>
+                                          </div>
+                                          {isEntityMode && !entity?.isInsurance && (
+                                            <div style={{ gridColumn: '1 / -1' }}>
+                                              <label style={accLabel}>Joint holders</label>
+                                              <ReadOnlyField size="sm">
+                                                {holders.length > 0 ? holders.map(h => (
+                                                  <span key={h._id} style={h._id === entityId ? chip('var(--text-secondary)', 'var(--bg-tertiary)') : chip('#8b5cf6', 'rgba(139, 92, 246, 0.12)')}>
+                                                    {ClientEntityHelpers.getEntityDisplayName(h)}{h._id === entityId && <span style={{ opacity: 0.6, marginLeft: '4px' }}>(primary)</span>}
+                                                  </span>
+                                                )) : entity && (
+                                                  <span style={chip('var(--text-secondary)', 'var(--bg-tertiary)')}>
+                                                    {ClientEntityHelpers.getEntityDisplayName(entity)}<span style={{ opacity: 0.6, marginLeft: '4px' }}>(primary)</span>
+                                                  </span>
+                                                )}
+                                              </ReadOnlyField>
                                             </div>
-                                            <div>
-                                              <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Description</div>
-                                              <div style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }}>{account.comment || account.accountType || '-'}</div>
+                                          )}
+                                          {isEntityMode && entity?.isInsurance && (
+                                            <div style={{ gridColumn: '1 / -1' }}>
+                                              <label style={accLabel}>Beneficial Owners (UBOs)</label>
+                                              <ReadOnlyField size="sm">
+                                                {ubos.map(u => <span key={u._id} style={chip('#0ea5e9', 'rgba(14, 165, 233, 0.1)')}>{ClientEntityHelpers.getEntityDisplayName(u)}</span>)}
+                                              </ReadOnlyField>
                                             </div>
-                                            {account.authorizedOverdraft > 0 && (
-                                              <div>
-                                                <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Credit Line</div>
-                                                <div style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--gain-color)' }}>{account.referenceCurrency} {account.authorizedOverdraft?.toLocaleString()}</div>
-                                              </div>
-                                            )}
-                                            <div>
-                                              <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Relationship Manager</div>
-                                              <div style={{ fontSize: '0.85rem', color: rm ? '#2563eb' : 'var(--text-muted)' }}>{rm ? `${rm.profile?.firstName} ${rm.profile?.lastName}` : '-'}</div>
+                                          )}
+                                          {account.accountType === 'life_insurance' && account.lifeInsuranceCompany && (
+                                            <div style={{ gridColumn: '1 / -1' }}>
+                                              <label style={accLabel}>Insurance Company</label>
+                                              <ReadOnlyField size="sm">{account.lifeInsuranceCompany}</ReadOnlyField>
                                             </div>
-                                            {(account.backupRmIds || []).length > 0 && (
-                                              <div>
-                                                <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Backup RMs</div>
-                                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                                                  {(account.backupRmIds || []).map(rmId => { const brm = relationshipManagers.find(r => r._id === rmId); return brm ? <span key={rmId} style={{ fontSize: '0.8rem', color: '#8b5cf6' }}>{brm.profile?.firstName} {brm.profile?.lastName}</span> : null; })}
-                                                </div>
-                                              </div>
+                                          )}
+                                          <div>
+                                            <label style={accLabel}>Relationship Manager</label>
+                                            <ReadOnlyField size="sm">{rm ? `${rm.profile?.firstName} ${rm.profile?.lastName}` : 'No RM'}</ReadOnlyField>
+                                          </div>
+                                          <div>
+                                            <label style={accLabel}>Backup RMs</label>
+                                            <ReadOnlyField size="sm">
+                                              {backupRms.map(brm => <span key={brm._id} style={chip('#8b5cf6', 'rgba(139, 92, 246, 0.1)')}>{brm.profile?.firstName} {brm.profile?.lastName}</span>)}
+                                            </ReadOnlyField>
+                                          </div>
+                                          <div style={{ gridColumn: '1 / -1', marginTop: '8px', paddingTop: '10px', borderTop: '1px dashed var(--border-color)' }}>
+                                            <AccessRightsPicker value={account.accessRights} readOnly />
+                                            {!account.accessRights && (
+                                              <div style={{ fontSize: '0.7rem', color: 'var(--warning-color)', marginTop: '4px' }}>Not specified yet — orders are allowed until it is set.</div>
                                             )}
-                                            <div>
-                                              <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Introducer</div>
-                                              <div style={{ fontSize: '0.85rem', color: intro ? 'var(--warning-color)' : 'var(--text-muted)' }}>{intro ? `${intro.profile?.firstName || ''} ${intro.profile?.lastName || ''}`.trim() : 'None'}</div>
+                                          </div>
+                                          <div style={{ gridColumn: '1 / -1', marginTop: '8px', paddingTop: '10px', borderTop: '1px dashed var(--border-color)' }}>
+                                            <div style={{ fontSize: '0.68rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>Authorized contacts</div>
+                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
+                                              <div style={{ gridColumn: '1 / -1' }}>
+                                                <label style={accLabel}>Authorized emails</label>
+                                                <ReadOnlyField size="sm">
+                                                  {authorizedEmails.map(em => <span key={em} style={chip('var(--gain-color)', 'rgba(16, 185, 129, 0.1)')}>{em}</span>)}
+                                                </ReadOnlyField>
+                                              </div>
+                                              <div>
+                                                <label style={accLabel}>Authorized phone (E.164)</label>
+                                                <ReadOnlyField size="sm">{account.authorizedPhone}</ReadOnlyField>
+                                              </div>
                                             </div>
-                                            {ubos.length > 0 && (
-                                              <div>
-                                                <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>UBOs</div>
-                                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                                                  {ubos.map(u => <span key={u._id} style={{ fontSize: '0.8rem', color: '#0ea5e9' }}>{ClientEntityHelpers.getEntityDisplayName(u)}</span>)}
-                                                </div>
-                                              </div>
-                                            )}
-                                            {account.accountType === 'life_insurance' && account.lifeInsuranceCompany && (
-                                              <div>
-                                                <div style={{ fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Insurance Company</div>
-                                                <div style={{ fontSize: '0.85rem', color: '#8b5cf6' }}>{account.lifeInsuranceCompany}</div>
-                                              </div>
-                                            )}
                                           </div>
                                         </div>
                                         );
@@ -4089,20 +4238,28 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                           </div>
                                         </div>
                                       ) : profile ? (
-                                        <div>
-                                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
-                                            {profile.profileName && <span style={{ padding: '3px 8px', borderRadius: '5px', fontSize: '0.75rem', fontWeight: '600', background: 'rgba(16, 185, 129, 0.1)', color: 'var(--gain-color)' }}>{profile.profileName}</span>}
-                                            {profile.isProfessionalInvestor && <span style={{ padding: '3px 8px', borderRadius: '5px', fontSize: '0.75rem', fontWeight: '600', background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6' }}>Professional</span>}
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                          <div style={{ gridColumn: '1 / -1' }}>
+                                            <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Profile</label>
+                                            <ReadOnlyField size="sm">{profile.profileName}</ReadOnlyField>
                                           </div>
-                                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px' }}>
-                                            {PROFILE_CATEGORIES.map(category => (
-                                              <div key={category.key} style={{ padding: '8px', background: 'var(--bg-secondary)', borderRadius: '6px', textAlign: 'center' }}>
-                                                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: '2px' }}>{category.shortLabel}</div>
-                                                <div style={{ fontSize: '0.85rem', fontWeight: '700', color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>
-                                                  {getProfileLimit(profile, `min${category.key}`)} – {getProfileLimit(profile, `max${category.key}`)}%
-                                                </div>
+                                          {PROFILE_CATEGORIES.map(category => (
+                                            <div key={category.key}>
+                                              <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>{category.label}</label>
+                                              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                                <PercentInput readOnly value={getProfileLimit(profile, `min${category.key}`)} ariaLabel={`${category.label} minimum percentage`} />
+                                                <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>–</span>
+                                                <PercentInput readOnly value={getProfileLimit(profile, `max${category.key}`)} ariaLabel={`${category.label} maximum percentage`} />
                                               </div>
-                                            ))}
+                                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em', marginTop: '2px' }}>
+                                                <span>Min</span>
+                                                <span>Max</span>
+                                              </div>
+                                            </div>
+                                          ))}
+                                          <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                            <input type="checkbox" checked={!!profile.isProfessionalInvestor} disabled readOnly />
+                                            <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>Professional Investor</span>
                                           </div>
                                         </div>
                                       ) : (
@@ -4390,21 +4547,37 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                     const roleLabels = { ubo: 'UBO', director: 'Director', signatory: 'Signatory', shareholder: 'Shareholder' };
                     const roleColors = { ubo: '#dc2626', director: '#2563eb', signatory: '#059669', shareholder: '#7c3aed' };
                     return (
-                      <div key={sh._id || idx} style={{ padding: '14px 16px', background: 'var(--bg-tertiary)', borderRadius: '10px', border: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                            <span style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.95rem' }}>{sh.name}</span>
-                            <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: '600', color: roleColors[sh.role] || '#6b7280', background: `${roleColors[sh.role] || '#6b7280'}15` }}>
-                              {roleLabels[sh.role] || sh.role}
-                            </span>
-                            {sh.ownership && <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{sh.ownership}%</span>}
-                          </div>
-                          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                            {sh.entityId && (() => { const ent = allEntities.find(e => e._id === sh.entityId); return ent ? <span>{ClientEntityHelpers.getEntityTypeLabel(ent.type)}</span> : null; })()}
-                            {sh.entityId && sh.notes && <span> · </span>}
-                            {sh.notes && <span>{sh.notes}</span>}
-                          </div>
-                        </div>
+                      <div key={sh._id || idx} style={{ padding: '14px 16px', background: 'var(--bg-tertiary)', borderRadius: '10px', border: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
+                        {(() => {
+                          const shLabel = { display: 'block', marginBottom: '4px', fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase' };
+                          const ent = sh.entityId ? allEntities.find(e => e._id === sh.entityId) : null;
+                          const fullRoleLabels = { ubo: 'Ultimate Beneficial Owner (UBO)', director: 'Director', signatory: 'Authorized Signatory', shareholder: 'Shareholder' };
+                          return (
+                            <div style={{ flex: 1, minWidth: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+                              <div>
+                                <label style={shLabel}>Person / Company</label>
+                                <ReadOnlyField>
+                                  {sh.name}
+                                  {ent && <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>({ClientEntityHelpers.getEntityTypeLabel(ent.type)})</span>}
+                                </ReadOnlyField>
+                              </div>
+                              <div>
+                                <label style={shLabel}>Role</label>
+                                <ReadOnlyField style={{ color: roleColors[sh.role] || 'var(--text-primary)', fontWeight: '600' }}>{fullRoleLabels[sh.role] || roleLabels[sh.role] || sh.role}</ReadOnlyField>
+                              </div>
+                              {(sh.role === 'ubo' || sh.role === 'shareholder') && (
+                                <div>
+                                  <label style={shLabel}>Ownership %</label>
+                                  <ReadOnlyField>{sh.ownership ? `${sh.ownership}%` : ''}</ReadOnlyField>
+                                </div>
+                              )}
+                              <div style={{ gridColumn: '1 / -1' }}>
+                                <label style={shLabel}>Notes</label>
+                                <ReadOnlyField>{sh.notes}</ReadOnlyField>
+                              </div>
+                            </div>
+                          );
+                        })()}
                         <button
                           onClick={async () => {
                             const updated = stakeholders.filter((_, i) => i !== idx);
@@ -4559,34 +4732,21 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                     <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
                       Outcome
                     </label>
-                    {editingEntityKyc ? (
-                      <div style={{ display: 'flex', gap: '6px' }}>
-                        {COMMITTEE_OUTCOMES.map(opt => (
-                          <button key={opt.value}
-                            onClick={() => setKyc({ committeeOutcome: kyc.committeeOutcome === opt.value ? null : opt.value })}
-                            style={{
-                              padding: '7px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.82rem', fontWeight: '600',
-                              border: kyc.committeeOutcome === opt.value ? 'none' : '1px solid var(--border-color)',
-                              background: kyc.committeeOutcome === opt.value ? opt.color : 'var(--bg-secondary)',
-                              color: kyc.committeeOutcome === opt.value ? 'white' : 'var(--text-secondary)',
-                              transition: 'all 0.15s ease'
-                            }}>
-                            {opt.label}
-                          </button>
-                        ))}
-                      </div>
-                    ) : (() => {
-                      const chosen = COMMITTEE_OUTCOMES.find(o => o.value === kyc.committeeOutcome);
-                      return (
-                        <span style={{
-                          display: 'inline-block', padding: '3px 12px', borderRadius: '6px', fontSize: '0.85rem', fontWeight: '700',
-                          background: chosen ? `color-mix(in srgb, ${chosen.color} 12%, transparent)` : 'var(--bg-secondary)',
-                          color: chosen ? chosen.color : 'var(--text-muted)'
-                        }}>
-                          {chosen ? chosen.label : '—'}
-                        </span>
-                      );
-                    })()}
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      {COMMITTEE_OUTCOMES.map(opt => (
+                        <button key={opt.value} type="button" disabled={!editingEntityKyc}
+                          onClick={editingEntityKyc ? () => setKyc({ committeeOutcome: kyc.committeeOutcome === opt.value ? null : opt.value }) : undefined}
+                          style={{
+                            padding: '7px 16px', borderRadius: '6px', cursor: editingEntityKyc ? 'pointer' : 'default', fontSize: '0.82rem', fontWeight: '600',
+                            border: kyc.committeeOutcome === opt.value ? 'none' : '1px solid var(--border-color)',
+                            background: kyc.committeeOutcome === opt.value ? opt.color : 'var(--bg-secondary)',
+                            color: kyc.committeeOutcome === opt.value ? 'white' : 'var(--text-secondary)',
+                            transition: 'all 0.15s ease'
+                          }}>
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
 
@@ -4620,8 +4780,12 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   const riskDisplay = overallRisk ? getRiskLevelDisplay(overallRisk) : null;
                   const years = overallRisk ? REVIEW_YEARS_BY_RISK[overallRisk] : null;
 
+                  // A typed last-review date wins; otherwise the latest dated
+                  // review file is the last review.
+                  const lastReviewFromFile = !kyc.lastReviewDate && latestReviewFileDate;
+                  const lastReview = kyc.lastReviewDate || latestReviewFileDate;
                   const storedNext = kyc.nextReviewDate ? new Date(kyc.nextReviewDate) : null;
-                  const derivedNext = computeNextReviewDate(kyc.lastReviewDate, overallRisk);
+                  const derivedNext = computeNextReviewDate(lastReview, overallRisk);
                   const nextDue = storedNext || derivedNext;
                   const isOverdue = nextDue && nextDue < new Date();
 
@@ -4647,7 +4811,9 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                           editing={editingEntityKyc}
                           type="date"
                           value={toDateInputValue(kyc.lastReviewDate)}
-                          display={kyc.lastReviewDate ? new Date(kyc.lastReviewDate).toLocaleDateString() : ''}
+                          display={lastReview
+                            ? `${new Date(lastReview).toLocaleDateString()}${lastReviewFromFile ? ' (latest review file)' : ''}`
+                            : ''}
                           onChange={v => setKyc({
                             lastReviewDate: v || null,
                             // Recomputed from the risk level in force at review time,
@@ -4659,11 +4825,11 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                           <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
                             Next Review Due
                           </label>
-                          <div style={{ fontSize: '0.95rem', fontWeight: isOverdue ? '700' : '400', color: isOverdue ? 'var(--loss-color)' : 'var(--text-primary)' }}>
-                            {nextDue ? nextDue.toLocaleDateString() : '-'}
+                          <ReadOnlyField style={{ fontWeight: isOverdue ? '700' : '400', color: isOverdue ? 'var(--loss-color)' : 'var(--text-primary)' }}>
+                            {nextDue ? nextDue.toLocaleDateString() : ''}
                             {isOverdue && ' (overdue)'}
-                          </div>
-                          {kyc.lastReviewDate && years && (
+                          </ReadOnlyField>
+                          {lastReview && years && (
                             <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                               {years} year{years > 1 ? 's' : ''} after the last review
                             </div>
@@ -4685,8 +4851,12 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                     periodic review, but the cadence is fixed at one year and
                     does not depend on the risk level. */}
                 {(() => {
+                  // A typed last-visit date wins; otherwise the latest dated
+                  // visit report is the last visit.
+                  const lastVisitFromFile = !kyc.lastVisitDate && latestVisitFileDate;
+                  const lastVisit = kyc.lastVisitDate || latestVisitFileDate;
                   const storedNext = kyc.nextVisitDate ? new Date(kyc.nextVisitDate) : null;
-                  const nextDue = storedNext || computeNextVisitDate(kyc.lastVisitDate);
+                  const nextDue = storedNext || computeNextVisitDate(lastVisit);
                   const isOverdue = nextDue && nextDue < new Date();
 
                   return (
@@ -4704,7 +4874,9 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                           editing={editingEntityKyc}
                           type="date"
                           value={toDateInputValue(kyc.lastVisitDate)}
-                          display={kyc.lastVisitDate ? new Date(kyc.lastVisitDate).toLocaleDateString() : ''}
+                          display={lastVisit
+                            ? `${new Date(lastVisit).toLocaleDateString()}${lastVisitFromFile ? ' (latest visit report)' : ''}`
+                            : ''}
                           onChange={v => setKyc({
                             lastVisitDate: v || null,
                             nextVisitDate: v ? computeNextVisitDate(v) : null
@@ -4714,11 +4886,11 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                           <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
                             Next Visit Due
                           </label>
-                          <div style={{ fontSize: '0.95rem', fontWeight: isOverdue ? '700' : '400', color: isOverdue ? 'var(--loss-color)' : 'var(--text-primary)' }}>
-                            {nextDue ? nextDue.toLocaleDateString() : '-'}
+                          <ReadOnlyField style={{ fontWeight: isOverdue ? '700' : '400', color: isOverdue ? 'var(--loss-color)' : 'var(--text-primary)' }}>
+                            {nextDue ? nextDue.toLocaleDateString() : ''}
                             {isOverdue && ' (overdue)'}
-                          </div>
-                          {kyc.lastVisitDate && (
+                          </ReadOnlyField>
+                          {lastVisit && (
                             <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                               {VISIT_INTERVAL_YEARS} year{VISIT_INTERVAL_YEARS > 1 ? 's' : ''} after the last visit
                             </div>
@@ -4731,6 +4903,76 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                         documentType={DOCUMENT_TYPES.VISIT_REPORT}
                         title="📄 Visit Report Files"
                         bordered={false}
+                      />
+                    </div>
+                  );
+                })()}
+
+                {/* Signed portfolios — each portfolio (bank account) is signed by
+                    the client once a year, on its own date. The last signature per
+                    portfolio comes from the dated signed-portfolio files. */}
+                {(() => {
+                  const bankName = (bankId) => banks.find(b => b._id === bankId)?.name || '';
+                  const portfolios = [...bankAccounts, ...beneficiaryAccounts]
+                    .filter((a, i, all) => all.findIndex(x => x._id === a._id) === i);
+                  const accountOptions = portfolios.map(a => ({
+                    value: a._id,
+                    label: [bankName(a.bankId), a.accountNumber, a.name && a.name !== a.accountNumber ? `(${a.name})` : '']
+                      .filter(Boolean).join(' ')
+                  }));
+                  const labelStyle = { display: 'block', fontSize: '0.72rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' };
+                  const cell = { padding: '8px 10px', borderBottom: '1px solid var(--border-color)', fontSize: '0.9rem', color: 'var(--text-primary)', textAlign: 'left' };
+
+                  return (
+                    <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid var(--border-color)' }}>
+                      <div style={{ fontSize: '0.78rem', fontWeight: '700', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        ✍️ Signed Portfolios
+                        <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: '500', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                          each portfolio signed every {SIGNED_PORTFOLIO_INTERVAL_YEARS > 1 ? `${SIGNED_PORTFOLIO_INTERVAL_YEARS} years` : 'year'}
+                        </span>
+                      </div>
+
+                      {portfolios.length === 0 ? (
+                        <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                          No portfolio yet — add a bank account in the Accounts tab.
+                        </div>
+                      ) : (
+                        <div style={{ overflowX: 'auto', marginBottom: '4px' }}>
+                          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                            <thead>
+                              <tr>
+                                <th style={{ ...cell, ...labelStyle, display: 'table-cell' }}>Portfolio</th>
+                                <th style={{ ...cell, ...labelStyle, display: 'table-cell' }}>Last Signed</th>
+                                <th style={{ ...cell, ...labelStyle, display: 'table-cell' }}>Next Signature Due</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {portfolios.map(account => {
+                                const lastSigned = lastPortfolioSignatureByAccount[account._id] || null;
+                                const nextDue = computeNextPortfolioSignatureDate(lastSigned);
+                                const isOverdue = nextDue && nextDue < new Date();
+                                return (
+                                  <tr key={account._id}>
+                                    <td style={cell}>{accountOptions.find(o => o.value === account._id)?.label || account.accountNumber}</td>
+                                    <td style={cell}>{lastSigned ? lastSigned.toLocaleDateString() : <span style={{ color: 'var(--text-muted)' }}>Never signed</span>}</td>
+                                    <td style={{ ...cell, fontWeight: isOverdue ? '700' : '400', color: isOverdue ? 'var(--loss-color)' : 'var(--text-primary)' }}>
+                                      {nextDue ? nextDue.toLocaleDateString() : '-'}
+                                      {isOverdue && ' (overdue)'}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+
+                      <SingleTypeDocumentManager
+                        userId={entityId}
+                        documentType={DOCUMENT_TYPES.SIGNED_PORTFOLIO}
+                        title="📄 Signed Portfolio Files"
+                        bordered={false}
+                        accountOptions={accountOptions}
                       />
                     </div>
                   );
@@ -4783,19 +5025,27 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem', padding: '12px 0' }}>No family members recorded.</div>
                 )}
 
-                {!editingFamily && members.map((m, idx) => (
-                  <div key={idx} style={{ padding: '12px 0', borderBottom: idx < members.length - 1 ? '1px solid var(--border-color)' : 'none' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
-                      <span style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.98rem' }}>{m.name || `${m.firstName || ''} ${m.lastName || ''}`.trim() || '—'}</span>
-                      <span style={{ padding: '2px 10px', borderRadius: '6px', background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6', fontSize: '0.75rem', fontWeight: '700' }}>{FAMILY_RELATIONSHIP_LABELS[m.relationship] || m.relationship || '—'}</span>
+                {!editingFamily && members.map((m, idx) => {
+                  // Older records only carry the combined name
+                  const [fallbackFirst, ...fallbackRest] = (m.name || '').split(' ');
+                  const firstName = m.firstName ?? (m.lastName ? '' : fallbackFirst);
+                  const lastName = m.lastName ?? (m.firstName ? '' : fallbackRest.join(' '));
+                  return (
+                    <div key={idx} style={{ border: '1px solid var(--border-color)', borderRadius: '10px', padding: '14px', marginBottom: '12px' }}>
+                      <div style={{ marginBottom: '10px' }}>
+                        <span style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-secondary)' }}>Member #{idx + 1}</span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '10px' }}>
+                        <div><label style={fieldLabel}>First Name</label><ReadOnlyField size="sm">{firstName}</ReadOnlyField></div>
+                        <div><label style={fieldLabel}>Surname</label><ReadOnlyField size="sm">{lastName}</ReadOnlyField></div>
+                        <div><label style={fieldLabel}>Relationship</label><ReadOnlyField size="sm">{FAMILY_RELATIONSHIP_LABELS[m.relationship] || m.relationship}</ReadOnlyField></div>
+                        <div><label style={fieldLabel}>Date of Birth</label><ReadOnlyField size="sm">{m.birthDate ? new Date(m.birthDate).toLocaleDateString('en-GB') : ''}</ReadOnlyField></div>
+                        <div><label style={fieldLabel}>Place of Birth</label><ReadOnlyField size="sm">{m.birthPlace}</ReadOnlyField></div>
+                        <div style={{ gridColumn: isMobile ? '1' : '1 / -1' }}><label style={fieldLabel}>Address</label><ReadOnlyField size="sm">{m.address}</ReadOnlyField></div>
+                      </div>
                     </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '4px 16px', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                      <div>Date of Birth: <span style={{ color: 'var(--text-primary)' }}>{m.birthDate ? new Date(m.birthDate).toLocaleDateString('en-GB') : '—'}</span></div>
-                      <div>Place of Birth: <span style={{ color: 'var(--text-primary)' }}>{m.birthPlace || '—'}</span></div>
-                      <div style={{ gridColumn: isMobile ? '1' : '1 / -1' }}>Address: <span style={{ color: 'var(--text-primary)' }}>{m.address || '—'}</span></div>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
 
                 {editingFamily && (
                   <div>

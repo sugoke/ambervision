@@ -1333,7 +1333,7 @@ Meteor.methods({
             _id: prod._id,
             isin: prod.isin,
             name: prod.title,
-            currency: prod.currency || prod.parameters?.currency || 'USD',
+            currency: prod.currency || prod.parameters?.currency || null,
             assetClass: 'structured_product',
             source: 'product',
             issuer: prod.issuer || '',
@@ -1413,6 +1413,22 @@ Meteor.methods({
         { limit: limit - results.length }
       ).fetchAsync();
 
+      // Metadata auto-created from a product may predate the currency sync: take the
+      // currency from the product itself rather than leaving it blank
+      const missingCurrencyIsins = metadataResults
+        .filter(sec => sec.isin && !sec.currency && sec.assetClass === 'structured_product')
+        .map(sec => sec.isin);
+      const productCurrencyByIsin = {};
+      if (missingCurrencyIsins.length > 0) {
+        const linkedProducts = await ProductsCollection.find(
+          { isin: { $in: missingCurrencyIsins } },
+          { fields: { isin: 1, currency: 1 } }
+        ).fetchAsync();
+        linkedProducts.forEach(p => {
+          if (p.currency) productCurrencyByIsin[p.isin.toUpperCase()] = p.currency;
+        });
+      }
+
       metadataResults.forEach(sec => {
         if (sec.isin && !seenISINs.has(sec.isin.toUpperCase())) {
           seenISINs.add(sec.isin.toUpperCase());
@@ -1422,7 +1438,7 @@ Meteor.methods({
             name: sec.securityName,
             ticker: sec.ticker,
             exchange: sec.listingExchange,
-            currency: sec.currency,
+            currency: sec.currency || productCurrencyByIsin[sec.isin.toUpperCase()] || null,
             assetClass: sec.assetClass,
             source: 'metadata'
           });

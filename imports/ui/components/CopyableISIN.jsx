@@ -16,6 +16,7 @@ const CopyableISIN = ({ isin, style = {}, prefix = '' }) => {
     <span
       onClick={handleCopy}
       title="Click to copy ISIN"
+      data-isin-copy="off" // has its own copy badge; the app-wide handler skips it
       style={{ cursor: 'pointer', position: 'relative', ...style }}
     >
       {prefix}{isin}

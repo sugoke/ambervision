@@ -6,11 +6,11 @@ import LiquidGlassCard from './components/LiquidGlassCard.jsx';
 import { useTheme } from './ThemeContext.jsx';
 import { PMSHoldingsCollection } from '/imports/api/pmsHoldings';
 import { PMSOperationsCollection } from '/imports/api/pmsOperations';
-import { BankAccountsCollection } from '/imports/api/bankAccounts';
+import { BankAccountsCollection, getClientReferenceCurrency } from '/imports/api/bankAccounts';
 import { BanksCollection } from '/imports/api/banks';
 import { ProductsCollection } from '/imports/api/products';
 import { AllocationsCollection } from '/imports/api/allocations';
-import { AccountProfilesCollection, aggregateToFourCategories, PROFILE_TEMPLATES, PROFILE_LIMIT_FIELDS, getProfileLimit } from '/imports/api/accountProfiles';
+import { AccountProfilesCollection, aggregateToFourCategories, getProfileName } from '/imports/api/accountProfiles';
 import { buildAssetClassBreakdown } from '/imports/api/assetClassification';
 import { useViewAs } from './ViewAsContext.jsx';
 import {
@@ -801,6 +801,16 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
     const accounts = BankAccountsCollection.find(query, { sort: { accountNumber: 1 } }).fetch();
     const banks = BanksCollection.find({ isActive: true }).fetch();
 
+    // The account list omits the KYC risk assessment; staff get it for the
+    // owner in view through 'bankAccounts.details', which merges it into the
+    // same documents. The publication refuses clients server-side too.
+    if (viewAsFilter?.id && user?.role && user.role !== 'client') {
+      const ownerId = viewAsFilter.type === 'account'
+        ? (accounts[0]?.entityId || accounts[0]?.userId)
+        : viewAsFilter.id;
+      if (ownerId) Meteor.subscribe('bankAccounts.details', sessionId, ownerId);
+    }
+
     // Get account profiles for these accounts
     const accountIds = accounts.map(a => a._id);
     const profiles = AccountProfilesCollection.find({ bankAccountId: { $in: accountIds } }).fetch();
@@ -817,7 +827,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
     });
 
     return { bankAccounts: enrichedAccounts, accountProfiles: profiles, isLoadingAccounts: false };
-  }, [viewAsFilter]);
+  }, [viewAsFilter, user?.role]);
 
   // Account description order (for tab sorting) and icons
   const ACCOUNT_DESCRIPTION_CONFIG = {
@@ -917,6 +927,11 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
   const displayPositionsRaw = filteredHoldings;
   const displayTransactions = filteredOperations;
 
+  // Currency picked in the header to view the portfolio in, overriding the
+  // resolved reference currency below. Reset whenever the scope changes.
+  const [displayCurrencyOverride, setDisplayCurrencyOverride] = useState(null);
+  useEffect(() => { setDisplayCurrencyOverride(null); }, [viewAsFilter?.type, viewAsFilter?.id]);
+
   // Determine portfolio reference currency
   // Priority: 1) Holdings' portfolioCurrency, 2) Scope's reference currency (account tab or
   // viewAs account/client/entity), 3) Most common bank account currency, 4) USD default
@@ -975,8 +990,12 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
       portfolioCurrency = mostCommonAccountCurrency() || portfolioCurrency;
     }
   } else if (viewAsFilter && (viewAsFilter.type === 'client' || viewAsFilter.type === 'entity')) {
-    // Priority 2: Entity/Client's referenceCurrency, then priority 3.
-    const clientCurrency = viewAsFilter.data?.referenceCurrency || viewAsFilter.data?.profile?.referenceCurrency;
+    // Priority 2: the client's reference currency - the currency of its
+    // investment accounts, the client setting only breaking a tie (same rule as
+    // the client file), then priority 3.
+    const clientCurrency = viewAsFilter.data
+      ? getClientReferenceCurrency(viewAsFilter.data, bankAccounts).currency
+      : null;
     portfolioCurrency = clientCurrency || mostCommonAccountCurrency() || portfolioCurrency;
   } else {
     // Priority 3: Most common bank account reference currency
@@ -989,6 +1008,13 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
   // logic above already resolved the correct portfolio currency, so leave it untouched.
   if (!viewAsFilter && activeAccountTab === 'consolidated' && user?.profile?.preferredCurrency) {
     portfolioCurrency = user.profile.preferredCurrency;
+  }
+
+  // The scope's own currency, before any currency picked in the header
+  const naturalPortfolioCurrency = portfolioCurrency;
+  if (displayCurrencyOverride) {
+    // Every value is converted to it at spot (toDisplayCurrency below)
+    portfolioCurrency = displayCurrencyOverride;
   }
 
   // Cross rates for mixed-currency scopes: a holding stores marketValue in its own
@@ -2378,6 +2404,9 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
     setHoldingPerfByKey({});
   }, [viewAsFilter, activeAccountTab]);
 
+  // The time-weighted return is computed in the display currency
+  React.useEffect(() => { setTwrData(null); }, [portfolioCurrency]);
+
   // Compute per-line WTD/MTD/YTD performance once holdings load.
   // The server does all the math (no calculations in the UI); we pass the
   // current holdings we already received (uniqueKey + current price/value) and
@@ -2489,7 +2518,8 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
           const result = await Meteor.callAsync('performance.calculateTWR', {
             sessionId,
             viewAsFilter,
-            portfolioCode
+            portfolioCode,
+            currency: portfolioCurrency
           });
           console.log('[PMS] calculateTWR SUCCESS', { hasData: result?.hasData, periods: result?.periods ? Object.keys(result.periods) : [] });
 
@@ -2511,7 +2541,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
 
   // Fetch chart data when Performance tab is active and time range changes
   React.useEffect(() => {
-    if (activeTab === 'performance' && selectedTimeRange !== lastFetchedRange && !chartLoading) {
+    if (activeTab === 'performance' && `${selectedTimeRange}|${portfolioCurrency}` !== lastFetchedRange && !chartLoading) {
       const fetchChartData = async () => {
         setChartLoading(true);
         const sessionId = localStorage.getItem('sessionId');
@@ -2546,12 +2576,13 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
             startDate,
             endDate,
             viewAsFilter,
-            portfolioCode
+            portfolioCode,
+            currency: portfolioCurrency
           });
           console.log('[PMS] getChartData result:', { hasData: chart?.hasData, snapshotCount: chart?.snapshots?.length || 0 });
 
           setChartData(chart);
-          setLastFetchedRange(selectedTimeRange);
+          setLastFetchedRange(`${selectedTimeRange}|${portfolioCurrency}`);
         } catch (error) {
           console.error('[PMS] Error fetching chart data:', error);
           setChartData({ hasData: false });
@@ -2562,7 +2593,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
 
       fetchChartData();
     }
-  }, [activeTab, selectedTimeRange, lastFetchedRange, chartLoading, viewAsFilter, activeAccountTab, accountTabs]);
+  }, [activeTab, selectedTimeRange, lastFetchedRange, chartLoading, viewAsFilter, activeAccountTab, accountTabs, portfolioCurrency]);
 
   // Subscribe to available snapshot dates from PMSHoldings
   const { snapshotDates } = useTracker(() => {
@@ -2869,8 +2900,13 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
           const colour = dayVariation.change === 0
             ? 'var(--text-muted)'
             : up ? 'var(--gain-color)' : 'var(--loss-color)';
-          const prev = new Date(dayVariation.previousDate);
-          const prevLabel = prev.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: '2-digit' });
+          // Bank files carry the previous day's close, so the figure itself is
+          // dated too: "Wed 30/09 vs Tue 29/09" rather than a bare "vs Tue 29/09"
+          // that reads as today compared with two days ago.
+          const dayLabel = (d) => new Date(d).toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: '2-digit', timeZone: 'UTC' });
+          const prevLabel = dayVariation.currentDate
+            ? `${dayLabel(dayVariation.currentDate)} vs ${dayLabel(dayVariation.previousDate)}`
+            : `vs ${dayLabel(dayVariation.previousDate)}`;
           const partial = dayVariation.comparedPortfolios < dayVariation.totalPortfolios;
           return (
             <div style={{
@@ -2887,7 +2923,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                 {up ? '+' : '\u2212'}{Math.abs(dayVariation.changePercent).toFixed(2)}%
               </span>
               <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                vs {prevLabel}
+                {prevLabel}
               </span>
               {partial && (
                 <span
@@ -2990,27 +3026,33 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                       }}
                     >
                       <td style={{ padding: '0.75rem' }}>
-                        {(() => {
-                          const FlagComponent = getCurrencyFlag(cash.currency);
-                          return FlagComponent ? (
-                            <FlagComponent
-                              style={{
-                                width: '2.5rem',
-                                height: 'auto',
-                                display: 'block',
-                                borderRadius: '2px'
-                              }}
-                            />
-                          ) : (
-                            <span style={{
-                              fontSize: '2rem',
-                              lineHeight: '1',
-                              fontWeight: '300'
-                            }}>
-                              {getCurrencySymbol(cash.currency)}
-                            </span>
-                          );
-                        })()}
+                        {/* Flag plus the ISO code: a flag alone is ambiguous (EUR) */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                          {(() => {
+                            const FlagComponent = getCurrencyFlag(cash.currency);
+                            return FlagComponent ? (
+                              <FlagComponent
+                                style={{
+                                  width: '2.5rem',
+                                  height: 'auto',
+                                  display: 'block',
+                                  borderRadius: '2px'
+                                }}
+                              />
+                            ) : (
+                              <span style={{
+                                fontSize: '2rem',
+                                lineHeight: '1',
+                                fontWeight: '300'
+                              }}>
+                                {getCurrencySymbol(cash.currency)}
+                              </span>
+                            );
+                          })()}
+                          <span style={{ fontWeight: '600', color: 'var(--text-primary)', letterSpacing: '0.02em' }}>
+                            {cash.currency}
+                          </span>
+                        </div>
                       </td>
                       <td style={{
                         padding: '0.75rem',
@@ -4288,9 +4330,11 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                         });
                       })()}
 
-                      {/* Buy/Sell Buttons - Only for RM/Admin */}
-                      {['rm', 'admin', 'superadmin'].includes(user?.role) && (
+                      {/* Position actions - Buy/Sell for RM/Admin, Reclassify for Admin/Compliance */}
+                      {['rm', 'admin', 'superadmin', 'compliance'].includes(user?.role) && (
                         <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          {['rm', 'admin', 'superadmin'].includes(user?.role) && (
+                          <>
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -4341,6 +4385,8 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                           >
                             Sell
                           </button>
+                          </>
+                          )}
                           {/* Reclassify Button - Admin/Superadmin/Compliance only */}
                           {['admin', 'superadmin', 'compliance'].includes(user?.role) && (
                             <button
@@ -4711,6 +4757,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                   background: theme === 'light' ? 'rgba(0, 0, 0, 0.02)' : 'rgba(255, 255, 255, 0.02)'
                 }}>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '400', color: 'var(--text-muted)' }}>Date</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '400', color: 'var(--text-muted)' }}>Value Date</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '400', color: 'var(--text-muted)' }}>Type</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '400', color: 'var(--text-muted)' }}>Category</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '400', color: 'var(--text-muted)' }}>Security</th>
@@ -4742,6 +4789,15 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                         month: 'short',
                         day: 'numeric'
                       })}
+                    </td>
+                    <td style={{ padding: '0.75rem', color: 'var(--text-secondary)' }}>
+                      {transaction.valueDate
+                        ? new Date(transaction.valueDate).toLocaleDateString('en-US', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric'
+                          })
+                        : '-'}
                     </td>
                     <td style={{ padding: '0.75rem' }}>
                       <span style={{
@@ -5071,6 +5127,11 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
           }}>
             Portfolio Value Over Time
           </h3>
+          {!chartLoading && chartData?.convertedAtSpot && (
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '-0.5rem 0 0.75rem' }}>
+              Shown in {chartData.valueCurrency}, converted from the accounts' currencies at current spot rates
+            </div>
+          )}
           {chartLoading ? (
             <div style={{
               height: '300px',
@@ -5119,7 +5180,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                           let label = context.dataset.label || '';
                           if (label) label += ': ';
                           if (context.parsed.y !== null) {
-                            label += formatCurrency(context.parsed.y, portfolioCurrency);
+                            label += formatCurrency(context.parsed.y, chartData.valueCurrency || portfolioCurrency);
                           }
                           return label;
                         }
@@ -5146,7 +5207,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                       ticks: {
                         color: theme === 'light' ? '#6b7280' : '#9ca3af',
                         callback: function(value) {
-                          return formatCurrency(value, portfolioCurrency);
+                          return formatCurrency(value, chartData.valueCurrency || portfolioCurrency);
                         }
                       }
                     }
@@ -5777,6 +5838,12 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
               {twrData.metadata && (
                 <div style={{ marginTop: '0.75rem', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
                   Data from {twrData.metadata.firstSnapshotDate} to {twrData.metadata.lastSnapshotDate} | {twrData.metadata.externalFlowCount} external flows detected
+                  {twrData.metadata.currency ? ` | in ${twrData.metadata.currency}` : ''}
+                  {twrData.metadata.excludedAccounts?.length > 0 && (
+                    <div style={{ marginTop: '0.2rem' }}>
+                      Investment accounts only — excluded: {twrData.metadata.excludedAccounts.map(a => `${a.accountNumber}${a.comment ? ` (${a.comment})` : ''}`).join(', ')}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -6261,14 +6328,9 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
         const showScopeBand = showAccountTabs || showFreshness;
 
         // ── Band 3: mandate attributes + the actions that act on this view
-        const getProfileName = (profile) => {
-          if (!profile) return null;
-          const match = Object.entries(PROFILE_TEMPLATES).find(([, tpl]) =>
-            PROFILE_LIMIT_FIELDS.every(field => getProfileLimit(tpl, field) === getProfileLimit(profile, field))
-          );
-          return match ? match[1].name : 'Custom';
-        };
-
+        // getProfileName (accountProfiles.js) prefers the saved profileName —
+        // the one the contact screen shows — and only falls back to matching
+        // the limits against the templates.
         let profileLabel = null;
         if (viewAsFilter) {
           if (activeAccountTab === 'consolidated') {
@@ -6279,7 +6341,17 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
           }
         }
 
-        const riskLevel = viewAsFilter?.data?.profile?.kyc?.riskLevel;
+        // KYC risk is assessed per bank account (kycRiskScore, see
+        // bankAccounts.js); the business-relationship level is the stored
+        // verdict. Consolidated shows the riskiest assessed account. The data
+        // only reaches staff browsers ('bankAccounts.details'), and the chip is
+        // hidden from clients as well.
+        const RISK_ORDER = ['low', 'medium', 'high'];
+        const riskLevelOf = (account) => account?.kycRiskScore?.businessRelationship?.riskLevel || null;
+        const riskLevel = activeAccountTab === 'consolidated'
+          ? bankAccounts.map(riskLevelOf).filter(Boolean)
+            .sort((a, b) => RISK_ORDER.indexOf(b) - RISK_ORDER.indexOf(a))[0] || null
+          : riskLevelOf(bankAccounts.find(a => a._id === activeAccountTab));
         const showRisk = viewAsFilter && user?.role !== 'client' && riskLevel;
         const riskConfig = {
           low: { label: 'Low Risk', color: 'var(--gain-color)', bg: 'rgba(16, 185, 129, 0.1)', border: 'rgba(16, 185, 129, 0.3)' },
@@ -6549,12 +6621,42 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                 )}
                 {showRisk && (
                   <div>
-                    <div style={eyebrowStyle}>Risk matrix</div>
+                    <div style={eyebrowStyle}>Risk profile</div>
                     <span style={chipStyle(riskCfg.color, riskCfg.bg, riskCfg.border)}>
                       {riskCfg.label}
                     </span>
                   </div>
                 )}
+                <div>
+                  <div style={eyebrowStyle}>Reference currency</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <select
+                      value={portfolioCurrency}
+                      onChange={(e) => setDisplayCurrencyOverride(e.target.value === naturalPortfolioCurrency ? null : e.target.value)}
+                      title="View this portfolio in another currency (converted at current spot rates)"
+                      style={{
+                        padding: '0.3rem 0.5rem', borderRadius: '6px', border: '1px solid var(--border-color)',
+                        background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.8rem', fontWeight: 600, cursor: 'pointer'
+                      }}
+                    >
+                      {[...new Set([naturalPortfolioCurrency, 'EUR', 'USD', 'CHF', 'GBP', ...displayPositionsRaw.map(p => p.portfolioCurrency).filter(Boolean)])]
+                        .map(ccy => <option key={ccy} value={ccy}>{ccy}{ccy === naturalPortfolioCurrency ? ' (default)' : ''}</option>)}
+                    </select>
+                    {displayCurrencyOverride && (
+                      <button
+                        type="button"
+                        onClick={() => setDisplayCurrencyOverride(null)}
+                        title={`Back to ${naturalPortfolioCurrency}`}
+                        style={{ background: 'none', border: 'none', color: 'var(--accent-color)', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600, padding: 0 }}
+                      >
+                        ↺ {naturalPortfolioCurrency}
+                      </button>
+                    )}
+                  </div>
+                  {displayCurrencyOverride && (
+                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '2px' }}>Converted at current spot rates</div>
+                  )}
+                </div>
               </div>
 
               <div style={{
@@ -6576,7 +6678,8 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                     title="Report PDF"
                     options={{
                       viewAsFilter: viewAsFilter ? JSON.stringify(viewAsFilter) : null,
-                      accountFilter: activeAccountTab
+                      accountFilter: activeAccountTab,
+                      currency: portfolioCurrency
                     }}
                     style={{
                       padding: '0.5rem 0.875rem',

@@ -10,7 +10,7 @@ import {
 } from 'chart.js';
 import { PMSHoldingsCollection } from '../../api/pmsHoldings';
 import { PMSOperationsCollection } from '../../api/pmsOperations';
-import { BankAccountsCollection } from '../../api/bankAccounts';
+import { BankAccountsCollection, getClientReferenceCurrency } from '../../api/bankAccounts';
 import { BanksCollection } from '../../api/banks';
 import { ProductsCollection } from '../../api/products';
 import { SecuritiesMetadataCollection, getAssetClassLabel } from '../../api/securitiesMetadata';
@@ -193,6 +193,11 @@ const PMSReportPDF = () => {
   const pdfToken = urlParams?.get('pdfToken');
   const pdfUserId = urlParams?.get('userId');
   const accountFilter = urlParams?.get('account') || 'all';
+  // Currency the portfolio was shown in on screen when the report was requested
+  const urlCurrency = (() => {
+    const c = urlParams?.get('currency');
+    return c && /^[A-Z]{3}$/.test(c) ? c : null;
+  })();
 
   // Parse viewAsFilter from URL if present (used for client/account filtering)
   const viewAsFilterParam = urlParams?.get('viewAsFilter');
@@ -354,7 +359,12 @@ const PMSReportPDF = () => {
 
       if (isPDFMode && pdfAuthState.validated && pdfUserId) {
         // Use PDF-specific method with viewAsFilter for proper perimeter
-        Meteor.callAsync('pms.getPerformanceForPdf', { userId: pdfUserId, pdfToken, viewAsFilter })
+        // The selected account tab narrows performance to that account, like the positions
+        Meteor.callAsync('pms.getPerformanceForPdf', {
+          userId: pdfUserId, pdfToken, viewAsFilter,
+          accountId: accountFilter !== 'all' ? accountFilter : null,
+          currency: urlCurrency
+        })
           .then(result => {
             if (result) {
               setPerformanceData(result);
@@ -366,8 +376,14 @@ const PMSReportPDF = () => {
             setPerformanceLoading(false);
           });
       } else {
-        // Use regular session-based method
-        Meteor.call('performance.getPeriods', { sessionId: currentSessionId }, (error, result) => {
+        // Same time-weighted return as the PMS Performance tab
+        const tabAccount = accountFilter !== 'all' ? bankAccounts.find(acc => acc._id === accountFilter) : null;
+        Meteor.call('performance.calculateTWR', {
+          sessionId: currentSessionId,
+          viewAsFilter,
+          portfolioCode: tabAccount?.accountNumber || null,
+          currency: urlCurrency
+        }, (error, result) => {
           if (!error && result) {
             setPerformanceData(result);
           }
@@ -375,14 +391,16 @@ const PMSReportPDF = () => {
         });
       }
     }
-  }, [isLoading, holdings.length, currentSessionId, isPDFMode, pdfAuthState.validated, pdfUserId, pdfToken, viewAsFilter]);
+  }, [isLoading, holdings.length, currentSessionId, isPDFMode, pdfAuthState.validated, pdfUserId, pdfToken, viewAsFilter, accountFilter]);
 
   // Filter holdings and operations by account
   const filteredHoldings = useMemo(() => {
     if (accountFilter === 'all') return holdings;
     const account = bankAccounts.find(acc => acc._id === accountFilter);
     if (!account) return holdings;
-    return holdings.filter(h => h.portfolioCode === account.accountNumber && h.bankName === account.bankId);
+    // Match on bankId: bankName is the display name and never equals an id, which
+    // emptied every single-account report.
+    return holdings.filter(h => h.portfolioCode === account.accountNumber && h.bankId === account.bankId);
   }, [holdings, bankAccounts, accountFilter]);
 
   // Filter operations to current year only
@@ -396,7 +414,7 @@ const PMSReportPDF = () => {
     if (accountFilter !== 'all') {
       const account = bankAccounts.find(acc => acc._id === accountFilter);
       if (account) {
-        filtered = filtered.filter(op => op.portfolioCode === account.accountNumber && op.bankName === account.bankId);
+        filtered = filtered.filter(op => op.portfolioCode === account.accountNumber && op.bankId === account.bankId);
       }
     }
 
@@ -451,10 +469,78 @@ const PMSReportPDF = () => {
     });
   }, [filteredHoldings, securitiesMetadataData, productsData]);
 
+  // Report currency: the one asked for (the currency PMS was showing), else the
+  // single currency every position is valued in, else the client's reference
+  // currency (its investment accounts' currency).
+  const holdingsCurrencies = useMemo(() => [...new Set(
+    enrichedHoldings.filter(h => h.portfolioCurrency).map(h => h.portfolioCurrency)
+  )], [enrichedHoldings]);
+  const portfolioCurrency = useMemo(() => {
+    if (urlCurrency) return urlCurrency;
+    if (holdingsCurrencies.length === 1) return holdingsCurrencies[0];
+    const account = accountFilter !== 'all' ? bankAccounts.find(acc => acc._id === accountFilter) : null;
+    if (account?.referenceCurrency) return account.referenceCurrency;
+    if (viewAsFilter?.data) return getClientReferenceCurrency(viewAsFilter.data, bankAccounts).currency;
+    return holdingsCurrencies[0] || 'USD';
+  }, [urlCurrency, holdingsCurrencies, accountFilter, bankAccounts, viewAsFilter]);
+  const portfolioHasMixedCurrencies = holdingsCurrencies.length > 1;
+
+  // Spot rates, only for accounts whose bank file gives no rate to the report currency
+  const [spotRates, setSpotRates] = useState({});
+  useEffect(() => {
+    const pairs = [...new Set(enrichedHoldings
+      .filter(h => h.portfolioCurrency && h.portfolioCurrency !== portfolioCurrency && !(h.bankFxRates?.[portfolioCurrency] > 0))
+      .map(h => `${h.portfolioCurrency}${portfolioCurrency}`))]
+      .filter(p => !(p in spotRates));
+    if (pairs.length === 0) return;
+    Meteor.callAsync('currencyCache.getRates', pairs.map(p => `${p}.FOREX`))
+      .then(result => {
+        if (!result?.success || !result.rates) return;
+        setSpotRates(prev => {
+          const next = { ...prev };
+          for (const p of pairs) {
+            const raw = result.rates[`${p}.FOREX`];
+            const n = raw != null && typeof raw === 'object' ? Number(raw.rate ?? raw.value ?? raw.price) : Number(raw);
+            if (Number.isFinite(n) && n > 0) next[p] = n;
+          }
+          return next;
+        });
+      })
+      .catch(err => console.warn('[PMSReportPDF] Spot rates unavailable:', err));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enrichedHoldings, portfolioCurrency]);
+
+  // Every amount in the report currency. A holding's values are stored in its
+  // ACCOUNT's currency; the bank file states its rates against that currency
+  // (bankFxRates[X] = units of X per 1 unit of the account currency), so the
+  // bank's own rate converts it exactly as on the bank statement. Cash has no
+  // purchase cost: its cost is its value, so it carries no unrealised P&L.
+  const valuedHoldings = useMemo(() => enrichedHoldings.map(h => {
+    const isCash = h.assetClass === 'cash';
+    let rate = 1;
+    let converted = true;
+    if (h.portfolioCurrency && h.portfolioCurrency !== portfolioCurrency) {
+      const bankRate = Number(h.bankFxRates?.[portfolioCurrency]);
+      const spot = spotRates[`${h.portfolioCurrency}${portfolioCurrency}`];
+      if (bankRate > 0) rate = bankRate;
+      else if (spot > 0) rate = spot;
+      else converted = false;
+    }
+    const marketValue = (h.marketValue || 0) * rate;
+    return {
+      ...h,
+      marketValue,
+      costBasisPortfolioCurrency: isCash ? marketValue : (h.costBasisPortfolioCurrency || 0) * rate,
+      pnlNotApplicable: isCash,
+      conversionPending: !converted
+    };
+  }), [enrichedHoldings, portfolioCurrency, spotRates]);
+  const conversionPending = valuedHoldings.some(h => h.conversionPending);
+
   // Group holdings by asset class with sub-groups
   const holdingsByAssetClass = useMemo(() => {
     const groups = {};
-    enrichedHoldings.forEach(holding => {
+    valuedHoldings.forEach(holding => {
       const key = holding.assetClass || 'other';
       if (!groups[key]) {
         groups[key] = {
@@ -486,7 +572,7 @@ const PMSReportPDF = () => {
     });
 
     return sorted;
-  }, [enrichedHoldings]);
+  }, [valuedHoldings]);
 
   // Calculate totals
   const totals = useMemo(() => {
@@ -494,7 +580,7 @@ const PMSReportPDF = () => {
     let totalCostBasis = 0;
     let cashBalance = 0;
 
-    enrichedHoldings.forEach(h => {
+    valuedHoldings.forEach(h => {
       const value = h.marketValue || 0;
       const cost = h.costBasisPortfolioCurrency || 0;
 
@@ -510,14 +596,14 @@ const PMSReportPDF = () => {
     const totalGainLossPercent = totalCostBasis > 0 ? (totalGainLoss / totalCostBasis) * 100 : 0;
 
     return { totalValue, totalCostBasis, totalGainLoss, totalGainLossPercent, cashBalance };
-  }, [enrichedHoldings]);
+  }, [valuedHoldings]);
 
   // Asset allocation rows for the table. Every non-zero class is listed, including classes with
   // a negative total (an overdrawn cash account) — dropping those left the table summing to
   // something other than 100% with no explanation of the gap.
   const assetAllocationRows = useMemo(() => {
     const allocation = {};
-    enrichedHoldings.forEach(h => {
+    valuedHoldings.forEach(h => {
       const key = h.assetClass || 'other';
       if (!allocation[key]) allocation[key] = 0;
       allocation[key] += h.marketValue || 0;
@@ -533,7 +619,7 @@ const PMSReportPDF = () => {
         percent: totals.totalValue !== 0 ? (value / totals.totalValue) * 100 : 0
       }))
       .sort((a, b) => b.value - a.value);
-  }, [enrichedHoldings, totals.totalValue]);
+  }, [valuedHoldings, totals.totalValue]);
 
   // Chart data — a doughnut can only render positive slices, so negative classes are listed in
   // the table only (flagged there via the footnote).
@@ -549,30 +635,6 @@ const PMSReportPDF = () => {
       }]
     };
   }, [assetAllocationRows]);
-
-  // Determine the report's reference currency — the currency every converted figure is in.
-  //
-  // The parser stores each holding's `marketValue` in that holding's own portfolioCurrency, so
-  // when all holdings agree, that currency IS what the figures are denominated in and nothing
-  // may override it. account.referenceCurrency is independent metadata that can be stale or
-  // self-contradictory (e.g. account 302894.001 says EUR while its holdings are stored in USD);
-  // trusting it there would only relabel USD amounts with a € sign.
-  const { portfolioCurrency, holdingsCurrencies } = useMemo(() => {
-    const currencies = [...new Set(
-      enrichedHoldings.filter(h => h.portfolioCurrency).map(h => h.portfolioCurrency)
-    )];
-    if (currencies.length === 1) {
-      return { portfolioCurrency: currencies[0], holdingsCurrencies: currencies };
-    }
-    const account = accountFilter !== 'all'
-      ? bankAccounts.find(acc => acc._id === accountFilter)
-      : null;
-    return {
-      portfolioCurrency: account?.referenceCurrency || enrichedHoldings[0]?.portfolioCurrency || 'USD',
-      holdingsCurrencies: currencies
-    };
-  }, [accountFilter, bankAccounts, enrichedHoldings]);
-  const portfolioHasMixedCurrencies = holdingsCurrencies.length > 1;
 
   // Valuation date of the positions. Distinct from the report date: holdings come from the
   // last bank file received, which on a Monday morning is still Friday's snapshot.
@@ -724,9 +786,9 @@ const PMSReportPDF = () => {
           </div>
           {portfolioHasMixedCurrencies && (
             <div style={styles.headerWarning}>
-              This perimeter holds positions valued in more than one reference currency
-              ({holdingsCurrencies.join(', ')}). Totals below add those values together and
-              are shown as {portfolioCurrency} for reference only.
+              This perimeter holds accounts in more than one currency
+              ({holdingsCurrencies.join(', ')}). Every amount below is converted to {portfolioCurrency}
+              {conversionPending ? ' — some rates are still loading' : ' at the rates supplied by the bank (current spot rate where the bank gives none)'}.
             </div>
           )}
         </div>
@@ -774,8 +836,8 @@ const PMSReportPDF = () => {
             Market Value column are in that currency. The second Market Value column, Unrealised
             P&amp;L and every total are converted to the reference currency
             (<strong>{portfolioCurrency}</strong>) at the rate supplied by the bank.
-            P&amp;L is unrealised and measured against average purchase cost; for cash accounts,
-            which have no purchase cost, it is the currency translation difference.
+            P&amp;L is unrealised and measured against average purchase cost; cash accounts and
+            credit lines have no purchase cost and carry none.
             <strong> Weight</strong> is the position as a percentage of total portfolio value.
           </p>
 
@@ -874,9 +936,13 @@ const PMSReportPDF = () => {
                   </td>
                   {/* Unrealised P&L in the reference currency */}
                   <td style={{...styles.td, textAlign: 'right', width: '13%'}}>
-                    <div style={{ fontWeight: '700', fontSize: '0.85rem', color: gainLoss >= 0 ? '#14724F' : '#B03C2F' }}>
-                      {gainLoss >= 0 ? '+' : ''}{formatCurrency(gainLoss, portfolioCurrency)}
-                    </div>
+                    {holding.pnlNotApplicable ? (
+                      <div style={{ color: '#767C88' }}>—</div>
+                    ) : (
+                      <div style={{ fontWeight: '700', fontSize: '0.85rem', color: gainLoss >= 0 ? '#14724F' : '#B03C2F' }}>
+                        {gainLoss >= 0 ? '+' : ''}{formatCurrency(gainLoss, portfolioCurrency)}
+                      </div>
+                    )}
                     {/* A cash account has no purchase cost, so a return percentage against the
                         parsers' 1.00 placeholder would be meaningless — the amount is the
                         currency translation difference and stands on its own. */}
@@ -1101,64 +1167,53 @@ const PMSReportPDF = () => {
           </div>
         </div>
 
-        {/* Performance Section */}
-        {performanceData && (
+        {/* Performance Section - time-weighted return, computed and formatted on the server
+            (the same figures as the PMS Performance tab) */}
+        {performanceData?.hasData && (
           <div style={styles.section} className="pms-pdf-section">
             <h2 style={styles.sectionTitle} className="pms-section-title">Performance Metrics</h2>
             <p style={styles.sectionNote}>
-              Each period compares the portfolio's total value at the start and end of the period,
-              in {portfolioCurrency}. <strong>Return</strong> is the change divided by the start
-              value; it is not adjusted for money paid in or withdrawn during the period, so it
-              will differ from a cash-flow-weighted return (IRR) where deposits or withdrawals occurred.
+              <strong>Time-weighted return</strong>{performanceData.metadata?.currency ? ` in ${performanceData.metadata.currency}` : ''}:
+              money paid in or withdrawn during a period does not count as performance, so the
+              figures are comparable with the bank's own statements.
+              {performanceData.metadata?.excludedAccounts?.length > 0 && (
+                <> Measured on the investment accounts; excluded: {performanceData.metadata.excludedAccounts
+                  .map(a => `${a.accountNumber}${a.comment ? ` (${a.comment})` : ''}`).join(', ')}.</>
+              )}
             </p>
             <table style={styles.table}>
               <thead>
                 <tr>
                   <th style={styles.th}>Period</th>
-                  <th style={{...styles.th, textAlign: 'right'}}>
-                    Start Value<div style={styles.thHint}>in {portfolioCurrency}</div>
-                  </th>
-                  <th style={{...styles.th, textAlign: 'right'}}>
-                    End Value<div style={styles.thHint}>in {portfolioCurrency}</div>
-                  </th>
-                  <th style={{...styles.th, textAlign: 'right'}}>
-                    Change<div style={styles.thHint}>end − start</div>
-                  </th>
-                  <th style={{...styles.th, textAlign: 'right'}}>
-                    Return<div style={styles.thHint}>change ÷ start</div>
-                  </th>
+                  <th style={{...styles.th, textAlign: 'right'}}>From</th>
+                  <th style={{...styles.th, textAlign: 'right'}}>To</th>
+                  <th style={{...styles.th, textAlign: 'right'}}>Return<div style={styles.thHint}>time-weighted</div></th>
                 </tr>
               </thead>
               <tbody>
                 {['1M', '3M', '6M', 'YTD', '1Y', 'ALL'].map(period => {
-                  const data = performanceData[period] || {};
+                  const data = performanceData.periods?.[period];
+                  if (!data) return null;
+                  const positive = !String(data.twrFormatted || '').startsWith('-');
                   return (
                     <tr key={period}>
                       <td style={{...styles.td, fontWeight: '600'}}>{period === 'ALL' ? 'Since Inception' : period}</td>
-                      <td style={{...styles.td, textAlign: 'right'}}>
-                        {formatCurrency(data.startValue, portfolioCurrency)}
-                      </td>
-                      <td style={{...styles.td, textAlign: 'right'}}>
-                        {formatCurrency(data.endValue, portfolioCurrency)}
-                      </td>
-                      <td style={{
-                        ...styles.td,
-                        textAlign: 'right',
-                                                color: (data.change || 0) >= 0 ? '#14724F' : '#B03C2F'
-                      }}>
-                        {formatCurrency(data.change, portfolioCurrency)}
-                      </td>
+                      <td style={{...styles.td, textAlign: 'right'}}>{data.hasData ? data.startDate : '—'}</td>
+                      <td style={{...styles.td, textAlign: 'right'}}>{data.hasData ? data.endDate : '—'}</td>
                       <td style={{...styles.td, textAlign: 'right'}}>
                         <span style={{
                           padding: '2px 8px',
                           borderRadius: '4px',
                           fontSize: '0.8rem',
                           fontWeight: '600',
-                          background: (data.returnPercent || 0) >= 0 ? '#E8F1EC' : '#F6E9E7',
-                          color: (data.returnPercent || 0) >= 0 ? '#14724F' : '#B03C2F'
+                          background: positive ? '#E8F1EC' : '#F6E9E7',
+                          color: positive ? '#14724F' : '#B03C2F'
                         }}>
-                          {formatPercent(data.returnPercent || 0)}
+                          {data.hasData ? data.twrFormatted : 'N/A'}
                         </span>
+                        {period === 'ALL' && data.twrAnnualizedFormatted && (
+                          <div style={{ fontSize: '0.7rem', color: '#767C88', marginTop: '2px' }}>{data.twrAnnualizedFormatted}</div>
+                        )}
                       </td>
                     </tr>
                   );

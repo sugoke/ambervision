@@ -51,6 +51,10 @@ export default function MailPickerModal({
   orderId,
   traceType,
   defaultFromFilter = '',
+  // Search text to open on — the order reference, which every order mail
+  // carries in its subject and bank replies keep. A reference is unique, so a
+  // prefilled search runs over any time rather than the last 30 days.
+  defaultQuery = '',
   // Which folder to open on. The order-to-bank trace is a mail WE sent, so
   // browsing the inbox for it is a wasted step.
   defaultFolder = 'inbox',
@@ -138,12 +142,14 @@ export default function MailPickerModal({
       // picker opened later for a different trace type comes up unfiltered.
       setFromAddress(defaultFromFilter || '');
       setFolderId(defaultFolder);
+      setQuery(defaultQuery || '');
+      setSinceDays(defaultQuery ? null : 30);
       return undefined;
     }
     // Reset on close so the next open starts clean.
     setMessages([]); setSelected(null); setPreview(null); setNextCursor(null); setError(null);
     return undefined;
-  }, [open, defaultFromFilter, defaultFolder]);
+  }, [open, defaultFromFilter, defaultFolder, defaultQuery]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -360,7 +366,18 @@ export default function MailPickerModal({
               <div style={{ padding: '20px', fontSize: '12px', color: 'var(--text-muted)' }}>Loading…</div>
             ) : messages.length === 0 ? (
               <div style={{ padding: '20px', fontSize: '12px', color: 'var(--text-muted)' }}>
-                {emptyText}
+                {defaultQuery && query.trim() === defaultQuery ? (
+                  <>
+                    No mail mentions {defaultQuery}.{' '}
+                    <button
+                      type="button"
+                      onClick={() => { setQuery(''); setSinceDays(30); }}
+                      style={{ background: 'none', border: 'none', padding: 0, color: '#0ea5e9', cursor: 'pointer', fontSize: '12px' }}
+                    >
+                      Browse recent mail instead
+                    </button>
+                  </>
+                ) : emptyText}
               </div>
             ) : (
               <>

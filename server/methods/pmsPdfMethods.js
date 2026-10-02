@@ -12,7 +12,7 @@ import { PMSHoldingsCollection } from '/imports/api/pmsHoldings';
 import { PMSOperationsCollection } from '/imports/api/pmsOperations';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { findUserByPdfAccessToken } from '../helpers/pdfAccessTokens.js';
-import { accountHolderSelector } from '/imports/api/bankAccounts';
+import { accountHolderSelector, getAccountHolderIds } from '/imports/api/bankAccounts';
 // The perimeter rule lives with the dashboard that defined it. Importing it is
 // the point: this file used to carry its own copy, and the copy was wrong.
 import { getFilteredClientIds } from './rmDashboardMethods.js';
@@ -233,85 +233,54 @@ Meteor.methods({
   /**
    * Get performance periods for PDF generation
    */
-  async 'pms.getPerformanceForPdf'({ userId, pdfToken, viewAsFilter }) {
+  async 'pms.getPerformanceForPdf'({ userId, pdfToken, viewAsFilter, accountId = null, currency = null }) {
     check(userId, String);
     check(pdfToken, String);
     check(viewAsFilter, Match.Maybe(Match.ObjectIncluding({
       type: String,
       id: String
     })));
+    check(accountId, Match.Maybe(String));
+    check(currency, Match.Maybe(String));
 
     console.log('[PMS_PDF] Fetching performance data for PDF');
 
     // Validate PDF token
     const currentUser = await validatePdfToken(userId, pdfToken);
 
-    const now = new Date();
-
-    // Same perimeter as the positions above. The snapshot helper works from one
-    // owner, so take the first of the resolved ids: with a viewAs selection that
-    // is the selected client (or the selected account's owner), and without one
-    // there is no single portfolio whose performance this would be.
+    // Same perimeter as the positions above
     const scope = await resolvePdfScope(currentUser, viewAsFilter);
-    const targetUserId = viewAsFilter ? (scope.ownerIds[0] || currentUser._id) : currentUser._id;
-    const targetPortfolioCode = scope.account ? scope.account.accountNumber : null;
 
-    // Define period start dates
-    const periods = {
-      '1M': new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
-      '3M': new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000),
-      '6M': new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000),
-      'YTD': new Date(now.getFullYear(), 0, 1),
-      '1Y': new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000),
-      'ALL': null
-    };
-
-    const results = {};
-
-    for (const [periodName, startDate] of Object.entries(periods)) {
-      try {
-        const performance = await PortfolioSnapshotHelpers.calculatePerformance({
-          userId: targetUserId,
-          portfolioCode: targetPortfolioCode,
-          startDate,
-          endDate: now
-        });
-
-        if (performance) {
-          results[periodName] = {
-            hasData: true,
-            returnPercent: performance.totalReturnPercent,
-            returnAmount: performance.totalReturn,
-            startValue: performance.initialValue,
-            endValue: performance.finalValue,
-            change: performance.totalReturn,
-            dataPoints: performance.dataPoints
-          };
-        } else {
-          results[periodName] = {
-            hasData: false,
-            returnPercent: 0,
-            returnAmount: 0,
-            startValue: 0,
-            endValue: 0,
-            change: 0
-          };
-        }
-      } catch (error) {
-        console.error(`[PMS_PDF] Error calculating ${periodName} performance:`, error.message);
-        results[periodName] = {
-          hasData: false,
-          returnPercent: 0,
-          returnAmount: 0,
-          startValue: 0,
-          endValue: 0,
-          change: 0
-        };
-      }
+    // One account: the viewAs account, or the account tab the report was opened
+    // on (passed as accountId). The tab account must sit inside the perimeter.
+    let account = scope.account;
+    if (!account && accountId) {
+      const candidate = await BankAccountsCollection.findOneAsync(accountId);
+      const holders = candidate ? [...getAccountHolderIds(candidate), candidate.userId].filter(Boolean) : [];
+      if (candidate && holders.some(id => scope.ownerIds.includes(id))) account = candidate;
     }
 
+    // The same time-weighted return as the PMS Performance tab: investment
+    // accounts of the perimeter, external flows neutralised, one currency.
+    const codes = account
+      ? [account.accountNumber]
+      : (await BankAccountsCollection.find(
+          { ...accountHolderSelector(scope.ownerIds), isActive: true },
+          { fields: { accountNumber: 1 } }
+        ).fetchAsync()).map(a => a.accountNumber).filter(Boolean);
+
+    if (codes.length === 0) return { hasData: false, periods: {}, metadata: {} };
+
+    const { computeTWR } = await import('./performanceMethods.js');
+    const result = await computeTWR({
+      codes: [...new Set(codes)],
+      portfolioCode: account ? account.accountNumber : null,
+      currency,
+      label: `pdf:${currentUser.username}`
+    });
+
     console.log('[PMS_PDF] Performance data calculated');
-    return results;
+    return { hasData: !!result?.hasData, periods: result?.periods || {}, metadata: result?.metadata || {} };
   }
 });
 

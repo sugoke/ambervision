@@ -4,7 +4,7 @@ import { Meteor } from 'meteor/meteor';
 import { USER_ROLES } from '/imports/api/users';
 import { ClientEntitiesCollection, ENTITY_TYPES, ENTITY_STATUSES, ClientEntityHelpers } from '/imports/api/clientEntities';
 import { UserEntityAccessCollection } from '/imports/api/userEntityAccess';
-import { BankAccountsCollection, getAccountHolderIds, isJointAccount, buildJointAccountName } from '/imports/api/bankAccounts';
+import { BankAccountsCollection, getAccountHolderIds, isJointAccount, buildJointAccountName, getClientReferenceCurrency } from '/imports/api/bankAccounts';
 import { BanksCollection } from '/imports/api/banks';
 import UserDetailsScreen from './UserDetailsScreen.jsx';
 import LiquidGlassCard from './components/LiquidGlassCard.jsx';
@@ -57,8 +57,15 @@ const S = {
   }
 };
 
-const ClientsSection = ({ user: currentUser, theme }) => {
-  const [selectedEntityId, setSelectedEntityId] = useState(null);
+const ClientsSection = ({ user: currentUser, theme, initialEntityId = null, onInitialEntityConsumed }) => {
+  const [selectedEntityId, setSelectedEntityId] = useState(initialEntityId);
+
+  // A dashboard link can ask for a specific client file to be opened
+  useEffect(() => {
+    if (!initialEntityId) return;
+    setSelectedEntityId(initialEntityId);
+    onInitialEntityConsumed?.();
+  }, [initialEntityId]);
   const [searchTerm, setSearchTerm] = useState('');
   const [showCreateEntityForm, setShowCreateEntityForm] = useState(false);
   const [entitySubTab, setEntitySubTab] = useState('clients');
@@ -66,6 +73,31 @@ const ClientsSection = ({ user: currentUser, theme }) => {
   const [entityStatusFilter, setEntityStatusFilter] = useState('active');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [exporting, setExporting] = useState(false);
+
+  // Whole client base to Excel - server enforces the same roles and audits it
+  const canExportClients = [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.COMPLIANCE].includes(currentUser?.role);
+  const handleExportClients = async () => {
+    setExporting(true);
+    setError('');
+    try {
+      const { base64, fileName, counts } = await Meteor.callAsync('clients.exportAllToExcel', localStorage.getItem('sessionId'));
+      const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setSuccess(`Exported ${counts.clients} clients and ${counts.accounts} bank accounts`);
+    } catch (err) {
+      setError(err.reason || err.message || 'Export failed');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // Create entity form state
   const [newEntityType, setNewEntityType] = useState(ENTITY_TYPES.PHYSICAL_PERSON);
@@ -477,6 +509,23 @@ const ClientsSection = ({ user: currentUser, theme }) => {
             >
               📊
             </button>
+            {canExportClients && (
+              <button
+                onClick={handleExportClients}
+                disabled={exporting}
+                style={{
+                  ...S.btnGhost,
+                  padding: '7px 10px',
+                  border: '1.5px solid var(--border-color)',
+                  color: 'var(--text-muted)',
+                  cursor: exporting ? 'wait' : 'pointer',
+                  opacity: exporting ? 0.6 : 1
+                }}
+                title="Export all clients, bank accounts, stakeholders and family members to Excel"
+              >
+                {exporting ? '…' : '⬇ Excel'}
+              </button>
+            )}
           </div>
 
           {/* Search */}
@@ -876,7 +925,7 @@ const ClientsSection = ({ user: currentUser, theme }) => {
                           fontSize: '0.8rem',
                           color: isSelected ? 'rgba(255,255,255,0.7)' : 'var(--text-secondary)',
                         }}>
-                          {entity.referenceCurrency || 'EUR'}
+                          {getClientReferenceCurrency(entity, allBankAccounts.filter(a => getAccountHolderIds(a).includes(entity._id))).currency}
                         </div>
                       </div>
                     </div>

@@ -29,7 +29,8 @@ Meteor.publish("customUsers", async function (sessionId) {
       role: 1,
       profile: 1,
       createdAt: 1,
-      canValidateOrders: 1
+      canValidateOrders: 1,
+      canValidateAnyOrder: 1
     }
   });
 });
@@ -156,7 +157,8 @@ Meteor.publish("users", async function () {
       username: 1,
       role: 1,
       profile: 1,
-      canValidateOrders: 1
+      canValidateOrders: 1,
+      canValidateAnyOrder: 1
     }
   });
 });

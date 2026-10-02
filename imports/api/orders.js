@@ -811,6 +811,25 @@ export function quotesPriceAsPercent(assetType) {
 }
 
 /**
+ * Consideration of an order from its own quantity and limit price, or null
+ * when the order does not carry a price (market orders, FX, deposits, funds
+ * entered as a cash amount). Percent-of-par instruments divide by 100; option
+ * premiums are per share, so they scale by the contract size.
+ */
+export function computeOrderEstimatedValue({ assetType, quantity, limitPrice, optionContractSize, fundQuantityMode }) {
+  const qty = Number(quantity);
+  const price = Number(limitPrice);
+  if (!(qty > 0) || !(price > 0)) return null;
+  if (assetType === ASSET_TYPES.FX || assetType === ASSET_TYPES.TERM_DEPOSIT) return null;
+  if (assetType === ASSET_TYPES.FUND && fundQuantityMode === FUND_QUANTITY_MODES.NOMINAL) return null;
+
+  const value = quotesPriceAsPercent(assetType)
+    ? qty * price / 100
+    : qty * price * (assetType === ASSET_TYPES.OPTION ? (Number(optionContractSize) || DEFAULT_OPTION_CONTRACT_SIZE) : 1);
+  return Math.round(value * 100) / 100;
+}
+
+/**
  * Order health check - computes completeness score based on order status and required items.
  * Returns { score, max, missing, color } where score/max is the fraction and missing lists what's absent.
  */

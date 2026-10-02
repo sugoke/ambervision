@@ -54,7 +54,7 @@ import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
 import { BanksCollection, BankHelpers } from '/imports/api/banks';
 import { BankConnectionsCollection, BankConnectionHelpers } from '/imports/api/bankConnections';
 import { BankConnectionLogsCollection, BankConnectionLogHelpers } from '/imports/api/bankConnectionLogs';
-import { BankAccountsCollection, BankAccountHelpers, BANK_ACCOUNT_LIST_FIELDS, accountHolderSelector } from '/imports/api/bankAccounts';
+import { BankAccountsCollection, BankAccountHelpers, BANK_ACCOUNT_LIST_FIELDS, accountHolderSelector, ACCOUNT_ACCESS_RIGHTS } from '/imports/api/bankAccounts';
 import { ProductPricesCollection, ProductPriceHelpers } from '/imports/api/productPrices';
 import { IssuersCollection, IssuerHelpers, DEFAULT_ISSUERS } from '/imports/api/issuers';
 import { TemplatesCollection, TemplateHelpers, BUILT_IN_TEMPLATES } from '/imports/api/templates';
@@ -133,6 +133,9 @@ import './methods/clientDocumentMethods';
 import './methods/orderMethods';
 import './methods/manualPriceTrackerMethods';
 import './methods/clientEntityMethods';
+import './methods/clientExportMethods'; // Full client-base Excel export (admin/compliance)
+import './methods/complianceDashboardMethods'; // Firm-wide compliance recap (compliance/superadmin)
+import './methods/sizeableTransactionMethods'; // AML: sizeable client money flows, compliance <-> RM questions
 import './methods/mcpTokenMethods';
 import './methods/dataQualityMethods';
 import './methods/demoClientMethods';
@@ -143,6 +146,7 @@ import './msgraph/callbackHandler'; // OAuth redirect target at /auth/microsoft/
 import '/imports/api/meetingReports'; // Client meeting reports — collection + methods
 import './publications/meetingReports';
 import './methods/researchMethods'; // Intranet research library — manual PDF uploads
+import './methods/birthdayMethods'; // Intranet birthday calendar — contacts in the caller's perimeter
 import './publications/researchDocuments';
 import './mcp/mcpHttpHandler'; // MCP Streamable HTTP endpoint at /mcp (also mounts OAuth endpoints)
 import './telekursIngestHandler'; // Telekurs.xlsx price ingest endpoint at POST /api/telekurs/quotes
@@ -644,7 +648,8 @@ Meteor.startup(async () => {
         username: 1,
         role: 1,
         profile: 1,
-        canValidateOrders: 1
+        canValidateOrders: 1,
+        canValidateAnyOrder: 1
       }
     });
   });
@@ -1526,7 +1531,8 @@ Meteor.methods({
         profile: user.profile,
         firstName: user.profile?.firstName,
         lastName: user.profile?.lastName,
-        canValidateOrders: user.canValidateOrders || false
+        canValidateOrders: user.canValidateOrders || false,
+        canValidateAnyOrder: user.canValidateAnyOrder || false
       },
       expiresAt: session.expiresAt,
       rememberMe: session.rememberMe
@@ -1612,6 +1618,7 @@ Meteor.methods({
         firstName: user.profile?.firstName,
         lastName: user.profile?.lastName,
         canValidateOrders: user.canValidateOrders || false,
+        canValidateAnyOrder: user.canValidateAnyOrder || false,
         sessionInfo: {
           createdAt: session.createdAt,
           lastUsed: session.lastUsed,
@@ -2032,8 +2039,41 @@ Meteor.methods({
 
     console.log(`[users.updateCanValidateOrders] Superadmin ${currentUser._id} setting canValidateOrders=${canValidate} for user ${targetUser._id}`);
 
+    // Without validation rights there is nothing to validate, on any client
     return await UsersCollection.updateAsync(userId, {
-      $set: { canValidateOrders: canValidate }
+      $set: canValidate ? { canValidateOrders: true } : { canValidateOrders: false, canValidateAnyOrder: false }
+    });
+  },
+
+  /**
+   * Toggle canValidateAnyOrder (SuperAdmin only): validate orders of ANY client,
+   * not only the clients the user manages. Granting it grants validation rights.
+   */
+  async 'users.updateCanValidateAnyOrder'(userId, canValidateAny, sessionId) {
+    check(userId, String);
+    check(canValidateAny, Boolean);
+    check(sessionId, String);
+
+    const session = await SessionHelpers.validateSession(sessionId);
+    if (!session || !session.userId) {
+      throw new Meteor.Error('unauthorized', 'Invalid or expired session');
+    }
+    const currentUser = await UsersCollection.findOneAsync(session.userId);
+    if (!currentUser || currentUser.role !== USER_ROLES.SUPERADMIN) {
+      throw new Meteor.Error('unauthorized', 'Only superadmins can change validation permissions');
+    }
+    const targetUser = await UsersCollection.findOneAsync(userId);
+    if (!targetUser) {
+      throw new Meteor.Error('not-found', 'User not found');
+    }
+    const staffRoles = [USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.RELATIONSHIP_MANAGER, USER_ROLES.COMPLIANCE, USER_ROLES.STAFF];
+    if (!staffRoles.includes(targetUser.role)) {
+      throw new Meteor.Error('invalid-operation', 'Only staff users can be granted validation permission');
+    }
+
+    console.log(`[users.updateCanValidateAnyOrder] Superadmin ${currentUser._id} setting canValidateAnyOrder=${canValidateAny} for user ${targetUser._id}`);
+    return await UsersCollection.updateAsync(userId, {
+      $set: canValidateAny ? { canValidateAnyOrder: true, canValidateOrders: true } : { canValidateAnyOrder: false }
     });
   },
 
@@ -2325,7 +2365,7 @@ Meteor.methods({
     }
   },
 
-  async 'bankAccounts.create'({ userId, bankId, accountNumber, referenceCurrency, accountType = 'personal', accountStructure = 'direct', lifeInsuranceCompany, authorizedOverdraft, comment, sessionId }) {
+  async 'bankAccounts.create'({ userId, bankId, accountNumber, referenceCurrency, accountType = 'personal', accountStructure = 'direct', lifeInsuranceCompany, authorizedOverdraft, comment, accessRights, sessionId }) {
     check(userId, String);
     check(bankId, String);
     check(accountNumber, String);
@@ -2393,6 +2433,14 @@ Meteor.methods({
     // Add comment/description if provided
     if (comment && comment.trim()) {
       bankAccountData.comment = comment.trim();
+    }
+
+    // Power of attorney vs view-only: view-only accounts cannot receive orders
+    if (accessRights) {
+      if (!Object.values(ACCOUNT_ACCESS_RIGHTS).includes(accessRights)) {
+        throw new Meteor.Error('invalid-access-rights', `Invalid access rights: ${accessRights}`);
+      }
+      bankAccountData.accessRights = accessRights;
     }
 
     console.log('Server: Creating bank account with data:', bankAccountData);
@@ -3051,6 +3099,8 @@ Meteor.methods({
               isin: enrichedProductData.isin,
               securityName: enrichedProductData.title || `Structured Product ${enrichedProductData.isin}`,
               assetClass: 'structured_product',
+              // Order search reads the currency from here when it hits the metadata record
+              ...(enrichedProductData.currency ? { currency: enrichedProductData.currency } : {}),
               structuredProductType: structuredProductType,
               structuredProductUnderlyingType: underlyingType,
               structuredProductProtectionType: protectionType,
@@ -3221,6 +3271,8 @@ Meteor.methods({
               isin: productWithoutChartData.isin,
               securityName: productWithoutChartData.title || `Structured Product ${productWithoutChartData.isin}`,
               assetClass: 'structured_product',
+              // Order search reads the currency from here when it hits the metadata record
+              ...(productWithoutChartData.currency ? { currency: productWithoutChartData.currency } : {}),
               structuredProductType: structuredProductType,
               structuredProductUnderlyingType: underlyingType,
               structuredProductProtectionType: protectionType,
@@ -6799,21 +6851,38 @@ Meteor.methods({
     }
 
     const escapedTerm = searchTerm.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const searchRegex = new RegExp(escapedTerm, 'i');
     // Stricter match for account numbers: anchor at start so typing "5040241" never shows "5040217"
     const accountNumberRegex = new RegExp('^' + escapedTerm + '$', 'i');
 
     // Search client entities (primary - entity-based architecture)
     const { ClientEntitiesCollection: EntitiesCol, ClientEntityHelpers, ENTITY_STATUSES } = require('../imports/api/clientEntities.js');
+    // Every word typed must match one of the name fields, ignoring case and accents,
+    // so "aurelia ben hamou" finds "Aurélia BEN HAMOU" and "Benhamou" alone still works
+    const ACCENT_CLASSES = { a: 'aàáâãäåā', c: 'cçć', e: 'eèéêëē', i: 'iìíîïī', n: 'nñ', o: 'oòóôõöøō', u: 'uùúûüū', y: 'yýÿ' };
+    const accentFoldedRegex = (word) => new RegExp(
+      word.normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/[aceinouy]/gi, ch => {
+          const variants = ACCENT_CLASSES[ch.toLowerCase()];
+          return `[${variants}${variants.toUpperCase()}]`;
+        }),
+      'i'
+    );
+    const nameWords = searchTerm.trim().split(/\s+/).filter(Boolean);
     const entityQuery = {
       isActive: true,
       // Archived (closed) relationships must not be selectable in the View As picker
       status: { $ne: ENTITY_STATUSES.ARCHIVED },
-      $or: [
-        { 'profile.firstName': searchRegex },
-        { 'profile.lastName': searchRegex },
-        { 'profile.companyName': searchRegex }
-      ]
+      $and: nameWords.map(word => {
+        const wordRegex = accentFoldedRegex(word);
+        return {
+          $or: [
+            { 'profile.firstName': wordRegex },
+            { 'profile.lastName': wordRegex },
+            { 'profile.companyName': wordRegex }
+          ]
+        };
+      })
     };
 
     // RMs can see entities they manage or have backup access to via bank accounts
@@ -6826,7 +6895,7 @@ Meteor.methods({
       ).fetchAsync();
       const backupEntityIds = [...new Set(backupAccounts.map(a => a.entityId).filter(Boolean))];
 
-      entityQuery.$and = [{
+      entityQuery.$and.push({
         $or: [
           // Canonical: entities the RM (or any of their effective ids) is assigned to.
           { assignedUserIds: { $in: rmIds } },
@@ -6834,7 +6903,7 @@ Meteor.methods({
           { relationshipManagerId: { $in: rmIds } },
           ...(backupEntityIds.length > 0 ? [{ _id: { $in: backupEntityIds } }] : [])
         ]
-      }];
+      });
     }
 
     const entities = await EntitiesCol.find(
@@ -6850,7 +6919,7 @@ Meteor.methods({
     const enrichedEntities = await Promise.all(entities.map(async (entity) => {
       const accounts = await BankAccountsCollection.find(
         { $or: [{ entityId: entity._id }, { beneficialOwnerIds: entity._id }, { beneficialOwnerId: entity._id }], isActive: true },
-        { limit: 10, fields: { accountNumber: 1, bankId: 1, referenceCurrency: 1, name: 1, entityId: 1 } }
+        { limit: 10, fields: { accountNumber: 1, bankId: 1, referenceCurrency: 1, name: 1, entityId: 1, accessRights: 1, comment: 1 } }
       ).fetchAsync();
 
       // Enrich accounts with bank name and owner entity name (for BO accounts)
@@ -6915,7 +6984,7 @@ Meteor.methods({
         // not every account the entity owns/is-BO-of (prevents showing 5040217 when user typed 5040241).
         const accounts = await BankAccountsCollection.find(
           { $or: [{ entityId: entity._id }, { beneficialOwnerIds: entity._id }, { beneficialOwnerId: entity._id }], isActive: true, accountNumber: accountNumberRegex },
-          { limit: 10, fields: { accountNumber: 1, bankId: 1, referenceCurrency: 1, name: 1, entityId: 1 } }
+          { limit: 10, fields: { accountNumber: 1, bankId: 1, referenceCurrency: 1, name: 1, entityId: 1, accessRights: 1, comment: 1 } }
         ).fetchAsync();
 
         if (accounts.length === 0) continue;

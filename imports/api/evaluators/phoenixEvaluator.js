@@ -805,9 +805,13 @@ export const PhoenixEvaluator = {
 
       // Determine observation type
       const isFinalObservation = i === schedule.length - 1;
+      // The final observation is the maturity whether or not the term sheet lists it
+      // in the autocall table (it is often the redemption valuation date only)
       let observationType = 'Coupon Only';
-      if (obs.isCallable) {
-        observationType = isFinalObservation ? 'Maturity & Coupon' : 'Autocall & Coupon';
+      if (isFinalObservation) {
+        observationType = 'Maturity & Coupon';
+      } else if (obs.isCallable) {
+        observationType = 'Autocall & Coupon';
       }
 
       // Calculate memory coupon amount for this observation

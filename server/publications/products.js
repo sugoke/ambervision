@@ -8,6 +8,7 @@ import { ProductsCollection } from '/imports/api/products';
 import { AllocationsCollection } from '/imports/api/allocations';
 import { BankAccountsCollection } from '/imports/api/bankAccounts';
 import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
+import { clientAllocationSelector } from '../helpers/clientAllocationScope.js';
 
 // Role-based products publication with access control
 Meteor.publish("products", async function (sessionId = null, viewAsFilter = null) {
@@ -186,10 +187,11 @@ Meteor.publish("products", async function (sessionId = null, viewAsFilter = null
 
   // Client sees only products they have allocations in
   if (currentUser.role === USER_ROLES.CLIENT) {
-    // Find all allocations for this client (active, matured, or cancelled)
-    const userAllocations = await AllocationsCollection.find(excludeArchived({
-      clientId: currentUser._id
-    })).fetchAsync();
+    // Find all allocations for this client (active, matured, or cancelled),
+    // whether keyed by the login id or by the client's entity / bank account
+    const selector = await clientAllocationSelector(currentUser);
+    if (!selector) return this.ready();
+    const userAllocations = await AllocationsCollection.find(excludeArchived(selector)).fetchAsync();
 
     const productIds = [...new Set(userAllocations.map(alloc => alloc.productId))];
 
@@ -257,10 +259,10 @@ Meteor.publish("products.single", async function (productId, sessionId = null) {
   let hasAccess = false;
 
   if (currentUser.role === USER_ROLES.CLIENT) {
-    const allocation = await AllocationsCollection.findOneAsync({
-      productId: productId,
-      clientId: currentUser._id
-    });
+    const selector = await clientAllocationSelector(currentUser);
+    const allocation = selector
+      ? await AllocationsCollection.findOneAsync({ $and: [{ productId }, selector] })
+      : null;
     hasAccess = !!allocation;
   } else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER) {
     const assignedClients = await UsersCollection.find({
@@ -349,10 +351,9 @@ Meteor.publish("productAllocations", async function (productId, sessionId = null
     // Client sees only their own allocations
     if (currentUser.role === USER_ROLES.CLIENT) {
       // console.log('productAllocations publication: Client access - returning own allocations');
-      return AllocationsCollection.find(excludeArchived({
-        productId: productId,
-        clientId: currentUser._id
-      }));
+      const selector = await clientAllocationSelector(currentUser);
+      if (!selector) return this.ready();
+      return AllocationsCollection.find(excludeArchived({ $and: [{ productId }, selector] }));
     }
 
     // Unknown role - return empty
@@ -556,9 +557,11 @@ Meteor.publish("allAllocations", async function (sessionId = null, viewAsFilter 
       );
     }
 
-    // Client sees only their own allocations
+    // Client sees only their own allocations — keyed by login, entity or account
     if (currentUser.role === USER_ROLES.CLIENT) {
-      return AllocationsCollection.find(excludeArchived({ clientId: currentUser._id }));
+      const selector = await clientAllocationSelector(currentUser);
+      if (!selector) return this.ready();
+      return AllocationsCollection.find(excludeArchived(selector));
     }
 
     return this.ready();

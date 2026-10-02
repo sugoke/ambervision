@@ -184,7 +184,7 @@ export const BankPositionParser = {
    * Returns array of files for the same date
    */
   findLatestFiles(directoryPath) {
-    const files = this.findPositionFiles(directoryPath);
+    const files = this.completeDateFiles(this.findPositionFiles(directoryPath));
 
     if (files.length === 0) {
       return [];
@@ -201,11 +201,32 @@ export const BankPositionParser = {
   },
 
   /**
+   * Keep only the files of dates that carry holdings (a securities or cash
+   * file). Banks upload their files for a day one by one: CMB's FX-rates file
+   * can land hours before its positions file, and treating that date as the
+   * latest parsed the rates file alone - 0 positions, reported as a success,
+   * while the real positions were never picked up. Such a date only becomes
+   * eligible once its positions arrive.
+   */
+  completeDateFiles(files) {
+    const holdingsDates = new Set(files
+      .filter(f => f.fileType === 'securities' || f.fileType === 'cash')
+      .map(f => f.fileDate.toDateString()));
+    if (holdingsDates.size === 0) return files; // a bank with no holdings files at all: unchanged
+    const incomplete = files.filter(f => !holdingsDates.has(f.fileDate.toDateString()));
+    if (incomplete.length > 0) {
+      const days = [...new Set(incomplete.map(f => f.fileDate.toISOString().split('T')[0]))].join(', ');
+      console.log(`[BANK_PARSER] Waiting for positions files for ${days} (only ${incomplete.map(f => f.fileType).join('/')} received so far)`);
+    }
+    return files.filter(f => holdingsDates.has(f.fileDate.toDateString()));
+  },
+
+  /**
    * Get all unique file dates available in a directory
    * Returns sorted array of dates (oldest first for chronological processing)
    */
   getAvailableFileDates(directoryPath) {
-    const files = this.findPositionFiles(directoryPath);
+    const files = this.completeDateFiles(this.findPositionFiles(directoryPath));
 
     if (files.length === 0) {
       return [];

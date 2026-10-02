@@ -1,4 +1,6 @@
 export { default as RMDashboard } from './RMDashboard.jsx';
+export { default as ComplianceDashboard } from './ComplianceDashboard.jsx';
+export { default as DashboardSwitcher } from './DashboardSwitcher.jsx';
 export { default as AlertsCard } from './AlertsCard.jsx';
 export { default as PortfolioSummaryCard } from './PortfolioSummaryCard.jsx';
 export { default as BirthdaysCard } from './BirthdaysCard.jsx';

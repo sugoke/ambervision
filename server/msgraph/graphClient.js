@@ -153,8 +153,10 @@ export async function graphFetch(userId, pathOrAbsoluteUrl, {
     touchLastUsed(userId);
 
     if (raw) return streamToBuffer(response, maxBytes);
-    if (response.status === 204) return null;
-    return response.json();
+    // /send answers 202 with an empty body, not 204 — parsing it as JSON throws
+    // after the mail has already gone, and the caller never records the send.
+    const text = await response.text();
+    return text ? JSON.parse(text) : null;
   }
 
   throw new Meteor.Error('msgraph-throttled', 'Outlook is rate-limiting requests. Please try again in a moment.');

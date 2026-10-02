@@ -51,7 +51,7 @@
     "SENDPULSE_CLIENT_ID": "your_sendpulse_client_id_here",
     "SENDPULSE_CLIENT_SECRET": "your_sendpulse_client_secret_here",
     "SENDPULSE_FROM_EMAIL": "noreply@yourdomain.com",
-    "SENDPULSE_FROM_NAME": "Amber Lake Partners",
+    "SENDPULSE_FROM_NAME": "Amberlake Partners",
     "APP_URL": "http://localhost:3000",
     "EMAIL_NOTIFICATIONS_BCC": [],
     "_comment_email_bcc": "Optional: Add email addresses to BCC on all product notification emails",

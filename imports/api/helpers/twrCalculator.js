@@ -143,8 +143,8 @@ export const calculateDailyTWR = (dailyValues, dailyFlows) => {
   let cumulativeProduct = 1;
 
   for (let i = 1; i < dailyValues.length; i++) {
-    const vStart = dailyValues[i - 1].totalValueEUR;
-    const vEnd = dailyValues[i].totalValueEUR;
+    const vStart = dailyValues[i - 1].totalValue ?? dailyValues[i - 1].totalValueEUR;
+    const vEnd = dailyValues[i].totalValue ?? dailyValues[i].totalValueEUR;
     const cf = dailyFlows[dailyValues[i].date] || 0;
 
     const denominator = vStart + cf;
@@ -183,6 +183,139 @@ export const calculateDailyTWR = (dailyValues, dailyFlows) => {
   }
 
   return results;
+};
+
+// ---------------------------------------------------------------------------
+// Multi-account, multi-currency series
+//
+// The original builders above sum snapshot values as stored (each in its own
+// account's currency) and always convert flows to EUR, which mis-states any
+// client whose accounts are not all in EUR, and take each flow's direction
+// from its operation type alone. The builders below express every value and
+// flow in ONE currency, keep accounts whose snapshot is missing on a day at
+// their last value, and read a flow's direction from the bank's own sign when
+// that bank books signed amounts.
+// ---------------------------------------------------------------------------
+
+// Money entering or leaving the measured accounts. Card spending from an
+// investment account is money leaving it, like a payment.
+const PERIMETER_FLOW_TYPES = new Set([
+  OPERATION_TYPES.TRANSFER_IN,
+  OPERATION_TYPES.TRANSFER_OUT,
+  OPERATION_TYPES.PAYMENT_IN,
+  OPERATION_TYPES.PAYMENT_OUT,
+  OPERATION_TYPES.CARD_PAYMENT,
+]);
+
+const INFLOW_TYPES = new Set([OPERATION_TYPES.TRANSFER_IN, OPERATION_TYPES.PAYMENT_IN]);
+
+export const PERIMETER_FLOW_TYPE_LIST = [...PERIMETER_FLOW_TYPES];
+
+/**
+ * Signed amount of a flow in the operation's own currency (+ in, - out).
+ * Some banks book signed amounts and their operation type can disagree with
+ * the sign (CMB files "transfer out" lines that credit the account); others
+ * book every amount as positive and only the type carries the direction.
+ * `trustSign` says which convention the operation's bank follows. Cash lines
+ * that leave the net amount empty carry it in the quantity.
+ */
+export const getSignedFlowAmount = (operation, { trustSign = false } = {}) => {
+  const raw = [operation.netAmount, operation.grossAmount, operation.quantity]
+    .find(v => v != null && v !== 0 && !Number.isNaN(Number(v)));
+  if (raw == null) return 0;
+  const amount = Number(raw);
+  if (trustSign) return amount;
+  const abs = Math.abs(amount);
+  return INFLOW_TYPES.has(operation.operationType) ? abs : -abs;
+};
+
+const dateKeyOf = (value) => (value instanceof Date
+  ? value.toISOString().split('T')[0]
+  : String(value).split('T')[0]);
+
+/**
+ * Daily total of several accounts in one currency.
+ *
+ * - `convert(amount, fromCurrency)` returns the amount in the target currency,
+ *   or null when no rate is known (the whole series is then refused).
+ * - An account with no snapshot on a day keeps its last value for up to
+ *   `maxGapDays`, so a late file does not read as the account vanishing.
+ * - An account entering the perimeter after the first day (or leaving it)
+ *   moves the total without any performance: that move is returned as a
+ *   structural flow for the same day.
+ *
+ * @returns {{ dailyValues: Array<{date, totalValue}>, structuralFlows: Object, missingRate: String|null }}
+ */
+export const buildConsolidatedDailyValues = (snapshots, convert, { maxGapDays = 10 } = {}) => {
+  // One value per account per day (several writers can store the same day)
+  const byAccount = new Map();
+  for (const snap of snapshots || []) {
+    const key = `${snap.bankId || ''}|${snap.portfolioCode || ''}`;
+    const date = dateKeyOf(snap.snapshotDate);
+    if (!byAccount.has(key)) byAccount.set(key, new Map());
+    const days = byAccount.get(key);
+    const existing = days.get(date);
+    const created = snap.createdAt ? new Date(snap.createdAt).getTime() : 0;
+    if (!existing || created >= existing.created) {
+      const value = convert(snap.totalAccountValue || 0, snap.currency);
+      if (value === null) return { dailyValues: [], structuralFlows: {}, missingRate: snap.currency };
+      days.set(date, { value, created });
+    }
+  }
+
+  const dates = [...new Set([...byAccount.values()].flatMap(days => [...days.keys()]))].sort();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const state = new Map(); // key -> { value, date, active }
+  const dailyValues = [];
+  const structuralFlows = {};
+
+  dates.forEach((date, index) => {
+    let total = 0;
+    for (const [key, days] of byAccount) {
+      const today = days.get(date);
+      const prev = state.get(key);
+      if (today) {
+        if (index > 0 && !(prev && prev.active)) {
+          structuralFlows[date] = (structuralFlows[date] || 0) + today.value; // enters the perimeter
+        }
+        state.set(key, { value: today.value, date, active: true });
+        total += today.value;
+      } else if (prev && prev.active) {
+        const gap = (new Date(date) - new Date(prev.date)) / dayMs;
+        if (gap <= maxGapDays) {
+          total += prev.value; // late or missing file: carry the last value
+        } else {
+          structuralFlows[date] = (structuralFlows[date] || 0) - prev.value; // left the perimeter
+          state.set(key, { ...prev, active: false });
+        }
+      }
+    }
+    dailyValues.push({ date, totalValue: total });
+  });
+
+  return { dailyValues, structuralFlows, missingRate: null };
+};
+
+/**
+ * Daily net flows in the target currency.
+ * @param {Array} operations
+ * @param {Function} convert - (amount, fromCurrency) => amount in target currency, or null
+ * @param {Set} signedBankIds - banks whose amounts carry the direction
+ * @returns {{ dailyFlows: Object, missingRate: String|null }}
+ */
+export const buildConsolidatedDailyFlows = (operations, convert, signedBankIds = new Set()) => {
+  const dailyFlows = {};
+  for (const op of operations || []) {
+    if (!PERIMETER_FLOW_TYPES.has(op.operationType)) continue;
+    const signed = getSignedFlowAmount(op, { trustSign: signedBankIds.has(op.bankId) });
+    if (!signed) continue;
+    const currency = op.currency || op.accountCurrency || op.operationCurrency || op.settlementCurrency;
+    const value = convert(signed, currency);
+    if (value === null) return { dailyFlows: {}, missingRate: currency };
+    const date = dateKeyOf(op.operationDate);
+    dailyFlows[date] = (dailyFlows[date] || 0) + value;
+  }
+  return { dailyFlows, missingRate: null };
 };
 
 /**
