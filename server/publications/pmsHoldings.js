@@ -345,7 +345,7 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
     else if (isClient) {
       // Check entity access for this user
       const { UserEntityAccessHelpers } = await import('../../imports/api/userEntityAccess.js');
-      const accessRecords = await UserEntityAccessHelpers.getUserEntities(currentUser._id);
+      const accessRecords = await UserEntityAccessHelpers.getAccessRecordsForUser(currentUser._id);
       const entityIds = accessRecords.map(a => a.entityId);
 
       if (entityIds.length > 0) {

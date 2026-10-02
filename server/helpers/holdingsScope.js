@@ -161,7 +161,7 @@ async function buildHoldingsScopeSelector({ currentUser, viewAsFilter }) {
     ];
   } else if (isClient) {
     const { UserEntityAccessHelpers } = await import('/imports/api/userEntityAccess.js');
-    const accessRecords = await UserEntityAccessHelpers.getUserEntities(currentUser._id);
+    const accessRecords = await UserEntityAccessHelpers.getAccessRecordsForUser(currentUser._id);
     const entityIds = accessRecords.map(a => a.entityId);
     if (entityIds.length > 0) {
       queryFilter.$or = [
