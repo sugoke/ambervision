@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Meteor } from 'meteor/meteor';
 import { translations, getTranslation } from '../../utils/reportTranslations';
@@ -23,11 +23,22 @@ const PDFDownloadButton = ({
   contentSelector = '.report-content', // Selector for the content to convert to PDF
   iconOnly = false, // When true, only show icon (title becomes tooltip)
   showLanguageSelector = true, // Whether to show language selection modal
-  onDownloaded = null // Optional callback fired after a successful PDF download
+  onDownloaded = null, // Optional callback fired after a successful PDF download
+  progressLabel = null // Text of the progress overlay; defaults per reportType
 }) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState(null);
   const [showLangModal, setShowLangModal] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+
+  // Seconds since generation started, shown in the progress overlay
+  useEffect(() => {
+    if (!isGenerating) return undefined;
+    setElapsed(0);
+    const started = Date.now();
+    const timer = setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [isGenerating]);
 
   const handleDownloadClick = () => {
     if (showLanguageSelector) {
@@ -209,10 +220,63 @@ const PDFDownloadButton = ({
     document.body
   );
 
+  // Progress overlay while the server renders the PDF. The server reports no
+  // intermediate steps, so this shows activity and elapsed time, not a percentage.
+  const PROGRESS_LABELS = {
+    pms: 'Generating portfolio statement',
+    template: 'Generating product report',
+    'risk-analysis': 'Generating risk analysis',
+    'portfolio-review': 'Generating portfolio review'
+  };
+  const progressOverlay = isGenerating && createPortal(
+    <div
+      role="status"
+      aria-live="polite"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(15, 23, 42, 0.45)',
+        backdropFilter: 'blur(2px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 2147483646
+      }}
+    >
+      <div style={{
+        background: 'var(--bg-primary, #1f2937)',
+        border: '1px solid var(--border-color, #374151)',
+        borderRadius: '14px',
+        padding: '1.75rem 2.25rem',
+        minWidth: '280px',
+        maxWidth: '90vw',
+        boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '0.9rem',
+        textAlign: 'center'
+      }}>
+        <div className="pdf-progress-spinner" />
+        <div style={{ fontSize: '1rem', fontWeight: 500, color: 'var(--text-primary, white)' }}>
+          {progressLabel || PROGRESS_LABELS[reportType] || 'Generating PDF'}…
+        </div>
+        <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary, #9ca3af)', fontVariantNumeric: 'tabular-nums' }}>
+          {elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${String(elapsed % 60).padStart(2, '0')}s`} elapsed
+        </div>
+        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted, #9ca3af)', maxWidth: '260px' }}>
+          The download starts automatically when the file is ready.
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+
   return (
     <div style={{ display: 'inline-block', position: 'relative', ...wrapperStyle }}>
       {/* Language Selection Modal - rendered via Portal */}
       {languageModal}
+      {progressOverlay}
 
       <button
         onClick={handleDownloadClick}
@@ -305,6 +369,17 @@ const PDFDownloadButton = ({
             to {
               transform: rotate(360deg);
             }
+          }
+          .pdf-progress-spinner {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            border: 4px solid var(--border-color, rgba(148, 163, 184, 0.3));
+            border-top-color: var(--accent-color, #DD772A);
+            animation: spin 0.9s linear infinite;
+          }
+          @media (prefers-reduced-motion: reduce) {
+            .pdf-progress-spinner { animation-duration: 2.4s; }
           }
         `}
       </style>

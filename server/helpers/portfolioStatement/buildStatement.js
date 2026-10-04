@@ -80,6 +80,10 @@ const opQuantity = (op) => (op.std ? op.std.quantity : op.quantity) ?? null;
 const opText = (op) => op.std?.description || op.description || op.operationTypeName || op.remark || TYPE_LABEL[op.operationType] || 'Movement';
 
 const dateKey = (d) => (d instanceof Date ? d : new Date(d)).toISOString().slice(0, 10);
+const escapeRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Everyone an account belongs to: holders, legacy owner and beneficial owners */
+const accountPeople = (a) => [...getAccountHolderIds(a), a.userId, a.beneficialOwnerId, ...(a.beneficialOwnerIds || [])].filter(Boolean);
+
 const chunk = (rows, first, next) => {
   const pages = [rows.slice(0, first)];
   for (let i = first; i < rows.length; i += next) pages.push(rows.slice(i, i + next));
@@ -135,19 +139,30 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
   let account = null;
   if (requestedAccountId) {
     const candidate = await BankAccountsCollection.findOneAsync(requestedAccountId);
-    const holders = candidate ? [...getAccountHolderIds(candidate), candidate.userId].filter(Boolean) : [];
+    const holders = candidate ? accountPeople(candidate) : [];
     if (candidate && holders.some(id => ownerIds.includes(id))) account = candidate;
     else if (viewAsFilter?.type === 'account') throw new Meteor.Error('not-authorized', 'Account outside your perimeter');
   }
 
+  // Accounts as the PMS screen resolves them: held, co-held, or beneficially
+  // owned (a life-insurance wrapper is held by the insurer for the client)
   const accounts = account
     ? [account]
-    : await BankAccountsCollection.find({ ...accountHolderSelector(ownerIds), isActive: true }).fetchAsync();
-  const ownerSel = { $or: [{ userId: { $in: ownerIds } }, { entityId: { $in: ownerIds } }] };
-  const holdings = await PMSHoldingsCollection.find({
-    isActive: true, isLatest: true, ...ownerSel,
-    ...(account ? { portfolioCode: account.accountNumber, bankId: account.bankId } : { portfolioCode: { $ne: 'CONSOLIDATED' } })
-  }).fetchAsync();
+    : (ownerIds.length ? await BankAccountsCollection.find({
+        isActive: true,
+        $or: [...accountHolderSelector(ownerIds).$or, { beneficialOwnerIds: { $in: ownerIds } }, { beneficialOwnerId: { $in: ownerIds } }]
+      }).fetchAsync() : []);
+  // Holdings by owner, or by bank account (bank + account number, sub-account
+  // codes included) for the accounts above, whoever the bank file filed them under
+  const byAccount = accounts.filter(a => a.bankId && a.accountNumber)
+    .map(a => ({ bankId: a.bankId, portfolioCode: { $regex: `^${escapeRe(String(a.accountNumber).split('-')[0])}(-|$)` } }));
+  const holdings = await PMSHoldingsCollection.find(account
+    ? { isActive: true, isLatest: true, bankId: account.bankId, portfolioCode: account.accountNumber }
+    : {
+        isActive: true, isLatest: true, portfolioCode: { $ne: 'CONSOLIDATED' },
+        $or: [{ userId: { $in: ownerIds } }, { entityId: { $in: ownerIds } }, ...byAccount]
+      }
+  ).fetchAsync();
 
   const codes = [...new Set([...accounts.map(a => a.accountNumber), ...holdings.map(h => h.portfolioCode)].filter(Boolean))];
   const accountByCode = new Map(accounts.map(a => [`${a.bankId}|${a.accountNumber}`, a]));
@@ -260,7 +275,6 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
   // Operations are matched by bank account (bank + account number), as banks
   // book them under sub-account codes ("5040241-1") and older ones carry a
   // legacy owner id only. The accounts themselves are already in scope.
-  const escapeRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const accountKeys = [...new Map([...accounts.map(a => [a.bankId, a.accountNumber]), ...holdings.map(h => [h.bankId, h.portfolioCode])]
     .filter(([bankId, code]) => bankId && code)
     .map(([bankId, code]) => [`${bankId}|${code}`, { bankId, code }])).values()];

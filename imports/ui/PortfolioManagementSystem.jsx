@@ -5018,6 +5018,103 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
         </div>
       </LiquidGlassCard>
 
+      {/* TWR Performance Summary Table */}
+      <LiquidGlassCard style={{
+        marginTop: '1rem',
+      }}>
+        <div style={{ padding: '1rem' }}>
+          <h3 style={{
+            margin: '0 0 1rem 0',
+            fontSize: '1.1rem',
+            fontWeight: '400',
+            color: 'var(--text-primary)'
+          }}>
+            TWR Performance Summary
+          </h3>
+          {twrData?.hasData && twrData?.periods ? (
+            <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                <thead>
+                  <tr style={{ borderBottom: '2px solid var(--border-color)' }}>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', color: 'var(--text-muted)', fontWeight: '600' }}>Period</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>Start Date</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>End Date</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>Data Points</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>TWR</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {['1M', '3M', '6M', 'YTD', '1Y', 'ALL'].map(periodKey => {
+                    const period = twrData.periods[periodKey];
+                    if (!period || !period.hasData) return null;
+                    const periodLabels = {
+                      '1M': '1 Month',
+                      '3M': '3 Months',
+                      '6M': '6 Months',
+                      'YTD': 'Year to Date',
+                      '1Y': '1 Year',
+                      'ALL': 'Since Inception'
+                    };
+                    const isPositive = period.twr >= 0;
+
+                    return (
+                      <tr key={periodKey} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                        <td style={{ padding: '0.75rem', fontWeight: '600', color: 'var(--text-primary)' }}>
+                          {periodLabels[periodKey] || periodKey}
+                        </td>
+                        <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
+                          {period.startDate || 'N/A'}
+                        </td>
+                        <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
+                          {period.endDate || 'N/A'}
+                        </td>
+                        <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary)' }}>
+                          {period.dataPoints || 0}
+                        </td>
+                        <td style={{
+                          padding: '0.75rem',
+                          textAlign: 'right',
+                          fontWeight: '700',
+                          fontSize: '1rem',
+                          color: isPositive ? 'var(--gain-color)' : 'var(--loss-color)'
+                        }}>
+                          {period.twrFormatted}
+                          {periodKey === 'ALL' && period.isAnnualized && period.twrAnnualizedFormatted && (
+                            <div style={{ fontSize: '0.7rem', fontWeight: '400', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
+                              {period.twrAnnualizedFormatted}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {twrData.metadata && (
+                <div style={{ marginTop: '0.75rem', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                  Data from {twrData.metadata.firstSnapshotDate} to {twrData.metadata.lastSnapshotDate} | {twrData.metadata.externalFlowCount} external flows detected
+                  {twrData.metadata.currency ? ` | in ${twrData.metadata.currency}` : ''}
+                  {twrData.metadata.excludedAccounts?.length > 0 && (
+                    <div style={{ marginTop: '0.2rem' }}>
+                      Investment accounts only — excluded: {twrData.metadata.excludedAccounts.map(a => `${a.accountNumber}${a.comment ? ` (${a.comment})` : ''}`).join(', ')}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div style={{
+              textAlign: 'center',
+              padding: '2rem',
+              color: 'var(--text-muted)',
+              fontSize: '0.875rem'
+            }}>
+              No TWR performance data available
+            </div>
+          )}
+        </div>
+      </LiquidGlassCard>
+
       {/* Monthly & yearly performance (time-weighted, from the server's computeTWR) */}
       {twrData?.calendarCharts?.monthly?.labels?.length > 0 && (() => {
         const chart = twrData.calendarCharts[calendarMode];
@@ -5784,103 +5881,6 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
           </div>
         </LiquidGlassCard>
       )}
-
-      {/* TWR Performance Summary Table */}
-      <LiquidGlassCard style={{
-        marginTop: '1rem',
-      }}>
-        <div style={{ padding: '1rem' }}>
-          <h3 style={{
-            margin: '0 0 1rem 0',
-            fontSize: '1.1rem',
-            fontWeight: '400',
-            color: 'var(--text-primary)'
-          }}>
-            TWR Performance Summary
-          </h3>
-          {twrData?.hasData && twrData?.periods ? (
-            <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
-                <thead>
-                  <tr style={{ borderBottom: '2px solid var(--border-color)' }}>
-                    <th style={{ padding: '0.75rem', textAlign: 'left', color: 'var(--text-muted)', fontWeight: '600' }}>Period</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>Start Date</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>End Date</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>Data Points</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-muted)', fontWeight: '600' }}>TWR</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {['1M', '3M', '6M', 'YTD', '1Y', 'ALL'].map(periodKey => {
-                    const period = twrData.periods[periodKey];
-                    if (!period || !period.hasData) return null;
-                    const periodLabels = {
-                      '1M': '1 Month',
-                      '3M': '3 Months',
-                      '6M': '6 Months',
-                      'YTD': 'Year to Date',
-                      '1Y': '1 Year',
-                      'ALL': 'Since Inception'
-                    };
-                    const isPositive = period.twr >= 0;
-
-                    return (
-                      <tr key={periodKey} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                        <td style={{ padding: '0.75rem', fontWeight: '600', color: 'var(--text-primary)' }}>
-                          {periodLabels[periodKey] || periodKey}
-                        </td>
-                        <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
-                          {period.startDate || 'N/A'}
-                        </td>
-                        <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
-                          {period.endDate || 'N/A'}
-                        </td>
-                        <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary)' }}>
-                          {period.dataPoints || 0}
-                        </td>
-                        <td style={{
-                          padding: '0.75rem',
-                          textAlign: 'right',
-                          fontWeight: '700',
-                          fontSize: '1rem',
-                          color: isPositive ? 'var(--gain-color)' : 'var(--loss-color)'
-                        }}>
-                          {period.twrFormatted}
-                          {periodKey === 'ALL' && period.isAnnualized && period.twrAnnualizedFormatted && (
-                            <div style={{ fontSize: '0.7rem', fontWeight: '400', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
-                              {period.twrAnnualizedFormatted}
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              {twrData.metadata && (
-                <div style={{ marginTop: '0.75rem', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                  Data from {twrData.metadata.firstSnapshotDate} to {twrData.metadata.lastSnapshotDate} | {twrData.metadata.externalFlowCount} external flows detected
-                  {twrData.metadata.currency ? ` | in ${twrData.metadata.currency}` : ''}
-                  {twrData.metadata.excludedAccounts?.length > 0 && (
-                    <div style={{ marginTop: '0.2rem' }}>
-                      Investment accounts only — excluded: {twrData.metadata.excludedAccounts.map(a => `${a.accountNumber}${a.comment ? ` (${a.comment})` : ''}`).join(', ')}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div style={{
-              textAlign: 'center',
-              padding: '2rem',
-              color: 'var(--text-muted)',
-              fontSize: '0.875rem'
-            }}>
-              No TWR performance data available
-            </div>
-          )}
-        </div>
-      </LiquidGlassCard>
     </div>
     );
   };
