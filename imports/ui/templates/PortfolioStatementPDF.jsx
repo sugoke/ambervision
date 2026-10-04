@@ -128,7 +128,8 @@ const Cover = ({ data }) => {
         )}
       </div>
       <div style={{ position: 'absolute', left: 676, top: 214, width: 1, height: 352, background: '#E6E1D8' }} />
-      <nav aria-label="Contents" style={{ position: 'absolute', left: 720, top: 214, width: 339, display: 'flex', flexDirection: 'column' }}>
+      {/* Not a <nav>: client/pdf-styles.css hides every nav element in print */}
+      <div role="navigation" aria-label="Contents" style={{ position: 'absolute', left: 720, top: 214, width: 339, display: 'flex', flexDirection: 'column' }}>
         <div className="st-k" style={{ paddingBottom: 12, borderBottom: '1.5px solid #1A2B40' }}>Contents</div>
         {c.contents.map(t => (
           <div key={t.n} className="st-toc">
@@ -137,7 +138,7 @@ const Cover = ({ data }) => {
             <span className="st-mono" style={{ fontSize: 11, color: '#687080', textAlign: 'right' }}>{t.page}</span>
           </div>
         ))}
-      </nav>
+      </div>
       <div style={{ position: 'absolute', left: 64, top: 618, width: 995, height: 148, borderTop: '1.5px solid #1A2B40', paddingTop: 26, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 32 }}>
           {[['Report date', c.reportDate], ['Reference currency', c.currencyText], ['Custodian', c.custodianText]].map(([k, v]) => (
