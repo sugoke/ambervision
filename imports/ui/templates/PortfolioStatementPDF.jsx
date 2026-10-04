@@ -252,9 +252,9 @@ const Overview = ({ data, page: p }) => (
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto 64px', columnGap: 14, fontSize: 12.5, lineHeight: '17px' }}>
             {p.periods.map((r, i) => (
               <React.Fragment key={r.label}>
-                <span style={{ padding: '10px 0 9px', borderBottom: i < p.periods.length - 1 ? '1px solid #F1EDE6' : 'none' }}>{r.label}</span>
-                <span className={`st-n ${r.changePositive ? 'st-pos' : 'st-neg'}`} style={{ padding: '10px 0 9px', borderBottom: i < p.periods.length - 1 ? '1px solid #F1EDE6' : 'none' }}>{r.changeText}</span>
-                <span className={`st-n ${r.twrPositive ? 'st-pos' : 'st-neg'}`} style={{ padding: '10px 0 9px', borderBottom: i < p.periods.length - 1 ? '1px solid #F1EDE6' : 'none', fontWeight: 500 }}>{r.twrText}</span>
+                <span style={{ padding: '7px 0 6px', borderBottom: i < p.periods.length - 1 ? '1px solid #F1EDE6' : 'none' }}>{r.label}</span>
+                <span className={`st-n ${r.changePositive ? 'st-pos' : 'st-neg'}`} style={{ padding: '7px 0 6px', borderBottom: i < p.periods.length - 1 ? '1px solid #F1EDE6' : 'none' }}>{r.changeText}</span>
+                <span className={`st-n ${r.twrPositive ? 'st-pos' : 'st-neg'}`} style={{ padding: '7px 0 6px', borderBottom: i < p.periods.length - 1 ? '1px solid #F1EDE6' : 'none', fontWeight: 500 }}>{r.twrText}</span>
               </React.Fragment>
             ))}
           </div>
