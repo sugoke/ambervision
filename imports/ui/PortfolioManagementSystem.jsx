@@ -4133,7 +4133,8 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                           </span>
                         )}
                         <div style={{ minWidth: 0, flex: '1' }}>
-                          <div style={{ fontWeight: '500', color: 'var(--text-primary)', fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <div style={{ fontWeight: '500', color: 'var(--text-primary)', fontSize: '0.9rem', display: 'flex', alignItems: 'center', minWidth: 0 }}>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
                             {position.linkedProduct ? (
                               <a
                                 href={`/report/${position.linkedProduct._id}`}
@@ -4155,6 +4156,31 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                                 {position.name}
                               </a>
                             ) : position.name}
+                            </span>
+                            {/* Visible way into the product report (the name link only shows on hover) */}
+                            {position.linkedProduct && onOpenProductReport && (
+                              <button
+                                type="button"
+                                title="Open the product report"
+                                aria-label={`Open the product report for ${position.name}`}
+                                onClick={(e) => { e.stopPropagation(); onOpenProductReport(position.linkedProduct._id); }}
+                                style={{
+                                  flex: 'none',
+                                  marginLeft: '0.4rem',
+                                  padding: '0.05rem 0.45rem',
+                                  fontSize: '0.68rem',
+                                  lineHeight: '1.2rem',
+                                  verticalAlign: 'middle',
+                                  color: 'var(--info-color)',
+                                  background: 'rgba(59, 130, 246, 0.12)',
+                                  border: 'none',
+                                  borderRadius: '4px',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                📄 Report
+                              </button>
+                            )}
                           </div>
                           <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
                             {position.isin

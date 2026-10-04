@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import Dashboard from './Dashboard.jsx';
 import DashboardSwitcher from './components/dashboard/DashboardSwitcher.jsx';
 import StructuredProductInterface from './StructuredProductInterface.jsx';
@@ -140,12 +140,27 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
    * — and the scroll position in it — that the report was opened from.
    */
   const [reportOrigin, setReportOrigin] = useState(null);
+  // PMS scroll position when a report was opened from it, restored on "Back to Portfolio"
+  const pmsScrollRef = useRef(0);
 
   const openProductReport = useCallback((productId, origin = null) => {
     if (!productId) return;
-    setReportOrigin(origin || currentSection || null);
+    const from = origin || currentSection || null;
+    if (from === 'pms' && typeof window !== 'undefined') pmsScrollRef.current = window.scrollY;
+    setReportOrigin(from);
     setCurrentSection('report', productId);
+    // The report opens at its top, wherever the page it came from was scrolled
+    if (typeof window !== 'undefined') requestAnimationFrame(() => window.scrollTo(0, 0));
   }, [setCurrentSection, currentSection]);
+
+  const backFromReport = useCallback(() => {
+    handleNavigate(reportOrigin || 'dashboard');
+    if (reportOrigin === 'pms' && typeof window !== 'undefined') {
+      // The PMS stayed mounted behind the report: put the page back where it was
+      const y = pmsScrollRef.current;
+      requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo(0, y)));
+    }
+  }, [reportOrigin]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleViewProductReport = useCallback((product) => {
     console.log('MainContent: Navigating to product report for:', product._id);
@@ -300,7 +315,7 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
             // Back goes where the report was opened from — the PMS, the product
             // list, the dashboard — and only falls back to the dashboard when
             // the report was reached directly by URL.
-            onNavigateBack={() => handleNavigate(reportOrigin || 'dashboard')}
+            onNavigateBack={backFromReport}
             backLabel={reportOrigin === 'pms' ? 'Back to Portfolio' : undefined}
             onEditProduct={handleEditProduct}
             onAllocateProduct={handleAllocateProduct}
@@ -322,15 +337,9 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
         return <UnderlyingsView user={user} onNavigateToReport={handleViewProductReport} />;
       
       case 'pms':
+        // Rendered in its own slot below, so it survives a visit to a product report
         if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
-        return (
-          <PortfolioManagementSystem
-            user={user}
-            // Opening a structured product's report from a position: in-app, so
-            // the PMS is still behind it and its back button returns here.
-            onOpenProductReport={(productId) => openProductReport(productId, 'pms')}
-          />
-        );
+        return null;
 
       case 'market-news':
         if (!hasAccess(USER_ROLES.CLIENT)) return <div>Access denied</div>;
@@ -387,6 +396,18 @@ const MainContent = ({ user, currentSection, setCurrentSection, onComponentLibra
         transition: 'margin-right 0.3s ease',
         marginRight: isMenuOpen ? '0px' : '0px' // Keep content fixed, menu overlays
       }}>
+        {/* The PMS stays mounted (hidden) while a report opened from it is shown,
+            so "Back to Portfolio" returns to the same tab, account and filters */}
+        {hasAccess(USER_ROLES.CLIENT) && (currentSection === 'pms' || (currentSection === 'report' && reportOrigin === 'pms')) && (
+          <div style={{ display: currentSection === 'pms' ? 'block' : 'none' }}>
+            <PortfolioManagementSystem
+              user={user}
+              // Opening a structured product's report from a position: in-app, so
+              // the PMS is still behind it and its back button returns here.
+              onOpenProductReport={(productId) => openProductReport(productId, 'pms')}
+            />
+          </div>
+        )}
         {renderContent()}
       </div>
 
