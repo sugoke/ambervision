@@ -43,6 +43,23 @@ const AppContent = () => {
   const [showMarketTicker, setShowMarketTicker] = useState(false); // Defer MarketTicker loading
   const [isAmberChatOpen, setIsAmberChatOpen] = useState(false); // Amber AI chat state
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false); // Mobile search overlay state
+  // Real height of the fixed top bar (safe area included), so the page starts
+  // right below it whatever the device, notch or header content
+  const [fixedHeaderHeight, setFixedHeaderHeight] = useState(0);
+  const headerObserverRef = React.useRef(null);
+  const fixedHeaderRef = useCallback((node) => {
+    if (headerObserverRef.current) {
+      headerObserverRef.current.disconnect();
+      headerObserverRef.current = null;
+    }
+    if (!node) return;
+    const measure = () => setFixedHeaderHeight(Math.ceil(node.getBoundingClientRect().height));
+    measure();
+    if (typeof ResizeObserver !== 'undefined') {
+      headerObserverRef.current = new ResizeObserver(measure);
+      headerObserverRef.current.observe(node);
+    }
+  }, []);
   const [mobileViewAsOpen, setMobileViewAsOpen] = useState(false); // Mobile view as overlay state
   const [isMenuOpen, setIsMenuOpen] = useState(false); // Navigation menu state (lifted for mobile header)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false); // Settings menu state (lifted for mobile header)
@@ -529,7 +546,7 @@ const AppContent = () => {
         `}</style>
         {/* Fixed Top Section - Header + Market Ticker */}
         {user && (
-          <div style={{
+          <div ref={fixedHeaderRef} style={{
             position: 'fixed',
             top: 0,
             left: 0,
@@ -834,9 +851,12 @@ const AppContent = () => {
 
         {/* Spacer to push content below fixed header - Adjust height for mobile (no MarketTicker) and Intranet - Add safe area inset */}
         {user && <div style={{
-          height: currentSection === 'intranet' || isMobile
-            ? (isMobile ? 'calc(40px + env(safe-area-inset-top))' : 'calc(50px + env(safe-area-inset-top))')
-            : 'calc(100px + env(safe-area-inset-top))'
+          // Measured height of the fixed bar; the estimates are only for the first paint
+          height: fixedHeaderHeight
+            ? `${fixedHeaderHeight}px`
+            : currentSection === 'intranet' || isMobile
+              ? (isMobile ? 'calc(52px + env(safe-area-inset-top))' : 'calc(50px + env(safe-area-inset-top))')
+              : 'calc(100px + env(safe-area-inset-top))'
         }} />}
 
         {/* Loading state during authentication check - Exclude PDF modes as they handle their own loading */}
