@@ -444,6 +444,15 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
   const [usPersonDraft, setUsPersonDraft] = useState({});
   const [editingFamily, setEditingFamily] = useState(false);
   const [familyDraft, setFamilyDraft] = useState([]);
+  // Loaded by method: the entity list publication strips profile.familyMembers and
+  // wins the merge box for `profile`, so they never reach the entity document here.
+  const [familyMembers, setFamilyMembers] = useState([]);
+  const [familyLoadError, setFamilyLoadError] = useState(null);
+  const [familySaving, setFamilySaving] = useState(false);
+  const [familySaveError, setFamilySaveError] = useState(null);
+  const [familyPickerIdx, setFamilyPickerIdx] = useState(null);
+  const [familyPickerQuery, setFamilyPickerQuery] = useState('');
+  const [familyReloadKey, setFamilyReloadKey] = useState(0);
 
   // KYC Risk Score state
   // Dated review / visit files. The latest file date stands in for the last
@@ -616,6 +625,33 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
     });
     return roles;
   }, [allEntities, entityId]);
+
+  // Family members of the entity in view (see familyMembers state above).
+  // Re-fetched when the entity's profile changes so edits made elsewhere show up.
+  const entityProfileStamp = entity?.profile?.updatedAt ? String(entity.profile.updatedAt) : '';
+  useEffect(() => {
+    if (!entityId) { setFamilyMembers([]); return; }
+    let cancelled = false;
+    setFamilyLoadError(null);
+    Meteor.callAsync('clientEntities.getFamilyMembers', entityId, sessionId)
+      .then(members => { if (!cancelled) setFamilyMembers(members || []); })
+      .catch(err => {
+        console.error('Error loading family members:', err);
+        if (!cancelled) setFamilyLoadError(err.reason || err.message);
+      });
+    return () => { cancelled = true; };
+  }, [entityId, entityProfileStamp, familyReloadKey]);
+
+  // People already known to the system that can be linked as a family member
+  const familyCandidates = useMemo(() => {
+    const q = familyPickerQuery.trim().toLowerCase();
+    if (familyPickerIdx === null || q.length < 2) return [];
+    const alreadyLinked = new Set(familyDraft.map(m => m.linkedEntityId).filter(Boolean));
+    return allEntities
+      .filter(e => e.type === ENTITY_TYPES.PHYSICAL_PERSON && e._id !== entityId && !alreadyLinked.has(e._id))
+      .filter(e => ClientEntityHelpers.getEntityDisplayName(e).toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [allEntities, entityId, familyDraft, familyPickerIdx, familyPickerQuery]);
 
   // Update form data when user or entity data loads
   useEffect(() => {
@@ -4613,7 +4649,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
           {activeTab === 'documents' && (isEntityMode || (hasUser && user.role === USER_ROLES.CLIENT)) && (
             <ClientDocumentManager
               userId={userId || entityId}
-              familyMembers={user?.profile?.familyMembers || entity?.profile?.familyMembers || []}
+              familyMembers={user?.profile?.familyMembers || (entityId ? familyMembers : [])}
               // Corporate documents (trade register, UBO register, articles,
               // signatory powers) only apply to companies. 'life_insurance' is a
               // legacy entity type that is also a legal person.
@@ -4983,12 +5019,92 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
 
           {/* Family Members — entity mode */}
           {activeTab === 'familyMembers' && isEntityMode && entity && (() => {
-            const members = editingFamily ? familyDraft : (entity.profile?.familyMembers || []);
+            const members = editingFamily ? familyDraft : familyMembers;
             const updateMember = (idx, patch) => setFamilyDraft(familyDraft.map((m, i) => i === idx ? { ...m, ...patch } : m));
-            const addMember = () => setFamilyDraft([...familyDraft, { firstName: '', lastName: '', relationship: 'partner', birthDate: '', birthPlace: '', address: '' }]);
-            const removeMember = (idx) => setFamilyDraft(familyDraft.filter((_, i) => i !== idx));
+            const addManualMember = () => setFamilyDraft([...familyDraft, { mode: 'manual', firstName: '', lastName: '', relationship: 'partner', birthDate: '', birthPlace: '', address: '' }]);
+            const addLinkedMember = () => {
+              setFamilyDraft([...familyDraft, { mode: 'linked', linkedEntityId: null, linked: null, relationship: 'partner' }]);
+              setFamilyPickerIdx(familyDraft.length);
+              setFamilyPickerQuery('');
+            };
+            const removeMember = (idx) => {
+              setFamilyDraft(familyDraft.filter((_, i) => i !== idx));
+              if (familyPickerIdx === idx) setFamilyPickerIdx(null);
+            };
+            const pickPerson = (idx, person) => {
+              const p = person.profile || {};
+              updateMember(idx, {
+                linkedEntityId: person._id,
+                linked: { entityId: person._id, status: person.status || null, firstName: p.firstName || '', lastName: p.lastName || '', birthDate: p.birthday || '', birthPlace: p.birthPlace || '', address: '' }
+              });
+              setFamilyPickerIdx(null);
+              setFamilyPickerQuery('');
+            };
+            const startEditing = () => {
+              setFamilyDraft(familyMembers.map(m => ({ ...m, mode: m.linkedEntityId ? 'linked' : 'manual' })));
+              setFamilySaveError(null);
+              setFamilyPickerIdx(null);
+              setEditingFamily(true);
+            };
+            const saveFamily = async () => {
+              const incomplete = familyDraft.some(m => m.mode === 'linked' && !m.linkedEntityId);
+              if (incomplete) {
+                setFamilySaveError('Select a person for each linked member, or remove it.');
+                return;
+              }
+              setFamilySaving(true);
+              setFamilySaveError(null);
+              try {
+                const payload = familyDraft.map(m => (m.mode === 'linked'
+                  ? { linkedEntityId: m.linkedEntityId, relationship: m.relationship || 'other' }
+                  : {
+                      firstName: (m.firstName || '').trim(),
+                      lastName: (m.lastName || '').trim(),
+                      relationship: m.relationship || 'other',
+                      birthDate: m.birthDate ? String(m.birthDate).slice(0, 10) : '',
+                      birthPlace: (m.birthPlace || '').trim(),
+                      address: (m.address || '').trim()
+                    }));
+                await Meteor.callAsync('clientEntities.updateFamilyMembers', entityId, payload, sessionId);
+                setEditingFamily(false);
+                setFamilyReloadKey(k => k + 1);
+              } catch (err) {
+                console.error('Error updating family members:', err);
+                setFamilySaveError(err.reason || err.message || 'Could not save family members');
+              } finally {
+                setFamilySaving(false);
+              }
+            };
             const inputStyle = { width: '100%', padding: '8px 10px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '0.88rem', boxSizing: 'border-box' };
             const fieldLabel = { display: 'block', fontSize: '0.72rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' };
+            const addButtonStyle = { flex: 1, padding: '10px 16px', background: 'var(--bg-secondary)', border: '1px dashed var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' };
+            const linkedBadge = <span style={{ marginLeft: '8px', padding: '2px 8px', borderRadius: '10px', background: 'var(--accent-color)', color: 'white', fontSize: '0.7rem', fontWeight: '600' }}>🔗 Linked contact</span>;
+            const formatBirth = (d) => (d ? new Date(d).toLocaleDateString('en-GB') : '');
+            // Linked members show the linked person's live details; manual ones what was typed
+            const shown = (m) => {
+              if (m.linked) return m.linked;
+              const [fallbackFirst, ...fallbackRest] = (m.name || '').split(' ');
+              return {
+                firstName: m.firstName ?? (m.lastName ? '' : fallbackFirst),
+                lastName: m.lastName ?? (m.firstName ? '' : fallbackRest.join(' ')),
+                birthDate: m.birthDate,
+                birthPlace: m.birthPlace,
+                address: m.address
+              };
+            };
+            const readOnlyDetails = (m) => {
+              const d = shown(m);
+              return (
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '10px' }}>
+                  <div><label style={fieldLabel}>First Name</label><ReadOnlyField size="sm">{d.firstName}</ReadOnlyField></div>
+                  <div><label style={fieldLabel}>Surname</label><ReadOnlyField size="sm">{d.lastName}</ReadOnlyField></div>
+                  <div><label style={fieldLabel}>Relationship</label><ReadOnlyField size="sm">{FAMILY_RELATIONSHIP_LABELS[m.relationship] || m.relationship}</ReadOnlyField></div>
+                  <div><label style={fieldLabel}>Date of Birth</label><ReadOnlyField size="sm">{formatBirth(d.birthDate)}</ReadOnlyField></div>
+                  <div><label style={fieldLabel}>Place of Birth</label><ReadOnlyField size="sm">{d.birthPlace}</ReadOnlyField></div>
+                  <div style={{ gridColumn: isMobile ? '1' : '1 / -1' }}><label style={fieldLabel}>Address</label><ReadOnlyField size="sm">{d.address}</ReadOnlyField></div>
+                </div>
+              );
+            };
             return (
               <LiquidGlassCard borderRadius="12px" style={{ padding: isMobile ? '1.5rem' : '1.5rem' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '2px solid var(--border-color)', paddingBottom: '1rem' }}>
@@ -4996,81 +5112,120 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                     <span style={{ fontSize: '1.5rem' }}>👨‍👩‍👧</span> Family Members
                   </h2>
                   {!editingFamily ? (
-                    <button onClick={() => { setFamilyDraft((entity.profile?.familyMembers || []).map(m => ({ ...m }))); setEditingFamily(true); }} style={{ padding: '8px 16px', background: 'var(--accent-color)', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Edit</button>
+                    <button onClick={startEditing} disabled={!!familyLoadError} style={{ padding: '8px 16px', background: 'var(--accent-color)', border: 'none', borderRadius: '8px', color: 'white', cursor: familyLoadError ? 'not-allowed' : 'pointer', opacity: familyLoadError ? 0.5 : 1, fontSize: '0.85rem', fontWeight: '600' }}>Edit</button>
                   ) : (
                     <div style={{ display: 'flex', gap: '8px' }}>
-                      <button onClick={async () => {
-                        try {
-                          const cleaned = familyDraft.map(m => ({
-                            firstName: (m.firstName || '').trim(),
-                            lastName: (m.lastName || '').trim(),
-                            name: `${(m.firstName || '').trim()} ${(m.lastName || '').trim()}`.trim(),
-                            relationship: m.relationship || 'other',
-                            birthDate: m.birthDate || '',
-                            birthPlace: (m.birthPlace || '').trim(),
-                            address: (m.address || '').trim()
-                          })).filter(m => m.firstName || m.lastName);
-                          await Meteor.callAsync('clientEntities.update', entityId, { profile: { familyMembers: cleaned } }, sessionId);
-                          setEditingFamily(false);
-                        } catch (err) {
-                          console.error('Error updating family members:', err);
-                        }
-                      }} style={{ padding: '8px 16px', background: 'var(--gain-color)', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>Save</button>
-                      <button onClick={() => setEditingFamily(false)} style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}>Cancel</button>
+                      <button onClick={saveFamily} disabled={familySaving} style={{ padding: '8px 16px', background: 'var(--gain-color)', border: 'none', borderRadius: '8px', color: 'white', cursor: familySaving ? 'wait' : 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>{familySaving ? 'Saving…' : 'Save'}</button>
+                      <button onClick={() => { setEditingFamily(false); setFamilySaveError(null); setFamilyPickerIdx(null); }} disabled={familySaving} style={{ padding: '8px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem' }}>Cancel</button>
                     </div>
                   )}
                 </div>
 
-                {members.length === 0 && !editingFamily && (
+                {familyLoadError && (
+                  <div style={{ color: 'var(--loss-color)', fontSize: '0.85rem', marginBottom: '12px' }}>Could not load family members: {familyLoadError}</div>
+                )}
+                {familySaveError && (
+                  <div style={{ color: 'var(--loss-color)', fontSize: '0.85rem', marginBottom: '12px' }}>{familySaveError}</div>
+                )}
+
+                {members.length === 0 && !editingFamily && !familyLoadError && (
                   <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem', padding: '12px 0' }}>No family members recorded.</div>
                 )}
 
-                {!editingFamily && members.map((m, idx) => {
-                  // Older records only carry the combined name
-                  const [fallbackFirst, ...fallbackRest] = (m.name || '').split(' ');
-                  const firstName = m.firstName ?? (m.lastName ? '' : fallbackFirst);
-                  const lastName = m.lastName ?? (m.firstName ? '' : fallbackRest.join(' '));
-                  return (
-                    <div key={idx} style={{ border: '1px solid var(--border-color)', borderRadius: '10px', padding: '14px', marginBottom: '12px' }}>
-                      <div style={{ marginBottom: '10px' }}>
-                        <span style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-secondary)' }}>Member #{idx + 1}</span>
-                      </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '10px' }}>
-                        <div><label style={fieldLabel}>First Name</label><ReadOnlyField size="sm">{firstName}</ReadOnlyField></div>
-                        <div><label style={fieldLabel}>Surname</label><ReadOnlyField size="sm">{lastName}</ReadOnlyField></div>
-                        <div><label style={fieldLabel}>Relationship</label><ReadOnlyField size="sm">{FAMILY_RELATIONSHIP_LABELS[m.relationship] || m.relationship}</ReadOnlyField></div>
-                        <div><label style={fieldLabel}>Date of Birth</label><ReadOnlyField size="sm">{m.birthDate ? new Date(m.birthDate).toLocaleDateString('en-GB') : ''}</ReadOnlyField></div>
-                        <div><label style={fieldLabel}>Place of Birth</label><ReadOnlyField size="sm">{m.birthPlace}</ReadOnlyField></div>
-                        <div style={{ gridColumn: isMobile ? '1' : '1 / -1' }}><label style={fieldLabel}>Address</label><ReadOnlyField size="sm">{m.address}</ReadOnlyField></div>
-                      </div>
+                {!editingFamily && members.map((m, idx) => (
+                  <div key={idx} style={{ border: '1px solid var(--border-color)', borderRadius: '10px', padding: '14px', marginBottom: '12px' }}>
+                    <div style={{ marginBottom: '10px', display: 'flex', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-secondary)' }}>Member #{idx + 1}</span>
+                      {m.linked && linkedBadge}
                     </div>
-                  );
-                })}
+                    {readOnlyDetails(m)}
+                  </div>
+                ))}
 
                 {editingFamily && (
                   <div>
                     {familyDraft.map((m, idx) => (
                       <div key={idx} style={{ border: '1px solid var(--border-color)', borderRadius: '10px', padding: '14px', marginBottom: '12px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                          <span style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-secondary)' }}>Member #{idx + 1}</span>
+                          <span style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center' }}>
+                            Member #{idx + 1}{m.mode === 'linked' && linkedBadge}
+                          </span>
                           <button onClick={() => removeMember(idx)} style={{ padding: '4px 10px', background: 'var(--loss-color)', border: 'none', borderRadius: '6px', color: 'white', cursor: 'pointer', fontSize: '0.75rem' }}>Remove</button>
                         </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '10px' }}>
-                          <div><label style={fieldLabel}>First Name</label><input value={m.firstName || ''} onChange={e => updateMember(idx, { firstName: e.target.value })} style={inputStyle} /></div>
-                          <div><label style={fieldLabel}>Surname</label><input value={m.lastName || ''} onChange={e => updateMember(idx, { lastName: e.target.value })} style={inputStyle} /></div>
+
+                        {m.mode === 'linked' ? (
                           <div>
-                            <label style={fieldLabel}>Relationship</label>
-                            <select value={m.relationship || 'other'} onChange={e => updateMember(idx, { relationship: e.target.value })} style={{ ...inputStyle, cursor: 'pointer' }}>
-                              {FAMILY_RELATIONSHIP_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                            </select>
+                            {(!m.linkedEntityId || familyPickerIdx === idx) ? (
+                              <div style={{ position: 'relative', marginBottom: '10px' }}>
+                                <label style={fieldLabel}>Search a person known to the system</label>
+                                <input
+                                  autoFocus
+                                  value={familyPickerIdx === idx ? familyPickerQuery : ''}
+                                  onFocus={() => setFamilyPickerIdx(idx)}
+                                  onChange={e => { setFamilyPickerIdx(idx); setFamilyPickerQuery(e.target.value); }}
+                                  placeholder="Type at least 2 letters of the name…"
+                                  style={inputStyle}
+                                />
+                                {familyPickerIdx === idx && familyPickerQuery.trim().length >= 2 && (
+                                  <div style={{ marginTop: '4px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', maxHeight: '240px', overflowY: 'auto' }}>
+                                    {familyCandidates.length === 0 ? (
+                                      <div style={{ padding: '8px 10px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>No matching person — use “Add manually” instead.</div>
+                                    ) : familyCandidates.map(person => (
+                                      <div
+                                        key={person._id}
+                                        onClick={() => pickPerson(idx, person)}
+                                        style={{ padding: '8px 10px', cursor: 'pointer', fontSize: '0.88rem', color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', gap: '8px' }}
+                                      >
+                                        <span>{ClientEntityHelpers.getEntityDisplayName(person)}</span>
+                                        <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>
+                                          {[person.profile?.birthday ? formatBirth(person.profile.birthday) : null, person.status].filter(Boolean).join(' · ')}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <div style={{ marginBottom: '10px' }}>
+                                <button onClick={() => { setFamilyPickerIdx(idx); setFamilyPickerQuery(''); }} style={{ padding: '4px 10px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.75rem' }}>Change person</button>
+                              </div>
+                            )}
+                            {m.linkedEntityId && (
+                              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '10px' }}>
+                                <div><label style={fieldLabel}>Name</label><ReadOnlyField size="sm">{`${m.linked?.firstName || m.firstName || ''} ${m.linked?.lastName || m.lastName || ''}`.trim()}</ReadOnlyField></div>
+                                <div>
+                                  <label style={fieldLabel}>Relationship</label>
+                                  <select value={m.relationship || 'other'} onChange={e => updateMember(idx, { relationship: e.target.value })} style={{ ...inputStyle, cursor: 'pointer' }}>
+                                    {FAMILY_RELATIONSHIP_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                  </select>
+                                </div>
+                                <div style={{ gridColumn: isMobile ? '1' : '1 / -1', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                  Date of birth, place of birth and address are taken from this person's own client file.
+                                </div>
+                              </div>
+                            )}
                           </div>
-                          <div><label style={fieldLabel}>Date of Birth</label><input type="date" value={m.birthDate || ''} onChange={e => updateMember(idx, { birthDate: e.target.value })} style={inputStyle} /></div>
-                          <div><label style={fieldLabel}>Place of Birth</label><input value={m.birthPlace || ''} onChange={e => updateMember(idx, { birthPlace: e.target.value })} style={inputStyle} /></div>
-                          <div style={{ gridColumn: isMobile ? '1' : '1 / -1' }}><label style={fieldLabel}>Address</label><input value={m.address || ''} onChange={e => updateMember(idx, { address: e.target.value })} style={inputStyle} /></div>
-                        </div>
+                        ) : (
+                          <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '10px' }}>
+                            <div><label style={fieldLabel}>First Name</label><input value={m.firstName || ''} onChange={e => updateMember(idx, { firstName: e.target.value })} style={inputStyle} /></div>
+                            <div><label style={fieldLabel}>Surname</label><input value={m.lastName || ''} onChange={e => updateMember(idx, { lastName: e.target.value })} style={inputStyle} /></div>
+                            <div>
+                              <label style={fieldLabel}>Relationship</label>
+                              <select value={m.relationship || 'other'} onChange={e => updateMember(idx, { relationship: e.target.value })} style={{ ...inputStyle, cursor: 'pointer' }}>
+                                {FAMILY_RELATIONSHIP_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                              </select>
+                            </div>
+                            <div><label style={fieldLabel}>Date of Birth</label><input type="date" value={m.birthDate ? String(m.birthDate).slice(0, 10) : ''} onChange={e => updateMember(idx, { birthDate: e.target.value })} style={inputStyle} /></div>
+                            <div><label style={fieldLabel}>Place of Birth</label><input value={m.birthPlace || ''} onChange={e => updateMember(idx, { birthPlace: e.target.value })} style={inputStyle} /></div>
+                            <div style={{ gridColumn: isMobile ? '1' : '1 / -1' }}><label style={fieldLabel}>Address</label><input value={m.address || ''} onChange={e => updateMember(idx, { address: e.target.value })} style={inputStyle} /></div>
+                          </div>
+                        )}
                       </div>
                     ))}
-                    <button onClick={addMember} style={{ padding: '10px 16px', background: 'var(--bg-secondary)', border: '1px dashed var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600', width: '100%' }}>➕ Add Family Member</button>
+                    <div style={{ display: 'flex', gap: '10px', flexDirection: isMobile ? 'column' : 'row' }}>
+                      <button onClick={addLinkedMember} style={addButtonStyle}>🔗 Link an existing person</button>
+                      <button onClick={addManualMember} style={addButtonStyle}>➕ Add manually</button>
+                    </div>
                   </div>
                 )}
               </LiquidGlassCard>

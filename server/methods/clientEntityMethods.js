@@ -115,6 +115,119 @@ Meteor.methods({
   },
 
   /**
+   * Family members of one entity. The list publication strips profile.familyMembers
+   * (GDPR minimisation) and Meteor's merge box resolves the whole `profile` field from
+   * that publication, so the detail screen cannot read them reactively — it loads
+   * them here instead. Members linked to a known person carry that person's live data.
+   */
+  async 'clientEntities.getFamilyMembers'(entityId, sessionId) {
+    check(entityId, String);
+    check(sessionId, String);
+
+    const currentUser = await validateSession(sessionId);
+    const allowed = await canManageEntity(currentUser, entityId)
+      || await UserEntityAccessHelpers.hasAccess(currentUser._id, entityId);
+    if (!allowed) {
+      throw new Meteor.Error('not-authorized', 'You do not have access to this entity');
+    }
+
+    const entity = await ClientEntitiesCollection.findOneAsync(entityId, { fields: { 'profile.familyMembers': 1 } });
+    if (!entity) throw new Meteor.Error('not-found', 'Entity not found');
+    const members = entity.profile?.familyMembers || [];
+
+    const linkedIds = [...new Set(members.map(m => m.linkedEntityId).filter(Boolean))];
+    const linkedEntities = linkedIds.length > 0
+      ? await ClientEntitiesCollection.find({ _id: { $in: linkedIds } }, {
+          fields: { status: 1, 'profile.firstName': 1, 'profile.lastName': 1, 'profile.birthday': 1, 'profile.birthPlace': 1, 'profile.taxAddress': 1 }
+        }).fetchAsync()
+      : [];
+    const linkedById = Object.fromEntries(linkedEntities.map(e => [e._id, e]));
+
+    return members.map(m => {
+      const linked = m.linkedEntityId ? linkedById[m.linkedEntityId] : null;
+      if (!linked) return { ...m, linked: null };
+      const p = linked.profile || {};
+      const address = [p.taxAddress?.street, [p.taxAddress?.postalCode, p.taxAddress?.city].filter(Boolean).join(' '), p.taxAddress?.country]
+        .filter(Boolean).join(', ');
+      return {
+        ...m,
+        linked: {
+          entityId: linked._id,
+          status: linked.status || null,
+          firstName: p.firstName || '',
+          lastName: p.lastName || '',
+          birthDate: p.birthday || '',
+          birthPlace: p.birthPlace || '',
+          address
+        }
+      };
+    });
+  },
+
+  /**
+   * Replace an entity's family members. Each member is either linked to a person
+   * already in the system (linkedEntityId) or entered manually. For linked members the
+   * name is refreshed from the linked person so documents, exports and compliance
+   * checks — which read the stored name — stay in step.
+   */
+  async 'clientEntities.updateFamilyMembers'(entityId, members, sessionId) {
+    check(entityId, String);
+    check(sessionId, String);
+    check(members, [Match.ObjectIncluding({
+      linkedEntityId: Match.Maybe(String),
+      firstName: Match.Maybe(String),
+      lastName: Match.Maybe(String),
+      relationship: Match.Maybe(String),
+      birthDate: Match.Maybe(String),
+      birthPlace: Match.Maybe(String),
+      address: Match.Maybe(String)
+    })]);
+
+    const currentUser = await validateSession(sessionId);
+    if (!await canManageEntity(currentUser, entityId)) {
+      throw new Meteor.Error('not-authorized', 'You do not have permission to edit this entity');
+    }
+
+    const linkedIds = [...new Set(members.map(m => m.linkedEntityId).filter(Boolean))];
+    if (linkedIds.includes(entityId)) {
+      throw new Meteor.Error('invalid-family-member', 'A client cannot be linked as their own family member');
+    }
+    const linkedEntities = linkedIds.length > 0
+      ? await ClientEntitiesCollection.find({ _id: { $in: linkedIds }, type: ENTITY_TYPES.PHYSICAL_PERSON }, {
+          fields: { 'profile.firstName': 1, 'profile.lastName': 1 }
+        }).fetchAsync()
+      : [];
+    const linkedById = Object.fromEntries(linkedEntities.map(e => [e._id, e]));
+    const unknown = linkedIds.filter(id => !linkedById[id]);
+    if (unknown.length > 0) {
+      throw new Meteor.Error('invalid-family-member', 'A linked person could not be found');
+    }
+
+    const cleaned = members.map(m => {
+      const linked = m.linkedEntityId ? linkedById[m.linkedEntityId] : null;
+      const firstName = (linked ? linked.profile?.firstName : m.firstName || '').trim();
+      const lastName = (linked ? linked.profile?.lastName : m.lastName || '').trim();
+      return {
+        ...(linked ? { linkedEntityId: linked._id } : {}),
+        firstName,
+        lastName,
+        name: `${firstName} ${lastName}`.trim(),
+        relationship: m.relationship || 'other',
+        // Linked members read these live from the linked person
+        birthDate: linked ? '' : (m.birthDate || ''),
+        birthPlace: linked ? '' : (m.birthPlace || '').trim(),
+        address: linked ? '' : (m.address || '').trim()
+      };
+    }).filter(m => m.linkedEntityId || m.firstName || m.lastName);
+
+    await ClientEntitiesCollection.updateAsync(entityId, {
+      $set: { 'profile.familyMembers': cleaned, 'profile.updatedAt': new Date(), updatedAt: new Date() }
+    });
+    console.log(`[ClientEntity] Family members updated for entity ${entityId} (${cleaned.length}) by user ${currentUser._id}`);
+    return cleaned.length;
+  },
+
+  /**
    * Deactivate a client entity
    */
   async 'clientEntities.deactivate'(entityId, sessionId) {
