@@ -290,12 +290,17 @@ const Allocation = ({ data, page: p }) => (
           </svg>
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
             <div className="st-th" style={{ gridTemplateColumns: 'minmax(0,1fr) 96px 60px' }}><span>Asset class</span><span className="st-n">Value</span><span className="st-n">Weight</span></div>
-            {p.allocationRows.map(r => (
+            {p.allocationRows.map(r => (r.sub ? (
+              <div key={`sub-${r.label}`} className="st-tr" style={{ gridTemplateColumns: 'minmax(0,1fr) 96px 60px', padding: '2px 0', fontSize: 11, color: '#687080', borderBottomColor: '#F6F3EE' }}>
+                <span className="st-ell" style={{ paddingLeft: 12 }}>{r.label}</span>
+                <span className="st-n">{r.valueText}</span><span className="st-n">{r.weightText}</span>
+              </div>
+            ) : (
               <div key={r.label} className="st-tr" style={{ gridTemplateColumns: 'minmax(0,1fr) 96px 60px', padding: p.compact ? '4px 0' : undefined }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}><span style={{ flex: 'none', width: 9, height: 9, background: r.color }} /><span className="st-ell">{r.label}</span></span>
                 <span className="st-n">{r.valueText}</span><span className="st-n">{r.weightText}</span>
               </div>
-            ))}
+            )))}
             <div className="st-tr" style={{ gridTemplateColumns: 'minmax(0,1fr) 96px 60px', fontWeight: 500, color: '#1A2B40' }}><span>Gross assets</span><span className="st-n">{p.grossText}</span><span className="st-n">100.00%</span></div>
             {p.hasFinancing && <div className="st-tr" style={{ gridTemplateColumns: 'minmax(0,1fr) 96px 60px' }}><span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ width: 9, height: 3, background: '#C76A5A' }} />Financing</span><span className="st-n st-neg">{p.financingText}</span><span className="st-n st-neg">{p.financingWeight}</span></div>}
             <div className="st-tr" style={{ gridTemplateColumns: 'minmax(0,1fr) 96px 60px', fontWeight: 600, color: '#1A2B40', borderBottom: '1.5px solid #1A2B40' }}><span>Net asset value</span><span className="st-n">{p.navText}</span><span className="st-n">{p.navWeight}</span></div>
@@ -563,7 +568,7 @@ const Activity = ({ data, page: p }) => (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 22, minWidth: 0 }}>
           {p.income && (
             <section>
-              <div className="st-ph"><span className="st-lbl" style={{ color: '#1A2B40' }}>Income received</span><span className="st-cap">dividends and coupons, net</span></div>
+              <div className="st-ph"><span className="st-lbl" style={{ color: '#1A2B40' }}>Income received</span><span className="st-cap">dividends, coupons and interest, net</span></div>
               <div className="st-th" style={{ gridTemplateColumns: '44px 36px minmax(0,1fr) 84px' }}><span>Ccy</span><span className="st-n">No.</span><span className="st-n">Net received</span><span className="st-n">Tax withheld</span></div>
               {p.income.rows.map(r => (
                 <div key={r.ccy} className="st-tr" style={{ gridTemplateColumns: '44px 36px minmax(0,1fr) 84px' }}>

@@ -14,6 +14,7 @@
  * custodian's own rates first (holding.bankFxRates), EOD rates otherwise.
  */
 import { Meteor } from 'meteor/meteor';
+import { OPERATION_TYPES, OPERATION_CATEGORIES } from '/imports/api/constants/operationTypes';
 import { PMSHoldingsCollection } from '/imports/api/pmsHoldings';
 import { PMSOperationsCollection } from '/imports/api/pmsOperations';
 import { BankAccountsCollection, accountHolderSelector, getAccountHolderIds, isInvestmentAccount, getClientReferenceCurrency } from '/imports/api/bankAccounts';
@@ -23,7 +24,8 @@ import { UsersCollection } from '/imports/api/users';
 import { SecuritiesMetadataCollection, ASSET_CLASSES, SECTORS } from '/imports/api/securitiesMetadata';
 import { CurrencyRateCacheCollection } from '/imports/api/currencyCache';
 import { PortfolioSnapshotsCollection, filterSnapshotsByBankStartDate, dedupeSnapshotsPerAccountDay } from '/imports/api/portfolioSnapshots';
-import { classifyHolding } from '/imports/api/assetClassification';
+import { classifyHolding, buildCategoryKey } from '/imports/api/assetClassification';
+import { getGranularCategoryLabel } from '/imports/api/securitiesMetadata';
 import { buildRatesMap, isPureCashHolding } from '/imports/api/helpers/cashCalculator';
 import { buildConsolidatedDailyValues } from '/imports/api/helpers/twrCalculator';
 import { getFilteredClientIds } from '../../methods/rmDashboardMethods.js';
@@ -37,7 +39,7 @@ import { buildLineChart, buildBarChart } from './charts.js';
 // Rows that fit the 577px content area of a page (measured on rendered PDFs)
 // positionsGroup: the rows a further asset class block costs on a shared page
 // (its heading, column header and total line)
-const ROWS = { positions: 13, positionsGroup: 4, tradesFirst: 14, tradesNext: 14, movements: 19, pnlWithChart: 7, pnlAlone: 14 };
+const ROWS = { positions: 13, positionsGroup: 4, positionsMinStart: 4, positionsHeading: 2, tradesFirst: 14, tradesNext: 13, movements: 19, pnlWithChart: 7, pnlAlone: 14 };
 
 const ISIN_PATTERN = /^[A-Z]{2}[A-Z0-9]{9}\d$/;
 const isIsin = (v) => typeof v === 'string' && ISIN_PATTERN.test(v.trim().toUpperCase());
@@ -46,6 +48,28 @@ const ASSET_CLASS_LABEL = Object.fromEntries(ASSET_CLASSES.filter(a => a.value).
 const assetClassLabel = (key) => ({ fund: 'Funds', equity: 'Equities', fixed_income: 'Fixed income', structured_product: 'Structured products' }[key]
   || ASSET_CLASS_LABEL[key] || (key ? key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : 'Other'));
 // Display order of asset classes in the statement
+// Structured products are split by protection, as in the PMS (buildCategoryKey):
+// capital guaranteed first, then partial, then conditional (barrier) protection
+const SP_CATEGORY_ORDER = [
+  'structured_product_capital_guaranteed',
+  'structured_product_partial_guarantee',
+  'structured_product_equity_linked_barrier_protected',
+  'structured_product_barrier_protected'
+];
+// Short names for tight spots (allocation sub-rows, total lines); headings use
+// the PMS label (getGranularCategoryLabel)
+const SP_SHORT_LABEL = {
+  structured_product_capital_guaranteed: '100% guaranteed',
+  structured_product_partial_guarantee: 'Partial guarantee',
+  structured_product_equity_linked_barrier_protected: 'Conditional (barrier)',
+  structured_product_barrier_protected: 'Conditional (barrier)',
+  structured_product: 'Unclassified'
+};
+const spCategoryRank = (key) => {
+  const i = SP_CATEGORY_ORDER.indexOf(key);
+  if (i >= 0) return i;
+  return key === 'structured_product' ? 99 : 50; // other underlying types, then unclassified
+};
 const CLASS_ORDER = ['equity', 'fixed_income', 'structured_product', 'fund', 'monetary_products', 'time_deposit', 'private_equity', 'private_debt', 'commodities', 'derivatives', 'other'];
 const CLASS_COLORS = ['#1A2B40', '#3E5A7A', '#7D93AD', '#A9561A', '#DD772A', '#B9B2A6', '#5E6B7D', '#C9A27E', '#9AA7B6', '#4B5563', '#D9D3C8'];
 const SECTOR_LABEL = Object.fromEntries(SECTORS.filter(s => s.value).map(s => [s.value, s.label]));
@@ -55,18 +79,24 @@ const PERCENT_PRICED = new Set(['fixed_income', 'structured_product']);
 const TYPE_LABEL = {
   BUY: 'Buy', SELL: 'Sell', SUBSCRIPTION: 'Subscription', REDEMPTION: 'Redemption', DIVIDEND: 'Dividend', COUPON: 'Coupon',
   INTEREST: 'Interest', FEE: 'Fee', TAX: 'Tax', TRANSFER_IN: 'Transfer in', TRANSFER_OUT: 'Transfer out',
-  PAYMENT_IN: 'Payment in', PAYMENT_OUT: 'Payment out', FX_TRADE: 'FX', CARD_PAYMENT: 'Card', CORPORATE_ACTION: 'Corporate action', OTHER: 'Other'
+  PAYMENT_IN: 'Payment in', PAYMENT_OUT: 'Payment out', FX_TRADE: 'FX', CARD_PAYMENT: 'Card', CORPORATE_ACTION: 'Corporate action', OTHER: 'Other',
+  OPTION_PREMIUM: 'Option premium', DEPOSIT_PLACEMENT: 'Deposit placed', DEPOSIT_MATURITY: 'Deposit matured'
 };
 const ACTIVITY_GROUPS = [
   { label: 'Card payments', types: ['CARD_PAYMENT'] },
   { label: 'Payments and transfers', types: ['PAYMENT_IN', 'PAYMENT_OUT', 'TRANSFER_IN', 'TRANSFER_OUT'] },
-  { label: 'Dividends and coupons', types: ['DIVIDEND', 'COUPON'] },
+  { label: 'Dividends and coupons', types: ['DIVIDEND', 'COUPON', 'OPTION_PREMIUM'] },
   { label: 'Interest, fees and taxes', types: ['INTEREST', 'FEE', 'TAX'] },
   { label: 'Securities trades', types: ['BUY', 'SELL', 'SUBSCRIPTION', 'REDEMPTION'] },
   { label: 'FX', types: ['FX_TRADE'] }
 ];
 const TRADE_TYPES = new Set(['BUY', 'SELL', 'SUBSCRIPTION', 'REDEMPTION']);
-const INCOME_TYPES = new Set(['DIVIDEND', 'COUPON']);
+// The app's Income category (dividends, coupons, option premiums paid by
+// structured products, interest). Interest counts only when received: debit
+// interest is a cost of borrowing, shown with the financing.
+const INCOME_TYPES = new Set(OPERATION_CATEGORIES.INCOME.types);
+const isIncome = (op) => INCOME_TYPES.has(op.operationType)
+  && (op.operationType !== OPERATION_TYPES.INTEREST || opAmount(op) > 0);
 
 // Bank operation fields differ by parser; the harmonised `std` block wins when present
 const opAmount = (op) => (op.std ? op.std.amount : (op.netAmount != null ? op.netAmount : op.grossAmount)) || 0;
@@ -210,6 +240,7 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
     const pnlRef = Number.isFinite(h.unrealizedPnL) ? fx.convert(h.unrealizedPnL, h.portfolioCurrency || refCcy) : valueRef - costRef;
     positions.push({
       h, meta, assetClass: cls.assetClass === 'cash' ? 'other' : cls.assetClass,
+      categoryKey: buildCategoryKey(cls),
       name: meta?.securityName || h.displayName || h.securityName || h.isin || '—',
       isin: isIsin(h.isin) ? h.isin : null,
       ccy: h.currency || h.portfolioCurrency,
@@ -239,6 +270,22 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
     return { key, label: assetClassLabel(key), value, color: CLASS_COLORS[i % CLASS_COLORS.length] };
   });
   const cashColor = '#DD772A';
+
+  // Position blocks: one per asset class, structured products one per protection category
+  const positionGroups = classes.flatMap(classKey => {
+    const rows = positions.filter(p => p.assetClass === classKey);
+    if (classKey !== 'structured_product') return [{ key: classKey, classKey, label: assetClassLabel(classKey), rows }];
+    const cats = [...new Set(rows.map(p => p.categoryKey))].sort((a, b) => spCategoryRank(a) - spCategoryRank(b) || a.localeCompare(b));
+    return cats.map(cat => ({
+      key: cat, classKey,
+      label: cat === 'structured_product' ? 'Structured products, unclassified' : `Structured products · ${getGranularCategoryLabel(cat)}`,
+      subLabel: cat === 'structured_product' ? 'Unclassified' : getGranularCategoryLabel(cat),
+      shortLabel: SP_SHORT_LABEL[cat] || getGranularCategoryLabel(cat),
+      rows: rows.filter(p => p.categoryKey === cat)
+    }));
+  });
+  // Rows of the allocation table: classes, structured-product sub-rows, cash
+  const allocationRowCount = classTotals.length + positionGroups.filter(g => g.subLabel).length + (cashValue > 0 ? 1 : 0);
 
   // ── Currency exposure (assets net of financing, per currency) ──────────────
   const ccyMap = {};
@@ -283,7 +330,7 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
     isActive: true, $or: operationAccounts, operationDate: { $gte: yearStart, $lte: new Date(valuationDate.getTime() + 86400000) }
   }, { sort: { operationDate: -1 } }).fetchAsync() : [];
 
-  const income = operations.filter(o => INCOME_TYPES.has(o.operationType));
+  const income = operations.filter(isIncome);
   const incomeByCcy = Object.values(income.reduce((m, o) => {
     const c = opCurrency(o) || refCcy;
     if (!m[c]) m[c] = { ccy: c, count: 0, net: 0, tax: 0 };
@@ -453,10 +500,18 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
   pages.push({
     type: 'allocation', section: '02 · Allocation', title: 'Allocation and exposure',
     caption: `Weights in % of gross assets unless stated · Gross assets ${refCcy} ${num(gross)}`,
-    compact: classTotals.length + (cashValue > 0 ? 1 : 0) > 6,
-    donutSize: classTotals.length + (cashValue > 0 ? 1 : 0) > 6 ? 156 : 188,
+    compact: allocationRowCount > 6,
+    donutSize: allocationRowCount > 6 ? 156 : 188,
     donut: { segments: donut, financingArc: hasFinancing ? `${((Math.min(1, -financing / gross)) * 2 * Math.PI * 86).toFixed(2)} ${(2 * Math.PI * 86).toFixed(2)}` : null, centerText: compact(gross) },
-    allocationRows: classTotals.map(c => ({ label: c.label, color: c.color, valueText: num(c.value), weightText: pct(weight(c.value)) }))
+    allocationRows: classTotals.flatMap(c => {
+      const row = { label: c.label, color: c.color, valueText: num(c.value), weightText: pct(weight(c.value)) };
+      // Structured products: one sub-row per protection category, as in the PMS
+      const subs = positionGroups.filter(g => g.classKey === c.key && g.subLabel);
+      return subs.length ? [row, ...subs.map(g => {
+        const v = sum(g.rows, p => p.valueRef);
+        return { label: g.shortLabel, sub: true, valueText: num(v), weightText: pct(weight(v)) };
+      })] : [row];
+    })
       .concat(cashValue > 0 ? [{ label: 'Cash', color: cashColor, valueText: num(cashValue), weightText: pct(weight(cashValue)) }] : []),
     grossText: num(gross), hasFinancing, financingText: num(financing), financingWeight: pct(weight(financing)),
     navText: num(nav), navWeight: pct(weight(nav)),
@@ -483,9 +538,9 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
   const positionPages = [];
   let current = null;
   const newPositionPage = () => { current = { groups: [], used: 0 }; positionPages.push(current); return current; };
-  for (const key of classes) {
-    const rows = positions.filter(p => p.assetClass === key);
-    const isPercent = PERCENT_PRICED.has(key);
+  for (const group of positionGroups) {
+    const { key, rows } = group;
+    const isPercent = PERCENT_PRICED.has(group.classKey);
     const total = sum(rows, p => p.valueRef);
     const totalCost = sum(rows, p => p.costRef);
     const totalPnl = sum(rows, p => p.pnlRef);
@@ -507,17 +562,19 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
         weight: pct(weight(p.valueRef))
       };
     });
-    const label = assetClassLabel(key);
+    const label = group.label;
     const pnlText = `${signed(totalPnl)} (${signedPct(totalCost ? totalPnl / totalCost : 0)})`;
+    const classLabel = assetClassLabel(group.classKey);
+    const subLabel = group.subLabel || null; // protection category of a structured-product block
     const block = {
-      key, label, isPercent,
+      key, label, isPercent, classKey: group.classKey, classLabel, subLabel,
       kpis: [
         { label: `Market value, ${refCcy}`, value: num(total) },
         { label: `Unrealised P&L, ${refCcy}`, value: pnlText, tone: totalPnl >= 0 ? 'pos' : 'neg' },
         { label: 'Positions', value: String(rows.length) }
       ],
       summaryText: `${num(total)} ${refCcy} · P&L ${pnlText} · ${rows.length} position${rows.length === 1 ? '' : 's'}`,
-      total: { label: `Total ${label.toLowerCase()}`, valueRef: num(total), pnl: signed(totalPnl), pnlPct: totalCost ? signedPct(totalPnl / totalCost) : '—', pnlPositive: totalPnl >= 0, weight: pct(weight(total)) }
+      total: { label: subLabel ? `Total ${group.shortLabel.toLowerCase()}` : `Total ${label.toLowerCase()}`, valueRef: num(total), pnl: signed(totalPnl), pnlPct: totalCost ? signedPct(totalPnl / totalCost) : '—', pnlPositive: totalPnl >= 0, weight: pct(weight(total)) }
     };
     let remaining = display;
     let part = 0;
@@ -527,31 +584,37 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
       const overhead = shared ? ROWS.positionsGroup + (current.groups.length === 1 ? 1 : 0) : 0;
       const room = current ? ROWS.positions - current.used - overhead : 0;
       let take;
-      if (current && !shared) take = Math.min(remaining.length, ROWS.positions);
-      else if (part === 0 && remaining.length <= room) take = remaining.length;
+      // A structured-product block alone on its page still shows its category heading
+      const headingRow = !shared && subLabel ? ROWS.positionsHeading : 0;
+      if (current && !shared) take = Math.min(remaining.length, ROWS.positions - headingRow);
+      // A block joins a shared page when it fits there whole, or when it spans pages
+      // anyway (longer than a page) and at least ROWS.positionsMinStart rows fit here
+      else if (part === 0 && (remaining.length <= room || (remaining.length > ROWS.positions - 1 && room >= ROWS.positionsMinStart))) take = Math.min(remaining.length, room);
       else { newPositionPage(); continue; }
       current.groups.push({ ...block, part, rows: remaining.slice(0, take), complete: take === remaining.length });
-      current.used += take + overhead;
+      current.used += take + overhead + headingRow;
       remaining = remaining.slice(take);
       part += 1;
     }
   }
   positionPages.forEach((pg) => {
+    // Titles name asset classes; structured-product categories are section headings
+    // (with their class named too when the page mixes classes)
+    const labels = [...new Set(pg.groups.map(g => g.classLabel))];
     const groups = pg.groups.map(g => ({
       key: g.key, isPercent: g.isPercent, rows: g.rows,
-      heading: g.part > 0 ? `${g.label} (continued)` : g.label,
+      heading: `${g.subLabel && labels.length === 1 ? g.subLabel : g.label}${g.part > 0 ? ' (continued)' : ''}`,
       summaryText: g.part === 0 ? g.summaryText : null,
       total: g.complete ? g.total : null
     }));
     const single = pg.groups.length === 1 ? pg.groups[0] : null;
-    const labels = pg.groups.map(g => g.label);
     const lastGroup = pg.groups[pg.groups.length - 1];
     pages.push({
       type: 'positions', section: '03 · Positions', refCcy,
-      title: single ? groups[0].heading
+      title: labels.length === 1 ? `${labels[0]}${pg.groups[0].part > 0 ? ' (continued)' : ''}`
         : labels.length === 2 ? `${labels[0]} and ${labels[1].toLowerCase()}` : 'Other holdings',
       kpis: single && single.part === 0 ? single.kpis : null,
-      showHeadings: !single,
+      showHeadings: !single || !!single.subLabel,
       groups,
       footnote: lastGroup.complete
         ? `Closing prices of ${dateLong(valuationDate)} supplied by the custodian. ${refCcy} values at the custodian's exchange rates (see liquidity page). ${pg.groups.some(g => g.isPercent) ? 'Bonds and structured products priced in % of nominal. ' : ''}Sorted by market value.`
