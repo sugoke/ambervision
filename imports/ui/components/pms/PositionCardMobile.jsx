@@ -242,6 +242,29 @@ const PositionCardMobile = ({
             )}
           </div>
         </div>
+        {/* Report shortcut on the collapsed card: no need to expand it first */}
+        {position.linkedProduct && onOpenReport && (
+          <button
+            type="button"
+            aria-label={`Open the product report for ${position.name}`}
+            onClick={(e) => { e.stopPropagation(); onOpenReport(position.linkedProduct._id); }}
+            style={{
+              flexShrink: 0,
+              minHeight: '32px',
+              padding: '0 0.6rem',
+              borderRadius: '8px',
+              border: 'none',
+              background: 'rgba(59, 130, 246, 0.15)',
+              color: 'var(--info-color)',
+              fontSize: '0.8rem',
+              fontWeight: '600',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap'
+            }}
+          >
+            📄 Report
+          </button>
+        )}
         {/* U+25BE / U+25B8 rather than U+25BC / U+25B6: the latter pair has an
             emoji presentation that renders as a blue play button and ignores
             the inherited colour. */}
