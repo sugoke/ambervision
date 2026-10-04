@@ -530,6 +530,32 @@ const OrderModal = ({
     return null;
   }, [quantity, isBulkMode, bulkTotalQuantity, priceType, limitPrice, prefillData, indicativePrice, assetType, optionContractSize, optionQuote]);
 
+  // "Amount to convert": size a units order from an amount in the price's
+  // currency (e.g. invest EUR 1,000,000 in a fund ordered in units). Uses the
+  // same price as the estimate — the limit when one is set, otherwise the last
+  // indicative price — and rounds DOWN so the order never exceeds the amount.
+  const [amountToConvert, setAmountToConvert] = useState('');
+  const isFundUnits = assetType === ASSET_TYPES.FUND && fundQuantityMode !== FUND_QUANTITY_MODES.NOMINAL;
+  const canConvertAmountToUnits = !isBulkMode
+    && (isFundUnits || assetType === ASSET_TYPES.EQUITY || assetType === ASSET_TYPES.ETF);
+  const conversionPrice = priceType === PRICE_TYPES.LIMIT && parseFloat(limitPrice) > 0
+    ? parseFloat(limitPrice)
+    : (indicativePrice > 0 ? indicativePrice : (prefillData?.marketPrice > 0 ? prefillData.marketPrice : null));
+  const conversionPriceSource = priceType === PRICE_TYPES.LIMIT && parseFloat(limitPrice) > 0 ? 'limit price' : 'last indicative price';
+  const unitDecimals = isFundUnits ? 4 : 0; // matches the units field's precision
+  const unitsForAmount = (amount) => {
+    const amt = parseFloat(amount);
+    if (!(amt > 0) || !(conversionPrice > 0)) return null;
+    const factor = 10 ** unitDecimals;
+    return Math.floor((amt / conversionPrice) * factor) / factor;
+  };
+  // Re-derive the units when the price moves (limit typed, price loaded)
+  useEffect(() => {
+    if (!canConvertAmountToUnits || !amountToConvert) return;
+    const units = unitsForAmount(amountToConvert);
+    if (units !== null) setQuantity(String(units));
+  }, [conversionPrice]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Keep the field on the computed value until someone types their own.
   useEffect(() => {
     if (estimatedValueManuallyEdited) return;
@@ -3103,7 +3129,7 @@ const OrderModal = ({
                         <button
                           key={opt.value}
                           type="button"
-                          onClick={() => { setFundQuantityMode(opt.value); setQuantity(''); }}
+                          onClick={() => { setFundQuantityMode(opt.value); setQuantity(''); setAmountToConvert(''); }}
                           style={{
                             padding: '8px 4px',
                             borderRadius: '6px',
@@ -3123,7 +3149,7 @@ const OrderModal = ({
                   <FormattedNumberInput
                     style={styles.input}
                     value={quantity}
-                    onChange={(e) => setQuantity(e.target.value)}
+                    onChange={(e) => { setQuantity(e.target.value); setAmountToConvert(''); }}
                     placeholder={
                       assetType === ASSET_TYPES.TERM_DEPOSIT
                         ? 'Enter amount'
@@ -3141,6 +3167,38 @@ const OrderModal = ({
                       : 0
                     }
                   />
+                  {/* Size the units from an amount: units = amount ÷ price, rounded down */}
+                  {canConvertAmountToUnits && (
+                    <div style={{ marginTop: '8px', padding: '8px 10px', borderRadius: '6px', border: '1px dashed var(--border-color)', background: 'var(--bg-secondary)' }}>
+                      <label style={{ display: 'block', fontSize: '11.5px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                        Or enter an amount ({getCurrencyForDisplay() || 'price currency'}) to compute the units
+                      </label>
+                      <FormattedNumberInput
+                        style={styles.input}
+                        value={amountToConvert}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setAmountToConvert(value);
+                          const units = unitsForAmount(value);
+                          if (units !== null) setQuantity(String(units));
+                          else if (!value.trim()) setQuantity('');
+                        }}
+                        placeholder={conversionPrice > 0 ? 'e.g. 1,000,000' : 'Waiting for a price…'}
+                        disabled={!(conversionPrice > 0)}
+                        maxDecimals={2}
+                      />
+                      <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                        {!(conversionPrice > 0)
+                          ? 'No price available yet — enter a limit price, or the units directly.'
+                          : unitsForAmount(amountToConvert) !== null
+                            ? <>
+                                = <strong>{unitsForAmount(amountToConvert).toLocaleString('en-US', { maximumFractionDigits: unitDecimals })} units</strong>
+                                {' '}at {getCurrencyForDisplay()} {conversionPrice.toLocaleString('en-US', { maximumFractionDigits: 4 })} ({conversionPriceSource}), rounded down
+                              </>
+                            : `Uses the ${conversionPriceSource}: ${getCurrencyForDisplay()} ${conversionPrice.toLocaleString('en-US', { maximumFractionDigits: 4 })}`}
+                      </div>
+                    </div>
+                  )}
                   {assetType === ASSET_TYPES.OPTION && optionShareEquivalent > 0 && (
                     <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>
                       {parseFloat(quantity).toLocaleString('en-US')} contracts × {(parseFloat(optionContractSize) || DEFAULT_OPTION_CONTRACT_SIZE).toLocaleString('en-US')} = <strong>{optionShareEquivalent.toLocaleString('en-US')} shares</strong>
