@@ -26,13 +26,14 @@ import { BankAccountsCollection } from '/imports/api/bankAccounts.js';
 import { scrapePrice } from '/imports/api/priceScraperService.js';
 import { convertToEUR, buildEURRatesMap, aggregateSnapshotsByDay } from '../helpers/currencyHelpers.js';
 import { refreshReferenceCurrencyOverrides } from '../helpers/referenceCurrencyOverrides.js';
+import { getBankfilesDir } from '../../imports/api/documentStorage.js';
 
 /**
  * Cron Jobs Configuration
  *
  * Scheduled jobs for automated system maintenance (Europe/Zurich timezone - CET/CEST):
- * 1. Market Data Refresh - Daily at 00:00 CET (midnight) - Skip weekends & holidays
- * 2. Product Re-evaluation - Daily at 00:30 CET (30 min after data refresh) - Skip weekends & holidays
+ * 1. Market Data Refresh - Daily at 00:00 CET (midnight) - Runs Mon-Sat (Saturday = Friday's close), skips Sundays & holidays
+ * 2. Product Re-evaluation - Daily at 00:30 CET (30 min after data refresh) - Runs Mon-Sat, skips Sundays & holidays
  * 3. Market Ticker Update - Every 15 minutes (conditional on user activity) - Skip weekends & holidays
  * 4. Bank File Sync - Daily at 07:30 CET Mon-Fri (all banks) - Skip weekends
  * 5. CMB File Sync - Daily at 09:00 CET Mon-Fri (CMB only - uploads files later than other banks) - Skip weekends
@@ -71,13 +72,20 @@ const MARKET_HOLIDAYS = [
 /**
  * Check if current date is a weekend or holiday
  * Uses Europe/Zurich timezone to match cron job schedule
+ * @param {object} [options]
+ * @param {boolean} [options.nightAfterTradingDay] - for the midnight jobs: the run in the
+ *   night from Friday to Saturday captures Friday's close, so Saturday counts as a run day
  * @returns {object} { isNonTradingDay: boolean, reason: string }
  */
-function isWeekendOrHoliday() {
+function isWeekendOrHoliday({ nightAfterTradingDay = false } = {}) {
   // Get current date in Europe/Zurich timezone
   const now = new Date();
   const zurichDate = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Zurich' }));
   const dayOfWeek = zurichDate.getDay(); // 0 = Sunday, 6 = Saturday
+
+  if (nightAfterTradingDay && dayOfWeek === 6) {
+    return { isNonTradingDay: false, reason: null };
+  }
 
   // Check for weekend
   if (dayOfWeek === 0 || dayOfWeek === 6) {
@@ -260,8 +268,8 @@ function getNextRunTime(cronExpression) {
  * Skips execution on weekends and holidays
  */
 async function marketDataRefreshJob() {
-  // Check if today is a weekend or holiday
-  const tradingDayCheck = isWeekendOrHoliday();
+  // Check if today is a weekend or holiday (the Friday-to-Saturday night still runs)
+  const tradingDayCheck = isWeekendOrHoliday({ nightAfterTradingDay: true });
   if (tradingDayCheck.isNonTradingDay) {
     console.log(`[CRON] Market Data Refresh skipped: ${tradingDayCheck.reason}`);
 
@@ -327,7 +335,7 @@ async function productRevaluationJob(options = {}) {
 
   // Check if today is a weekend or holiday (unless bypassed for manual triggers)
   if (!bypassWeekendCheck) {
-    const tradingDayCheck = isWeekendOrHoliday();
+    const tradingDayCheck = isWeekendOrHoliday({ nightAfterTradingDay: true });
     if (tradingDayCheck.isNonTradingDay) {
       console.log(`[CRON] Product Re-evaluation skipped: ${tradingDayCheck.reason}`);
 
@@ -1774,7 +1782,7 @@ async function dataRetentionJob(triggerSource = 'cron') {
     // 6. Raw bank files older than the retention window (they contain IBANs and
     //    full position data; the parsed rows in pmsHoldings/pmsOperations are the
     //    retained financial record). Age is judged by file mtime.
-    const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
+    const bankfilesRoot = getBankfilesDir();
     results.bankFiles = 0;
     if (fs.existsSync(bankfilesRoot)) {
       const cutoff = Date.now() - days.bankFiles * 24 * 60 * 60 * 1000;

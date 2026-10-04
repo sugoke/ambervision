@@ -20,6 +20,7 @@ import { Meteor } from 'meteor/meteor';
 import { BankConnectionsCollection } from '../../imports/api/bankConnections.js';
 import fs from 'fs';
 import path from 'path';
+import { getBankfilesDir } from '../../imports/api/documentStorage.js';
 
 export async function initializeSeenLocalFiles() {
   console.log('[MIGRATION] Starting seenLocalFiles initialization for local connections...');
@@ -36,7 +37,7 @@ export async function initializeSeenLocalFiles() {
 
   console.log(`[MIGRATION] Found ${localConnections.length} local connection(s)`);
 
-  const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
+  const bankfilesRoot = getBankfilesDir();
   let updatedCount = 0;
 
   for (const connection of localConnections) {

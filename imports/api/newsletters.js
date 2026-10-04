@@ -3,6 +3,11 @@ import { Mongo } from 'meteor/mongo';
 import { check } from 'meteor/check';
 import { UsersCollection } from './users';
 import { SessionsCollection, SessionHelpers } from './sessions';
+import { getNewslettersDir } from './documentStorage';
+
+/** Download path of a stored newsletter (served by the /newsletters handler with a token). */
+export const NEWSLETTER_URL_PREFIX = '/newsletters';
+export const SAFE_NEWSLETTER_FILENAME = /^[A-Za-z0-9._-]+\.pdf$/i;
 
 export const NewslettersCollection = new Mongo.Collection('newsletters');
 
@@ -94,17 +99,12 @@ Meteor.methods({
     const sanitizedFilename = newsletterData.filename.replace(/[^a-zA-Z0-9.-]/g, '_');
     const uniqueFilename = `${timestamp}_${sanitizedFilename}`;
 
-    // Define newsletters directory path
-    const publicDir = path.join(process.cwd(), '../../../public/newsletters');
-    const filePath = path.join(publicDir, uniqueFilename);
-
-    console.log('[Newsletter Upload] Public dir:', publicDir);
-    console.log('[Newsletter Upload] File path:', filePath);
-
-    // Ensure newsletters directory exists
-    if (!fs.existsSync(publicDir)) {
-      console.log('[Newsletter Upload] Creating directory:', publicDir);
-      fs.mkdirSync(publicDir, { recursive: true });
+    // Private store on the documents volume (never public/: Meteor serves that
+    // tree without login, and the container's copy is wiped on every deploy)
+    const newslettersDir = getNewslettersDir();
+    const filePath = path.join(newslettersDir, uniqueFilename);
+    if (!fs.existsSync(newslettersDir)) {
+      fs.mkdirSync(newslettersDir, { recursive: true });
     }
 
     // Convert base64 to buffer and write file
@@ -119,7 +119,6 @@ Meteor.methods({
       category: newsletterData.category,
       filename: sanitizedFilename,
       uniqueFilename: uniqueFilename,
-      fileUrl: `/newsletters/${uniqueFilename}`,
       fileSize: newsletterData.fileSize,
       visibleToRoles: newsletterData.visibleToRoles,
       uploadedBy: user._id,
@@ -133,8 +132,7 @@ Meteor.methods({
 
     return {
       success: true,
-      newsletterId: newsletterId,
-      fileUrl: `/newsletters/${uniqueFilename}`
+      newsletterId: newsletterId
     };
   },
 
@@ -174,7 +172,7 @@ Meteor.methods({
     const fs = require('fs');
     const path = require('path');
 
-    const filePath = path.join(process.cwd(), '../../../public/newsletters', newsletter.uniqueFilename);
+    const filePath = path.join(getNewslettersDir(), newsletter.uniqueFilename);
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
       console.log(`[Newsletter Delete] File deleted: ${newsletter.uniqueFilename}`);

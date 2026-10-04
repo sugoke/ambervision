@@ -24,10 +24,13 @@ import {
   getOrderTracesDir,
   getMeetingReportsDir,
   getResearchDir,
+  getNewslettersDir,
+  describeStorageRoots,
   getTermsheetsDir,
   resolveTermsheetPath,
   flattenNestedTermsheets
 } from '/imports/api/documentStorage.js';
+import { SAFE_NEWSLETTER_FILENAME } from '/imports/api/newsletters';
 import {
   ResearchDocumentsCollection,
   researchStoredFileSelector,
@@ -146,6 +149,7 @@ import './msgraph/callbackHandler'; // OAuth redirect target at /auth/microsoft/
 import '/imports/api/meetingReports'; // Client meeting reports — collection + methods
 import './publications/meetingReports';
 import './methods/researchMethods'; // Intranet research library — manual PDF uploads
+import './methods/newsletterDownloadMethods'; // Token-gated Market News newsletter downloads
 import './methods/birthdayMethods'; // Intranet birthday calendar — contacts in the caller's perimeter
 import './publications/researchDocuments';
 import './mcp/mcpHttpHandler'; // MCP Streamable HTTP endpoint at /mcp (also mounts OAuth endpoints)
@@ -213,6 +217,9 @@ async function insertLink({ title, url }) {
 }
 
 Meteor.startup(async () => {
+  // Where every file store resolves; in production each must be on the volume
+  console.log('[STORAGE] Document roots:', JSON.stringify(describeStorageRoots()));
+
   console.log('\n✅ Starting Ambervision Server...');
   console.log(`[SEEDING] Demo data seeding is ${SHOULD_SEED ? 'ENABLED' : 'DISABLED'}`);
   
@@ -7269,6 +7276,59 @@ WebApp.connectHandlers.use('/research', async (req, res, next) => {
     fs.createReadStream(filePath).pipe(res);
   } catch (error) {
     console.error('Error serving research document:', error);
+    res.writeHead(500, { 'Content-Type': 'text/plain' });
+    res.end('Internal server error');
+  }
+});
+
+// Market News newsletters, stored under getNewslettersDir() and served only
+// with a capability token minted by newsletters.getDownloadUrl.
+WebApp.connectHandlers.use('/newsletters', async (req, res, next) => {
+  // URL format: /newsletters/{uniqueFilename}?dl=<token>
+  const urlParts = req.url.split('?')[0].split('/').filter(p => p);
+  if (urlParts.length !== 1) return next();
+
+  const filename = decodeURIComponent(urlParts[0]);
+  if (!SAFE_NEWSLETTER_FILENAME.test(filename)) return next();
+
+  const auth = await authorizeDocumentRequest(req);
+  if (!auth) {
+    res.writeHead(401, { 'Content-Type': 'text/plain' });
+    res.end('Unauthorized');
+    return;
+  }
+
+  try {
+    const baseDir = path.resolve(getNewslettersDir());
+    const filePath = path.resolve(baseDir, filename);
+    if (!filePath.startsWith(baseDir + path.sep)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Forbidden');
+      return;
+    }
+    if (!fs.existsSync(filePath)) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Newsletter not found');
+      return;
+    }
+
+    const doc = await NewslettersCollection.findOneAsync({ uniqueFilename: filename }, { fields: { filename: 1 } });
+    // Header-safe: ASCII only, no quotes / control characters
+    const downloadName = String(doc?.filename || filename)
+      .replace(/[^\x20-\x7E]/g, '_')
+      .replace(/["\\]/g, '_')
+      .slice(0, 200) || filename;
+
+    const stat = fs.statSync(filePath);
+    res.writeHead(200, {
+      'Content-Type': 'application/pdf',
+      'Content-Length': stat.size,
+      'Content-Disposition': `inline; filename="${downloadName}"`,
+      'Cache-Control': 'private, max-age=300'
+    });
+    fs.createReadStream(filePath).pipe(res);
+  } catch (error) {
+    console.error('Error serving newsletter:', error);
     res.writeHead(500, { 'Content-Type': 'text/plain' });
     res.end('Internal server error');
   }

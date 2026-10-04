@@ -12,13 +12,20 @@
  *     even when FICHIER_CENTRAL_PATH pointed at the production volume, so they
  *     were written to the container's ephemeral filesystem.
  *
- * Layout:
+ * Layout (production: each *_PATH points at the mounted volume, and a missing
+ * one is an error; the <root>/... fallbacks are for local dev only):
  *   TERMSHEETS_PATH        or <root>/.termsheets                    product term sheets (flat)
+ *   BANKFILES_PATH         or <root>/bankfiles                      bank files, per connection
  *   FICHIER_CENTRAL_PATH   or <root>/.fichier_central               client documents (KYC/PII)
+ *     └ <userId>/                                                    client documents
  *     └ orders/<orderId>/                                            order email traces
  *     └ entities/<entityId>/                                         entity documents
  *     └ meetingReports/    (or MEETING_REPORTS_PATH)                 meeting report PDFs
  *     └ research/          (or RESEARCH_PATH)                         internal research PDFs
+ *     └ newsletters/       (or NEWSLETTERS_PATH)                      Market News newsletters
+ *
+ * Every file-writing feature takes its directory from here; nothing else
+ * builds a storage path from process.cwd() or an env var of its own.
  *
  * Nothing lives under public/ — Meteor serves that tree unauthenticated. Every
  * read goes through a WebApp handler gated on a capability token
@@ -44,9 +51,52 @@ export function resolveProjectRoot() {
   return projectRoot;
 }
 
+/**
+ * A storage root from its env var. In production the variable is mandatory:
+ * the fallback would sit inside the app container, whose filesystem is wiped
+ * on every deploy, so a missing variable fails loudly instead of losing files.
+ * Dev falls back to a git-ignored folder next to the source tree.
+ */
+function storageRoot(envVar, devFolder) {
+  const configured = process.env[envVar];
+  if (configured) return configured;
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(`[documentStorage] ${envVar} is not set: refusing to store files inside the app container`);
+  }
+  return path.join(resolveProjectRoot(), devFolder);
+}
+
 /** Root of the client-document tree (KYC/PII). */
 export function getFichierCentralDir() {
-  return process.env.FICHIER_CENTRAL_PATH || path.join(resolveProjectRoot(), '.fichier_central');
+  return storageRoot('FICHIER_CENTRAL_PATH', '.fichier_central');
+}
+
+/** Bank files (SFTP downloads, decrypted and extracted files), one folder per connection. */
+export function getBankfilesDir() {
+  return storageRoot('BANKFILES_PATH', 'bankfiles');
+}
+
+/** Newsletters published on Market News. Honours NEWSLETTERS_PATH, else sits inside the volume. */
+export function getNewslettersDir() {
+  return process.env.NEWSLETTERS_PATH || path.join(getFichierCentralDir(), 'newsletters');
+}
+
+/**
+ * Where each store resolves, for the startup log. Never throws: a missing
+ * production variable is reported, not raised, so the app still boots.
+ */
+export function describeStorageRoots() {
+  const roots = {
+    termsheets: getTermsheetsDir,
+    fichierCentral: getFichierCentralDir,
+    bankfiles: getBankfilesDir,
+    newsletters: getNewslettersDir,
+    meetingReports: getMeetingReportsDir,
+    research: getResearchDir
+  };
+  return Object.fromEntries(Object.entries(roots).map(([name, resolve]) => {
+    try { return [name, resolve()]; } catch (e) { return [name, `ERROR: ${e.message}`]; }
+  }));
 }
 
 /** Order email traces: <fichier_central>/orders/<orderId>/<storedFileName> */
@@ -75,7 +125,7 @@ export function getResearchDir() {
 
 /** Product term sheets — one flat directory, filename is the identity. */
 export function getTermsheetsDir() {
-  return process.env.TERMSHEETS_PATH || path.join(resolveProjectRoot(), '.termsheets');
+  return storageRoot('TERMSHEETS_PATH', '.termsheets');
 }
 
 // ---------------------------------------------------------------------------

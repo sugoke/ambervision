@@ -12,13 +12,14 @@ import { isSGZipFile, extractSGZipFile, findNewSGZipFiles } from '../../imports/
 import { decryptAllGpgFiles, isGpgAvailable } from '../../imports/utils/gpgUtils.js';
 import fs from 'fs';
 import path from 'path';
+import { getBankfilesDir } from '../../imports/api/documentStorage.js';
 
 /**
  * Get the most recent file modification date from a folder
  * Used to determine when the bank last uploaded files for local connections
  */
 function getLatestFileModificationDate(folderPath) {
-  const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
+  const bankfilesRoot = getBankfilesDir();
   const fullPath = path.join(bankfilesRoot, folderPath);
 
   if (!fs.existsSync(fullPath)) return null;
@@ -259,7 +260,7 @@ Meteor.methods({
         });
       } else if (connection.connectionType === 'local') {
         // Test local folder connection - check if folder exists and is readable
-        const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
+        const bankfilesRoot = getBankfilesDir();
         const folderPath = path.join(bankfilesRoot, connection.localFolderName);
 
         console.log(`[BANK_CONNECTIONS] Testing local folder: ${folderPath}`);
@@ -372,7 +373,7 @@ Meteor.methods({
         actualPath = remotePath || connection.remotePath;
       } else if (connection.connectionType === 'local') {
         // List files from local folder
-        const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
+        const bankfilesRoot = getBankfilesDir();
         const folderPath = path.join(bankfilesRoot, connection.localFolderName);
         // Return "/" as path - the actual folder is determined by localFolderName
         // This prevents path doubling when UI passes filePath to downloadFile
@@ -457,7 +458,7 @@ Meteor.methods({
 
       // Handle local connections - read file directly from filesystem
       if (connection.connectionType === 'local') {
-        const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
+        const bankfilesRoot = getBankfilesDir();
         const fullPath = path.join(bankfilesRoot, connection.localFolderName, filePath);
 
         if (!fs.existsSync(fullPath)) {
@@ -563,7 +564,7 @@ Meteor.methods({
     // Handle local connections - files are already in place, no download needed
     // Detect which files are NEW (haven't been seen before) - matches SFTP behavior
     if (connection.connectionType === 'local') {
-      const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
+      const bankfilesRoot = getBankfilesDir();
       const folderPath = path.join(bankfilesRoot, connection.localFolderName);
 
       console.log(`[BANK_CONNECTIONS] Local connection - checking folder: ${folderPath}`);
@@ -838,8 +839,8 @@ Meteor.methods({
         .replace(/^-|-$/g, '');
 
       // Create bank folder path
-      // Use environment variable for persistent storage, fallback to process.cwd()
-      const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
+      // Persistent bank-file store (BANKFILES_PATH volume), see documentStorage
+      const bankfilesRoot = getBankfilesDir();
       const bankFolderPath = path.join(bankfilesRoot, sanitizedBankName);
 
       console.log(`[BANK_CONNECTIONS] Bankfiles root: ${bankfilesRoot}`);

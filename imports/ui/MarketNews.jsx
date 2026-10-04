@@ -3,6 +3,7 @@ import { useTracker } from 'meteor/react-meteor-data';
 import { Meteor } from 'meteor/meteor';
 import { NewslettersCollection } from '../api/newsletters';
 import NewsletterUploader from './components/NewsletterUploader.jsx';
+import { openDocumentWindow } from './utils/openDocument.js';
 
 const MarketNews = ({ user }) => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -67,9 +68,17 @@ const MarketNews = ({ user }) => {
   };
 
   // Handle download
-  const handleDownload = (newsletter) => {
+  const handleDownload = async (newsletter) => {
     Meteor.call('newsletters.incrementDownload', newsletter._id);
-    window.open(newsletter.fileUrl, '_blank');
+    try {
+      // Newsletters are private files: the server hands out a short-lived link
+      await openDocumentWindow(async () => {
+        const res = await Meteor.callAsync('newsletters.getDownloadUrl', localStorage.getItem('sessionId'), newsletter._id);
+        return res.url;
+      });
+    } catch (err) {
+      alert(err.reason || err.message || 'Could not open the newsletter');
+    }
   };
 
   // Handle delete

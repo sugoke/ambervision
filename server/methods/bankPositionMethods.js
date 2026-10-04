@@ -32,6 +32,7 @@ import { SizeableTransactionReviewsCollection } from '../../imports/api/sizeable
 import { buildSignatureIndex, findReplacement } from '../../imports/api/helpers/operationReconcile.js';
 import path from 'path';
 import fs from 'fs';
+import { getBankfilesDir } from '../../imports/api/documentStorage.js';
 
 /**
  * Check if ISIN needs re-enrichment from AmbervisionDB
@@ -309,8 +310,8 @@ Meteor.methods({
 
     try {
       // Build path to bank files directory
-      // Use environment variable for persistent storage, fallback to process.cwd()
-      const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
+      // Persistent bank-file store (BANKFILES_PATH volume), see documentStorage
+      const bankfilesRoot = getBankfilesDir();
 
       let bankFolderPath;
       if (connection.connectionType === 'local' && connection.localFolderName) {
@@ -1862,7 +1863,7 @@ Meteor.methods({
     // Resolve the bank files folder exactly as processLatest does: local connections use the
     // configured folder; SFTP connections use the sanitized bank name (e.g. "CMB Monaco" ->
     // "cmb-monaco"). localFolderName is null for SFTP, so never fall back to connectionName.
-    const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
+    const bankfilesRoot = getBankfilesDir();
     let bankFolderPath;
     if (connection.connectionType === 'local' && connection.localFolderName) {
       bankFolderPath = path.join(bankfilesRoot, connection.localFolderName);
@@ -2083,7 +2084,7 @@ Meteor.methods({
       .replace(/-+/g, '-')
       .replace(/^-|-$/g, '');
 
-    const bankFolderPath = path.join(process.cwd(), 'bankfiles', sanitizedBankName);
+    const bankFolderPath = path.join(getBankfilesDir(), sanitizedBankName);
 
     // Find all position files
     const files = BankPositionParser.findPositionFiles(bankFolderPath);
@@ -2163,7 +2164,7 @@ Meteor.methods({
     }
 
     // Build path to bank files
-    const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
+    const bankfilesRoot = getBankfilesDir();
     let bankFolderPath;
     if (connection.connectionType === 'local' && connection.localFolderName) {
       bankFolderPath = path.join(bankfilesRoot, connection.localFolderName);
@@ -2267,7 +2268,7 @@ Meteor.methods({
 
     try {
       // Build path
-      const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
+      const bankfilesRoot = getBankfilesDir();
       let bankFolderPath;
       if (connection.connectionType === 'local' && connection.localFolderName) {
         bankFolderPath = path.join(bankfilesRoot, connection.localFolderName);
@@ -2728,8 +2729,8 @@ Meteor.methods({
 
     try {
       // Build path to bank files directory
-      // Use environment variable for persistent storage, fallback to process.cwd()
-      const bankfilesRoot = process.env.BANKFILES_PATH || path.join(process.cwd(), 'bankfiles');
+      // Persistent bank-file store (BANKFILES_PATH volume), see documentStorage
+      const bankfilesRoot = getBankfilesDir();
       const bankFolderPath = path.join(bankfilesRoot, 'julius-baer');
 
       console.log(`[BANK_POSITIONS_TEST] Environment: ${process.env.NODE_ENV || 'development'}`);

@@ -1835,8 +1835,8 @@ ${userDisplayName}
     let instructionFilePath = null;
     if (clientInstructionFile) {
       try {
-        const basePath = process.env.FICHIER_CENTRAL_PATH || './.fichier_central';
-        const ordersDir = path.join(basePath, 'orders', orderId);
+        // Same tree as the order email traces (documentStorage)
+        const ordersDir = path.join(getOrderTracesDir(), orderId);
         if (!fs.existsSync(ordersDir)) {
           fs.mkdirSync(ordersDir, { recursive: true });
         }
