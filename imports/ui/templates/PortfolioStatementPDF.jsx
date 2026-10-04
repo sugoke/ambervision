@@ -18,6 +18,10 @@ html, body { margin: 0; padding: 0; background: #FFFFFF !important; }
 /* Print only the statement, anchored at the sheet origin: anything the app
    shell renders around the route would otherwise shift every fixed page. */
 @media print {
+  /* The app shell gives html, body and #react-target overflow-x: hidden, which
+     turns them into scroll containers: Chrome then prints only what fits the
+     first sheet. Undo it on every element that wraps the statement. */
+  html, body, :has(.st-doc) { height: auto !important; min-height: 0 !important; max-height: none !important; overflow: visible !important; }
   body * { visibility: hidden; }
   .st-doc, .st-doc * { visibility: visible; }
   .st-doc { position: absolute; left: 0; top: 0; width: 1123px; }
@@ -525,7 +529,7 @@ const Performance = ({ data, page: p }) => (
 );
 
 // ── Activity ─────────────────────────────────────────────────────────────────
-const TRADE_COLS = '72px 64px minmax(0,1fr) 64px 62px 58px 30px 96px';
+const TRADE_COLS = '72px 74px minmax(0,1fr) 64px 62px 58px 30px 96px';
 const Activity = ({ data, page: p }) => (
   <Page data={data} page={p} right={p.first ? (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
