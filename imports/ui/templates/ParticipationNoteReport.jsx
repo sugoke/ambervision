@@ -9,6 +9,7 @@ import Dialog from '../Dialog.jsx';
 import { getTranslation, t } from '../../utils/reportTranslations';
 import { useIsMobile } from '../hooks/useIsMobile.js';
 import ScheduleCardsMobile from '../components/reports/ScheduleCardsMobile.jsx';
+import { ReportSection } from '../components/ReportTabs.jsx';
 
 /**
  * Participation Note Report Component
@@ -298,6 +299,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
         </div>
       )}
 
+      <ReportSection tab="summary">
       {/* Underlying Assets Performance Table */}
       {underlyings.length > 0 && (
         <div style={{
@@ -554,7 +556,9 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
           )}
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Indicative Maturity Value - Shows hypothetical redemption if product matured today */}
       {results.indicativeMaturityValue && results.indicativeMaturityValue.isLive && (
         <div className="pdf-card pdf-page-break-before" style={{
@@ -788,7 +792,9 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="news">
       {/* Latest News Section */}
       {underlyings.length > 0 && (
         <div style={{
@@ -821,10 +827,14 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="chart">
       {/* Chart */}
       <StructuredProductChart productId={productId} height="900px" />
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Issuer Call Status (only show when NOT called - called products have the prominent banner at top) */}
       {issuerCall.hasCallOption && !issuerCall.isCalled && (
         <div style={{
@@ -928,7 +938,9 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="structure">
       {/* Admin Only: Issuer Call Management */}
       {isAdmin && (
         <div style={{
@@ -1205,7 +1217,9 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
           )}
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Participation Calculation */}
       <div style={{
         background: 'var(--bg-secondary)',
@@ -1335,7 +1349,9 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
           </div>
         </div>
       </div>
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Redemption Calculation */}
       <div style={{
         background: 'var(--bg-secondary)',
@@ -1439,7 +1455,9 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
           )}
         </div>
       </div>
+      </ReportSection>
 
+      <ReportSection tab="structure">
       {/* Participation Note Parameters Summary */}
       <div style={{
         background: 'var(--bg-secondary)',
@@ -1487,7 +1505,9 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
           </div>
         )}
       </div>
+      </ReportSection>
 
+      <ReportSection tab="schedule">
       {/* Early Redemption Schedule (if applicable) */}
       {hasObservationSchedule && observationSchedule.length > 0 && (
         <div style={{
@@ -1773,6 +1793,7 @@ const ParticipationNoteReport = ({ results, productId, product, user }) => {
           )}
         </div>
       )}
+      </ReportSection>
 
       {/* Confirmation Dialog */}
       <Dialog

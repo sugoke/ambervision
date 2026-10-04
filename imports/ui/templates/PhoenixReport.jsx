@@ -6,6 +6,7 @@ import PriceSparkline from '../components/PriceSparkline.jsx';
 import { getTranslation, t } from '../../utils/reportTranslations';
 import { useIsMobile } from '../hooks/useIsMobile.js';
 import ScheduleCardsMobile from '../components/reports/ScheduleCardsMobile.jsx';
+import { ReportSection } from '../components/ReportTabs.jsx';
 
 /**
  * Phoenix Autocallable Report Component
@@ -100,6 +101,7 @@ const PhoenixReport = ({ results, productId, product }) => {
         </div>
       )}
 
+      <ReportSection tab="summary">
       {/* Underlying Assets Performance Card */}
       {underlyings.length > 0 && (
         <div className="pdf-card" style={{
@@ -520,7 +522,9 @@ const PhoenixReport = ({ results, productId, product }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="chart">
       {/* Performance Bar Chart - responsive: compact columns on phones */}
       {underlyings.length > 0 && (
         <div className="pdf-card pdf-page-break-before" style={{
@@ -812,7 +816,9 @@ const PhoenixReport = ({ results, productId, product }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="news">
       {/* Latest News Section - Hidden in PDF */}
       {underlyings.length > 0 && (
         <div className="no-print underlying-news-section" style={{
@@ -845,7 +851,9 @@ const PhoenixReport = ({ results, productId, product }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Basket Analysis Summary */}
       {results.basketAnalysis && (
         <div className="pdf-card pdf-page-break-before" style={{
@@ -979,7 +987,9 @@ const PhoenixReport = ({ results, productId, product }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Indicative Maturity Value (live) / Final Redemption Result (matured/autocalled) */}
       {results.indicativeMaturityValue && (results.indicativeMaturityValue.isLive || results.indicativeMaturityValue.isMatured || results.indicativeMaturityValue.isAutocalled) && (() => {
         const iv = results.indicativeMaturityValue;
@@ -1241,7 +1251,9 @@ const PhoenixReport = ({ results, productId, product }) => {
         </div>
         );
       })()}
+      </ReportSection>
 
+      <ReportSection tab="schedule">
       {/* Observation Schedule */}
       {results.observationAnalysis && results.observationAnalysis.observations && results.observationAnalysis.observations.length > 0 && (
         <div className="pdf-card pdf-page-break-before observation-schedule-section" style={{
@@ -2299,7 +2311,9 @@ const PhoenixReport = ({ results, productId, product }) => {
           )}
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="chart">
       {/* Performance Chart */}
       {productId && (
         <div className="pdf-card pdf-page-break-before structured-product-chart" style={{
@@ -2321,7 +2335,9 @@ const PhoenixReport = ({ results, productId, product }) => {
           <StructuredProductChart productId={productId} height={isMobile ? '300px' : '450px'} />
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="structure">
       {/* Phoenix Parameters Summary */}
       <div className="pdf-card pdf-page-break-before" style={{
         background: 'var(--bg-primary)',
@@ -2367,6 +2383,7 @@ const PhoenixReport = ({ results, productId, product }) => {
           </div>
         </div>
       </div>
+      </ReportSection>
     </div>
   );
 };

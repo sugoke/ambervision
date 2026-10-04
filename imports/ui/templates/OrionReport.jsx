@@ -5,6 +5,7 @@ import PriceSparkline from '../components/PriceSparkline.jsx';
 import { getTranslation, t } from '../../utils/reportTranslations';
 import { useIsMobile } from '../hooks/useIsMobile.js';
 import ScheduleCardsMobile from '../components/reports/ScheduleCardsMobile.jsx';
+import { ReportSection } from '../components/ReportTabs.jsx';
 
 /**
  * Orion Memory Report Component
@@ -46,6 +47,7 @@ const OrionReport = ({ results, productId, product }) => {
         ⭐ {tr.orionMemoryEvaluationResults}
       </div>
 
+      <ReportSection tab="summary">
       {/* Underlying Assets Performance Table */}
       {underlyings.length > 0 && (
         <div style={{
@@ -384,7 +386,9 @@ const OrionReport = ({ results, productId, product }) => {
           )}
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Indicative Maturity Value - Shows hypothetical redemption if product matured today */}
       {results.indicativeMaturityValue && results.indicativeMaturityValue.isLive && (
         <div className="pdf-card pdf-page-break-before" style={{
@@ -633,7 +637,9 @@ const OrionReport = ({ results, productId, product }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="news">
       {/* Latest News Section */}
       {underlyings.length > 0 && (
         <div style={{
@@ -666,10 +672,14 @@ const OrionReport = ({ results, productId, product }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="chart">
       {/* Chart */}
       <StructuredProductChart productId={productId} height="900px" />
+      </ReportSection>
 
+      <ReportSection tab="structure">
       {/* Orion Parameters Summary */}
       <div style={{
         background: 'var(--bg-secondary)',
@@ -716,6 +726,7 @@ const OrionReport = ({ results, productId, product }) => {
           </div>
         </div>
       </div>
+      </ReportSection>
     </div>
   );
 };

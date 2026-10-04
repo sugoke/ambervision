@@ -3,6 +3,7 @@ import StructuredProductChart from '../components/StructuredProductChart.jsx';
 import UnderlyingNews from '../components/UnderlyingNews.jsx';
 import CopyableISIN from '../components/CopyableISIN.jsx';
 import PriceSparkline from '../components/PriceSparkline.jsx';
+import { ReportSection } from '../components/ReportTabs.jsx';
 
 /**
  * Bonus Certificate Report Component
@@ -47,6 +48,7 @@ const BonusCertificateReport = ({ results, productId }) => {
         🎁 {params.variantLabel || 'Bonus Certificate'} Evaluation Results
       </div>
 
+      <ReportSection tab="summary">
       {/* Product Structure Summary */}
       <div style={{
         background: 'linear-gradient(135deg, #14b8a6 0%, #0d9488 100%)',
@@ -222,7 +224,9 @@ const BonusCertificateReport = ({ results, productId }) => {
           </div>
         )}
       </div>
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Underlying Assets Performance Card */}
       {underlyings.length > 0 && (
         <div style={{
@@ -478,7 +482,9 @@ const BonusCertificateReport = ({ results, productId }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Knock-In Status */}
       <div style={{
         background: knockInBreached
@@ -595,7 +601,9 @@ const BonusCertificateReport = ({ results, productId }) => {
           )}
         </div>
       </div>
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Redemption Calculation */}
       <div style={{
         background: knockInBreached
@@ -726,7 +734,9 @@ const BonusCertificateReport = ({ results, productId }) => {
           </div>
         </div>
       </div>
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Basket analysis (counts) */}
       {basketAnalysis && underlyings.length > 1 && (
         <div style={{
@@ -832,7 +842,9 @@ const BonusCertificateReport = ({ results, productId }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="chart">
       {/* Performance Chart */}
       {productId && (
         <div style={{
@@ -852,7 +864,9 @@ const BonusCertificateReport = ({ results, productId }) => {
           <StructuredProductChart productId={productId} height="450px" />
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="news">
       {/* Latest News */}
       {underlyings.length > 0 && (
         <div style={{
@@ -876,7 +890,9 @@ const BonusCertificateReport = ({ results, productId }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="structure">
       {/* Parameters Summary Footer */}
       <div style={{
         background: 'var(--bg-secondary)',
@@ -927,6 +943,7 @@ const BonusCertificateReport = ({ results, productId }) => {
           </div>
         </div>
       </div>
+      </ReportSection>
     </div>
   );
 };

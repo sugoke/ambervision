@@ -3,6 +3,7 @@ import StructuredProductChart from '../components/StructuredProductChart.jsx';
 import CopyableISIN from '../components/CopyableISIN.jsx';
 import { useIsMobile } from '../hooks/useIsMobile.js';
 import ScheduleCardsMobile from '../components/reports/ScheduleCardsMobile.jsx';
+import { ReportSection } from '../components/ReportTabs.jsx';
 
 /**
  * Rate Report Component (CMS Steepener / Target-Redemption certificate)
@@ -56,6 +57,7 @@ const RateReport = ({ results, productId }) => {
         </span>
       </div>
 
+      <ReportSection tab="summary">
       {/* Structure Summary */}
       <div style={{ background: 'linear-gradient(135deg, #0ea5e9 0%, #0369a1 100%)', padding: '1.5rem', borderRadius: '8px', marginBottom: '1.5rem', border: '2px solid #38bdf8', boxShadow: '0 8px 24px rgba(14, 165, 233, 0.3)' }}>
         <h4 style={{ margin: '0 0 1rem 0', fontSize: '1.1rem', color: 'white', fontWeight: '700' }}>📋 Product Structure</h4>
@@ -87,7 +89,9 @@ const RateReport = ({ results, productId }) => {
           </div>
         )}
       </div>
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Target Progress */}
       {s.targetEnabled && (
         <div style={{ background: 'var(--bg-secondary)', padding: '1.5rem', borderRadius: '6px', marginBottom: '1.5rem' }}>
@@ -107,7 +111,9 @@ const RateReport = ({ results, productId }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="schedule">
       {/* Coupon Schedule */}
       <div style={{ background: 'var(--bg-secondary)', padding: '1.5rem', borderRadius: '6px', marginBottom: '1.5rem' }}>
         <h4 style={{ margin: '0 0 1rem 0', fontSize: '1rem', color: 'var(--text-primary)' }}>🗓️ Coupon Schedule</h4>
@@ -170,7 +176,9 @@ const RateReport = ({ results, productId }) => {
         </div>
         )}
       </div>
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Redemption */}
       <div style={{ background: 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)', padding: '1.5rem', borderRadius: '8px', marginBottom: '1.5rem', border: '2px solid #34d399', boxShadow: '0 8px 24px rgba(16, 185, 129, 0.3)' }}>
         <h4 style={{ margin: '0 0 1rem 0', fontSize: '1.1rem', color: 'white', fontWeight: '700' }}>💰 Redemption</h4>
@@ -194,7 +202,9 @@ const RateReport = ({ results, productId }) => {
           </div>
         </div>
       </div>
+      </ReportSection>
 
+      <ReportSection tab="chart">
       {/* Coupon Accumulation Chart */}
       {productId && (
         <div style={{ background: 'var(--bg-secondary)', padding: '1.5rem', borderRadius: '6px', marginBottom: '1.5rem' }}>
@@ -202,7 +212,9 @@ const RateReport = ({ results, productId }) => {
           <StructuredProductChart productId={productId} height="420px" />
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="structure">
       {/* Footer / parameters */}
       <div style={{ background: 'var(--bg-secondary)', padding: '1.5rem', borderRadius: '6px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '1.5rem' }}>
         <div>
@@ -226,6 +238,7 @@ const RateReport = ({ results, productId }) => {
           <div style={{ fontSize: '1rem', fontWeight: '600', color: 'var(--text-primary)' }}>{status.daysToMaturityText}</div>
         </div>
       </div>
+      </ReportSection>
     </div>
   );
 };

@@ -28,6 +28,7 @@ import HoldingPriceChart from './components/HoldingPriceChart.jsx';
 import TermSheetManager from './components/TermSheetManager.jsx';
 import PDFDownloadButton from './components/PDFDownloadButton.jsx';
 import { useIsMobile } from './hooks/useIsMobile.js';
+import { ReportTabsProvider, ReportTabBar, ReportSection } from './components/ReportTabs.jsx';
 
 /**
  * Processing Issues Alert Component
@@ -601,6 +602,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, backLabel, onE
   }
 
   return (
+    <ReportTabsProvider key={productId} enabled={!isPDFMode}>
     <div style={{
       maxWidth: '1200px',
       margin: '0 auto',
@@ -1214,6 +1216,10 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, backLabel, onE
         </div>
       </div>
 
+      {/* Report sections as tabs (one long page in PDF mode) */}
+      <ReportTabBar />
+
+      <ReportSection tab="clients">
       {/* PMS Client Holdings Summary (Phoenix-style) */}
       {linkedHoldings && linkedHoldings.length > 0 && user && (user.role === USER_ROLES.ADMIN || user.role === USER_ROLES.SUPERADMIN || user.role === USER_ROLES.RELATIONSHIP_MANAGER) && (() => {
         const totalMV = linkedHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
@@ -1640,9 +1646,12 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, backLabel, onE
           )}
         </div>
       )}
+      </ReportSection>
 
       {/* Product Commentary Card */}
-      <ProductCommentaryCard productId={productId} />
+      <ReportSection tab="summary">
+        <ProductCommentaryCard productId={productId} />
+      </ReportSection>
 
       {/* Evaluation Error */}
       {evaluationError && (
@@ -1742,6 +1751,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, backLabel, onE
         </div>
       )}
     </div>
+    </ReportTabsProvider>
   );
 };
 

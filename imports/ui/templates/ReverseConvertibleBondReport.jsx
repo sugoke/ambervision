@@ -1,6 +1,7 @@
 import React from 'react';
 import StructuredProductChart from '../components/StructuredProductChart.jsx';
 import PriceSparkline from '../components/PriceSparkline.jsx';
+import { ReportSection } from '../components/ReportTabs.jsx';
 
 /**
  * Reverse Convertible (Bond) Report Component
@@ -40,6 +41,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
         Reverse Convertible (Bond) Evaluation Results
       </div>
 
+      <ReportSection tab="summary">
       {/* Product Structure Summary */}
       <div style={{
         background: 'linear-gradient(135deg, var(--gain-color) 0%, #059669 100%)',
@@ -172,7 +174,9 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
 
         </div>
       </div>
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Underlying Assets Performance Card */}
       {underlyings.length > 0 && (
         <div style={{
@@ -491,7 +495,9 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="chart">
       {/* Performance Bar Chart */}
       {underlyings.length > 0 && (
         <div style={{
@@ -771,8 +777,10 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
 
+      <ReportSection tab="summary">
       {/* Strike Analysis */}
       {basketAnalysis && (
         <div style={{
@@ -906,7 +914,9 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Redemption Calculation */}
       {redemption && (
         <div style={{
@@ -1110,7 +1120,9 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="chart">
       {/* Performance Chart */}
       {productId && (
         <div style={{
@@ -1132,7 +1144,9 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
           <StructuredProductChart productId={productId} height="450px" />
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="structure">
       {/* Parameters Summary */}
       <div style={{
         background: 'var(--bg-secondary)',
@@ -1196,6 +1210,7 @@ const ReverseConvertibleBondReport = ({ results, productId }) => {
           </div>
         </div>
       </div>
+      </ReportSection>
     </div>
   );
 };

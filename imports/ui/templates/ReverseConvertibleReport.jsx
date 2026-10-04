@@ -3,6 +3,7 @@ import StructuredProductChart from '../components/StructuredProductChart.jsx';
 import UnderlyingNews from '../components/UnderlyingNews.jsx';
 import CopyableISIN from '../components/CopyableISIN.jsx';
 import PriceSparkline from '../components/PriceSparkline.jsx';
+import { ReportSection } from '../components/ReportTabs.jsx';
 
 /**
  * Reverse Convertible Report Component
@@ -40,6 +41,7 @@ const ReverseConvertibleReport = ({ results, productId }) => {
         🔄 Reverse Convertible Evaluation Results
       </div>
 
+      <ReportSection tab="summary">
       {/* Product Structure Summary */}
       <div style={{
         background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
@@ -171,7 +173,9 @@ const ReverseConvertibleReport = ({ results, productId }) => {
           </div>
         </div>
       </div>
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Underlying Assets Performance Card */}
       {underlyings.length > 0 && (
         <div style={{
@@ -470,7 +474,9 @@ const ReverseConvertibleReport = ({ results, productId }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="chart">
       {/* Performance Bar Chart */}
       {underlyings.length > 0 && (
         <div style={{
@@ -722,7 +728,9 @@ const ReverseConvertibleReport = ({ results, productId }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="news">
       {/* Latest News Section */}
       {underlyings.length > 0 && (
         <div style={{
@@ -755,7 +763,9 @@ const ReverseConvertibleReport = ({ results, productId }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Capital Protection Analysis */}
       {basketAnalysis && (
         <div style={{
@@ -889,7 +899,9 @@ const ReverseConvertibleReport = ({ results, productId }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Redemption Calculation */}
       {redemption && (
         <div style={{
@@ -1057,7 +1069,9 @@ const ReverseConvertibleReport = ({ results, productId }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="chart">
       {/* Performance Chart */}
       {productId && (
         <div style={{
@@ -1079,7 +1093,9 @@ const ReverseConvertibleReport = ({ results, productId }) => {
           <StructuredProductChart productId={productId} height="450px" />
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="structure">
       {/* Reverse Convertible Parameters Summary */}
       <div style={{
         background: 'var(--bg-secondary)',
@@ -1125,6 +1141,7 @@ const ReverseConvertibleReport = ({ results, productId }) => {
           </div>
         </div>
       </div>
+      </ReportSection>
     </div>
   );
 };

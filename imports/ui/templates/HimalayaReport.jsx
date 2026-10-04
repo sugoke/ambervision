@@ -4,6 +4,7 @@ import UnderlyingNews from '../components/UnderlyingNews.jsx';
 import { getTranslation, t } from '../../utils/reportTranslations';
 import { useIsMobile } from '../hooks/useIsMobile.js';
 import ScheduleCardsMobile from '../components/reports/ScheduleCardsMobile.jsx';
+import { ReportSection } from '../components/ReportTabs.jsx';
 
 /**
  * Himalaya Report Component
@@ -45,6 +46,7 @@ const HimalayaReport = ({ results, productId, product }) => {
         🏔️ {tr.himalayaEvaluationResults}
       </div>
 
+      <ReportSection tab="summary">
       {/* Final Performance Summary */}
       <div style={{
         background: 'var(--bg-secondary)',
@@ -118,6 +120,7 @@ const HimalayaReport = ({ results, productId, product }) => {
           )}
         </div>
       </div>
+      </ReportSection>
 
       {/* Indicative Calculation Disclaimer for Live Products */}
       {!status.hasMatured && (
@@ -151,6 +154,7 @@ const HimalayaReport = ({ results, productId, product }) => {
         </div>
       )}
 
+      <ReportSection tab="summary">
       {/* Combined Performance Table */}
       {underlyings.length > 0 && (
         <div style={{
@@ -477,7 +481,9 @@ const HimalayaReport = ({ results, productId, product }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="news">
       {/* Latest News Section */}
       {underlyings.length > 0 && (
         <div style={{
@@ -510,7 +516,9 @@ const HimalayaReport = ({ results, productId, product }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="structure">
       {/* Himalaya Parameters Summary */}
       <div style={{
         background: 'var(--bg-secondary)',
@@ -547,7 +555,9 @@ const HimalayaReport = ({ results, productId, product }) => {
           </div>
         </div>
       </div>
+      </ReportSection>
 
+      <ReportSection tab="chart">
       {/* Performance Chart */}
       <div style={{
         background: 'var(--bg-secondary)',
@@ -558,6 +568,7 @@ const HimalayaReport = ({ results, productId, product }) => {
       }}>
         <StructuredProductChart productId={productId} height="900px" />
       </div>
+      </ReportSection>
     </div>
   );
 };

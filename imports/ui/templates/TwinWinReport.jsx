@@ -3,6 +3,7 @@ import StructuredProductChart from '../components/StructuredProductChart.jsx';
 import UnderlyingNews from '../components/UnderlyingNews.jsx';
 import CopyableISIN from '../components/CopyableISIN.jsx';
 import PriceSparkline from '../components/PriceSparkline.jsx';
+import { ReportSection } from '../components/ReportTabs.jsx';
 
 /**
  * Twin Win Report Component
@@ -73,6 +74,7 @@ const TwinWinReport = ({ results, productId }) => {
         🔁 Twin Win Evaluation Results
       </div>
 
+      <ReportSection tab="summary">
       {/* Product Structure Summary */}
       <div style={{
         background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
@@ -136,7 +138,9 @@ const TwinWinReport = ({ results, productId }) => {
           {params.basketTypeLabel && <span>Aggregation: <strong>{params.basketTypeLabel}</strong></span>}
         </div>
       </div>
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Underlying Assets Performance */}
       {underlyings.length > 0 && (
         <div style={{
@@ -306,7 +310,9 @@ const TwinWinReport = ({ results, productId }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Dual Barrier Monitoring */}
       <div style={{
         background: anyTouched
@@ -357,7 +363,9 @@ const TwinWinReport = ({ results, productId }) => {
           </div>
         </div>
       </div>
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Redemption Calculation */}
       <div style={{
         background: bothTouched
@@ -409,7 +417,9 @@ const TwinWinReport = ({ results, productId }) => {
           </div>
         </div>
       </div>
+      </ReportSection>
 
+      <ReportSection tab="structure">
       {/* How a Twin Win pays */}
       <div style={{
         background: 'var(--bg-secondary)',
@@ -431,7 +441,9 @@ const TwinWinReport = ({ results, productId }) => {
           <li><strong>{params.barrierTypeLabel}:</strong> {params.barrierType === 'american' ? 'each barrier is monitored continuously (any touch over the life counts)' : 'barriers are checked only at the final fixing'}.</li>
         </ul>
       </div>
+      </ReportSection>
 
+      <ReportSection tab="chart">
       {/* Performance Chart */}
       {productId && (
         <div style={{
@@ -444,7 +456,9 @@ const TwinWinReport = ({ results, productId }) => {
           <StructuredProductChart productId={productId} height="450px" />
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="news">
       {/* Latest News */}
       {underlyings.length > 0 && (
         <div style={{
@@ -461,7 +475,9 @@ const TwinWinReport = ({ results, productId }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="structure">
       {/* Parameters Summary Footer */}
       <div style={{
         background: 'var(--bg-secondary)',
@@ -492,6 +508,7 @@ const TwinWinReport = ({ results, productId }) => {
           <div style={{ fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)' }}>{params.minRedemptionFormatted}</div>
         </div>
       </div>
+      </ReportSection>
     </div>
   );
 };

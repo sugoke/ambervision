@@ -5,6 +5,7 @@ import PriceSparkline from '../components/PriceSparkline.jsx';
 import { getTranslation } from '../../utils/reportTranslations';
 import { useIsMobile } from '../hooks/useIsMobile.js';
 import ScheduleCardsMobile from '../components/reports/ScheduleCardsMobile.jsx';
+import { ReportSection } from '../components/ReportTabs.jsx';
 
 /**
  * Shark Note Report Component
@@ -56,6 +57,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
         🦈 {lang === 'fr' ? 'Résultats d\'Évaluation Shark Note' : 'Shark Note Evaluation Results'}
       </div>
 
+      <ReportSection tab="summary">
       {/* Underlying Assets Performance Table */}
       {underlyings.length > 0 && (
         <div style={{
@@ -277,7 +279,9 @@ const SharkNoteReport = ({ results, productId, product }) => {
           )}
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="news">
       {/* Latest News Section */}
       {underlyings.length > 0 && (
         <div style={{
@@ -310,10 +314,14 @@ const SharkNoteReport = ({ results, productId, product }) => {
           </div>
         </div>
       )}
+      </ReportSection>
 
+      <ReportSection tab="chart">
       {/* Chart */}
       <StructuredProductChart productId={productId} height="900px" />
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Barrier Touch Status */}
       <div style={{
         background: 'var(--bg-secondary)',
@@ -397,7 +405,9 @@ const SharkNoteReport = ({ results, productId, product }) => {
           </div>
         </div>
       </div>
+      </ReportSection>
 
+      <ReportSection tab="summary">
       {/* Redemption Calculation */}
       <div style={{
         background: 'var(--bg-secondary)',
@@ -487,7 +497,9 @@ const SharkNoteReport = ({ results, productId, product }) => {
           </div>
         </div>
       </div>
+      </ReportSection>
 
+      <ReportSection tab="structure">
       {/* Shark Note Parameters Summary */}
       <div style={{
         background: 'var(--bg-secondary)',
@@ -533,6 +545,7 @@ const SharkNoteReport = ({ results, productId, product }) => {
           </div>
         </div>
       </div>
+      </ReportSection>
     </div>
   );
 };
