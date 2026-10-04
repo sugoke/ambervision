@@ -531,11 +531,16 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
     const latestOnly = !selectedDate; // If no date selected, show latest only
     const asOfDate = selectedDate ? new Date(selectedDate) : null;
     const handle = Meteor.subscribe('pmsHoldings', sessionId, viewAsFilter, latestOnly, asOfDate);
-    const productsHandle = Meteor.subscribe('products.all');
+    // Products the positions link to (icon, title, report). products.all needs the
+    // session to know the user is staff: without it the server published nothing,
+    // and positions were only linked when another page had loaded the products
+    // first. Clients get the products of their own perimeter from 'products'.
+    const productsHandle = Meteor.subscribe('products.all', sessionId);
+    const scopedProductsHandle = Meteor.subscribe('products', sessionId, viewAsFilter);
     const allocationsHandle = Meteor.subscribe('allAllocations', sessionId, viewAsFilter);
     const metadataHandle = Meteor.subscribe('securitiesMetadata', sessionId, {});
 
-    if (!handle.ready() || !productsHandle.ready() || !allocationsHandle.ready() || !metadataHandle.ready()) {
+    if (!handle.ready() || !productsHandle.ready() || !scopedProductsHandle.ready() || !allocationsHandle.ready() || !metadataHandle.ready()) {
       return { holdings: [], isLoading: true };
     }
 
