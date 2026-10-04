@@ -1,3 +1,4 @@
+import { PERIMETER_FLOW_TYPE_LIST } from '/imports/api/helpers/twrCalculator.js';
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { BankConnectionsCollection, BankConnectionHelpers } from '../../imports/api/bankConnections.js';
@@ -27,6 +28,8 @@ import { decryptAllGpgFiles, isGpgAvailable } from '../../imports/utils/gpgUtils
 import { yieldToEventLoop } from '../../imports/utils/asyncHelpers.js';
 import { buildPortfolioEntityMap, getEntityIdFromMap } from '../../imports/utils/entityResolver.js';
 import { ClientEntityHelpers } from '../../imports/api/clientEntities.js';
+import { SizeableTransactionReviewsCollection } from '../../imports/api/sizeableTransactions.js';
+import { buildSignatureIndex, findReplacement } from '../../imports/api/helpers/operationReconcile.js';
 import path from 'path';
 import fs from 'fs';
 
@@ -1163,8 +1166,7 @@ Meteor.methods({
       const portfolioUserIds = [...new Set(Object.values(positionsByPortfolio).map(positions => positions[0]?.userId).filter(Boolean))];
       const transferOpsCache = await PMSOperationsCollection.find({
         userId: { $in: portfolioUserIds },
-        operationType: 'TRANSFER',
-        operationCategory: 'CASH'
+        operationType: { $in: PERIMETER_FLOW_TYPE_LIST }
       }).fetchAsync();
 
       // Create snapshot for each portfolio
@@ -1834,12 +1836,15 @@ Meteor.methods({
    * file (ignoring the seen-file markers), clears the bank's existing operations, and
    * re-imports with the corrected per-transaction key. Positions/holdings are untouched.
    */
-  async 'bankPositions.reprocessOperations'({ connectionId, sessionId, clearExisting = true }) {
+  async 'bankPositions.reprocessOperations'({ connectionId, sessionId, clearExisting = false }) {
     check(connectionId, String);
     check(sessionId, String);
-    // clearExisting=false re-reads every file and updates operations IN PLACE (same
-    // uniqueKey -> same _id), adding only rows the parser used to drop. Records keep
-    // their ids, so reviews referencing them (sizeable transactions) are untouched.
+    // Default (clearExisting=false): re-read every file, update records IN PLACE (same
+    // uniqueKey -> same _id) and reconcile the stored records the new parse no longer
+    // produces (type/id corrections, merged duplicate legs): reviews pointing at them are
+    // moved to the record describing the same movement, then they are removed. Records
+    // whose source file is gone are kept and re-standardized from their stored fields.
+    // clearExisting=true wipes the bank's operations first (new ids, reviews detached).
     check(clearExisting, Boolean);
     this.unblock();
 
@@ -1861,6 +1866,14 @@ Meteor.methods({
     let bankFolderPath;
     if (connection.connectionType === 'local' && connection.localFolderName) {
       bankFolderPath = path.join(bankfilesRoot, connection.localFolderName);
+      // SG files arrive encrypted in the incoming folder; the sync parses the CSVs it
+      // decrypted into the sibling 'decrypted' folder, so the reprocess reads them there
+      const isSocieteGenerale = bank.name?.toLowerCase().includes('societe generale')
+        || bank.name?.toLowerCase().includes('société générale')
+        || connection.localFolderName.includes('sg/');
+      if (isSocieteGenerale) {
+        bankFolderPath = path.join(bankfilesRoot, path.dirname(connection.localFolderName), 'decrypted');
+      }
     } else {
       const sanitizedBankName = bank.name
         .toLowerCase()
@@ -1889,6 +1902,9 @@ Meteor.methods({
     // 3. Re-import with entity/userId matching and the corrected unique key.
     const portfolioEntityMap = await buildPortfolioEntityMap(connection.bankId);
     let opNew = 0, opUpdated = 0, opSkipped = 0, opUnmapped = 0;
+    const producedKeys = new Set();
+    // Every record this run produced (inserted or updated): replacements for stale records
+    const producedOperations = [];
     for (const operation of operations) {
       try {
         const mapping = getEntityIdFromMap(operation.portfolioCode, portfolioEntityMap);
@@ -1898,9 +1914,65 @@ Meteor.methods({
         operation.connectionId = connectionId;
         operation.sourceFilePath = path.join(bankFolderPath, operation.sourceFile || 'unknown');
         const result = await PMSOperationsHelpers.upsertOperation(operation);
+        producedKeys.add(result.uniqueKey);
         if (result.updated) opUpdated++; else opNew++;
+        producedOperations.push({ ...operation, _id: result._id, uniqueKey: result.uniqueKey });
       } catch (e) {
         opSkipped++;
+      }
+    }
+
+    // 3b. Reconcile stored records the new parse no longer produces.
+    const processedFileNames = new Set((parseResult.processedFiles || []).map(f => (typeof f === 'string' ? f : (f.filename || String(f)))));
+    let retired = 0, reviewsRepointed = 0, restandardized = 0, keptUnread = 0, keptReferenced = 0;
+    // Nothing read (wrong or empty folder): leave the stored records alone
+    if (!clearExisting && processedFileNames.size > 0) {
+      const stale = await PMSOperationsCollection.find({
+        bankId: connection.bankId,
+        uniqueKey: { $nin: [...producedKeys] }
+      }).fetchAsync();
+      const index = buildSignatureIndex(producedOperations);
+      const reviews = await SizeableTransactionReviewsCollection.find({ bankId: connection.bankId }).fetchAsync();
+
+      for (const old of stale) {
+        // Its file is no longer on disk: keep it, re-standardized when the parser can
+        if (!processedFileNames.has(old.sourceFile)) {
+          const redone = BankOperationParser.restandardizeStored(old, bank.name);
+          if (redone) {
+            await PMSOperationsCollection.updateAsync(old._id, { $set: {
+              operationType: redone.operationType,
+              std: redone.std,
+              ...(redone.currency && !old.currency ? { currency: redone.currency } : {}),
+              updatedAt: new Date()
+            } });
+            restandardized++;
+          } else {
+            keptUnread++;
+          }
+          continue;
+        }
+
+        const replacement = findReplacement(old, index);
+        const singleKey = `single|${old.uniqueKey}`;
+        const referencing = reviews.filter(r => r.key === singleKey || (r.operationIds || []).includes(old._id));
+        if (referencing.length > 0 && !replacement) { keptReferenced++; continue; }
+
+        for (const review of referencing) {
+          const set = {
+            operationIds: (review.operationIds || []).map(id => (id === old._id ? replacement._id : id)),
+            operations: (review.operations || []).map(op => (op.operationId === old._id ? { ...op, operationId: replacement._id } : op)),
+            updatedAt: new Date()
+          };
+          const newKey = `single|${replacement.uniqueKey}`;
+          if (review.key === singleKey && !(await SizeableTransactionReviewsCollection.findOneAsync({ key: newKey }))) {
+            set.key = newKey;
+          }
+          await SizeableTransactionReviewsCollection.updateAsync(review._id, { $set: set });
+          Object.assign(review, set);
+          reviewsRepointed++;
+        }
+        await PMSOperationsCollection.removeAsync(old._id);
+        retired++;
       }
     }
 
@@ -1914,11 +1986,11 @@ Meteor.methods({
       connectionName: connection.connectionName,
       action: 'reprocess_operations',
       status: 'success',
-      message: `Reprocessed operations: cleared ${cleared}, parsed ${operations.length} → ${opNew} new, ${opUpdated} merged, ${opSkipped} skipped (${opUnmapped} unmapped)`,
+      message: `Reprocessed operations: cleared ${cleared}, parsed ${operations.length} → ${opNew} new, ${opUpdated} merged, ${opSkipped} skipped (${opUnmapped} unmapped); reconciled: ${retired} retired, ${reviewsRepointed} reviews re-pointed, ${restandardized} re-standardized, ${keptUnread} kept (file gone), ${keptReferenced} kept (referenced)`,
       userId: user._id
     });
 
-    return { success: true, cleared, parsed: operations.length, opNew, opUpdated, opSkipped, opUnmapped, filesProcessed: processedFiles.length };
+    return { success: true, cleared, parsed: operations.length, opNew, opUpdated, opSkipped, opUnmapped, retired, reviewsRepointed, restandardized, keptUnread, keptReferenced, filesProcessed: processedFiles.length };
   },
 
   /**
@@ -2440,8 +2512,7 @@ Meteor.methods({
       const portfolioUserIds = [...new Set(Object.values(positionsByPortfolio).map(positions => positions[0]?.userId).filter(Boolean))];
       const transferOpsCache = await PMSOperationsCollection.find({
         userId: { $in: portfolioUserIds },
-        operationType: 'TRANSFER',
-        operationCategory: 'CASH'
+        operationType: { $in: PERIMETER_FLOW_TYPE_LIST }
       }).fetchAsync();
 
       for (const [portfolioCode, portfolioPositions] of Object.entries(positionsByPortfolio)) {
@@ -2777,8 +2848,7 @@ Meteor.methods({
       const portfolioUserIds = [...new Set(Object.values(positionsByPortfolio).map(positions => positions[0]?.userId).filter(Boolean))];
       const transferOpsCache = await PMSOperationsCollection.find({
         userId: { $in: portfolioUserIds },
-        operationType: 'TRANSFER',
-        operationCategory: 'CASH'
+        operationType: { $in: PERIMETER_FLOW_TYPE_LIST }
       }).fetchAsync();
 
       // Create snapshot for each portfolio
@@ -3255,8 +3325,7 @@ Meteor.methods({
     const userIds = [...new Set(datesToProcess.map(d => d.userId))];
     const transferOpsCache = await PMSOperationsCollection.find({
       userId: { $in: userIds },
-      operationType: 'TRANSFER',
-      operationCategory: 'CASH'
+      operationType: { $in: PERIMETER_FLOW_TYPE_LIST }
     }).fetchAsync();
 
     let regenerated = 0;

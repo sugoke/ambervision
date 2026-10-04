@@ -9,7 +9,18 @@
  * File format: Semicolon-delimited CSV with NO header row
  */
 
-import { OPERATION_TYPES, mapCFMOperationType } from '../constants/operationTypes';
+import { OPERATION_TYPES, directedType } from '../constants/operationTypes';
+import { withStandard, signedFromFlag } from '../helpers/operationStandardizer';
+
+// CFM securities movements (mtit): the label says what kind of movement it is; the
+// direction column says A (achat: cash out) or V (vente: cash in).
+const CFM_SECURITY_WORDING = [
+  [/SOUSCRIPTION/, OPERATION_TYPES.SUBSCRIPTION],
+  [/RACHAT|REMBOURSEMENT|ECHEANCE/, OPERATION_TYPES.REDEMPTION],
+  [/COUPON/, OPERATION_TYPES.COUPON],
+  [/DIVIDENDE/, OPERATION_TYPES.DIVIDEND],
+  [/LIVRAISON|TRANSFERT|RECEPTION DE TITRES/, 'TRANSFER']
+];
 
 export const CFMOperationParser = {
   /**
@@ -164,7 +175,15 @@ export const CFMOperationParser = {
    * Uses centralized mapping from operationTypes.js constants
    */
   mapOperationType(operationType, direction) {
-    return mapCFMOperationType(operationType, direction);
+    const label = String(operationType || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+    const isSale = String(direction || '').toUpperCase() === 'V';
+    for (const [pattern, type] of CFM_SECURITY_WORDING) {
+      if (pattern.test(label)) return directedType(type, isSale ? 1 : -1);
+    }
+    const dir = String(direction || '').toUpperCase();
+    if (dir === 'A') return OPERATION_TYPES.BUY;
+    if (dir === 'V') return OPERATION_TYPES.SELL;
+    return OPERATION_TYPES.OTHER;
   },
 
   /**
@@ -241,7 +260,7 @@ export const CFMOperationParser = {
     const folderNumber = row[c.FOLDER_NUMBER] || '';
     const accountNumber = clientNumber.replace(/^0+/, '') || clientNumber;
 
-    return {
+    const operation = {
       // Bank and portfolio identifiers
       bankId,
       bankName,
@@ -269,6 +288,7 @@ export const CFMOperationParser = {
       operationType,
       operationCategory,
       operationNumber: row[c.OPERATION_NUMBER] || null,
+      operationId: row[c.OPERATION_NUMBER] || null,
       operationTypeLabel: row[c.OPERATION_TYPE] || null,
       direction: row[c.DIRECTION] || null,
       operationCurrency: row[c.OPERATION_CURRENCY] || null,
@@ -321,6 +341,26 @@ export const CFMOperationParser = {
         originalRow: row
       }
     };
+
+    const isSale = String(row[c.DIRECTION] || '').toUpperCase() === 'V';
+    const isSecuritiesMove = operationType === OPERATION_TYPES.TRANSFER_IN || operationType === OPERATION_TYPES.TRANSFER_OUT;
+    return withStandard(operation, {
+      type: operationType,
+      description: row[c.TEXT] || row[c.OPERATION_TYPE],
+      instrumentName: null, // not in the mtit file (the PMS resolves the name from the ISIN)
+      isin: row[c.ISIN],
+      quantity,
+      price: unitPrice,
+      amount: signedFromFlag(netAmount || grossAmount, isSale),
+      currency: row[c.SETTLEMENT_CURRENCY] || row[c.OPERATION_CURRENCY],
+      cashImpact: !isSecuritiesMove,
+      fees: (fees || 0) + (commissions || 0) + (extraFees || 0) + (localFees || 0) + (foreignFees || 0),
+      taxes: (taxes || 0) + (taxFinTrans || 0) + (foreignTax || 0) + (otherTax || 0) + (withholding || 0) + (euWithholding || 0) + (fiscalRetention || 0),
+      accruedInterest,
+      bankTypeCode: row[c.DIRECTION] ? `${row[c.OPERATION_TYPE] || ''} (${row[c.DIRECTION]})` : row[c.OPERATION_TYPE],
+      bankTypeLabel: row[c.OPERATION_TYPE],
+      reference: row[c.OPERATION_NUMBER]
+    });
   },
 
   /**

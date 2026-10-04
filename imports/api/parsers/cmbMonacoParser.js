@@ -11,6 +11,7 @@
 
 import { SECURITY_TYPES } from '../constants/instrumentTypes';
 import { mapCMBOperationType, OPERATION_TYPES } from '../constants/operationTypes';
+import { withStandard } from '../helpers/operationStandardizer';
 
 export const CMBMonacoParser = {
   /**
@@ -1007,7 +1008,7 @@ export const CMBMonacoParser = {
     const valueDate = this.parseDate(row.Value_Date);
     const verificationDate = this.parseDate(row.Verification_Date);
 
-    return {
+    const operation = {
       // Source Information
       bankId,
       bankName,
@@ -1081,6 +1082,28 @@ export const CMBMonacoParser = {
       isProcessed: false,
       createdAt: new Date()
     };
+
+    const isin = String(row.ISIN || '').trim();
+    const bookingText = String(row.Internal_Booking_Text || '').trim();
+    // Exchange trades only carry "M : <price> <ccy>" as booking text: use the order type wording
+    const description = /^M\s*:/.test(bookingText) ? (row.Order_Type || bookingText) : (bookingText || row.Order_Type);
+    return withStandard(operation, {
+      type: operationType,
+      description,
+      instrumentName: isCashBooking ? null : row.Position,
+      isin,
+      quantity: isCashBooking ? null : quantity,
+      price: isCashBooking ? null : this.parseNumber(row.Security_Market_Price),
+      amount: effectiveNetAmount != null && effectiveNetAmount !== 0 ? effectiveNetAmount : (grossAmount || 0),
+      currency: row.Transaction_Currency || row.Account_Currency,
+      fees: this.parseNumber(row.Costs),
+      taxes: (Math.abs(this.parseNumber(row.Withholding_Tax) || 0)) + (Math.abs(this.parseNumber(row.Tax_Stamp) || 0)),
+      accruedInterest: this.parseNumber(row.Accrued_Interests),
+      fxRate: this.parseNumber(row.Exchange_Rate),
+      bankTypeCode: row.Order_Type_ID || row.Meta_Type_ID,
+      bankTypeLabel: row.Order_Type || row.Meta_Type,
+      reference: row.Order
+    });
   },
 
   /**

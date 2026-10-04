@@ -10,6 +10,7 @@
  */
 
 import { OPERATION_TYPES } from '../constants/operationTypes';
+import { withStandard, signedFromFlag } from '../helpers/operationStandardizer';
 
 export const CFMFXParser = {
   /**
@@ -186,7 +187,7 @@ export const CFMFXParser = {
     const baseCurrency = row[c.BASE_CURRENCY] || '';
     const settlementCurrency = row[c.SETTLEMENT_CURRENCY] || '';
 
-    return {
+    const operation = {
       // Bank and portfolio identifiers
       bankId,
       bankName,
@@ -214,6 +215,9 @@ export const CFMFXParser = {
       operationType,
       operationCategory: 'FX',
       operationNumber: row[c.OPERATION_NUMBER] || null,
+      // Both legs of a deal share the operation number; currency + direction tell them apart.
+      // The .001/.002 suffix distinguishes the legs of a swap (different rates), so it is kept.
+      operationId: row[c.OPERATION_NUMBER] ? `${row[c.OPERATION_NUMBER]}|${currency}|${row[c.DIRECTION] || ''}` : null,
       operationTypeLabel: row[c.OPERATION_TYPE] || null,
       direction: row[c.DIRECTION] || null,
       operationCurrency: currency,
@@ -254,6 +258,20 @@ export const CFMFXParser = {
         currencyRepeat: row[c.CURRENCY_REPEAT]
       }
     };
+
+    // Each leg is booked in its own currency: C = currency received, D = currency paid
+    const isCredit = String(row[c.DIRECTION] || '').toUpperCase() === 'C';
+    return withStandard(operation, {
+      type: operationType,
+      description: row[c.TEXT] || row[c.OPERATION_TYPE],
+      instrumentName: `FX ${currency}/${baseCurrency}`,
+      amount: signedFromFlag(amount, isCredit),
+      currency,
+      fxRate,
+      bankTypeCode: `${row[c.OPERATION_TYPE] || ''} (${row[c.DIRECTION] || ''})`,
+      bankTypeLabel: row[c.OPERATION_TYPE],
+      reference: row[c.OPERATION_NUMBER]
+    });
   },
 
   /**

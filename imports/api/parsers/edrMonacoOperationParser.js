@@ -10,7 +10,50 @@
  * First row contains column headers, data starts from row 2
  */
 
-import { OPERATION_TYPES } from '../constants/operationTypes';
+import { OPERATION_TYPES, directedType } from '../constants/operationTypes';
+import { withStandard } from '../helpers/operationStandardizer';
+
+// EDR securities movements carry a 3-letter codeope1; cash movements only a numeric
+// codeope3 whose wording (libelle) tells several things apart under one code.
+const EDR_SECURITY_CODES = {
+  CPS: OPERATION_TYPES.COUPON,             // Coupons (EXT.CPS = reversal, signed debit)
+  DIV: OPERATION_TYPES.DIVIDEND,
+  ACT: OPERATION_TYPES.BUY,                // Achat
+  VCT: OPERATION_TYPES.SELL,               // Vente
+  VTE: OPERATION_TYPES.SELL,
+  RBT: OPERATION_TYPES.REDEMPTION,         // Remboursement
+  ECH: OPERATION_TYPES.REDEMPTION,         // Echéance
+  SBS: OPERATION_TYPES.SUBSCRIPTION,
+  INT: OPERATION_TYPES.INTEREST,
+  TDE: OPERATION_TYPES.TRANSFER_IN,        // Transfert dépositaire (entrée) — securities
+  TDS: OPERATION_TYPES.TRANSFER_OUT,       // Transfert dépositaire (sortie) — securities
+  LIV: OPERATION_TYPES.TRANSFER_IN,
+  CNE: OPERATION_TYPES.CORPORATE_ACTION,   // Conversion (entrée)
+  CNS: OPERATION_TYPES.CORPORATE_ACTION,   // Conversion (sortie)
+  CNA: OPERATION_TYPES.CORPORATE_ACTION,   // Cost adjustment linked to a conversion
+  CNV: OPERATION_TYPES.CORPORATE_ACTION,
+  MCA: OPERATION_TYPES.CORPORATE_ACTION    // Modification du prix d'achat
+};
+
+// Securities moved without cash (the amount is the value of the securities)
+const EDR_NO_CASH_CODES = new Set(['TDE', 'TDS', 'LIV', 'CNE', 'CNS', 'CNA', 'CNV', 'MCA']);
+
+// Cash wordings (lowercase, accents stripped), first match wins
+const EDR_CASH_WORDING = [
+  [/^(dim|rbt)\.c/, OPERATION_TYPES.DEPOSIT_MATURITY],  // deposit repaid
+  [/^cat\.c/, OPERATION_TYPES.DEPOSIT_PLACEMENT],       // call deposit placed
+  [/^int\.c|interets? debiteurs?|interets? crediteurs?/, OPERATION_TYPES.INTEREST],
+  [/prelevement forfaitaire|impot|retenue a la source/, OPERATION_TYPES.TAX],
+  [/solde mensuel cb/, OPERATION_TYPES.CARD_PAYMENT],    // card statement settlement
+  [/cotisation carte|frais|droits de garde|commission/, OPERATION_TYPES.FEE],
+  [/nivellement de compte/, 'TRANSFER'],
+  [/^virt|virement/, 'PAYMENT']
+];
+
+// Card purchases / refunds and cash withdrawals (codeope3)
+const EDR_CARD_CODES = new Set(['247', '293', '237']);
+
+const stripAccents = (str) => String(str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
 export const EDRMonacoOperationParser = {
   /**
@@ -66,30 +109,6 @@ export const EDRMonacoOperationParser = {
     'code_val': 'SECURITY_CODE',
     'rub': 'CATEGORY',
     'id_cat': 'CATEGORY_ID'
-  },
-
-  /**
-   * Operation code mappings for EDR
-   * Based on codeope1, codeope3, and genre
-   */
-  operationCodeMap: {
-    // codeope1 mappings
-    'CPS': OPERATION_TYPES.COUPON,           // Coupons
-    'ACT': OPERATION_TYPES.BUY,              // Achat (Buy)
-    'VTE': OPERATION_TYPES.SELL,             // Vente (Sell)
-    'DIV': OPERATION_TYPES.DIVIDEND,         // Dividende
-    'INT': OPERATION_TYPES.INTEREST,         // Intérêts
-    'RBT': OPERATION_TYPES.REDEMPTION,       // Remboursement
-    'ECH': OPERATION_TYPES.REDEMPTION,       // Echéance (Maturity)
-    'SBS': OPERATION_TYPES.SUBSCRIPTION,     // Souscription
-    'LIV': OPERATION_TYPES.TRANSFER_IN,      // Livraison
-    'VIR': OPERATION_TYPES.TRANSFER_OUT,     // Virement
-
-    // codeope3 mappings (more specific)
-    '247': OPERATION_TYPES.CARD_PAYMENT,     // ACHAT CB (Card Payment)
-    '408': OPERATION_TYPES.TRANSFER_IN,      // DEPOT A PREAVIS (Deposit)
-    '120': OPERATION_TYPES.TRANSFER_IN,      // ENTREE DE FONDS (Funds In)
-    '121': OPERATION_TYPES.TRANSFER_OUT,     // SORTIE DE FONDS (Funds Out)
   },
 
   /**
@@ -238,71 +257,18 @@ export const EDRMonacoOperationParser = {
   /**
    * Map operation codes to standardized operation type
    */
-  mapOperationType(row) {
-    const code1 = (row.OPERATION_CODE_1 || '').toUpperCase();
-    const code3 = row.OPERATION_CODE_3 || '';
-    const label1 = (row.OPERATION_LABEL_1 || '').toLowerCase();
-    const label3 = (row.OPERATION_LABEL_3 || '').toLowerCase();
-    const description = (row.DESCRIPTION || '').toLowerCase();
-    const direction = row.DIRECTION;
+  mapOperationType(row, signedAmount) {
+    const code1 = (row.OPERATION_CODE_1 || '').toUpperCase().trim();
+    const code3 = (row.OPERATION_CODE_3 || '').trim();
+    if (code1 && EDR_SECURITY_CODES[code1]) return EDR_SECURITY_CODES[code1];
+    if (EDR_CARD_CODES.has(code3)) return OPERATION_TYPES.CARD_PAYMENT;
 
-    // Check codeope3 first (most specific)
-    if (code3 && this.operationCodeMap[code3]) {
-      return this.operationCodeMap[code3];
+    const wording = stripAccents(`${row.DESCRIPTION || ''} ${row.OPERATION_LABEL_3 || ''}`).toLowerCase().trim();
+    for (const [pattern, type] of EDR_CASH_WORDING) {
+      if (pattern.test(wording)) return directedType(type, signedAmount);
     }
-
-    // Check codeope1
-    if (code1 && this.operationCodeMap[code1]) {
-      return this.operationCodeMap[code1];
-    }
-
-    // Check labels for keywords
-    const allLabels = `${label1} ${label3} ${description}`;
-
-    if (allLabels.includes('coupon') || allLabels.includes('cps')) {
-      return OPERATION_TYPES.COUPON;
-    }
-    if (allLabels.includes('achat') || allLabels.includes('buy') || allLabels.includes('purchase')) {
-      return OPERATION_TYPES.BUY;
-    }
-    if (allLabels.includes('vente') || allLabels.includes('sell') || allLabels.includes('sale')) {
-      return OPERATION_TYPES.SELL;
-    }
-    if (allLabels.includes('dividende') || allLabels.includes('dividend')) {
-      return OPERATION_TYPES.DIVIDEND;
-    }
-    if (allLabels.includes('interet') || allLabels.includes('interest') || allLabels.includes('int.')) {
-      return OPERATION_TYPES.INTEREST;
-    }
-    if (allLabels.includes('remboursement') || allLabels.includes('redemption') || allLabels.includes('rbt')) {
-      return OPERATION_TYPES.REDEMPTION;
-    }
-    if (allLabels.includes('echeance') || allLabels.includes('maturity')) {
-      return OPERATION_TYPES.REDEMPTION;
-    }
-    if (allLabels.includes('depot') || allLabels.includes('deposit') || allLabels.includes('entree')) {
-      return OPERATION_TYPES.TRANSFER_IN;
-    }
-    if (allLabels.includes('virement') || allLabels.includes('transfer') || allLabels.includes('sortie')) {
-      return OPERATION_TYPES.TRANSFER_OUT;
-    }
-    if (allLabels.includes('cb') || allLabels.includes('carte') || allLabels.includes('card')) {
-      return OPERATION_TYPES.CARD_PAYMENT;
-    }
-    if (allLabels.includes('frais') || allLabels.includes('commission') || allLabels.includes('fee')) {
-      return OPERATION_TYPES.FEE;
-    }
-    if (allLabels.includes('impot') || allLabels.includes('tax') || allLabels.includes('prelevement')) {
-      return OPERATION_TYPES.TAX;
-    }
-
-    // Default based on direction
-    if (direction === 'C') {
-      return OPERATION_TYPES.PAYMENT_IN;
-    } else if (direction === 'D') {
-      return OPERATION_TYPES.PAYMENT_OUT;
-    }
-
+    // Unlabelled cash movement: a payment in or out
+    if (row.GENRE_CODE === '001' || !row.ISIN || row.ISIN === 'N/A') return directedType('PAYMENT', signedAmount);
     return OPERATION_TYPES.OTHER;
   },
 
@@ -358,7 +324,7 @@ export const EDRMonacoOperationParser = {
     const signedAmount = direction === 'D' ? -(amount || 0) : (amount || 0);
 
     // Determine operation type and category
-    const operationType = this.mapOperationType(row);
+    const operationType = this.mapOperationType(row, signedAmount);
     const isin = row.ISIN && row.ISIN !== 'N/A' ? row.ISIN : null;
     const operationCategory = this.mapOperationCategory(row.GENRE_CODE, isin);
 
@@ -367,7 +333,11 @@ export const EDRMonacoOperationParser = {
                        `${row.OPERATION_LABEL_1 || ''} ${row.OPERATION_LABEL_3 || ''}`.trim() ||
                        'Unknown Operation';
 
-    return {
+    const code1 = (row.OPERATION_CODE_1 || '').toUpperCase().trim();
+    // Securities descriptions read "CPS/ISSUER NAME" (or "EXT.CPS/..." for a reversal)
+    const securityName = isin ? description.replace(/^[A-Z.]+\//, '') : null;
+
+    const operation = {
       // Bank and portfolio identifiers
       bankId,
       bankName,
@@ -396,6 +366,12 @@ export const EDRMonacoOperationParser = {
       instrumentCode: isin || row.SECURITY_CODE || null,
       transactionRef: row.REFERENCE || null,
       movementId: row.MOVEMENT_ID || null,
+      // One movement can have several lines (capital + interest of a deposit, both legs
+      // of a card settlement); movement + entry number identifies one line. Securities
+      // events carry movement 0 and fall back to the content-based key.
+      operationId: row.MOVEMENT_ID && String(row.MOVEMENT_ID) !== '0'
+        ? `${row.MOVEMENT_ID}|${row.ENTRY_NUMBER || ''}`
+        : null,
       entryNumber: row.ENTRY_NUMBER || null,
       transactionLabel: description,
       operationCode1: row.OPERATION_CODE_1 || null,
@@ -440,6 +416,24 @@ export const EDRMonacoOperationParser = {
         fee1, fee2, fee3, fee4, fee5, fee6
       }
     };
+
+    return withStandard(operation, {
+      type: operationType,
+      description,
+      instrumentName: securityName,
+      isin,
+      quantity: isin ? quantity : null,
+      price: isin ? price : null,
+      amount: signedAmount,
+      currency: row.CURRENCY,
+      cashImpact: !EDR_NO_CASH_CODES.has(code1),
+      fees: (fee1 || 0) + (fee2 || 0) + (fee3 || 0) + (fee4 || 0) + (fee5 || 0) + (fee6 || 0),
+      taxes: (tax || 0) + (euTax || 0),
+      accruedInterest: accruedCoupon,
+      bankTypeCode: [row.OPERATION_CODE_1, row.OPERATION_CODE_3].filter(Boolean).join('/') || row.GENRE_CODE,
+      bankTypeLabel: (row.OPERATION_LABEL_1 || row.OPERATION_LABEL_3 || '').trim() || null,
+      reference: row.REFERENCE || row.MOVEMENT_ID
+    });
   },
 
   /**

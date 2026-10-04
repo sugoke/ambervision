@@ -10,7 +10,33 @@
  * First row contains column headers, data starts from row 2
  */
 
-import { OPERATION_TYPES, mapAndbankOperationType } from '../constants/operationTypes';
+import { OPERATION_TYPES, directedType } from '../constants/operationTypes';
+import { withStandard, signedFromFlag } from '../helpers/operationStandardizer';
+
+// Andbank transaction type codes are '<number><3-letter suffix>' (190CPS, 120RBT, 999CSH).
+// The suffix carries the nature of the movement; CSH (cash) codes only say 'cash' and
+// their wording (Transaction type label) tells fees, transfers and payments apart.
+const ANDBANK_SUFFIX_MAP = {
+  CPS: OPERATION_TYPES.COUPON,
+  DIV: OPERATION_TYPES.DIVIDEND,
+  RBT: OPERATION_TYPES.REDEMPTION,
+  VCT: OPERATION_TYPES.SELL,
+  ACT: OPERATION_TYPES.BUY,
+  SBS: OPERATION_TYPES.SUBSCRIPTION,
+  INT: OPERATION_TYPES.INTEREST
+};
+
+// Cash wordings (lowercase, accents stripped) → type; first match wins
+const ANDBANK_CASH_WORDING = [
+  [/frais|tva|commission|droits de garde/, OPERATION_TYPES.FEE],
+  [/interet|\bint\.? ?(debit|credit)/, OPERATION_TYPES.INTEREST],
+  [/impot|prelevement fiscal|retenue/, OPERATION_TYPES.TAX],
+  [/couverture de compte|compte a compte|alimentation compte|transfert/, 'TRANSFER'],
+  [/virement|paiement|payment|sepa|swift/, 'PAYMENT'],
+  [/change/, OPERATION_TYPES.FX_TRADE]
+];
+
+const stripAccents = (str) => String(str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
 export const AndbankOperationParser = {
   /**
@@ -178,9 +204,15 @@ export const AndbankOperationParser = {
    * Map transaction type to standardized operation type
    * Uses centralized mapping from operationTypes.js constants
    */
-  mapOperationType(typeCode, typeLabel, movementType, movementLabel) {
-    // Use centralized mapping, falling back to typeLabel if typeCode doesn't match
-    return mapAndbankOperationType(typeCode, typeLabel || movementLabel, movementType);
+  mapOperationType(typeCode, typeLabel, signedAmount) {
+    const code = String(typeCode || '').toUpperCase();
+    const suffix = code.replace(/^\d+/, '');
+    if (ANDBANK_SUFFIX_MAP[suffix]) return ANDBANK_SUFFIX_MAP[suffix];
+    const wording = stripAccents(typeLabel).toLowerCase();
+    for (const [pattern, type] of ANDBANK_CASH_WORDING) {
+      if (pattern.test(wording)) return directedType(type, signedAmount);
+    }
+    return OPERATION_TYPES.OTHER;
   },
 
   /**
@@ -233,12 +265,16 @@ export const AndbankOperationParser = {
     const exchangeRate = this.parseNumber(row.EXCHANGE_RATE);
     const interestRate = this.parseNumber(row.INTEREST_RATE);
 
+    // Andbank amounts are unsigned; DebitCredit (C/D) gives the direction. Cash lines
+    // leave Net amount at 0 and carry the amount in transaction currency only.
+    const isCredit = String(row.DEBIT_CREDIT || '').trim().toUpperCase() === 'C';
+    const signedAmount = signedFromFlag(amountTransactionCcy || netAmount, isCredit);
+
     // Determine operation type and category
     const operationType = this.mapOperationType(
       row.TRANSACTION_TYPE_CODE,
       row.TRANSACTION_TYPE_LABEL,
-      row.MOVEMENT_TYPE,
-      row.MOVEMENT_TYPE_LABEL
+      signedAmount
     );
     const operationCategory = this.mapSecurityCategory(
       row.SECURITY_TYPE_CODE,
@@ -248,7 +284,7 @@ export const AndbankOperationParser = {
     // Calculate total fees
     const totalFees = (brokerFees || 0) + (commission || 0) + (tax || 0) + (fees || 0) + (vat || 0);
 
-    return {
+    const operation = {
       // Bank and portfolio identifiers
       bankId,
       bankName,
@@ -278,6 +314,8 @@ export const AndbankOperationParser = {
       operationCode: row.TRANSACTION_TYPE_CODE || row.MOVEMENT_TYPE || 'UNKNOWN', // For unique key generation
       instrumentCode: row.ISIN || row.INTERNAL_ASSET_CODE || null, // For unique key generation
       transactionRef: row.TRANSACTION_REF || null,
+      // Movement type is a per-movement id (e.g. 2474652.1), unique per operation
+      operationId: row.MOVEMENT_TYPE || null,
       transactionLabel: row.TRANSACTION_LABEL || null,
       transactionTypeCode: row.TRANSACTION_TYPE_CODE || null,
       transactionTypeLabel: row.TRANSACTION_TYPE_LABEL || null,
@@ -319,6 +357,24 @@ export const AndbankOperationParser = {
         transactionCurrency: row.TRANSACTION_CCY || null
       }
     };
+
+    return withStandard(operation, {
+      type: operationType,
+      description: row.TRANSACTION_LABEL || row.TRANSACTION_TYPE_LABEL,
+      instrumentName: row.ISIN ? row.ASSET_LABEL : null,
+      isin: row.ISIN,
+      quantity: row.ISIN ? quantity : null,
+      price: row.ISIN ? price : null,
+      amount: signedAmount,
+      currency: row.TRANSACTION_CCY || row.SECURITY_CCY || row.PORTFOLIO_CCY,
+      fees: (brokerFees || 0) + (commission || 0) + (fees || 0) + (vat || 0),
+      taxes: tax,
+      accruedInterest: interests,
+      fxRate: exchangeRate,
+      bankTypeCode: row.TRANSACTION_TYPE_CODE,
+      bankTypeLabel: row.TRANSACTION_TYPE_LABEL,
+      reference: row.TRANSACTION_REF
+    });
   },
 
   /**

@@ -1,345 +1,295 @@
 /**
  * Julius Baer Operation File Parser
  *
- * Parses Julius Baer CSV operation files (OPE) and converts to standardized schema
+ * Parses Julius Baer CSV operation files (OPE) into the PMSOperations schema.
  *
  * Filename format: DDS########_DAILY_OPE_JB.YYYYMMDD.HHMMSS.EAM#######.CSV
  * Example: DDS03632510_DAILY_OPE_JB.20251117.031754.EAM3632510.CSV
  *
- * File format: Semicolon-delimited CSV with header row
+ * File format: semicolon-delimited CSV with header row. The same operation is repeated
+ * in the daily files of following days; OPER_CODE is the bank's unique reference for it
+ * (one OPER_CODE = one operation), so it is the operation's id.
+ *
+ * Julius Baer quirks:
+ * - OP_NET_AMNT is already signed from the account's view (+ credit, − debit) and is
+ *   expressed in NET_CURR (falls back to POS_CUR for securities moves).
+ * - TYPE_NAME carries the operation wording; several cash wordings ("ACKZ Account
+ *   Transfer", "SWIFTCTS Payment", "MONEY MARKET") only get their direction from the sign.
+ * - "Securities transfer" moves securities in/out without cash: OP_NET_AMNT is the
+ *   value of the securities, DEBIT/CREDIT is 0.
+ * - DEBIT/CREDIT is the signed cash movement on the account; when present its sign wins
+ *   over OP_NET_AMNT ("Third party fees" carry a positive net but are debits).
+ * - INSTR_NAME is truncated to 20 characters; REMARK2 repeats it in full after the
+ *   operation wording, so the full name is read from there.
+ * - "6_B_LOAN" (loan drawdown / repayment) is financing, not a client flow: it stays OTHER.
  */
 
-import { mapJuliusBaerOperationType, OPERATION_TYPES } from '../constants/operationTypes';
+import { OPERATION_TYPES, directedType } from '../constants/operationTypes';
+import { withStandard } from '../helpers/operationStandardizer';
+
+// TYPE_NAME (lowercase) → type. Two-way wordings resolve their direction from the sign.
+const TYPE_NAME_MAP = {
+  'securities purchase': OPERATION_TYPES.BUY,
+  'new issue purchase': OPERATION_TYPES.BUY,
+  'securities sale': OPERATION_TYPES.SELL,
+  'redemption': OPERATION_TYPES.REDEMPTION,
+  'dt_early.redm.m': OPERATION_TYPES.REDEMPTION,
+  'dt_spec.red': OPERATION_TYPES.REDEMPTION,
+  'liquidation cash': OPERATION_TYPES.REDEMPTION,
+  'interest payment': OPERATION_TYPES.COUPON,
+  'cash dividend': OPERATION_TYPES.DIVIDEND,
+  'dividend': OPERATION_TYPES.DIVIDEND,
+  'payment of interest': OPERATION_TYPES.INTEREST,
+  'debit interest': OPERATION_TYPES.INTEREST,
+  'credit interest': OPERATION_TYPES.INTEREST,
+  'correction of debit': OPERATION_TYPES.INTEREST,
+  'option premium': OPERATION_TYPES.OPTION_PREMIUM,
+  'acc. maintenance fee': OPERATION_TYPES.FEE,
+  'safecustody fees': OPERATION_TYPES.FEE,
+  'lombard file fee': OPERATION_TYPES.FEE,
+  'third party fees': OPERATION_TYPES.FEE,
+  'acr4 reverse of charges': OPERATION_TYPES.FEE,
+  'taxes': OPERATION_TYPES.TAX,
+  'money market': 'DEPOSIT',
+  'ackz account transfer': 'TRANSFER',
+  'swiftcts payment': 'PAYMENT',
+  'swiftmxct payment': 'PAYMENT',
+  'pacs.008 receipt of payment': 'PAYMENT'
+};
 
 export const JuliusBaerOperationParser = {
-  /**
-   * Bank identifier
-   */
   bankName: 'Julius Baer',
 
-  /**
-   * Filename pattern for Julius Baer operation files (OPE = Operations)
-   */
   filenamePattern: /^DDS\d+_DAILY_OPE_JB\.(\d{8})\.\d+\.EAM\d+\.CSV$/i,
 
-  /**
-   * Check if filename matches Julius Baer operation file pattern
-   */
   matchesPattern(filename) {
-    return this.filenamePattern.test(filename);
+    return this.filenamePattern.test(filename) || String(filename).includes('_JB.');
+  },
+
+  parseNumber(value) {
+    if (value === null || value === undefined || String(value).trim() === '') return 0;
+    const n = parseFloat(String(value).replace(/,/g, ''));
+    return Number.isFinite(n) ? n : 0;
   },
 
   /**
-   * Extract date from filename
-   * Format: DDS03632510_DAILY_OPE_JB.20251117.031754.EAM3632510.CSV
-   * Returns: Date object
+   * Parse Julius Baer date format (YYYYMMDD or DD/MM/YYYY HH:MM:SS)
    */
-  extractFileDate(filename) {
-    const match = filename.match(this.filenamePattern);
-    if (!match) {
-      throw new Error(`Filename does not match Julius Baer OPE pattern: ${filename}`);
+  parseDate(dateStr) {
+    if (!dateStr || dateStr.trim() === '') return null;
+    const str = dateStr.trim();
+    if (/^\d{8}$/.test(str)) {
+      return new Date(parseInt(str.substring(0, 4)), parseInt(str.substring(4, 6)) - 1, parseInt(str.substring(6, 8)));
     }
-
-    const dateStr = match[1]; // YYYYMMDD
-    const year = parseInt(dateStr.substring(0, 4));
-    const month = parseInt(dateStr.substring(4, 6)) - 1;
-    const day = parseInt(dateStr.substring(6, 8));
-
-    return new Date(year, month, day);
+    if (str.includes('/')) {
+      const [datePart] = str.split(' ');
+      const [day, month, year] = datePart.split('/');
+      return new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+    }
+    const d = new Date(str);
+    return isNaN(d.getTime()) ? null : d;
   },
 
   /**
-   * Parse CSV content to array of objects (with header row)
+   * Map TYPE_NAME / SUB_TYPE_NAME to a standard type, using the signed net amount
+   * for wordings that do not carry a direction.
    */
-  parseCSV(csvContent) {
-    const lines = csvContent.trim().split('\n');
-    if (lines.length < 2) {
-      return [];
-    }
+  mapOperationType(typeName, subtypeName, signedAmount) {
+    const type = (typeName || '').toLowerCase().trim();
+    const subtype = (subtypeName || '').toLowerCase().trim();
 
-    // First line is headers
+    if (type === 'securities transfer') {
+      if (subtype.includes('out')) return OPERATION_TYPES.TRANSFER_OUT;
+      if (subtype.includes('in')) return OPERATION_TYPES.TRANSFER_IN;
+      return directedType('TRANSFER', signedAmount);
+    }
+    const mapped = TYPE_NAME_MAP[type];
+    if (mapped) return directedType(mapped, signedAmount);
+    return OPERATION_TYPES.OTHER;
+  },
+
+  mapOperationCategory(instrumentType) {
+    const type = (instrumentType || '').toLowerCase();
+    if (type.includes('equity') || type.includes('stock') || type.includes('share')) return 'EQUITY';
+    if (type.includes('bond') || type.includes('fixed income')) return 'BOND';
+    if (type.includes('cash') || type.includes('account') || type.includes('deposit')) return 'CASH';
+    if (type.includes('cert') || type.includes('structured') || type.includes('convertible')) return 'STRUCTURED_PRODUCT';
+    if (type.includes('fund')) return 'FUND';
+    return 'OTHER';
+  },
+
+  /**
+   * Parse a Julius Baer operations file.
+   * @returns {Array} operations
+   */
+  parse(fileContent, options = {}) {
+    const { bankId, sourceFile, fileDate, userId } = options;
+    const lines = String(fileContent || '').trim().split('\n');
+    if (lines.length < 2) return [];
+
     const headers = lines[0].split(';').map(h => h.trim());
+    const operations = [];
 
-    // Parse remaining lines
-    const rows = [];
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i].trim();
-      if (!line) continue; // Skip empty lines
-
+      if (!line) continue;
       const values = line.split(';');
-      const row = {};
+      const record = {};
+      headers.forEach((header, index) => { record[header] = values[index] ? values[index].trim() : ''; });
 
-      headers.forEach((header, index) => {
-        row[header] = values[index] ? values[index].trim() : '';
-      });
-
-      rows.push(row);
+      try {
+        const operation = this.mapToSchema(record, { bankId, sourceFile, fileDate, userId });
+        if (operation) operations.push(operation);
+      } catch (error) {
+        console.error(`[JB_OPERATIONS] Error parsing record ${i}: ${error.message}`);
+      }
     }
 
-    return rows;
-  },
-
-  /**
-   * Parse number from string
-   */
-  parseNumber(value) {
-    if (!value || value === '') return null;
-
-    const str = String(value).trim();
-    if (str === '') return null;
-
-    // Handle percentage symbol if present
-    const cleanedStr = str.replace(/%/g, '').replace(/,/g, '');
-    const num = parseFloat(cleanedStr);
-
-    return isNaN(num) ? null : num;
-  },
-
-  /**
-   * Parse date from string (YYYYMMDD format)
-   */
-  parseDate(value) {
-    if (!value || value === '') return null;
-
-    const str = String(value).trim();
-    if (str === '' || str.length !== 8 || !/^\d{8}$/.test(str)) return null;
-
-    const year = parseInt(str.substring(0, 4));
-    const month = parseInt(str.substring(4, 6)) - 1;
-    const day = parseInt(str.substring(6, 8));
-
-    const date = new Date(year, month, day);
-    return isNaN(date.getTime()) ? null : date;
-  },
-
-  /**
-   * Strip leading zeros from portfolio/account numbers
-   */
-  stripLeadingZeros(value) {
-    if (!value) return '';
-    return String(value).replace(/^0+/, '') || '0';
-  },
-
-  /**
-   * Parse operations file
-   * Returns array of operation objects in standardized schema
-   */
-  parseOperations(csvContent, { bankId, bankName, sourceFile, fileDate, userId }) {
-    console.log(`[JB_OPE_PARSER] Parsing Julius Baer operations file: ${sourceFile}`);
-
-    const rows = this.parseCSV(csvContent);
-    console.log(`[JB_OPE_PARSER] Found ${rows.length} operation rows`);
-
-    // Filter out empty rows
-    const validRows = rows.filter(row => row.OPER_CODE || row.PORTFOLIO);
-
-    const operations = validRows.map(row =>
-      this.mapOperationToSchema(row, bankId, bankName, sourceFile, fileDate, userId)
-    );
-
-    console.log(`[JB_OPE_PARSER] Mapped ${operations.length} operations`);
-
+    console.log(`[JB_OPERATIONS] ${operations.length} operations from ${sourceFile}`);
     return operations;
   },
 
   /**
-   * Map Julius Baer operation row to standardized schema
+   * Recompute type and std of an operation stored by an older parser version whose
+   * source file is no longer on disk. The stored fields are the file's columns under
+   * other names, so they are mapped back and run through the same mapping.
+   * @returns {{ operationType, std, currency }}
    */
-  mapOperationToSchema(row, bankId, bankName, sourceFile, fileDate, userId) {
-    const inputDate = this.parseDate(row.INPUT_DATE);
-    const operDate = this.parseDate(row.OPER_DATE);
-    const valueDate = this.parseDate(row.VALUE_DATE);
-    const expirationDate = this.parseDate(row.EXPIRATION_DATE);
-    const orderCreateDate = this.parseDate(row.ORD_CREA_DATE);
-    const orderExecDate = this.parseDate(row.ORD_EXEC_DATE);
-
-    // Calculate total fees
-    const bankCommission = this.parseNumber(row.BANK_COMMISSION) || 0;
-    const brokerFee = this.parseNumber(row.BROKER_FEE) || 0;
-    const tax = this.parseNumber(row.TAX) || 0;
-    const otherFee = this.parseNumber(row.OTHER_FEE) || 0;
-    const finTxnTax = this.parseNumber(row.FIN_TXN_TAX) || 0;
-    const totalFees = bankCommission + brokerFee + tax + otherFee + finTxnTax;
-
-    // Determine net amount for direction detection
-    const netAmount = this.parseNumber(row.OP_NET_AMNT) || this.parseNumber(row.SYS_NET_AMOUNT) || 0;
-
-    return {
-      // Source Information
-      bankId,
-      bankName,
-      connectionId: null,
-      sourceFile,
-      fileDate,
-      processingDate: new Date(),
-
-      // Operation Identifiers
-      operationId: row.OPER_CODE || null,
-      externalReference: row.OPER_CODE || null,
-      orderCode: row.ACC_CODE || null,
-
-      // Account Information
-      portfolioCode: this.stripLeadingZeros(row.PORTFOLIO),
-      portfolioCurrency: row.PORTF_CCY || null,
-      accountNumber: row.ACCOUNT || null,
-      accountIban: row.ACCOUNT_IBAN || null,
-
-      // Security Information
-      isin: row.INSTR_ISIN || null,
-      instrumentCode: row.INSTR_CODE || null,
-      instrumentWkn: row.INSTR_WKN || null,
-      securityName: row.INSTR_NAME || null,
-      securityType: row.INSTR_TYPE_NAME || null,
-      securitySubType: row.INSTR_SUBTYPE_NAME || null,
-      securityCurrency: row.INSTR_CCY || null,
-
-      // Transaction Details - Map to standardized operation type
-      operationType: mapJuliusBaerOperationType(
-        row.OPER_NATURE,
-        row.TYPE_NAME,
-        row.SUB_TYPE_NAME
-      ),
-      operationTypeName: row.TYPE_NAME || row.OPER_NATURE || null,
-      operationSubType: row.SUB_TYPE_NAME || null,
-      originalOperationType: row.OPER_NAT_CODE || null, // Preserve original code
-      typeCode: row.TYPE_CODE || null,
-      subTypeCode: row.SUB_TYPE_CODE || null,
-
-      // Direction
-      debitCredit: row['DEBIT/CREDIT'] || null,
-
-      // Dates - operationDate is REQUIRED
-      operationDate: operDate || valueDate || inputDate || fileDate,
-      inputDate: inputDate,
-      valueDate: valueDate,
-      expirationDate: expirationDate,
-      orderCreateDate: orderCreateDate,
-      orderExecDate: orderExecDate,
-
-      // Amounts
-      quantity: this.parseNumber(row.QUANTITY),
-      quote: this.parseNumber(row.QUOTE),
-      currency: row.INSTR_U_CCY || row.INSTR_CCY || null,
-      positionCurrency: row.POS_CUR || null,
-      netCurrency: row.NET_CURR || null,
-      accruedInterest: this.parseNumber(row.AI),
-      grossAmount: this.parseNumber(row.GROSS_AMOUNT),
-      netAmount: this.parseNumber(row.OP_NET_AMNT),
-      systemNetAmount: this.parseNumber(row.SYS_NET_AMOUNT),
-
-      // Fees breakdown
-      bankCommission: this.parseNumber(row.BANK_COMMISSION),
-      brokerFee: this.parseNumber(row.BROKER_FEE),
-      tax: this.parseNumber(row.TAX),
-      otherFee: this.parseNumber(row.OTHER_FEE),
-      finTxnTax: this.parseNumber(row.FIN_TXN_TAX),
-      totalFees: totalFees !== 0 ? totalFees : null,
-
-      // Exchange rates
-      accountExchangeRate: this.parseNumber(row.ACC_EXCH_RATE),
-      instrumentExchangeRate: this.parseNumber(row.INSTR_EXCH_RATE),
-
-      // Interest rate for bonds/deposits
-      interestRate: this.parseNumber(row.INT_RATE),
-      accrualRule: row.ACCRUAL_RULE || null,
-
-      // Counterparty information
-      counterparty: row.COUNTERPARTY || null,
-      market: row.MARKET || null,
-      payeeCounterparty: row.PAY_CTPY || null,
-      payeeCountry: row.PAY_CTRY || null,
-      payeeIban: row.IBAN_CTPY || null,
-      payNote: row.PAY_NOTE || null,
-      payRemark: row.PAY_REMARK || null,
-
-      // Remarks
-      remark: row.REMARK2 || null,
-
-      // Adjustment information (for corporate actions)
-      adjQuantity: this.parseNumber(row.ADJ_QUANTITY),
-      adjDeposit: row.ADJ_DEPOSIT || null,
-      adjInstrumentCode: row.ADJ_INSTR_CODE || null,
-      adjInstrumentIsin: row.ADJ_INSTR_ISIN || null,
-      adjInstrumentName: row.ADJ_INSTR_NAME || null,
-
-      // Reversal information
-      reversalOperNature: row.REV_OPER_NAT_E || null,
-      reversalOperCode: row.REV_OPER_CODE || null,
-
-      // Reference operation
-      refOperNature: row.REF_NAT_E || null,
-      refOperCode: row.REF_OPER_CODE || null,
-
-      // Money market specific
-      mmTotalAiPosCur: this.parseNumber(row.MM_TOT_AI_POS_CUR),
-
-      // Company code
-      companyCode: row.COMPANY_CODE || null,
-
-      // Bank-Specific Data (preserve all raw fields)
-      bankSpecificData: {
-        operNatCode: row.OPER_NAT_CODE,
-        operNature: row.OPER_NATURE,
-        typeCode: row.TYPE_CODE,
-        typeName: row.TYPE_NAME,
-        subTypeCode: row.SUB_TYPE_CODE,
-        subTypeName: row.SUB_TYPE_NAME,
-        instrNatCode: row.INSTR_NAT_CODE,
-        instrNature: row.INSTR_NATURE,
-        instrType: row.INSTR_TYPE,
-        instrTypeName: row.INSTR_TYPE_NAME,
-        instrSubtype: row.INSTR_SUBTYPE,
-        instrSubtypeName: row.INSTR_SUBTYPE_NAME,
-        instrDenom: row.INSTR_DENOM,
-        deposit: row.DEPOSIT,
-        instrIban: row.INSTR_IBAN,
-        instrFwdAcc: row.INSTR_FWD_ACC
-      },
-
-      // Metadata
-      userId,
-      isProcessed: false,
-      createdAt: new Date()
+  restandardizeStored(op) {
+    const record = {
+      TYPE_NAME: op.operationTypeName || '',
+      SUB_TYPE_NAME: op.operationSubtypeName || '',
+      OP_NET_AMNT: String(op.netAmount ?? ''),
+      GROSS_AMOUNT: String(op.grossAmount ?? ''),
+      'DEBIT/CREDIT': op.bankSpecificData?.debitCredit || '',
+      REMARK2: op.remark || '',
+      INSTR_NAME: op.instrumentName || '',
+      INSTR_ISIN: op.isin || '',
+      INSTR_TYPE_NAME: op.instrumentType || '',
+      INSTR_CCY: op.instrumentCurrency || '',
+      NET_CURR: op.currency || op.instrumentCurrency || op.portfolioCurrency || '',
+      QUANTITY: String(op.quantity ?? ''),
+      QUOTE: String(op.price ?? ''),
+      BANK_COMMISSION: String(op.bankCommission ?? ''),
+      BROKER_FEE: String(op.brokerFee ?? ''),
+      TAX: String(op.tax ?? ''),
+      OTHER_FEE: String(op.otherFee ?? ''),
+      OPER_CODE: op.operationCode || '',
+      ACC_EXCH_RATE: String(op.bankSpecificData?.exchangeRate ?? ''),
+      PORTFOLIO: op.portfolioCode
     };
+    const mapped = this.mapToSchema(record, { bankId: op.bankId, sourceFile: op.sourceFile, fileDate: op.fileDate, userId: op.userId });
+    return { operationType: mapped.operationType, std: mapped.std, currency: mapped.currency };
   },
 
-  /**
-   * Generate unique key for deduplication
-   */
-  generateUniqueKey(operation) {
-    const crypto = require('crypto');
-    const keyParts = [
-      operation.bankId || '',
-      operation.portfolioCode || '',
-      operation.operationId || '',
-      operation.operationDate ? operation.operationDate.toISOString().split('T')[0] : '',
-      operation.isin || operation.instrumentCode || ''
-    ];
+  mapToSchema(record, { bankId, sourceFile, fileDate, userId }) {
+    const inputDate = this.parseDate(record.INPUT_DATE);
+    const operationDate = this.parseDate(record.OPER_DATE) || this.parseDate(record.VALUE_DATE) || inputDate || fileDate;
+    const valueDate = this.parseDate(record.VALUE_DATE);
 
-    return crypto.createHash('sha256').update(keyParts.join('|')).digest('hex');
-  },
+    const quantity = this.parseNumber(record.QUANTITY);
+    const quote = this.parseNumber(record.QUOTE);
+    const bankCommission = this.parseNumber(record.BANK_COMMISSION);
+    const brokerFee = this.parseNumber(record.BROKER_FEE);
+    const tax = this.parseNumber(record.TAX);
+    const finTxnTax = this.parseNumber(record.FIN_TXN_TAX);
+    const otherFee = this.parseNumber(record.OTHER_FEE);
+    const grossAmount = this.parseNumber(record.GROSS_AMOUNT);
+    const netAmount = this.parseNumber(record.OP_NET_AMNT);
+    const operationCode = record.OPER_CODE?.trim() || null;
 
-  /**
-   * Validate operations file before parsing
-   */
-  validate(csvContent) {
-    const lines = csvContent.trim().split('\n');
+    const debitCredit = this.parseNumber(record['DEBIT/CREDIT']);
+    const signedAmount = debitCredit !== 0 ? Math.sign(debitCredit) * Math.abs(netAmount) : netAmount;
+    const remark = record.REMARK2?.trim() || '';
+    const shortName = record.INSTR_NAME?.trim() || '';
+    const nameAt = shortName ? remark.indexOf(shortName) : -1;
+    const fullInstrumentName = nameAt >= 0 ? remark.slice(nameAt) : shortName;
 
-    if (lines.length < 2) {
-      return { valid: false, error: 'File is empty or has no data rows' };
-    }
+    const typeName = record.TYPE_NAME?.trim() || '';
+    const subtypeName = record.SUB_TYPE_NAME?.trim() || '';
+    const operationType = this.mapOperationType(typeName, subtypeName, signedAmount);
+    const isSecuritiesMove = typeName.toLowerCase() === 'securities transfer'
+      || typeName.toLowerCase() === 'deposit transfer';
 
-    const headers = lines[0].split(';').map(h => h.trim());
-    const requiredHeaders = ['PORTFOLIO', 'OPER_DATE', 'OPER_CODE'];
+    const operation = {
+      bankId,
+      portfolioCode: record.PORTFOLIO?.trim() || 'UNKNOWN',
+      portfolioCurrency: record.PORTF_CCY?.trim() || 'EUR',
+      userId,
 
-    const missingHeaders = requiredHeaders.filter(h => !headers.includes(h));
-    if (missingHeaders.length > 0) {
-      return {
-        valid: false,
-        error: `Missing required headers: ${missingHeaders.join(', ')}`
-      };
-    }
+      inputDate,
+      operationDate,
+      valueDate,
+      fileDate,
 
-    return { valid: true };
+      // OPER_CODE is unique per operation (repeated unchanged across daily files)
+      operationId: operationCode,
+
+      instrumentCode: record.INSTR_CODE?.trim(),
+      isin: record.INSTR_ISIN?.trim() || null,
+      wkn: record.INSTR_WKN?.trim() || null,
+      ticker: record.INSTR_ISIN?.trim() || record.INSTR_WKN?.trim() || null,
+      instrumentName: record.INSTR_NAME?.trim() || 'Unknown',
+      instrumentType: record.INSTR_TYPE_NAME?.trim(),
+      instrumentSubtype: record.INSTR_SUBTYPE_NAME?.trim(),
+      instrumentCurrency: record.INSTR_CCY?.trim() || 'EUR',
+      currency: record.NET_CURR?.trim() || record.POS_CUR?.trim() || record.INSTR_CCY?.trim() || null,
+
+      operationType,
+      operationCategory: this.mapOperationCategory(record.INSTR_TYPE_NAME),
+      operationTypeName: typeName || null,
+      operationSubtypeName: subtypeName || null,
+      operationCode,
+
+      quantity,
+      price: quote,
+      grossAmount,
+      netAmount,
+
+      bankCommission,
+      brokerFee,
+      tax,
+      otherFee,
+      totalFees: bankCommission + brokerFee + tax + otherFee,
+
+      account: record.ACCOUNT?.trim(),
+      accountIban: record.ACCOUNT_IBAN?.trim(),
+      counterparty: record.COUNTERPARTY?.trim(),
+      market: record.MARKET?.trim(),
+      remark: record.REMARK2?.trim(),
+
+      sourceFile,
+      importedAt: new Date(),
+      isActive: true,
+
+      bankSpecificData: {
+        debitCredit: record['DEBIT/CREDIT']?.trim(),
+        exchangeRate: this.parseNumber(record.ACC_EXCH_RATE) || 1,
+        referenceCode: record.REF_OPER_CODE?.trim(),
+        orderCreationDate: record.ORD_CREA_DATE?.trim(),
+        orderExecutionDate: record.ORD_EXEC_DATE?.trim(),
+        companyCode: record.COMPANY_CODE?.trim(),
+        operNatureCode: record.OPER_NAT_CODE?.trim()
+      }
+    };
+
+    return withStandard(operation, {
+      type: operationType,
+      description: remark || typeName,
+      instrumentName: fullInstrumentName,
+      isin: record.INSTR_ISIN,
+      quantity,
+      price: quote,
+      amount: signedAmount,
+      currency: operation.currency,
+      cashImpact: !isSecuritiesMove,
+      fees: bankCommission + brokerFee + otherFee,
+      taxes: tax + finTxnTax,
+      accruedInterest: this.parseNumber(record.AI),
+      fxRate: this.parseNumber(record.ACC_EXCH_RATE) || null,
+      bankTypeCode: [record.OPER_NAT_CODE, record.TYPE_CODE, record.SUB_TYPE_CODE].filter(Boolean).join('/'),
+      bankTypeLabel: subtypeName ? `${typeName} – ${subtypeName}` : typeName,
+      reference: operationCode
+    });
   }
 };

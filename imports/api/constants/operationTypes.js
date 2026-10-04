@@ -24,6 +24,11 @@ export const OPERATION_TYPES = {
   DIVIDEND: 'DIVIDEND',                // Dividend payment
   COUPON: 'COUPON',                    // Bond coupon payment
   INTEREST: 'INTEREST',                // Account interest (debit/credit)
+  OPTION_PREMIUM: 'OPTION_PREMIUM',    // Option premium paid out by a structured product
+
+  // Deposits (money market, call and time deposits)
+  DEPOSIT_PLACEMENT: 'DEPOSIT_PLACEMENT', // Cash placed on deposit
+  DEPOSIT_MATURITY: 'DEPOSIT_MATURITY',   // Deposit repaid / liquidated
 
   // Fees & Taxes
   FEE: 'FEE',                          // All fees (custody, management, AUM, transaction)
@@ -59,6 +64,9 @@ export const OPERATION_TYPE_LABELS = {
   [OPERATION_TYPES.DIVIDEND]: 'Dividend',
   [OPERATION_TYPES.COUPON]: 'Coupon',
   [OPERATION_TYPES.INTEREST]: 'Interest',
+  [OPERATION_TYPES.OPTION_PREMIUM]: 'Option Premium',
+  [OPERATION_TYPES.DEPOSIT_PLACEMENT]: 'Deposit Placement',
+  [OPERATION_TYPES.DEPOSIT_MATURITY]: 'Deposit Maturity',
   [OPERATION_TYPES.FEE]: 'Fee',
   [OPERATION_TYPES.TAX]: 'Tax',
   [OPERATION_TYPES.TRANSFER_IN]: 'Transfer In',
@@ -84,6 +92,9 @@ export const OPERATION_TYPE_COLORS = {
   [OPERATION_TYPES.DIVIDEND]: { bg: '#d1fae5', text: '#065f46' },      // Green
   [OPERATION_TYPES.COUPON]: { bg: '#d1fae5', text: '#065f46' },        // Green
   [OPERATION_TYPES.INTEREST]: { bg: '#d1fae5', text: '#065f46' },      // Green
+  [OPERATION_TYPES.OPTION_PREMIUM]: { bg: '#d1fae5', text: '#065f46' }, // Green
+  [OPERATION_TYPES.DEPOSIT_PLACEMENT]: { bg: '#ecfccb', text: '#3f6212' }, // Lime
+  [OPERATION_TYPES.DEPOSIT_MATURITY]: { bg: '#ecfccb', text: '#3f6212' },  // Lime
   [OPERATION_TYPES.FEE]: { bg: '#fee2e2', text: '#991b1b' },           // Red
   [OPERATION_TYPES.TAX]: { bg: '#fee2e2', text: '#991b1b' },           // Red
   [OPERATION_TYPES.TRANSFER_IN]: { bg: '#e0e7ff', text: '#3730a3' },   // Indigo
@@ -96,6 +107,55 @@ export const OPERATION_TYPE_COLORS = {
   [OPERATION_TYPES.CORPORATE_ACTION]: { bg: '#f3f4f6', text: '#374151' }, // Gray
   [OPERATION_TYPES.OTHER]: { bg: '#f3f4f6', text: '#374151' }          // Gray
 };
+
+// =============================================================================
+// OPERATION CATEGORIES (UI grouping)
+// =============================================================================
+// User-facing families of operation types, shared by the PMS transactions view,
+// reports and exports. Every OPERATION_TYPES value belongs to exactly one.
+
+export const OPERATION_CATEGORIES = {
+  TRADES: { key: 'TRADES', label: 'Trades', icon: '🔄', types: [OPERATION_TYPES.BUY, OPERATION_TYPES.SELL, OPERATION_TYPES.SUBSCRIPTION, OPERATION_TYPES.REDEMPTION] },
+  INCOME: { key: 'INCOME', label: 'Income', icon: '💰', types: [OPERATION_TYPES.COUPON, OPERATION_TYPES.DIVIDEND, OPERATION_TYPES.INTEREST, OPERATION_TYPES.OPTION_PREMIUM] },
+  CASH_MOVEMENTS: { key: 'CASH_MOVEMENTS', label: 'Cash movements', icon: '🏦', types: [OPERATION_TYPES.TRANSFER_IN, OPERATION_TYPES.TRANSFER_OUT, OPERATION_TYPES.PAYMENT_IN, OPERATION_TYPES.PAYMENT_OUT] },
+  DEPOSITS: { key: 'DEPOSITS', label: 'Deposits', icon: '🔒', types: [OPERATION_TYPES.DEPOSIT_PLACEMENT, OPERATION_TYPES.DEPOSIT_MATURITY] },
+  FX: { key: 'FX', label: 'FX', icon: '💱', types: [OPERATION_TYPES.FX_TRADE] },
+  FEES_TAXES: { key: 'FEES_TAXES', label: 'Fees & taxes', icon: '🧾', types: [OPERATION_TYPES.FEE, OPERATION_TYPES.TAX] },
+  CORPORATE_ACTIONS: { key: 'CORPORATE_ACTIONS', label: 'Corporate actions', icon: '🏛️', types: [OPERATION_TYPES.CORPORATE_ACTION] },
+  CARD_PAYMENTS: { key: 'CARD_PAYMENTS', label: 'Card payments', icon: '💳', types: [OPERATION_TYPES.CARD_PAYMENT] },
+  OTHER: { key: 'OTHER', label: 'Other', icon: '📄', types: [OPERATION_TYPES.OTHER] }
+};
+
+export const OPERATION_CATEGORY_LIST = Object.values(OPERATION_CATEGORIES);
+
+const CATEGORY_BY_TYPE = OPERATION_CATEGORY_LIST.reduce((acc, cat) => {
+  cat.types.forEach(t => { acc[t] = cat.key; });
+  return acc;
+}, {});
+
+/**
+ * Category key (OPERATION_CATEGORIES) of an operation type.
+ * @param {string} type - One of OPERATION_TYPES values
+ * @returns {string} Category key, OTHER when unknown
+ */
+export function getOperationCategory(type) {
+  return CATEGORY_BY_TYPE[type] || OPERATION_CATEGORIES.OTHER.key;
+}
+
+/**
+ * Pick the IN or OUT variant of a two-way type from a signed amount
+ * (+ = into the account). Used by parsers whose bank gives the direction
+ * as a sign or a debit/credit flag rather than in the type code.
+ */
+export function directedType(baseType, signedAmount) {
+  const inflow = Number(signedAmount) > 0;
+  switch (baseType) {
+    case 'TRANSFER': return inflow ? OPERATION_TYPES.TRANSFER_IN : OPERATION_TYPES.TRANSFER_OUT;
+    case 'PAYMENT': return inflow ? OPERATION_TYPES.PAYMENT_IN : OPERATION_TYPES.PAYMENT_OUT;
+    case 'DEPOSIT': return inflow ? OPERATION_TYPES.DEPOSIT_MATURITY : OPERATION_TYPES.DEPOSIT_PLACEMENT;
+    default: return baseType;
+  }
+}
 
 // =============================================================================
 // BANK-SPECIFIC MAPPINGS
@@ -120,6 +180,11 @@ export const CMB_OPERATION_TYPE_MAPPING = {
   'sectrx2_redm_cash': OPERATION_TYPES.REDEMPTION,
   'sectrx2_buy': OPERATION_TYPES.BUY,
   'sectrx2_sell': OPERATION_TYPES.SELL,
+  'sectrx2_intr': OPERATION_TYPES.COUPON,             // bond interest ("Interest Nominal: ...")
+  'sectrx2_rednom': OPERATION_TYPES.REDEMPTION,       // denomination reduction (capital paid back)
+  'sectrx2_div_cash_storno': OPERATION_TYPES.DIVIDEND, // dividend reversal (negative amount)
+  'mba$comm_pay': OPERATION_TYPES.FEE,                // credit facility commission
+  'mba$cust_fee': OPERATION_TYPES.FEE,
 
   // By Meta_Type_ID (category)
   'cardtrx': OPERATION_TYPES.CARD_PAYMENT,
@@ -359,6 +424,14 @@ export function mapCMBOperationType(orderTypeId, metaTypeId, amount = 0) {
     if (t.includes('rdmpt') || t.includes('redm')) return OPERATION_TYPES.REDEMPTION;
     if (t.includes('sell')) return OPERATION_TYPES.SELL;
     if (t.includes('buy')) return OPERATION_TYPES.BUY;
+  }
+
+  // Other security cash events: read the family from the code wording
+  if (orderTypeId && orderTypeId.toLowerCase().startsWith('sectrx2_')) {
+    const t = orderTypeId.toLowerCase();
+    if (t.includes('div')) return OPERATION_TYPES.DIVIDEND;
+    if (t.includes('coup') || t.includes('intr')) return OPERATION_TYPES.COUPON;
+    if (t.includes('redm') || t.includes('rednom') || t.includes('rdmpt')) return OPERATION_TYPES.REDEMPTION;
   }
 
   // Fall back to Meta_Type_ID mapping

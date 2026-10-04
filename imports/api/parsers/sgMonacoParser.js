@@ -14,7 +14,8 @@
  */
 
 import { SECURITY_TYPES } from '../constants/instrumentTypes.js';
-import { OPERATION_TYPES } from '../constants/operationTypes.js';
+import { OPERATION_TYPES, directedType } from '../constants/operationTypes.js';
+import { withStandard } from '../helpers/operationStandardizer';
 
 export const SGMonacoParser = {
   /**
@@ -748,10 +749,21 @@ export const SGMonacoParser = {
     const rows = this.parseCSV(csvContent);
     console.log(`[SG_PARSER] Parsing ${rows.length} transaction rows from ${sourceFile}`);
 
+    // An operation comes as its typed line (a security line, or a typed cash line for FX
+    // spots — it already carries the cash amount in OPE_CASH_AMOUNT1) plus an untyped
+    // cash-account line ('C', instrument CAV, no OPE_TYPE) with the same OPE_REF_CODE.
+    // The untyped line adds nothing, so it is dropped when its typed line is in the file.
+    const typedRefs = new Set(rows
+      .filter(r => String(r.OPE_TYPE || '').trim() && r.OPE_REF_CODE)
+      .map(r => `${r.PTF_COD}|${r.OPE_REF_CODE}`));
+    const isMergedCashLeg = (r) => r.OPE_LINE_TYPE === 'C' && !String(r.OPE_TYPE || '').trim()
+      && typedRefs.has(`${r.PTF_COD}|${r.OPE_REF_CODE}`);
+
     const operations = [];
 
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
+      if (isMergedCashLeg(row)) continue;
       try {
         console.log(`[SG_PARSER] Processing row ${i + 1}: OPE_TYPE=${row.OPE_TYPE}, OPE_NATURE=${row.OPE_NATURE}, OPE_LINE_TYPE=${row.OPE_LINE_TYPE}, INS_NAME=${row.INS_NAME}`);
 
@@ -781,76 +793,51 @@ export const SGMonacoParser = {
   /**
    * Map SG Monaco operation type to standardized operation type
    */
-  mapOperationType(opeType, opeNature, opeRemarks) {
-    // SG Monaco field mapping:
-    // - OPE_TYPE contains the transaction code (SEC-CPS_03, SEC-RBT_02, etc.)
-    // - OPE_NATURE contains the category (Income, Sell, Buy, etc.)
-    const typeCode = String(opeType || '').toUpperCase();  // SEC-CPS_03, SEC-RBT_02
-    const nature = String(opeNature || '').toLowerCase();   // income, sell, buy
+  mapOperationType(opeType, opeNature, opeRemarks, signedCash = 0) {
+    // OPE_TYPE is '<family>-<code>_<n>' (SEC-CPS_03, CSH-110_04, CMC-401_01); OPE_NATURE
+    // is the family wording (Income, Buy, Sell, Investment, Withdrawal, Fees & Taxes).
+    const typeCode = String(opeType || '').toUpperCase().trim();
+    const nature = String(opeNature || '').toLowerCase().trim();
     const remarks = String(opeRemarks || '').toUpperCase();
 
-    // Coupon payments - OPE_NATURE=Income + OPE_TYPE contains CPS
-    if (nature === 'income' && (typeCode.includes('CPS') || remarks.includes('COUPON'))) {
-      return OPERATION_TYPES.COUPON;
+    // Securities
+    if (typeCode.startsWith('SEC-CPS')) return OPERATION_TYPES.COUPON;
+    if (typeCode.startsWith('SEC-DIV')) return OPERATION_TYPES.DIVIDEND;
+    if (typeCode.startsWith('SEC-RBT')) return OPERATION_TYPES.REDEMPTION;
+    if (typeCode.startsWith('SEC-VCT')) return OPERATION_TYPES.SELL;
+    if (typeCode.startsWith('SEC-ACT')) return OPERATION_TYPES.BUY;
+    if (typeCode.startsWith('SEC-SBS') || typeCode.startsWith('SEC-SOU')) return OPERATION_TYPES.SUBSCRIPTION;
+    if (typeCode.startsWith('SEC-REM')) return OPERATION_TYPES.TRANSFER_IN;   // receipt of securities
+    if (typeCode.startsWith('SEC-TVS')) return OPERATION_TYPES.TRANSFER_OUT;  // securities delivered out
+    if (typeCode.startsWith('SEC-ECE')) return OPERATION_TYPES.CORPORATE_ACTION; // exchange / adjustment
+
+    // Call and time deposits (CMC = movement, CMF = interest)
+    if (typeCode.startsWith('CMC-')) {
+      return nature === 'sell' || remarks.includes('LIQUIDATION')
+        ? OPERATION_TYPES.DEPOSIT_MATURITY
+        : OPERATION_TYPES.DEPOSIT_PLACEMENT;
+    }
+    if (typeCode.startsWith('CMF-') || typeCode.startsWith('CSH-INT')) return OPERATION_TYPES.INTEREST;
+
+    // FX spot
+    if (/\b(BUY|SELL) SPOT\b/.test(typeCode) || /\bSPOT\b/.test(remarks)) return OPERATION_TYPES.FX_TRADE;
+
+    // Cash
+    if (typeCode.startsWith('CSH-FEE') || nature === 'fees & taxes') {
+      return remarks.includes('TAX') && !remarks.includes('FEE') ? OPERATION_TYPES.TAX : OPERATION_TYPES.FEE;
+    }
+    if (typeCode.startsWith('CSH-')) {
+      if (/MANAGEMENT FEE|CUSTODY FEE|ADVISORY FEE/.test(remarks)) return OPERATION_TYPES.FEE;
+      if (remarks.includes('DISTRIBUTION')) return OPERATION_TYPES.DIVIDEND;
+      if (remarks.includes('CLOTURE DE COMPTE')) return directedType('TRANSFER', signedCash);
+      return directedType('PAYMENT', signedCash);
     }
 
-    // Dividends - OPE_NATURE=Income + OPE_TYPE contains DIV
-    if (nature === 'income' && (typeCode.includes('DIV') || remarks.includes('DIVIDEND'))) {
-      return OPERATION_TYPES.DIVIDEND;
-    }
+    // Untyped lines (a cash leg whose security line is missing from the file)
+    if (nature === 'income') return OPERATION_TYPES.COUPON;
+    if (nature === 'buy') return OPERATION_TYPES.BUY;
+    if (nature === 'sell') return OPERATION_TYPES.SELL;
 
-    // Redemptions / Maturities - OPE_NATURE=Sell + OPE_TYPE contains RBT
-    if (nature === 'sell' && (typeCode.includes('RBT') || remarks.includes('REDEMPTION') || remarks.includes('MATURITY'))) {
-      return OPERATION_TYPES.REDEMPTION;
-    }
-
-    // Sales
-    if (nature === 'sell') {
-      return OPERATION_TYPES.SELL;
-    }
-
-    // Purchases
-    if (nature === 'buy' || nature === 'purchase') {
-      return OPERATION_TYPES.BUY;
-    }
-
-    // Interest - OPE_NATURE=Income + OPE_TYPE contains INT
-    if (nature === 'income' && (typeCode.includes('INT') || remarks.includes('INTEREST'))) {
-      return OPERATION_TYPES.INTEREST;
-    }
-
-    // Generic income (fallback for other income types)
-    if (nature === 'income') {
-      return OPERATION_TYPES.COUPON; // Default income to coupon
-    }
-
-    // Income distributions (OPE_NATURE='Investment' but remarks indicate income)
-    // Examples: "INCOME DISTRIBUTION KUBER CAPITAL TRUST..."
-    if (remarks.includes('INCOME DISTRIBUTION') || remarks.includes('DISTRIBUTION')) {
-      return OPERATION_TYPES.DIVIDEND; // Fund/trust distributions
-    }
-
-    // Fees
-    if (typeCode.includes('FEE') || remarks.includes('FEE') || remarks.includes('COMMISSION')) {
-      return OPERATION_TYPES.FEE;
-    }
-
-    // Tax
-    if (typeCode.includes('TAX') || remarks.includes('TAX') || remarks.includes('WITHHOLD')) {
-      return OPERATION_TYPES.TAX;
-    }
-
-    // Transfers
-    if (nature === 'transfer' || typeCode.includes('TRF')) {
-      return OPERATION_TYPES.TRANSFER_OUT;
-    }
-
-    // FX
-    if (typeCode.includes('FX') || typeCode.includes('FOREX')) {
-      return OPERATION_TYPES.FX_TRADE;
-    }
-
-    // Default to OTHER
     console.log(`[SG_PARSER] Unknown operation type: ${opeType}, nature: ${opeNature}`);
     return OPERATION_TYPES.OTHER;
   },
@@ -905,6 +892,14 @@ export const SGMonacoParser = {
     const securityNetAmount = this.parseNumber(row.OPE_NET_AMOUNT);
     const netAmount = cashAmount || Math.abs(securityNetAmount) || 0;
 
+    // Signed cash from the account's view (+ in): OPE_CASH_AMOUNT1 when SG gives it;
+    // otherwise OPE_NET_AMOUNT, which SG books from the position's view (negated).
+    // An untyped cash-account line only carries OPE_NET_AMT_INS (cash view).
+    const isUntypedCashLine = row.OPE_LINE_TYPE === 'C' && !String(row.OPE_TYPE || '').trim();
+    const signedCash = cashAmount
+      || (isUntypedCashLine ? this.parseNumber(row.OPE_NET_AMT_INS) : -securityNetAmount)
+      || 0;
+
     console.log(`[SG_PARSER]   Parsed dates: operationDate=${operationDate}, valueDate=${valueDate}, accountDate=${accountDate}`);
     console.log(`[SG_PARSER]   Parsed amounts: quantity=${quantity}, cashAmount=${cashAmount}, securityNetAmount=${securityNetAmount}, netAmount=${netAmount}`);
 
@@ -922,7 +917,7 @@ export const SGMonacoParser = {
     const opKey = `sg-monaco|${portfolioCode}|${row.OPE_REF_CODE || ''}|${row.OPE_OPER_DATE}|${row.INS_ISN_COD || row.INS_INT_COD}`;
     const operationId = crypto.createHash('sha256').update(opKey).digest('hex').substring(0, 16);
 
-    return {
+    const operation = {
       // Source Information
       bankId,
       bankName,
@@ -949,7 +944,7 @@ export const SGMonacoParser = {
       assetClass: row.INS_NATURE || null,
 
       // Transaction Details
-      operationType: this.mapOperationType(row.OPE_TYPE, row.OPE_NATURE, row.OPE_REMARKS),
+      operationType: this.mapOperationType(row.OPE_TYPE, row.OPE_NATURE, row.OPE_REMARKS, signedCash),
       operationCategory: this.mapOperationCategory(row.INS_NATURE),
       operationTypeName: row.OPE_TYPE || null,
       transactionCategory: row.OPE_NATURE || null,
@@ -1012,6 +1007,34 @@ export const SGMonacoParser = {
       isProcessed: false,
       createdAt: new Date()
     };
+
+    const typeCode = String(row.OPE_TYPE || '').toUpperCase();
+    const isSecuritiesMove = typeCode.startsWith('SEC-REM') || typeCode.startsWith('SEC-TVS') || typeCode.startsWith('SEC-ECE');
+    const insName = String(row.INS_NAME || '').trim();
+    const isCashInstrument = !row.INS_ISN_COD && (insName === 'CAV' || /^M\d{3} /.test(insName));
+    const costs = [row.OPE_COST_1_AMT, row.OPE_COST_2_AMT, row.OPE_COST_3_AMT, row.OPE_COST_4_AMT, row.OPE_COST_5_AMT]
+      .reduce((sum, v) => sum + Math.abs(this.parseNumber(v) || 0), 0);
+    const taxes = [row.OPE_TAX_1_AMT, row.OPE_TAX_2_AMT, row.OPE_TAX_3_AMT, row.OPE_TAX_4_AMT]
+      .reduce((sum, v) => sum + Math.abs(this.parseNumber(v) || 0), 0);
+
+    return withStandard(operation, {
+      type: operation.operationType,
+      description: row.OPE_REMARKS || row.OPE_SUB_TYPE || row.OPE_TYPE,
+      instrumentName: isCashInstrument ? null : insName,
+      isin: row.INS_ISN_COD,
+      quantity: isCashInstrument ? null : quantity,
+      price: isCashInstrument ? null : this.parseNumber(row.OPE_PRICE),
+      amount: signedCash,
+      currency: (cashAmount && row.OPE_CASH_ACCT1_CUR) || row.OPE_CUR || row.INS_CUR,
+      cashImpact: !isSecuritiesMove,
+      fees: costs,
+      taxes,
+      accruedInterest: this.parseNumber(row.OPE_ACCR_AMT),
+      fxRate: this.parseNumber(row.OPE_EXG_RAT_TRAD) || null,
+      bankTypeCode: row.OPE_TYPE,
+      bankTypeLabel: [row.OPE_NATURE, row.OPE_SUB_TYPE].filter(v => v && String(v).trim()).join(' – '),
+      reference: row.OPE_REF_CODE
+    });
   }
 };
 

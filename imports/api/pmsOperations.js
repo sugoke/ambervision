@@ -67,7 +67,7 @@ export const PMSOperationsHelpers = {
           version: (existing.version || 0) + 1
         }
       });
-      return { _id: existing._id, updated: true };
+      return { _id: existing._id, updated: true, uniqueKey };
     } else {
       // Insert new record
       const operationId = await PMSOperationsCollection.insertAsync({
@@ -78,7 +78,7 @@ export const PMSOperationsHelpers = {
         createdAt: now,
         updatedAt: now
       });
-      return { _id: operationId, updated: false };
+      return { _id: operationId, updated: false, uniqueKey };
     }
   },
 

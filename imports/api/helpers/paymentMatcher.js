@@ -117,7 +117,8 @@ export function matchScheduledPayment(product, observation, pmsOperations = null
         { netAmount: { $gt: 0 } },
         { operationType: 'COUPON' },    // Direct type match (SG Monaco, etc.)
         { operationType: 'DIVIDEND' },  // Also catches dividend-style income
-        { operationType: 'INTEREST' }   // Interest payments
+        { operationType: 'INTEREST' },  // Interest payments
+        { operationType: 'OPTION_PREMIUM' } // Coupon part paid as option premium (Julius Baer)
       ]
     }).fetch();
   }
@@ -178,7 +179,7 @@ export function matchScheduledPayment(product, observation, pmsOperations = null
     // Amount sanity check — must be a positive incoming payment
     const hasPositiveGrossAmount = operation.grossAmount && operation.grossAmount > 0;
     const hasPositiveNetAmount = operation.netAmount && operation.netAmount > 0;
-    const isCouponType = ['COUPON', 'DIVIDEND', 'INTEREST'].includes(operation.operationType);
+    const isCouponType = ['COUPON', 'DIVIDEND', 'INTEREST', 'OPTION_PREMIUM'].includes(operation.operationType);
 
     if (hasPositiveGrossAmount || hasPositiveNetAmount) {
       score += 30;

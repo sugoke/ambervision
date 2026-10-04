@@ -1,3 +1,4 @@
+import { PERIMETER_FLOW_TYPE_LIST } from '/imports/api/helpers/twrCalculator.js';
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import cron from 'node-cron';
@@ -1300,8 +1301,7 @@ async function regenerateTodaySnapshots() {
 
   // Pre-fetch transfer operations for all users (reused across all snapshots)
   const transferOpsCache = await PMSOperationsCollection.find({
-    operationType: 'TRANSFER',
-    operationCategory: 'CASH'
+    operationType: { $in: PERIMETER_FLOW_TYPE_LIST }
   }).fetchAsync();
 
   // Exclude non-investment accounts from snapshots

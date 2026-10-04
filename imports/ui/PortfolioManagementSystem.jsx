@@ -40,11 +40,13 @@ import PositionCardMobile from './components/pms/PositionCardMobile.jsx';
 import { getCurrencySymbol, getCurrencyFlag, formatCurrency, formatPrice } from './components/pms/pmsFormatters.js';
 import { resolveChartColor, resolveChartColors } from '/imports/utils/chartColors.js';
 import CashBalanceCardsMobile from './components/pms/CashBalanceCardsMobile.jsx';
+import TransactionsSection from './components/pms/TransactionsSection.jsx';
+import { getOperationCategory, getOperationTypeLabel } from '/imports/api/constants/operationTypes';
 import * as XLSX from 'xlsx';
 
 // Local collection for snapshot dates (synthetic collection from publication)
 const PMSHoldingsSnapshotDatesCollection = new Mongo.Collection('pmsHoldingsSnapshotDates');
-import { Line, Doughnut } from 'react-chartjs-2';
+import { Line, Doughnut, Bar } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -52,6 +54,7 @@ import {
   PointElement,
   LineElement,
   ArcElement,
+  BarElement,
   Title,
   Tooltip,
   Legend,
@@ -65,6 +68,7 @@ ChartJS.register(
   PointElement,
   LineElement,
   ArcElement,
+  BarElement,
   Title,
   Tooltip,
   Legend,
@@ -297,11 +301,6 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
     };
   }, []);
 
-  // Transactions filters and sorting
-  const [txSortBy, setTxSortBy] = useState('date'); // Default sort by date
-  const [txSortDirection, setTxSortDirection] = useState('desc');
-  const [filterTxType, setFilterTxType] = useState('all');
-  const [filterTxCategory, setFilterTxCategory] = useState('all');
 
   // Account tab layer - Consolidated or specific account
   const [activeAccountTab, setActiveAccountTab] = useState('consolidated');
@@ -329,6 +328,8 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
   const [currencyAllocation, setCurrencyAllocation] = useState(null);
   const [issuerAllocation, setIssuerAllocation] = useState(null);
   const [selectedTimeRange, setSelectedTimeRange] = useState('1Y');
+  // Performance tab: calendar return bars, per month or per year
+  const [calendarMode, setCalendarMode] = useState('monthly');
 
   // Refresh key for forcing re-subscription after file processing (Meteor 3 async publication workaround)
   const [refreshKey, setRefreshKey] = useState(0);
@@ -724,8 +725,38 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
 
     const rawOperations = PMSOperationsCollection.find({}, { sort: { operationDate: -1 } }).fetch();
 
+    // Harmonized view of each operation (written by the bank parsers). Records stored
+    // before parsers wrote it get the same shape from their raw fields.
+    const standardOf = (op) => {
+      const std = op.std || {
+        type: op.operationType,
+        category: getOperationCategory(op.operationType),
+        label: getOperationTypeLabel(op.operationType),
+        description: op.description || op.remark || op.text || op.operationTypeName || null,
+        instrumentName: op.securityName || op.instrumentName || null,
+        isin: op.isin || null,
+        quantity: op.quantity || null,
+        price: op.price || null,
+        amount: op.netAmount ?? op.grossAmount ?? 0,
+        currency: op.currency || op.operationCurrency || op.instrumentCurrency || op.portfolioCurrency || null,
+        cashImpact: true,
+        fees: op.totalFees || op.fees || null,
+        bankTypeCode: op.operationCode || op.originalOperationType || null,
+        bankTypeLabel: op.operationTypeName || op.operationTypeLabel || null,
+        reference: op.operationId || null
+      };
+      // Some banks (CFM) do not name the security in their transaction file
+      if (!std.instrumentName && std.isin) {
+        const metadata = SecuritiesMetadataCollection.findOne({ isin: std.isin.toUpperCase() });
+        if (metadata?.securityName) return { ...std, instrumentName: metadata.securityName };
+      }
+      return std;
+    };
+
     // Transform operations to match UI structure
     const transformedOperations = rawOperations.map((op) => ({
+      std: standardOf(op),
+      bankLabel: op.bankName || null,
       id: op._id,
       date: op.operationDate,
       valueDate: op.valueDate,
@@ -4718,151 +4749,24 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
     );
   };
 
-  const renderTransactionsSection = () => (
-    <div style={{ padding: '1.5rem' }}>
-      <LiquidGlassCard style={{
-        background: theme === 'light'
-          ? '#ffffff'
-          : '#0f172a',
-        backdropFilter: 'none'
-      }}>
-        <div style={{ padding: '1.5rem' }}>
-          <h3 style={{
-            margin: '0 0 1.5rem 0',
-            fontSize: '1.25rem',
-            fontWeight: '400',
-            color: 'var(--text-primary)'
-          }}>
-            Transaction History ({displayTransactions.length})
-          </h3>
-
-          {isLoadingOperations ? (
-            <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
-              Loading transactions...
-            </div>
-          ) : displayTransactions.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
-              No transactions found
-            </div>
-          ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{
-              width: '100%',
-              borderCollapse: 'collapse',
-              fontSize: '0.875rem'
-            }}>
-              <thead>
-                <tr style={{
-                  borderBottom: '2px solid var(--border-color)',
-                  background: theme === 'light' ? 'rgba(0, 0, 0, 0.02)' : 'rgba(255, 255, 255, 0.02)'
-                }}>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '400', color: 'var(--text-muted)' }}>Date</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '400', color: 'var(--text-muted)' }}>Value Date</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '400', color: 'var(--text-muted)' }}>Type</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '400', color: 'var(--text-muted)' }}>Category</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '400', color: 'var(--text-muted)' }}>Security</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'right', fontWeight: '400', color: 'var(--text-muted)' }}>Quantity</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'right', fontWeight: '400', color: 'var(--text-muted)' }}>Price</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'right', fontWeight: '400', color: 'var(--text-muted)' }}>Fees</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'right', fontWeight: '400', color: 'var(--text-muted)' }}>Net Amount</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '400', color: 'var(--text-muted)' }}>Details</th>
-                </tr>
-              </thead>
-              <tbody>
-                {displayTransactions.map((transaction) => (
-                  <tr
-                    key={transaction.id}
-                    style={{
-                      borderBottom: '1px solid var(--border-color)',
-                      transition: 'background 0.2s ease'
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = theme === 'light' ? 'rgba(0, 0, 0, 0.02)' : 'rgba(255, 255, 255, 0.02)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'transparent';
-                    }}
-                  >
-                    <td style={{ padding: '0.75rem', color: 'var(--text-secondary)' }}>
-                      {new Date(transaction.date).toLocaleDateString('en-US', {
-                        year: 'numeric',
-                        month: 'short',
-                        day: 'numeric'
-                      })}
-                    </td>
-                    <td style={{ padding: '0.75rem', color: 'var(--text-secondary)' }}>
-                      {transaction.valueDate
-                        ? new Date(transaction.valueDate).toLocaleDateString('en-US', {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric'
-                          })
-                        : '-'}
-                    </td>
-                    <td style={{ padding: '0.75rem' }}>
-                      <span style={{
-                        padding: '0.25rem 0.5rem',
-                        borderRadius: '4px',
-                        background: transaction.type === 'BUY'
-                          ? 'rgba(16, 185, 129, 0.1)'
-                          : transaction.type === 'SELL'
-                          ? 'rgba(239, 68, 68, 0.1)'
-                          : transaction.type === 'DIVIDEND' || transaction.type === 'COUPON'
-                          ? 'rgba(59, 130, 246, 0.1)'
-                          : transaction.type === 'FEE'
-                          ? 'rgba(245, 158, 11, 0.1)'
-                          : 'rgba(139, 92, 246, 0.1)',
-                        color: transaction.type === 'BUY'
-                          ? 'var(--gain-color)'
-                          : transaction.type === 'SELL'
-                          ? 'var(--loss-color)'
-                          : transaction.type === 'DIVIDEND' || transaction.type === 'COUPON'
-                          ? 'var(--info-color)'
-                          : transaction.type === 'FEE'
-                          ? 'var(--warning-color)'
-                          : '#8b5cf6',
-                        fontWeight: '400',
-                        fontSize: '0.75rem'
-                      }}>
-                        {transaction.type}
-                      </span>
-                    </td>
-                    <td style={{ padding: '0.75rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-                      {transaction.category || 'N/A'}
-                    </td>
-                    <td style={{ padding: '0.75rem' }}>
-                      <div style={{ color: 'var(--accent-color)', fontSize: '0.85rem', fontWeight: '400' }}>
-                        {transaction.ticker}
-                      </div>
-                      <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                        {transaction.instrumentName}
-                      </div>
-                    </td>
-                    <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-primary)' }}>
-                      {transaction.quantity !== 0 ? transaction.quantity.toLocaleString() : '-'}
-                    </td>
-                    <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-primary)' }}>
-                      {transaction.price !== 0 ? `${transaction.currency} ${transaction.price.toFixed(2)}` : '-'}
-                    </td>
-                    <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-secondary)' }}>
-                      {transaction.totalFees !== 0 ? `${transaction.currency} ${transaction.totalFees.toFixed(2)}` : '-'}
-                    </td>
-                    <td style={{ padding: '0.75rem', textAlign: 'right', color: 'var(--text-primary)', fontWeight: '400' }}>
-                      {transaction.currency} {transaction.netAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </td>
-                    <td style={{ padding: '0.75rem', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                      {transaction.subtypeName || transaction.remark || '-'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          )}
-        </div>
-      </LiquidGlassCard>
-    </div>
-  );
+  const renderTransactionsSection = () => {
+    const accountFor = (op) => bankAccounts.find(acc => acc.bankId === op.bankName
+      && acc.accountNumber && String(op.portfolioCode || '').startsWith(acc.accountNumber.split('-')[0]));
+    return (
+      <TransactionsSection
+        operations={displayTransactions}
+        isLoading={isLoadingOperations}
+        isMobile={isMobile}
+        theme={theme}
+        bankNameFor={(op) => accountFor(op)?.bankName || op.bankLabel || ''}
+        accountLabelFor={(op) => {
+          const acc = accountFor(op);
+          return acc ? `${acc.accountNumber}${acc.comment ? ` · ${acc.comment}` : ''}` : (op.portfolioCode || '');
+        }}
+        exportName="transactions"
+      />
+    );
+  };
 
   const renderPerformanceSection = () => {
     // Loading state
@@ -5113,6 +5017,124 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
           })()}
         </div>
       </LiquidGlassCard>
+
+      {/* Monthly & yearly performance (time-weighted, from the server's computeTWR) */}
+      {twrData?.calendarCharts?.monthly?.labels?.length > 0 && (() => {
+        const chart = twrData.calendarCharts[calendarMode];
+        const yearRows = twrData.yearlyReturns || [];
+        const monthByKey = Object.fromEntries((twrData.monthlyReturns || []).map(m => [m.key, m]));
+        const monthCols = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
+        const monthHeads = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const gridColor = theme === 'light' ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)';
+        const tickColor = theme === 'light' ? '#6b7280' : '#9ca3af';
+        const cellColor = (row) => (!row ? 'var(--text-muted)' : row.isPositive ? 'var(--gain-color)' : 'var(--loss-color)');
+        const cell = { padding: '6px 8px', textAlign: 'right', borderBottom: '1px solid var(--border-color)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' };
+        return (
+          <LiquidGlassCard style={{ marginTop: '1rem' }}>
+            <div style={{ padding: '1rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}>
+                <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: '400', color: 'var(--text-primary)' }}>
+                  {calendarMode === 'monthly' ? 'Monthly' : 'Yearly'} Performance (time-weighted)
+                </h3>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  {[{ key: 'monthly', label: 'Monthly' }, { key: 'yearly', label: 'Yearly' }].map(opt => (
+                    <button
+                      key={opt.key}
+                      onClick={() => setCalendarMode(opt.key)}
+                      style={{
+                        padding: '0.4rem 0.75rem',
+                        background: calendarMode === opt.key
+                          ? 'var(--accent-color)'
+                          : theme === 'light' ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)',
+                        color: calendarMode === opt.key ? '#ffffff' : 'var(--text-secondary)',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '0.7rem',
+                        fontWeight: '500'
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Many months scroll sideways instead of squeezing the bars */}
+              <div style={{ overflowX: 'auto' }}>
+                <div style={{ height: '280px', minWidth: calendarMode === 'monthly' ? `${chart.labels.length * 34}px` : undefined }}>
+                  <Bar
+                    data={{ labels: chart.labels, datasets: chart.datasets }}
+                    options={{
+                      responsive: true,
+                      maintainAspectRatio: false,
+                      plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                          backgroundColor: theme === 'light' ? '#ffffff' : '#1f2937',
+                          titleColor: theme === 'light' ? '#111827' : '#f9fafb',
+                          bodyColor: theme === 'light' ? '#374151' : '#d1d5db',
+                          borderColor: theme === 'light' ? '#e5e7eb' : '#374151',
+                          borderWidth: 1,
+                          padding: 10,
+                          callbacks: {
+                            label: (ctx) => {
+                              const t = chart.tooltips?.[ctx.dataIndex];
+                              return t ? [`TWR ${t.value}${t.partial ? ' (partial period)' : ''}`, t.range] : '';
+                            }
+                          }
+                        }
+                      },
+                      scales: {
+                        x: { grid: { display: false }, ticks: { color: tickColor, maxRotation: 45, minRotation: 0 } },
+                        y: {
+                          grace: '10%',
+                          grid: { color: gridColor },
+                          ticks: { color: tickColor, callback: (value) => `${value}%` }
+                        }
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+                Return net of deposits and withdrawals, in {twrData.metadata?.currency || portfolioCurrency}. * partial period (first valuation inside it, or still running).
+              </div>
+
+              {/* Year × month table of the same pre-formatted figures */}
+              <div style={{ overflowX: 'auto', marginTop: '1rem' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...cell, textAlign: 'left', color: 'var(--text-secondary)', fontWeight: 600 }}>Year</th>
+                      {monthHeads.map(h => <th key={h} style={{ ...cell, color: 'var(--text-secondary)', fontWeight: 600 }}>{h}</th>)}
+                      <th style={{ ...cell, color: 'var(--text-primary)', fontWeight: 700 }}>Year</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...yearRows].reverse().map(y => (
+                      <tr key={y.key}>
+                        <td style={{ ...cell, textAlign: 'left', fontWeight: 600, color: 'var(--text-primary)' }}>{y.key}</td>
+                        {monthCols.map(mm => {
+                          const m = monthByKey[`${y.key}-${mm}`];
+                          return (
+                            <td key={mm} style={{ ...cell, color: cellColor(m) }} title={m?.rangeText || ''}>
+                              {m ? `${m.twrFormatted}${m.isPartial ? '*' : ''}` : '–'}
+                            </td>
+                          );
+                        })}
+                        <td style={{ ...cell, fontWeight: 700, color: cellColor(y) }} title={y.rangeText}>
+                          {y.twrFormatted}{y.isPartial ? '*' : ''}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </LiquidGlassCard>
+        );
+      })()}
 
       {/* Portfolio Value Over Time (Absolute) */}
       <LiquidGlassCard style={{

@@ -9,7 +9,20 @@
  * File format: Semicolon-delimited CSV with NO header row
  */
 
-import { OPERATION_TYPES } from '../constants/operationTypes';
+import { OPERATION_TYPES, directedType } from '../constants/operationTypes';
+import { withStandard } from '../helpers/operationStandardizer';
+
+// CFM cash movements (mesp): the label names the movement family; the free text tells
+// interest from commissions inside "CALCUL DES INTERETS + COMMISSIONS". Direction C/D.
+const CFM_CASH_WORDING = [
+  [/CALCUL DES INTERETS/, (text) => (/INTERET/.test(text) ? OPERATION_TYPES.INTEREST : OPERATION_TYPES.FEE)],
+  [/^DDG$|DROITS DE GARDE|FRAIS|COMMISSION/, () => OPERATION_TYPES.FEE],
+  [/INTERET/, () => OPERATION_TYPES.INTEREST],
+  [/CPTE A CPTE|VIREMENT INTERNE/, () => 'TRANSFER'],
+  [/PAIEMENT|SWIFT|ENTREE DE FONDS|SORTIE DE FONDS|VIREMENT/, () => 'PAYMENT']
+];
+
+const upperPlain = (str) => String(str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
 
 export const CFMCashOperationParser = {
   /**
@@ -147,7 +160,24 @@ export const CFMCashOperationParser = {
   /**
    * Map cash operation type from CFM description to standardized type
    */
-  mapOperationType(operationType, direction) {
+  mapOperationType(operationType, direction, text = '') {
+    const label = upperPlain(operationType);
+    const description = upperPlain(text);
+    const dir = (direction || '').toUpperCase();
+    const signed = dir === 'C' ? 1 : -1;
+    // The label is checked first (it names the family), the text only as a fallback
+    for (const source of [label, description]) {
+      for (const [pattern, resolve] of CFM_CASH_WORDING) {
+        if (pattern.test(source)) return directedType(resolve(description), signed);
+      }
+    }
+    if (dir === 'C') return OPERATION_TYPES.PAYMENT_IN;
+    if (dir === 'D') return OPERATION_TYPES.PAYMENT_OUT;
+    return OPERATION_TYPES.OTHER;
+  },
+
+  // Wording-only mapping used before the description was taken into account
+  mapOperationTypeByLabel(operationType, direction) {
     const type = (operationType || '').toUpperCase();
     const dir = (direction || '').toUpperCase();
 
@@ -200,7 +230,7 @@ export const CFMCashOperationParser = {
     const exchangeRate = this.parseNumber(row[c.EXCHANGE_RATE]);
 
     // Determine operation type
-    const operationType = this.mapOperationType(row[c.OPERATION_TYPE], row[c.DIRECTION]);
+    const operationType = this.mapOperationType(row[c.OPERATION_TYPE], row[c.DIRECTION], row[c.DESCRIPTION]);
 
     // Build account number from client number
     const clientNumber = row[c.CLIENT_NUMBER] || '';
@@ -213,7 +243,7 @@ export const CFMCashOperationParser = {
     // Determine sign based on direction
     const signedAmount = direction === 'D' ? -Math.abs(netAmount || grossAmount || 0) : Math.abs(netAmount || grossAmount || 0);
 
-    return {
+    const operation = {
       // Bank and portfolio identifiers
       bankId,
       bankName,
@@ -241,6 +271,7 @@ export const CFMCashOperationParser = {
       operationType,
       operationCategory: 'CASH',
       operationNumber: row[c.OPERATION_NUMBER] || null,
+      operationId: row[c.OPERATION_NUMBER] ? `${row[c.OPERATION_NUMBER]}|${currency}|${direction}` : null,
       operationTypeLabel: row[c.OPERATION_TYPE] || null,
       direction: direction,
       operationCurrency: row[c.OPERATION_CURRENCY] || currency,
@@ -276,6 +307,18 @@ export const CFMCashOperationParser = {
         originalRow: row
       }
     };
+
+    return withStandard(operation, {
+      type: operationType,
+      description: row[c.DESCRIPTION] || row[c.OPERATION_TYPE],
+      amount: signedAmount,
+      currency,
+      fees,
+      fxRate: exchangeRate,
+      bankTypeCode: `${row[c.OPERATION_TYPE] || ''} (${direction})`,
+      bankTypeLabel: row[c.OPERATION_TYPE],
+      reference: row[c.REFERENCE] || row[c.OPERATION_NUMBER]
+    });
   },
 
   /**

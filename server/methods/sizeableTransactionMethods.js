@@ -130,7 +130,7 @@ const describeOperation = (op, eurAmount) => {
     typeLabel: OPERATION_TYPE_LABELS[op.operationType] || op.operationType,
     assetLabel: isSecuritiesMovement(op) ? `Securities · ${String(op.isin).trim()}` : 'Cash',
     isSecurities: isSecuritiesMovement(op),
-    description: op.text || op.description || op.operationTypeName || op.originalOperationType || '',
+    description: op.std?.description || op.text || op.description || op.operationTypeName || op.originalOperationType || '',
     amountText: formatAmount(raw, op.amountPortfolioCcy ? 'EUR' : currency),
     amountEURText: formatEUR(Math.abs(eurAmount))
   };

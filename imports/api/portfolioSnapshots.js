@@ -1,3 +1,4 @@
+import { PERIMETER_FLOW_TYPE_LIST, getSignedFlowAmount } from './helpers/twrCalculator.js';
 import { Mongo } from 'meteor/mongo';
 import { SecuritiesMetadataCollection } from './securitiesMetadata';
 import { getHoldingCategoryKey } from './assetClassification';
@@ -34,6 +35,27 @@ export const BANK_SNAPSHOT_START_DATES = {
 /**
  * Filter out snapshots from banks with known bad historical data
  */
+/**
+ * One snapshot per account per day. The same bank file can be stored more than
+ * once for a day (re-imports filed under a former owner, regenerated snapshots),
+ * and summing every row then doubles the client's value — Ravberg showed ~12M
+ * instead of ~6M until the duplicates stopped. Keeps the most recently created
+ * row per bankId + portfolioCode + date, the rule the TWR builder already uses
+ * (buildConsolidatedDailyValues). Use before summing snapshots across accounts.
+ */
+export function dedupeSnapshotsPerAccountDay(snapshots) {
+  const byKey = new Map();
+  for (const s of snapshots || []) {
+    const day = s.snapshotDate instanceof Date ? s.snapshotDate.toISOString().slice(0, 10) : String(s.snapshotDate).slice(0, 10);
+    const key = `${s.bankId || ''}|${s.portfolioCode || ''}|${day}`;
+    const existing = byKey.get(key);
+    const created = s.createdAt ? new Date(s.createdAt).getTime() : 0;
+    const existingCreated = existing?.createdAt ? new Date(existing.createdAt).getTime() : 0;
+    if (!existing || created >= existingCreated) byKey.set(key, s);
+  }
+  return [...byKey.values()].sort((a, b) => new Date(a.snapshotDate) - new Date(b.snapshotDate));
+}
+
 export function filterSnapshotsByBankStartDate(snapshots) {
   return snapshots.filter(s => {
     if (!s.bankId) return true;
@@ -154,8 +176,7 @@ export const PortfolioSnapshotHelpers = {
 
         const query = {
           userId,
-          operationType: 'TRANSFER',
-          operationCategory: 'CASH'
+          operationType: { $in: PERIMETER_FLOW_TYPE_LIST }
         };
 
         if (portfolioCode) {
@@ -177,16 +198,11 @@ export const PortfolioSnapshotHelpers = {
       let totalCapitalInvested = 0;
 
       for (const op of operations) {
-        const debitCredit = op.bankSpecificData?.debitCredit || '';
-        const amount = op.netAmount || 0;
-
-        // CREDIT = money IN (deposit) → add to capital invested
-        // DEBIT = money OUT (withdrawal) → subtract from capital invested
-        if (debitCredit === 'CREDIT') {
-          totalCapitalInvested += amount;
-        } else if (debitCredit === 'DEBIT') {
-          totalCapitalInvested -= amount;
-        }
+        // Money in/out of the portfolio (+ in, - out). Only flows booked in the
+        // portfolio's own currency are added: a sum across currencies means nothing.
+        const flowCurrency = op.std?.currency || op.currency || op.operationCurrency || null;
+        if (flowCurrency && op.portfolioCurrency && flowCurrency !== op.portfolioCurrency) continue;
+        totalCapitalInvested += getSignedFlowAmount(op);
       }
 
       // Only log when there are actual operations (transfers are rare)
@@ -765,7 +781,7 @@ export const PortfolioSnapshotHelpers = {
     }).fetchAsync();
 
     // Filter out snapshots from banks with known bad historical data
-    const snapshots = filterSnapshotsByBankStartDate(rawSnapshots);
+    const snapshots = dedupeSnapshotsPerAccountDay(filterSnapshotsByBankStartDate(rawSnapshots));
 
     // Group by date and sum values
     const dateMap = {};
@@ -912,7 +928,7 @@ export const PortfolioSnapshotHelpers = {
     console.log(`[SNAPSHOTS] getAggregatedSnapshots found ${rawSnapshots.length} raw snapshots`);
 
     // Filter out snapshots from banks with known bad historical data
-    const snapshots = filterSnapshotsByBankStartDate(rawSnapshots);
+    const snapshots = dedupeSnapshotsPerAccountDay(filterSnapshotsByBankStartDate(rawSnapshots));
 
     // Group by date and sum values (skip weekends - banks don't report on weekends)
     const dateMap = {};

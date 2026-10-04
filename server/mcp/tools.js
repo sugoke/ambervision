@@ -1343,7 +1343,8 @@ export function registerTools(mcpServer, user) {
         entityId: z.string().optional(),
         bankName: z.string().optional(),
         accountNumber: z.string().optional(),
-        operationType: z.string().optional().describe('e.g. buy, sell, dividend, coupon, transfer'),
+        operationType: z.string().optional().describe('One of BUY, SELL, SUBSCRIPTION, REDEMPTION, COUPON, DIVIDEND, INTEREST, OPTION_PREMIUM, TRANSFER_IN, TRANSFER_OUT, PAYMENT_IN, PAYMENT_OUT, DEPOSIT_PLACEMENT, DEPOSIT_MATURITY, FX_TRADE, FEE, TAX, CARD_PAYMENT, CORPORATE_ACTION, OTHER'),
+        category: z.string().optional().describe('One of TRADES, INCOME, CASH_MOVEMENTS, DEPOSITS, FX, FEES_TAXES, CORPORATE_ACTIONS, CARD_PAYMENTS, OTHER'),
         isinContains: z.string().optional(),
         from: z.string().optional(),
         to: z.string().optional(),
@@ -1351,7 +1352,7 @@ export function registerTools(mcpServer, user) {
         offset: z.number().optional()
       }
     },
-    async ({ entityId, bankName, accountNumber, operationType, isinContains, from, to, limit, offset }) => {
+    async ({ entityId, bankName, accountNumber, operationType, category, isinContains, from, to, limit, offset }) => {
       const scope = await resolveMcpScope(user, { entityId });
       // Scope against PMSOperations itself, not snapshots — a code with no
       // snapshot would otherwise silently drop its transactions.
@@ -1367,7 +1368,8 @@ export function registerTools(mcpServer, user) {
         filter.portfolioCode = acct.portfolioCode;
         if (acct.bankId && !filter.bankId) filter.bankId = acct.bankId;
       }
-      if (operationType) filter.operationType = operationType;
+      if (operationType) filter.operationType = String(operationType).trim().toUpperCase();
+      if (category) filter['std.category'] = String(category).trim().toUpperCase();
       if (isinContains) filter.isin = { $regex: `^${escapeRegex(isinContains)}`, $options: 'i' };
       if (from || to) {
         filter.operationDate = {};
@@ -1389,10 +1391,15 @@ export function registerTools(mcpServer, user) {
         items: ops.map(o => ({
           date: o.operationDate,
           type: o.operationType,
-          typeLabel: o.operationTypeLabel || null,
+          typeLabel: o.std?.label || o.operationTypeLabel || null,
+          category: o.std?.category || null,
+          description: o.std?.description || null,
+          amount: o.std?.amount ?? null,
+          amountCurrency: o.std?.currency || null,
+          bankWording: o.std?.bankTypeLabel || null,
           direction: o.direction || null,
           isin: o.isin || null,
-          instrument: o.instrumentName || null,
+          instrument: o.std?.instrumentName || o.instrumentName || o.securityName || null,
           quantity: o.quantity ?? null,
           price: o.price ?? null,
           grossAmount: o.grossAmount ?? null,
