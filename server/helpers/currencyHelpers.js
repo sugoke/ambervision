@@ -5,7 +5,7 @@ import { CurrencyRateCacheCollection } from '/imports/api/currencyCache';
  *
  * pmsHoldings.marketValue and portfolioSnapshots.totalAccountValue are stored
  * in each PORTFOLIO's reference currency (holdings.portfolioCurrency /
- * snapshot.currency) — never assume EUR when summing across portfolios.
+ * snapshot.portfolioCurrency) — never assume EUR when summing across portfolios.
  * (rmDashboardMethods.js keeps identical local copies; keep them in sync.)
  */
 
@@ -134,7 +134,7 @@ export function aggregateSnapshotsByDay(snapshots, ratesMap) {
     const key = `${snapshot.portfolioCode || 'unknown'}|${snapshot.bankId || 'unknown'}`;
     if (!perPortfolio.has(key)) perPortfolio.set(key, new Map());
     const series = perPortfolio.get(key);
-    const valueEUR = convertToEUR(snapshot.totalAccountValue || 0, snapshot.portfolioCurrency || 'EUR', ratesMap);
+    const valueEUR = convertToEUR(snapshot.totalAccountValue || 0, snapshot.portfolioCurrency || snapshot.currency || 'EUR', ratesMap);
     // A portfolio normally has one snapshot per day; if duplicates exist, last wins
     series.set(dayKey, valueEUR);
   }

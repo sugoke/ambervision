@@ -12,7 +12,7 @@ import OrionReportPDF from './templates/OrionReportPDF.jsx';
 import ParticipationNoteReportPDF from './templates/ParticipationNoteReportPDF.jsx';
 import TwinWinReportPDF from './templates/TwinWinReportPDF.jsx';
 import RateReportPDF from './templates/RateReportPDF.jsx';
-import PMSReportPDF from './templates/PMSReportPDF.jsx';
+import PortfolioStatementPDF from './templates/PortfolioStatementPDF.jsx';
 import RiskAnalysisPDF from './templates/RiskAnalysisPDF.jsx';
 import PortfolioReviewPDF from './templates/PortfolioReviewPDF.jsx';
 import GlobalSearchBar from './components/GlobalSearchBar.jsx';
@@ -891,7 +891,7 @@ const AppContent = () => {
 
         {/* PDF PMS Report - Portfolio Management System PDF */}
         {currentSection === 'pdf-pms' && (
-          <PMSReportPDF />
+          <PortfolioStatementPDF />
         )}
 
         {/* PDF Risk Analysis Report */}

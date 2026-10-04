@@ -98,7 +98,7 @@ const loadLatestSnapshots = async () => {
         totalAccountValue: { $first: '$totalAccountValue' },
         totalMarketValue: { $first: '$totalMarketValue' },
         cashBalance: { $first: '$cashBalance' },
-        currency: { $first: '$currency' }
+        currency: { $first: { $ifNull: ['$portfolioCurrency', '$currency'] } }
       }
     }
   ], { allowDiskUse: true }).toArray();

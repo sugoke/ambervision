@@ -397,11 +397,10 @@ Meteor.methods({
       console.log('[PDF] New page created');
 
       // Set viewport
-      await page.setViewport({
-        width: 1200,
-        height: 1600,
-        deviceScaleFactor: 2
-      });
+      // The portfolio statement is designed at 1123×794 px per page (A4 landscape)
+      await page.setViewport(reportType === 'pms'
+        ? { width: 1123, height: 794, deviceScaleFactor: 2 }
+        : { width: 1200, height: 1600, deviceScaleFactor: 2 });
 
       console.log('[PDF] Navigating to:', reportUrl.replace(tempToken, '***TOKEN***'));
 
@@ -543,7 +542,20 @@ Meteor.methods({
 
       let pdfBuffer;
       const renderStartedAt = Date.now();
-      try {
+      // The portfolio statement is laid out as fixed A4-landscape pages
+      // (1123×794 CSS px each) carrying their own header, footer and "n / N",
+      // so it prints edge to edge with no Puppeteer margins or running footer.
+      if (reportType === 'pms') {
+        pdfBuffer = await page.pdf({
+          width: '297mm',
+          height: '210mm',
+          printBackground: true,
+          preferCSSPageSize: true,
+          timeout: PDF_RENDER_TIMEOUT_MS,
+          margin: { top: '0mm', right: '0mm', bottom: '0mm', left: '0mm' },
+          displayHeaderFooter: false
+        });
+      } else try {
         pdfBuffer = await page.pdf({
           format: 'A4',
           landscape: useLandscape,

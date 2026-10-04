@@ -2,13 +2,14 @@ import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
-import { PortfolioSnapshotHelpers, filterSnapshotsByBankStartDate } from '../../imports/api/portfolioSnapshots.js';
+import { PortfolioSnapshotHelpers, filterSnapshotsByBankStartDate, dedupeSnapshotsPerAccountDay } from '../../imports/api/portfolioSnapshots.js';
 import { getAssetClassLabel, getGranularCategoryLabel } from '../../imports/api/securitiesMetadata.js';
 import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
 import { getHeldProductIdsForScope } from '../helpers/holdingsScope.js';
 import { buildEURRatesMap, convertCurrency } from '../helpers/currencyHelpers.js';
+import { snapshotValueCurrency } from '../../imports/api/helpers/twrCalculator.js';
 
-// Snapshot amounts, each stored in its snapshot's own currency (snapshot.currency)
+// Snapshot amounts, each stored in its account's reference currency (snapshotValueCurrency)
 const SNAPSHOT_AMOUNT_FIELDS = ['totalAccountValue', 'cashBalance', 'totalMarketValue', 'totalCostBasis', 'totalCapitalInvested', 'unrealizedPnL'];
 
 /**
@@ -20,10 +21,10 @@ async function convertSnapshots(snapshots, currency) {
   const ratesMap = await buildEURRatesMap();
   const converted = [];
   for (const snap of snapshots) {
-    const out = { ...snap, currency };
+    const out = { ...snap, currency, portfolioCurrency: currency };
     for (const field of SNAPSHOT_AMOUNT_FIELDS) {
       if (snap[field] === null || snap[field] === undefined) continue;
-      const value = convertCurrency(snap[field], snap.currency, currency, ratesMap);
+      const value = convertCurrency(snap[field], snapshotValueCurrency(snap), currency, ratesMap);
       if (value === null) return null;
       out[field] = value;
     }
@@ -485,7 +486,7 @@ Meteor.methods({
         // Exclude snapshots from banks with known bad historical pricing (e.g. CMB before 2026-01-09)
         let rawSnapshots = filterSnapshotsByBankStartDate(fetchedSnapshots);
 
-        if (currency && rawSnapshots.some(snap => snap.currency && snap.currency !== currency)) {
+        if (currency && rawSnapshots.some(snap => snapshotValueCurrency(snap) && snapshotValueCurrency(snap) !== currency)) {
           const converted = await convertSnapshots(rawSnapshots, currency);
           if (converted) {
             rawSnapshots = converted;
@@ -497,7 +498,8 @@ Meteor.methods({
 
         if (targetPortfolioCodes.length > 1 && rawSnapshots.length > 0) {
           const byDate = {};
-          for (const snap of rawSnapshots) {
+          // One row per account per day first: duplicates of the same file would be summed
+          for (const snap of dedupeSnapshotsPerAccountDay(rawSnapshots)) {
             const dateKey = snap.snapshotDate.toISOString().split('T')[0];
             if (!byDate[dateKey]) {
               byDate[dateKey] = { ...snap };
@@ -565,7 +567,7 @@ Meteor.methods({
 
     // The currency the amounts are in: the requested one once converted, else
     // the snapshots' own currency when they agree, else unknown (mixed).
-    const snapshotCurrencies = [...new Set(snapshots.map(s => s.currency).filter(Boolean))];
+    const snapshotCurrencies = [...new Set(snapshots.map(s => snapshotValueCurrency(s)).filter(Boolean))];
     const valueCurrency = convertedAtSpot ? currency
       : snapshotCurrencies.length === 1 ? snapshotCurrencies[0] : null;
 
@@ -863,7 +865,8 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
     // Aggregate by date if multiple accounts
     if (targetPortfolioCodes.length > 1 && rawSnapshots.length > 0) {
       const byDate = {};
-      for (const snap of rawSnapshots) {
+      // One row per account per day first: duplicates of the same file would be summed
+      for (const snap of dedupeSnapshotsPerAccountDay(rawSnapshots)) {
         const dateKey = snap.snapshotDate.toISOString().split('T')[0];
         if (!byDate[dateKey]) {
           byDate[dateKey] = { ...snap, _aggregated: true };
@@ -945,11 +948,13 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
     buildConsolidatedDailyValues,
     buildConsolidatedDailyFlows,
     calculateDailyTWR,
-    annualizeTWR
+    annualizeTWR,
+    buildCalendarReturns
   } = await import('../../imports/api/helpers/twrCalculator.js');
 
   const snapshotCurrencyCounts = snapshots.reduce((acc, snap) => {
-    if (snap.currency) acc[snap.currency] = (acc[snap.currency] || 0) + 1;
+    const ccy = snapshotValueCurrency(snap);
+    if (ccy) acc[ccy] = (acc[ccy] || 0) + 1;
     return acc;
   }, {});
   const twrCurrency = currency
@@ -1094,12 +1099,36 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
     }]
   };
 
+  // 7. Calendar returns (per month / per year), chain-linked from the same daily
+  // series so they multiply back to the cumulative TWR. Bar colors follow the
+  // sign: the hex values of --gain-color / --loss-color (client/main.css).
+  const monthlyReturns = buildCalendarReturns(twrSeries, 'month', dailyValues[0].date);
+  const yearlyReturns = buildCalendarReturns(twrSeries, 'year', dailyValues[0].date);
+  const GAIN_COLOR = '#57B891';
+  const LOSS_COLOR = '#D9776B';
+  const toBarChart = (rows) => ({
+    labels: rows.map(r => (r.isPartial ? `${r.label}*` : r.label)),
+    datasets: [{
+      label: 'Time-weighted return',
+      data: rows.map(r => Number((r.twr * 100).toFixed(2))),
+      backgroundColor: rows.map(r => (r.isPositive ? GAIN_COLOR : LOSS_COLOR)),
+      borderRadius: 3,
+      maxBarThickness: 48
+    }],
+    // Per-bar text for the tooltip, already formatted
+    tooltips: rows.map(r => ({ value: r.twrFormatted, range: r.rangeText, partial: r.isPartial }))
+  });
+  const calendarCharts = { monthly: toBarChart(monthlyReturns), yearly: toBarChart(yearlyReturns) };
+
   console.log(`[TWR] Complete: ${twrSeries.length} data points, ALL TWR: ${formatTWR(lastEntry.cumulativeTWR)}, ${operations.length} external flows`);
 
   return {
     hasData: true,
     periods,
     chartData,
+    monthlyReturns,
+    yearlyReturns,
+    calendarCharts,
     metadata: {
       calculatedAt: new Date(),
       totalDays,

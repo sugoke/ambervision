@@ -16,6 +16,15 @@
 import { OPERATION_TYPES } from '/imports/api/constants/operationTypes.js';
 import { convertToEUR } from '/imports/api/helpers/cashCalculator.js';
 
+/**
+ * Currency a snapshot's totals (totalAccountValue, cashBalance, ...) are
+ * denominated in. `portfolioCurrency` is the account's reference currency the
+ * holdings were valued in; `currency` is only the dominant security currency
+ * (a EUR credit line with a USD sub-balance is labelled "USD"). Older
+ * snapshots have no portfolioCurrency, and there `currency` is the only hint.
+ */
+export const snapshotValueCurrency = (snap) => (snap && (snap.portfolioCurrency || snap.currency)) || null;
+
 // External cash flow operation types that distort performance
 const EXTERNAL_FLOW_TYPES = new Set([
   OPERATION_TYPES.TRANSFER_IN,
@@ -220,6 +229,10 @@ export const PERIMETER_FLOW_TYPE_LIST = [...PERIMETER_FLOW_TYPES];
  * that leave the net amount empty carry it in the quantity.
  */
 export const getSignedFlowAmount = (operation, { trustSign = false } = {}) => {
+  // Parsers now store the signed amount (+ in, - out) in the operation's std block
+  if (operation.std && Number.isFinite(Number(operation.std.amount)) && Number(operation.std.amount) !== 0) {
+    return Number(operation.std.amount);
+  }
   const raw = [operation.netAmount, operation.grossAmount, operation.quantity]
     .find(v => v != null && v !== 0 && !Number.isNaN(Number(v)));
   if (raw == null) return 0;
@@ -257,8 +270,8 @@ export const buildConsolidatedDailyValues = (snapshots, convert, { maxGapDays = 
     const existing = days.get(date);
     const created = snap.createdAt ? new Date(snap.createdAt).getTime() : 0;
     if (!existing || created >= existing.created) {
-      const value = convert(snap.totalAccountValue || 0, snap.currency);
-      if (value === null) return { dailyValues: [], structuralFlows: {}, missingRate: snap.currency };
+      const value = convert(snap.totalAccountValue || 0, snapshotValueCurrency(snap));
+      if (value === null) return { dailyValues: [], structuralFlows: {}, missingRate: snapshotValueCurrency(snap) };
       days.set(date, { value, created });
     }
   }
@@ -309,7 +322,9 @@ export const buildConsolidatedDailyFlows = (operations, convert, signedBankIds =
     if (!PERIMETER_FLOW_TYPES.has(op.operationType)) continue;
     const signed = getSignedFlowAmount(op, { trustSign: signedBankIds.has(op.bankId) });
     if (!signed) continue;
-    const currency = op.currency || op.accountCurrency || op.operationCurrency || op.settlementCurrency;
+    // The std amount is in std.currency; the legacy amount fields in the bank currency fields
+    const usesStd = op.std && Number(op.std.amount) !== 0 && Number.isFinite(Number(op.std.amount));
+    const currency = (usesStd && op.std.currency) || op.currency || op.accountCurrency || op.operationCurrency || op.settlementCurrency;
     const value = convert(signed, currency);
     if (value === null) return { dailyFlows: {}, missingRate: currency };
     const date = dateKeyOf(op.operationDate);
@@ -331,4 +346,76 @@ export const buildConsolidatedDailyFlows = (operations, convert, signedBankIds =
 export const annualizeTWR = (twr, totalDays) => {
   if (totalDays <= 365) return null;
   return Math.pow(1 + twr, 365 / totalDays) - 1;
+};
+
+// ---------------------------------------------------------------------------
+// Calendar (monthly / yearly) returns
+// ---------------------------------------------------------------------------
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+const formatDayMonth = (iso) => `${Number(iso.slice(8, 10))} ${MONTH_NAMES[Number(iso.slice(5, 7)) - 1]}`;
+
+/**
+ * Time-weighted return per calendar month or year, chain-linked from the daily
+ * series built by calculateDailyTWR — so deposits and withdrawals are already
+ * neutralised and the buckets multiply back to the cumulative TWR.
+ *
+ * Return of a bucket = (1 + cum at its last day) / (1 + cum at the previous
+ * bucket's last day) − 1. The first bucket starts from the series base value
+ * (cumulative 0 on `baseDate`, the day before the first series entry).
+ *
+ * A bucket is partial when the series starts inside it (no value at the end of
+ * the previous bucket) or when it is still running at `asOf`.
+ *
+ * @param {Array} twrSeries - [{ date: 'YYYY-MM-DD', cumulativeTWR }], sorted
+ * @param {'month'|'year'} granularity
+ * @param {string} baseDate - date of the series base value ('YYYY-MM-DD')
+ * @param {Date} [asOf] - reference "today" for the running bucket
+ * @returns {Array} [{ key, label, twr, twrFormatted, isPositive, isPartial, fromDate, toDate, rangeText }]
+ */
+export const buildCalendarReturns = (twrSeries, granularity, baseDate, asOf = new Date()) => {
+  if (!twrSeries || twrSeries.length === 0 || !baseDate) return [];
+  const keyOf = (iso) => (granularity === 'year' ? iso.slice(0, 4) : iso.slice(0, 7));
+  const asOfIso = asOf.toISOString().slice(0, 10);
+
+  // Last entry of each bucket, in order
+  const buckets = [];
+  for (const point of twrSeries) {
+    const key = keyOf(point.date);
+    const last = buckets[buckets.length - 1];
+    if (last && last.key === key) {
+      last.end = point;
+    } else {
+      buckets.push({ key, first: point, end: point });
+    }
+  }
+
+  let prevCum = 0;
+  let prevEndDate = baseDate;
+  return buckets.map((b, index) => {
+    const twr = (1 + b.end.cumulativeTWR) / (1 + prevCum) - 1;
+    const startsInside = index === 0 && keyOf(baseDate) === b.key;
+    const isRunning = keyOf(asOfIso) === b.key;
+    const fromDate = index === 0 ? baseDate : prevEndDate;
+    const toDate = b.end.date;
+    prevCum = b.end.cumulativeTWR;
+    prevEndDate = b.end.date;
+
+    const label = granularity === 'year'
+      ? b.key
+      : `${MONTH_NAMES[Number(b.key.slice(5, 7)) - 1]} ${b.key.slice(0, 4)}`;
+    const pct = twr * 100;
+    return {
+      key: b.key,
+      label,
+      twr,
+      twrFormatted: `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`,
+      isPositive: twr >= 0,
+      isPartial: startsInside || isRunning,
+      fromDate,
+      toDate,
+      rangeText: `${formatDayMonth(fromDate)} ${fromDate.slice(0, 4)} – ${formatDayMonth(toDate)} ${toDate.slice(0, 4)}${isRunning ? ' (to date)' : startsInside ? ' (from first valuation)' : ''}`
+    };
+  });
 };
