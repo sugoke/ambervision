@@ -6727,7 +6727,17 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                     wrapperStyle={isMobile ? { display: 'block' } : undefined}
                     reportId={activeAccountTab}
                     reportType="pms"
-                    filename={`Portfolio_Report_${new Date().toISOString().split('T')[0]}`}
+                    filename={`Portfolio_Report_${(() => {
+                      // First three letters of the client's last name (company name for a
+                      // company), so saved reports are told apart at a glance. The view-as
+                      // filter carries the client record; an account filter carries it as
+                      // entityData. Fallback: the label ("<client> - <account number>").
+                      const entity = viewAsFilter?.type === 'account' ? viewAsFilter?.data?.entityData : viewAsFilter?.data;
+                      const name = entity?.profile?.lastName || entity?.profile?.companyName
+                        || String(viewAsFilter?.label || '').split(' - ')[0];
+                      const letters = name.normalize('NFD').replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase();
+                      return letters ? `${letters}_` : '';
+                    })()}${new Date().toISOString().split('T')[0]}`}
                     title="Report PDF"
                     options={{
                       viewAsFilter: viewAsFilter ? JSON.stringify(viewAsFilter) : null,
