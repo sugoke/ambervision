@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Meteor } from 'meteor/meteor';
+import { LOGO, CSS, tone, Header, Title, KpiStrip, Footer, Page, Bar, LineChart, BarChart } from './reportKit.jsx';
 
 /**
  * Portfolio statement (PDF). Rendered by Puppeteer at /pdf/pms, one fixed
@@ -7,101 +8,6 @@ import { Meteor } from 'meteor/meteor';
  * break and chart coordinate comes from the server (pms.getStatementForPdf →
  * server/helpers/portfolioStatement/buildStatement.js).
  */
-
-const LOGO = '/images/amberlake-logo.png';
-
-const CSS = `
-@page { size: A4 landscape; margin: 0; }
-html, body { margin: 0; padding: 0; background: #FFFFFF !important; }
-* { print-color-adjust: exact; -webkit-print-color-adjust: exact; box-sizing: border-box; }
-.st-doc { background: #FFFFFF; }
-/* Print only the statement, anchored at the sheet origin: anything the app
-   shell renders around the route would otherwise shift every fixed page. */
-@media print {
-  /* The app shell gives html, body and #react-target overflow-x: hidden, which
-     turns them into scroll containers: Chrome then prints only what fits the
-     first sheet. Undo it on every element that wraps the statement. */
-  html, body, :has(.st-doc) { height: auto !important; min-height: 0 !important; max-height: none !important; overflow: visible !important; }
-  body * { visibility: hidden; }
-  .st-doc, .st-doc * { visibility: visible; }
-  .st-doc { position: absolute; left: 0; top: 0; width: 1123px; }
-}
-.st-page { width: 1123px; height: 794px; position: relative; overflow: hidden; background: #FFFFFF; color: #2A2F37;
-  font-family: 'Poppins','Helvetica Neue',sans-serif; -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums lining-nums;
-  break-after: page; page-break-after: always; }
-.st-page:last-child { break-after: auto; page-break-after: auto; }
-.st-inner { padding: 30px 56px 36px; display: flex; flex-direction: column; height: 100%; }
-.st-mono { font-family: 'IBM Plex Mono',ui-monospace,Menlo,monospace; }
-.st-k { font-size: 10px; line-height: 14px; letter-spacing: 0.2em; text-transform: uppercase; font-weight: 500; color: #687080; }
-.st-lbl { font-size: 10px; line-height: 14px; letter-spacing: 0.16em; text-transform: uppercase; font-weight: 500; color: #687080; }
-.st-pos { color: #2E7559; } .st-neg { color: #B23B2A; }
-.st-n { text-align: right; white-space: nowrap; }
-.st-cap { font-size: 10.5px; line-height: 15px; color: #687080; }
-.st-ph { display: flex; justify-content: space-between; align-items: baseline; padding-bottom: 9px; border-bottom: 1px solid #1A2B40; }
-.st-tr { display: grid; align-items: center; font-size: 12px; line-height: 17px; padding: 6px 0; border-bottom: 1px solid #EEE9E1; }
-.st-th { display: grid; align-items: end; font-size: 10px; line-height: 13px; color: #687080; padding: 8px 0 6px; border-bottom: 1px solid #E6E1D8; }
-.st-toc { display: grid; grid-template-columns: 36px minmax(0,1fr) 28px; align-items: baseline; padding: 13px 0; border-bottom: 1px solid #E6E1D8; }
-.st-ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-`;
-
-const tone = (t) => (t === 'pos' ? 'st-pos' : t === 'neg' ? 'st-neg' : '');
-
-const Header = ({ header }) => (
-  <header style={{ flex: 'none', height: 30, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-    <img src={LOGO} alt="Amberlake Partners" style={{ height: 20, width: 'auto', display: 'block' }} />
-    <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 10.5, lineHeight: '14px', color: '#687080' }}>
-      <span style={{ color: '#1A2B40', fontWeight: 500 }}>{header.clientName}</span>
-      <span style={{ width: 1, height: 12, background: '#D9D3C8' }} />
-      <span>{header.valuationText}</span>
-      <span style={{ width: 1, height: 12, background: '#D9D3C8' }} />
-      <span>{header.currencyText}</span>
-    </div>
-  </header>
-);
-
-const Title = ({ page, right }) => (
-  <div style={{ flex: 'none', marginTop: 24, paddingBottom: 16, borderBottom: '1px solid #E6E1D8', display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <div className="st-lbl" style={{ color: '#A9561A' }}>{page.section}</div>
-      <h1 style={{ margin: 0, fontSize: 30, lineHeight: '36px', fontWeight: 300, letterSpacing: '-0.01em', color: '#1A2B40' }}>{page.title}</h1>
-    </div>
-    {right}
-  </div>
-);
-
-const KpiStrip = ({ kpis }) => (kpis && kpis.length ? (
-  <div style={{ display: 'flex', gap: 28 }}>
-    {kpis.map((k, i) => (
-      <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-end' }}>
-        <span className="st-cap">{k.label}</span>
-        <span className={tone(k.tone)} style={{ fontSize: 15, lineHeight: '20px', color: k.tone ? undefined : '#1A2B40', fontWeight: 500 }}>{k.value}</span>
-      </div>
-    ))}
-  </div>
-) : null);
-
-const Footer = ({ page }) => (
-  <footer style={{ flex: 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #E6E1D8', paddingTop: 9, fontSize: 10, lineHeight: '14px', color: '#687080' }}>
-    <span>Amberlake Partners SAM · Private and confidential</span>
-    <span>SEC registered · CCAF regulated</span>
-    <span><span style={{ color: '#1A2B40', fontWeight: 500 }}>{page.pageNumber}</span> / {page.pageCount}</span>
-  </footer>
-);
-
-const Page = ({ data, page, right, children }) => (
-  <section className="st-page">
-    <div className="st-inner">
-      <Header header={data.header} />
-      <Title page={page} right={right} />
-      <main style={{ flex: 1, minHeight: 0, paddingTop: 20 }}>{children}</main>
-      <Footer page={page} />
-    </div>
-  </section>
-);
-
-const Bar = ({ pct, color = '#1A2B40', height = 3 }) => (
-  <div style={{ height, background: '#F1EDE6' }}><div style={{ width: `${pct}%`, height, background: color }} /></div>
-);
 
 // ── Cover ────────────────────────────────────────────────────────────────────
 const Cover = ({ data }) => {
@@ -450,40 +356,6 @@ const Liquidity = ({ data, page: p }) => (
 );
 
 // ── Performance ──────────────────────────────────────────────────────────────
-const LineChart = ({ chart }) => (
-  <svg width={chart.width} height={chart.height} viewBox={`0 0 ${chart.width} ${chart.height}`} style={{ display: 'block' }}>
-    {chart.yTicks.map((t, i) => (
-      <g key={i}>
-        <line x1={chart.plot.left} x2={chart.plot.right} y1={t.y} y2={t.y} stroke="#EEE9E1" strokeWidth="1" />
-        <text x={chart.plot.left - 8} y={t.y + 3} textAnchor="end" fontSize="9.5" fill="#687080" fontFamily="IBM Plex Mono, monospace">{t.label}</text>
-      </g>
-    ))}
-    {chart.xTicks.map((t, i) => <text key={i} x={t.x} y={chart.plot.bottom + 16} textAnchor="middle" fontSize="9.5" fill="#687080" fontFamily="Poppins, sans-serif">{t.label}</text>)}
-    <path d={chart.area} fill="#1A2B40" fillOpacity="0.06" />
-    <path d={chart.line} fill="none" stroke="#1A2B40" strokeWidth="1.6" />
-    <circle cx={chart.lastPoint.x} cy={chart.lastPoint.y} r="3" fill="#DD772A" />
-  </svg>
-);
-
-const BarChart = ({ chart }) => (
-  <svg width={chart.width} height={chart.height} viewBox={`0 0 ${chart.width} ${chart.height}`} style={{ display: 'block' }}>
-    {chart.yTicks.map((t, i) => (
-      <g key={i}>
-        <line x1={chart.plot.left} x2={chart.plot.right} y1={t.y} y2={t.y} stroke="#EEE9E1" strokeWidth="1" />
-        <text x={chart.plot.left - 6} y={t.y + 3} textAnchor="end" fontSize="9" fill="#687080" fontFamily="IBM Plex Mono, monospace">{t.label}</text>
-      </g>
-    ))}
-    <line x1={chart.plot.left} x2={chart.plot.right} y1={chart.zeroY} y2={chart.zeroY} stroke="#9A9389" strokeWidth="1" />
-    {chart.bars.map((b, i) => (
-      <g key={i}>
-        <rect x={b.x} y={b.y} width={b.w} height={b.h} fill={b.positive ? '#2E7559' : '#C76A5A'} />
-        {b.valueText && <text x={b.labelX} y={b.valueY} textAnchor="middle" fontSize="8.5" fill="#2A2F37" fontFamily="IBM Plex Mono, monospace">{b.valueText}</text>}
-        <text x={b.labelX} y={chart.plot.bottom + 14} textAnchor="middle" fontSize="9" fill="#687080" fontFamily="Poppins, sans-serif">{b.label}</text>
-      </g>
-    ))}
-  </svg>
-);
-
 const Performance = ({ data, page: p }) => (
   <Page data={data} page={p} right={<KpiStrip kpis={p.kpis} />}>
     <div style={{ display: 'grid', gridTemplateColumns: '600px minmax(0,1fr)', columnGap: 44, height: '100%' }}>
