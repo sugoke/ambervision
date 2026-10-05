@@ -120,9 +120,31 @@ export const ClientEntityHelpers = {
       const { BankAccountsCollection } = await import('./bankAccounts');
       const accounts = await BankAccountsCollection.find(
         { entityId: { $in: entityIds } },
-        { fields: { _id: 1, bankId: 1, accountNumber: 1 } }
+        { fields: { _id: 1, bankId: 1, accountNumber: 1, userId: 1 } }
       ).fetchAsync();
       bankAccountIds = accounts.map(a => a._id);
+
+      // Legacy owner ids stamped on the archived entities' accounts. An entity is not
+      // always linked to its legacy user through migratedFromUserId; its accounts can
+      // still carry that user's id, and the user's records (accounts, holdings) would
+      // then bring the archived client back into every aggregate. Such a user is
+      // archived too, unless it still owns an active account of a live entity (or of
+      // no entity) or is the legacy user of a live entity.
+      const candidateUserIds = [...new Set(accounts.map(a => a.userId).filter(id => id && !userIds.includes(id)))];
+      if (candidateUserIds.length > 0) {
+        const [liveAccounts, liveEntities] = await Promise.all([
+          BankAccountsCollection.find(
+            { userId: { $in: candidateUserIds }, isActive: true, $or: [{ entityId: { $exists: false } }, { entityId: null }, { entityId: { $nin: entityIds } }] },
+            { fields: { userId: 1 } }
+          ).fetchAsync(),
+          ClientEntitiesCollection.find(
+            { migratedFromUserId: { $in: candidateUserIds }, status: { $ne: ENTITY_STATUSES.ARCHIVED } },
+            { fields: { migratedFromUserId: 1 } }
+          ).fetchAsync()
+        ]);
+        const stillLive = new Set([...liveAccounts.map(a => a.userId), ...liveEntities.map(e => e.migratedFromUserId)]);
+        userIds.push(...candidateUserIds.filter(id => !stillLive.has(id)));
+      }
       let candidateKeys = accounts
         .filter(a => a.bankId && a.accountNumber)
         .map(a => ({ bankId: a.bankId, accountNumber: a.accountNumber }));
