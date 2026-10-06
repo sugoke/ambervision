@@ -196,14 +196,19 @@ export function evaluateClientCompliance({ entity, documents = [], accounts = []
     const personDocs = tabDocs.filter(d => (person.index === null
       ? (d.familyMemberIndex === null || d.familyMemberIndex === undefined)
       : d.familyMemberIndex === person.index));
-    for (const docType of getExpectedDocumentTypes(person.isCompany)) {
+    for (const docType of getDocumentTabTypes(person.isCompany)) {
       const config = DOCUMENT_TYPE_CONFIG[docType] || {};
+      // Optional types are never missing; those with an expiry date (residency
+      // card) are still followed once a file is there. Catch-all buckets aren't.
+      const optional = isOptionalDocumentType(docType);
+      if (optional && !config.requiresExpiration) continue;
       const isAmberlake = config.category === 'amberlake';
       // The Amberlake pack is signed by the client, not by family members
       if (isAmberlake && person.index !== null) continue;
       const docs = personDocs.filter(d => d.documentType === docType);
       const subject = person.index === null ? null : person.name;
       if (docs.length === 0) {
+        if (optional) continue;
         push({
           category: isAmberlake ? COMPLIANCE_CATEGORIES.AMBERLAKE : COMPLIANCE_CATEGORIES.DOCUMENTS,
           severity: 'critical',

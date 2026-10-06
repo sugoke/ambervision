@@ -116,7 +116,11 @@ export const DOCUMENT_TYPE_CONFIG = {
     requiresExpiration: true,
     dateLabel: 'Issued',
     icon: '🏠',
-    category: 'compliance'
+    category: 'compliance',
+    // Not every client has one, so never "missing"; once filed, its expiry is
+    // followed like any other (Documents tab, compliance dashboard and alerts)
+    optional: true,
+    hint: 'Optional. When filed, its expiry date is monitored.'
   },
   [DOCUMENT_TYPES.PROOF_OF_ADDRESS]: {
     label: 'Proof of Address',
