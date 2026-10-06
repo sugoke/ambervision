@@ -24,12 +24,17 @@ const PDFDownloadButton = ({
   iconOnly = false, // When true, only show icon (title becomes tooltip)
   showLanguageSelector = true, // Whether to show language selection modal
   onDownloaded = null, // Optional callback fired after a successful PDF download
-  progressLabel = null // Text of the progress overlay; defaults per reportType
+  progressLabel = null, // Text of the progress overlay; defaults per reportType
+  sectionChoices = null // Optional [{ key, label, required }]: ticked sections go to the server as options.sections
 }) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState(null);
   const [showLangModal, setShowLangModal] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [selectedSections, setSelectedSections] = useState(() => (sectionChoices || []).map(s => s.key));
+  const hasSections = Array.isArray(sectionChoices) && sectionChoices.length > 0;
+  const noSectionTicked = hasSections && !sectionChoices.some(s => !s.required && selectedSections.includes(s.key));
+  const toggleSection = (key) => setSelectedSections(prev => (prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]));
 
   // Seconds since generation started, shown in the progress overlay
   useEffect(() => {
@@ -41,7 +46,7 @@ const PDFDownloadButton = ({
   }, [isGenerating]);
 
   const handleDownloadClick = () => {
-    if (showLanguageSelector) {
+    if (showLanguageSelector || hasSections) {
       setShowLangModal(true);
     } else {
       handleDownloadPDF('en');
@@ -67,7 +72,11 @@ const PDFDownloadButton = ({
         reportType,
         sessionId,
         lang,
-        options: { title: filename || 'Report', ...options }
+        options: {
+          title: filename || 'Report',
+          ...options,
+          ...(hasSections ? { sections: sectionChoices.filter(s => s.required || selectedSections.includes(s.key)).map(s => s.key) } : {})
+        }
       });
 
       console.log('[PDF] Received result type:', typeof result);
@@ -132,13 +141,59 @@ const PDFDownloadButton = ({
           background: 'var(--bg-primary, #1f2937)',
           borderRadius: '12px',
           padding: '1.5rem',
-          maxWidth: '320px',
+          maxWidth: hasSections ? '380px' : '320px',
           width: '90%',
           boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
           pointerEvents: 'auto'
         }}
         onClick={(e) => e.stopPropagation()}
       >
+        {hasSections && (
+          <div style={{ marginBottom: '1.25rem' }}>
+            <h3 style={{
+              margin: '0 0 0.75rem 0',
+              fontSize: '1.1rem',
+              fontWeight: '600',
+              color: 'var(--text-primary, white)',
+              textAlign: 'center'
+            }}>
+              Sections to include
+            </h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+              {sectionChoices.map(s => (
+                <label
+                  key={s.key}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.6rem',
+                    padding: '0.4rem 0.6rem',
+                    borderRadius: '6px',
+                    border: '1px solid var(--border-color, #4b5563)',
+                    cursor: s.required ? 'default' : 'pointer',
+                    fontSize: '0.9rem',
+                    color: s.required ? 'var(--text-muted, #9ca3af)' : 'var(--text-primary, white)'
+                  }}
+                  title={s.required ? 'Always included' : undefined}
+                >
+                  <input
+                    type="checkbox"
+                    checked={s.required || selectedSections.includes(s.key)}
+                    disabled={s.required}
+                    onChange={() => toggleSection(s.key)}
+                  />
+                  <span>{s.label}</span>
+                  {s.required && <span style={{ marginLeft: 'auto', fontSize: '0.75rem' }}>always</span>}
+                </label>
+              ))}
+            </div>
+            {noSectionTicked && (
+              <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: 'var(--warning-color, #f59e0b)', textAlign: 'center' }}>
+                Tick at least one section.
+              </div>
+            )}
+          </div>
+        )}
         <h3 style={{
           margin: '0 0 1rem 0',
           fontSize: '1.1rem',
@@ -155,6 +210,7 @@ const PDFDownloadButton = ({
         }}>
           <button
             onClick={() => handleDownloadPDF('en')}
+            disabled={noSectionTicked}
             type="button"
             style={{
               padding: '0.75rem 1.5rem',
@@ -162,7 +218,8 @@ const PDFDownloadButton = ({
               color: 'white',
               border: 'none',
               borderRadius: '8px',
-              cursor: 'pointer',
+              cursor: noSectionTicked ? 'not-allowed' : 'pointer',
+              opacity: noSectionTicked ? 0.5 : 1,
               fontSize: '0.95rem',
               fontWeight: '500',
               display: 'flex',
@@ -177,6 +234,7 @@ const PDFDownloadButton = ({
           </button>
           <button
             onClick={() => handleDownloadPDF('fr')}
+            disabled={noSectionTicked}
             type="button"
             style={{
               padding: '0.75rem 1.5rem',
@@ -184,7 +242,8 @@ const PDFDownloadButton = ({
               color: 'white',
               border: 'none',
               borderRadius: '8px',
-              cursor: 'pointer',
+              cursor: noSectionTicked ? 'not-allowed' : 'pointer',
+              opacity: noSectionTicked ? 0.5 : 1,
               fontSize: '0.95rem',
               fontWeight: '500',
               display: 'flex',

@@ -957,12 +957,22 @@ export const CMBMonacoParser = {
     const isRealIsin = (v) => /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(String(v || '').trim());
     const byOrder = new Map();
     const passthrough = [];
+    const extraLegs = new Map(); // order -> security legs seen beyond the first
     for (const row of rows) {
       const orderRef = row.Order && String(row.Order).trim();
       if (!orderRef) { passthrough.push(row); continue; }
       const order = `${orderRef}|${String(row.Portfolio_Number || '').trim()}`;
       const existing = byOrder.get(order);
       if (!existing) { byOrder.set(order, row); continue; }
+      // Two security legs under one Order are two bookings (a trade and its
+      // cancellation share the Order): both are kept. The later one gets its own
+      // reference, as operations are stored one per reference and day.
+      if (isRealIsin(existing.ISIN) && isRealIsin(row.ISIN)) {
+        const n = (extraLegs.get(order) || 1) + 1;
+        extraLegs.set(order, n);
+        passthrough.push({ ...row, Order: `${orderRef}#${n}` });
+        continue;
+      }
       // Prefer the security leg (real ISIN) over the cash-account leg.
       if (!isRealIsin(existing.ISIN) && isRealIsin(row.ISIN)) byOrder.set(order, row);
     }
@@ -1090,7 +1100,7 @@ export const CMBMonacoParser = {
     return withStandard(operation, {
       type: operationType,
       description,
-      instrumentName: isCashBooking ? null : row.Position,
+      instrumentName: isCashBooking ? null : this.cleanPositionName(row.Position, isin),
       isin,
       quantity: isCashBooking ? null : quantity,
       price: isCashBooking ? null : this.parseNumber(row.Security_Market_Price),
@@ -1104,6 +1114,22 @@ export const CMBMonacoParser = {
       bankTypeLabel: row.Order_Type || row.Meta_Type,
       reference: row.Order
     });
+  },
+
+  /**
+   * Instrument name from an operation's Position label, which wraps it in the
+   * client reference and the custody details:
+   *   "CLT.4669.2 SLB Limited USD CCC.BNPAUS3NB2S.AUX_NOSTRO.1600" -> "SLB Limited"
+   *   "CLT.4669.2 IShares Bitcoin Trust Shs Benef Int (US46438F1012) USD CCC..." -> "IShares Bitcoin Trust Shs Benef Int"
+   */
+  cleanPositionName(position, isin) {
+    let name = String(position || '').trim().replace(/^CLT\.[\d.]+\s+/, '');
+    if (isin) {
+      const at = name.indexOf(`(${isin})`);
+      if (at > 0) name = name.slice(0, at);
+    }
+    name = name.replace(/\s+[A-Z]{3}\s+CCC\..*$/, '').trim();
+    return name || position || null;
   },
 
   /**

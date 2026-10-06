@@ -835,6 +835,7 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
   // 1. Fetch snapshots by portfolio codes (account-centric)
   let snapshots;
   let rawSnapshotsForTWR = [];
+  let coverageStarts = {};
   if (isAdminAllClients) {
     snapshots = await PortfolioSnapshotHelpers.getAggregatedSnapshots({
       startDate: null,
@@ -855,8 +856,11 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
       sort: { snapshotDate: 1 }
     }).fetchAsync();
 
-    // Exclude snapshots from banks with known bad historical pricing (e.g. CMB before 2026-01-09)
-    const rawSnapshots = filterSnapshotsByBankStartDate(fetchedSnapshots);
+    // Exclude snapshots from banks with known bad historical pricing (e.g. CMB before 2026-01-09),
+    // and those from before a bank's operations history: the flows between them are unknown
+    const { getOperationsCoverageStarts, filterSnapshotsByOperationsCoverage } = await import('../helpers/operationsCoverage.js');
+    coverageStarts = await getOperationsCoverageStarts(fetchedSnapshots.map(s => s.bankId));
+    const rawSnapshots = filterSnapshotsByOperationsCoverage(filterSnapshotsByBankStartDate(fetchedSnapshots), coverageStarts);
 
     console.log(`[TWR] Found ${rawSnapshots.length} raw snapshots (filtered from ${fetchedSnapshots.length})`);
 
@@ -1028,6 +1032,7 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
         twr,
         twrFormatted: formatTWR(twr),
         startDate: dailyValues[0].date,
+        measuredFrom: dailyValues[0].date,
         endDate: lastEntry.date,
         dataPoints: twrSeries.length,
         isAnnualized: annualized !== null,
@@ -1076,6 +1081,9 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
       twr: periodTWR,
       twrFormatted: formatTWR(periodTWR),
       startDate: periodStartStr,
+      // The measure starts later than the period when the history does
+      // (first valuation, or start of the bank's operations history)
+      measuredFrom: dailyValues[0].date > periodStartStr ? dailyValues[0].date : periodStartStr,
       endDate: lastEntry.date,
       dataPoints: dataPointsInPeriod
     };
@@ -1135,6 +1143,8 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
       firstSnapshotDate: dailyValues[0].date,
       lastSnapshotDate: lastEntry.date,
       externalFlowCount: operations.length,
+      // bankId -> first day with known flows (ISO), for banks whose operations history starts later
+      operationsCoverageStarts: Object.fromEntries(Object.entries(coverageStarts).map(([b, d]) => [b, d.toISOString().split('T')[0]])),
       currency: twrCurrency,
       // Accounts of the perimeter left out of the measure (credit lines, cards, spending)
       excludedAccounts: perimeterAccounts

@@ -28,6 +28,7 @@ import { classifyHolding, buildCategoryKey } from '/imports/api/assetClassificat
 import { getGranularCategoryLabel } from '/imports/api/securitiesMetadata';
 import { buildRatesMap, isPureCashHolding } from '/imports/api/helpers/cashCalculator';
 import { buildConsolidatedDailyValues } from '/imports/api/helpers/twrCalculator';
+import { STATEMENT_SECTIONS } from '/imports/constants/statementSections';
 import { getFilteredClientIds } from '../../methods/rmDashboardMethods.js';
 import {
   num, signed, pct, signedPct, qty, compact, dateLong, dateShort, dayMonth, monthYear,
@@ -158,9 +159,10 @@ const makeConverter = (holdings, eurRates, refCcy) => {
  * @param {Object|null} params.viewAsFilter
  * @param {String|null} params.accountId - account tab the statement was opened on
  * @param {String|null} params.currency  - reference currency asked by the PMS
+ * @param {String[]|null} params.sections - STATEMENT_SECTIONS keys to include (all when empty)
  * @param {Date} [params.now]
  */
-export async function buildStatement({ currentUser, viewAsFilter = null, accountId = null, currency = null, now = new Date() }) {
+export async function buildStatement({ currentUser, viewAsFilter = null, accountId = null, currency = null, sections = null, now = new Date() }) {
   // ── Perimeter ──────────────────────────────────────────────────────────────
   const ownerIds = await getFilteredClientIds(currentUser, viewAsFilter || null);
   // One account: the viewAs account, or the account tab the report was opened on.
@@ -231,7 +233,10 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
   for (const h of holdings) {
     const valueRef = fx.convert(h.marketValue || 0, h.portfolioCurrency || refCcy);
     if (isPureCashHolding(h)) {
-      cashRows.push({ h, valueRef, account: accountOf(h) });
+      // A balance held in the reference currency is taken as booked, not converted
+      // to the account's currency and back (a USD balance on a EUR account lost cents)
+      const balanceRef = h.currency === refCcy && Number.isFinite(h.marketValueOriginalCurrency) ? h.marketValueOriginalCurrency : valueRef;
+      cashRows.push({ h, valueRef: balanceRef, account: accountOf(h) });
       continue;
     }
     const meta = metaByIsin[h.isin] || null;
@@ -329,6 +334,11 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
   const operations = operationAccounts.length ? await PMSOperationsCollection.find({
     isActive: true, $or: operationAccounts, operationDate: { $gte: yearStart, $lte: new Date(valuationDate.getTime() + 86400000) }
   }, { sort: { operationDate: -1 } }).fetchAsync() : [];
+  // Securities traded but no longer held: their names come from the reference data too
+  const tradedIsins = [...new Set(operations.map(o => String(o.isin || '').toUpperCase()).filter(i => isIsin(i) && !metaByIsin[i]))];
+  if (tradedIsins.length) {
+    (await SecuritiesMetadataCollection.find({ isin: { $in: tradedIsins } }).fetchAsync()).forEach(m => { metaByIsin[m.isin] = m; });
+  }
 
   const income = operations.filter(isIncome);
   const incomeByCcy = Object.values(income.reduce((m, o) => {
@@ -342,11 +352,16 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
   const incomeTotalRef = sum(incomeByCcy, r => fx.convert(r.net, r.ccy));
   const incomeCount = sum(incomeByCcy, r => r.count);
 
+  // A cancelled trade is booked with the trade's type and the opposite amount.
+  // Read from the sign only for banks booking signed amounts (a purchase debited).
+  const signedTradeBanks = new Set(operations.filter(o => o.operationType === 'BUY' && opAmount(o) < 0).map(o => o.bankId));
+  const isTradeReversal = (o) => o.isReversal === true || (signedTradeBanks.has(o.bankId)
+    && ((o.operationType === 'BUY' && opAmount(o) > 0) || (o.operationType === 'SELL' && opAmount(o) < 0)));
   const trades = operations.filter(o => TRADE_TYPES.has(o.operationType)).map(o => {
     const amount = opAmount(o);
     return {
       date: dateShort(o.operationDate),
-      side: TYPE_LABEL[o.operationType],
+      side: isTradeReversal(o) ? `${TYPE_LABEL[o.operationType]} reversal` : TYPE_LABEL[o.operationType],
       security: metaByIsin[o.isin]?.securityName || o.std?.instrumentName || o.instrumentName || o.securityName || '—',
       isin: isIsin(o.isin) ? o.isin.toUpperCase() : '',
       qty: opQuantity(o) != null ? qty(opQuantity(o)) : '—',
@@ -409,14 +424,21 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
   }
   const PERIODS = [['1M', '1 month'], ['3M', '3 months'], ['6M', '6 months'], ['YTD', 'Year to date'], ['1Y', '1 year'], ['ALL', 'Since inception']];
   const navEnd = navSeries[navSeries.length - 1] || null;
+  const seenStarts = new Set();
   const periodRows = PERIODS.map(([key, label]) => {
     const p = twr?.periods?.[key];
     if (!p || !p.hasData) return null;
+    // Returns start where the history allows it (first valuation, or start of the
+    // custodian's operations history); periods reduced to the same start are shown once
+    const measuredFrom = p.measuredFrom || p.startDate;
+    if (seenStarts.has(measuredFrom)) return null;
+    seenStarts.add(measuredFrom);
     // Value at the period start, or the first valuation when the history is shorter
-    const start = navAt(p.startDate) || navSeries[0];
+    const start = navAt(measuredFrom) || navSeries[0];
     const change = start && navEnd ? navEnd.value - start.value : null;
+    const shortened = key !== 'ALL' && measuredFrom > p.startDate;
     return {
-      key, label, fromText: `from ${dateShort(start ? start.date : p.startDate)}`, change, startDate: start ? start.date : null,
+      key, label: shortened ? `Since ${dateShort(measuredFrom)}` : label, shortened, fromText: `from ${dateShort(start ? start.date : p.startDate)}`, change, startDate: start ? start.date : null,
       startText: start ? num(start.value) : '—',
       changeText: change != null ? signed(change) : '—', changePositive: (change || 0) >= 0,
       twrText: p.twrFormatted || signedPct(p.twr), twrPositive: (p.twr || 0) >= 0
@@ -485,7 +507,7 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
       }),
       caption: shortCcys.length ? `After financing the portfolio is net short ${shortCcys.join(', ')}.` : 'Currency exposure of the assets, net of financing.'
     },
-    periods: periodRows.filter(r => ['1 month', '3 months', '6 months', 'Year to date'].includes(r.label))
+    periods: periodRows.filter(r => ['1M', '3M', '6M', 'YTD'].includes(r.key))
   });
 
   // 02 Allocation
@@ -670,14 +692,14 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
     type: 'performance', section: '04 · Performance', title: 'Performance', refCcy,
     kpis: [
       { label: `Net asset value, ${refCcy}`, value: num(nav) },
-      ...(twr?.periods?.YTD?.hasData ? [{ label: 'Time-weighted return, year to date', value: twr.periods.YTD.twrFormatted, tone: twr.periods.YTD.twr >= 0 ? 'pos' : 'neg' }] : [])
+      ...(twr?.periods?.YTD?.hasData ? [{ label: ytdRow?.shortened ? `Time-weighted return, ${ytdRow.label.toLowerCase()}` : 'Time-weighted return, year to date', value: twr.periods.YTD.twrFormatted, tone: twr.periods.YTD.twr >= 0 ? 'pos' : 'neg' }] : [])
     ],
     navChart, navCaption: navSeries.length ? `${refCcy}, at each valuation date from ${dateShort(navSeries[0].date)}` : null,
     periodRows,
     monthlyChart, monthlyCaption: monthly.length ? `TWR${monthly.some(m => m.isPartial) ? ' · * partial month' : ''}` : null,
     yearly,
     pnlRows: pnlRows.map(p => ({ name: p.name, pnl: signed(p.pnlRef), pnlPct: p.costRef ? signedPct(p.pnlRef / p.costRef) : '—', positive: p.pnlRef >= 0, barPct: (Math.abs(p.pnlRef) / maxPnl) * 100 })),
-    footnote: `Returns are time-weighted: deposits and withdrawals are neutralised, so they measure the investment result. ${hasFinancing && !account ? " They cover the investment accounts; credit facilities and cards are left out." : ""} Changes in ${refCcy} are the simple difference in net asset value, financing included, and include flows.${twr?.metadata?.externalFlowCount ? ` ${twr.metadata.externalFlowCount} external flows neutralised.` : ''}`
+    footnote: `Returns are time-weighted: deposits and withdrawals are neutralised, so they measure the investment result. ${hasFinancing && !account ? " They cover the investment accounts; credit facilities and cards are left out." : ""} Changes in ${refCcy} are the simple difference in net asset value, financing included, and include flows.${twr?.metadata?.externalFlowCount ? ` ${twr.metadata.externalFlowCount} external flows neutralised.` : ''}${periodRows.some(r => r.shortened) ? ` Returns are measured from ${dateLong(twr.periods.ALL.measuredFrom)}, the first date with both valuations and the custodian's record of deposits and withdrawals.` : ''}`
   });
 
   // 05 Activity (YTD), securities transactions continue on extra pages
@@ -753,13 +775,26 @@ export async function buildStatement({ currentUser, viewAsFilter = null, account
   const isEmpty = holdings.length === 0 && operations.length === 0;
   if (isEmpty) pages.splice(0, pages.length, ...pages.filter(p => p.type === 'notes'));
 
+  // Sections left out by the user; the remaining ones are renumbered 01, 02…
+  // Required sections (notes and disclosures) are always kept.
+  const wanted = Array.isArray(sections) && sections.length ? new Set(sections) : null;
+  const kept = STATEMENT_SECTIONS.filter(s => !wanted || s.required || wanted.has(s.key));
+  const sectionNumber = new Map(kept.map((s, i) => [s.n, String(i + 1).padStart(2, '0')]));
+  pages.splice(0, pages.length, ...pages.filter(p => sectionNumber.has(p.section.slice(0, 2))));
+  pages.forEach((p) => {
+    p.section = `${sectionNumber.get(p.section.slice(0, 2))}${p.section.slice(2)}`;
+    if (p.type === 'overview') {
+      p.performanceRef = sectionNumber.has('04') ? `Detail in section ${sectionNumber.get('04')}.` : null;
+    }
+  });
+
   // Number the pages and build the contents (cover + pages)
   const total = pages.length + 1;
   pages.forEach((p, i) => { p.pageNumber = i + 2; p.pageCount = total; });
   const firstPageOf = (section) => pages.find(p => p.section.startsWith(section))?.pageNumber;
-  const contents = [
-    ['01', 'Overview'], ['02', 'Allocation and exposure'], ['03', 'Positions'], ['04', 'Performance'], ['05', 'Activity'], ['06', 'Notes and disclosures']
-  ].map(([n, label]) => ({ n, label, page: firstPageOf(n) })).filter(c => c.page);
+  const contents = kept
+    .map(s => ({ n: sectionNumber.get(s.n), label: s.label, page: firstPageOf(sectionNumber.get(s.n)) }))
+    .filter(c => c.page);
 
   return {
     meta: { pageCount: total, empty: isEmpty, missingRates: [...fx.missing] },

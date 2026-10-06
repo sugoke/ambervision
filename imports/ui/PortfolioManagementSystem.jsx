@@ -28,6 +28,7 @@ import {
   getAssetSubClass as getAssetSubClassBase
 } from '/imports/api/constants/instrumentTypes';
 import PDFDownloadButton from './components/PDFDownloadButton.jsx';
+import { STATEMENT_SECTIONS } from '/imports/constants/statementSections';
 import NestedDoughnutChart from './components/NestedDoughnutChart.jsx';
 import OrderModal from './components/OrderModal.jsx';
 import SecurityClassificationModal from './components/SecurityClassificationModal.jsx';
@@ -6754,6 +6755,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                       return letters ? `${letters}_` : '';
                     })()}${new Date().toISOString().split('T')[0]}`}
                     title="Report PDF"
+                    sectionChoices={STATEMENT_SECTIONS}
                     options={{
                       viewAsFilter: viewAsFilter ? JSON.stringify(viewAsFilter) : null,
                       accountFilter: activeAccountTab,

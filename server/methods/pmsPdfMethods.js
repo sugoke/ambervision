@@ -38,12 +38,13 @@ Meteor.methods({
    * server-side by buildStatement. The perimeter is resolved there exactly as
    * the on-screen PMS resolves it (getFilteredClientIds).
    */
-  async 'pms.getStatementForPdf'({ userId, pdfToken, viewAsFilter, accountId = null, currency = null }) {
+  async 'pms.getStatementForPdf'({ userId, pdfToken, viewAsFilter, accountId = null, currency = null, sections = null }) {
     check(userId, String);
     check(pdfToken, String);
     check(viewAsFilter, Match.Maybe(Match.ObjectIncluding({ type: String, id: String })));
     check(accountId, Match.Maybe(String));
     check(currency, Match.Maybe(String));
+    check(sections, Match.Maybe([String]));
 
     const currentUser = await validatePdfToken(userId, pdfToken);
     await AuditLog.record({
@@ -55,7 +56,7 @@ Meteor.methods({
     });
 
     const { buildStatement } = await import('../helpers/portfolioStatement/buildStatement.js');
-    return buildStatement({ currentUser, viewAsFilter: viewAsFilter || null, accountId, currency });
+    return buildStatement({ currentUser, viewAsFilter: viewAsFilter || null, accountId, currency, sections });
   }
 });
 

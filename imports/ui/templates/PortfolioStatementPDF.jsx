@@ -164,7 +164,7 @@ const Overview = ({ data, page: p }) => (
               </React.Fragment>
             ))}
           </div>
-          <div className="st-cap" style={{ marginTop: 6 }}>Change in NAV includes flows; the return is time-weighted. Detail in section 04.</div>
+          <div className="st-cap" style={{ marginTop: 6 }}>Change in NAV includes flows; the return is time-weighted.{p.performanceRef ? ` ${p.performanceRef}` : ''}</div>
         </div>
       </section>
     </div>
@@ -564,6 +564,7 @@ export default function PortfolioStatementPDF() {
   const userId = params.get('userId');
   const accountParam = params.get('account');
   const currencyParam = params.get('currency');
+  const sectionsParam = params.get('sections');
   const viewAsFilter = (() => {
     const raw = params.get('viewAsFilter');
     if (!raw) return null;
@@ -582,7 +583,8 @@ export default function PortfolioStatementPDF() {
       pdfToken,
       viewAsFilter: viewAsFilter ? { ...viewAsFilter, type: String(viewAsFilter.type), id: String(viewAsFilter.id) } : null,
       accountId: accountParam && !['all', 'consolidated'].includes(accountParam) ? accountParam : null,
-      currency: currencyParam && /^[A-Z]{3}$/.test(currencyParam) ? currencyParam : null
+      currency: currencyParam && /^[A-Z]{3}$/.test(currencyParam) ? currencyParam : null,
+      sections: sectionsParam ? sectionsParam.split(',').filter(Boolean) : null
     }).then(result => { if (!cancelled) setData(result); })
       .catch(err => { if (!cancelled) setError(err.reason || err.message || 'Statement unavailable'); });
     return () => { cancelled = true; document.body.removeAttribute('data-pdf-mode'); };

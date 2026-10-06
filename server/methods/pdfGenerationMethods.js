@@ -288,7 +288,10 @@ Meteor.methods({
           const accountFilterParam = options.accountFilter ? `&account=${encodeURIComponent(options.accountFilter)}` : '';
           // The currency the portfolio is shown in on screen, so the report matches it
           const currencyParam = typeof options.currency === 'string' && /^[A-Z]{3}$/.test(options.currency) ? `&currency=${options.currency}` : '';
-          reportUrl = `${baseUrl}pdf/pms/${reportId}?pdfToken=${tempToken}&userId=${userId}&lang=${lang}${viewAsFilterParam}${accountFilterParam}${currencyParam}`;
+          // Sections ticked in the download dialog (all when absent)
+          const sectionsParam = Array.isArray(options.sections) && options.sections.length
+            ? `&sections=${options.sections.filter(s => /^[a-z]+$/.test(s)).join(',')}` : '';
+          reportUrl = `${baseUrl}pdf/pms/${reportId}?pdfToken=${tempToken}&userId=${userId}&lang=${lang}${viewAsFilterParam}${accountFilterParam}${currencyParam}${sectionsParam}`;
           console.log('[PDF] Using PMS Portfolio Report template for account:', reportId, 'viewAsFilter:', options.viewAsFilter ? 'present' : 'none');
           break;
         case 'risk-analysis':
