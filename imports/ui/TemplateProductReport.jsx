@@ -468,12 +468,21 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, backLabel, onE
         return marketPrice; // very low — leave as-is to avoid wrong rescale
       })();
 
+      // Nominal (face amount): for a note priced in % of par the bank's
+      // quantity is the nominal; a unit-priced position has none to show.
+      const quantity = h.quantity ?? h.balance;
+      const nominal = h.priceType === 'percentage' && quantity != null ? quantity : null;
+
       return {
         _id: h._id,
         bankName,
         portfolioCode: h.portfolioCode,
         isin: h.isin,
-        quantity: h.quantity ?? h.balance,
+        quantity,
+        nominal,
+        nominalFormatted: nominal != null
+          ? new Intl.NumberFormat('en-US', { style: 'currency', currency: h.currency || 'EUR', maximumFractionDigits: 0 }).format(nominal)
+          : 'N/A',
         marketPrice: decimalPrice,
         marketPriceFormatted: decimalPrice != null ? `${(decimalPrice * 100).toFixed(2)}%` : 'N/A',
         marketValue,
@@ -1223,6 +1232,8 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, backLabel, onE
       {/* PMS Client Holdings Summary (Phoenix-style) */}
       {linkedHoldings && linkedHoldings.length > 0 && user && (user.role === USER_ROLES.ADMIN || user.role === USER_ROLES.SUPERADMIN || user.role === USER_ROLES.RELATIONSHIP_MANAGER) && (() => {
         const totalMV = linkedHoldings.reduce((sum, h) => sum + (h.marketValue || 0), 0);
+        const hasNominal = linkedHoldings.some(h => h.nominal != null);
+        const totalNominal = linkedHoldings.reduce((sum, h) => sum + (h.nominal || 0), 0);
         const uniqueClients = [...new Set(linkedHoldings.map(h => h.clientEmail).filter(Boolean))].length;
         const currency = linkedHoldings[0]?.currency || 'EUR';
         const avgPrice = linkedHoldings.length > 0
@@ -1264,6 +1275,14 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, backLabel, onE
                   {uniqueClients || linkedHoldings.length}
                 </div>
               </div>
+              {hasNominal && (
+              <div>
+                <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Total Nominal</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                  {new Intl.NumberFormat('en-US', { style: 'currency', currency, maximumFractionDigits: 0 }).format(totalNominal)}
+                </div>
+              </div>
+              )}
               <div>
                 <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Total Market Value</div>
                 <div style={{ fontSize: '1.5rem', fontWeight: '700', color: 'var(--text-primary)' }}>
@@ -1329,6 +1348,10 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, backLabel, onE
                           </div>
                           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                             <div>
+                              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.25rem', textTransform: 'uppercase' }}>Nominal</div>
+                              <div style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{holding.nominalFormatted}</div>
+                            </div>
+                            <div>
                               <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.25rem', textTransform: 'uppercase' }}>Market Value</div>
                               <div style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{holding.marketValueFormatted}</div>
                             </div>
@@ -1353,7 +1376,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, backLabel, onE
                     <>
                       <div style={{
                         display: 'grid',
-                        gridTemplateColumns: '2fr 1fr 2fr 1fr 1fr',
+                        gridTemplateColumns: '2fr 1fr 1fr 2fr 1fr 1fr',
                         gap: '12px',
                         padding: '12px',
                         background: 'var(--bg-tertiary)',
@@ -1363,6 +1386,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, backLabel, onE
                         borderBottom: '1px solid var(--border-color)'
                       }}>
                         <div>Client</div>
+                        <div>Nominal</div>
                         <div>Market Value</div>
                         <div>Bank Account</div>
                         <div>Price</div>
@@ -1371,7 +1395,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, backLabel, onE
                       {linkedHoldings.map((holding, index) => (
                         <div key={holding._id} style={{
                           display: 'grid',
-                          gridTemplateColumns: '2fr 1fr 2fr 1fr 1fr',
+                          gridTemplateColumns: '2fr 1fr 1fr 2fr 1fr 1fr',
                           gap: '12px',
                           padding: '12px',
                           borderBottom: index < linkedHoldings.length - 1 ? '1px solid var(--border-color)' : 'none',
@@ -1380,6 +1404,9 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, backLabel, onE
                           <div>
                             <div style={{ fontWeight: '500', color: 'var(--text-primary)' }}>{holding.clientName || holding.portfolioCode}</div>
                             {holding.clientEmail && <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '2px' }}>{holding.clientEmail}</div>}
+                          </div>
+                          <div style={{ fontWeight: '500', color: 'var(--text-primary)' }}>
+                            {holding.nominalFormatted}
                           </div>
                           <div style={{ fontWeight: '600', color: 'var(--text-primary)' }}>
                             {holding.marketValueFormatted}
