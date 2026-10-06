@@ -14,7 +14,7 @@ const LiveOrderPills = ({ orders = [], style }) => {
         const isSell = order.orderType === 'sell';
         const title = [
           order.orderReference,
-          `${order.priceTypeLabel || 'Order'} ${order.orderType || ''}`.trim(),
+          `${order.restingTypeLabel || 'Order'} ${order.orderType || ''}`.trim(),
           order.triggerPriceFormatted && `Price: ${order.triggerPriceFormatted}${order.currency && !order.quotesAsPercent ? ` ${order.currency}` : ''}`,
           `Quantity: ${order.remainingOfTotalFormatted}`,
           order.validityShort && `Validity: ${order.validityShort}`,

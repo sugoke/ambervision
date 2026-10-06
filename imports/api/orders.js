@@ -1221,7 +1221,7 @@ export const OrderHelpers = {
             : order.validityType === VALIDITY_TYPES.DAY ? 'Day' : null;
         return {
           isLiveResting: isLiveRestingOrder(order),
-          priceTypeLabel: typeLabel,
+          restingTypeLabel: typeLabel,
           triggerPriceFormatted: triggerText || null,
           remainingQuantityFormatted: formatQuantityForOrder(remaining),
           remainingOfTotalFormatted: partlyFilled

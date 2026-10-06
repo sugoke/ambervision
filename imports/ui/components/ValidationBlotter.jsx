@@ -41,20 +41,33 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
   const [deleteModalOrder, setDeleteModalOrder] = useState(null);
   const [isActioning, setIsActioning] = useState(null);
   const [reviewOrder, setReviewOrder] = useState(null);
-  // Sell under review: held position and what is left after it (server-computed)
+  // Order under review: position once it is done (buy or sell) and the
+  // indicative price now, to confirm the security (both server-computed)
   const [postSalePosition, setPostSalePosition] = useState(null);
+  const [indicative, setIndicative] = useState(null);
   const reviewOrderId = reviewOrder?._id;
-  const reviewOrderIsSell = reviewOrder?.orderType === 'sell';
+  const reviewOrderSide = reviewOrder?.orderType;
   const reviewOrderQuantity = reviewOrder?.quantity;
+  const reviewOrderLevel = reviewOrder?.limitPrice ?? reviewOrder?.stopPrice ?? null;
   useEffect(() => {
     setPostSalePosition(null);
-    if (!reviewOrderId || !reviewOrderIsSell) return undefined;
+    if (!reviewOrderId || !['buy', 'sell'].includes(reviewOrderSide)) return undefined;
     let cancelled = false;
-    Meteor.callAsync('orders.getPostSalePosition', { orderId: reviewOrderId, sessionId: getSessionId() })
+    Meteor.callAsync('orders.getPositionAfterTrade', { orderId: reviewOrderId, sessionId: getSessionId() })
       .then(result => { if (!cancelled) setPostSalePosition(result); })
-      .catch(err => console.warn('[ValidationBlotter] Post-sale position unavailable:', err.reason || err.message));
+      .catch(err => console.warn('[ValidationBlotter] Position after trade unavailable:', err.reason || err.message));
     return () => { cancelled = true; };
-  }, [reviewOrderId, reviewOrderIsSell, reviewOrderQuantity]);
+  }, [reviewOrderId, reviewOrderSide, reviewOrderQuantity]);
+  useEffect(() => {
+    setIndicative(null);
+    if (!reviewOrderId) return undefined;
+    let cancelled = false;
+    setIndicative({ loading: true });
+    Meteor.callAsync('orders.getIndicativePrice', { orderId: reviewOrderId, sessionId: getSessionId() })
+      .then(result => { if (!cancelled) setIndicative(result); })
+      .catch(err => { if (!cancelled) setIndicative({ found: false, issue: err.reason || err.message }); });
+    return () => { cancelled = true; };
+  }, [reviewOrderId, reviewOrderLevel]);
   // A bulk under review: { groupId, lockedByOther }. Exclusive with reviewOrder.
   const [reviewGroup, setReviewGroup] = useState(null);
   // Inline-edit state for a sent-back order being revised by its creator
@@ -1421,7 +1434,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                 {reviewOrder.assetType === ASSET_TYPES.FX && reviewOrder.fxAmountCurrencyFormatted ? ` ${reviewOrder.fxAmountCurrencyFormatted}` : ''}
                 {reviewOrder.quantityUnitLabel ? <span style={{ fontSize: '11px', fontWeight: '500', color: 'var(--text-muted)' }}> {reviewOrder.quantityUnitLabel}</span> : null}
               </div></div>
-              {reviewOrder.orderType === 'sell' && postSalePosition?.found && (
+              {['buy', 'sell'].includes(reviewOrder.orderType) && postSalePosition?.found && (
                 <div style={{
                   gridColumn: '1 / -1',
                   padding: '10px 12px',
@@ -1429,15 +1442,20 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                   border: `1px solid ${postSalePosition.exceedsPosition ? 'var(--loss-color)' : 'var(--border-color)'}`,
                   background: postSalePosition.exceedsPosition ? 'rgba(239, 68, 68, 0.08)' : 'var(--bg-primary)'
                 }}>
-                  <span style={styles.reviewLabel}>Position after this sale</span>
+                  <span style={styles.reviewLabel}>Position after this {postSalePosition.isSell ? 'sale' : 'purchase'}</span>
                   <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '6px 14px', marginTop: '4px', fontSize: '13px', color: 'var(--text-secondary)' }}>
                     <span>Held <strong style={{ color: 'var(--text-primary)' }}>{postSalePosition.heldQuantityFormatted}</strong></span>
+                    {postSalePosition.otherOpenBuyQuantityFormatted && (
+                      <span title={postSalePosition.otherOpenBuyRefs.join(', ')}>
+                        + other open buys <strong style={{ color: 'var(--text-primary)' }}>{postSalePosition.otherOpenBuyQuantityFormatted}</strong> ({postSalePosition.otherOpenBuyRefs.join(', ')})
+                      </span>
+                    )}
                     {postSalePosition.otherOpenSellQuantityFormatted && (
                       <span title={postSalePosition.otherOpenSellRefs.join(', ')}>
                         − other open sells <strong style={{ color: 'var(--text-primary)' }}>{postSalePosition.otherOpenSellQuantityFormatted}</strong> ({postSalePosition.otherOpenSellRefs.join(', ')})
                       </span>
                     )}
-                    <span>− this order <strong style={{ color: 'var(--text-primary)' }}>{postSalePosition.orderQuantityFormatted}</strong></span>
+                    <span>{postSalePosition.isSell ? '−' : '+'} this order <strong style={{ color: 'var(--text-primary)' }}>{postSalePosition.orderQuantityFormatted}</strong></span>
                     <span>=
                       <strong style={{
                         marginLeft: '6px', fontSize: '15px',
@@ -1454,8 +1472,46 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                     </div>
                   )}
                   <div style={{ marginTop: '4px', fontSize: '11px', color: 'var(--text-muted)' }}>
-                    Held quantity: {postSalePosition.heldSourceLabel}
+                    Held quantity: {postSalePosition.heldSourceLabel}{postSalePosition.heldAsOfFormatted ? ` (${postSalePosition.heldAsOfFormatted})` : ''}
                   </div>
+                </div>
+              )}
+              {indicative && (
+                <div style={{
+                  gridColumn: '1 / -1',
+                  padding: '10px 12px',
+                  borderRadius: '8px',
+                  border: `1px solid ${indicative.vsMarket?.marketable ? 'var(--warning-color)' : 'var(--border-color)'}`,
+                  background: 'var(--bg-primary)'
+                }}>
+                  <span style={styles.reviewLabel}>Indicative price now</span>
+                  {indicative.loading ? (
+                    <div style={{ marginTop: '4px', fontSize: '13px', color: 'var(--text-muted)' }}>Loading…</div>
+                  ) : indicative.found ? (
+                    <>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '6px 14px', marginTop: '4px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        <strong style={{ fontSize: '15px', color: 'var(--text-primary)' }}>{indicative.priceFormatted}</strong>
+                        {indicative.changeFormatted && (
+                          <span style={{ color: indicative.changePositive ? 'var(--gain-color)' : 'var(--loss-color)' }}>{indicative.changeFormatted}</span>
+                        )}
+                        {indicative.vsMarket && <span style={{ color: 'var(--text-primary)' }}>{indicative.vsMarket.text}</span>}
+                      </div>
+                      {(indicative.listingName || indicative.ticker) && (
+                        <div style={{ marginTop: '4px', fontSize: '12px', color: 'var(--text-primary)' }}>
+                          {indicative.listingName}{indicative.ticker ? <span style={{ fontFamily: 'monospace', color: 'var(--text-secondary)' }}> · {indicative.ticker}</span> : null}
+                          {indicative.listingType ? <span style={{ color: 'var(--text-muted)' }}> · {indicative.listingType}</span> : null}
+                        </div>
+                      )}
+                      {indicative.vsMarket?.hint && (
+                        <div style={{ marginTop: '4px', fontSize: '12px', fontWeight: '600', color: 'var(--warning-color)' }}>{indicative.vsMarket.hint}</div>
+                      )}
+                      <div style={{ marginTop: '4px', fontSize: '11px', color: 'var(--text-muted)' }}>
+                        {indicative.source}{indicative.atFormatted ? ` · ${indicative.atFormatted}` : ''} · check the name matches the order's security
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ marginTop: '4px', fontSize: '12px', color: 'var(--text-muted)' }}>{indicative.issue || 'No current price available'}</div>
+                  )}
                 </div>
               )}
               <div><span style={styles.reviewLabel}>Order Type</span><div style={styles.reviewValue}>{reviewOrder.priceTypeLabel || 'Market'}</div></div>

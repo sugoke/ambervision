@@ -160,7 +160,7 @@ const LiveOrdersBlotter = ({ user, onOpenOrder }) => {
                   </td>
                   <td style={td}>{o.bankName}</td>
                   <td style={{ ...td, fontWeight: 600, color: sideColor(o), textTransform: 'capitalize' }}>{o.orderType}</td>
-                  <td style={{ ...td, whiteSpace: 'nowrap' }}>{o.priceTypeLabel}</td>
+                  <td style={{ ...td, whiteSpace: 'nowrap' }}>{o.restingTypeLabel}</td>
                   <td style={td}>
                     <div>{o.securityName}</div>
                     <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>{o.isin}</div>

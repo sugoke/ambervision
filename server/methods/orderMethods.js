@@ -5379,7 +5379,9 @@ Meteor.methods({
    * Held quantity comes from the latest bank file; when the position is not
    * found there, the snapshot taken at order entry is used and labelled so.
    */
-  async 'orders.getPostSalePosition'({ orderId, sessionId }) {
+  // Position in the account once this order (and the other open orders on the
+  // same position) is done: buys add to what is held, sells take from it.
+  async 'orders.getPositionAfterTrade'({ orderId, sessionId }) {
     check(orderId, String);
     check(sessionId, String);
 
@@ -5387,7 +5389,8 @@ Meteor.methods({
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
 
-    if (order.orderType !== 'sell' || !order.isin || !order.bankAccountId) return null;
+    const isSell = order.orderType === 'sell';
+    if (!['buy', 'sell'].includes(order.orderType) || !order.isin || !order.bankAccountId) return null;
 
     let heldQuantity = null;
     let heldSource = null;
@@ -5409,28 +5412,36 @@ Meteor.methods({
       heldSource = 'order_entry';
       heldAsOf = order.createdAt || null;
     }
+    // A buy can open a new position: nothing held is a real zero
+    if (heldQuantity === null && !isSell) {
+      heldQuantity = 0;
+      heldSource = 'none';
+    }
     if (heldQuantity === null) return { found: false };
 
-    // Sells on the same position that are live but not executed yet: the bank
-    // file does not reflect them, so they still come out of what is held.
+    // Orders on the same position that are live but not executed yet: the bank
+    // file does not reflect them, so they still move what is held.
     const openStatuses = [
       ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING, ORDER_STATUSES.PENDING_MODIFICATION,
       ORDER_STATUSES.REVISION_REQUESTED, ORDER_STATUSES.TRANSMITTED, ORDER_STATUSES.SENT,
       ORDER_STATUSES.PARTIALLY_EXECUTED
     ];
-    const otherSells = await OrdersCollection.find({
+    const otherOrders = await OrdersCollection.find({
       _id: { $ne: order._id },
       bankAccountId: order.bankAccountId,
       isin: order.isin,
-      orderType: 'sell',
+      orderType: { $in: ['buy', 'sell'] },
       status: { $in: openStatuses }
-    }, { fields: { orderReference: 1, quantity: 1, executedQuantity: 1, status: 1 } }).fetchAsync();
-    const otherOpenSellQuantity = otherSells.reduce(
-      (sum, o) => sum + Math.max((Number(o.quantity) || 0) - (Number(o.executedQuantity) || 0), 0), 0
-    );
+    }, { fields: { orderReference: 1, orderType: 1, quantity: 1, executedQuantity: 1, status: 1 } }).fetchAsync();
+    const openQty = (o) => Math.max((Number(o.quantity) || 0) - (Number(o.executedQuantity) || 0), 0);
+    const otherSells = otherOrders.filter(o => o.orderType === 'sell');
+    const otherBuys = otherOrders.filter(o => o.orderType === 'buy');
+    const otherOpenSellQuantity = otherSells.reduce((sum, o) => sum + openQty(o), 0);
+    const otherOpenBuyQuantity = otherBuys.reduce((sum, o) => sum + openQty(o), 0);
 
-    const orderQuantity = Math.max((Number(order.quantity) || 0) - (Number(order.executedQuantity) || 0), 0);
-    const remainingQuantity = heldQuantity - otherOpenSellQuantity - orderQuantity;
+    const orderQuantity = openQty(order);
+    const remainingQuantity = heldQuantity + otherOpenBuyQuantity - otherOpenSellQuantity
+      + (isSell ? -orderQuantity : orderQuantity);
     const fmt = (q) => OrderFormatters.formatQuantity(q);
 
     return {
@@ -5438,9 +5449,13 @@ Meteor.methods({
       heldSource,
       heldAsOf,
       heldQuantityFormatted: fmt(heldQuantity),
-      heldSourceLabel: heldSource === 'bank_file' ? 'Latest bank file' : 'Snapshot at order entry',
+      heldAsOfFormatted: heldAsOf ? OrderFormatters.formatDate(heldAsOf) : null,
+      heldSourceLabel: heldSource === 'bank_file' ? 'Latest bank file' : heldSource === 'none' ? 'Not held in this account (new position)' : 'Snapshot at order entry',
+      isSell,
       otherOpenSellQuantityFormatted: otherOpenSellQuantity > 0 ? fmt(otherOpenSellQuantity) : null,
       otherOpenSellRefs: otherSells.map(o => o.orderReference),
+      otherOpenBuyQuantityFormatted: otherOpenBuyQuantity > 0 ? fmt(otherOpenBuyQuantity) : null,
+      otherOpenBuyRefs: otherBuys.map(o => o.orderReference),
       orderQuantityFormatted: fmt(orderQuantity),
       remainingQuantityFormatted: fmt(remainingQuantity),
       isFullExit: remainingQuantity === 0,

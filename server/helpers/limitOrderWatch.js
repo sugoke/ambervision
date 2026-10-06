@@ -91,13 +91,18 @@ async function percentQuotedBars(order, sinceKey) {
 }
 
 /** EOD ticker for the ISIN trading in the order's currency, cached on the order. */
-async function resolveTicker(order) {
-  if (order.priceWatch?.ticker) return { ticker: order.priceWatch.ticker };
+async function resolveTicker(order, { withListing = false } = {}) {
+  if (order.priceWatch?.ticker && !withListing) return { ticker: order.priceWatch.ticker };
   const { EODApiHelpers } = await import('/imports/api/eodApi.js');
   const results = await EODApiHelpers.searchSecurities(order.isin, 10);
   const exact = (results || []).filter(r => String(r.ISIN || '').toUpperCase() === order.isin.toUpperCase());
   const inCurrency = exact.find(r => String(r.Currency || '').toUpperCase() === String(order.currency || '').toUpperCase());
-  if (inCurrency) return { ticker: `${inCurrency.Code}.${inCurrency.Exchange}` };
+  if (inCurrency) {
+    return {
+      ticker: `${inCurrency.Code}.${inCurrency.Exchange}`,
+      listing: { name: inCurrency.Name || null, exchange: inCurrency.Exchange || null, currency: inCurrency.Currency || null, type: inCurrency.Type || null }
+    };
+  }
   if (exact.length) return { issue: `No listing in ${order.currency} found for ${order.isin} (found ${exact.map(r => `${r.Code}.${r.Exchange} ${r.Currency}`).join(', ')})` };
   return { issue: `No market data listing found for ${order.isin}` };
 }
@@ -174,6 +179,83 @@ async function notifyLevelReached(order, reached) {
 /**
  * Check every live resting order once. Returns a summary per order.
  */
+/**
+ * Indicative price now, for the four-eyes review: lets the validator check the
+ * order is on the right security and see where the market is against the
+ * order's limit. Listed: EOD quote (~15 min delayed) of the listing matching
+ * the ISIN in the order's currency, with that listing's name. Quoted in % of
+ * par: latest issuer or bank-file price.
+ */
+export async function indicativePrice(order) {
+  if (!order?.isin) return { found: false, issue: 'No ISIN on the order' };
+  const pct = quotesPriceAsPercent(order.assetType);
+  let price = null; let at = null; let source = null; let listing = null; let ticker = null; let changePct = null;
+
+  if (pct) {
+    const { ProductPricesCollection } = await import('/imports/api/productPrices.js');
+    const { PMSHoldingsCollection } = await import('/imports/api/pmsHoldings.js');
+    const issuer = await ProductPricesCollection.findOneAsync(
+      { isin: order.isin, isActive: true }, { sort: { priceDate: -1, uploadDate: -1 } }
+    );
+    const bank = await PMSHoldingsCollection.findOneAsync(
+      { isin: order.isin, priceType: 'percentage', isLatest: true, portfolioCode: { $not: /CONSOLIDATED/i }, marketPrice: { $gt: 0 } },
+      { sort: { snapshotDate: -1 }, fields: { marketPrice: 1, snapshotDate: 1, securityName: 1 } }
+    );
+    const issuerAt = issuer?.priceDate ? new Date(issuer.priceDate) : null;
+    const bankAt = bank?.snapshotDate ? new Date(bank.snapshotDate) : null;
+    if (issuer && (!bankAt || (issuerAt && issuerAt >= bankAt))) {
+      price = issuer.price <= 2 ? issuer.price * 100 : issuer.price;
+      at = issuerAt; source = 'Issuer price';
+    } else if (bank) {
+      price = bank.marketPrice * 100; at = bankAt; source = 'Bank file price';
+      listing = { name: bank.securityName || null };
+    }
+  } else {
+    const resolved = await resolveTicker(order, { withListing: true });
+    if (!resolved.ticker) return { found: false, issue: resolved.issue };
+    ticker = resolved.ticker;
+    listing = resolved.listing || null;
+    const { EODApiHelpers } = await import('/imports/api/eodApi.js');
+    const rt = await EODApiHelpers.getRealTimePrice(ticker);
+    const close = Number(rt?.close);
+    if (Number.isFinite(close) && close > 0) {
+      price = close;
+      at = Number(rt?.timestamp) ? new Date(Number(rt.timestamp) * 1000) : null;
+      source = 'EOD (~15 min delayed)';
+      changePct = Number.isFinite(Number(rt?.change_p)) ? Number(rt.change_p) : null;
+    }
+  }
+  if (!Number.isFinite(price)) return { found: false, issue: 'No current price available for this security', ticker, listing };
+
+  // Where the order's level sits against the market
+  const watch = watchedLevel(order);
+  let vsMarket = null;
+  if (watch) {
+    const diff = ((watch.level - price) / price) * 100;
+    const side = order.orderType === 'sell' ? 'sell' : 'buy';
+    const marketable = watch.kind === 'limit' && (side === 'sell' ? watch.level <= price : watch.level >= price);
+    vsMarket = {
+      text: `${watch.kind === 'stop' ? 'Stop' : 'Limit'} ${Math.abs(diff) < 0.005 ? 'at' : `${Math.abs(diff).toFixed(2)}% ${diff > 0 ? 'above' : 'below'}`} the market`,
+      marketable,
+      hint: marketable ? 'At or through the market: likely to execute immediately' : null
+    };
+  }
+  const fmtPrice = (v) => (pct ? `${v.toFixed(2)}%` : `${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} ${listing?.currency || order.currency || ''}`.trim());
+  return {
+    found: true,
+    priceFormatted: fmtPrice(price),
+    changeFormatted: changePct !== null ? `${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}% today` : null,
+    changePositive: changePct !== null ? changePct >= 0 : null,
+    atFormatted: at ? at.toLocaleString('en-GB', { timeZone: 'Europe/Paris', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : null,
+    source,
+    ticker,
+    listingName: listing?.name || null,
+    listingExchange: listing?.exchange || null,
+    listingType: listing?.type || null,
+    vsMarket
+  };
+}
+
 export async function checkLiveLimitOrders({ now = new Date(), dryRun = false } = {}) {
   // dryRun: compute and report only, no write to the orders, no notification
   const write = (id, modifier) => (dryRun ? null : OrdersCollection.updateAsync(id, modifier));
