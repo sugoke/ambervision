@@ -184,7 +184,11 @@ export function evaluateClientCompliance({ entity, documents = [], accounts = []
   const people = [
     { index: null, name: clientName, isCompany },
     // Family members are always individuals, even under a company entity
-    ...familyMembers.map((m, index) => ({ index, name: m.name || `Family member ${index + 1}`, isCompany: false }))
+    // A member linked to another contact is checked on that contact, unless
+    // files were filed under the member here (same rule as the Documents tab)
+    ...familyMembers
+      .map((m, index) => ({ index, name: m.name || `Family member ${index + 1}`, isCompany: false, linked: !!m.linkedEntityId }))
+      .filter(p => !p.linked || tabDocs.some(d => d.familyMemberIndex === p.index))
   ];
   for (const person of people) {
     const personDocs = tabDocs.filter(d => (person.index === null

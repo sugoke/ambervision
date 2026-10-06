@@ -552,6 +552,12 @@ const ClientDocumentManager = ({ userId, familyMembers = [], isCompany = false }
   const [collapsedState, setCollapsedState] = useState({});
   const toggleCollapse = (key) => setCollapsedState(prev => ({ ...prev, [key]: !prev[key] }));
 
+  // A family member linked to another contact keeps their documents on that
+  // contact, so no document slots here — unless files were already filed under
+  // this member. Documents are keyed by the member's position, so the index is kept.
+  const showsMemberDocuments = (member, idx) =>
+    !member?.linkedEntityId || documents.some(d => d.familyMemberIndex === idx);
+
   // Count total warnings and missing across all persons (documents-tab types only)
   const totalIssues = () => {
     let warnings = 0;
@@ -576,7 +582,7 @@ const ClientDocumentManager = ({ userId, familyMembers = [], isCompany = false }
     };
 
     countFor(null);
-    familyMembers.forEach((_, idx) => countFor(idx));
+    familyMembers.forEach((member, idx) => { if (showsMemberDocuments(member, idx)) countFor(idx); });
 
     return { warnings, missing };
   };
@@ -620,7 +626,7 @@ const ClientDocumentManager = ({ userId, familyMembers = [], isCompany = false }
             onUploadComplete={handleUploadComplete}
           />
 
-          {familyMembers.map((member, idx) => (
+          {familyMembers.map((member, idx) => showsMemberDocuments(member, idx) && (
             <PersonDocuments
               key={idx}
               personName={member.name || `Family Member ${idx + 1}`}
