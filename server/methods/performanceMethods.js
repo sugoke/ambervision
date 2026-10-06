@@ -499,7 +499,8 @@ Meteor.methods({
         if (targetPortfolioCodes.length > 1 && rawSnapshots.length > 0) {
           const byDate = {};
           // One row per account per day first: duplicates of the same file would be summed
-          for (const snap of dedupeSnapshotsPerAccountDay(rawSnapshots)) {
+          const perAccountDay = dedupeSnapshotsPerAccountDay(rawSnapshots);
+          for (const snap of perAccountDay) {
             const dateKey = snap.snapshotDate.toISOString().split('T')[0];
             if (!byDate[dateKey]) {
               byDate[dateKey] = { ...snap };
@@ -508,6 +509,14 @@ Meteor.methods({
               byDate[dateKey].cashBalance = (byDate[dateKey].cashBalance || 0) + (snap.cashBalance || 0);
               byDate[dateKey].totalMarketValue = (byDate[dateKey].totalMarketValue || 0) + (snap.totalMarketValue || 0);
             }
+          }
+          // An account missing on a day (late file, credit line not regenerated)
+          // keeps its last value, as in the TWR: summing only the accounts present
+          // dropped a credit line's debt and spiked the curve
+          const { buildConsolidatedDailyValues } = await import('../../imports/api/helpers/twrCalculator.js');
+          const { dailyValues } = buildConsolidatedDailyValues(perAccountDay, (v) => v);
+          for (const { date, totalValue } of dailyValues) {
+            if (byDate[date]) byDate[date].totalAccountValue = totalValue;
           }
           snapshots = Object.values(byDate);
         } else if (rawSnapshots.length > 0) {
@@ -1008,12 +1017,16 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
   const lastDate = new Date(lastEntry.date);
   const totalDays = Math.ceil((lastDate - firstDate) / (1000 * 60 * 60 * 24));
 
+  // Periods count back from the last valuation, not from the clock: the PMS
+  // (called today) and the statement (as of its valuation date) then measure
+  // the same days. Counting from today moved every start by a day or more.
+  const anchor = lastDate;
   const periodDefs = {
-    '1M': new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
-    '3M': new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000),
-    '6M': new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000),
-    'YTD': new Date(now.getFullYear(), 0, 1),
-    '1Y': new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000),
+    '1M': new Date(anchor.getTime() - 30 * 24 * 60 * 60 * 1000),
+    '3M': new Date(anchor.getTime() - 90 * 24 * 60 * 60 * 1000),
+    '6M': new Date(anchor.getTime() - 180 * 24 * 60 * 60 * 1000),
+    'YTD': new Date(Date.UTC(anchor.getUTCFullYear(), 0, 1)),
+    '1Y': new Date(anchor.getTime() - 365 * 24 * 60 * 60 * 1000),
     'ALL': null
   };
 

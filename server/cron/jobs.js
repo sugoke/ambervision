@@ -1367,6 +1367,12 @@ async function regenerateTodaySnapshots() {
       for (let gi = 0; gi < groupValues.length; gi++) {
         await yieldToEventLoop(gi, 10);
         const group = groupValues[gi];
+        // Dated as of the holdings' own valuation, not the day the job runs: a
+        // file of yesterday's positions processed this morning stays yesterday's.
+        // Dating it today added a duplicate day without the accounts left out
+        // above (credit lines), and the value chart dropped their debt on it.
+        const dataDates = group.positions.map(h => new Date(h.snapshotDate || h.fileDate || 0).getTime()).filter(t => t > 0);
+        const asOf = dataDates.length ? new Date(Math.max(...dataDates)) : today;
         try {
           await PortfolioSnapshotHelpers.createSnapshot({
             userId: group.userId,
@@ -1376,8 +1382,8 @@ async function regenerateTodaySnapshots() {
             connectionId: connection._id,
             portfolioCode: group.portfolioCode,
             accountNumber: group.accountNumber,
-            snapshotDate: today,
-            fileDate: today,
+            snapshotDate: asOf,
+            fileDate: asOf,
             sourceFile: 'regenerated_post_sync',
             holdings: group.positions,
             transferOpsCache
