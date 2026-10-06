@@ -2105,6 +2105,7 @@ const OrderBook = ({ user }) => {
                       <SortableHeader field="assetType" label="Asset" />
                       <SortableHeader field="currency" label="Ccy" />
                       <SortableHeader field="quantity" label="Qty" />
+                      <SortableHeader field="priceType" label="Price Type" />
                       <SortableHeader field="executedPrice" label="Exec Price" />
                       <SortableHeader field="broker" label="Broker" />
                       <SortableHeader field="settlementCurrency" label="Settl. Ccy" />
@@ -2259,6 +2260,12 @@ const OrderBook = ({ user }) => {
                         <td style={styles.td}>
                           {order.quantityFormatted}
                           {order.quantityUnitLabel ? <span style={{ color: 'var(--text-muted)' }}> {order.quantityUnitLabel}</span> : null}
+                        </td>
+                        <td style={styles.td}>
+                          <div style={{ fontSize: '12px', fontWeight: '500', whiteSpace: 'nowrap' }}>{order.priceTypeLabel}</div>
+                          {order.limitPriceFormatted && (
+                            <div style={{ fontSize: '11px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>@ {order.limitPriceFormatted}</div>
+                          )}
                         </td>
                         <td style={styles.td} onClick={(e) => e.stopPropagation()}>
                           <InlineExecPriceCell
