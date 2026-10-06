@@ -62,6 +62,7 @@ Meteor.publish('orders', async function(sessionId, filters = {}) {
     status: Match.Maybe(Match.OneOf(String, [String])),
     clientId: Match.Maybe(String),
     bankId: Match.Maybe(String),
+    priceType: Match.Maybe(Match.OneOf(String, [String])),
     limit: Match.Maybe(Number)
   });
 
@@ -92,6 +93,10 @@ Meteor.publish('orders', async function(sessionId, filters = {}) {
 
   if (filters.bankId) {
     query.bankId = filters.bankId;
+  }
+
+  if (filters.priceType) {
+    query.priceType = Array.isArray(filters.priceType) ? { $in: filters.priceType } : filters.priceType;
   }
 
   const options = {

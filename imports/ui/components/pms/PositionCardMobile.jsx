@@ -1,5 +1,6 @@
 import React from 'react';
 import HoldingPriceChart from '../HoldingPriceChart.jsx';
+import LiveOrderPills from './LiveOrderPills.jsx';
 import { formatCurrency, formatPrice } from './pmsFormatters.js';
 import { S, POSITIVE, NEGATIVE, labelStyle, headlineRowStyle, cardStyle } from './pmsMobileStyles.js';
 
@@ -34,6 +35,7 @@ const PositionCardMobile = ({
   totalSellQty,
   buyOrderCount,
   sellOrderCount,
+  restingOrders = [],
   theme,
   userRole,
   onBuy,
@@ -241,6 +243,8 @@ const PositionCardMobile = ({
               </span>
             )}
           </div>
+          {/* Live limit / stop orders working on this position */}
+          <LiveOrderPills orders={restingOrders} style={{ marginTop: '0.3rem' }} />
         </div>
         {/* Report shortcut on the collapsed card: no need to expand it first */}
         {position.linkedProduct && onOpenReport && (

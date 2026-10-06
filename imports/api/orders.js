@@ -383,6 +383,38 @@ export const LINKED_ORDER_TYPES = {
   STOP_LOSS: 'stop_loss'
 };
 
+// Validated and still working: not filled, cancelled or rejected
+export const LIVE_ORDER_STATUSES = ['pending', 'transmitted', 'sent', 'partially_executed'];
+
+// Orders that wait for a price (everything but market), TP/SL legs included
+export const RESTING_PRICE_TYPES = [
+  PRICE_TYPES.LIMIT, PRICE_TYPES.STOP_LIMIT, PRICE_TYPES.STOP_LOSS, PRICE_TYPES.TAKE_PROFIT
+];
+
+export const isLiveRestingOrder = (order) =>
+  !!order && LIVE_ORDER_STATUSES.includes(order.status) && RESTING_PRICE_TYPES.includes(order.priceType);
+
+/**
+ * Has the order's validity run out? Nothing expires orders automatically (the
+ * bank is the source of truth), so a passed validity is only flagged.
+ * Day: placed before today. GTD: validity date before today. GTC: never.
+ */
+export function isOrderValidityPassed(order, now = new Date()) {
+  if (!order) return false;
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (order.validityType === VALIDITY_TYPES.DAY) {
+    return !!order.createdAt && new Date(order.createdAt) < startOfToday;
+  }
+  if (order.validityType === VALIDITY_TYPES.GTD) {
+    return !!order.validityDate && new Date(order.validityDate) < startOfToday;
+  }
+  return false;
+}
+
+/** Quantity still working at the bank (total minus what was already filled). */
+export const remainingOrderQuantity = (order) =>
+  Math.max(0, (Number(order?.quantity) || 0) - (Number(order?.executedQuantity) || 0));
+
 // Order source types (how the client instruction was received)
 export const ORDER_SOURCE_TYPES = {
   EMAIL: 'email',
@@ -1173,6 +1205,36 @@ export const OrderHelpers = {
       linkedOrderType: order.linkedOrderType || null,
       linkedOrderGroup: order.linkedOrderGroup || null,
       stopPriceFormatted: order.stopPrice ? formatPriceForOrder(order.stopPrice) : null,
+      // Live resting order (limit / stop / take-profit still working at the bank)
+      ...(() => {
+        const typeLabel = { limit: 'Limit', stop_limit: 'Stop limit', stop_loss: 'Stop', take_profit: 'Take profit' }[order.priceType] || null;
+        const stop = order.stopPrice ?? order.stopLossPrice;
+        const target = order.limitPrice ?? (order.priceType === PRICE_TYPES.TAKE_PROFIT ? order.takeProfitPrice : null);
+        // The price the order waits for: stop limit shows both trigger and limit
+        const triggerText = order.priceType === PRICE_TYPES.STOP_LIMIT
+          ? [stop != null ? `stop ${formatPriceForOrder(stop)}` : null, target != null ? `limit ${formatPriceForOrder(target)}` : null].filter(Boolean).join(' / ')
+          : formatPriceForOrder(order.priceType === PRICE_TYPES.STOP_LOSS ? (stop ?? target) : (target ?? stop));
+        const remaining = remainingOrderQuantity(order);
+        const partlyFilled = (Number(order.executedQuantity) || 0) > 0;
+        const validityShort = order.validityType === VALIDITY_TYPES.GTC ? 'GTC'
+          : order.validityType === VALIDITY_TYPES.GTD ? `GTD ${order.validityDate ? OrderFormatters.formatDate(order.validityDate) : ''}`.trim()
+            : order.validityType === VALIDITY_TYPES.DAY ? 'Day' : null;
+        return {
+          isLiveResting: isLiveRestingOrder(order),
+          priceTypeLabel: typeLabel,
+          triggerPriceFormatted: triggerText || null,
+          remainingQuantityFormatted: formatQuantityForOrder(remaining),
+          remainingOfTotalFormatted: partlyFilled
+            ? `${formatQuantityForOrder(remaining)} of ${formatQuantityForOrder(order.quantity)}`
+            : formatQuantityForOrder(order.quantity),
+          validityShort,
+          validityPassed: isOrderValidityPassed(order),
+          // e.g. "Limit sell 250,000 @ 82.05%"
+          restingLabel: typeLabel
+            ? `${typeLabel} ${order.orderType || ''} ${formatQuantityForOrder(remaining)}${triggerText ? ` @ ${triggerText}` : ''}`.replace(/\s+/g, ' ').trim()
+            : null
+        };
+      })(),
       // Validation fields (four-eyes principle)
       validatedByName: order.validatedByName || null,
       validatedAtFormatted: order.validatedAt ? OrderFormatters.formatDateTime(order.validatedAt) : null,

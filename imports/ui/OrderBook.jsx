@@ -6,6 +6,7 @@ import Modal from './components/common/Modal.jsx';
 import ActionButton from './components/common/ActionButton.jsx';
 import OrderModal from './components/OrderModal.jsx';
 import ValidationBlotter from './components/ValidationBlotter.jsx';
+import LiveOrdersBlotter from './components/LiveOrdersBlotter.jsx';
 import { useTheme } from './ThemeContext.jsx';
 import * as XLSX from 'xlsx';
 import { OrdersCollection, ORDER_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, TERMSHEET_TRACE_TYPES, ASSET_TYPES, PRICE_TYPES, TERMSHEET_STATUSES, OrderFormatters, OrderHelpers, getOrderHealthCheck, HEALTH_FILTER_ANY, getTraceCompleteness, isTerminalOrderStatus, EXECUTION_TYPES, EXECUTION_TYPE_LABELS } from '/imports/api/orders';
@@ -1829,6 +1830,7 @@ const OrderBook = ({ user }) => {
                 <option value="all">All Statuses</option>
                 <option value={ORDER_STATUSES.PENDING_VALIDATION}>Pending Validation</option>
                 <option value={ORDER_STATUSES.PENDING}>Pending</option>
+                <option value={ORDER_STATUSES.TRANSMITTED}>Transmitted</option>
                 <option value={ORDER_STATUSES.SENT}>Sent</option>
                 <option value={ORDER_STATUSES.EXECUTED}>Executed</option>
                 <option value={ORDER_STATUSES.PARTIALLY_EXECUTED}>Partially Executed</option>
@@ -1934,6 +1936,9 @@ const OrderBook = ({ user }) => {
 
           {/* Validation Blotter (four-eyes principle) */}
           <ValidationBlotter user={user} onOrderUpdate={loadOrders} />
+
+          {/* Limit / stop orders still working at the banks */}
+          <LiveOrdersBlotter user={user} onOpenOrder={handleViewDetails} />
 
           {/* Health Check Summary — desktop only. It is a back-office triage aid: on a
               phone the badges wrap into several rows and push the orders themselves off

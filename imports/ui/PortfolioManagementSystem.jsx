@@ -37,6 +37,8 @@ import { DataFreshnessPanel } from './components/DataFreshnessIndicator.jsx';
 import { checkDataFreshness } from '/imports/api/helpers/dataFreshness.js';
 import HoldingPriceChart from './components/HoldingPriceChart.jsx';
 import PositionCardMobile from './components/pms/PositionCardMobile.jsx';
+import LiveOrderPills from './components/pms/LiveOrderPills.jsx';
+import { LIVE_ORDER_STATUSES } from '/imports/api/orders';
 import { getCurrencySymbol, getCurrencyFlag, formatCurrency, formatPrice } from './components/pms/pmsFormatters.js';
 import { resolveChartColor, resolveChartColors } from '/imports/utils/chartColors.js';
 import CashBalanceCardsMobile from './components/pms/CashBalanceCardsMobile.jsx';
@@ -450,7 +452,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
 
       try {
         const filters = {
-          status: ['pending', 'sent'] // Only active orders
+          status: LIVE_ORDER_STATUSES // validated and still working at the bank
         };
 
         // If viewing a specific client, filter by that client
@@ -4069,13 +4071,20 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
               const positionFreshness = checkDataFreshness(position.dataDate);
               const isStale = positionFreshness.status === 'stale' || positionFreshness.status === 'old';
 
-              // Find active orders for this position (by ISIN and optionally portfolioCode)
+              // Live orders on this position: same ISIN, same account (base
+              // account number, as holdings are matched to accounts elsewhere).
+              // A consolidated line takes the orders of every account.
+              const accountBase = (code) => String(code || '').split('-')[0];
+              const isConsolidatedLine = !position.portfolioCode || /CONSOLIDATED/i.test(position.portfolioCode);
               const positionOrders = activeOrders.filter(order =>
                 order.isin === position.isin &&
-                (!position.portfolioCode || order.portfolioCode === position.portfolioCode)
+                (isConsolidatedLine || accountBase(order.portfolioCode) === accountBase(position.portfolioCode))
               );
-              const buyOrders = positionOrders.filter(o => o.orderType === 'buy');
-              const sellOrders = positionOrders.filter(o => o.orderType === 'sell');
+              // Resting orders (limit / stop / TP) get their own pill with the
+              // price; the others keep the +N / -N quantity pills
+              const restingOrders = positionOrders.filter(o => o.isLiveResting);
+              const buyOrders = positionOrders.filter(o => o.orderType === 'buy' && !o.isLiveResting);
+              const sellOrders = positionOrders.filter(o => o.orderType === 'sell' && !o.isLiveResting);
               const totalBuyQty = buyOrders.reduce((sum, o) => sum + (o.quantity || 0), 0);
               const totalSellQty = sellOrders.reduce((sum, o) => sum + (o.quantity || 0), 0);
 
@@ -4097,6 +4106,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                     totalSellQty={totalSellQty}
                     buyOrderCount={buyOrders.length}
                     sellOrderCount={sellOrders.length}
+                    restingOrders={restingOrders}
                     theme={theme}
                     userRole={user?.role}
                     onBuy={(p) => openOrderModal('buy', p)}
@@ -4187,6 +4197,9 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                               >
                                 📄 Report
                               </button>
+                            )}
+                            {restingOrders.length > 0 && (
+                              <LiveOrderPills orders={restingOrders} style={{ marginLeft: '0.4rem', verticalAlign: 'middle' }} />
                             )}
                           </div>
                           <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
