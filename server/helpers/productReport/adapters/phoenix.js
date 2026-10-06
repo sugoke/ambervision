@@ -2,7 +2,7 @@
  * Phoenix autocallable: coupons (with memory), autocall levels, protection at
  * maturity. Reads phoenixEvaluator's templateResults.
  */
-import { underlyingsOf, basketModeLabel, couponPerPeriod, frequencyLabel, toIso } from '../common.js';
+import { underlyingsOf, basketModeLabel, couponPerPeriod, frequencyLabel, toIso, hasMissingPrices } from '../common.js';
 
 const TYPE_KEYS = { 'Coupon Only': 'typeCoupon', 'Autocall & Coupon': 'typeAutocallCoupon', 'Maturity & Coupon': 'typeFinal' };
 
@@ -27,7 +27,7 @@ export default {
 
     // Headline: indicative value while live, final amount once closed
     const headlineLabel = status.key === 'autocalled' ? t('autocallRedemption') : status.key === 'live' ? t('indicativeValue') : t('finalRedemption');
-    const headline = imv && Number.isFinite(imv.totalValue) ? {
+    const headline = imv && Number.isFinite(imv.totalValue) && !hasMissingPrices(r) ? {
       label: headlineLabel,
       value: f.pctOf(imv.totalValue),
       caption: Number.isFinite(imv.pnl) ? `${t('pnl')} ${f.signedPctOf(imv.pnl)}` : null,

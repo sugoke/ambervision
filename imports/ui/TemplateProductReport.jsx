@@ -790,7 +790,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, backLabel, onE
             <PDFDownloadButton
               reportId={productId}
               reportType="template"
-              filename={`${(latestReport?.templateResults?.generatedProductName || displayProduct.title || 'product').replace(/[^a-z0-9]/gi, '_').toLowerCase()}-report-${new Date().toISOString().split('T')[0]}.pdf`}
+              filename={`${(latestReport?.templateResults?.generatedProductName || displayProduct.title || 'product').replace(/[^a-z0-9]/gi, '_').toLowerCase()}-report-${new Date().toISOString().split('T')[0]}`}
               title="Download PDF"
               iconOnly={true}
               contentSelector="#product-report-content"

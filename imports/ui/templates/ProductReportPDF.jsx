@@ -101,12 +101,12 @@ const Overview = ({ data, page: p }) => {
               <SectionHead title={labels.underlyings} caption={u.priceCaption} />
               <div className="st-th" style={{ gridTemplateColumns: UND_COLS(u), columnGap: 10 }}>
                 <span>{labels.colUnderlying}</span><span className="st-n">{labels.colInitial}</span><span className="st-n">{labels.colCurrent}</span>
-                <span className="st-n">{labels.colPerformance}</span>{u.hasDistance && <span className="st-n">{labels.colDistance}</span>}{u.hasStatus && <span className="st-n">{labels.colStatus}</span>}
+                <span className="st-n">{labels.colPerformance}</span>{u.hasDistance && <span className="st-n">{u.distanceLabel || labels.colDistance}</span>}{u.hasStatus && <span className="st-n">{labels.colStatus}</span>}
               </div>
               {u.rows.map((r, i) => (
                 <div key={i} className="st-tr" style={{ gridTemplateColumns: UND_COLS(u), columnGap: 10, padding: '5px 0' }}>
                   <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-                    <span className="st-mono" style={{ color: '#1A2B40', fontSize: 11.5, lineHeight: '15px' }}>{r.ticker}{r.worst && <span style={{ color: '#A9561A', marginLeft: 6 }}>●</span>}</span>
+                    <span className="st-mono" style={{ color: '#1A2B40', fontSize: 11.5, lineHeight: '15px' }}>{r.ticker}{r.worst && <span aria-label="worst" style={{ display: 'inline-block', width: 6, height: 6, borderRadius: 3, background: '#A9561A', verticalAlign: 'middle', marginLeft: 6 }} />}</span>
                     <span className="st-ell" style={{ fontSize: 10.5, lineHeight: '14px', color: '#687080' }}>{r.name}</span>
                   </span>
                   <span className="st-n" style={{ color: '#687080' }}>{r.initial}</span>
@@ -116,7 +116,8 @@ const Overview = ({ data, page: p }) => {
                   {u.hasStatus && <span className={`st-n ${toneClass(r.statusTone)}`}>{r.status || '—'}</span>}
                 </div>
               ))}
-              {labels.worstNote && u.rows.some(r => r.worst) && <div className="st-cap" style={{ marginTop: 10 }}><span style={{ color: '#A9561A' }}>●</span> {labels.worstNote}</div>}
+              {labels.worstNote && u.rows.some(r => r.worst) && <div className="st-cap" style={{ marginTop: 10 }}><span aria-label="worst" style={{ display: 'inline-block', width: 6, height: 6, borderRadius: 3, background: '#A9561A', verticalAlign: 'middle', marginRight: 2 }} /> {labels.worstNote}</div>}
+              {u.missingText && <div style={{ marginTop: 14, padding: '10px 14px', background: '#FBF1E8', borderLeft: '3px solid #DD772A', fontSize: 11, lineHeight: '16px', color: '#2A2F37' }}>{u.missingText}</div>}
             </>
           )}
         </section>

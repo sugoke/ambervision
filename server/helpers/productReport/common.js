@@ -53,25 +53,38 @@ const BARRIER_TONES = { safe: 'pos', near: 'warn', breached: 'neg' };
  * Underlyings table and performance bars. `barrier` is the product's barrier as
  * a level (50 for 50%); the bars show it as a performance (−50%).
  */
-export const underlyingsOf = (templateResults, f, t, { barrier = null, withDistance = true } = {}) => {
+export const underlyingsOf = (templateResults, f, t, {
+  barrier = null,
+  withDistance = true,
+  priceAsPercent = false,        // bond-linked notes quote the underlying in % of par
+  distanceOf = (u) => u.distanceToBarrier,
+  distanceLabel = null,
+  statusOf = null                // (u) => { text, tone } for payoff-specific statuses
+} = {}) => {
   const list = templateResults?.underlyings || [];
   if (!list.length) return null;
-  const price = (v, ccy) => (Number.isFinite(v) ? `${f.num(v)} ${ccy || ''}`.trim() : '—');
-  const rows = list.map(u => ({
-    ticker: u.ticker || '',
-    name: u.name || u.ticker || '—',
-    initial: price(u.initialPrice ?? u.effectiveInitialPrice, u.currency),
-    current: u.hasCurrentData === false ? '—' : price(u.currentPrice, u.currency),
-    performance: Number.isFinite(u.performance) ? f.signedPctOf(u.performance) : '—',
-    performanceTone: !Number.isFinite(u.performance) ? '' : u.performance >= 0 ? 'pos' : 'neg',
-    distance: withDistance && Number.isFinite(u.distanceToBarrier) ? f.signedPctOf(u.distanceToBarrier, 1) : null,
-    status: u.barrierStatus ? t(BARRIER_KEYS[u.barrierStatus] || 'barSafe') : null,
-    statusTone: BARRIER_TONES[u.barrierStatus] || '',
-    worst: !!u.isWorstPerforming
-  }));
+  const price = (v, ccy) => (!Number.isFinite(v) ? '—' : priceAsPercent ? f.pctOf(v) : `${f.num(v)} ${ccy || ''}`.trim());
+  const noPrice = (u) => u.hasCurrentData === false;
+  const rows = list.map(u => {
+    const status = statusOf ? statusOf(u) : (u.barrierStatus ? { text: t(BARRIER_KEYS[u.barrierStatus] || 'barSafe'), tone: BARRIER_TONES[u.barrierStatus] || '' } : null);
+    const distance = distanceOf(u);
+    return {
+      ticker: u.ticker || '',
+      name: u.name || u.ticker || '—',
+      initial: price(u.initialPrice ?? u.effectiveInitialPrice, u.currency),
+      current: noPrice(u) ? '—' : price(u.currentPrice, u.currency),
+      performance: !noPrice(u) && Number.isFinite(u.performance) ? f.signedPctOf(u.performance) : '—',
+      performanceTone: noPrice(u) || !Number.isFinite(u.performance) ? '' : u.performance >= 0 ? 'pos' : 'neg',
+      distance: withDistance && !noPrice(u) && Number.isFinite(distance) ? f.signedPctOf(distance, 1) : null,
+      status: noPrice(u) ? t('noPrice') : status ? status.text : null,
+      statusTone: noPrice(u) ? 'warn' : status ? status.tone : '',
+      worst: !!u.isWorstPerforming && !noPrice(u)
+    };
+  });
   const priceDates = [...new Set(list.map(u => toIso(u.priceDate)).filter(Boolean))].sort();
   const reference = Number.isFinite(barrier) ? barrier - 100 : null;
-  const bars = buildHBarChart(list.map(u => ({
+  const missing = list.filter(noPrice).map(u => u.ticker || u.name);
+  const bars = buildHBarChart(list.filter(u => !noPrice(u)).map(u => ({
     label: u.ticker || u.name,
     value: u.performance,
     valueText: Number.isFinite(u.performance) ? f.signedPctOf(u.performance) : '—',
@@ -79,7 +92,10 @@ export const underlyingsOf = (templateResults, f, t, { barrier = null, withDista
   })), { reference, width: 400, labelWidth: 64, valueWidth: 70, rowHeight: list.length > 6 ? 22 : 28, tickFormat: (v) => f.signedPctOf(v, 0) });
   return {
     hasDistance: rows.some(r => r.distance),
+    distanceLabel,
     hasStatus: rows.some(r => r.status),
+    missingPrices: missing,
+    missingText: missing.length ? t('missingPrices', { list: missing.join(', ') }) : null,
     rows,
     bars,
     barsCaption: Number.isFinite(barrier) ? t('performanceVsBarrier', { barrier: f.pctOf(barrier, 0) }) : null,
@@ -163,4 +179,50 @@ export const frequencyLabel = (frequency, t, { capitalize = false } = {}) => {
   const fq = FREQ[String(frequency || '').toLowerCase()];
   const text = fq ? t(fq[0]) : (frequency || '—');
   return capitalize ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+};
+
+/**
+ * A percentage from an evaluator object: the raw number formatted for the
+ * report language, else the evaluator's own formatted text (English), else —.
+ */
+export const pctField = (obj, key, f, { signed = false, decimals = 2 } = {}) => {
+  const v = obj?.[key];
+  if (Number.isFinite(v)) return signed ? f.signedPctOf(v, decimals) : f.pctOf(v, decimals);
+  return obj?.[`${key}Formatted`] || '—';
+};
+
+/** European / American barrier observation, translated. */
+export const barrierTypeLabel = (type, t) => {
+  const s = String(type || '').toLowerCase();
+  if (s.includes('american') || s.includes('continuous')) return t('barrierAmerican');
+  if (s.includes('european') || s.includes('final')) return t('barrierEuropean');
+  return type || '—';
+};
+
+/** True when the evaluation lacks a current price for an underlying. */
+export const hasMissingPrices = (templateResults) => (templateResults?.underlyings || []).some(u => u.hasCurrentData === false);
+
+/**
+ * Headline figure of a payoff: the redemption in % of nominal, indicative while
+ * live, final once closed. None when a price it depends on is missing.
+ */
+export const headlineFor = (total, { status, results, f, t }) => {
+  if (!Number.isFinite(total) || hasMissingPrices(results)) return null;
+  const pnl = total - 100;
+  return {
+    label: status.key === 'live' ? t('indicativeRedemption') : t('finalRedemption'),
+    value: f.pctOf(total),
+    caption: `${t('pnl')} ${f.signedPctOf(pnl)}`,
+    tone: pnl >= 0 ? 'pos' : 'neg'
+  };
+};
+
+/** Reference basket of a participation-style payoff (worst / best / average / single). */
+export const referenceLabel = (ref, t) => {
+  const s = String(ref || '').toLowerCase();
+  if (s.includes('worst')) return t('refWorst');
+  if (s.includes('best')) return t('refBest');
+  if (s.includes('average') || s.includes('basket')) return t('refAverage');
+  if (s.includes('single')) return t('refSingle');
+  return ref || '—';
 };

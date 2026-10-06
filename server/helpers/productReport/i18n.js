@@ -159,13 +159,160 @@ const FR = {
   basketWorst: 'sous-jacent le moins performant', basketBest: 'sous-jacent le plus performant', basketAvg: 'panier (moyenne des sous-jacents)'
 };
 
-const DICTS = { en: EN, fr: FR };
+// Labels of the other payoffs (Orion, Himalaya, Shark, Participation, Reverse
+// Convertible and its bond variant, Bonus, Twin Win, Rate) and shared notices
+const EN_MORE = {
+  noPrice: 'No current price',
+  missingPrices: 'No current price was available for {list} at the evaluation: values depending on it are not shown.',
+  barrierAmerican: 'American (continuous)', barrierEuropean: 'European (at final observation)',
+  barrierType: 'Barrier observation', barrierLevel: 'Barrier', strikeLevel: 'Strike', participationRate: 'Participation', capitalProtection: 'Capital protection',
+  redemptionValue: 'Redemption', indicativeRedemption: 'Indicative redemption if matured today',
+  colConsidered: 'Counted performance', colDistanceLower: 'Distance to lower barrier',
+
+  tplOrion: 'Orion', titlePayoffOrion: 'Performance and redemption',
+  upperBarrier: 'Upper barrier', rebate: 'Rebate', capitalGuaranteed: 'Capital guaranteed', lowerBarrier: 'Lower barrier',
+  orionCapped: 'Capped at rebate', orionParticipating: 'Participating',
+  countedPerformances: 'Performances counted', basketCounted: 'Basket (average counted)',
+  orionNoneHit: 'No underlying has reached the {upper} upper barrier: each counts with its own performance, and the capital is guaranteed at {guarantee}.',
+  orionSomeHit: '{n} of {total} underlyings reached the {upper} upper barrier and count for the {rebate} rebate; the others count with their own performance. The capital is guaranteed at {guarantee}.',
+  howOrion: 'Each underlying counts with its own performance from the start, unless it reaches the {upper} upper barrier during the life of the product: it then counts for a fixed {rebate}. At maturity the product repays the capital plus the average of the counted performances, and at least {guarantee} of the capital.',
+
+  tplHimalaya: 'Himalaya', titlePayoffHimalaya: 'Selection and payout',
+  floor: 'Floor', averagePerformance: 'Average of the recorded performances', payout: 'Payout', selectionDone: 'Underlyings recorded',
+  titleSelection: 'Observation and selection', colNumber: 'No.', colSelected: 'Underlying recorded', colRemaining: 'Remaining',
+  selFrozen: 'Recorded', selPending: 'To come',
+  himalayaText: 'The average of the performances recorded so far is {avg}; with the {floor} floor the product would pay {payout}.',
+  howHimalaya: 'On each observation date, the best-performing underlying still in the basket is recorded with its performance and removed. At maturity the product pays the capital plus the average of the recorded performances, with a floor at {floor}.',
+
+  tplShark: 'Shark note', titlePayoffShark: 'Barrier and redemption',
+  barrierTouched: 'Upper barrier touched', barrierNotTouched: 'Upper barrier not touched', touchedOn: 'on {date}',
+  sharkText: 'Redemption at {value}.',
+  howShark: 'If the reference performance reaches the {upper} upper barrier during the life of the product, the product repays the capital plus a fixed {rebate}. Otherwise it repays the capital plus the performance at maturity, with a floor at {floor}.',
+
+  tplParticipation: 'Participation note', titlePayoffParticipation: 'Participation and redemption',
+  basketPerformance: 'Reference performance', participatedPerformance: 'Performance with participation', protectionLevel: 'Protection', rawRedemption: 'Redemption before protection',
+  partProtected: 'With participation the redemption would be {raw}, below the {protection} protection: the product repays {value}.',
+  partNormal: 'With participation the product would repay {value}.',
+  issuerCall: 'Issuer call', callable: 'Callable by the issuer', calledOn: 'Called on {date}', notCalled: 'Not called', callPrice: 'Call price', noCallOption: 'No call option',
+  refWorst: 'Worst performer', refBest: 'Best performer', refAverage: 'Average of the underlyings', refSingle: 'Single underlying',
+  howParticipation: 'At maturity the product repays the capital plus {rate} of the reference performance ({reference}){protection}.',
+  howParticipationProtection: ', and at least {protection} of the capital',
+  titleCallSchedule: 'Call schedule', colCallable: 'Callable', colRebate: 'Rebate',
+
+  tplReverseConvertible: 'Reverse convertible', titlePayoffRC: 'Coupon and redemption',
+  gearing: 'Gearing', capitalComponent: 'Capital repaid', couponComponent: 'Coupon', barrierBreached: 'The barrier has been breached',
+  rcIntact: 'The underlyings are above the {barrier} barrier: the capital is repaid in full, plus the coupon.',
+  rcBreached: 'An underlying is below the {barrier} barrier: the capital is repaid at {capital}, plus the coupon.',
+  howRC: 'The product pays a coupon of {coupon}. At maturity the capital is repaid in full if no underlying is below the {barrier} barrier; otherwise the capital follows the fall of the worst underlying.',
+
+  tplReverseConvertibleBond: 'Reverse convertible on bond', titlePayoffRCB: 'Strike and redemption',
+  bondLevel: 'Bond price', distanceToStrike: 'Distance to strike', settlement: 'Settlement', settleCash: 'Cash at par', settlePhysical: 'Delivery of the bond',
+  conversionRatio: 'Conversion ratio', denomination: 'Denomination',
+  strikeAbove: 'At or above strike', strikeBelow: 'Below strike',
+  rcbCash: 'The bond is above the {strike} strike: the note is repaid at par in cash, plus the coupon.',
+  rcbPhysical: 'The bond is at or below the {strike} strike: the note is settled by delivery of the bond ({ratio} bonds per note), plus the coupon.',
+  howRCB: 'The note pays a coupon of {coupon}. At maturity it is repaid at par in cash if the bond is above the {strike} strike; at or below it, the bond is delivered at the conversion ratio.',
+
+  tplBonus: 'Bonus certificate', titlePayoffBonus: 'Knock-in and redemption',
+  bonusLevel: 'Bonus level', cap: 'Cap', maxRedemption: 'Maximum redemption', bonusOrUpside: 'Bonus or upside', knockIn: 'Knock-in barrier',
+  kiOccurred: 'Knock-in on {date}', kiNotYet: 'Observed at final observation only', kiNone: 'No knock-in so far',
+  bonusText: 'At today\'s level the certificate would repay {total}.',
+  howBonus: 'At maturity, if the knock-in barrier at {barrier} has not been breached, the certificate repays at least the {bonus} bonus level, plus {rate} of any rise above it{cap}. If the barrier has been breached, it follows the underlying.',
+  howBonusCap: ', capped at {cap}',
+
+  tplTwinWin: 'Twin win', titlePayoffTwinWin: 'Barriers and redemption',
+  bonus: 'Bonus', minRedemption: 'Minimum redemption', upperTouched: 'Upper barrier', lowerTouched: 'Lower barrier', touched: 'Touched on {date}', notTouched: 'Not touched',
+  twAboveUpper: 'Above upper barrier', twBelowLower: 'Below lower barrier', participationComponent: 'Performance or bonus',
+  twinText: 'At today\'s level the product would repay {total}.',
+  howTwinWin: 'Between the {lower} and {upper} barriers, the product turns the underlying\'s performance into a gain whichever way it moves. Outside them, the {bonus} bonus and the {protection} capital protection set the redemption, with at least {min}.',
+
+  tplRate: 'Rate note', titlePayoffRate: 'Coupons and redemption', titleCouponSchedule: 'Coupon schedule',
+  fixedCoupon: 'Fixed coupon', floatingCoupon: 'Floating coupon', targetCoupon: 'Target', couponFrequency: 'Coupon frequency', referenceRates: 'Reference rates',
+  targetReached: 'Target reached on {date}', targetProgress: 'Coupons paid towards the target',
+  colPeriod: 'Period', colRate: 'Rate p.a.', colPeriodCoupon: 'Coupon', colCumulative: 'Cumulative', colStatusShort: 'Status',
+  rsPaid: 'Paid', rsUpcoming: 'Upcoming', rsPending: 'To be fixed', rsRedeemed: 'Redeemed', rsCancelled: 'Cancelled'
+};
+
+const FR_MORE = {
+  noPrice: 'Pas de cours actuel',
+  missingPrices: 'Aucun cours actuel n\'était disponible pour {list} lors de l\'évaluation : les valeurs qui en dépendent ne sont pas affichées.',
+  barrierAmerican: 'Américaine (en continu)', barrierEuropean: 'Européenne (à l\'observation finale)',
+  barrierType: 'Observation de la barrière', barrierLevel: 'Barrière', strikeLevel: 'Strike', participationRate: 'Participation', capitalProtection: 'Protection du capital',
+  redemptionValue: 'Remboursement', indicativeRedemption: 'Remboursement indicatif si échéance aujourd\'hui',
+  colConsidered: 'Performance retenue', colDistanceLower: 'Distance à la barrière basse',
+
+  tplOrion: 'Orion', titlePayoffOrion: 'Performance et remboursement',
+  upperBarrier: 'Barrière haute', rebate: 'Rebate', capitalGuaranteed: 'Capital garanti', lowerBarrier: 'Barrière basse',
+  orionCapped: 'Plafonné au rebate', orionParticipating: 'Participe',
+  countedPerformances: 'Performances retenues', basketCounted: 'Panier (moyenne retenue)',
+  orionNoneHit: 'Aucun sous-jacent n\'a atteint la barrière haute de {upper} : chacun compte pour sa propre performance, et le capital est garanti à {guarantee}.',
+  orionSomeHit: '{n} sous-jacents sur {total} ont atteint la barrière haute de {upper} et comptent pour le rebate de {rebate} ; les autres comptent pour leur propre performance. Le capital est garanti à {guarantee}.',
+  howOrion: 'Chaque sous-jacent compte pour sa propre performance depuis le lancement, sauf s\'il atteint la barrière haute de {upper} pendant la vie du produit : il compte alors pour un montant fixe de {rebate}. À l\'échéance, le produit rembourse le capital plus la moyenne des performances retenues, et au moins {guarantee} du capital.',
+
+  tplHimalaya: 'Himalaya', titlePayoffHimalaya: 'Sélection et remboursement',
+  floor: 'Plancher', averagePerformance: 'Moyenne des performances retenues', payout: 'Remboursement', selectionDone: 'Sous-jacents retenus',
+  titleSelection: 'Observations et sélection', colNumber: 'N°', colSelected: 'Sous-jacent retenu', colRemaining: 'Restants',
+  selFrozen: 'Retenu', selPending: 'À venir',
+  himalayaText: 'La moyenne des performances retenues à ce jour est de {avg} ; avec le plancher de {floor}, le produit verserait {payout}.',
+  howHimalaya: 'À chaque date d\'observation, le sous-jacent le plus performant encore dans le panier est retenu avec sa performance puis retiré. À l\'échéance, le produit verse le capital plus la moyenne des performances retenues, avec un plancher de {floor}.',
+
+  tplShark: 'Shark note', titlePayoffShark: 'Barrière et remboursement',
+  barrierTouched: 'Barrière haute atteinte', barrierNotTouched: 'Barrière haute non atteinte', touchedOn: 'le {date}',
+  sharkText: 'Remboursement à {value}.',
+  howShark: 'Si la performance de référence atteint la barrière haute de {upper} pendant la vie du produit, celui-ci rembourse le capital plus un montant fixe de {rebate}. Sinon il rembourse le capital plus la performance à l\'échéance, avec un plancher de {floor}.',
+
+  tplParticipation: 'Note de participation', titlePayoffParticipation: 'Participation et remboursement',
+  basketPerformance: 'Performance de référence', participatedPerformance: 'Performance avec participation', protectionLevel: 'Protection', rawRedemption: 'Remboursement avant protection',
+  partProtected: 'Avec la participation, le remboursement serait de {raw}, sous la protection de {protection} : le produit rembourse {value}.',
+  partNormal: 'Avec la participation, le produit rembourserait {value}.',
+  issuerCall: 'Rappel par l\'émetteur', callable: 'Rappelable par l\'émetteur', calledOn: 'Rappelé le {date}', notCalled: 'Non rappelé', callPrice: 'Prix de rappel', noCallOption: 'Pas d\'option de rappel',
+  refWorst: 'Moins performant', refBest: 'Plus performant', refAverage: 'Moyenne des sous-jacents', refSingle: 'Sous-jacent unique',
+  howParticipation: 'À l\'échéance, le produit rembourse le capital plus {rate} de la performance de référence ({reference}){protection}.',
+  howParticipationProtection: ', et au moins {protection} du capital',
+  titleCallSchedule: 'Calendrier de rappel', colCallable: 'Rappelable', colRebate: 'Rebate',
+
+  tplReverseConvertible: 'Reverse convertible', titlePayoffRC: 'Coupon et remboursement',
+  gearing: 'Effet de levier', capitalComponent: 'Capital remboursé', couponComponent: 'Coupon', barrierBreached: 'La barrière a été franchie',
+  rcIntact: 'Les sous-jacents sont au-dessus de la barrière de {barrier} : le capital est intégralement remboursé, plus le coupon.',
+  rcBreached: 'Un sous-jacent est sous la barrière de {barrier} : le capital est remboursé à {capital}, plus le coupon.',
+  howRC: 'Le produit verse un coupon de {coupon}. À l\'échéance, le capital est intégralement remboursé si aucun sous-jacent n\'est sous la barrière de {barrier} ; sinon le capital suit la baisse du sous-jacent le moins performant.',
+
+  tplReverseConvertibleBond: 'Reverse convertible sur obligation', titlePayoffRCB: 'Strike et remboursement',
+  bondLevel: 'Prix de l\'obligation', distanceToStrike: 'Distance au strike', settlement: 'Règlement', settleCash: 'En espèces au pair', settlePhysical: 'Livraison de l\'obligation',
+  conversionRatio: 'Ratio de conversion', denomination: 'Valeur nominale',
+  strikeAbove: 'Au strike ou au-dessus', strikeBelow: 'Sous le strike',
+  rcbCash: 'L\'obligation est au-dessus du strike de {strike} : la note est remboursée au pair en espèces, plus le coupon.',
+  rcbPhysical: 'L\'obligation est au strike de {strike} ou en dessous : la note est réglée par livraison de l\'obligation ({ratio} obligations par note), plus le coupon.',
+  howRCB: 'La note verse un coupon de {coupon}. À l\'échéance, elle est remboursée au pair en espèces si l\'obligation est au-dessus du strike de {strike} ; au strike ou en dessous, l\'obligation est livrée selon le ratio de conversion.',
+
+  tplBonus: 'Certificat bonus', titlePayoffBonus: 'Barrière et remboursement',
+  bonusLevel: 'Niveau bonus', cap: 'Plafond', maxRedemption: 'Remboursement maximum', bonusOrUpside: 'Bonus ou hausse', knockIn: 'Barrière désactivante',
+  kiOccurred: 'Barrière franchie le {date}', kiNotYet: 'Observée à l\'observation finale uniquement', kiNone: 'Barrière non franchie à ce jour',
+  bonusText: 'Au niveau actuel, le certificat rembourserait {total}.',
+  howBonus: 'À l\'échéance, si la barrière de {barrier} n\'a pas été franchie, le certificat rembourse au moins le niveau bonus de {bonus}, plus {rate} de la hausse au-delà{cap}. Si la barrière a été franchie, il suit le sous-jacent.',
+  howBonusCap: ', dans la limite de {cap}',
+
+  tplTwinWin: 'Twin win', titlePayoffTwinWin: 'Barrières et remboursement',
+  bonus: 'Bonus', minRedemption: 'Remboursement minimum', upperTouched: 'Barrière haute', lowerTouched: 'Barrière basse', touched: 'Atteinte le {date}', notTouched: 'Non atteinte',
+  twAboveUpper: 'Au-dessus de la barrière haute', twBelowLower: 'Sous la barrière basse', participationComponent: 'Performance ou bonus',
+  twinText: 'Au niveau actuel, le produit rembourserait {total}.',
+  howTwinWin: 'Entre les barrières de {lower} et {upper}, le produit transforme la performance du sous-jacent en gain, à la hausse comme à la baisse. Au-delà, le bonus de {bonus} et la protection du capital de {protection} fixent le remboursement, avec au moins {min}.',
+
+  tplRate: 'Note de taux', titlePayoffRate: 'Coupons et remboursement', titleCouponSchedule: 'Calendrier des coupons',
+  fixedCoupon: 'Coupon fixe', floatingCoupon: 'Coupon variable', targetCoupon: 'Objectif', couponFrequency: 'Fréquence des coupons', referenceRates: 'Taux de référence',
+  targetReached: 'Objectif atteint le {date}', targetProgress: 'Coupons versés vers l\'objectif',
+  colPeriod: 'Période', colRate: 'Taux annuel', colPeriodCoupon: 'Coupon', colCumulative: 'Cumul', colStatusShort: 'Statut',
+  rsPaid: 'Versé', rsUpcoming: 'À venir', rsPending: 'À fixer', rsRedeemed: 'Remboursé', rsCancelled: 'Annulé'
+};
+
+const EN_ALL = { ...EN, ...EN_MORE };
+const DICTS = { en: EN_ALL, fr: { ...FR, ...FR_MORE } };
 
 /** Translator for one language: t('key', { var }) with English fallback. */
 export const translatorFor = (lang = 'en') => {
   const dict = DICTS[lang] || EN;
   return (key, vars = {}) => {
-    const raw = dict[key] ?? EN[key] ?? key;
+    const raw = dict[key] ?? EN_ALL[key] ?? key;
     if (typeof raw !== 'string') return raw;
     return raw.replace(/\{(\w+)\}/g, (_, k) => (vars[k] !== undefined ? vars[k] : `{${k}}`));
   };

@@ -276,41 +276,10 @@ Meteor.methods({
           reportUrl = `${baseUrl}underlyings-report/${reportId}?pdf=true&pdfToken=${tempToken}&userId=${userId}&lang=${lang}`;
           break;
         case 'product':
-          reportUrl = `${baseUrl}report/${reportId}?pdf=true&pdfToken=${tempToken}&userId=${userId}&lang=${lang}`;
-          break;
         case 'template':
-          // For template reports, check if we have a dedicated PDF template
-          // Look up the latest report to determine the template type
-          const { TemplateReportsCollection } = await import('../../imports/api/templateReports.js');
-          const latestReport = await TemplateReportsCollection.findOneAsync(
-            { productId: reportId },
-            { sort: { createdAt: -1 } }
-          );
-
-          const templateId = latestReport?.templateId || options.templateId;
-          const templateIdLower = templateId ? templateId.toLowerCase() : '';
-          console.log('[PDF] Template type for product:', reportId, 'is:', templateId, '(normalized:', templateIdLower, ')');
-
-          // Use dedicated PDF templates for supported product types (case-insensitive matching)
-          if (templateIdLower.includes('phoenix')) {
-            reportUrl = `${baseUrl}pdf/phoenix/${reportId}?pdfToken=${tempToken}&userId=${userId}&lang=${lang}`;
-            console.log('[PDF] Using dedicated Phoenix PDF template');
-          } else if (templateIdLower.includes('orion')) {
-            reportUrl = `${baseUrl}pdf/orion/${reportId}?pdfToken=${tempToken}&userId=${userId}&lang=${lang}`;
-            console.log('[PDF] Using dedicated Orion PDF template');
-          } else if (templateIdLower.includes('participation')) {
-            reportUrl = `${baseUrl}pdf/participation/${reportId}?pdfToken=${tempToken}&userId=${userId}&lang=${lang}`;
-            console.log('[PDF] Using dedicated Participation Note PDF template');
-          } else if (templateIdLower.includes('twin')) {
-            reportUrl = `${baseUrl}pdf/twinwin/${reportId}?pdfToken=${tempToken}&userId=${userId}&lang=${lang}`;
-            console.log('[PDF] Using dedicated Twin Win PDF template');
-          } else if (templateIdLower === 'rate' || templateIdLower.includes('steepener')) {
-            reportUrl = `${baseUrl}pdf/rate/${reportId}?pdfToken=${tempToken}&userId=${userId}&lang=${lang}`;
-            console.log('[PDF] Using dedicated Rate PDF template');
-          } else {
-            // Fallback to existing product view for other templates
-            reportUrl = `${baseUrl}product/${reportId}?pdf=true&pdfToken=${tempToken}&userId=${userId}&lang=${lang}`;
-          }
+          // Every payoff renders through the same server-built report
+          // (products.getReportForPdf + adapters in server/helpers/productReport)
+          reportUrl = `${baseUrl}pdf/product/${reportId}?pdfToken=${tempToken}&userId=${userId}&lang=${lang}`;
           break;
         case 'pms':
           // PMS Portfolio Report - reportId is the account filter ('all' or specific account ID)
@@ -397,8 +366,10 @@ Meteor.methods({
       console.log('[PDF] New page created');
 
       // Set viewport
-      // The portfolio statement is designed at 1123×794 px per page (A4 landscape)
-      await page.setViewport(reportType === 'pms'
+      // The portfolio statement and the product report are designed at
+      // 1123×794 px per page (A4 landscape)
+      const isFixedPageReport = reportType === 'pms' || reportType === 'product' || reportType === 'template';
+      await page.setViewport(isFixedPageReport
         ? { width: 1123, height: 794, deviceScaleFactor: 2 }
         : { width: 1200, height: 1600, deviceScaleFactor: 2 });
 
@@ -542,10 +513,10 @@ Meteor.methods({
 
       let pdfBuffer;
       const renderStartedAt = Date.now();
-      // The portfolio statement is laid out as fixed A4-landscape pages
+      // The portfolio statement and the product report are laid out as fixed A4-landscape pages
       // (1123×794 CSS px each) carrying their own header, footer and "n / N",
       // so it prints edge to edge with no Puppeteer margins or running footer.
-      if (reportType === 'pms') {
+      if (isFixedPageReport) {
         pdfBuffer = await page.pdf({
           width: '297mm',
           height: '210mm',

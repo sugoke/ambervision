@@ -7,11 +7,7 @@ import PrintableProductReport from './PrintableProductReport.jsx';
 import LandingPage from './LandingPage.jsx';
 import PrivacyPolicy from './PrivacyPolicy.jsx';
 import InfinePage from './InfinePage.jsx';
-import PhoenixReportPDF from './templates/PhoenixReportPDF.jsx';
-import OrionReportPDF from './templates/OrionReportPDF.jsx';
-import ParticipationNoteReportPDF from './templates/ParticipationNoteReportPDF.jsx';
-import TwinWinReportPDF from './templates/TwinWinReportPDF.jsx';
-import RateReportPDF from './templates/RateReportPDF.jsx';
+import ProductReportPDF from './templates/ProductReportPDF.jsx';
 import PortfolioStatementPDF from './templates/PortfolioStatementPDF.jsx';
 import RiskAnalysisPDF from './templates/RiskAnalysisPDF.jsx';
 import PortfolioReviewPDF from './templates/PortfolioReviewPDF.jsx';
@@ -108,44 +104,10 @@ const AppContent = () => {
       return { section: 'print-report', productId };
     }
 
-    // Check for PDF Phoenix route: /pdf/phoenix/:productId
-    const pdfPhoenixMatch = pathname.match(/^\/pdf\/phoenix\/([a-zA-Z0-9]+)$/);
-    if (pdfPhoenixMatch) {
-      const productId = pdfPhoenixMatch[1];
-      console.log('App: Found PDF Phoenix route for product:', productId);
-      return { section: 'pdf-phoenix', productId };
-    }
-
-    // Check for PDF Orion route: /pdf/orion/:productId
-    const pdfOrionMatch = pathname.match(/^\/pdf\/orion\/([a-zA-Z0-9]+)$/);
-    if (pdfOrionMatch) {
-      const productId = pdfOrionMatch[1];
-      console.log('App: Found PDF Orion route for product:', productId);
-      return { section: 'pdf-orion', productId };
-    }
-
-    // Check for PDF Participation Note route: /pdf/participation/:productId
-    const pdfParticipationMatch = pathname.match(/^\/pdf\/participation\/([a-zA-Z0-9]+)$/);
-    if (pdfParticipationMatch) {
-      const productId = pdfParticipationMatch[1];
-      console.log('App: Found PDF Participation Note route for product:', productId);
-      return { section: 'pdf-participation', productId };
-    }
-
-    // Check for PDF Twin Win route: /pdf/twinwin/:productId
-    const pdfTwinWinMatch = pathname.match(/^\/pdf\/twinwin\/([a-zA-Z0-9]+)$/);
-    if (pdfTwinWinMatch) {
-      const productId = pdfTwinWinMatch[1];
-      console.log('App: Found PDF Twin Win route for product:', productId);
-      return { section: 'pdf-twinwin', productId };
-    }
-
-    // Check for PDF Rate route: /pdf/rate/:productId
-    const pdfRateMatch = pathname.match(/^\/pdf\/rate\/([a-zA-Z0-9]+)$/);
-    if (pdfRateMatch) {
-      const productId = pdfRateMatch[1];
-      console.log('App: Found PDF Rate route for product:', productId);
-      return { section: 'pdf-rate', productId };
+    // Check for PDF product report route: /pdf/product/:productId (every payoff)
+    const pdfProductMatch = pathname.match(/^\/pdf\/product\/([a-zA-Z0-9]+)$/);
+    if (pdfProductMatch) {
+      return { section: 'pdf-product', productId: pdfProductMatch[1] };
     }
 
     // Check for PDF PMS route: /pdf/pms/:accountFilter (or /pdf/pms for all accounts)
@@ -860,7 +822,7 @@ const AppContent = () => {
         }} />}
 
         {/* Loading state during authentication check - Exclude PDF modes as they handle their own loading */}
-        {isAuthLoading && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-twinwin' && currentSection !== 'pdf-rate' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'privacy' && currentSection !== 'infine' && (
+        {isAuthLoading && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-product' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'privacy' && currentSection !== 'infine' && (
           <div style={{
             display: 'flex',
             justifyContent: 'center',
@@ -884,29 +846,9 @@ const AppContent = () => {
           <PrintableProductReport />
         )}
 
-        {/* PDF Phoenix Report - Clean table-based layout for PDF generation */}
-        {currentSection === 'pdf-phoenix' && currentRoute.productId && (
-          <PhoenixReportPDF productId={currentRoute.productId} />
-        )}
-
-        {/* PDF Orion Report - Clean table-based layout for PDF generation */}
-        {currentSection === 'pdf-orion' && currentRoute.productId && (
-          <OrionReportPDF productId={currentRoute.productId} />
-        )}
-
-        {/* PDF Participation Note Report - Clean table-based layout for PDF generation */}
-        {currentSection === 'pdf-participation' && currentRoute.productId && (
-          <ParticipationNoteReportPDF productId={currentRoute.productId} />
-        )}
-
-        {/* PDF Twin Win Report - Clean table-based layout for PDF generation */}
-        {currentSection === 'pdf-twinwin' && currentRoute.productId && (
-          <TwinWinReportPDF productId={currentRoute.productId} />
-        )}
-
-        {/* PDF Rate Report - Clean table-based layout for PDF generation */}
-        {currentSection === 'pdf-rate' && currentRoute.productId && (
-          <RateReportPDF productId={currentRoute.productId} />
+        {/* PDF product report - every payoff, built server-side (products.getReportForPdf) */}
+        {currentSection === 'pdf-product' && currentRoute.productId && (
+          <ProductReportPDF productId={currentRoute.productId} />
         )}
 
         {/* PDF PMS Report - Portfolio Management System PDF */}
@@ -956,7 +898,7 @@ const AppContent = () => {
         )}
 
         {/* Login Form Section - Only show when not logged in, not loading, not on reset password page, and not in PDF mode */}
-        {!user && !isAuthLoading && currentSection !== 'reset-password' && currentSection !== 'oauth-consent' && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-twinwin' && currentSection !== 'pdf-rate' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'privacy' && currentSection !== 'infine' && (
+        {!user && !isAuthLoading && currentSection !== 'reset-password' && currentSection !== 'oauth-consent' && !isPDFMode && currentSection !== 'print-report' && currentSection !== 'pdf-product' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'privacy' && currentSection !== 'infine' && (
           <section style={{
             padding: '0 1rem',
             background: theme === 'light' ? 'transparent' : 'transparent'
@@ -976,7 +918,7 @@ const AppContent = () => {
 
 
         {/* Main Content - Protected (or PDF mode) */}
-        {(user || isPDFMode) && currentSection !== 'reset-password' && currentSection !== 'oauth-consent' && currentSection !== 'print-report' && currentSection !== 'pdf-phoenix' && currentSection !== 'pdf-orion' && currentSection !== 'pdf-participation' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'privacy' && currentSection !== 'infine' && <MainContent user={user} currentSection={currentSection} setCurrentSection={handleSectionChange} onComponentLibraryStateChange={setIsComponentLibraryOpen} currentRoute={currentRoute} isMenuOpen={isMenuOpen} setIsMenuOpen={setIsMenuOpen} isSettingsOpen={isSettingsOpen} setIsSettingsOpen={setIsSettingsOpen} isMobile={isMobile} />}
+        {(user || isPDFMode) && currentSection !== 'reset-password' && currentSection !== 'oauth-consent' && currentSection !== 'print-report' && currentSection !== 'pdf-product' && currentSection !== 'pdf-pms' && currentSection !== 'pdf-risk-analysis' && currentSection !== 'pdf-portfolio-review' && currentSection !== 'landing' && currentSection !== 'privacy' && currentSection !== 'infine' && <MainContent user={user} currentSection={currentSection} setCurrentSection={handleSectionChange} onComponentLibraryStateChange={setIsComponentLibraryOpen} currentRoute={currentRoute} isMenuOpen={isMenuOpen} setIsMenuOpen={setIsMenuOpen} isSettingsOpen={isSettingsOpen} setIsSettingsOpen={setIsSettingsOpen} isMobile={isMobile} />}
 
         {/* Spacer to prevent content from being hidden behind fixed bottom bar - Hide on mobile */}
         {user && !isMobile && <div style={{ height: '40px' }} />}

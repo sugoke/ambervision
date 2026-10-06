@@ -416,13 +416,19 @@ Template-specific chart generation for each product type, creating pre-calculate
 
 #### Report Components (`/imports/ui/templates/`)
 Template-specific report rendering:
-- `PhoenixReport.jsx` / `PhoenixReportPDF.jsx`
-- `OrionReport.jsx` / `OrionReportPDF.jsx`
+- `PhoenixReport.jsx`
+- `OrionReport.jsx`
 - `HimalayaReport.jsx`
 - `SharkNoteReport.jsx`
-- `ParticipationNoteReport.jsx` / `ParticipationNoteReportPDF.jsx`
+- `ParticipationNoteReport.jsx`
 - `ReverseConvertibleReport.jsx`
 - `ReverseConvertibleBondReport.jsx`
+
+#### Product Report PDF (all payoffs)
+One A4-landscape PDF for every template, in the portfolio-statement style:
+- Server: `server/helpers/productReport/buildProductReport.js` builds every page, string and chart geometry; per-payoff adapters in `server/helpers/productReport/adapters/` (keyed by `templateId`, generic fallback); EN/FR labels in `i18n.js`; shared formatting/SVG charts in `server/helpers/reportKit/`
+- Method: `products.getReportForPdf` (`server/methods/productReportPdfMethods.js`, PDF-token auth)
+- Client: `imports/ui/templates/ProductReportPDF.jsx` at `/pdf/product/:id`, display-only, shared pieces in `reportKit.jsx`
 
 ### Adding New Product Templates
 
@@ -430,6 +436,7 @@ Template-specific report rendering:
 2. Create helpers: `/imports/api/evaluators/{templateName}EvaluationHelpers.js`
 3. Create chart builder: `/imports/api/chartBuilders/{templateName}ChartBuilder.js`
 4. Create report component: `/imports/ui/templates/{TemplateName}Report.jsx`
+   and a PDF adapter: `/server/helpers/productReport/adapters/{templateName}.js` (registered in its `index.js`)
 5. Register in productTypeAnalyzer.js
 
 ## Report Architecture and Data Flow
