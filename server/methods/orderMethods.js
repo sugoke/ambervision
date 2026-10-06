@@ -19,7 +19,7 @@ import { EODApiHelpers } from '../../imports/api/eodApi.js';
 import { AuditLog } from '/imports/api/auditLog';
 import { OrderCountersCollection, OrderCounterHelpers } from '../../imports/api/orderCounters.js';
 import { EmailService, EMAIL, emailShell, emailKvTable, emailParagraph, emailButton } from '../../imports/api/emailService.js';
-import { AccountProfilesCollection, aggregateToFourCategories, getBreakdownKeyForAssetType, mapOrderAssetTypeToProfileCategory, getProfileName } from '../../imports/api/accountProfiles.js';
+import { AccountProfilesCollection, aggregateToFourCategories, getBreakdownKeyForAssetType, mapOrderAssetTypeToProfileCategory, getProfileName, limitsProfile, isNoProfile } from '../../imports/api/accountProfiles.js';
 import { getHoldingCategoryKey } from '../../imports/api/assetClassification.js';
 import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetadata.js';
 import { IssuersCollection } from '../../imports/api/issuers.js';
@@ -465,9 +465,11 @@ async function resolveClientId(clientId) {
  * Reusable by both the preview method and inline in orders.create.
  */
 async function checkAllocationImpact({ bankAccountId, clientId, assetType, estimatedValue, capitalProtected }) {
-  const profile = await AccountProfilesCollection.findOneAsync({ bankAccountId });
+  const storedProfile = await AccountProfilesCollection.findOneAsync({ bankAccountId });
+  // "No profile" accounts have no limits to check, like accounts without a profile
+  const profile = limitsProfile(storedProfile);
   if (!profile) {
-    return { hasProfile: false, hasBreaches: false };
+    return { hasProfile: false, noProfile: isNoProfile(storedProfile), hasBreaches: false };
   }
 
   const bankAccount = await BankAccountsCollection.findOneAsync(bankAccountId);

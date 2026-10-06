@@ -17,7 +17,7 @@ import { BankFileStructureHelpers } from '../../imports/api/bankFileStructures.j
 import { CFMParser } from '../../imports/api/parsers/cfmParser.js';
 import { EDRMonacoParser } from '../../imports/api/parsers/edrMonacoParser.js';
 import { NotificationHelpers } from '../../imports/api/notifications.js';
-import { AccountProfilesCollection, aggregateToFourCategories } from '../../imports/api/accountProfiles.js';
+import { AccountProfilesCollection, aggregateToFourCategories, limitsProfile } from '../../imports/api/accountProfiles.js';
 import { SecuritiesMetadataCollection } from '../../imports/api/securitiesMetadata.js';
 import { CurrencyRateCacheCollection } from '../../imports/api/currencyCache.js';
 import { checkNegativeCash, buildRatesMap } from '../../imports/api/helpers/cashCalculator.js';
@@ -1364,7 +1364,7 @@ Meteor.methods({
           });
 
           // Skip allocation limit check if no profile set (but negative cash check already ran above)
-          if (!accountProfile) continue;
+          if (!limitsProfile(accountProfile)) continue; // none, or "No profile"
 
           // For allocation checks, we need the snapshot with breakdown data
           if (!snapshot || !snapshot.assetClassBreakdown || !snapshot.totalAccountValue) continue;
@@ -2896,7 +2896,7 @@ Meteor.methods({
             bankAccountId: testBankAccount._id
           });
 
-          if (!accountProfile) continue;
+          if (!limitsProfile(accountProfile)) continue; // none, or "No profile"
 
           // Get the latest snapshot
           const snapshot = await PortfolioSnapshotsCollection.findOneAsync({

@@ -16,6 +16,7 @@ export const AccountProfilesCollection = new Mongo.Collection('accountProfiles')
  *   maxEquities: Number,        // 0-100 (max % for Equities and similar)
  *   minAlternative: Number,     // 0-100 (min % for Alternative investments)
  *   maxAlternative: Number,     // 0-100 (max % for Alternative investments)
+ *   noProfile: Boolean,         // true = "No profile": not an investment account, no limits checked
  *   lastUpdated: Date,
  *   updatedBy: String           // userId who made the change
  * }
@@ -183,6 +184,24 @@ export const PROFILE_TEMPLATES = {
   }
 };
 
+// "No profile": the account is deliberately not run against an investment
+// profile (current account, custody-only, ...). Stored as a profile document
+// with noProfile: true so the choice is recorded; no limits apply to it.
+export const NO_PROFILE_KEY = 'no-profile';
+export const NO_PROFILE_NAME = 'No profile';
+
+export const isNoProfile = (profile) => profile?.noProfile === true;
+
+/**
+ * The profile when it carries allocation limits to check against, else null.
+ * Every limit check goes through this, so a "No profile" account is treated
+ * exactly like an account without a profile.
+ */
+export const limitsProfile = (profile) => (profile && !isNoProfile(profile) ? profile : null);
+
+// Mongo selector part excluding "No profile" documents from limit checks
+export const WITH_LIMITS_SELECTOR = { noProfile: { $ne: true } };
+
 /**
  * Read a profile limit, defaulting to 0 when the field is absent
  * (profiles created before minimums existed have no min* fields).
@@ -206,6 +225,7 @@ export const formatProfileRange = (profile, categoryKey) => {
  */
 export const getProfileName = (profile) => {
   if (!profile) return null;
+  if (isNoProfile(profile)) return NO_PROFILE_NAME;
   if (profile.profileName) return profile.profileName;
   const match = Object.entries(PROFILE_TEMPLATES).find(([, tpl]) =>
     PROFILE_LIMIT_FIELDS.every(field => getProfileLimit(tpl, field) === getProfileLimit(profile, field))

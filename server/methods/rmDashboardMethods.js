@@ -7,7 +7,7 @@ import { UsersCollection, USER_ROLES, UserHelpers } from '../../imports/api/user
 import { ProductsCollection } from '../../imports/api/products.js';
 import { AllocationsCollection } from '../../imports/api/allocations.js';
 import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
-import { AccountProfilesCollection, aggregateToFourCategories } from '../../imports/api/accountProfiles.js';
+import { AccountProfilesCollection, aggregateToFourCategories, limitsProfile, WITH_LIMITS_SELECTOR } from '../../imports/api/accountProfiles.js';
 import { PortfolioSnapshotsCollection, filterSnapshotsByBankStartDate } from '../../imports/api/portfolioSnapshots.js';
 import { BankAccountsCollection, accountHolderSelector } from '../../imports/api/bankAccounts.js';
 import { BanksCollection } from '../../imports/api/banks.js';
@@ -521,7 +521,8 @@ Meteor.methods({
       // snapshot lookup — latest-per-user via $top, which unlike $sort+$group
       // doesn't blow the multiplanner memory limit on large collections.
       const clientProfiles = await AccountProfilesCollection.find({
-        userId: { $in: clientIds }
+        userId: { $in: clientIds },
+        ...WITH_LIMITS_SELECTOR // "No profile" accounts have no limits
       }).fetchAsync();
       const profilesByUser = new Map(clientProfiles.map(p => [p.userId, p]));
       let snapshotsByUser = new Map();
@@ -2110,7 +2111,7 @@ Meteor.methods({
       for (const account of bankAccounts) {
         // Get account profile (limits)
         const profile = await AccountProfilesCollection.findOneAsync({ bankAccountId: account._id });
-        if (!profile) continue;
+        if (!limitsProfile(profile)) continue; // none, or "No profile"
 
         // Get matching portfolio snapshot
         const bank = bankMap[account.bankId];

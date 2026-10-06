@@ -4,6 +4,7 @@ import {
   AccountProfilesCollection,
   PROFILE_CATEGORIES,
   PROFILE_LIMIT_FIELDS,
+  NO_PROFILE_NAME,
   getProfileLimit
 } from '../../imports/api/accountProfiles.js';
 import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
@@ -29,7 +30,8 @@ Meteor.methods({
       maxEquities: Match.Integer,
       minAlternative: Match.Maybe(Match.Integer),
       maxAlternative: Match.Integer,
-      isProfessionalInvestor: Match.Maybe(Boolean)
+      isProfessionalInvestor: Match.Maybe(Boolean),
+      noProfile: Match.Maybe(Boolean)
     });
     check(sessionId, String);
 
@@ -98,12 +100,17 @@ Meteor.methods({
       }
     }
 
+    // "No profile" carries no limits: stored as zeros under its own name
+    const toStore = profile.noProfile
+      ? { ...profile, profileName: NO_PROFILE_NAME, ...Object.fromEntries(PROFILE_LIMIT_FIELDS.map(field => [field, 0])) }
+      : { ...profile, noProfile: false };
+
     // Upsert the profile
     const result = await AccountProfilesCollection.upsertAsync(
       { bankAccountId },
       {
         $set: {
-          ...profile,
+          ...toStore,
           lastUpdated: new Date(),
           updatedBy: currentUser._id
         },

@@ -10,7 +10,7 @@ import { BankAccountsCollection, getClientReferenceCurrency } from '/imports/api
 import { BanksCollection } from '/imports/api/banks';
 import { ProductsCollection } from '/imports/api/products';
 import { AllocationsCollection } from '/imports/api/allocations';
-import { AccountProfilesCollection, aggregateToFourCategories, getProfileName } from '/imports/api/accountProfiles';
+import { AccountProfilesCollection, aggregateToFourCategories, getProfileName, limitsProfile, isNoProfile } from '/imports/api/accountProfiles';
 import { buildAssetClassBreakdown } from '/imports/api/assetClassification';
 import { useViewAs } from './ViewAsContext.jsx';
 import {
@@ -1147,6 +1147,8 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
     }
     return accountProfiles.find(p => p.bankAccountId === activeAccountTab);
   }, [activeAccountTab, accountProfiles]);
+  // Its allocation limits, if any ("No profile" accounts have none)
+  const limitsOfSelectedAccount = limitsProfile(selectedAccountProfile);
 
   // Calculate asset allocation from filtered holdings (with sub-asset classes)
   React.useEffect(() => {
@@ -6979,10 +6981,10 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
             gap: isMobile ? '0.875rem' : '1rem'
           }}>
             {[
-              { key: 'cash', label: 'Cash', icon: '💵', max: selectedAccountProfile?.maxCash ?? null, current: fourCategoryAllocation.cash, color: 'var(--info-color)', tooltip: 'Cash • Term Deposits • Monetary Products • Money Market Funds' },
-              { key: 'bonds', label: 'Bonds', icon: '📄', max: selectedAccountProfile?.maxBonds ?? null, current: fourCategoryAllocation.bonds, color: 'var(--gain-color)', tooltip: 'Fixed-Income Bonds • Convertible Bonds • Bond Funds • Capital-Guaranteed Structured Products' },
-              { key: 'equities', label: 'Equities', icon: '📈', max: selectedAccountProfile?.maxEquities ?? null, current: fourCategoryAllocation.equities, color: 'var(--warning-color)', tooltip: 'Equities & Stocks • Equity Funds • Equity-Linked Structured Products (without capital protection)' },
-              { key: 'alternative', label: 'Alternative', icon: '🎯', max: selectedAccountProfile?.maxAlternative ?? null, current: fourCategoryAllocation.alternative, color: '#8b5cf6', tooltip: 'Private Equity • Private Debt • Commodities • Real Estate • Hedge Funds • Derivatives • Other' }
+              { key: 'cash', label: 'Cash', icon: '💵', max: limitsOfSelectedAccount?.maxCash ?? null, current: fourCategoryAllocation.cash, color: 'var(--info-color)', tooltip: 'Cash • Term Deposits • Monetary Products • Money Market Funds' },
+              { key: 'bonds', label: 'Bonds', icon: '📄', max: limitsOfSelectedAccount?.maxBonds ?? null, current: fourCategoryAllocation.bonds, color: 'var(--gain-color)', tooltip: 'Fixed-Income Bonds • Convertible Bonds • Bond Funds • Capital-Guaranteed Structured Products' },
+              { key: 'equities', label: 'Equities', icon: '📈', max: limitsOfSelectedAccount?.maxEquities ?? null, current: fourCategoryAllocation.equities, color: 'var(--warning-color)', tooltip: 'Equities & Stocks • Equity Funds • Equity-Linked Structured Products (without capital protection)' },
+              { key: 'alternative', label: 'Alternative', icon: '🎯', max: limitsOfSelectedAccount?.maxAlternative ?? null, current: fourCategoryAllocation.alternative, color: '#8b5cf6', tooltip: 'Private Equity • Private Debt • Commodities • Real Estate • Hedge Funds • Derivatives • Other' }
             ].map(item => {
               const hasProfile = item.max !== null;
               const isOverLimit = hasProfile && item.current > item.max;
@@ -7056,9 +7058,11 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
               );
             })}
           </div>
-          {!selectedAccountProfile && (
+          {!limitsOfSelectedAccount && (
             <p style={{ margin: '10px 0 0', color: 'var(--text-secondary)', fontSize: isMobile ? '0.8125rem' : '11px', textAlign: 'center' }}>
-              Set a profile to see limit comparisons
+              {isNoProfile(selectedAccountProfile)
+                ? 'No investment profile for this account: no allocation limits apply'
+                : 'Set a profile to see limit comparisons'}
             </p>
           )}
         </div>

@@ -6,7 +6,7 @@ import { TemplateReportsCollection } from './templateReports';
 import { ProductCommentaryCollection } from './riskAnalysis';
 import { MarketDataCacheCollection } from './marketDataCache';
 import { CurrencyRateCacheCollection } from './currencyCache';
-import { AccountProfilesCollection, aggregateToFourCategories } from './accountProfiles';
+import { AccountProfilesCollection, aggregateToFourCategories, WITH_LIMITS_SELECTOR } from './accountProfiles';
 import { buildAssetClassBreakdown } from './assetClassification';
 import { BankAccountsCollection } from './bankAccounts';
 import { EODApiHelpers } from './eodApi';
@@ -549,13 +549,13 @@ async function gatherAllocationData(holdings, accountFilter, viewAsFilter) {
   let profile = null;
   if (accountFilter && accountFilter !== 'consolidated') {
     // Specific account selected - look up directly by bankAccountId
-    profile = await AccountProfilesCollection.findOneAsync({ bankAccountId: accountFilter });
+    profile = await AccountProfilesCollection.findOneAsync({ bankAccountId: accountFilter, ...WITH_LIMITS_SELECTOR });
   } else if (viewAsFilter?.type === 'client') {
     // Consolidated view for a client - find any profile for their accounts
     const clientAccounts = await BankAccountsCollection.find({ userId: viewAsFilter.id }).fetchAsync();
     const accountIds = clientAccounts.map(a => a._id);
     if (accountIds.length > 0) {
-      profile = await AccountProfilesCollection.findOneAsync({ bankAccountId: { $in: accountIds } });
+      profile = await AccountProfilesCollection.findOneAsync({ bankAccountId: { $in: accountIds }, ...WITH_LIMITS_SELECTOR });
     }
   }
 
