@@ -40,7 +40,9 @@ const AlertCenter = ({ user }) => {
     { value: 'early_redemption', label: 'Early Redemption', icon: '📤', color: 'var(--info-color)', priority: 'important' },
     // PMS alerts
     { value: 'allocation_breach', label: 'Allocation Breach', icon: '⚖️', color: 'var(--loss-color)', priority: 'critical' },
-    { value: 'unauthorized_overdraft', label: 'Negative Cash', icon: '💳', color: 'var(--loss-color)', priority: 'critical' }
+    { value: 'unauthorized_overdraft', label: 'Negative Cash', icon: '💳', color: 'var(--loss-color)', priority: 'critical' },
+    // Orders
+    { value: 'limit_level_reached', label: 'Limit Level Reached', icon: '⏳', color: 'var(--warning-color)', priority: 'important' }
   ];
 
   // Event type configurations

@@ -128,6 +128,7 @@ import './methods/performanceMethods';
 import './methods/pdfGenerationMethods';
 import './methods/pmsPdfMethods';
 import './methods/productReportPdfMethods';
+import './methods/limitOrderWatchMethods';
 import './methods/riskAnalysisPdfMethods';
 import './methods/pmsLinkingMethods';
 import './methods/accountProfileMethods';

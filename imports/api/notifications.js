@@ -66,6 +66,8 @@ export const EVENT_TYPES = {
   ORDER_PENDING_VALIDATION: 'order_pending_validation',
   ORDER_VALIDATED: 'order_validated',
   ORDER_REJECTED: 'order_rejected',
+  // Live limit order whose level the market has reached (probably executed)
+  LIMIT_LEVEL_REACHED: 'limit_level_reached',
   // Compliance questions to RMs (sizeable transactions)
   COMPLIANCE_QUERY: 'compliance_query',
   COMPLIANCE_QUERY_ANSWERED: 'compliance_query_answered'
@@ -93,6 +95,7 @@ export const EVENT_TYPE_NAMES = {
   [EVENT_TYPES.ORDER_PENDING_VALIDATION]: 'Order Pending Validation',
   [EVENT_TYPES.ORDER_VALIDATED]: 'Order Validated',
   [EVENT_TYPES.ORDER_REJECTED]: 'Order Rejected',
+  [EVENT_TYPES.LIMIT_LEVEL_REACHED]: 'Limit Level Reached',
   // Compliance question event names
   [EVENT_TYPES.COMPLIANCE_QUERY]: 'Compliance Question',
   [EVENT_TYPES.COMPLIANCE_QUERY_ANSWERED]: 'Compliance Question Answered'
@@ -119,6 +122,7 @@ export const EVENT_PRIORITY = {
   [EVENT_TYPES.ORDER_PENDING_VALIDATION]: 2,
   [EVENT_TYPES.ORDER_VALIDATED]: 3,
   [EVENT_TYPES.ORDER_REJECTED]: 2,
+  [EVENT_TYPES.LIMIT_LEVEL_REACHED]: 2,
   // Compliance question priorities
   [EVENT_TYPES.COMPLIANCE_QUERY]: 2,
   [EVENT_TYPES.COMPLIANCE_QUERY_ANSWERED]: 3

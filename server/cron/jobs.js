@@ -123,7 +123,8 @@ let cronJobs = {
   priceTrackerScrape: null,  // Manual price tracker scrape for securities without EOD coverage
   settlementCheck: null,     // Daily settlement reconciliation for executed orders
   dataRetention: null,       // GDPR retention: purge expired logs, leads, sessions, old bank files
-  bankReplyScan: null        // Outlook: spot bank replies to orders sent via Graph (notifies only)
+  bankReplyScan: null,       // Outlook: spot bank replies to orders sent via Graph (notifies only)
+  limitOrderWatch: null      // Alerts when the market reaches a live limit order's level
 };
 
 // Store next run times for the dashboard
@@ -2058,6 +2059,27 @@ export async function initializeCronJobs() {
   });
 
   console.log('✓ Bank reply scan scheduled every 10 min, 07:00-20:00 CET Mon-Fri');
+
+  // Limit order watch — every 15 minutes, 08:00-22:59 CET Mon-Fri (European
+  // and US sessions). EOD intraday quotes are ~15 min delayed, so a tighter
+  // cadence would only repeat the same prices. Notifies only: an order is
+  // marked executed on the bank's confirmation, never from this check.
+  cronJobs.limitOrderWatch = cron.schedule('*/15 8-22 * * 1-5', Meteor.bindEnvironment(async () => {
+    try {
+      // Production only: a local server on the same database would raise the
+      // same alerts a second time
+      if (!Meteor.isProduction) return;
+      const { checkLiveLimitOrders } = await import('../helpers/limitOrderWatch.js');
+      await checkLiveLimitOrders();
+    } catch (error) {
+      console.error('[CRON] Limit order watch error:', error);
+    }
+  }), {
+    scheduled: true,
+    timezone: "Europe/Paris"
+  });
+
+  console.log('✓ Limit order watch scheduled every 15 min, 08:00-22:59 CET Mon-Fri');
 
   // Settlement Check — 09:30 CET Mon-Fri (after bank file syncs)
   cronJobs.settlementCheck = cron.schedule(scheduleInfo.settlementCheck.schedule, Meteor.bindEnvironment(async () => {

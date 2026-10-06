@@ -50,7 +50,7 @@ export const NOTIFICATION_PREFERENCE_GROUPS = [
   {
     id: 'orders',
     label: 'Orders',
-    description: 'Four-eyes validation workflow.',
+    description: 'Four-eyes validation workflow and live limit orders.',
     preferences: [
       {
         key: 'order_pending_validation',
@@ -60,7 +60,13 @@ export const NOTIFICATION_PREFERENCE_GROUPS = [
         hint: 'Always emailed to validators by the order workflow'
       },
       { key: 'order_validated', label: 'Order / modification validated', eventTypes: ['order_validated'] },
-      { key: 'order_rejected', label: 'Order / modification rejected', eventTypes: ['order_rejected'] }
+      { key: 'order_rejected', label: 'Order / modification rejected', eventTypes: ['order_rejected'] },
+      {
+        key: 'limit_level_reached',
+        label: 'Limit level reached',
+        eventTypes: ['limit_level_reached'],
+        hint: 'The market reached the level of a live limit or stop order: probably executed'
+      }
     ]
   },
   {

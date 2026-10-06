@@ -1229,6 +1229,17 @@ export const OrderHelpers = {
             : formatQuantityForOrder(order.quantity),
           validityShort,
           validityPassed: isOrderValidityPassed(order),
+          // Market watch (server/helpers/limitOrderWatch.js): last price seen
+          // and whether the order's level has been reached
+          lastSeenPriceFormatted: Number.isFinite(order.priceWatch?.lastPrice) ? formatPriceForOrder(order.priceWatch.lastPrice) : null,
+          lastSeenText: Number.isFinite(order.priceWatch?.lastPrice)
+            ? `${/intraday/i.test(order.priceWatch.source || '') ? OrderFormatters.formatDateTime(order.priceWatch.lastPriceAt) : OrderFormatters.formatDate(order.priceWatch.lastPriceAt)} · ${order.priceWatch.source || ''}`.trim()
+            : (order.priceWatch?.issue || null),
+          priceWatchIssue: order.priceWatch?.issue || null,
+          levelReached: !!order.levelReached,
+          levelReachedText: order.levelReached
+            ? `Level reached: ${formatPriceForOrder(order.levelReached.price)} on ${OrderFormatters.formatDate(order.levelReached.date)} (${order.levelReached.source})${order.levelReached.onPlacementDay ? ', on the day the order was placed' : ''}. Probably executed: check with the bank`
+            : null,
           // e.g. "Limit sell 250,000 @ 82.05%"
           restingLabel: typeLabel
             ? `${typeLabel} ${order.orderType || ''} ${formatQuantityForOrder(remaining)}${triggerText ? ` @ ${triggerText}` : ''}`.replace(/\s+/g, ' ').trim()
