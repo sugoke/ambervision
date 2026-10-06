@@ -25,8 +25,10 @@ import {
 // Corporate documents (trade register, UBO register, articles, signatory powers)
 // only apply to companies, so they are appended for company entities only —
 // otherwise every individual would show four permanently missing documents.
+// The personal compliance documents (ID, residency card, proof of address) only
+// apply to individuals: a company is identified by its corporate documents.
 export const getDocumentTabTypes = (isCompany) => [
-  ...getDocumentsByCategory('compliance'),
+  ...(isCompany ? [] : getDocumentsByCategory('compliance')),
   ...getDocumentsByCategory('amberlake'),
   ...getDocumentsByCategory('bank'),
   ...(isCompany ? getDocumentsByCategory('corporate') : [])

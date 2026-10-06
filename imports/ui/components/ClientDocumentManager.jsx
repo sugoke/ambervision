@@ -529,7 +529,10 @@ const PersonDocuments = ({
 
       {!isCollapsed && (
         <div style={{ padding: '12px 16px' }}>
-          {renderCategory('📋 Compliance Documents', 'compliance')}
+          {/* Personal documents don't apply to a company — shown there only if
+              files were already filed under them */}
+          {(!isCompany || getDocumentsByCategory('compliance').some(type => getDocuments(type).length > 0))
+            && renderCategory('📋 Compliance Documents', 'compliance')}
           {isCompany && renderCategory('🏢 Corporate Documents', 'corporate')}
           {renderCategory('🏛️ Amberlake Partners Pack', 'amberlake')}
           {renderCategory('🏦 Bank Documents', 'bank')}
