@@ -6,7 +6,7 @@ import { ClientEntitiesCollection, ClientEntityHelpers, ENTITY_TYPES, ENTITY_STA
 import { UserEntityAccessCollection, ACCESS_LEVELS } from '../api/userEntityAccess.js';
 import { BankAccountsCollection, accountHolderSelector, getAccountHolderIds, isJointAccount, buildJointAccountName, getAuthorizedEmails, ACCOUNT_ACCESS_RIGHTS, ACCOUNT_ACCESS_RIGHTS_LABELS, getClientReferenceCurrency } from '../api/bankAccounts.js';
 import { BanksCollection } from '../api/banks.js';
-import { AccountProfilesCollection, PROFILE_TEMPLATES, PROFILE_CATEGORIES, PROFILE_LIMIT_FIELDS, getProfileLimit, aggregateToFourCategories } from '../api/accountProfiles.js';
+import { AccountProfilesCollection, PROFILE_TEMPLATES, PROFILE_CATEGORIES, PROFILE_LIMIT_FIELDS, NO_PROFILE_KEY, NO_PROFILE_NAME, isNoProfile, getProfileLimit, aggregateToFourCategories } from '../api/accountProfiles.js';
 import { PortfolioSnapshotsCollection } from '../api/portfolioSnapshots.js';
 import LiquidGlassCard from './components/LiquidGlassCard.jsx';
 import ClientDocumentManager, { KycDocumentManager, SingleTypeDocumentManager, IdentityImageSlot } from './components/ClientDocumentManager.jsx';
@@ -431,7 +431,8 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
   const [accountProfileDraft, setAccountProfileDraft] = useState({
     profileName: '',
     ...Object.fromEntries(PROFILE_LIMIT_FIELDS.map(field => [field, 0])),
-    isProfessionalInvestor: false
+    isProfessionalInvestor: false,
+    noProfile: false
   });
 
   // Tab navigation state
@@ -1057,7 +1058,8 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
     setAccountProfileDraft({
       profileName: existingProfile?.profileName || '',
       ...Object.fromEntries(PROFILE_LIMIT_FIELDS.map(field => [field, getProfileLimit(existingProfile, field)])),
-      isProfessionalInvestor: existingProfile?.isProfessionalInvestor || false
+      isProfessionalInvestor: existingProfile?.isProfessionalInvestor || false,
+      noProfile: isNoProfile(existingProfile)
     });
     setEditingAccountProfile(accountId);
   };
@@ -1092,10 +1094,21 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
   };
 
   const applyTemplate = (templateKey) => {
+    // "No profile": not an investment account, no limits
+    if (templateKey === NO_PROFILE_KEY) {
+      setAccountProfileDraft(prev => ({
+        ...prev,
+        noProfile: true,
+        profileName: NO_PROFILE_NAME,
+        ...Object.fromEntries(PROFILE_LIMIT_FIELDS.map(field => [field, 0]))
+      }));
+      return;
+    }
     const template = PROFILE_TEMPLATES[templateKey];
     if (template) {
       setAccountProfileDraft(prev => ({
         ...prev,
+        noProfile: false,
         profileName: template.name,
         ...Object.fromEntries(PROFILE_LIMIT_FIELDS.map(field => [field, getProfileLimit(template, field)]))
       }));
@@ -2027,6 +2040,25 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   Beneficiary
                 </span>
               )}
+              {/* Roles held in companies (UBO, director, signatory, shareholder),
+                  one badge per role; hover lists the companies */}
+              {isEntityMode && entity && [...new Set(entityStakeholderRoles.map(r => r.role))].map(role => (
+                <span
+                  key={role}
+                  style={{
+                    padding: '4px 10px',
+                    borderRadius: '16px',
+                    background: 'rgba(100, 116, 139, 0.12)',
+                    color: 'var(--text-secondary)',
+                    fontSize: '11px',
+                    fontWeight: '600',
+                    letterSpacing: '0.3px'
+                  }}
+                  title={`${role}: ${entityStakeholderRoles.filter(r => r.role === role).map(r => r.companyName).join(', ')}`}
+                >
+                  {role}
+                </span>
+              ))}
               {hasUser && editingRole && currentUser?.role === USER_ROLES.SUPERADMIN ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <select
@@ -3893,7 +3925,9 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                               <td style={{ padding: '10px 14px', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{account.comment || account.accountType}</td>
                               {entity?.isInsurance && <td style={{ padding: '10px 14px', fontSize: '0.82rem', color: ubos.length > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>{ubos.length > 0 ? ubos.map(u => ClientEntityHelpers.getEntityDisplayName(u)).join(', ') : '-'}</td>}
                               <td style={{ padding: '10px 14px' }}>
-                                {profile ? (
+                                {profile && isNoProfile(profile) ? (
+                                  <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: '600', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}>{NO_PROFILE_NAME}</span>
+                                ) : profile ? (
                                   <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: '600', background: 'rgba(16, 185, 129, 0.1)', color: 'var(--gain-color)' }}>{profile.profileName || 'Set'}</span>
                                 ) : (
                                   <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>-</span>
@@ -4231,10 +4265,15 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                             <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Template</label>
                                             <select onChange={e => { if (e.target.value) applyTemplate(e.target.value); }} style={{ width: '100%', padding: '7px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '0.82rem', cursor: 'pointer' }}>
                                               <option value="">Apply template...</option>
+                                              <option value={NO_PROFILE_KEY}>{NO_PROFILE_NAME}</option>
                                               {Object.entries(PROFILE_TEMPLATES).map(([k, t]) => <option key={k} value={k}>{t.name}</option>)}
                                             </select>
                                           </div>
-                                          {PROFILE_CATEGORIES.map(category => {
+                                          {accountProfileDraft.noProfile ? (
+                                            <div style={{ gridColumn: '1 / -1', padding: '10px 12px', borderRadius: '6px', background: 'var(--bg-primary)', border: '1px solid var(--border-color)', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                              <strong style={{ color: 'var(--text-primary)' }}>{NO_PROFILE_NAME}</strong>: not an investment account. No allocation limits are checked. Choose a template to set limits.
+                                            </div>
+                                          ) : PROFILE_CATEGORIES.map(category => {
                                             const minField = `min${category.key}`;
                                             const maxField = `max${category.key}`;
                                             const minValue = getProfileLimit(accountProfileDraft, minField);
@@ -4277,9 +4316,13 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                                           <div style={{ gridColumn: '1 / -1' }}>
                                             <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>Profile</label>
-                                            <ReadOnlyField size="sm">{profile.profileName}</ReadOnlyField>
+                                            <ReadOnlyField size="sm">{isNoProfile(profile) ? NO_PROFILE_NAME : profile.profileName}</ReadOnlyField>
                                           </div>
-                                          {PROFILE_CATEGORIES.map(category => (
+                                          {isNoProfile(profile) ? (
+                                            <div style={{ gridColumn: '1 / -1', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                              Not an investment account: no allocation limits are checked.
+                                            </div>
+                                          ) : PROFILE_CATEGORIES.map(category => (
                                             <div key={category.key}>
                                               <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '3px' }}>{category.label}</label>
                                               <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
