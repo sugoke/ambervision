@@ -14,7 +14,7 @@ import { BankAccountsCollection, getAuthorizedEmails, accountAllowsOrders } from
 import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
 import { ProductsCollection } from '../../imports/api/products.js';
 import { PMSOperationsCollection } from '../../imports/api/pmsOperations.js';
-import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, ORDER_SOURCE_TYPES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, FX_SUBTYPES, TERM_DEPOSIT_TENORS, EXECUTION_TYPE_LABELS, OPTION_TYPES, DEFAULT_OPTION_CONTRACT_SIZE, TERMINAL_ORDER_STATUSES, isPlaceholderIsin, OrderHelpers, OrderFormatters, quotesPriceAsPercent, isShortCall, computeShortCallCoverage, computeOrderEstimatedValue, optionContractDescription, getOrderHealthCheck, HEALTH_FILTER_ANY, TICKET_KINDS, AT_BANK_ORDER_STATUSES, MULTI_INSTANCE_TRACE_TYPES, VALIDITY_TYPES, isModifiableOrder } from '../../imports/api/orders.js';
+import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, ORDER_SOURCE_TYPES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, FX_SUBTYPES, TERM_DEPOSIT_TENORS, EXECUTION_TYPE_LABELS, OPTION_TYPES, DEFAULT_OPTION_CONTRACT_SIZE, TERMINAL_ORDER_STATUSES, isPlaceholderIsin, OrderHelpers, OrderFormatters, quotesPriceAsPercent, isShortCall, computeShortCallCoverage, computeOrderEstimatedValue, optionContractDescription, getOrderHealthCheck, HEALTH_FILTER_ANY, TICKET_KINDS, AT_BANK_ORDER_STATUSES, MULTI_INSTANCE_TRACE_TYPES, VALIDITY_TYPES, isModifiableOrder, remainingOrderQuantity } from '../../imports/api/orders.js';
 import { EODApiHelpers } from '../../imports/api/eodApi.js';
 import { AuditLog } from '/imports/api/auditLog';
 import { OrderCountersCollection, OrderCounterHelpers } from '../../imports/api/orderCounters.js';
@@ -325,6 +325,10 @@ async function resolveShortCallCoverage({ resolved, bankAccount, order, excludeO
     checkedAt: new Date()
   };
 }
+
+// How far back an order on the same security and account counts as "recent" in
+// the order modal's duplicate warning. Bank files catch up within a few days.
+const RECENT_ORDER_DAYS = 7;
 
 /**
  * Validate session and return user info
@@ -7809,6 +7813,93 @@ Meteor.methods({
     }
 
     return findAccountHoldings(resolved, bankAccount);
+  },
+
+  /**
+   * Orders already raised on the same security in the same account, shown by
+   * the order modal before a new one is placed: every order still open (from
+   * pending validation to partially executed) and every non-cancelled order of
+   * the last RECENT_ORDER_DAYS days. Two uses:
+   * - a duplicate warning: the same instruction entered twice gets executed twice;
+   * - for a sell, the quantity already committed to other sells, which the bank
+   *   file does not reflect yet (open orders, and executions after the file date).
+   */
+  async 'orders.getRelatedForPosition'({ clientId, bankAccountId, isin, holdingId }, sessionId) {
+    check(clientId, String);
+    check(bankAccountId, String);
+    check(isin, String);
+    check(holdingId, Match.Maybe(String));
+    check(sessionId, String);
+
+    const { user } = await validateSession(sessionId);
+    if (!OrderHelpers.canPlaceOrders(user.role)) {
+      throw new Meteor.Error('not-authorized', 'Not authorized to access orders');
+    }
+
+    const resolved = await resolveClientId(clientId);
+    if (user.role === 'rm' || user.role === 'assistant') {
+      const rmIds = UserHelpers.getEffectiveRmIds(user);
+      if (!rmIds.includes(resolved.relationshipManagerId)) {
+        throw new Meteor.Error('not-authorized', 'You do not have access to this client');
+      }
+    }
+
+    if (!isin || isPlaceholderIsin(isin)) {
+      return { orders: [], sellCommittedQuantity: 0, sellCommittedQuantityFormatted: null, recentDays: RECENT_ORDER_DAYS };
+    }
+
+    const OPEN_STATUSES = [
+      ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING, ORDER_STATUSES.PENDING_MODIFICATION,
+      ORDER_STATUSES.REVISION_REQUESTED, ORDER_STATUSES.TRANSMITTED, ORDER_STATUSES.SENT,
+      ORDER_STATUSES.PARTIALLY_EXECUTED
+    ];
+    const since = new Date(Date.now() - RECENT_ORDER_DAYS * 24 * 60 * 60 * 1000);
+
+    const orders = await OrdersCollection.find({
+      bankAccountId,
+      isin,
+      status: { $nin: [ORDER_STATUSES.DRAFT, ...TERMINAL_ORDER_STATUSES] },
+      $or: [{ status: { $in: OPEN_STATUSES } }, { createdAt: { $gte: since } }]
+    }, { sort: { createdAt: -1 }, limit: 50 }).fetchAsync();
+
+    // Executions dated after the position's file date are not in its quantity yet
+    let fileDate = null;
+    if (holdingId) {
+      const holding = await PMSHoldingsCollection.findOneAsync(holdingId, { fields: { snapshotDate: 1, fileDate: 1 } });
+      const d = holding?.snapshotDate || holding?.fileDate;
+      fileDate = d ? new Date(d) : null;
+    }
+
+    let sellCommittedQuantity = 0;
+    const rows = orders.map(order => {
+      const isOpen = OPEN_STATUSES.includes(order.status);
+      const executed = Number(order.executedQuantity) || (order.status === ORDER_STATUSES.EXECUTED ? Number(order.quantity) || 0 : 0);
+      const executedAfterFile = executed > 0 && order.executionDate
+        && (!fileDate || new Date(order.executionDate) > fileDate);
+      const committed = (isOpen ? remainingOrderQuantity(order) : 0) + (executedAfterFile ? executed : 0);
+      if (order.orderType === 'sell') sellCommittedQuantity += committed;
+
+      const f = OrderFormatters.formatOrderDetails(order);
+      return {
+        _id: order._id,
+        orderReference: order.orderReference,
+        orderType: order.orderType,
+        quantityFormatted: f.quantityFormatted,
+        priceText: f.restingLabel || (order.limitPrice != null ? `Limit ${f.limitPriceFormatted || order.limitPrice}` : 'Market'),
+        statusLabel: f.statusLabel,
+        createdAtFormatted: f.createdAtFull,
+        createdByName: order.createdByName || null,
+        isOpen,
+        notInBankFile: !!executedAfterFile
+      };
+    });
+
+    return {
+      orders: rows,
+      sellCommittedQuantity,
+      sellCommittedQuantityFormatted: sellCommittedQuantity > 0 ? OrderFormatters.formatQuantity(sellCommittedQuantity) : null,
+      recentDays: RECENT_ORDER_DAYS
+    };
   },
 
   /**

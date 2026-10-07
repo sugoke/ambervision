@@ -863,6 +863,33 @@ const OrderModal = ({
     setIndicativePriceCurrency(holding.currency || null);
   }, [isOpen, mode, accountHoldings, prefillData]);
 
+  // Orders already raised on this security in this account: open ones and
+  // recent ones. Warns against entering the same instruction twice and, for a
+  // sell, shows how much of the position other sells already take.
+  const [relatedOrders, setRelatedOrders] = useState(null);
+  const [duplicateConfirmed, setDuplicateConfirmed] = useState(false);
+  const relatedIsin = selectedSecurity?.isin || '';
+  useEffect(() => {
+    setRelatedOrders(null);
+    setDuplicateConfirmed(false);
+    if (!isOpen || isBulkMode || !selectedClientId || !selectedBankAccountId || !relatedIsin
+      || assetType === ASSET_TYPES.FX || assetType === ASSET_TYPES.TERM_DEPOSIT) return;
+    let cancelled = false;
+    Meteor.callAsync('orders.getRelatedForPosition', {
+      clientId: selectedClientId,
+      bankAccountId: selectedBankAccountId,
+      isin: relatedIsin,
+      holdingId: selectedHolding?._id ? String(selectedHolding._id) : (prefillData?.holdingId || undefined)
+    }, getSessionId())
+      .then(res => { if (!cancelled) setRelatedOrders(res || null); })
+      .catch(err => { console.error('Error loading related orders:', err); });
+    return () => { cancelled = true; };
+  }, [isOpen, isBulkMode, selectedClientId, selectedBankAccountId, relatedIsin, assetType, selectedHolding?._id]);
+
+  // Same side, same security, same account: the order that could be a repeat
+  const sameSideOrders = (relatedOrders?.orders || []).filter(o => o.orderType === mode);
+  useEffect(() => { setDuplicateConfirmed(false); }, [mode]);
+
   // Reload account data when bank account selection changes
   useEffect(() => {
     if (selectedClientId && selectedBankAccountId) {
@@ -1063,18 +1090,23 @@ const OrderModal = ({
     setManualCurrency('EUR');
   };
 
-  // Check if the order exceeds available cash (for buy equity/ETF orders)
-  const isCashExceeded = (() => {
-    if (mode !== 'buy' || (assetType !== ASSET_TYPES.EQUITY && assetType !== ASSET_TYPES.ETF)) return false;
-    if (!cashBalance?.cashPositions?.length) return false;
-    const secCurrency = selectedSecurity?.currency || prefillData?.currency || settlementCurrency || '';
-    const cashInCurrency = cashBalance.cashPositions.find(p => p.currency === secCurrency);
-    if (!cashInCurrency) return false;
-    const price = priceType === PRICE_TYPES.LIMIT && limitPrice ? parseFloat(limitPrice) : indicativePrice;
-    const qty = parseFloat(quantity) || 0;
-    const estCost = qty > 0 && price ? qty * price : 0;
-    return estCost > cashInCurrency.amount;
+  // Cash check for a buy: the estimated value (which already handles prices in
+  // % of par and option multipliers) against the account's cash in the
+  // settlement currency. Compared only when the estimate is in that currency.
+  const cashCheck = (() => {
+    if (mode !== 'buy' || isBulkMode) return null;
+    if (assetType === ASSET_TYPES.FX || assetType === ASSET_TYPES.TERM_DEPOSIT) return null;
+    if (!cashBalance?.cashPositions?.length) return null;
+    const secCurrency = selectedSecurity?.currency || prefillData?.currency || '';
+    const cashCurrency = settlementCurrency || secCurrency;
+    if (!cashCurrency) return null;
+    const cashInCurrency = cashBalance.cashPositions.find(p => p.currency === cashCurrency) || null;
+    const estCost = parseFloat(estimatedValue) || 0;
+    const comparable = !secCurrency || secCurrency === cashCurrency;
+    const exceeds = comparable && estCost > 0 && (cashInCurrency ? estCost > cashInCurrency.amount : true);
+    return { secCurrency, cashCurrency, cashInCurrency, estCost, comparable, exceeds };
   })();
+  const isCashExceeded = !!cashCheck?.exceeds;
 
   const validateStep = (step) => {
     setError(null);
@@ -1403,6 +1435,10 @@ const OrderModal = ({
 
   const handleSubmit = async () => {
     if (!validateStep(1) || !validateStep(2) || !validateStep(3)) return;
+    if (!isBulkMode && sameSideOrders.length > 0 && !duplicateConfirmed) {
+      setError(`A ${mode} order on this security already exists for this account. Confirm it is not a duplicate before submitting.`);
+      return;
+    }
 
     setIsSubmitting(true);
     setError(null);
@@ -2745,8 +2781,86 @@ const OrderModal = ({
   // contracts other live orders have already committed.
   const effectiveCoverage = coverageCheck || coveragePreview;
 
+  // Open and recent orders on the same security and account. On the review step
+  // a same-side order has to be confirmed as not a duplicate.
+  const renderRelatedOrders = ({ withConfirm = false } = {}) => {
+    if (isBulkMode || !relatedOrders) return null;
+    const rows = relatedOrders.orders || [];
+    const committed = mode === 'sell' ? (relatedOrders.sellCommittedQuantity || 0) : 0;
+    const positionQty = selectedHolding?.quantity;
+    const showSellLine = mode === 'sell' && committed > 0 && positionQty != null;
+    if (rows.length === 0 && !showSellLine) return null;
+
+    const available = showSellLine ? Math.max(0, positionQty - committed) : null;
+    const qty = parseFloat(quantity) || 0;
+    const overAvailable = showSellLine && qty > available;
+    const isWarning = sameSideOrders.length > 0 || overAvailable;
+    const fmt = (n) => Number(n).toLocaleString('en-US', { maximumFractionDigits: 4 });
+
+    return (
+      <div style={{
+        padding: '10px 14px',
+        marginBottom: '16px',
+        borderRadius: '8px',
+        fontSize: '13px',
+        background: isWarning ? 'rgba(245, 158, 11, 0.08)' : 'var(--bg-secondary)',
+        border: `1px solid ${isWarning ? 'rgba(245, 158, 11, 0.4)' : 'var(--border-color)'}`
+      }}>
+        <div style={{ fontWeight: '600', marginBottom: rows.length ? '6px' : 0, color: isWarning ? 'var(--warning-color)' : 'var(--text-primary)' }}>
+          {sameSideOrders.length > 0
+            ? `Possible duplicate: ${sameSideOrders.length === 1 ? 'a' : sameSideOrders.length} ${mode} order${sameSideOrders.length === 1 ? '' : 's'} on this security already exist${sameSideOrders.length === 1 ? 's' : ''} for this account`
+            : rows.length > 0 ? 'Other orders on this security for this account' : 'Position already committed to other sells'}
+        </div>
+        {rows.length > 0 && (
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '6px' }}>
+            Open orders and orders of the last {relatedOrders.recentDays} days
+          </div>
+        )}
+        {rows.map(o => (
+          <div key={o._id} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', padding: '3px 0', borderTop: '1px solid var(--border-color)' }}>
+            <span style={{ minWidth: 0 }}>
+              <span style={{ fontWeight: '600', color: o.orderType === 'sell' ? 'var(--loss-color)' : 'var(--gain-color)' }}>
+                {String(o.orderType || '').toUpperCase()}
+              </span>
+              {' '}{o.quantityFormatted} · {o.priceText}
+              <span style={{ color: 'var(--text-muted)' }}> · {o.orderReference}{o.createdByName ? ` · ${o.createdByName}` : ''}</span>
+            </span>
+            <span style={{ whiteSpace: 'nowrap', textAlign: 'right' }}>
+              {o.statusLabel}
+              {o.notInBankFile && <span style={{ color: 'var(--warning-color)' }}> · not in bank file yet</span>}
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{o.createdAtFormatted}</div>
+            </span>
+          </div>
+        ))}
+        {showSellLine && (
+          <div style={{ marginTop: '8px', paddingTop: '6px', borderTop: '1px dashed var(--border-color)' }}>
+            Position {fmt(positionQty)} · committed to other sells {relatedOrders.sellCommittedQuantityFormatted} ·{' '}
+            <strong style={{ color: overAvailable ? 'var(--loss-color)' : 'var(--text-primary)' }}>available {fmt(available)}</strong>
+            {overAvailable && (
+              <div style={{ color: 'var(--loss-color)', fontSize: '12px', marginTop: '2px' }}>
+                This sell is larger than what the other sells leave in the position.
+              </div>
+            )}
+          </div>
+        )}
+        {withConfirm && sameSideOrders.length > 0 && (
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginTop: '10px', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={duplicateConfirmed}
+              onChange={(e) => setDuplicateConfirmed(e.target.checked)}
+              style={{ marginTop: '2px', cursor: 'pointer' }}
+            />
+            <span style={{ fontWeight: '600' }}>I have checked: this is a new instruction, not a repeat of the order above</span>
+          </label>
+        )}
+      </div>
+    );
+  };
+
   const renderStep2 = () => (
     <div>
+      {renderRelatedOrders()}
       {/* FX-specific Step 2 */}
       {assetType === ASSET_TYPES.FX ? (
         <>
@@ -3260,17 +3374,18 @@ const OrderModal = ({
             </div>
           )}
 
-          {/* Cash sufficiency check for BUY equity/ETF orders */}
-          {mode === 'buy' && (assetType === ASSET_TYPES.EQUITY || assetType === ASSET_TYPES.ETF) && cashBalance?.cashPositions?.length > 0 && (() => {
-            const secCurrency = selectedSecurity?.currency || prefillData?.currency || settlementCurrency || '';
-            const cashInCurrency = cashBalance.cashPositions.find(p => p.currency === secCurrency);
-            const price = priceType === PRICE_TYPES.LIMIT && limitPrice ? parseFloat(limitPrice) : indicativePrice;
-            const maxShares = cashInCurrency && price && price > 0 ? Math.floor(cashInCurrency.amount / price) : null;
-            const qty = parseFloat(quantity) || 0;
-            const estCost = qty > 0 && price ? qty * price : 0;
-            const exceeds = cashInCurrency && estCost > cashInCurrency.amount;
+          {/* Cash check for BUY orders: estimated value against the cash in the settlement currency */}
+          {cashCheck && (() => {
+            const { secCurrency, cashCurrency, cashInCurrency, estCost, comparable, exceeds } = cashCheck;
+            const fmt2 = (n) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            // Shares only: the one case where "how many can I buy" is a plain division
+            const unitPrice = priceType === PRICE_TYPES.LIMIT && limitPrice ? parseFloat(limitPrice) : indicativePrice;
+            const maxShares = (assetType === ASSET_TYPES.EQUITY || assetType === ASSET_TYPES.ETF)
+              && comparable && cashInCurrency && unitPrice > 0
+              ? Math.floor(cashInCurrency.amount / unitPrice) : null;
+            const nearCash = cashBalance?.nearCashPositions?.find(p => p.currency === cashCurrency);
 
-            return cashInCurrency || secCurrency ? (
+            return (
               <div style={{
                 padding: '10px 14px',
                 background: exceeds ? 'rgba(239, 68, 68, 0.08)' : 'rgba(16, 185, 129, 0.08)',
@@ -3279,16 +3394,16 @@ const OrderModal = ({
                 marginBottom: '12px',
                 fontSize: '13px'
               }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: maxShares ? '4px' : 0 }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>Cash in {secCurrency}</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>Cash in {cashCurrency}</span>
                   <span style={{ fontWeight: '600', color: cashInCurrency ? (exceeds ? 'var(--loss-color)' : 'var(--gain-color)') : 'var(--text-secondary)' }}>
-                    {cashInCurrency ? cashInCurrency.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : 'No balance'}
+                    {cashInCurrency ? fmt2(cashInCurrency.amount) : 'No balance'}
                   </span>
                 </div>
                 {maxShares !== null && maxShares > 0 && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>
-                      Max shares at {price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {secCurrency}
+                      Max shares at {fmt2(unitPrice)} {cashCurrency}
                     </span>
                     <span
                       style={{ fontWeight: '600', color: 'var(--accent-color)', cursor: 'pointer' }}
@@ -3299,23 +3414,23 @@ const OrderModal = ({
                     </span>
                   </div>
                 )}
-                {exceeds && qty > 0 && (() => {
-                  // Short on cash is not the same as short on money: say so when
-                  // the shortfall is covered by a money market fund or a deposit.
-                  const nearCash = cashBalance?.nearCashPositions?.find(p => p.currency === secCurrency);
-                  return (
-                    <div style={{ marginTop: '4px', color: 'var(--loss-color)', fontSize: '12px', fontWeight: '500' }}>
-                      Estimated cost {secCurrency} {estCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} exceeds available cash
-                      {nearCash && nearCash.amount > 0 && (
-                        <span style={{ color: 'var(--text-secondary)', fontWeight: '400' }}>
-                          {' '}— {secCurrency} {nearCash.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} sits in money market &amp; deposits, which must be sold first
-                        </span>
-                      )}
-                    </div>
-                  );
-                })()}
+                {exceeds && (
+                  <div style={{ marginTop: '4px', color: 'var(--loss-color)', fontSize: '12px', fontWeight: '500' }}>
+                    Estimated value {cashCurrency} {fmt2(estCost)} exceeds the cash available in {cashCurrency}
+                    {nearCash && nearCash.amount > 0 && (
+                      <span style={{ color: 'var(--text-secondary)', fontWeight: '400' }}>
+                        {' '}— {cashCurrency} {fmt2(nearCash.amount)} sits in money market &amp; deposits, which must be sold first
+                      </span>
+                    )}
+                  </div>
+                )}
+                {!comparable && estCost > 0 && (
+                  <div style={{ marginTop: '4px', color: 'var(--text-secondary)', fontSize: '12px' }}>
+                    Estimated value is in {secCurrency}, settlement in {cashCurrency}: not compared.
+                  </div>
+                )}
               </div>
-            ) : null;
+            );
           })()}
 
           {/* Order type selector */}
@@ -4606,6 +4721,8 @@ const OrderModal = ({
             {EXECUTION_TYPE_LABELS[executionType]}
           </div>
         </div>
+
+        {renderRelatedOrders({ withConfirm: true })}
 
         {/* Allocation compliance warning */}
         {isCheckingAllocation && (
