@@ -2691,8 +2691,19 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
       return;
     }
 
-    // Determine client ID: from position data, viewAsFilter, or current user
-    const clientId = position.userId || viewAsFilter?.id || user?._id;
+    // The position belongs to one bank account: the open account tab, or in the
+    // consolidated view the account whose number the position's portfolio code
+    // starts with (same matching as the account tabs). The order goes to that
+    // account's holder, so the modal skips the account step.
+    const account = activeAccountTab !== 'consolidated'
+      ? bankAccounts.find(acc => acc._id === activeAccountTab)
+      : bankAccounts.find(acc =>
+          acc.bankId === position.bankId &&
+          acc.accountNumber &&
+          (position.portfolioCode || '').startsWith(acc.accountNumber.split('-')[0])
+        );
+    const clientId = account?.entityId || account?.userId
+      || (viewAsFilter && viewAsFilter.type !== 'account' ? viewAsFilter.id : '');
 
     setOrderModalMode(mode);
     setOrderPrefillData({
@@ -2706,11 +2717,13 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
       quantity: position.quantity,
       holdingId: String(position.holdingId || position.id || ''),
       clientId: clientId,
-      bankAccountId: position.bankAccountId,
+      bankAccountId: account?._id || '',
       bankId: position.bankId,
       marketPrice: position.currentPrice || position.marketPrice || 0,
       marketValue: position.marketValue || 0,
-      bankName: position.bankName || '',
+      bankName: account?.bankName || position.bankName || '',
+      accountNumber: account?.accountNumber || position.portfolioCode || '',
+      clientName: viewAsFilter?.type !== 'account' ? (viewAsFilter?.label || '') : '',
       priceType: position.priceType || 'absolute'
     });
     setOrderModalOpen(true);

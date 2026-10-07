@@ -326,6 +326,17 @@ const OrderModal = ({
     }
   }, [isOpen]);
 
+  // The modal instance is mounted while closed, so the Buy/Sell the caller asked
+  // for only arrives on open. An order raised from a position already knows its
+  // account: go straight to the order step.
+  useEffect(() => {
+    if (!isOpen) return;
+    setMode(initialMode);
+    if (prefillData?.clientId && prefillData?.bankAccountId && !bulkMode) {
+      setCurrentStep(2);
+    }
+  }, [isOpen]);
+
   const loadClients = async () => {
     setIsLoadingClients(true);
     try {
@@ -831,6 +842,26 @@ const OrderModal = ({
       setIsLoadingCash(false);
     }
   };
+
+  // Selling from a PMS position: that position is the source holding. Matched
+  // once per opening so "Change" can still clear it.
+  const prefillHoldingMatchedRef = useRef(false);
+  useEffect(() => {
+    if (!isOpen) {
+      prefillHoldingMatchedRef.current = false;
+      return;
+    }
+    if (prefillHoldingMatchedRef.current || mode !== 'sell' || !prefillData?.isin) return;
+    if (!accountHoldings.length) return;
+    prefillHoldingMatchedRef.current = true;
+    const holding = accountHoldings.find(h => String(h._id) === prefillData.holdingId)
+      || accountHoldings.find(h => h.isin === prefillData.isin);
+    if (!holding) return;
+    setSelectedHolding(holding);
+    setQuantity(String(holding.quantity || ''));
+    if (holding.marketPrice) setIndicativePrice(holding.marketPrice);
+    setIndicativePriceCurrency(holding.currency || null);
+  }, [isOpen, mode, accountHoldings, prefillData]);
 
   // Reload account data when bank account selection changes
   useEffect(() => {
@@ -4461,7 +4492,7 @@ const OrderModal = ({
             <AccountAutocomplete
               ordersOnly
               value={selectedAccountLabel}
-              disabled={!!prefillData?.clientId}
+              disabled={!!(prefillData?.clientId && prefillData?.bankAccountId)}
               onSelect={({ clientId, entityId, bankAccountId, accountLabel }) => {
                 setSelectedClientId(clientId || entityId);
                 setSelectedEntityId(entityId);
