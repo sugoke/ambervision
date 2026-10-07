@@ -1017,6 +1017,11 @@ export const CMBMonacoParser = {
       : netAmount;
     const valueDate = this.parseDate(row.Value_Date);
     const verificationDate = this.parseDate(row.Verification_Date);
+    // FX trades carry the dealt rate only in the booking text; Exchange_Rate is the
+    // account conversion rate, not the rate the trade was done at.
+    const fxTrade = operationType === OPERATION_TYPES.FX_TRADE
+      ? this.parseFxTradeText(row.Internal_Booking_Text)
+      : null;
 
     const operation = {
       // Source Information
@@ -1109,11 +1114,34 @@ export const CMBMonacoParser = {
       fees: this.parseNumber(row.Costs),
       taxes: (Math.abs(this.parseNumber(row.Withholding_Tax) || 0)) + (Math.abs(this.parseNumber(row.Tax_Stamp) || 0)),
       accruedInterest: this.parseNumber(row.Accrued_Interests),
-      fxRate: this.parseNumber(row.Exchange_Rate),
+      fxRate: fxTrade ? fxTrade.rate : this.parseNumber(row.Exchange_Rate),
+      ...(fxTrade ? {
+        fxBaseCurrency: fxTrade.baseCurrency,
+        fxQuoteCurrency: fxTrade.quoteCurrency,
+        // One row per deal: Quantity is the leg in Transaction_Currency, the text names the other
+        fxLegs: [{ currency: row.Transaction_Currency, amount: quantity }, fxTrade.textLeg]
+      } : {}),
       bankTypeCode: row.Order_Type_ID || row.Meta_Type_ID,
       bankTypeLabel: row.Order_Type || row.Meta_Type,
       reference: row.Order
     });
+  },
+
+  /**
+   * Dealt rate and currency pair of an FX trade, from CMB's booking text:
+   *   "FX Spot: USD -18,680.16 (EUR/USD 1.16004285)"
+   *     -> { baseCurrency: EUR, quoteCurrency: USD, rate: 1.16004285, textLeg: { USD, -18680.16 } }
+   * Returns null when the text carries no "(XXX/YYY rate)" part.
+   */
+  parseFxTradeText(text) {
+    const str = String(text || '');
+    const match = str.match(/\(([A-Z]{3})\/([A-Z]{3})\s+([0-9][0-9,]*(?:\.[0-9]+)?)\)/);
+    if (!match) return null;
+    const rate = parseFloat(match[3].replace(/,/g, ''));
+    if (!isFinite(rate) || rate <= 0) return null;
+    const leg = str.match(/:\s*([A-Z]{3})\s+(-?[0-9][0-9,]*(?:\.[0-9]+)?)/);
+    const textLeg = leg ? { currency: leg[1], amount: parseFloat(leg[2].replace(/,/g, '')) } : null;
+    return { baseCurrency: match[1], quoteCurrency: match[2], rate, textLeg };
   },
 
   /**

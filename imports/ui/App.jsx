@@ -29,6 +29,7 @@ import { ViewAsProvider, useViewAs } from './ViewAsContext.jsx';
 import MarketTicker from './MarketTicker.jsx';
 import GlobalIsinCopy from './components/GlobalIsinCopy.jsx';
 import { setPendingSizeableReviewId } from './components/compliance/SizeableTransactionsModal.jsx';
+import { setPendingMeetingReport } from './utils/pendingMeetingReport.js';
 
 const AppContent = () => {
   const { theme } = useTheme();
@@ -751,6 +752,18 @@ const AppContent = () => {
                       // (compliance modal or RM questions card) opens the item
                       handleSectionChange('dashboard');
                       setPendingSizeableReviewId(notification.metadata.sizeableReviewId);
+                    } else if (notification.metadata?.visitReportRequestId && notification.eventType === 'visit_report_requested') {
+                      // Compliance asks for a meeting report: open the editor on that client
+                      setPendingMeetingReport({
+                        entityId: notification.metadata.entityId,
+                        clientName: notification.metadata.clientName || '',
+                        requestId: notification.metadata.visitReportRequestId
+                      });
+                      handleSectionChange('intranet');
+                    } else if (notification.metadata?.visitReportRequestId && notification.metadata?.entityId) {
+                      // Requested report delivered: back to the (compliance) dashboard,
+                      // where the visit flag has cleared
+                      handleSectionChange('dashboard');
                     }
                   }}
                 />

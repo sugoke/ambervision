@@ -1693,7 +1693,8 @@ async function settlementCheckJob(triggerSource = 'cron') {
             settlementSet.executedPrice = matched.price;
             settlementSet.executedPriceSource = 'pms_settlement_match';
           }
-          if (order.executedQuantity == null && typeof matched.quantity === 'number') {
+          // Orders marked executed from the blotter store executedQuantity 0 as "not entered"
+          if (!order.executedQuantity && typeof matched.quantity === 'number') {
             settlementSet.executedQuantity = Math.abs(matched.quantity);
           }
           if (!order.executionDate && matched.operationDate) {

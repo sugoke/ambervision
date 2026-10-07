@@ -268,6 +268,9 @@ export const CFMFXParser = {
       amount: signedFromFlag(amount, isCredit),
       currency,
       fxRate,
+      // Each row is one leg; the deal's pair is in the base/settlement columns. The
+      // rate's orientation isn't stated (EUR/ILS 3.29 and USD/ILS 3.10 alike).
+      fxCurrencies: [currency, baseCurrency, settlementCurrency],
       bankTypeCode: `${row[c.OPERATION_TYPE] || ''} (${row[c.DIRECTION] || ''})`,
       bankTypeLabel: row[c.OPERATION_TYPE],
       reference: row[c.OPERATION_NUMBER]

@@ -82,7 +82,9 @@ export default function OrderSendPreviewModal({ payload, mailbox, onClose, onSen
       const result = await Meteor.callAsync('orders.sendViaGraph', {
         orderId: payload.orderId,
         sessionId: localStorage.getItem('sessionId'),
-        overrides: { to, cc, subject, body }
+        overrides: { to, cc, subject, body },
+        // amend / cancel: the server rebuilds that ticket, not the original order
+        ticketKind: payload.ticketKind || undefined
       });
       onSent?.(result);
       onClose?.();
@@ -109,7 +111,7 @@ export default function OrderSendPreviewModal({ payload, mailbox, onClose, onSen
   };
 
   const attachments = [
-    { name: `${payload.orderReference}.pdf`, data: payload.pdfData, contentType: 'application/pdf' },
+    { name: `${payload.fileReference || payload.orderReference}.pdf`, data: payload.pdfData, contentType: 'application/pdf' },
     ...(payload.termsheet
       ? [{
         name: payload.termsheet.name,
@@ -201,7 +203,7 @@ export default function OrderSendPreviewModal({ payload, mailbox, onClose, onSen
       >
         <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--border-color)' }}>
           <strong style={{ color: 'var(--text-primary)', fontSize: '14px' }}>
-            Send order {payload.orderReference}
+            {payload.ticketKind === 'cancel' ? 'Send cancellation of order' : payload.ticketKind === 'amend' ? 'Send amendment of order' : 'Send order'} {payload.orderReference}
           </strong>
           <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '3px' }}>
             Sending from {mailbox || 'your Outlook mailbox'} — it will appear in your Sent Items.

@@ -62,11 +62,12 @@ export const buildEmlFile = (emailData, pdfBase64, pdfFilename, termsheet) => {
 /**
  * Hand the browser one .eml draft for an order.
  * `payload` is the shape orders.validate / orders.prepareEmail return:
- * { orderReference, emailData, pdfData, termsheet }.
+ * { orderReference, emailData, pdfData, termsheet }, plus fileReference for an
+ * amendment / cancellation ticket ("2026-00143-AMEND-1"), which names the files.
  */
-export const downloadEml = ({ orderReference, emailData, pdfData, termsheet }) => {
+export const downloadEml = ({ orderReference, fileReference, emailData, pdfData, termsheet }) => {
   if (!emailData || !pdfData) return false;
-  const reference = orderReference || 'order';
+  const reference = fileReference || orderReference || 'order';
   const emlContent = buildEmlFile(emailData, pdfData, `${reference}.pdf`, termsheet);
   const blob = new Blob([emlContent], { type: 'message/rfc822' });
   const link = document.createElement('a');
@@ -126,9 +127,9 @@ const base64ToFile = (base64, name, type) => {
 };
 
 /** The attachments of a draft as File objects: the order PDF, then the termsheet when there is one. */
-export const buildOrderAttachmentFiles = ({ orderReference, pdfData, termsheet }) => {
+export const buildOrderAttachmentFiles = ({ orderReference, fileReference, pdfData, termsheet }) => {
   const files = [];
-  if (pdfData) files.push(base64ToFile(pdfData, `${orderReference || 'order'}.pdf`, 'application/pdf'));
+  if (pdfData) files.push(base64ToFile(pdfData, `${fileReference || orderReference || 'order'}.pdf`, 'application/pdf'));
   if (termsheet?.content && termsheet?.name) {
     files.push(base64ToFile(termsheet.content, termsheet.name, termsheet.contentType || 'application/octet-stream'));
   }

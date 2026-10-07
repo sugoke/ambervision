@@ -19,6 +19,7 @@ const LiveOrderPills = ({ orders = [], style }) => {
           `Quantity: ${order.remainingOfTotalFormatted}`,
           order.validityShort && `Validity: ${order.validityShort}`,
           order.statusLabel && `Status: ${order.statusLabel}`,
+          order.changePendingLabel && `Note: ${order.changePendingLabel}`,
           order.lastSeenPriceFormatted && `Last price: ${order.lastSeenPriceFormatted} (${order.lastSeenText})`,
           order.levelReachedText,
           order.validityPassed && 'Validity passed: confirm with the bank or cancel'
@@ -40,7 +41,7 @@ const LiveOrderPills = ({ orders = [], style }) => {
               border: order.levelReached ? '1px solid var(--gain-color)' : order.validityPassed ? '1px solid var(--loss-color)' : '1px solid rgba(245, 158, 11, 0.45)'
             }}
           >
-            {order.levelReached ? '✓' : '⏳'} {order.restingLabel}{order.levelReached ? ' · level reached' : order.validityPassed ? ' · validity passed' : ''}
+            {order.levelReached ? '✓' : '⏳'} {order.restingLabel}{order.changePendingLabel ? ` · ${order.changePendingLabel}` : order.levelReached ? ' · level reached' : order.validityPassed ? ' · validity passed' : ''}
           </span>
         );
       })}

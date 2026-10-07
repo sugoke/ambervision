@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
-import { OrdersCollection, OrderHelpers, LIVE_ORDER_STATUSES, RESTING_PRICE_TYPES } from '/imports/api/orders';
+import { OrdersCollection, OrderHelpers, LIVE_AT_BANK_QUERY_STATUSES, RESTING_PRICE_TYPES, isLiveAtBank } from '/imports/api/orders';
 import { BanksCollection } from '/imports/api/banks';
 import { useIsMobile } from '../hooks/useIsMobile.js';
 
@@ -26,16 +26,16 @@ const LiveOrdersBlotter = ({ user, onOpenOrder }) => {
   const orders = useTracker(() => {
     if (!isStaff || !sessionId) return [];
     const handle = Meteor.subscribe('orders', sessionId, {
-      status: LIVE_ORDER_STATUSES,
+      status: LIVE_AT_BANK_QUERY_STATUSES,
       priceType: RESTING_PRICE_TYPES,
       limit: 500
     });
     Meteor.subscribe('banks');
     if (!handle.ready()) return [];
     return OrdersCollection.find(
-      { status: { $in: LIVE_ORDER_STATUSES }, priceType: { $in: RESTING_PRICE_TYPES } },
+      { status: { $in: LIVE_AT_BANK_QUERY_STATUSES }, priceType: { $in: RESTING_PRICE_TYPES } },
       { sort: { createdAt: 1 } }
-    ).fetch().map(order => {
+    ).fetch().filter(isLiveAtBank).map(order => {
       const formatted = OrderHelpers.formatOrderDetails(order);
       const bank = order.bankId ? BanksCollection.findOne(order.bankId) : null;
       return {
@@ -66,6 +66,8 @@ const LiveOrdersBlotter = ({ user, onOpenOrder }) => {
   const th = { padding: '8px 10px', textAlign: 'left', fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap', borderBottom: '1px solid var(--border-color)' };
   const td = { padding: '8px 10px', fontSize: '0.82rem', color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)', verticalAlign: 'top' };
   const right = { textAlign: 'right' };
+  // A change in review or not yet sent: the bank is still working the old terms
+  const changeBadge = { display: 'inline-block', marginLeft: '0.35rem', marginTop: '2px', padding: '0 0.4rem', fontSize: '0.68rem', fontWeight: 600, borderRadius: '4px', color: '#b45309', background: 'rgba(245, 158, 11, 0.15)', border: '1px solid rgba(245, 158, 11, 0.45)' };
   const sideColor = (o) => (o.orderType === 'sell' ? 'var(--loss-color)' : 'var(--gain-color)');
 
   return (
@@ -110,7 +112,7 @@ const LiveOrdersBlotter = ({ user, onOpenOrder }) => {
             <div key={o._id} onClick={() => onOpenOrder?.(o)} style={{ padding: '10px', marginBottom: '8px', borderRadius: '8px', background: 'var(--bg-primary)', border: o.levelReached ? '1px solid var(--gain-color)' : o.validityPassed ? '1px solid var(--loss-color)' : '1px solid var(--border-color)', cursor: 'pointer' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
                 <span>{o.orderReference} · {o.createdAtFormatted}</span>
-                <span>{o.statusLabel}</span>
+                <span>{o.statusLabel}{o.changePendingLabel && <span style={changeBadge}>{o.changePendingLabel}</span>}</span>
               </div>
               <div style={{ fontWeight: 600, margin: '4px 0', fontSize: '0.88rem' }}>{o.securityName}</div>
               <div style={{ fontSize: '0.85rem', fontWeight: 600, color: sideColor(o) }}>{o.restingLabel} {!o.quotesAsPercent && o.currency}</div>
@@ -179,7 +181,10 @@ const LiveOrdersBlotter = ({ user, onOpenOrder }) => {
                     {o.validityShort || '—'}
                     {o.validityPassed && <div style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--loss-color)' }}>Validity passed: confirm or cancel</div>}
                   </td>
-                  <td style={{ ...td, whiteSpace: 'nowrap' }}>{o.statusLabel}</td>
+                  <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                    {o.statusLabel}
+                    {o.changePendingLabel && <div><span style={changeBadge}>{o.changePendingLabel}</span></div>}
+                  </td>
                 </tr>
               ))}
             </tbody>

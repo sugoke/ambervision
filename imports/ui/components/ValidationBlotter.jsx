@@ -2,7 +2,27 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
-import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, OrderFormatters, OrderHelpers, EXECUTION_TYPES, EXECUTION_TYPE_LABELS, TERMSHEET_TRACE_TYPES } from '/imports/api/orders';
+import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, OrderFormatters, OrderHelpers, EXECUTION_TYPES, EXECUTION_TYPE_LABELS, TERMSHEET_TRACE_TYPES, TICKET_KINDS } from '/imports/api/orders';
+
+const isCancelRequest = (order) => order?.pendingModification?.kind === TICKET_KINDS.CANCEL;
+
+/** A pending request in the shape describeOrderChange reads (a limitHistory entry). */
+const pendingChangeAsEntry = (mod) => {
+  const o = mod?.oldValues || {};
+  const n = mod?.newValues || {};
+  const entry = {
+    priceType: o.priceType, price: o.limitPrice, stopLossPrice: o.stopLossPrice, takeProfitPrice: o.takeProfitPrice,
+    newPriceType: n.priceType, newPrice: n.limitPrice, newStopLossPrice: n.stopLossPrice, newTakeProfitPrice: n.takeProfitPrice
+  };
+  if ('quantity' in n) Object.assign(entry, { quantity: o.quantity, newQuantity: n.quantity });
+  if ('validityType' in n) {
+    Object.assign(entry, {
+      validityType: o.validityType, validityDate: o.validityDate,
+      newValidityType: n.validityType, newValidityDate: n.validityDate
+    });
+  }
+  return entry;
+};
 import { UsersCollection } from '/imports/api/users';
 import { BanksCollection } from '/imports/api/banks';
 import { IssuersCollection } from '/imports/api/issuers';
@@ -665,8 +685,27 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
     setIsActioning(order._id);
     try {
       const sessionId = getSessionId();
-      await Meteor.callAsync('orders.validateModification', { orderId: order._id, sessionId });
+      const result = await Meteor.callAsync('orders.validateModification', { orderId: order._id, sessionId });
       closeReview();
+
+      // The bank already had the order: hand over the amendment / cancellation
+      // ticket exactly like a newly validated order's ticket. If it is not sent
+      // now, the order keeps a "Send ... to Bank" action in the order book.
+      if (result?.pdfData && result?.emailData) {
+        if (!result.emailData.to && !graphConnected) {
+          alert(`No desk email is configured at ${result.emailData.bankName || 'this bank'}. The draft will open with an empty recipient — add the address in Bank Management.`);
+        }
+        deliverOrderEmail({
+          orderReference: result.orderReference || order.orderReference,
+          fileReference: result.fileReference,
+          ticketKind: result.ticketKind,
+          emailData: result.emailData,
+          pdfData: result.pdfData,
+          termsheet: null
+        }, { orderId: order._id });
+      } else if (result?.ticketError) {
+        alert(`Validated, but the bank ticket could not be prepared: ${result.ticketError}. Use "Send to Bank" on the order.`);
+      }
       onOrderUpdate?.();
     } catch (err) {
       alert(err.reason || err.message || 'Validation failed');
@@ -2235,14 +2274,17 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                     borderLeft: `3px solid ${entry.status === 'rejected' ? 'var(--loss-color)' : entry.validatedByName ? 'var(--gain-color)' : 'var(--border-color)'}`
                   }}>
                     <div>
-                      {entry.changedAtFormatted} — {entry.changedByName || 'Unknown'}
+                      <strong>{entry.kindLabel}</strong> · {entry.changedAtFormatted} — {entry.changedByName || 'Unknown'}
                       {entry.reason && <span style={{ color: 'var(--text-muted)' }}> — {entry.reason}</span>}
                     </div>
-                    {entry.newPriceType && (
+                    {entry.changeRows?.length > 0 && (
                       <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
-                        {entry.priceTypeLabel}: {entry.price ?? '—'} → {entry.newPriceTypeLabel}: {entry.newPrice ?? '—'}
-                        {entry.stopLossPrice !== undefined && ` | SL: ${entry.stopLossPrice ?? '—'} → ${entry.newStopLossPrice ?? '—'}`}
-                        {entry.takeProfitPrice !== undefined && ` | TP: ${entry.takeProfitPrice ?? '—'} → ${entry.newTakeProfitPrice ?? '—'}`}
+                        {entry.changeRows.map(row => `${row.label}: ${row.from} → ${row.to}`).join(' | ')}
+                      </div>
+                    )}
+                    {entry.bankNotice?.required && (
+                      <div style={{ fontSize: '11px', marginTop: '2px', color: entry.bankNotice.sentAt ? 'var(--text-muted)' : '#b45309' }}>
+                        {entry.bankNoticeSentAtFormatted ? `Sent to bank on ${entry.bankNoticeSentAtFormatted}` : 'Not yet sent to the bank'}
                       </div>
                     )}
                     {entry.validatedByName && (
@@ -2280,43 +2322,38 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
               return (
                 <div style={{ marginBottom: '14px', padding: '14px', borderRadius: '8px', border: '2px solid #a855f7', background: 'rgba(168, 85, 247, 0.05)' }}>
                   <div style={{ fontSize: '11px', fontWeight: '700', color: '#a855f7', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: '10px' }}>
-                    Proposed Modification
+                    {isCancelRequest(reviewOrder) ? 'Cancellation Request' : 'Proposed Modification'}
                   </div>
                   <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px' }}>
                     Requested by <strong style={{ color: 'var(--text-primary)' }}>{mod.requestedByName}</strong> on {new Date(mod.requestedAt).toLocaleString()}
                     {mod.reason && <span> — {mod.reason}</span>}
                   </div>
 
-                  {/* Changes table */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '6px', fontSize: '12px', marginBottom: '10px' }}>
-                    <div style={{ fontWeight: '600', color: 'var(--text-muted)', fontSize: '10px', textTransform: 'uppercase' }}>Field</div>
-                    <div style={{ fontWeight: '600', color: 'var(--text-muted)', fontSize: '10px', textTransform: 'uppercase' }}>Current</div>
-                    <div style={{ fontWeight: '600', color: 'var(--text-muted)', fontSize: '10px', textTransform: 'uppercase' }}>Proposed</div>
-
-                    {mod.oldValues.priceType !== mod.newValues.priceType && (<>
-                      <div>Price Type</div>
-                      <div style={{ color: 'var(--text-secondary)' }}>{mod.oldValues.priceType}</div>
-                      <div style={{ color: '#a855f7', fontWeight: '600' }}>{mod.newValues.priceType}</div>
-                    </>)}
-
-                    {mod.oldValues.limitPrice !== mod.newValues.limitPrice && (<>
-                      <div>Limit Price</div>
-                      <div style={{ color: 'var(--text-secondary)' }}>{mod.oldValues.limitPrice ?? '—'}</div>
-                      <div style={{ color: '#a855f7', fontWeight: '600' }}>{mod.newValues.limitPrice ?? '—'}</div>
-                    </>)}
-
-                    {mod.oldValues.stopLossPrice !== mod.newValues.stopLossPrice && (<>
-                      <div>Stop Loss</div>
-                      <div style={{ color: 'var(--loss-color)' }}>{mod.oldValues.stopLossPrice ?? '—'}</div>
-                      <div style={{ color: '#a855f7', fontWeight: '600' }}>{mod.newValues.stopLossPrice ?? '—'}</div>
-                    </>)}
-
-                    {mod.oldValues.takeProfitPrice !== mod.newValues.takeProfitPrice && (<>
-                      <div>Take Profit</div>
-                      <div style={{ color: 'var(--gain-color)' }}>{mod.oldValues.takeProfitPrice ?? '—'}</div>
-                      <div style={{ color: '#a855f7', fontWeight: '600' }}>{mod.newValues.takeProfitPrice ?? '—'}</div>
-                    </>)}
-                  </div>
+                  {isCancelRequest(reviewOrder) ? (
+                    <div style={{ fontSize: '12px', marginBottom: '10px', color: 'var(--text-primary)' }}>
+                      Cancel the order — remaining quantity{' '}
+                      <strong>{OrderFormatters.formatQuantity(Math.max(0, (reviewOrder.quantity || 0) - (reviewOrder.executedQuantity || 0)))}</strong>
+                      {reviewOrder.executedQuantity > 0 && <span style={{ color: 'var(--text-muted)' }}> ({OrderFormatters.formatQuantity(reviewOrder.executedQuantity)} already executed)</span>}
+                    </div>
+                  ) : (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '6px', fontSize: '12px', marginBottom: '10px' }}>
+                      <div style={{ fontWeight: '600', color: 'var(--text-muted)', fontSize: '10px', textTransform: 'uppercase' }}>Field</div>
+                      <div style={{ fontWeight: '600', color: 'var(--text-muted)', fontSize: '10px', textTransform: 'uppercase' }}>Current</div>
+                      <div style={{ fontWeight: '600', color: 'var(--text-muted)', fontSize: '10px', textTransform: 'uppercase' }}>Proposed</div>
+                      {OrderHelpers.describeOrderChange(pendingChangeAsEntry(mod), reviewOrder).map(row => (
+                        <React.Fragment key={row.label}>
+                          <div>{row.label}</div>
+                          <div style={{ color: 'var(--text-secondary)' }}>{row.from}</div>
+                          <div style={{ color: '#a855f7', fontWeight: '600' }}>{row.to}</div>
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  )}
+                  {['transmitted', 'sent', 'partially_executed'].includes(mod.statusBeforeModification) && (
+                    <div style={{ fontSize: '11px', color: '#b45309', marginBottom: '10px' }}>
+                      The bank already has this order: validating opens the {isCancelRequest(reviewOrder) ? 'cancellation' : 'amendment'} ticket to send to the desk.
+                    </div>
+                  )}
 
                   {/* Client Instruction Preview */}
                   {instrUrl && (
@@ -2420,7 +2457,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                     onClick={() => { setRejectModalOrder(reviewOrder); setRejectionReason(''); closeReview(); }}
                     disabled={!!isActioning}
                   >
-                    Reject Modification
+                    {isCancelRequest(reviewOrder) ? 'Reject Cancellation' : 'Reject Modification'}
                   </button>
                   <button
                     style={{
@@ -2436,7 +2473,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                       : 'Validate modification'
                     }
                   >
-                    {isActioning === reviewOrder._id ? 'Validating...' : 'Validate Modification'}
+                    {isActioning === reviewOrder._id ? 'Validating...' : (isCancelRequest(reviewOrder) ? 'Validate Cancellation' : 'Validate Modification')}
                   </button>
                 </>
               ) : reviewOrder.status === ORDER_STATUSES.REVISION_REQUESTED ? (
@@ -2543,7 +2580,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
         <div style={styles.modalOverlay} onClick={() => setRejectModalOrder(null)}>
           <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>
-              {rejectModalOrder.status === 'pending_modification' ? 'Reject Modification' : 'Reject Order'} {rejectModalOrder.orderReference}
+              {rejectModalOrder.status === 'pending_modification' ? (isCancelRequest(rejectModalOrder) ? 'Reject Cancellation' : 'Reject Modification') : 'Reject Order'} {rejectModalOrder.orderReference}
             </h3>
             <p style={styles.modalDesc}>
               {rejectModalOrder.status === 'pending_modification'
@@ -2578,7 +2615,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
                 onClick={rejectModalOrder.status === 'pending_modification' ? handleRejectModification : handleReject}
                 disabled={!!isActioning}
               >
-                {isActioning ? 'Rejecting...' : (rejectModalOrder.status === 'pending_modification' ? 'Reject Modification' : 'Reject Order')}
+                {isActioning ? 'Rejecting...' : (rejectModalOrder.status === 'pending_modification' ? (isCancelRequest(rejectModalOrder) ? 'Reject Cancellation' : 'Reject Modification') : 'Reject Order')}
               </button>
             </div>
           </div>

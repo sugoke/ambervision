@@ -13,6 +13,7 @@ import {
   COMPLIANCE_CATEGORY_LABELS
 } from '../../imports/api/complianceChecks.js';
 import { getSizeableSummary } from './sizeableTransactionMethods.js';
+import { VisitReportRequestsCollection, VISIT_REQUEST_STATUS } from '../../imports/api/visitReportRequests.js';
 
 /**
  * Compliance dashboard: firm-wide recap of every client file.
@@ -51,7 +52,7 @@ async function validateComplianceSession(sessionId) {
 }
 
 export async function buildComplianceOverview(now = new Date()) {
-  const [entities, documents, accounts, banks, staff] = await Promise.all([
+  const [entities, documents, accounts, banks, staff, openVisitRequests] = await Promise.all([
     ClientEntitiesCollection.find({}).fetchAsync(),
     ClientDocumentsCollection.find({}, {
       fields: {
@@ -61,8 +62,11 @@ export async function buildComplianceOverview(now = new Date()) {
     }).fetchAsync(),
     BankAccountsCollection.find({ isActive: true }, { fields: { kycRiskScoreHistory: 0 } }).fetchAsync(),
     BanksCollection.find({}, { fields: { name: 1 } }).fetchAsync(),
-    UsersCollection.find({ role: { $ne: USER_ROLES.CLIENT } }, { fields: { username: 1, profile: 1 } }).fetchAsync()
+    UsersCollection.find({ role: { $ne: USER_ROLES.CLIENT } }, { fields: { username: 1, profile: 1 } }).fetchAsync(),
+    VisitReportRequestsCollection.find({ status: VISIT_REQUEST_STATUS.OPEN }).fetchAsync()
   ]);
+  // Open "visit report requested" per client (one at most)
+  const visitRequestByEntity = new Map(openVisitRequests.map(r => [r.entityId, r]));
 
   const bankNameById = new Map(banks.map(b => [b._id, b.name]));
   const staffById = new Map(staff.map(u => [u._id, u]));
@@ -119,8 +123,16 @@ export async function buildComplianceOverview(now = new Date()) {
 
     const managerIds = [...new Set([...(entity.assignedUserIds || []), entity.relationshipManagerId].filter(Boolean))];
     const criticalCount = issues.filter(i => i.severity === 'critical').length;
+    const visitRequest = visitRequestByEntity.get(entity._id);
     return {
       entityId: entity._id,
+      // Pending compliance request for a visit / meeting report, if any
+      visitRequest: visitRequest ? {
+        requestId: visitRequest._id,
+        requestedAtText: formatDate(visitRequest.requestedAt),
+        requestedByName: visitRequest.requestedByName || '',
+        note: visitRequest.note || ''
+      } : null,
       name: ClientEntityHelpers.getEntityDisplayName(entity),
       status,
       rmNames: managerIds.map(id => userName(staffById.get(id))).filter(Boolean).join(', '),

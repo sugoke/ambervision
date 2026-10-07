@@ -27,7 +27,7 @@
  */
 
 import {
-  OrdersCollection, LIVE_ORDER_STATUSES, RESTING_PRICE_TYPES, PRICE_TYPES, quotesPriceAsPercent
+  OrdersCollection, LIVE_AT_BANK_QUERY_STATUSES, isLiveAtBank, RESTING_PRICE_TYPES, PRICE_TYPES, quotesPriceAsPercent
 } from '/imports/api/orders.js';
 
 const dayKey = (d) => new Date(d).toISOString().slice(0, 10);
@@ -260,9 +260,9 @@ export async function checkLiveLimitOrders({ now = new Date(), dryRun = false } 
   // dryRun: compute and report only, no write to the orders, no notification
   const write = (id, modifier) => (dryRun ? null : OrdersCollection.updateAsync(id, modifier));
   const orders = await OrdersCollection.find({
-    status: { $in: LIVE_ORDER_STATUSES },
+    status: { $in: LIVE_AT_BANK_QUERY_STATUSES },
     priceType: { $in: RESTING_PRICE_TYPES }
-  }).fetchAsync();
+  }).fetchAsync().then(rows => rows.filter(isLiveAtBank));
 
   const summary = [];
   for (const order of orders) {

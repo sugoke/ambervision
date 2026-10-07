@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTheme } from './ThemeContext.jsx';
 import BirthdayCalendar from './BirthdayCalendar.jsx';
 import BondPriceQuery from './components/BondPriceQuery.jsx';
 import MeetingReports from './MeetingReports.jsx';
+import { MEETING_REPORT_OPEN_EVENT } from './utils/pendingMeetingReport.js';
 import ResearchLibrary from './ResearchLibrary.jsx';
 import ProductExplainers from './ProductExplainers.jsx';
 
@@ -580,6 +581,13 @@ Thanks,
 const Intranet = ({ user }) => {
   const { theme, isDark } = useTheme();
   const [activeApp, setActiveApp] = useState('meeting-reports');
+  // A "visit report requested" notification opens the meeting-report editor:
+  // make sure that mini-app is the one shown (MeetingReports picks the client up)
+  useEffect(() => {
+    const show = () => setActiveApp('meeting-reports');
+    window.addEventListener(MEETING_REPORT_OPEN_EVENT, show);
+    return () => window.removeEventListener(MEETING_REPORT_OPEN_EVENT, show);
+  }, []);
 
   // Define available mini-apps
   const miniApps = [

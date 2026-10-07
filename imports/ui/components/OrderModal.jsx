@@ -1169,12 +1169,14 @@ const OrderModal = ({
             return false;
           }
         }
-        // Structured products are quoted by the bank at indicative price; entering a
-        // limit "% of par" is optional. FX uses its own limit-price gating elsewhere.
-        if (assetType !== ASSET_TYPES.FX && assetType !== ASSET_TYPES.STRUCTURED_PRODUCT
+        // A limit order must carry its limit. Structured products are the one
+        // exception: the price "% of par" is optional and, left empty, the order
+        // goes to the bank at market (indicative price) — never as a limit
+        // without a limit.
+        if (assetType !== ASSET_TYPES.STRUCTURED_PRODUCT
           && priceType === PRICE_TYPES.LIMIT
           && (!limitPrice || parseFloat(limitPrice) <= 0)) {
-          setError('Please enter a valid limit price');
+          setError(assetType === ASSET_TYPES.FX ? 'Please enter the limit rate' : 'Please enter a valid limit price');
           return false;
         }
         if (priceType === PRICE_TYPES.STOP_LOSS && (!stopPrice || parseFloat(stopPrice) <= 0)) {
@@ -1463,6 +1465,14 @@ const OrderModal = ({
         if ((priceType === PRICE_TYPES.LIMIT || priceType === PRICE_TYPES.STOP_LIMIT) && limitPrice) {
           bulkOrderData.limitPrice = parseFloat(limitPrice);
         }
+        if ((priceType === PRICE_TYPES.STOP_LOSS || priceType === PRICE_TYPES.STOP_LIMIT) && stopPrice) {
+          bulkOrderData.stopPrice = parseFloat(stopPrice);
+        }
+        // No price on a structured product: at market, not a limit without a limit
+        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && !(parseFloat(limitPrice) > 0)) {
+          bulkOrderData.priceType = PRICE_TYPES.MARKET;
+          delete bulkOrderData.limitPrice;
+        }
         // Block consideration; the server prorates it onto each row by nominal
         if (mode === 'buy' && parseFloat(estimatedValue) > 0) {
           bulkOrderData.estimatedValue = parseFloat(estimatedValue);
@@ -1599,6 +1609,11 @@ const OrderModal = ({
         if ((priceType === PRICE_TYPES.STOP_LOSS || priceType === PRICE_TYPES.STOP_LIMIT) && stopPrice) {
           orderData.stopPrice = parseFloat(stopPrice);
         }
+        // No price on a structured product: at market, not a limit without a limit
+        if (assetType === ASSET_TYPES.STRUCTURED_PRODUCT && !(parseFloat(limitPrice) > 0)) {
+          orderData.priceType = PRICE_TYPES.MARKET;
+          delete orderData.limitPrice;
+        }
         if (estimatedValue) {
           orderData.estimatedValue = parseFloat(estimatedValue);
         }
@@ -1648,9 +1663,13 @@ const OrderModal = ({
           if (stopLossPrice) orderData.attachedStopLoss = parseFloat(stopLossPrice);
           if (fxForwardDate) orderData.fxForwardDate = fxForwardDate;
           if (fxValueDate) orderData.fxValueDate = fxValueDate;
-          // For FX, set priceType based on which levels are set
-          if (limitPrice) {
+          // For FX, the price type follows the rate: a limit rate makes it a
+          // limit order, no rate a market order (never a limit without a limit)
+          if (parseFloat(limitPrice) > 0) {
             orderData.priceType = PRICE_TYPES.LIMIT;
+          } else {
+            orderData.priceType = PRICE_TYPES.MARKET;
+            delete orderData.limitPrice;
           }
         }
         // Term Deposit-specific fields

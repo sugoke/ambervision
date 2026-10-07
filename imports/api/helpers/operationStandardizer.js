@@ -14,6 +14,9 @@
  *     cashImpact,                     // false for securities moved in/out without cash
  *     fees, taxes, accruedInterest,   // positive magnitudes in `currency`
  *     fxRate,
+ *     fxBaseCurrency, fxQuoteCurrency, // FX trades: fxRate is 1 base = fxRate quote (null when the bank doesn't say)
+ *     fxLegs,                         // FX trades: [{ currency, amount }] when one row carries both legs
+ *     fxCurrencies,                   // FX trades: the deal's currency pair when the row itself only shows one leg
  *     bankTypeCode, bankTypeLabel,    // the bank's own code and wording
  *     reference                       // the bank's reference for the operation
  *   }
@@ -52,6 +55,24 @@ const cleanIsin = (value) => {
   return s && /^[A-Z]{2}[A-Z0-9]{9}\d$/i.test(s) ? s.toUpperCase() : null;
 };
 
+const cleanCurrency = (value) => {
+  const s = cleanText(value)?.toUpperCase();
+  return s && /^[A-Z]{3}$/.test(s) ? s : null;
+};
+
+const cleanCurrencyList = (values) => {
+  const list = [...new Set((values || []).map(cleanCurrency).filter(Boolean))];
+  return list.length > 0 ? list : null;
+};
+
+// Legs with a currency and a non-zero amount; null unless at least one remains
+const cleanFxLegs = (legs) => {
+  const list = (legs || [])
+    .map(leg => ({ currency: cleanCurrency(leg?.currency), amount: round(leg?.amount, 2) }))
+    .filter(leg => leg.currency && leg.amount);
+  return list.length > 0 ? list : null;
+};
+
 /**
  * Build the `std` block.
  * @param {Object} input
@@ -79,6 +100,10 @@ export function buildStandardOperation(input = {}) {
     taxes: magnitude(input.taxes),
     accruedInterest: magnitude(input.accruedInterest),
     fxRate: toNumber(input.fxRate) || null,
+    fxBaseCurrency: cleanCurrency(input.fxBaseCurrency),
+    fxQuoteCurrency: cleanCurrency(input.fxQuoteCurrency),
+    fxLegs: cleanFxLegs(input.fxLegs),
+    fxCurrencies: cleanCurrencyList(input.fxCurrencies),
     bankTypeCode: cleanText(input.bankTypeCode),
     bankTypeLabel: cleanText(input.bankTypeLabel),
     reference: cleanText(input.reference)

@@ -1031,6 +1031,14 @@ export const SGMonacoParser = {
       taxes,
       accruedInterest: this.parseNumber(row.OPE_ACCR_AMT),
       fxRate: this.parseNumber(row.OPE_EXG_RAT_TRAD) || null,
+      // FX trades: OPE_QTY is the dealt amount in OPE_CUR, OPE_CASH_AMOUNT1 the
+      // counter-leg in the cash account's currency (no dealt rate is given)
+      ...(operation.operationType === OPERATION_TYPES.FX_TRADE ? {
+        fxLegs: [
+          { currency: row.OPE_CUR, amount: quantity },
+          { currency: row.OPE_CASH_ACCT1_CUR, amount: cashAmount }
+        ]
+      } : {}),
       bankTypeCode: row.OPE_TYPE,
       bankTypeLabel: [row.OPE_NATURE, row.OPE_SUB_TYPE].filter(v => v && String(v).trim()).join(' – '),
       reference: row.OPE_REF_CODE

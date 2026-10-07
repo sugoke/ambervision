@@ -141,6 +141,7 @@ import './methods/clientEntityMethods';
 import './methods/clientExportMethods'; // Full client-base Excel export (admin/compliance)
 import './methods/complianceDashboardMethods'; // Firm-wide compliance recap (compliance/superadmin)
 import './methods/sizeableTransactionMethods'; // AML: sizeable client money flows, compliance <-> RM questions
+import './methods/visitReportRequestMethods'; // Compliance asks RMs for visit / meeting reports
 import './methods/mcpTokenMethods';
 import './methods/dataQualityMethods';
 import './methods/demoClientMethods';
@@ -6927,8 +6928,8 @@ Meteor.methods({
     // Enrich entities with their bank accounts (owned or beneficial owner)
     const enrichedEntities = await Promise.all(entities.map(async (entity) => {
       const accounts = await BankAccountsCollection.find(
-        { $or: [{ entityId: entity._id }, { beneficialOwnerIds: entity._id }, { beneficialOwnerId: entity._id }], isActive: true },
-        { limit: 10, fields: { accountNumber: 1, bankId: 1, referenceCurrency: 1, name: 1, entityId: 1, accessRights: 1, comment: 1 } }
+        { $or: [{ entityId: entity._id }, { holderEntityIds: entity._id }, { beneficialOwnerIds: entity._id }, { beneficialOwnerId: entity._id }], isActive: true },
+        { limit: 10, fields: { accountNumber: 1, bankId: 1, referenceCurrency: 1, name: 1, entityId: 1, holderEntityIds: 1, accessRights: 1, comment: 1 } }
       ).fetchAsync();
 
       // Enrich accounts with bank name and owner entity name (for BO accounts)
@@ -6957,13 +6958,15 @@ Meteor.methods({
     // RMs: restrict to accounts they manage (primary RM or backup)
     if (isRM) {
       const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
+      // Same assignment rule as the name search: assignedUserIds (canonical)
+      // or the legacy relationshipManagerId
       const rmEntities = await EntitiesCol.find(
-        { relationshipManagerId: { $in: rmIds }, isActive: true },
+        { $or: [{ assignedUserIds: { $in: rmIds } }, { relationshipManagerId: { $in: rmIds } }], isActive: true },
         { fields: { _id: 1 } }
       ).fetchAsync();
       const rmEntityIds = rmEntities.map(e => e._id);
       accountQuery.$or = [
-        ...(rmEntityIds.length > 0 ? [{ entityId: { $in: rmEntityIds } }] : []),
+        ...(rmEntityIds.length > 0 ? [{ entityId: { $in: rmEntityIds } }, { holderEntityIds: { $in: rmEntityIds } }] : []),
         { backupRmIds: { $in: rmIds } },
         { relationshipManagerId: { $in: rmIds } }
       ];
@@ -6976,6 +6979,10 @@ Meteor.methods({
     const accountEntityIdSet = new Set();
     for (const a of matchedAccounts) {
       if (a.entityId && !existingEntityIds.has(a.entityId)) accountEntityIdSet.add(a.entityId);
+      // Co-holders of a joint account are clients of it too
+      for (const holderId of (a.holderEntityIds || [])) {
+        if (!existingEntityIds.has(holderId)) accountEntityIdSet.add(holderId);
+      }
       for (const boId of (a.beneficialOwnerIds || [])) {
         if (!existingEntityIds.has(boId)) accountEntityIdSet.add(boId);
       }
@@ -6992,8 +6999,8 @@ Meteor.methods({
         // Entity was matched via account number — only show accounts that actually match the search,
         // not every account the entity owns/is-BO-of (prevents showing 5040217 when user typed 5040241).
         const accounts = await BankAccountsCollection.find(
-          { $or: [{ entityId: entity._id }, { beneficialOwnerIds: entity._id }, { beneficialOwnerId: entity._id }], isActive: true, accountNumber: accountNumberRegex },
-          { limit: 10, fields: { accountNumber: 1, bankId: 1, referenceCurrency: 1, name: 1, entityId: 1, accessRights: 1, comment: 1 } }
+          { $or: [{ entityId: entity._id }, { holderEntityIds: entity._id }, { beneficialOwnerIds: entity._id }, { beneficialOwnerId: entity._id }], isActive: true, accountNumber: accountNumberRegex },
+          { limit: 10, fields: { accountNumber: 1, bankId: 1, referenceCurrency: 1, name: 1, entityId: 1, holderEntityIds: 1, accessRights: 1, comment: 1 } }
         ).fetchAsync();
 
         if (accounts.length === 0) continue;

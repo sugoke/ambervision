@@ -7,7 +7,10 @@ import { accountAllowsOrders } from '/imports/api/bankAccounts';
  * Selecting a result sets both clientId and bankAccountId in one go.
  *
  * Props:
- *   onSelect({ clientId, bankAccountId, clientName, accountLabel }) — called when user picks an account
+ *   onSelect({ clientId, entityId, pickedEntityId, bankAccountId, clientName, accountLabel }) — called
+ *     when user picks an account. entityId is the account's primary holder (what an
+ *     order is booked under); pickedEntityId is the contact the user actually clicked,
+ *     which differs for a joint co-holder or a beneficial owner of a company account.
  *   value — display string for selected account (controlled)
  *   placeholder
  *   disabled
@@ -79,6 +82,7 @@ export default function AccountAutocomplete({ onSelect, value = '', placeholder 
     onSelect({
       clientId: entity.migratedFromUserId || null,
       entityId: account.entityId || entity._id,
+      pickedEntityId: entity._id,
       bankAccountId: account._id,
       clientName: entityName,
       accountLabel: label
@@ -97,6 +101,7 @@ export default function AccountAutocomplete({ onSelect, value = '', placeholder 
     onSelect({
       clientId: entity.migratedFromUserId || null,
       entityId: entity._id,
+      pickedEntityId: entity._id,
       bankAccountId: null,
       clientName: entityName,
       accountLabel: entityName

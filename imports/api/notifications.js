@@ -70,7 +70,10 @@ export const EVENT_TYPES = {
   LIMIT_LEVEL_REACHED: 'limit_level_reached',
   // Compliance questions to RMs (sizeable transactions)
   COMPLIANCE_QUERY: 'compliance_query',
-  COMPLIANCE_QUERY_ANSWERED: 'compliance_query_answered'
+  COMPLIANCE_QUERY_ANSWERED: 'compliance_query_answered',
+  // Compliance asks an RM for a client visit / meeting report
+  VISIT_REPORT_REQUESTED: 'visit_report_requested',
+  VISIT_REPORT_DELIVERED: 'visit_report_delivered'
 };
 
 // Event type display names
@@ -98,7 +101,9 @@ export const EVENT_TYPE_NAMES = {
   [EVENT_TYPES.LIMIT_LEVEL_REACHED]: 'Limit Level Reached',
   // Compliance question event names
   [EVENT_TYPES.COMPLIANCE_QUERY]: 'Compliance Question',
-  [EVENT_TYPES.COMPLIANCE_QUERY_ANSWERED]: 'Compliance Question Answered'
+  [EVENT_TYPES.COMPLIANCE_QUERY_ANSWERED]: 'Compliance Question Answered',
+  [EVENT_TYPES.VISIT_REPORT_REQUESTED]: 'Visit Report Requested',
+  [EVENT_TYPES.VISIT_REPORT_DELIVERED]: 'Visit Report Delivered'
 };
 
 // Event priority levels (for UI display and sorting)
@@ -125,7 +130,9 @@ export const EVENT_PRIORITY = {
   [EVENT_TYPES.LIMIT_LEVEL_REACHED]: 2,
   // Compliance question priorities
   [EVENT_TYPES.COMPLIANCE_QUERY]: 2,
-  [EVENT_TYPES.COMPLIANCE_QUERY_ANSWERED]: 3
+  [EVENT_TYPES.COMPLIANCE_QUERY_ANSWERED]: 3,
+  [EVENT_TYPES.VISIT_REPORT_REQUESTED]: 2,
+  [EVENT_TYPES.VISIT_REPORT_DELIVERED]: 3
 };
 
 if (Meteor.isServer) {

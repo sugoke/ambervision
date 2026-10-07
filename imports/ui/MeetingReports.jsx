@@ -1,10 +1,12 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import AccountAutocomplete from './components/AccountAutocomplete.jsx';
+import DictationButton from './components/DictationButton.jsx';
 import { useTheme } from './ThemeContext.jsx';
 import { MeetingReportsCollection } from '/imports/api/meetingReports';
 import { openDocumentWindow } from './utils/openDocument.js';
+import { consumePendingMeetingReport, MEETING_REPORT_OPEN_EVENT } from './utils/pendingMeetingReport.js';
 
 const MEETING_TYPES = { IN_PERSON: 'in_person', CALL: 'call' };
 const SATISFACTION = {
@@ -48,7 +50,19 @@ const labels = (lang = 'fr') => lang === 'en' ? {
   status: 'Status',
   manager: 'Manager',
   draft: 'Draft',
-  finalized: 'Finalized'
+  finalized: 'Finalized',
+  requestsTitle: 'Requested by compliance',
+  requestedBy: 'requested by',
+  writeReport: 'Write report',
+  speechLang: 'en-GB',
+  dictation: {
+    start: 'Dictate',
+    stop: 'Stop dictation',
+    listening: 'Listening… speak naturally, the text is added to the notes.',
+    denied: 'Microphone access was refused — allow it in the browser to dictate.',
+    unsupported: 'Dictation is not available in this browser (use Chrome, Edge or Safari).',
+    error: 'Dictation error'
+  }
 } : {
   newReport: '+ Nouveau rapport',
   back: '← Retour',
@@ -81,7 +95,19 @@ const labels = (lang = 'fr') => lang === 'en' ? {
   status: 'Statut',
   manager: 'Gestionnaire',
   draft: 'Brouillon',
-  finalized: 'Finalisé'
+  finalized: 'Finalisé',
+  requestsTitle: 'Demandés par la conformité',
+  requestedBy: 'demandé par',
+  writeReport: 'Rédiger le rapport',
+  speechLang: 'fr-FR',
+  dictation: {
+    start: 'Dicter',
+    stop: 'Arrêter la dictée',
+    listening: 'Écoute en cours… parlez normalement, le texte s\'ajoute aux notes.',
+    denied: 'Accès au micro refusé — autorisez-le dans le navigateur pour dicter.',
+    unsupported: 'Dictée non disponible dans ce navigateur (utilisez Chrome, Edge ou Safari).',
+    error: 'Erreur de dictée'
+  }
 };
 
 const inputBase = {
@@ -109,6 +135,32 @@ function ErrorBanner({ error }) {
       marginBottom: 12
     }}>
       {error}
+    </div>
+  );
+}
+
+/** Open compliance requests for a visit report; finalizing a report on the client closes them. */
+function RequestsPanel({ requests, t, onWrite }) {
+  if (!requests?.length) return null;
+  return (
+    <div style={{ marginBottom: 18, border: '1px solid rgba(245, 158, 11, 0.45)', borderRadius: 8, overflow: 'hidden' }}>
+      <div style={{ padding: '8px 14px', background: 'rgba(245, 158, 11, 0.10)', fontWeight: 600, fontSize: 13 }}>
+        {t.requestsTitle} · {requests.length}
+      </div>
+      {requests.map(r => (
+        <div key={r._id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', borderTop: '1px solid var(--border-color)', flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 240px', minWidth: 0 }}>
+            <div style={{ fontWeight: 600, fontSize: 13 }}>{r.clientName}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              {r.requestedAtText} · {t.requestedBy} {r.requestedByName}{r.note ? ` — ${r.note}` : ''}
+            </div>
+          </div>
+          <button
+            onClick={() => onWrite({ entityId: r.entityId, clientName: r.clientName })}
+            style={{ ...btnGhost, padding: '6px 12px', fontWeight: 600, borderColor: 'var(--accent-color)', color: 'var(--accent-color)' }}
+          >{t.writeReport}</button>
+        </div>
+      ))}
     </div>
   );
 }
@@ -223,8 +275,13 @@ function Editor({ initial, t, onCancel, onSaved }) {
 
   const handleClientSelect = (sel) => {
     setClient({
-      entityId: sel.entityId,
-      bankAccountId: sel.bankAccountId,
+      // The report belongs to the person or company that was met — the
+      // contact picked in the list. `sel.entityId` is the account's primary
+      // holder, which differs for a co-holder of a joint account or a
+      // beneficial owner of a company account, and would file the report
+      // (and print the name) under someone else.
+      entityId: sel.pickedEntityId || sel.entityId || null,
+      bankAccountId: sel.bankAccountId || null,
       clientName: sel.clientName,
       // Bank/account snapshots are resolved authoritatively server-side
       // from bankAccountId — no need to parse the label string here.
@@ -374,6 +431,17 @@ function Editor({ initial, t, onCancel, onSaved }) {
           rows={8}
           style={{ ...inputBase, minHeight: 140, resize: 'vertical' }}
         />
+        <div style={{ marginTop: 8 }}>
+          {/* Dictated phrases are appended to the notes, which stay editable */}
+          <DictationButton
+            lang={t.speechLang}
+            labels={t.dictation}
+            onText={(text) => setRawNotes(prev => {
+              if (!prev.trim()) return text;
+              return /[\s]$/.test(prev) ? `${prev}${text}` : `${prev} ${text}`;
+            })}
+          />
+        </div>
       </Field>
 
       <div style={{ marginTop: 8, marginBottom: 20 }}>
@@ -478,6 +546,30 @@ export default function MeetingReports({ user }) {
 
   const [view, setView] = useState({ mode: 'list', initial: null });
 
+  // Compliance requests addressed to this user (visit report wanted on a client)
+  const [requests, setRequests] = useState([]);
+  const loadRequests = useCallback(async () => {
+    try {
+      setRequests(await Meteor.callAsync('visitReportRequests.listForRm', localStorage.getItem('sessionId')) || []);
+    } catch (err) {
+      setRequests([]);
+    }
+  }, []);
+  useEffect(() => { loadRequests(); }, [loadRequests]);
+
+  // A new report on a given client: from a request, or from a notification
+  // hand-off (pendingMeetingReport) — the editor starts with the client set.
+  const startReportFor = useCallback((target) => {
+    if (!target?.entityId) return;
+    setView({ mode: 'edit', initial: { entityId: target.entityId, clientNameSnapshot: target.clientName || '' } });
+  }, []);
+  useEffect(() => {
+    const openPending = () => startReportFor(consumePendingMeetingReport());
+    openPending();
+    window.addEventListener(MEETING_REPORT_OPEN_EVENT, openPending);
+    return () => window.removeEventListener(MEETING_REPORT_OPEN_EVENT, openPending);
+  }, [startReportFor]);
+
   const handleOpen = useCallback(async (id) => {
     try {
       const sessionId = localStorage.getItem('sessionId');
@@ -519,6 +611,8 @@ export default function MeetingReports({ user }) {
       color: 'var(--text-primary)'
     }}>
       {view.mode === 'list' ? (
+        <>
+        <RequestsPanel requests={requests} t={t} onWrite={startReportFor} />
         <ListView
           reports={reports}
           isLoading={isLoading}
@@ -528,12 +622,14 @@ export default function MeetingReports({ user }) {
           onDelete={handleDelete}
           onDownload={handleDownload}
         />
+        </>
       ) : (
         <Editor
+          key={view.initial?._id || view.initial?.entityId || 'new'}
           initial={view.initial}
           t={t}
           onCancel={() => setView({ mode: 'list', initial: null })}
-          onSaved={() => setView({ mode: 'list', initial: null })}
+          onSaved={() => { setView({ mode: 'list', initial: null }); loadRequests(); }}
         />
       )}
     </div>

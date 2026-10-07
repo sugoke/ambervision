@@ -132,6 +132,23 @@ const latestDate = (docs) => docs
   .filter(Boolean)
   .sort((a, b) => b - a)[0] || null;
 
+/**
+ * Last / next date of a recurring requirement (review, visit) from the manual
+ * dates on the client file and the dated files. The newest evidence wins: a
+ * file newer than the manual "last" date (e.g. a meeting report finalized
+ * after someone typed a date in) moves the due date on, instead of the stale
+ * manual date hiding it. A manual "next" date is kept when it is later than
+ * what the newest evidence gives.
+ */
+export const resolveDueDate = ({ manualLast, manualNext, fileLast, compute }) => {
+  const last = [manualLast, fileLast].filter(Boolean).sort((a, b) => b - a)[0] || null;
+  const fileIsNewer = !!fileLast && (!manualLast || fileLast > manualLast);
+  if (!fileIsNewer) return { last, next: manualNext || compute(last) };
+  const computed = compute(last);
+  if (manualNext && computed) return { last, next: manualNext > computed ? manualNext : computed };
+  return { last, next: computed || manualNext || null };
+};
+
 /** Severity of a due date: overdue is critical, due within DUE_SOON_DAYS a warning, else none. */
 const dueSeverity = (dueDate, now) => {
   if (!dueDate) return null;
@@ -239,9 +256,12 @@ export function evaluateClientCompliance({ entity, documents = [], accounts = []
   // ---- Periodic review ----
   const overallRisk = getOverallRisk(accounts);
   const kyc = entity.kyc || {};
-  const lastReview = toDate(kyc.lastReviewDate)
-    || latestDate(kycDocs.filter(d => d.documentType === DOCUMENT_TYPES.PERIODIC_REVIEW));
-  const nextReview = toDate(kyc.nextReviewDate) || computeNextReviewDate(lastReview, overallRisk);
+  const { next: nextReview } = resolveDueDate({
+    manualLast: toDate(kyc.lastReviewDate),
+    manualNext: toDate(kyc.nextReviewDate),
+    fileLast: latestDate(kycDocs.filter(d => d.documentType === DOCUMENT_TYPES.PERIODIC_REVIEW)),
+    compute: (last) => computeNextReviewDate(last, overallRisk)
+  });
   if (!nextReview) {
     push({ category: COMPLIANCE_CATEGORIES.PERIODIC_REVIEW, severity: 'critical', label: 'No periodic review on file' });
   } else {
@@ -258,9 +278,14 @@ export function evaluateClientCompliance({ entity, documents = [], accounts = []
   }
 
   // ---- Client visit ----
-  const lastVisit = toDate(kyc.lastVisitDate)
-    || latestDate(kycDocs.filter(d => d.documentType === DOCUMENT_TYPES.VISIT_REPORT));
-  const nextVisit = toDate(kyc.nextVisitDate) || computeNextVisitDate(lastVisit);
+  // Visit report files include finalized meeting reports, which are filed on
+  // the client as visit reports (meetingReports.finalize).
+  const { next: nextVisit } = resolveDueDate({
+    manualLast: toDate(kyc.lastVisitDate),
+    manualNext: toDate(kyc.nextVisitDate),
+    fileLast: latestDate(kycDocs.filter(d => d.documentType === DOCUMENT_TYPES.VISIT_REPORT)),
+    compute: computeNextVisitDate
+  });
   if (!nextVisit) {
     push({ category: COMPLIANCE_CATEGORIES.VISIT, severity: 'critical', label: 'No client visit on file' });
   } else {

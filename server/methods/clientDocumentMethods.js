@@ -106,8 +106,9 @@ const ALLOWED_WORD_MIMES = new Set([
 ]);
 const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024; // 25 MB
 
-// Ensure user directory exists
-const ensureUserDirectory = (userId) => {
+// Ensure user directory exists (also used to file finalized meeting reports
+// as visit reports — server/helpers/meetingReportFiling.js)
+export const ensureUserDirectory = (userId) => {
   assertSafeSubjectId(userId);
   const basePath = getDocumentsBasePath();
   const userDir = path.join(basePath, userId);

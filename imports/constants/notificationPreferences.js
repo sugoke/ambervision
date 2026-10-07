@@ -73,10 +73,12 @@ export const NOTIFICATION_PREFERENCE_GROUPS = [
   {
     id: 'compliance',
     label: 'Compliance',
-    description: 'Questions between compliance and relationship managers.',
+    description: 'Questions and report requests between compliance and relationship managers.',
     preferences: [
       { key: 'compliance_query', label: 'Compliance question received', eventTypes: ['compliance_query'] },
-      { key: 'compliance_query_answered', label: 'Compliance question answered', eventTypes: ['compliance_query_answered'] }
+      { key: 'compliance_query_answered', label: 'Compliance question answered', eventTypes: ['compliance_query_answered'] },
+      { key: 'visit_report_requested', label: 'Visit report requested by compliance', eventTypes: ['visit_report_requested'] },
+      { key: 'visit_report_delivered', label: 'Requested visit report delivered', eventTypes: ['visit_report_delivered'] }
     ]
   },
   {

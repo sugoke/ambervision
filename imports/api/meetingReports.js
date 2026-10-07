@@ -5,7 +5,7 @@ import { HTTP } from 'meteor/http';
 
 import { SessionHelpers } from '/imports/api/sessions';
 import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
-import { BankAccountsCollection } from '/imports/api/bankAccounts';
+import { BankAccountsCollection, isAccountHolder } from '/imports/api/bankAccounts';
 import { BanksCollection } from '/imports/api/banks';
 import { ClientEntitiesCollection, ClientEntityHelpers } from '/imports/api/clientEntities';
 
@@ -375,6 +375,39 @@ if (Meteor.isServer) {
         throw new Meteor.Error('invalid-input', 'Invalid satisfaction level');
       }
 
+      // The report must point at a real client, the account (if any) must be
+      // one of that client's, and the client must be in the author's scope:
+      // visibility follows entityId / bankAccountId, so a report filed under
+      // the wrong client lands in someone else's list and vanishes from the
+      // author's own.
+      let entity = null;
+      if (params.entityId) {
+        entity = await ClientEntitiesCollection.findOneAsync(params.entityId);
+        if (!entity) throw new Meteor.Error('invalid-input', 'Unknown client');
+      }
+      let account = null;
+      if (params.bankAccountId) {
+        account = await BankAccountsCollection.findOneAsync(params.bankAccountId);
+        if (!account) throw new Meteor.Error('invalid-input', 'Unknown bank account');
+        if (entity) {
+          const relatedToEntity = isAccountHolder(account, entity._id)
+            || (entity.migratedFromUserId && account.userId === entity.migratedFromUserId)
+            || (account.beneficialOwnerIds || []).includes(entity._id)
+            || account.beneficialOwnerId === entity._id;
+          if (!relatedToEntity) {
+            throw new Meteor.Error('invalid-input', 'This bank account does not belong to the selected client');
+          }
+        }
+      }
+      if ((entity || account) && !isAdmin(user)) {
+        const { entityIds, bankAccountIds } = await getUserScope(user);
+        const inScope = (entity && entityIds.includes(entity._id))
+          || (account && bankAccountIds.includes(account._id));
+        if (!inScope) {
+          throw new Meteor.Error('not-authorized', 'This client is not in your client list');
+        }
+      }
+
       // The "manager" on the PDF is the entity's relationship manager — not
       // the user clicking save (who may be an assistant). Fall back to the
       // current user only when no entity/RM can be resolved.
@@ -389,22 +422,16 @@ if (Meteor.isServer) {
       let resolvedBankName = params.bankNameSnapshot || null;
       let resolvedClientName = params.clientNameSnapshot;
 
-      if (params.bankAccountId) {
-        const account = await BankAccountsCollection.findOneAsync(params.bankAccountId);
-        if (account) {
-          resolvedAccountNumber = account.accountNumber || resolvedAccountNumber;
-          if (account.bankId) {
-            const bank = await BanksCollection.findOneAsync(account.bankId);
-            if (bank) resolvedBankName = bank.name || resolvedBankName;
-          }
+      if (account) {
+        resolvedAccountNumber = account.accountNumber || resolvedAccountNumber;
+        if (account.bankId) {
+          const bank = await BanksCollection.findOneAsync(account.bankId);
+          if (bank) resolvedBankName = bank.name || resolvedBankName;
         }
       }
-      if (params.entityId) {
-        const entity = await ClientEntitiesCollection.findOneAsync(params.entityId);
-        if (entity) {
-          const display = ClientEntityHelpers?.getEntityDisplayName?.(entity);
-          if (display) resolvedClientName = display;
-        }
+      if (entity) {
+        const display = ClientEntityHelpers?.getEntityDisplayName?.(entity);
+        if (display) resolvedClientName = display;
       }
 
       const baseFields = {
@@ -473,7 +500,23 @@ if (Meteor.isServer) {
       await MeetingReportsCollection.updateAsync(meetingReportId, {
         $set: { pdfPath: result.relativeUrl, pdfGeneratedAt: new Date() }
       });
-      return { _id: meetingReportId, url: result.relativeUrl };
+
+      // A finalized report is the client's visit report: file the PDF on the
+      // client (KYC → Visit Reports, read by the compliance dashboard) and
+      // close any compliance request waiting for it. Neither may fail the
+      // finalize — the report itself is done and downloadable.
+      let filed = false;
+      try {
+        const { fileMeetingReportAsVisit } = await import('/server/helpers/meetingReportFiling');
+        filed = !!(await fileMeetingReportAsVisit(fresh, Buffer.from(result.base64, 'base64'), user));
+      } catch (err) {
+        console.error('[MEETING-REPORTS] Could not file the report on the client:', err);
+      }
+      if (fresh.entityId) {
+        const { fulfillVisitReportRequests } = await import('/server/methods/visitReportRequestMethods');
+        await fulfillVisitReportRequests({ entityId: fresh.entityId, meetingReportId, user });
+      }
+      return { _id: meetingReportId, url: result.relativeUrl, filedOnClient: filed };
     },
 
     /**
@@ -514,6 +557,15 @@ if (Meteor.isServer) {
       await MeetingReportsCollection.updateAsync(meetingReportId, {
         $set: { status: REPORT_STATUS.DELETED, updatedAt: new Date(), updatedBy: user._id }
       });
+      // A deleted report no longer counts as the client's visit
+      if (report.visitDocumentId) {
+        try {
+          const { removeMeetingReportVisitDocument } = await import('/server/helpers/meetingReportFiling');
+          await removeMeetingReportVisitDocument(report);
+        } catch (err) {
+          console.error('[MEETING-REPORTS] Could not remove the filed visit report:', err);
+        }
+      }
       return { success: true };
     },
 

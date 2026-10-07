@@ -9,7 +9,15 @@ import ValidationBlotter from './components/ValidationBlotter.jsx';
 import LiveOrdersBlotter from './components/LiveOrdersBlotter.jsx';
 import { useTheme } from './ThemeContext.jsx';
 import * as XLSX from 'xlsx';
-import { OrdersCollection, ORDER_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, TERMSHEET_TRACE_TYPES, ASSET_TYPES, PRICE_TYPES, TERMSHEET_STATUSES, OrderFormatters, OrderHelpers, getOrderHealthCheck, HEALTH_FILTER_ANY, getTraceCompleteness, isTerminalOrderStatus, EXECUTION_TYPES, EXECUTION_TYPE_LABELS } from '/imports/api/orders';
+import { OrdersCollection, ORDER_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, TERMSHEET_TRACE_TYPES, ASSET_TYPES, PRICE_TYPES, TERMSHEET_STATUSES, OrderFormatters, OrderHelpers, getOrderHealthCheck, HEALTH_FILTER_ANY, getTraceCompleteness, isTerminalOrderStatus, EXECUTION_TYPES, EXECUTION_TYPE_LABELS, TICKET_KINDS, VALIDITY_TYPES, isModifiableOrder, MULTI_INSTANCE_TRACE_TYPES } from '/imports/api/orders';
+
+// Trace type the order's pending amendment / cancellation notice is filed under
+const pendingNoticeTraceType = (order) => {
+  const kind = order?.pendingBankNotice?.kind;
+  if (kind === TICKET_KINDS.CANCEL) return EMAIL_TRACE_TYPES.CANCELLATION_TO_BANK;
+  if (kind === TICKET_KINDS.AMEND) return EMAIL_TRACE_TYPES.AMENDMENT_TO_BANK;
+  return null;
+};
 import { BanksCollection } from '/imports/api/banks';
 import { IssuersCollection } from '/imports/api/issuers';
 import { UsersCollection } from '/imports/api/users';
@@ -230,6 +238,9 @@ const OrderBook = ({ user }) => {
   const [limitNewTakeProfit, setLimitNewTakeProfit] = useState('');
   const [limitReason, setLimitReason] = useState('');
   const [limitInstructionFile, setLimitInstructionFile] = useState(null);
+  const [limitQuantity, setLimitQuantity] = useState('');
+  const [limitValidityType, setLimitValidityType] = useState('');
+  const [limitValidityDate, setLimitValidityDate] = useState('');
 
   // Force settle modal
   const [forceSettleOrder, setForceSettleOrder] = useState(null);
@@ -645,24 +656,110 @@ const OrderBook = ({ user }) => {
     }
   };
 
+  // Client instruction drop zone shared by the Modify and Cancel Order modals
+  // (both are four-eyes requests that need the client's instruction).
+  const renderInstructionDropzone = () => (
+    <div style={{ marginBottom: '16px' }}>
+      <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
+        Client Instruction Email *
+      </label>
+      <div
+        style={{
+          border: limitInstructionFile ? '2px solid var(--gain-color)' : '2px dashed var(--border-color)',
+          borderRadius: '8px', padding: '14px', textAlign: 'center',
+          cursor: 'pointer',
+          background: limitInstructionFile ? 'rgba(16, 185, 129, 0.05)' : 'var(--bg-primary)',
+          transition: 'border-color 0.15s'
+        }}
+        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+        onDrop={(e) => {
+          e.preventDefault(); e.stopPropagation();
+          const file = e.dataTransfer.files[0];
+          if (file) {
+            if (file.size > EMAIL_TRACE_MAX_SIZE) { setActionError('File exceeds 15MB'); return; }
+            setLimitInstructionFile(file); setActionError(null);
+          }
+        }}
+        onClick={() => {
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.accept = EMAIL_TRACE_ACCEPTED_TYPES.join(',');
+          input.onchange = (e) => {
+            const file = e.target.files[0];
+            if (file) {
+              if (file.size > EMAIL_TRACE_MAX_SIZE) { setActionError('File exceeds 15MB'); return; }
+              setLimitInstructionFile(file); setActionError(null);
+            }
+          };
+          input.click();
+        }}
+      >
+        {limitInstructionFile ? (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '14px' }}>📎</span>
+            <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--gain-color)' }}>{limitInstructionFile.name}</span>
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+              ({(limitInstructionFile.size / 1024).toFixed(0)} KB)
+            </span>
+            <button
+              style={{ background: 'none', border: 'none', color: 'var(--loss-color)', cursor: 'pointer', fontSize: '14px', padding: '2px 6px' }}
+              onClick={(e) => { e.stopPropagation(); setLimitInstructionFile(null); }}
+            >
+              ✕
+            </button>
+          </div>
+        ) : (
+          <div>
+            <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '2px' }}>
+              Click or drag & drop client instruction
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+              .pdf, .jpg, .png, .eml, .msg, .html
+            </div>
+            {graphConnected && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setFilePicker('limitInstruction'); }}
+                style={{
+                  marginTop: '8px', padding: '4px 14px', fontSize: '11px', fontWeight: 500,
+                  border: '1px solid #0ea5e9', borderRadius: '4px',
+                  background: 'rgba(14, 165, 233, 0.1)', color: '#0ea5e9', cursor: 'pointer'
+                }}
+              >
+                Pick from Outlook
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   const handleCancel = async () => {
     if (!selectedOrder) return;
+    if (!limitInstructionFile) {
+      setActionError('Client instruction email is required for a cancellation');
+      return;
+    }
 
     setIsActioning(true);
     setActionError(null);
 
     try {
       const sessionId = getSessionId();
-      await Meteor.callAsync('orders.cancel', {
+      await Meteor.callAsync('orders.requestCancellation', {
         orderId: selectedOrder.order._id,
-        reason: cancellationReason,
+        reason: cancellationReason?.trim() || null,
+        clientInstructionFile: await readInstructionFile(limitInstructionFile),
         sessionId
       });
 
       setCancelModalOpen(false);
       setCancellationReason('');
+      setLimitInstructionFile(null);
       setSelectedOrder(null);
       loadOrders();
+      setBlotterRefreshKey(k => k + 1);
     } catch (err) {
       setActionError(err.reason || err.message);
     } finally {
@@ -795,13 +892,15 @@ const OrderBook = ({ user }) => {
     }
   };
 
-  const handleSendEmail = async (order) => {
+  // ticketKind: the original order (default), or the pending amendment /
+  // cancellation notice for an order the bank already has
+  const handleSendEmail = async (order, ticketKind = TICKET_KINDS.ORDER) => {
     setLoadingEmail(order._id);
     try {
       const sessionId = getSessionId();
 
       // Get PDF + email data from server
-      const result = await Meteor.callAsync('orders.prepareEmail', { orderId: order._id, sessionId });
+      const result = await Meteor.callAsync('orders.prepareEmail', { orderId: order._id, sessionId, ticketKind });
 
       // Desktop: .eml with PDF (and termsheet if present) attached, opens as a prefilled Outlook draft.
       // Phone: PDF saved to Files + Outlook compose deep link, since iOS cannot open a .eml as a draft.
@@ -813,6 +912,8 @@ const OrderBook = ({ user }) => {
         }
         deliverOrderEmail({
           orderReference: result.orderReference || order.orderReference,
+          fileReference: result.fileReference,
+          ticketKind: result.ticketKind,
           emailData: result.emailData,
           pdfData: result.pdfData,
           termsheet: result.termsheet
@@ -1219,8 +1320,33 @@ const OrderBook = ({ user }) => {
     setLimitNewTakeProfit(order.takeProfitPrice?.toString() || '');
     setLimitReason('');
     setLimitInstructionFile(null);
+    setLimitQuantity(order.quantity != null ? String(order.quantity) : '');
+    setLimitValidityType(order.validityType || '');
+    setLimitValidityDate(order.validityDate ? new Date(order.validityDate).toISOString().slice(0, 10) : '');
+    setActionError(null);
     setLimitModalOpen(true);
   };
+
+  // Cancelling a live order is a four-eyes request with the client's
+  // instruction, like a modification (it shares the instruction drop zone).
+  const openCancelModal = (order) => {
+    setSelectedOrder({ order });
+    setCancellationReason('');
+    setLimitInstructionFile(null);
+    setActionError(null);
+    setCancelModalOpen(true);
+  };
+
+  const readInstructionFile = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({
+      fileName: file.name,
+      base64Data: reader.result.split(',')[1],
+      mimeType: file.type || 'application/octet-stream'
+    });
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 
   const handleUpdateLimit = async () => {
     if (!selectedOrder) return;
@@ -1265,6 +1391,21 @@ const OrderBook = ({ user }) => {
       }
       if (limitReason && limitReason.trim()) {
         data.reason = limitReason.trim();
+      }
+      const newQuantity = parseFloat(String(limitQuantity).replace(/,/g, ''));
+      if (Number.isFinite(newQuantity) && newQuantity !== selectedOrder.order.quantity) {
+        data.quantity = newQuantity;
+      }
+      if (limitValidityType) {
+        data.validityType = limitValidityType;
+        if (limitValidityType === VALIDITY_TYPES.GTD) {
+          if (!limitValidityDate) {
+            setActionError('Choose the Good Till Date');
+            setIsActioning(false);
+            return;
+          }
+          data.validityDate = limitValidityDate;
+        }
       }
 
       await Meteor.callAsync('orders.updateLimit', data);
@@ -2425,7 +2566,8 @@ const OrderBook = ({ user }) => {
             {selectedOrder.order.status !== ORDER_STATUSES.CANCELLED &&
              selectedOrder.order.status !== ORDER_STATUSES.EXECUTED && (
               <>
-                {selectedOrder.order.status !== ORDER_STATUSES.PENDING_VALIDATION && (
+                {selectedOrder.order.status !== ORDER_STATUSES.PENDING_VALIDATION
+                  && selectedOrder.order.status !== ORDER_STATUSES.PENDING_MODIFICATION && (
                   <ActionButton
                     variant="secondary"
                     size={detailBtnSize}
@@ -2435,18 +2577,31 @@ const OrderBook = ({ user }) => {
                     {loadingEmail === selectedOrder.order._id ? '...' : 'Email'}
                   </ActionButton>
                 )}
-                {(selectedOrder.order.status === ORDER_STATUSES.PENDING || selectedOrder.order.status === ORDER_STATUSES.SENT) && (
-                  <ActionButton
-                    variant="secondary"
-                    size={detailBtnSize}
-                    onClick={() => {
-                      setDetailModalOpen(false);
-                      openLimitModal(selectedOrder.order);
-                    }}
-                    style={{ color: 'var(--warning-color)' }}
-                  >
-                    Modify
-                  </ActionButton>
+                {isModifiableOrder(selectedOrder.order) && !selectedOrder.order.pendingBankNotice && (
+                  <>
+                    <ActionButton
+                      variant="secondary"
+                      size={detailBtnSize}
+                      onClick={() => {
+                        setDetailModalOpen(false);
+                        openLimitModal(selectedOrder.order);
+                      }}
+                      style={{ color: 'var(--warning-color)' }}
+                    >
+                      Modify
+                    </ActionButton>
+                    <ActionButton
+                      variant="secondary"
+                      size={detailBtnSize}
+                      onClick={() => {
+                        setDetailModalOpen(false);
+                        openCancelModal(selectedOrder.order);
+                      }}
+                      style={{ color: 'var(--loss-color)' }}
+                    >
+                      Cancel Order
+                    </ActionButton>
+                  </>
                 )}
                 {selectedOrder.order.status !== ORDER_STATUSES.PENDING_VALIDATION && (() => {
                   const needsTermsheet = selectedOrder.order.assetType === ASSET_TYPES.STRUCTURED_PRODUCT
@@ -2494,6 +2649,19 @@ const OrderBook = ({ user }) => {
                   </ActionButton>
                 )}
               </>
+            )}
+            {selectedOrder.order.pendingBankNotice && (
+              <ActionButton
+                variant="primary"
+                size={detailBtnSize}
+                disabled={loadingEmail === selectedOrder.order._id}
+                title="The validated change has not been sent to the bank yet"
+                onClick={() => handleSendEmail(selectedOrder.order, selectedOrder.order.pendingBankNotice.kind)}
+              >
+                {loadingEmail === selectedOrder.order._id
+                  ? '...'
+                  : selectedOrder.order.pendingBankNotice.kind === TICKET_KINDS.CANCEL ? 'Send Cancellation to Bank' : 'Send Amendment to Bank'}
+              </ActionButton>
             )}
             <ActionButton variant="secondary" size={detailBtnSize} onClick={() => setDetailModalOpen(false)}>
               Close
@@ -3193,6 +3361,12 @@ const OrderBook = ({ user }) => {
                     // Legacy split tiles — replaced by the unified TERMSHEET tile.
                     if (traceType === EMAIL_TRACE_TYPES.TERMSHEET_SENT) return false;
                     if (traceType === EMAIL_TRACE_TYPES.TERMSHEET_SIGNED) return false;
+                    // Amendment / cancellation notices: only once there is one to file
+                    // or already filed (a cancelled order still needs its notice).
+                    if (MULTI_INSTANCE_TRACE_TYPES.has(traceType)) {
+                      return existingTraces.some(t => t.traceType === traceType)
+                        || pendingNoticeTraceType(selectedOrder.order) === traceType;
+                    }
                     // Terminal orders: only show tiles for traces already captured — never
                     // render an empty dropzone prompting for evidence on a dead order.
                     if (isTerminal) return existingTraces.some(t => t.traceType === traceType);
@@ -3211,7 +3385,12 @@ const OrderBook = ({ user }) => {
                   const trace = isTermsheetTile
                     ? (traces.find(t => t.traceType === EMAIL_TRACE_TYPES.TERMSHEET_SIGNED)
                       || traces.find(t => t.traceType === EMAIL_TRACE_TYPES.TERMSHEET))
-                    : traces.find(t => t.traceType === traceType);
+                    : MULTI_INSTANCE_TRACE_TYPES.has(traceType)
+                      // A notice still to file gets an empty drop zone; otherwise the latest one
+                      ? (pendingNoticeTraceType(selectedOrder.order) === traceType
+                        ? null
+                        : [...traces].reverse().find(t => t.traceType === traceType))
+                      : traces.find(t => t.traceType === traceType);
                   const isUploading = uploadingTrace === traceType;
                   const isPhoneMode = !isTermsheetTile && !!tracePhoneForms[traceType];
 
@@ -3495,8 +3674,8 @@ const OrderBook = ({ user }) => {
           setCancellationReason('');
           setActionError(null);
         }}
-        title="Cancel Order"
-        size="small"
+        title="Request Cancellation"
+        size="medium"
         footer={
           <>
             <ActionButton
@@ -3510,15 +3689,36 @@ const OrderBook = ({ user }) => {
               variant="danger"
               onClick={handleCancel}
               loading={isActioning}
+              disabled={!limitInstructionFile}
             >
-              Confirm Cancel
+              {isActioning ? 'Submitting...' : 'Submit Cancellation'}
             </ActionButton>
           </>
         }
       >
-        <p style={{ marginBottom: '16px', color: 'var(--text-secondary)' }}>
-          Are you sure you want to cancel this order? This action cannot be undone.
-        </p>
+        {selectedOrder && (
+          <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-primary)', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>Order Reference</div>
+            <div style={{ fontWeight: '600', fontFamily: 'monospace' }}>{selectedOrder.order.orderReference}</div>
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{selectedOrder.order.securityName}</div>
+            {selectedOrder.order.executedQuantity > 0 && (
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                {OrderFormatters.formatQuantity(selectedOrder.order.executedQuantity)} of {OrderFormatters.formatQuantity(selectedOrder.order.quantity)} already executed — only the remainder is cancelled.
+              </div>
+            )}
+          </div>
+        )}
+        <div style={{ fontSize: '11px', color: '#f97316', background: 'rgba(249, 115, 22, 0.08)', padding: '8px 12px', borderRadius: '6px', marginBottom: '16px', border: '1px solid rgba(249, 115, 22, 0.2)' }}>
+          Cancellations require four-eyes validation. Attach the client instruction email.
+          {selectedOrder && ['transmitted', 'sent', 'partially_executed'].includes(selectedOrder.order.status)
+            ? ' Once validated, a cancellation ticket is sent to the bank.'
+            : ''}
+        </div>
+        {selectedOrder?.order?.linkedOrderGroup && (
+          <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '12px' }}>
+            This order has linked take-profit / stop-loss legs. They are not cancelled with it — cancel each one separately if needed.
+          </div>
+        )}
         <div style={{ marginBottom: '16px' }}>
           <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
             Cancellation Reason (Optional)
@@ -3537,9 +3737,10 @@ const OrderBook = ({ user }) => {
             }}
             value={cancellationReason}
             onChange={(e) => setCancellationReason(e.target.value)}
-            placeholder="Enter reason for cancellation..."
+            placeholder="e.g. Client cancelled by email"
           />
         </div>
+        {renderInstructionDropzone()}
         {actionError && (
           <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: 'var(--loss-color)', fontSize: '13px' }}>
             {actionError}
@@ -3917,6 +4118,9 @@ const OrderBook = ({ user }) => {
 
             <div style={{ fontSize: '11px', color: '#f97316', background: 'rgba(249, 115, 22, 0.08)', padding: '8px 12px', borderRadius: '6px', marginBottom: '16px', border: '1px solid rgba(249, 115, 22, 0.2)' }}>
               Modifications require four-eyes validation. Attach the client instruction email.
+              {['transmitted', 'sent', 'partially_executed'].includes(selectedOrder.order.status)
+                ? ' Once validated, an amendment ticket is sent to the bank.'
+                : ''}
             </div>
 
             {/* Price Type */}
@@ -3935,6 +4139,9 @@ const OrderBook = ({ user }) => {
               >
                 <option value="market">Market</option>
                 <option value="limit">Limit</option>
+                {selectedOrder.order.priceType && !['market', 'limit'].includes(selectedOrder.order.priceType) && (
+                  <option value={selectedOrder.order.priceType}>{OrderFormatters.getPriceTypeLabel(selectedOrder.order.priceType)}</option>
+                )}
               </select>
             </div>
 
@@ -3991,6 +4198,67 @@ const OrderBook = ({ user }) => {
               </div>
             </div>
 
+            {/* Quantity / Validity */}
+            <div style={{ display: 'flex', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
+              <div style={{ flex: '1 1 140px' }}>
+                <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
+                  Quantity
+                </label>
+                <FormattedNumberInput
+                  style={{
+                    width: '100%', padding: '10px 12px',
+                    border: '1px solid var(--border-color)', borderRadius: '6px',
+                    fontSize: '13px', background: 'var(--bg-primary)', color: 'var(--text-primary)'
+                  }}
+                  value={limitQuantity}
+                  onChange={(e) => setLimitQuantity(e.target.value)}
+                  maxDecimals={6}
+                />
+                {selectedOrder.order.executedQuantity > 0 && (
+                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    {OrderFormatters.formatQuantity(selectedOrder.order.executedQuantity)} already executed
+                  </div>
+                )}
+              </div>
+              <div style={{ flex: '1 1 140px' }}>
+                <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
+                  Validity
+                </label>
+                <select
+                  style={{
+                    width: '100%', padding: '10px 12px',
+                    border: '1px solid var(--border-color)', borderRadius: '6px',
+                    fontSize: '13px', background: 'var(--bg-primary)', color: 'var(--text-primary)'
+                  }}
+                  value={limitValidityType}
+                  onChange={(e) => setLimitValidityType(e.target.value)}
+                >
+                  {!limitValidityType && <option value="">Not set</option>}
+                  <option value={VALIDITY_TYPES.DAY}>Day</option>
+                  <option value={VALIDITY_TYPES.GTC}>Good Till Canceled</option>
+                  <option value={VALIDITY_TYPES.GTD}>Good Till Date</option>
+                </select>
+              </div>
+              {limitValidityType === VALIDITY_TYPES.GTD && (
+                <div style={{ flex: '1 1 140px' }}>
+                  <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
+                    Valid until
+                  </label>
+                  <input
+                    type="date"
+                    style={{
+                      width: '100%', padding: '9px 12px',
+                      border: '1px solid var(--border-color)', borderRadius: '6px',
+                      fontSize: '13px', background: 'var(--bg-primary)', color: 'var(--text-primary)'
+                    }}
+                    min={new Date().toISOString().slice(0, 10)}
+                    value={limitValidityDate}
+                    onChange={(e) => setLimitValidityDate(e.target.value)}
+                  />
+                </div>
+              )}
+            </div>
+
             {/* Reason */}
             <div style={{ marginBottom: '12px' }}>
               <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
@@ -4009,81 +4277,7 @@ const OrderBook = ({ user }) => {
               />
             </div>
 
-            {/* Client Instruction Email (required) */}
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
-                Client Instruction Email *
-              </label>
-              <div
-                style={{
-                  border: limitInstructionFile ? '2px solid var(--gain-color)' : '2px dashed var(--border-color)',
-                  borderRadius: '8px', padding: '14px', textAlign: 'center',
-                  cursor: 'pointer',
-                  background: limitInstructionFile ? 'rgba(16, 185, 129, 0.05)' : 'var(--bg-primary)',
-                  transition: 'border-color 0.15s'
-                }}
-                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                onDrop={(e) => {
-                  e.preventDefault(); e.stopPropagation();
-                  const file = e.dataTransfer.files[0];
-                  if (file) {
-                    if (file.size > EMAIL_TRACE_MAX_SIZE) { setActionError('File exceeds 15MB'); return; }
-                    setLimitInstructionFile(file); setActionError(null);
-                  }
-                }}
-                onClick={() => {
-                  const input = document.createElement('input');
-                  input.type = 'file';
-                  input.accept = EMAIL_TRACE_ACCEPTED_TYPES.join(',');
-                  input.onchange = (e) => {
-                    const file = e.target.files[0];
-                    if (file) {
-                      if (file.size > EMAIL_TRACE_MAX_SIZE) { setActionError('File exceeds 15MB'); return; }
-                      setLimitInstructionFile(file); setActionError(null);
-                    }
-                  };
-                  input.click();
-                }}
-              >
-                {limitInstructionFile ? (
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
-                    <span style={{ fontSize: '14px' }}>📎</span>
-                    <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--gain-color)' }}>{limitInstructionFile.name}</span>
-                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                      ({(limitInstructionFile.size / 1024).toFixed(0)} KB)
-                    </span>
-                    <button
-                      style={{ background: 'none', border: 'none', color: 'var(--loss-color)', cursor: 'pointer', fontSize: '14px', padding: '2px 6px' }}
-                      onClick={(e) => { e.stopPropagation(); setLimitInstructionFile(null); }}
-                    >
-                      ✕
-                    </button>
-                  </div>
-                ) : (
-                  <div>
-                    <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '2px' }}>
-                      Click or drag & drop client instruction
-                    </div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                      .pdf, .jpg, .png, .eml, .msg, .html
-                    </div>
-                    {graphConnected && (
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); setFilePicker('limitInstruction'); }}
-                        style={{
-                          marginTop: '8px', padding: '4px 14px', fontSize: '11px', fontWeight: 500,
-                          border: '1px solid #0ea5e9', borderRadius: '4px',
-                          background: 'rgba(14, 165, 233, 0.1)', color: '#0ea5e9', cursor: 'pointer'
-                        }}
-                      >
-                        Pick from Outlook
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
+            {renderInstructionDropzone()}
 
             {actionError && (
               <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px', color: 'var(--loss-color)', fontSize: '13px' }}>

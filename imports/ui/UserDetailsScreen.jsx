@@ -11,6 +11,7 @@ import { PortfolioSnapshotsCollection } from '../api/portfolioSnapshots.js';
 import LiquidGlassCard from './components/LiquidGlassCard.jsx';
 import ClientDocumentManager, { KycDocumentManager, SingleTypeDocumentManager, IdentityImageSlot } from './components/ClientDocumentManager.jsx';
 import { ClientDocumentsCollection, DOCUMENT_TYPES, REVIEW_YEARS_BY_RISK, computeNextReviewDate, computeNextVisitDate, VISIT_INTERVAL_YEARS, computeNextPortfolioSignatureDate, SIGNED_PORTFOLIO_INTERVAL_YEARS } from '../api/clientDocuments.js';
+import { resolveDueDate } from '../api/complianceChecks.js';
 import Dialog from './Dialog.jsx';
 import { useDialog } from './useDialog.js';
 import { useTheme } from './ThemeContext.jsx';
@@ -4859,13 +4860,16 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                   const riskDisplay = overallRisk ? getRiskLevelDisplay(overallRisk) : null;
                   const years = overallRisk ? REVIEW_YEARS_BY_RISK[overallRisk] : null;
 
-                  // A typed last-review date wins; otherwise the latest dated
-                  // review file is the last review.
-                  const lastReviewFromFile = !kyc.lastReviewDate && latestReviewFileDate;
-                  const lastReview = kyc.lastReviewDate || latestReviewFileDate;
-                  const storedNext = kyc.nextReviewDate ? new Date(kyc.nextReviewDate) : null;
-                  const derivedNext = computeNextReviewDate(lastReview, overallRisk);
-                  const nextDue = storedNext || derivedNext;
+                  // The newest of the typed date and the latest dated review
+                  // file is the last review (same rule as the compliance dashboard).
+                  const typedReview = kyc.lastReviewDate ? new Date(kyc.lastReviewDate) : null;
+                  const { last: lastReview, next: nextDue } = resolveDueDate({
+                    manualLast: typedReview,
+                    manualNext: kyc.nextReviewDate ? new Date(kyc.nextReviewDate) : null,
+                    fileLast: latestReviewFileDate,
+                    compute: (last) => computeNextReviewDate(last, overallRisk)
+                  });
+                  const lastReviewFromFile = !!latestReviewFileDate && (!typedReview || latestReviewFileDate > typedReview);
                   const isOverdue = nextDue && nextDue < new Date();
 
                   return (
@@ -4930,12 +4934,17 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
                     periodic review, but the cadence is fixed at one year and
                     does not depend on the risk level. */}
                 {(() => {
-                  // A typed last-visit date wins; otherwise the latest dated
-                  // visit report is the last visit.
-                  const lastVisitFromFile = !kyc.lastVisitDate && latestVisitFileDate;
-                  const lastVisit = kyc.lastVisitDate || latestVisitFileDate;
-                  const storedNext = kyc.nextVisitDate ? new Date(kyc.nextVisitDate) : null;
-                  const nextDue = storedNext || computeNextVisitDate(lastVisit);
+                  // The newest of the typed date and the latest dated visit
+                  // report (finalized meeting reports are filed here too) is
+                  // the last visit — same rule as the compliance dashboard.
+                  const typedVisit = kyc.lastVisitDate ? new Date(kyc.lastVisitDate) : null;
+                  const { last: lastVisit, next: nextDue } = resolveDueDate({
+                    manualLast: typedVisit,
+                    manualNext: kyc.nextVisitDate ? new Date(kyc.nextVisitDate) : null,
+                    fileLast: latestVisitFileDate,
+                    compute: computeNextVisitDate
+                  });
+                  const lastVisitFromFile = !!latestVisitFileDate && (!typedVisit || latestVisitFileDate > typedVisit);
                   const isOverdue = nextDue && nextDue < new Date();
 
                   return (

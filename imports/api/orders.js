@@ -141,8 +141,19 @@ export const OrdersCollection = new Mongo.Collection('orders');
 //     checkedAt, justification (optional, supplied by the trader)
 //   } (optional),
 //
-//   // Limit modification history
-//   limitHistory: [{ price: Number, priceType: String, changedAt: Date, changedBy: String, changedByName: String, reason: String }],
+//   // Modification / cancellation history (validated or rejected requests)
+//   limitHistory: [{
+//     _id: String, kind: 'amend' | 'cancel' (absent on old rows = amend),
+//     price, priceType, stopLossPrice, takeProfitPrice, quantity, validityType, validityDate,  // before
+//     newPrice, newPriceType, newStopLossPrice, newTakeProfitPrice, newQuantity, newValidityType, newValidityDate,
+//     changedAt: Date, changedBy: String, changedByName: String, reason: String,
+//     validatedAt, validatedBy, validatedByName, rejected: Boolean,
+//     // The bank already had the order, so the change must be sent to it
+//     bankNotice: { required: Boolean, sentAt: Date, sentMethod: 'graph'|'trace', sentBy: String, traceId: String }
+//   }],
+//
+//   // A validated amendment/cancellation the bank has not been told about yet
+//   pendingBankNotice: { kind: 'amend' | 'cancel', historyId: String, validatedAt: Date } | null,
 //
 //   // Notes
 //   notes: String,
@@ -197,8 +208,17 @@ export const EMAIL_TRACE_TYPES = {
   INITIAL_TERMSHEET: 'initial_termsheet',
   TERMSHEET: 'termsheet',
   TERMSHEET_SENT: 'termsheet_sent',
-  TERMSHEET_SIGNED: 'termsheet_signed'
+  TERMSHEET_SIGNED: 'termsheet_signed',
+  AMENDMENT_TO_BANK: 'amendment_to_bank',
+  CANCELLATION_TO_BANK: 'cancellation_to_bank'
 };
+
+// An order can be amended more than once, so these traces accumulate instead of
+// replacing the previous one of the same type (which would destroy evidence).
+export const MULTI_INSTANCE_TRACE_TYPES = new Set([
+  EMAIL_TRACE_TYPES.AMENDMENT_TO_BANK,
+  EMAIL_TRACE_TYPES.CANCELLATION_TO_BANK
+]);
 
 // Trace type labels for display
 export const EMAIL_TRACE_LABELS = {
@@ -209,7 +229,9 @@ export const EMAIL_TRACE_LABELS = {
   [EMAIL_TRACE_TYPES.INITIAL_TERMSHEET]: 'Initial Termsheet',
   [EMAIL_TRACE_TYPES.TERMSHEET]: 'Signed Termsheet',
   [EMAIL_TRACE_TYPES.TERMSHEET_SENT]: 'Termsheet Sent',
-  [EMAIL_TRACE_TYPES.TERMSHEET_SIGNED]: 'Signed Termsheet'
+  [EMAIL_TRACE_TYPES.TERMSHEET_SIGNED]: 'Signed Termsheet',
+  [EMAIL_TRACE_TYPES.AMENDMENT_TO_BANK]: 'Amendment to Bank',
+  [EMAIL_TRACE_TYPES.CANCELLATION_TO_BANK]: 'Cancellation to Bank'
 };
 
 // Trace types that document the termsheet workflow (separate from order trace count)
@@ -391,8 +413,37 @@ export const RESTING_PRICE_TYPES = [
   PRICE_TYPES.LIMIT, PRICE_TYPES.STOP_LIMIT, PRICE_TYPES.STOP_LOSS, PRICE_TYPES.TAKE_PROFIT
 ];
 
+// Includes an order whose change request awaits validation (isLiveAtBank below)
 export const isLiveRestingOrder = (order) =>
-  !!order && LIVE_ORDER_STATUSES.includes(order.status) && RESTING_PRICE_TYPES.includes(order.priceType);
+  isLiveAtBank(order) && RESTING_PRICE_TYPES.includes(order.priceType);
+
+// Statuses in which the bank already has the order, so any change to it has to
+// be sent to the bank as an amendment / cancellation ticket.
+export const AT_BANK_ORDER_STATUSES = ['transmitted', 'sent', 'partially_executed'];
+
+// Ticket variants: the original order instruction, an amendment, a cancellation
+export const TICKET_KINDS = {
+  ORDER: 'order',
+  AMEND: 'amend',
+  CANCEL: 'cancel'
+};
+
+/** Can a modification or cancellation be requested on this order? */
+export const isModifiableOrder = (order) =>
+  !!order && LIVE_ORDER_STATUSES.includes(order.status);
+
+/**
+ * Is this order still working at the bank? Same as a live status, plus an
+ * order whose change request is awaiting four-eyes: until that is validated
+ * and sent, the bank is still working the original instruction.
+ */
+export const isLiveAtBank = (order) =>
+  !!order && (LIVE_ORDER_STATUSES.includes(order.status)
+    || (order.status === 'pending_modification'
+      && LIVE_ORDER_STATUSES.includes(order.pendingModification?.statusBeforeModification)));
+
+// Statuses to query for orders working at the bank; refine with isLiveAtBank
+export const LIVE_AT_BANK_QUERY_STATUSES = [...LIVE_ORDER_STATUSES, 'pending_modification'];
 
 /**
  * Has the order's validity run out? Nothing expires orders automatically (the
@@ -918,8 +969,9 @@ export function getOrderHealthCheck(order) {
     checks.push({ name: 'Bank confirmation', ok: hasTrace(EMAIL_TRACE_TYPES.BANK_CONFIRMATION) });
   }
 
-  // 6. Execution price (required for executed orders)
-  if (executedStatuses.includes(order.status)) {
+  // 6. Execution price (required for executed orders). A term deposit is placed
+  // at a rate, not bought at a price, so it never has one.
+  if (executedStatuses.includes(order.status) && order.assetType !== ASSET_TYPES.TERM_DEPOSIT) {
     checks.push({ name: 'Exec price', ok: order.executedPrice != null && order.executedPrice > 0 });
   }
 
@@ -1186,8 +1238,19 @@ export const OrderHelpers = {
         validatedAtFormatted: entry.validatedAt ? OrderFormatters.formatDateTime(entry.validatedAt) : null,
         rejectedAtFormatted: entry.rejectedAt ? OrderFormatters.formatDateTime(entry.rejectedAt) : null,
         priceTypeLabel: OrderFormatters.getPriceTypeLabel(entry.priceType),
-        newPriceTypeLabel: entry.newPriceType ? OrderFormatters.getPriceTypeLabel(entry.newPriceType) : null
+        newPriceTypeLabel: entry.newPriceType ? OrderFormatters.getPriceTypeLabel(entry.newPriceType) : null,
+        kindLabel: entry.kind === TICKET_KINDS.CANCEL ? 'Cancellation' : 'Amendment',
+        changeRows: entry.kind === TICKET_KINDS.CANCEL ? [] : OrderHelpers.describeOrderChange(entry, order),
+        bankNoticeSentAtFormatted: entry.bankNotice?.sentAt ? OrderFormatters.formatDateTime(entry.bankNotice.sentAt) : null
       })),
+      isModifiable: isModifiableOrder(order),
+      // Badge for the live blotter / PMS pills while a change is in flight
+      changePendingLabel: order.status === 'pending_modification'
+        ? (order.pendingModification?.kind === TICKET_KINDS.CANCEL ? 'cancellation pending' : 'change pending')
+        : (order.pendingBankNotice ? 'bank not yet notified' : null),
+      pendingBankNoticeLabel: order.pendingBankNotice
+        ? (order.pendingBankNotice.kind === TICKET_KINDS.CANCEL ? 'Cancellation not yet sent to bank' : 'Amendment not yet sent to bank')
+        : null,
       // Executed-price modification history (inline edits from the blotter)
       executedPriceHistoryFormatted: (order.executedPriceHistory || []).map(entry => ({
         ...entry,
@@ -1305,8 +1368,49 @@ export const OrderHelpers = {
     return !!(issuer && (issuer.contactName || issuer.contactEmail || issuer.contactPhone));
   },
 
-  // Generate email body for mailto
-  generateEmailBody(order, client, bank, bankAccount, liveIssuer = null, deskLabel = 'Trading Desk') {
+  /**
+   * The fields a validated amendment changed, as display rows
+   * [{ label, from, to }]. Shared by the amendment ticket PDF and its email
+   * body so the two cannot list different changes.
+   */
+  describeOrderChange(entry, order = {}) {
+    if (!entry) return [];
+    const asPercent = quotesPriceAsPercent(order.assetType);
+    const price = (v) => {
+      if (v === null || v === undefined || v === '') return '—';
+      if (asPercent) return `${Number(v).toFixed(2)}%`;
+      const ccy = order.currency ? ` ${order.currency}` : '';
+      return `${Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}${ccy}`;
+    };
+    const qty = (v) => (v === null || v === undefined) ? '—' : OrderFormatters.formatQuantity(v);
+    const validity = (type, date) => {
+      if (type === VALIDITY_TYPES.GTC) return 'Good Till Canceled';
+      if (type === VALIDITY_TYPES.GTD) return `Good Till ${date ? OrderFormatters.formatDate(date) : 'Date'}`;
+      if (type === VALIDITY_TYPES.DAY) return 'Day';
+      return '—';
+    };
+    // Old rows predate quantity/validity: "undefined" means not part of the change
+    const has = (key) => entry[key] !== undefined;
+    const rows = [];
+    const push = (label, from, to) => { if (from !== to) rows.push({ label, from, to }); };
+
+    if (has('newPriceType')) {
+      push('Price type', OrderFormatters.getPriceTypeLabel(entry.priceType), OrderFormatters.getPriceTypeLabel(entry.newPriceType));
+    }
+    if (has('newPrice')) push('Limit price', price(entry.price), price(entry.newPrice));
+    if (has('newStopLossPrice')) push('Stop loss', price(entry.stopLossPrice), price(entry.newStopLossPrice));
+    if (has('newTakeProfitPrice')) push('Take profit', price(entry.takeProfitPrice), price(entry.newTakeProfitPrice));
+    if (has('newQuantity')) push('Quantity', qty(entry.quantity), qty(entry.newQuantity));
+    if (has('newValidityType')) {
+      push('Validity', validity(entry.validityType, entry.validityDate), validity(entry.newValidityType, entry.newValidityDate));
+    }
+    return rows;
+  },
+
+  // Generate email body for mailto. `options.ticketKind` turns it into an
+  // amendment / cancellation notice; `options.change` is the limitHistory entry.
+  generateEmailBody(order, client, bank, bankAccount, liveIssuer = null, deskLabel = 'Trading Desk', options = {}) {
+    const ticketKind = options.ticketKind || TICKET_KINDS.ORDER;
     const clientName = client
       ? (client.profile?.clientType === 'company'
         ? (client.profile?.companyName || 'our client')
@@ -1315,14 +1419,57 @@ export const OrderHelpers = {
     const accountNumber = bankAccount?.accountNumber || order.portfolioCode || '';
 
     const issuer = OrderHelpers.resolveIssuerContact(order, liveIssuer);
+    const forAccount = `for the account of ${clientName}${accountNumber ? ` (account ${accountNumber})` : ''}`;
+    const originalSentAt = order.transmittedAt || order.sentAt;
+    const sentOn = originalSentAt ? ` sent on ${OrderFormatters.formatDate(originalSentAt)}` : '';
 
     const lines = [
       // The mail goes to a desk address with several people in copy, so it opens
       // to all of them rather than to a desk label or one named recipient.
       'Dear all,',
-      '',
-      `Please find attached an order instruction (Ref: ${order.orderReference}) for the account of ${clientName}${accountNumber ? ` (account ${accountNumber})` : ''}.`
+      ''
     ];
+
+    if (ticketKind === TICKET_KINDS.CANCEL) {
+      const remaining = remainingOrderQuantity(order);
+      lines.push(
+        `Please CANCEL our order instruction (Ref: ${order.orderReference})${sentOn}, ${forAccount}.`,
+        '',
+        `${OrderFormatters.orderDirectionLabel(order).toUpperCase()} ${order.securityName}${order.isin ? ` (${order.isin})` : ''}`,
+        `Quantity to cancel: ${OrderFormatters.formatQuantity(remaining)}${order.executedQuantity ? ` (of ${OrderFormatters.formatQuantity(order.quantity)}; ${OrderFormatters.formatQuantity(order.executedQuantity)} already executed)` : ''}`,
+        '',
+        'The cancellation instruction is attached.',
+        '',
+        'We kindly ask you to cancel this order at your earliest convenience and confirm the cancellation.'
+      );
+    } else if (ticketKind === TICKET_KINDS.AMEND) {
+      lines.push(
+        `Please AMEND our order instruction (Ref: ${order.orderReference})${sentOn}, ${forAccount}, as follows:`,
+        ''
+      );
+      for (const row of OrderHelpers.describeOrderChange(options.change, order)) {
+        lines.push(`${row.label}: ${row.from} -> ${row.to}`);
+      }
+      lines.push(
+        '',
+        'The amended order instruction is attached. All other terms are unchanged.',
+        '',
+        'We kindly ask you to apply this amendment at your earliest convenience and confirm.'
+      );
+    } else {
+      lines.push(`Please find attached an order instruction (Ref: ${order.orderReference}) ${forAccount}.`);
+    }
+
+    if (ticketKind !== TICKET_KINDS.ORDER) {
+      lines.push(
+        '',
+        'Should you require any additional information, please do not hesitate to contact us.',
+        '',
+        'Kind regards,',
+        'Amberlake Partners'
+      );
+      return lines.join('\n');
+    }
 
     // The desk deals directly with the issuer on a structured product, so give
     // them the coordinates rather than making them come back and ask.
@@ -1348,8 +1495,12 @@ export const OrderHelpers = {
   },
 
   // Generate email subject
-  generateEmailSubject(order, liveIssuer = null) {
+  generateEmailSubject(order, liveIssuer = null, ticketKind = TICKET_KINDS.ORDER) {
     const isinPart = order.isin ? ` (${order.isin})` : '';
+    // The desk finds the original by its reference, so the prefix goes in front
+    // of the unchanged original subject.
+    const prefix = ticketKind === TICKET_KINDS.CANCEL ? 'CANCELLATION: '
+      : ticketKind === TICKET_KINDS.AMEND ? 'AMENDMENT: ' : '';
     // "BUY Term Deposit" is not how the desk or the bank talks about a deposit —
     // orderDirectionLabel gives INCREASE / DECREASE there, and the pair for FX.
     const direction = OrderFormatters.orderDirectionLabel(order).toUpperCase();
@@ -1357,6 +1508,6 @@ export const OrderHelpers = {
     // belongs in the subject where they see it without opening the mail.
     const issuer = OrderHelpers.resolveIssuerContact(order, liveIssuer);
     const issuerPart = issuer?.name ? ` - Issuer: ${issuer.name}` : '';
-    return `Order: ${order.orderReference} - ${direction} ${order.securityName}${isinPart}${issuerPart}`;
+    return `${prefix}Order: ${order.orderReference} - ${direction} ${order.securityName}${isinPart}${issuerPart}`;
   }
 };

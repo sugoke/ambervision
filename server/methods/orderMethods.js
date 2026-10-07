@@ -14,7 +14,7 @@ import { BankAccountsCollection, getAuthorizedEmails, accountAllowsOrders } from
 import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
 import { ProductsCollection } from '../../imports/api/products.js';
 import { PMSOperationsCollection } from '../../imports/api/pmsOperations.js';
-import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, ORDER_SOURCE_TYPES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, FX_SUBTYPES, TERM_DEPOSIT_TENORS, EXECUTION_TYPE_LABELS, OPTION_TYPES, DEFAULT_OPTION_CONTRACT_SIZE, TERMINAL_ORDER_STATUSES, isPlaceholderIsin, OrderHelpers, OrderFormatters, quotesPriceAsPercent, isShortCall, computeShortCallCoverage, computeOrderEstimatedValue, optionContractDescription, getOrderHealthCheck, HEALTH_FILTER_ANY } from '../../imports/api/orders.js';
+import { OrdersCollection, ORDER_STATUSES, ASSET_TYPES, PRICE_TYPES, TRADE_MODES, ORDER_SOURCE_TYPES, TERMSHEET_STATUSES, EMAIL_TRACE_TYPES, EMAIL_TRACE_LABELS, EMAIL_TRACE_ACCEPTED_TYPES, EMAIL_TRACE_MAX_SIZE, TERMSHEET_EVIDENCE_TYPES, FX_SUBTYPES, TERM_DEPOSIT_TENORS, EXECUTION_TYPE_LABELS, OPTION_TYPES, DEFAULT_OPTION_CONTRACT_SIZE, TERMINAL_ORDER_STATUSES, isPlaceholderIsin, OrderHelpers, OrderFormatters, quotesPriceAsPercent, isShortCall, computeShortCallCoverage, computeOrderEstimatedValue, optionContractDescription, getOrderHealthCheck, HEALTH_FILTER_ANY, TICKET_KINDS, AT_BANK_ORDER_STATUSES, MULTI_INSTANCE_TRACE_TYPES, VALIDITY_TYPES, isModifiableOrder } from '../../imports/api/orders.js';
 import { EODApiHelpers } from '../../imports/api/eodApi.js';
 import { AuditLog } from '/imports/api/auditLog';
 import { OrderCountersCollection, OrderCounterHelpers } from '../../imports/api/orderCounters.js';
@@ -592,6 +592,254 @@ async function checkAllocationImpact({ bankAccountId, clientId, assetType, estim
   };
 }
 
+// ---------------------------------------------------------------------------
+// Amendments & cancellations of live orders (four-eyes)
+//
+// Both go through `pendingModification` (kind 'amend' | 'cancel'): the RM files
+// the request with the client's instruction, a second validator applies it, and
+// if the bank already had the order the validator then sends it an amendment /
+// cancellation ticket. Until that ticket is out, `pendingBankNotice` says so.
+// ---------------------------------------------------------------------------
+
+const isOrderValidator = (user) => user.canValidateOrders === true || user.role === 'compliance';
+
+/**
+ * A priced order must carry its price: a limit (or stop-limit) order without a
+ * limit, or a stop order without a stop, reaches the bank as an instruction it
+ * cannot execute — or worse, executes "at market" by default.
+ */
+const assertOrderPriceLevels = ({ priceType, limitPrice, stopPrice }) => {
+  const positive = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0;
+  if ((priceType === PRICE_TYPES.LIMIT || priceType === PRICE_TYPES.STOP_LIMIT) && !positive(limitPrice)) {
+    throw new Meteor.Error('missing-limit-price', 'A limit order needs a limit price above zero');
+  }
+  if ((priceType === PRICE_TYPES.STOP_LOSS || priceType === PRICE_TYPES.STOP_LIMIT) && !positive(stopPrice)) {
+    throw new Meteor.Error('missing-stop-price', 'A stop order needs a stop price above zero');
+  }
+};
+
+/** A change can only be requested on a live order with nothing else in flight. */
+const assertOrderChangeable = (order) => {
+  if (!isModifiableOrder(order)) {
+    throw new Meteor.Error('invalid-operation',
+      'Only live orders (validated, transmitted or partially executed) can be modified or cancelled');
+  }
+  // A second change before the first reached the bank would describe a
+  // "previous" state the bank never saw.
+  if (order.pendingBankNotice) {
+    throw new Meteor.Error('bank-notice-pending',
+      `The previous ${order.pendingBankNotice.kind === TICKET_KINDS.CANCEL ? 'cancellation' : 'amendment'} has not been sent to the bank yet — send it first.`);
+  }
+};
+
+/** Store the client's instruction for a change request next to the order's traces. */
+const saveChangeInstructionFile = (orderId, file, prefix) => {
+  try {
+    const ordersDir = path.join(getOrderTracesDir(), orderId);
+    if (!fs.existsSync(ordersDir)) {
+      fs.mkdirSync(ordersDir, { recursive: true });
+    }
+    const ext = path.extname(file.fileName).toLowerCase();
+    const storedFileName = `${prefix}_${Date.now()}${ext}`;
+    const filePath = path.join(ordersDir, storedFileName);
+    fs.writeFileSync(filePath, Buffer.from(file.base64Data, 'base64'));
+    return {
+      fileName: file.fileName,
+      mimeType: file.mimeType,
+      filePath,
+      storedFileName
+    };
+  } catch (err) {
+    console.error('[ORDERS] Error saving change instruction file:', err);
+    throw new Meteor.Error('file-system-error', 'Failed to save client instruction file');
+  }
+};
+
+/** Put a change request on the order and tell the validators. */
+const fileOrderChangeRequest = async ({ order, kind, oldValues, newValues, reason, instructionFile, userId, userDisplayName }) => {
+  const pendingModification = {
+    _id: Random.id(),
+    kind,
+    requestedBy: userId,
+    requestedByName: userDisplayName,
+    requestedAt: new Date(),
+    reason: reason || null,
+    oldValues,
+    newValues,
+    instructionFile,
+    statusBeforeModification: order.status,
+    status: 'pending' // pending | validated | rejected
+  };
+
+  // Compare-and-set on the status so two simultaneous requests cannot both land
+  const updated = await OrdersCollection.updateAsync(
+    { _id: order._id, status: order.status },
+    {
+      $set: {
+        status: ORDER_STATUSES.PENDING_MODIFICATION,
+        pendingModification,
+        updatedAt: new Date(),
+        updatedBy: userId
+      }
+    }
+  );
+  if (!updated) {
+    throw new Meteor.Error('conflict', 'The order changed in the meantime — please refresh and try again.');
+  }
+
+  const isCancel = kind === TICKET_KINDS.CANCEL;
+  console.log(`[ORDERS] ${isCancel ? 'Cancellation' : 'Modification'} requested on order ${order.orderReference} by ${userDisplayName} (${userId}) - reason: ${reason || 'none'}`);
+
+  AuditLog.record({
+    actorUserId: userId,
+    action: isCancel ? 'order.cancellation.requested' : 'order.modification.requested',
+    targetType: 'order',
+    targetId: order._id,
+    meta: { orderReference: order.orderReference, reason: reason || null, ...(isCancel ? {} : { newValues }) }
+  });
+
+  try {
+    const { NotificationHelpers, EVENT_TYPES } = await import('../../imports/api/notifications.js');
+    const validators = await UsersCollection.find({
+      $or: [{ canValidateOrders: true }, { role: 'compliance' }],
+      _id: { $ne: userId },
+      role: { $in: ['superadmin', 'admin', 'rm', 'compliance', 'staff'] }
+    }).fetchAsync();
+
+    for (const validator of validators) {
+      await NotificationHelpers.create({
+        userId: validator._id,
+        type: 'warning',
+        title: isCancel ? 'Order Cancellation Pending' : 'Order Modification Pending',
+        message: `${userDisplayName} requested ${isCancel ? 'the cancellation of' : 'a modification on'} order ${order.orderReference} (${order.securityName}).`,
+        metadata: { orderId: order._id, orderReference: order.orderReference },
+        eventType: EVENT_TYPES.ORDER_CREATED
+      });
+    }
+  } catch (notifError) {
+    console.error('[ORDERS] Error sending change-request notification:', notifError);
+  }
+
+  return pendingModification;
+};
+
+/**
+ * limitHistory entry for a processed change request. Quantity / validity keys
+ * are only written when the request carried them: older requests predate those
+ * fields, and an absent key is how describeOrderChange knows it wasn't changed.
+ */
+const buildChangeHistoryEntry = (mod) => {
+  const o = mod.oldValues || {};
+  const n = mod.newValues || {};
+  const entry = {
+    _id: Random.id(),
+    kind: mod.kind || TICKET_KINDS.AMEND,
+    changedAt: mod.requestedAt,
+    changedBy: mod.requestedBy,
+    changedByName: mod.requestedByName,
+    reason: mod.reason,
+    instructionFile: mod.instructionFile ? {
+      fileName: mod.instructionFile.fileName,
+      storedFileName: mod.instructionFile.storedFileName
+    } : null
+  };
+  if (entry.kind === TICKET_KINDS.CANCEL) return entry;
+
+  Object.assign(entry, {
+    price: o.limitPrice ?? null,
+    priceType: o.priceType ?? null,
+    stopLossPrice: o.stopLossPrice ?? null,
+    takeProfitPrice: o.takeProfitPrice ?? null,
+    newPrice: n.limitPrice ?? null,
+    newPriceType: n.priceType ?? null,
+    newStopLossPrice: n.stopLossPrice ?? null,
+    newTakeProfitPrice: n.takeProfitPrice ?? null
+  });
+  if ('quantity' in n) {
+    entry.quantity = o.quantity ?? null;
+    entry.newQuantity = n.quantity ?? null;
+  }
+  if ('validityType' in n) {
+    entry.validityType = o.validityType ?? null;
+    entry.validityDate = o.validityDate ?? null;
+    entry.newValidityType = n.validityType ?? null;
+    entry.newValidityDate = n.validityDate ?? null;
+  }
+  return entry;
+};
+
+/** The latest validated change the bank still has to be told about, if any. */
+const findPendingNoticeEntry = (order) => {
+  const historyId = order?.pendingBankNotice?.historyId;
+  if (!historyId) return null;
+  return (order.limitHistory || []).find(entry => entry._id === historyId) || null;
+};
+
+/**
+ * Record that an amendment / cancellation notice reached the bank: stamp the
+ * history entry and clear pendingBankNotice. No-op if nothing was pending.
+ */
+const markBankNoticeSent = async ({ order, sentMethod, userId, traceId = null }) => {
+  const historyId = order?.pendingBankNotice?.historyId;
+  if (!historyId) return;
+  const sentAt = new Date();
+  await OrdersCollection.updateAsync(
+    { _id: order._id, 'limitHistory._id': historyId },
+    {
+      $set: {
+        'limitHistory.$.bankNotice.sentAt': sentAt,
+        'limitHistory.$.bankNotice.sentMethod': sentMethod,
+        'limitHistory.$.bankNotice.sentBy': userId,
+        ...(traceId ? { 'limitHistory.$.bankNotice.traceId': traceId } : {}),
+        pendingBankNotice: null,
+        updatedAt: sentAt,
+        updatedBy: userId
+      }
+    }
+  );
+  AuditLog.record({
+    actorUserId: userId,
+    action: 'order.bankNotice.sent',
+    targetType: 'order',
+    targetId: order._id,
+    meta: { orderReference: order.orderReference, kind: order.pendingBankNotice.kind, via: sentMethod }
+  });
+};
+
+/** Trace type a bank ticket of this kind is filed under. */
+const traceTypeForTicket = (ticketKind) => (
+  ticketKind === TICKET_KINDS.CANCEL ? EMAIL_TRACE_TYPES.CANCELLATION_TO_BANK
+    : ticketKind === TICKET_KINDS.AMEND ? EMAIL_TRACE_TYPES.AMENDMENT_TO_BANK
+      : EMAIL_TRACE_TYPES.ORDER_TO_BANK
+);
+
+/**
+ * An amendment / cancellation ticket can only be built while the order has a
+ * notice of that kind pending — it describes a specific validated change.
+ */
+const assertTicketKindSendable = (order, ticketKind) => {
+  if (!ticketKind || ticketKind === TICKET_KINDS.ORDER) return;
+  if (order.pendingBankNotice?.kind !== ticketKind || !findPendingNoticeEntry(order)) {
+    throw new Meteor.Error('invalid-operation',
+      `This order has no validated ${ticketKind === TICKET_KINDS.CANCEL ? 'cancellation' : 'amendment'} waiting to be sent to the bank.`);
+  }
+};
+
+/**
+ * The original order ticket must not go out while a change request is under
+ * review (sending would move the order to TRANSMITTED underneath it), nor for
+ * a cancelled order.
+ */
+const assertOriginalTicketSendable = (order, ticketKind) => {
+  if (ticketKind && ticketKind !== TICKET_KINDS.ORDER) return;
+  if (order.status === ORDER_STATUSES.PENDING_MODIFICATION) {
+    throw new Meteor.Error('invalid-operation', 'A modification or cancellation of this order is awaiting validation — validate or reject it first.');
+  }
+  if (order.status === ORDER_STATUSES.CANCELLED) {
+    throw new Meteor.Error('invalid-operation', 'This order is cancelled.');
+  }
+};
+
 Meteor.methods({
   /**
    * Generate next order reference number
@@ -802,6 +1050,7 @@ Meteor.methods({
     }
 
     // Create order document
+    assertOrderPriceLevels(orderData);
     const hasLimitPrice = orderData.priceType === 'limit' || orderData.priceType === 'stop_limit';
     const order = {
       orderReference,
@@ -1325,6 +1574,8 @@ ${userDisplayName}
     if (!bulkOrderData.orders || bulkOrderData.orders.length === 0) {
       throw new Meteor.Error('invalid-order', 'At least one order is required');
     }
+    // Checked up front so a block without its price fails before any row is created
+    assertOrderPriceLevels(bulkOrderData);
 
     const filesByKey = new Map((clientOrderFiles || []).map(f => [f.key, f]));
     const isPhoneSource = bulkOrderData.orderSource === ORDER_SOURCE_TYPES.PHONE;
@@ -1406,6 +1657,7 @@ ${userDisplayName}
         if (bulkOrderData.fxAmountCurrency) sharedFields.fxAmountCurrency = bulkOrderData.fxAmountCurrency;
         if (bulkOrderData.fxForwardDate) sharedFields.fxForwardDate = bulkOrderData.fxForwardDate;
         if (bulkOrderData.fxValueDate) sharedFields.fxValueDate = bulkOrderData.fxValueDate;
+        if (bulkOrderData.stopPrice) sharedFields.stopPrice = bulkOrderData.stopPrice;
         if (bulkOrderData.stopLossPrice) sharedFields.stopLossPrice = bulkOrderData.stopLossPrice;
         if (bulkOrderData.takeProfitPrice) sharedFields.takeProfitPrice = bulkOrderData.takeProfitPrice;
         if (bulkOrderData.depositTenor) sharedFields.depositTenor = bulkOrderData.depositTenor;
@@ -1547,20 +1799,46 @@ ${userDisplayName}
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
 
-    // Cannot cancel executed orders
-    if (order.status === ORDER_STATUSES.EXECUTED) {
-      throw new Meteor.Error('invalid-operation', 'Cannot cancel executed orders');
+    // Direct cancel only while the bank has not received the order. Once it
+    // has, the cancellation goes through four-eyes and a ticket to the bank
+    // (orders.requestCancellation).
+    const cancellableDirectly = [
+      ORDER_STATUSES.DRAFT,
+      ORDER_STATUSES.PENDING_VALIDATION,
+      ORDER_STATUSES.REVISION_REQUESTED,
+      ORDER_STATUSES.PENDING
+    ];
+    if (!cancellableDirectly.includes(order.status)) {
+      throw new Meteor.Error('invalid-operation',
+        AT_BANK_ORDER_STATUSES.includes(order.status)
+          ? 'The bank already has this order — request a cancellation instead, so a cancellation ticket is sent.'
+          : 'This order can no longer be cancelled');
     }
 
-    await OrdersCollection.updateAsync(orderId, {
-      $set: {
-        status: ORDER_STATUSES.CANCELLED,
-        cancelledAt: new Date(),
-        cancelledBy: userId,
-        cancellationReason: reason || null,
-        updatedAt: new Date(),
-        updatedBy: userId
+    const updated = await OrdersCollection.updateAsync(
+      { _id: orderId, status: order.status },
+      {
+        $set: {
+          status: ORDER_STATUSES.CANCELLED,
+          cancelledAt: new Date(),
+          cancelledBy: userId,
+          cancellationReason: reason || null,
+          updatedAt: new Date(),
+          updatedBy: userId
+        }
       }
+    );
+    if (!updated) {
+      throw new Meteor.Error('conflict', 'The order changed in the meantime — please refresh and try again.');
+    }
+
+    AuditLog.record({
+      actorUserId: userId,
+      actorRole: user.role || null,
+      action: 'order.cancelled',
+      targetType: 'order',
+      targetId: orderId,
+      meta: { orderReference: order.orderReference, previousStatus: order.status, reason: reason || null }
     });
 
     console.log(`[ORDERS] Cancelled order ${order.orderReference} by ${userDisplayName} (${userId})`);
@@ -1722,6 +2000,8 @@ ${userDisplayName}
     // Leaving the original snapshot would show the validator cover for a
     // contract count that no longer exists.
     const revised = { ...order, ...updateFields };
+    // An edit must not leave a limit / stop order without its price
+    assertOrderPriceLevels(revised);
 
     // Keep the estimated value in line with a revised nominal or price - the
     // ticket, the PDFs and the allocation check all read it.
@@ -1797,20 +2077,21 @@ ${userDisplayName}
   },
 
   /**
-   * Update limit on a sent order (allows post-send limit changes)
-   * Tracks change history for audit trail
+   * Request a modification of a live order (four-eyes: goes to PENDING_MODIFICATION).
+   * Covers the price fields, quantity and validity. Requires the client's
+   * instruction. Once validated, an order the bank already has gets an
+   * amendment ticket (see orders.validateModification).
    */
-  /**
-   * Request a limit/SL/TP modification (four-eyes: goes to PENDING_MODIFICATION)
-   * Requires client instruction email attachment
-   */
-  async 'orders.updateLimit'({ orderId, priceType, limitPrice, stopLossPrice, takeProfitPrice, reason, clientInstructionFile, sessionId }) {
+  async 'orders.updateLimit'({ orderId, priceType, limitPrice, stopLossPrice, takeProfitPrice, quantity, validityType, validityDate, reason, clientInstructionFile, sessionId }) {
     check(orderId, String);
     check(sessionId, String);
     check(priceType, Match.Maybe(Match.Where(x => Object.values(PRICE_TYPES).includes(x))));
     check(limitPrice, Match.Maybe(Number));
     check(stopLossPrice, Match.Maybe(Number));
     check(takeProfitPrice, Match.Maybe(Number));
+    check(quantity, Match.Maybe(Number));
+    check(validityType, Match.Maybe(Match.Where(x => Object.values(VALIDITY_TYPES).includes(x))));
+    check(validityDate, Match.Maybe(Match.OneOf(Date, String)));
     check(reason, Match.Maybe(String));
     check(clientInstructionFile, Match.Maybe({
       fileName: String,
@@ -1823,120 +2104,140 @@ ${userDisplayName}
 
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
+    assertOrderChangeable(order);
 
-    // Allowed on pending and sent orders (not pending_validation or already pending_modification)
-    const allowedStatuses = [ORDER_STATUSES.PENDING, ORDER_STATUSES.SENT];
-    if (!allowedStatuses.includes(order.status)) {
-      throw new Meteor.Error('invalid-operation', 'Modifications can only be requested on pending or sent orders');
-    }
-
-    // Client instruction is required
     if (!clientInstructionFile) {
       throw new Meteor.Error('missing-attachment', 'Client instruction email is required for modifications');
     }
 
-    // Save client instruction file
-    let instructionFilePath = null;
-    if (clientInstructionFile) {
-      try {
-        // Same tree as the order email traces (documentStorage)
-        const ordersDir = path.join(getOrderTracesDir(), orderId);
-        if (!fs.existsSync(ordersDir)) {
-          fs.mkdirSync(ordersDir, { recursive: true });
-        }
-        const ext = path.extname(clientInstructionFile.fileName).toLowerCase();
-        const timestamp = Date.now();
-        const storedFileName = `modification_instruction_${timestamp}${ext}`;
-        instructionFilePath = path.join(ordersDir, storedFileName);
-        const buffer = Buffer.from(clientInstructionFile.base64Data, 'base64');
-        fs.writeFileSync(instructionFilePath, buffer);
-      } catch (err) {
-        console.error('[ORDERS] Error saving modification instruction file:', err);
-        throw new Meteor.Error('file-system-error', 'Failed to save client instruction file');
-      }
+    // Proposed values: anything not supplied keeps the order's current value
+    const newPriceType = priceType || order.priceType;
+    const newValidityType = validityType || order.validityType || null;
+    let newValidityDate = null;
+    if (newValidityType === VALIDITY_TYPES.GTD) {
+      const raw = validityDate !== undefined && validityDate !== null ? validityDate : order.validityDate;
+      newValidityDate = raw ? new Date(raw) : null;
     }
-
-    // Build the pending modification object with proposed changes
-    const pendingModification = {
-      _id: Random.id(),
-      requestedBy: userId,
-      requestedByName: userDisplayName,
-      requestedAt: new Date(),
-      reason: reason || null,
-      // Snapshot old values
-      oldValues: {
-        priceType: order.priceType,
-        limitPrice: order.limitPrice || null,
-        stopLossPrice: order.stopLossPrice || null,
-        takeProfitPrice: order.takeProfitPrice || null
-      },
-      // Proposed new values
-      newValues: {
-        priceType: priceType || order.priceType,
-        limitPrice: (priceType === 'market') ? null : (limitPrice !== undefined ? limitPrice : order.limitPrice),
-        stopLossPrice: stopLossPrice !== undefined ? stopLossPrice : order.stopLossPrice,
-        takeProfitPrice: takeProfitPrice !== undefined ? takeProfitPrice : order.takeProfitPrice
-      },
-      // Client instruction
-      instructionFile: clientInstructionFile ? {
-        fileName: clientInstructionFile.fileName,
-        mimeType: clientInstructionFile.mimeType,
-        filePath: instructionFilePath,
-        storedFileName: path.basename(instructionFilePath)
-      } : null,
-      // Status tracking
-      statusBeforeModification: order.status,
-      status: 'pending' // pending | validated | rejected
+    const newValues = {
+      priceType: newPriceType,
+      limitPrice: newPriceType === PRICE_TYPES.MARKET ? null : (limitPrice !== undefined && limitPrice !== null ? limitPrice : (order.limitPrice ?? null)),
+      stopLossPrice: stopLossPrice !== undefined ? stopLossPrice : (order.stopLossPrice ?? null),
+      takeProfitPrice: takeProfitPrice !== undefined ? takeProfitPrice : (order.takeProfitPrice ?? null),
+      quantity: quantity !== undefined && quantity !== null ? quantity : order.quantity,
+      validityType: newValidityType,
+      validityDate: newValidityDate
+    };
+    const oldValues = {
+      priceType: order.priceType,
+      limitPrice: order.limitPrice ?? null,
+      stopLossPrice: order.stopLossPrice ?? null,
+      takeProfitPrice: order.takeProfitPrice ?? null,
+      quantity: order.quantity,
+      validityType: order.validityType || null,
+      validityDate: order.validityDate || null
     };
 
-    await OrdersCollection.updateAsync(orderId, {
-      $set: {
-        status: ORDER_STATUSES.PENDING_MODIFICATION,
-        pendingModification,
-        updatedAt: new Date(),
-        updatedBy: userId
-      }
-    });
-
-    console.log(`[ORDERS] Modification requested on order ${order.orderReference} by ${userDisplayName} (${userId}) - reason: ${reason || 'none'}`);
-
-    // Notify validators
-    try {
-      const { NotificationHelpers, EVENT_TYPES } = await import('../../imports/api/notifications.js');
-      const validators = await UsersCollection.find({
-        $or: [{ canValidateOrders: true }, { role: 'compliance' }],
-        _id: { $ne: userId },
-        role: { $in: ['superadmin', 'admin', 'rm', 'compliance', 'staff'] }
-      }).fetchAsync();
-
-      for (const validator of validators) {
-        await NotificationHelpers.create({
-          userId: validator._id,
-          type: 'warning',
-          title: 'Order Modification Pending',
-          message: `${userDisplayName} requested a modification on order ${order.orderReference} (${order.securityName}).`,
-          metadata: { orderId, orderReference: order.orderReference },
-          eventType: EVENT_TYPES.ORDER_CREATED
-        });
-      }
-    } catch (notifError) {
-      console.error('[ORDERS] Error sending modification notification:', notifError);
+    assertOrderPriceLevels({ ...newValues, stopPrice: order.stopPrice ?? order.stopLossPrice ?? null });
+    if (!(newValues.quantity > 0)) {
+      throw new Meteor.Error('invalid-quantity', 'Quantity must be above zero');
     }
+    const executed = Number(order.executedQuantity) || 0;
+    if (executed > 0 && newValues.quantity <= executed) {
+      throw new Meteor.Error('invalid-quantity', `Quantity must stay above the ${executed} already executed — to stop the rest, cancel the order instead`);
+    }
+    if (newValues.validityType === VALIDITY_TYPES.GTD) {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      if (!newValues.validityDate || Number.isNaN(newValues.validityDate.getTime()) || newValues.validityDate < startOfToday) {
+        throw new Meteor.Error('invalid-validity', 'A Good Till Date order needs a validity date from today on');
+      }
+    }
+
+    const sameDate = (a, b) => (a ? new Date(a).getTime() : null) === (b ? new Date(b).getTime() : null);
+    const changed = Object.keys(newValues).some(key => (
+      key === 'validityDate' ? !sameDate(oldValues[key], newValues[key]) : (oldValues[key] ?? null) !== (newValues[key] ?? null)
+    ));
+    if (!changed) {
+      throw new Meteor.Error('no-change', 'The proposed values are the same as the current order');
+    }
+
+    const instructionFile = saveChangeInstructionFile(orderId, clientInstructionFile, 'modification_instruction');
+
+    await fileOrderChangeRequest({
+      order,
+      kind: TICKET_KINDS.AMEND,
+      oldValues,
+      newValues,
+      reason,
+      instructionFile,
+      userId,
+      userDisplayName
+    });
 
     return { success: true, orderId };
   },
 
   /**
-   * Validate a pending modification (four-eyes: apply the changes)
+   * Request the cancellation of a live order (four-eyes: goes to PENDING_MODIFICATION).
+   * Requires the client's instruction. Once validated, an order the bank
+   * already has gets a cancellation ticket.
+   */
+  async 'orders.requestCancellation'({ orderId, reason, clientInstructionFile, sessionId }) {
+    check(orderId, String);
+    check(sessionId, String);
+    check(reason, Match.Maybe(String));
+    check(clientInstructionFile, Match.Maybe({
+      fileName: String,
+      base64Data: String,
+      mimeType: String
+    }));
+
+    const { user, userId, userDisplayName } = await validateSession(sessionId);
+    validateOrderPermission(user);
+
+    const order = await OrdersCollection.findOneAsync(orderId);
+    await validateOrderAccess(order, user);
+    assertOrderChangeable(order);
+
+    if (!clientInstructionFile) {
+      throw new Meteor.Error('missing-attachment', 'Client instruction email is required for a cancellation');
+    }
+
+    const instructionFile = saveChangeInstructionFile(orderId, clientInstructionFile, 'cancellation_instruction');
+
+    await fileOrderChangeRequest({
+      order,
+      kind: TICKET_KINDS.CANCEL,
+      oldValues: {
+        quantity: order.quantity,
+        executedQuantity: order.executedQuantity || 0
+      },
+      newValues: {},
+      reason,
+      instructionFile,
+      userId,
+      userDisplayName
+    });
+
+    return { success: true, orderId };
+  },
+
+  /**
+   * Validate a pending modification or cancellation (four-eyes: apply it).
+   * When the bank already had the order, returns the amendment / cancellation
+   * ticket ({ pdfData, emailData, ticketKind }) for the validator to send, the
+   * same way orders.validate hands back the original order ticket.
    */
   async 'orders.validateModification'({ orderId, sessionId }) {
     check(orderId, String);
     check(sessionId, String);
 
+    // May render the ticket PDF — don't hold the caller's other calls behind it
+    this.unblock();
+
     const { user, userId, userDisplayName } = await validateSession(sessionId);
 
-    // Permission check
-    if (!user.canValidateOrders && user.role !== 'compliance') {
+    if (!isOrderValidator(user)) {
       throw new Meteor.Error('not-authorized', 'You do not have order validation permission');
     }
 
@@ -1948,39 +2249,61 @@ ${userDisplayName}
       throw new Meteor.Error('invalid-operation', 'Order has no pending modification');
     }
 
-    // Four-eyes: requester cannot validate their own modification
+    // Four-eyes: requester cannot validate their own request
     if (order.pendingModification.requestedBy === userId) {
-      throw new Meteor.Error('four-eyes-violation', 'You cannot validate your own modification (four-eyes principle)');
+      throw new Meteor.Error('four-eyes-violation', 'You cannot validate your own request (four-eyes principle)');
     }
 
     const mod = order.pendingModification;
+    const kind = mod.kind || TICKET_KINDS.AMEND;
+    const isCancel = kind === TICKET_KINDS.CANCEL;
+    const now = new Date();
 
-    // Build history entry for the old values
+    // The bank already has the order: the change only takes effect once it is
+    // told, so the validated entry carries a bank notice still to be sent.
+    const bankHasOrder = AT_BANK_ORDER_STATUSES.includes(mod.statusBeforeModification);
+
     const historyEntry = {
-      price: mod.oldValues.limitPrice,
-      priceType: mod.oldValues.priceType,
-      stopLossPrice: mod.oldValues.stopLossPrice,
-      takeProfitPrice: mod.oldValues.takeProfitPrice,
-      newPrice: mod.newValues.limitPrice,
-      newPriceType: mod.newValues.priceType,
-      newStopLossPrice: mod.newValues.stopLossPrice,
-      newTakeProfitPrice: mod.newValues.takeProfitPrice,
-      changedAt: mod.requestedAt,
-      changedBy: mod.requestedBy,
-      changedByName: mod.requestedByName,
-      validatedAt: new Date(),
+      ...buildChangeHistoryEntry(mod),
+      validatedAt: now,
       validatedBy: userId,
       validatedByName: userDisplayName,
-      reason: mod.reason,
-      instructionFile: mod.instructionFile ? {
-        fileName: mod.instructionFile.fileName,
-        storedFileName: mod.instructionFile.storedFileName
-      } : null
+      ...(bankHasOrder ? { bankNotice: { required: true, sentAt: null } } : {})
     };
 
-    // Apply the modification — atomic compare-and-set against the
-    // PENDING_MODIFICATION status + review-lock claim, so two simultaneous
-    // validators cannot both apply the same change.
+    let changeSet;
+    if (isCancel) {
+      changeSet = {
+        status: ORDER_STATUSES.CANCELLED,
+        cancelledAt: now,
+        cancelledBy: mod.requestedBy,
+        cancellationReason: mod.reason || null,
+        cancellationValidatedBy: userId
+      };
+    } else {
+      const n = mod.newValues;
+      changeSet = {
+        status: mod.statusBeforeModification,
+        priceType: n.priceType,
+        limitPrice: n.limitPrice,
+        stopLossPrice: n.stopLossPrice,
+        takeProfitPrice: n.takeProfitPrice
+      };
+      if ('quantity' in n) changeSet.quantity = n.quantity;
+      if ('validityType' in n) {
+        changeSet.validityType = n.validityType;
+        changeSet.validityDate = n.validityDate;
+      }
+      const estimatedValue = computeOrderEstimatedValue({
+        ...order,
+        quantity: changeSet.quantity ?? order.quantity,
+        limitPrice: changeSet.limitPrice
+      });
+      if (estimatedValue !== null) changeSet.estimatedValue = estimatedValue;
+    }
+
+    // Apply — atomic compare-and-set against the PENDING_MODIFICATION status +
+    // review-lock claim, so two simultaneous validators cannot both apply it.
     const lockStaleBefore = new Date(Date.now() - REVIEW_LOCK_TTL_MS);
     const updateResult = await OrdersCollection.rawCollection().findOneAndUpdate(
       {
@@ -1994,13 +2317,10 @@ ${userDisplayName}
       },
       {
         $set: {
-          status: mod.statusBeforeModification,
-          priceType: mod.newValues.priceType,
-          limitPrice: mod.newValues.limitPrice,
-          stopLossPrice: mod.newValues.stopLossPrice,
-          takeProfitPrice: mod.newValues.takeProfitPrice,
+          ...changeSet,
           pendingModification: null,
-          updatedAt: new Date(),
+          pendingBankNotice: bankHasOrder ? { kind, historyId: historyEntry._id, validatedAt: now } : null,
+          updatedAt: now,
           updatedBy: userId
         },
         $push: { limitHistory: historyEntry },
@@ -2021,16 +2341,25 @@ ${userDisplayName}
       const current = await OrdersCollection.findOneAsync(orderId);
       if (!current) throw new Meteor.Error('not-found', 'Order not found');
       if (current.status !== ORDER_STATUSES.PENDING_MODIFICATION) {
-        throw new Meteor.Error('already-validated', 'This modification was already processed.');
+        throw new Meteor.Error('already-validated', 'This request was already processed.');
       }
       if (current.reviewingBy && current.reviewingBy !== userId) {
         const whoLabel = current.reviewingByName || 'another user';
         throw new Meteor.Error('locked-by-other', `This order is currently being reviewed by ${whoLabel}.`);
       }
-      throw new Meteor.Error('validation-failed', 'Could not validate this modification — please refresh and try again.');
+      throw new Meteor.Error('validation-failed', 'Could not validate this request — please refresh and try again.');
     }
 
-    console.log(`[ORDERS] Modification validated on order ${order.orderReference} by ${userDisplayName} (${userId})`);
+    console.log(`[ORDERS] ${isCancel ? 'Cancellation' : 'Modification'} validated on order ${order.orderReference} by ${userDisplayName} (${userId})${bankHasOrder ? ' — bank notice pending' : ''}`);
+
+    AuditLog.record({
+      actorUserId: userId,
+      actorRole: user.role || null,
+      action: isCancel ? 'order.cancellation.validated' : 'order.modification.validated',
+      targetType: 'order',
+      targetId: orderId,
+      meta: { orderReference: order.orderReference, requestedBy: mod.requestedBy, bankNoticeRequired: bankHasOrder }
+    });
 
     // Notify the requester
     try {
@@ -2038,8 +2367,8 @@ ${userDisplayName}
       await NotificationHelpers.create({
         userId: mod.requestedBy,
         type: 'success',
-        title: 'Modification Validated',
-        message: `Your modification on order ${order.orderReference} (${order.securityName}) has been validated by ${userDisplayName}.`,
+        title: isCancel ? 'Cancellation Validated' : 'Modification Validated',
+        message: `Your ${isCancel ? 'cancellation' : 'modification'} of order ${order.orderReference} (${order.securityName}) has been validated by ${userDisplayName}.`,
         metadata: { orderId, orderReference: order.orderReference },
         eventType: EVENT_TYPES.ORDER_VALIDATED
       });
@@ -2047,11 +2376,23 @@ ${userDisplayName}
       console.error('[ORDERS] Error sending modification validation notification:', notifError);
     }
 
-    return { success: true, orderId };
+    if (!bankHasOrder) {
+      return { success: true, orderId, ticketKind: kind };
+    }
+
+    // Hand the validator the ticket to send. If this fails the change still
+    // stands and pendingBankNotice keeps the "send to bank" action available.
+    try {
+      const payload = await buildOrderEmailPayload(updateResult.value, user, { ticketKind: kind });
+      return { success: true, orderId, ticketKind: kind, ...payload };
+    } catch (err) {
+      console.error(`[ORDERS] Could not build the ${kind} ticket for ${order.orderReference}:`, err);
+      return { success: true, orderId, ticketKind: kind, ticketError: err.reason || err.message };
+    }
   },
 
   /**
-   * Reject a pending modification (revert to previous status)
+   * Reject a pending modification or cancellation (revert to previous status)
    */
   async 'orders.rejectModification'({ orderId, reason, sessionId }) {
     check(orderId, String);
@@ -2060,7 +2401,7 @@ ${userDisplayName}
 
     const { user, userId, userDisplayName } = await validateSession(sessionId);
 
-    if (!user.canValidateOrders && user.role !== 'compliance') {
+    if (!isOrderValidator(user)) {
       throw new Meteor.Error('not-authorized', 'You do not have order validation permission');
     }
 
@@ -2073,40 +2414,44 @@ ${userDisplayName}
     }
 
     const mod = order.pendingModification;
+    const isCancel = mod.kind === TICKET_KINDS.CANCEL;
 
-    // Build rejected history entry
     const historyEntry = {
-      price: mod.oldValues.limitPrice,
-      priceType: mod.oldValues.priceType,
-      stopLossPrice: mod.oldValues.stopLossPrice,
-      takeProfitPrice: mod.oldValues.takeProfitPrice,
-      newPrice: mod.newValues.limitPrice,
-      newPriceType: mod.newValues.priceType,
-      newStopLossPrice: mod.newValues.stopLossPrice,
-      newTakeProfitPrice: mod.newValues.takeProfitPrice,
-      changedAt: mod.requestedAt,
-      changedBy: mod.requestedBy,
-      changedByName: mod.requestedByName,
+      ...buildChangeHistoryEntry(mod),
       rejectedAt: new Date(),
       rejectedBy: userId,
       rejectedByName: userDisplayName,
-      reason: mod.reason,
       rejectionReason: reason || null,
       status: 'rejected'
     };
 
     // Revert to previous status without applying changes
-    await OrdersCollection.updateAsync(orderId, {
-      $set: {
-        status: mod.statusBeforeModification,
-        pendingModification: null,
-        updatedAt: new Date(),
-        updatedBy: userId
-      },
-      $push: { limitHistory: historyEntry }
-    });
+    const updated = await OrdersCollection.updateAsync(
+      { _id: orderId, status: ORDER_STATUSES.PENDING_MODIFICATION },
+      {
+        $set: {
+          status: mod.statusBeforeModification,
+          pendingModification: null,
+          updatedAt: new Date(),
+          updatedBy: userId
+        },
+        $push: { limitHistory: historyEntry }
+      }
+    );
+    if (!updated) {
+      throw new Meteor.Error('already-validated', 'This request was already processed.');
+    }
 
-    console.log(`[ORDERS] Modification rejected on order ${order.orderReference} by ${userDisplayName} (${userId}) - reason: ${reason || 'N/A'}`);
+    console.log(`[ORDERS] ${isCancel ? 'Cancellation' : 'Modification'} rejected on order ${order.orderReference} by ${userDisplayName} (${userId}) - reason: ${reason || 'N/A'}`);
+
+    AuditLog.record({
+      actorUserId: userId,
+      actorRole: user.role || null,
+      action: isCancel ? 'order.cancellation.rejected' : 'order.modification.rejected',
+      targetType: 'order',
+      targetId: orderId,
+      meta: { orderReference: order.orderReference, reason: reason || null }
+    });
 
     // Notify the requester
     try {
@@ -2114,8 +2459,8 @@ ${userDisplayName}
       await NotificationHelpers.create({
         userId: mod.requestedBy,
         type: 'error',
-        title: 'Modification Rejected',
-        message: `Your modification on order ${order.orderReference} was rejected by ${userDisplayName}.${reason ? ` Reason: ${reason}` : ''}`,
+        title: isCancel ? 'Cancellation Rejected' : 'Modification Rejected',
+        message: `Your ${isCancel ? 'cancellation' : 'modification'} of order ${order.orderReference} was rejected by ${userDisplayName}.${reason ? ` Reason: ${reason}` : ''}`,
         metadata: { orderId, orderReference: order.orderReference, reason },
         eventType: EVENT_TYPES.ORDER_REJECTED
       });
@@ -2841,9 +3186,10 @@ ${userDisplayName}
   /**
    * Prepare email data + PDF for an order (returns data for .eml generation client-side)
    */
-  async 'orders.prepareEmail'({ orderId, sessionId }) {
+  async 'orders.prepareEmail'({ orderId, sessionId, ticketKind }) {
     check(orderId, String);
     check(sessionId, String);
+    check(ticketKind, Match.Maybe(Match.Where(x => Object.values(TICKET_KINDS).includes(x))));
 
     const { user, userId, userDisplayName } = await validateSession(sessionId);
     validateOrderPermission(user);
@@ -2854,8 +3200,9 @@ ${userDisplayName}
     if (order.status === ORDER_STATUSES.PENDING_VALIDATION) {
       throw new Meteor.Error('invalid-operation', 'Cannot prepare email for orders pending validation');
     }
+    assertOriginalTicketSendable(order, ticketKind);
 
-    const payload = await buildOrderEmailPayload(order, user);
+    const payload = await buildOrderEmailPayload(order, user, { ticketKind: ticketKind || TICKET_KINDS.ORDER });
     return { success: true, ...payload };
   },
 
@@ -3826,6 +4173,15 @@ function toOrderPriceConvention(price, assetType, cashAmount, nominalQuantity) {
  * Match an order against PMSOperations to detect if it was booked
  */
 /**
+ * Days after the order in which its booking is looked for. Funds dealing
+ * monthly or on notice are booked weeks after the order: the bank first takes
+ * the cash as a subscription prepayment and delivers the units after the NAV.
+ */
+function settlementWindowDays(order) {
+  return order.assetType === ASSET_TYPES.FUND ? 75 : 30;
+}
+
+/**
  * Fallback when no pmsOperations row matches: look for a freshly-appeared
  * pmsHoldings row covering the same ISIN/portfolio. Only confirms if the
  * holding is NEW (no earlier snapshot with this uniqueKey) — otherwise the
@@ -3837,7 +4193,7 @@ async function tryHoldingsFallback(order, escapedCode, orderDate) {
   const windowStart = new Date(orderDate);
   windowStart.setDate(windowStart.getDate() - 2);
   const windowEnd = new Date(orderDate);
-  windowEnd.setDate(windowEnd.getDate() + 30);
+  windowEnd.setDate(windowEnd.getDate() + settlementWindowDays(order));
 
   // Find the earliest holding for this ISIN+portfolio in the window.
   const candidateHoldings = await PMSHoldingsCollection.find({
@@ -3901,11 +4257,76 @@ async function tryHoldingsFallback(order, escapedCode, orderDate) {
 }
 
 /**
- * Settlement matcher for FX orders. FX trades have no ISIN, so we match against
- * the bank's FX_TRADE operations on: same portfolio, the order's currency pair
- * (buy/sell ccy must both appear among the operation's currencies), notional
- * amount (compared in either leg via the operation's fxRate), and proximity to
- * the value/forward date. Returns the same shape as matchOrderToOperations.
+ * The legs, currencies and quoted rate of one FX_TRADE operation, read from its
+ * harmonized `std` block so the same rules hold for every bank. A row is one leg
+ * (std.currency / std.amount) unless the parser listed both legs in std.fxLegs.
+ * Records stored before `std` existed fall back to their raw fields.
+ */
+function fxOperationView(op) {
+  const std = op.std || {};
+  const upper = (c) => (typeof c === 'string' && /^[A-Za-z]{3}$/.test(c.trim()) ? c.trim().toUpperCase() : null);
+  let legs = (std.fxLegs || []).map(l => ({ currency: upper(l.currency), amount: Math.abs(l.amount || 0) }));
+  if (legs.length === 0) {
+    const currency = upper(std.currency || op.currency || op.operationCurrency);
+    const amount = [std.amount, op.netAmount, op.grossAmount, op.amount, op.quantity]
+      .map(v => Math.abs(Number(v) || 0)).find(v => v > 0) || 0;
+    legs = [{ currency, amount }];
+  }
+  legs = legs.filter(l => l.currency && l.amount > 0);
+  const base = upper(std.fxBaseCurrency);
+  const quote = upper(std.fxQuoteCurrency);
+  const currencies = new Set([
+    ...legs.map(l => l.currency),
+    ...(std.fxCurrencies || []).map(upper),
+    base, quote,
+    upper(op.operationCurrency), upper(op.settlementCurrency), upper(op.baseCurrency)
+  ].filter(Boolean));
+  const rate = Number(std.fxRate || op.fxRate) || null;
+  return { legs, currencies, rate, base: base && quote ? base : null, quote: base && quote ? quote : null };
+}
+
+/**
+ * Executed rate of a deal, expressed in the order's pair (1 pairBase = rate pairQuote).
+ * In order of reliability:
+ *   1. the bank's dealt rate when it says which way it is quoted;
+ *   2. the ratio of the two settled legs;
+ *   3. the bank's rate with no stated orientation, turned the way that makes one
+ *      leg convert into the order's amount;
+ *   4. that rate as given.
+ */
+function fxDealRate(deal, pairBase, pairQuote, orderAmount, amountCurrency) {
+  const { rate } = deal;
+  if (rate && deal.base && deal.quote) {
+    if (deal.base === pairBase && deal.quote === pairQuote) return rate;
+    if (deal.base === pairQuote && deal.quote === pairBase) return 1 / rate;
+  }
+  const legIn = (c) => deal.legs.find(l => l.currency === c);
+  const baseLeg = legIn(pairBase);
+  const quoteLeg = legIn(pairQuote);
+  if (baseLeg && quoteLeg) return quoteLeg.amount / baseLeg.amount;
+  if (!rate) return null;
+  if (orderAmount > 0) {
+    // Order amount in the quote currency, leg in the base: quote = base × rate(B/Q)
+    if (baseLeg && amountCurrency === pairQuote) {
+      return Math.abs(baseLeg.amount * rate - orderAmount) <= Math.abs(baseLeg.amount / rate - orderAmount) ? rate : 1 / rate;
+    }
+    // Order amount in the base currency, leg in the quote: base = quote / rate(B/Q)
+    if (quoteLeg && amountCurrency === pairBase) {
+      return Math.abs(quoteLeg.amount / rate - orderAmount) <= Math.abs(quoteLeg.amount * rate - orderAmount) ? rate : 1 / rate;
+    }
+  }
+  return rate;
+}
+
+/**
+ * Settlement matcher for FX orders. FX trades have no ISIN, so the bank's
+ * FX_TRADE operations of the portfolio are grouped into deals (same day and bank
+ * reference: banks that book one row per currency leg give both rows the same
+ * reference) and a deal matches on: the order's currency pair, the notional (the
+ * leg in the order's amount currency, or the other leg converted at the deal
+ * rate), and proximity to the value/forward date. The executed rate is the deal's
+ * rate in the order's pair (see fxDealRate). Bank-agnostic: it reads the `std`
+ * block every parser writes. Returns the same shape as matchOrderToOperations.
  */
 async function matchFxOrderToOperations(order) {
   const escapedCode = order.portfolioCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -3928,54 +4349,76 @@ async function matchFxOrderToOperations(order) {
     operationType: 'FX_TRADE',
     operationDate: { $gte: windowStart, $lte: windowEnd },
     isActive: true
-  }, { sort: { operationDate: -1 }, limit: 25 }).fetchAsync();
+  }, { sort: { operationDate: -1 }, limit: 50 }).fetchAsync();
 
   if (ops.length === 0) {
     return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'No matching FX_TRADE operations found' };
   }
 
-  const orderCcys = [order.fxBuyCurrency, order.fxSellCurrency]
-    .filter(Boolean).map(c => c.toUpperCase());
+  // Order pair: fxPair "EUR/USD" is 1 EUR = rate USD; buy/sell currencies as fallback
+  const [pairBase, pairQuote] = (order.fxPair && order.fxPair.includes('/')
+    ? order.fxPair.split('/')
+    : [order.fxBuyCurrency, order.fxSellCurrency]).map(c => (c || '').trim().toUpperCase());
+  const pairKnown = !!(pairBase && pairQuote);
+  const amountCurrency = (order.fxAmountCurrency || pairBase || '').toUpperCase();
   const orderAmount = Math.abs(order.quantity || 0);
   const refDate = valueDate ? new Date(valueDate) : new Date(orderDate);
 
-  let bestMatch = null, bestScore = 0, bestRatio = 0;
+  // Group the rows into deals
+  const deals = new Map();
   for (const op of ops) {
-    const opCcys = [op.operationCurrency, op.settlementCurrency, op.baseCurrency]
-      .filter(Boolean).map(c => c.toUpperCase());
-
-    // The order's currency pair must align with the operation's currencies.
-    if (orderCcys.length === 2 && !orderCcys.every(c => opCcys.includes(c))) continue;
-
-    // Credit the pair only when we actually verified it (both currencies known
-    // and matched above); otherwise amount + date must carry the match.
-    let score = orderCcys.length === 2 ? 30 : 0;
-
-    // Amount: the op notional may be expressed in either leg, so also test it
-    // scaled by the fx rate before picking the best ratio.
-    const opAmount = Math.abs(op.amount || op.grossAmount || op.netAmount || op.quantity || 0);
-    const rate = op.fxRate || order.fxRate || null;
-    const candidates = [opAmount];
-    if (rate) candidates.push(opAmount * rate, opAmount / rate);
-    let ratio = 0;
-    if (orderAmount > 0) {
-      for (const c of candidates) {
-        if (c > 0) ratio = Math.max(ratio, Math.min(orderAmount, c) / Math.max(orderAmount, c));
-      }
+    const day = new Date(op.operationDate).toISOString().slice(0, 10);
+    const ref = op.std?.reference || op.operationNumber || op.operationCode || op.externalReference || op._id;
+    const key = `${day}|${ref}`;
+    if (!deals.has(key)) deals.set(key, { ops: [], legs: [], currencies: new Set(), rate: null, base: null, quote: null });
+    const deal = deals.get(key);
+    const view = fxOperationView(op);
+    deal.ops.push(op);
+    view.currencies.forEach(c => deal.currencies.add(c));
+    for (const leg of view.legs) {
+      const same = deal.legs.find(l => l.currency === leg.currency);
+      if (!same) deal.legs.push({ ...leg });
+      else same.amount = Math.max(same.amount, leg.amount); // a leg repeated, not added
     }
+    if (view.rate && (!deal.rate || (view.base && !deal.base))) {
+      deal.rate = view.rate; deal.base = view.base; deal.quote = view.quote;
+    }
+  }
+
+  let best = null, bestScore = 0, bestRatio = 0, bestRate = null;
+  for (const deal of deals.values()) {
+    // The order's currency pair must align with the deal's currencies.
+    if (pairKnown && !(deal.currencies.has(pairBase) && deal.currencies.has(pairQuote))) continue;
+    // Credit the pair only when we actually verified it; otherwise amount + date must carry the match.
+    let score = pairKnown ? 30 : 0;
+
+    const dealRate = pairKnown ? fxDealRate(deal, pairBase, pairQuote, orderAmount, amountCurrency) : deal.rate;
+
+    // Notional: the leg in the order's amount currency, else the other leg at the deal rate
+    let dealAmount = deal.legs.find(l => l.currency === amountCurrency)?.amount || null;
+    if (!dealAmount && dealRate && pairKnown) {
+      const baseLeg = deal.legs.find(l => l.currency === pairBase);
+      const quoteLeg = deal.legs.find(l => l.currency === pairQuote);
+      if (amountCurrency === pairQuote && baseLeg) dealAmount = baseLeg.amount * dealRate;
+      else if (amountCurrency === pairBase && quoteLeg) dealAmount = quoteLeg.amount / dealRate;
+    }
+    const ratio = orderAmount > 0 && dealAmount > 0
+      ? Math.min(orderAmount, dealAmount) / Math.max(orderAmount, dealAmount)
+      : 0;
     if (ratio >= 0.99) score += 50;
     else if (ratio >= 0.95) score += 35;
     else if (ratio >= 0.90) score += 20;
 
-    const daysDiff = Math.abs((new Date(op.valueDate || op.operationDate) - refDate) / (1000 * 60 * 60 * 24));
+    const op0 = deal.ops[0];
+    const daysDiff = Math.abs((new Date(op0.valueDate || op0.operationDate) - refDate) / (1000 * 60 * 60 * 24));
     if (daysDiff <= 2) score += 25;
     else if (daysDiff <= 7) score += 15;
     else if (daysDiff <= 21) score += 5;
 
-    if (score > bestScore) { bestScore = score; bestMatch = op; bestRatio = ratio; }
+    if (score > bestScore) { bestScore = score; best = deal; bestRatio = ratio; bestRate = dealRate; }
   }
 
-  if (!bestMatch) {
+  if (!best) {
     return { bookingStatus: 'none', matchedOperation: null, confidence: null, reason: 'No FX operation with a matching currency pair found' };
   }
 
@@ -3989,21 +4432,24 @@ async function matchFxOrderToOperations(order) {
     };
   }
 
-  const opDate = bestMatch.valueDate || bestMatch.operationDate;
+  const op0 = best.ops[0];
+  const opDate = op0.valueDate || op0.operationDate;
+  const executedRate = bestRate ? Math.round(bestRate * 1e8) / 1e8 : (order.fxRate || null);
+  const reference = op0.std?.reference || op0.operationNumber || op0.operationCode || '';
   return {
     bookingStatus: 'confirmed',
     matchedOperation: {
       operationDate: opDate,
       quantity: order.quantity,                       // FX "quantity" is the notional
-      price: bestMatch.fxRate || order.fxRate || null, // executed rate
-      grossAmount: bestMatch.grossAmount || bestMatch.amount || null,
-      operationCode: bestMatch.operationNumber || null,
+      price: executedRate,                            // executed rate, in the order's pair
+      grossAmount: op0.grossAmount || op0.amount || null,
+      operationCode: reference || null,
       instrumentName: order.fxPair || null,
-      remark: `Matched FX_TRADE ${bestMatch.operationNumber || ''}`.trim(),
+      remark: `Matched FX_TRADE ${reference}`.trim(),
       operationType: 'FX_TRADE'
     },
     confidence: 'fx_operation_match',
-    reason: `Matching FX_TRADE operation found${order.fxPair ? ` (${order.fxPair})` : ''}${opDate ? ` on ${new Date(opDate).toISOString().split('T')[0]}` : ''}.`
+    reason: `Matching FX_TRADE operation found${order.fxPair ? ` (${order.fxPair}${executedRate ? ` ${executedRate}` : ''})` : ''}${opDate ? ` on ${new Date(opDate).toISOString().split('T')[0]}` : ''}.`
   };
 }
 
@@ -4117,12 +4563,12 @@ export async function matchOrderToOperations(order) {
     ? ['BUY', 'SUBSCRIPTION', 'OTHER']
     : ['SELL', 'REDEMPTION', 'OTHER'];
 
-  // Date window: 5 days before order to 30 days after
+  // Date window: 5 days before order to settlementWindowDays after
   const orderDate = order.createdAt || new Date();
   const windowStart = new Date(orderDate);
   windowStart.setDate(windowStart.getDate() - 5);
   const windowEnd = new Date(orderDate);
-  windowEnd.setDate(windowEnd.getDate() + 30);
+  windowEnd.setDate(windowEnd.getDate() + settlementWindowDays(order));
 
   // Escape special regex chars in portfolioCode and match with prefix
   const escapedCode = order.portfolioCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -4382,9 +4828,12 @@ const writeTraceFileToOrder = async ({
   console.log(`[ORDERS] Writing trace: ${traceType} for order ${order.orderReference} by ${userDisplayName} (${userId})`);
   console.log(`   File: ${fileName} -> ${storedFileName}`);
 
-  // Remove existing trace of same type (file from disk + entry from DB) if it exists
+  // Remove existing trace of same type (file from disk + entry from DB) if it exists.
+  // Amendment / cancellation notices accumulate instead: each one is evidence.
   const existingTraces = order.emailTraces || [];
-  const existingTrace = existingTraces.find(t => t.traceType === traceType);
+  const existingTrace = MULTI_INSTANCE_TRACE_TYPES.has(traceType)
+    ? null
+    : existingTraces.find(t => t.traceType === traceType);
   if (existingTrace) {
     try {
       if (existingTrace.filePath && fs.existsSync(existingTrace.filePath)) {
@@ -4461,8 +4910,9 @@ const parseRecipientList = (value) => {
  * applied disclaimers or rewriting: better evidence than the .eml draft, which
  * was never itself the thing that got sent.
  */
-const attachSentCopyAsTrace = async ({ order, userId, userDisplayName, internetMessageId }) => {
+const attachSentCopyAsTrace = async ({ order, userId, userDisplayName, internetMessageId, traceType = EMAIL_TRACE_TYPES.ORDER_TO_BANK, historyId = null }) => {
   if (!internetMessageId) return false;
+  const isOriginalOrderMail = traceType === EMAIL_TRACE_TYPES.ORDER_TO_BANK;
 
   // Exchange usually materialises the Sent Items copy within a couple of
   // seconds, but under load it has taken far longer — and giving up early is
@@ -4480,8 +4930,8 @@ const attachSentCopyAsTrace = async ({ order, userId, userDisplayName, internetM
 
       const trace = await writeTraceFileToOrder({
         order: fresh,
-        traceType: EMAIL_TRACE_TYPES.ORDER_TO_BANK,
-        fileName: `${fresh.orderReference}_order_to_bank.eml`,
+        traceType,
+        fileName: `${fresh.orderReference}_${traceType}.eml`,
         base64Data: mime.toString('base64'),
         mimeType: 'message/rfc822',
         userId,
@@ -4496,10 +4946,17 @@ const attachSentCopyAsTrace = async ({ order, userId, userDisplayName, internetM
         fromAddress: null
       };
 
-      await pushTraceAndAdvance({ order: fresh, trace, traceType: EMAIL_TRACE_TYPES.ORDER_TO_BANK, userId });
-      await OrdersCollection.updateAsync(order._id, { $set: { 'graphSend.sentTraceStatus': 'attached' } });
+      await pushTraceAndAdvance({ order: fresh, trace, traceType, userId });
+      if (isOriginalOrderMail) {
+        await OrdersCollection.updateAsync(order._id, { $set: { 'graphSend.sentTraceStatus': 'attached' } });
+      } else if (historyId) {
+        await OrdersCollection.updateAsync(
+          { _id: order._id, 'limitHistory._id': historyId },
+          { $set: { 'limitHistory.$.bankNotice.traceId': trace._id } }
+        );
+      }
 
-      console.log(`[ORDERS] Sent copy auto-filed as order_to_bank trace for ${fresh.orderReference}`);
+      console.log(`[ORDERS] Sent copy auto-filed as ${traceType} trace for ${fresh.orderReference}`);
       return true;
     } catch (err) {
       console.warn(`[ORDERS] Could not auto-file sent copy (attempt ${attempt + 1}):`, err.message);
@@ -4644,13 +5101,17 @@ export async function scanForBankReplies({ lookbackDays = 14 } = {}) {
  * apart — which, for an order confirmation, is a compliance problem rather than
  * a cosmetic one.
  */
-const buildOrderEmailPayload = async (order, sender = null) => {
+const buildOrderEmailPayload = async (order, sender = null, { ticketKind = TICKET_KINDS.ORDER } = {}) => {
   const client = await UsersCollection.findOneAsync(order.clientId);
   const bankAccount = await BankAccountsCollection.findOneAsync(order.bankAccountId);
   const bank = await BanksCollection.findOneAsync(order.bankId);
   const createdByUser = await UsersCollection.findOneAsync(order.createdBy);
 
-  const html = generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser, await loadOrderIssuer(order));
+  // An amendment / cancellation ticket describes the validated change the bank
+  // has not been told about yet.
+  const ticket = buildTicketContext(order, ticketKind);
+
+  const html = generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser, await loadOrderIssuer(order), ticket);
   const pdfResult = await generatePDFFromHTML(html, {
     format: 'A4', marginTop: '10mm', marginRight: '15mm', marginBottom: '10mm', marginLeft: '15mm'
   });
@@ -4659,8 +5120,11 @@ const buildOrderEmailPayload = async (order, sender = null) => {
   // the bank's FX team) — see BankHelpers.resolveOrderRecipients.
   const liveIssuer = await loadOrderIssuer(order);
   const recipients = BankHelpers.resolveOrderRecipients(bank, order.assetType);
-  const subject = OrderHelpers.generateEmailSubject(order, liveIssuer);
-  const body = OrderHelpers.generateEmailBody(order, client, bank, bankAccount, liveIssuer, recipients.deskLabel);
+  const subject = OrderHelpers.generateEmailSubject(order, liveIssuer, ticketKind);
+  const body = OrderHelpers.generateEmailBody(order, client, bank, bankAccount, liveIssuer, recipients.deskLabel, {
+    ticketKind,
+    change: ticket?.change
+  });
 
   // CC: bank + desk CC addresses, the order creator, and whoever is sending it
   // now — under four-eyes the sender is usually the validator, not the creator,
@@ -4679,6 +5143,9 @@ const buildOrderEmailPayload = async (order, sender = null) => {
 
   return {
     orderReference: order.orderReference,
+    ticketKind,
+    // Attachment / draft file name: "2026-00143" or "2026-00143-AMEND-1"
+    fileReference: ticket ? ticket.fileReference : order.orderReference,
     pdfData: pdfResult.pdfData,
     emailData: {
       to: recipients.to,
@@ -4689,8 +5156,26 @@ const buildOrderEmailPayload = async (order, sender = null) => {
       bankName: bank?.name || '',
       assetType: order.assetType
     },
-    termsheet: loadInitialTermsheetAttachment(order)
+    // The desk already has the termsheet from the original order
+    termsheet: ticket ? null : loadInitialTermsheetAttachment(order)
   };
+};
+
+/**
+ * What an amendment / cancellation ticket needs: the pending change, its
+ * sequence number among the bank notices, and the file reference. Null for the
+ * original order ticket.
+ */
+const buildTicketContext = (order, ticketKind) => {
+  if (!ticketKind || ticketKind === TICKET_KINDS.ORDER) return null;
+  assertTicketKindSendable(order, ticketKind);
+  const change = findPendingNoticeEntry(order);
+  if (ticketKind === TICKET_KINDS.CANCEL) {
+    return { kind: ticketKind, change, sequence: 1, fileReference: `${order.orderReference}-CANCEL` };
+  }
+  const notices = (order.limitHistory || []).filter(e => e.kind !== TICKET_KINDS.CANCEL && e.bankNotice?.required);
+  const sequence = Math.max(1, notices.findIndex(e => e._id === change._id) + 1);
+  return { kind: ticketKind, change, sequence, fileReference: `${order.orderReference}-AMEND-${sequence}` };
 };
 
 /**
@@ -4724,7 +5209,16 @@ const graphTraceFileName = (subject, traceType) => {
 const pushTraceAndAdvance = async ({ order, trace, traceType, userId }) => {
   const updateFields = { updatedAt: new Date(), updatedBy: userId };
 
-  if (traceType === EMAIL_TRACE_TYPES.ORDER_TO_BANK && order.status !== ORDER_STATUSES.EXECUTED) {
+  // The original order mail only moves an order forward into TRANSMITTED; it
+  // must not resurrect a cancelled order or undo a fill / a change in review.
+  const noTransmitAdvance = [
+    ORDER_STATUSES.EXECUTED,
+    ORDER_STATUSES.PARTIALLY_EXECUTED,
+    ORDER_STATUSES.CANCELLED,
+    ORDER_STATUSES.REJECTED,
+    ORDER_STATUSES.PENDING_MODIFICATION
+  ];
+  if (traceType === EMAIL_TRACE_TYPES.ORDER_TO_BANK && !noTransmitAdvance.includes(order.status)) {
     updateFields.status = ORDER_STATUSES.TRANSMITTED;
     updateFields.transmittedAt = new Date();
     console.log(`[ORDERS] Auto-advancing order ${order.orderReference} to TRANSMITTED (order-to-bank email attached)`);
@@ -4744,6 +5238,12 @@ const pushTraceAndAdvance = async ({ order, trace, traceType, userId }) => {
   }
 
   await OrdersCollection.updateAsync(order._id, updateOp);
+
+  // The sent amendment / cancellation mail filed back on the order (the .eml
+  // route) is what proves the bank was told: close the pending notice.
+  if (order.pendingBankNotice && traceTypeForTicket(order.pendingBankNotice.kind) === traceType) {
+    await markBankNoticeSent({ order, sentMethod: 'trace', userId, traceId: trace._id });
+  }
 };
 
 /**
@@ -4881,9 +5381,10 @@ Meteor.methods({
    * recipients, subject and body from the preview. A client-supplied PDF would
    * mean the document of record was whatever the browser chose to send.
    */
-  async 'orders.sendViaGraph'({ orderId, sessionId, overrides }) {
+  async 'orders.sendViaGraph'({ orderId, sessionId, overrides, ticketKind }) {
     check(orderId, String);
     check(sessionId, String);
+    check(ticketKind, Match.Maybe(Match.Where(x => Object.values(TICKET_KINDS).includes(x))));
     check(overrides, Match.Maybe({
       to: Match.Maybe(String),
       cc: Match.Maybe(String),
@@ -4904,11 +5405,16 @@ Meteor.methods({
     if (order.status === ORDER_STATUSES.PENDING_VALIDATION) {
       throw new Meteor.Error('invalid-operation', 'Cannot send an order that is still pending validation');
     }
+    const kind = ticketKind || TICKET_KINDS.ORDER;
+    const isChangeNotice = kind !== TICKET_KINDS.ORDER;
+    assertOriginalTicketSendable(order, kind);
     if (!graphSendRateLimit(userId)) {
       throw new Meteor.Error('rate-limited', 'Too many sends in a short time. Please wait a moment.');
     }
 
-    const payload = await buildOrderEmailPayload(order, user);
+    // Throws for an amend/cancel ticket when no such change is pending
+    const payload = await buildOrderEmailPayload(order, user, { ticketKind: kind });
+    const noticeHistoryId = order.pendingBankNotice?.historyId || null;
     const o = overrides || {};
 
     const toList = parseRecipientList(o.to !== undefined ? o.to : payload.emailData.to);
@@ -4936,7 +5442,7 @@ Meteor.methods({
         contentBytes
       });
     };
-    addAttachment(`${order.orderReference}.pdf`, payload.pdfData, 'application/pdf');
+    addAttachment(`${payload.fileReference || order.orderReference}.pdf`, payload.pdfData, 'application/pdf');
     if (payload.termsheet) {
       addAttachment(payload.termsheet.name, payload.termsheet.content, payload.termsheet.contentType);
     }
@@ -4959,6 +5465,42 @@ Meteor.methods({
     await sendDraft(userId, draft.id);
 
     const sentAt = new Date();
+
+    if (isChangeNotice) {
+      // The original send (status, graphSend, reply tracking) is left as is:
+      // this notice is recorded on its limitHistory entry instead.
+      await markBankNoticeSent({ order, sentMethod: 'graph', userId });
+
+      AuditLog.record({
+        actorUserId: userId,
+        actorRole: user.role || null,
+        action: 'order.email.sent',
+        targetType: 'order',
+        targetId: orderId,
+        meta: { via: 'graph', ticketKind: kind, to: toList.join('; '), subject: subject.slice(0, 120) }
+      });
+
+      console.log(`[ORDERS] ${kind === TICKET_KINDS.CANCEL ? 'Cancellation' : 'Amendment'} of ${order.orderReference} sent via Outlook by ${userDisplayName} (${userId}) to ${toList.join('; ')}`);
+
+      attachSentCopyAsTrace({
+        order,
+        userId,
+        userDisplayName,
+        internetMessageId: draft.internetMessageId,
+        traceType: traceTypeForTicket(kind),
+        historyId: noticeHistoryId
+      }).catch(err => console.error('[ORDERS] Auto-filing the sent copy failed:', err.message));
+
+      return {
+        success: true,
+        orderReference: order.orderReference,
+        ticketKind: kind,
+        sentTo: toList.join('; '),
+        conversationId: draft.conversationId || null,
+        traceAttached: 'pending'
+      };
+    }
+
     await OrdersCollection.updateAsync(orderId, {
       $set: {
         status: order.status === ORDER_STATUSES.EXECUTED ? order.status : ORDER_STATUSES.TRANSMITTED,
@@ -5128,6 +5670,8 @@ Meteor.methods({
     const sentAfter = order.createdAt ? new Date(order.createdAt).getTime() : 0;
     const match = candidates
       .filter(m => String(m.subject || '').toLowerCase().includes(reference))
+      // An amendment / cancellation notice carries the reference too, but it is not the original order mail
+      .filter(m => !/^\s*((re|fw|fwd):\s*)*(amendment|cancellation):/i.test(String(m.subject || '')))
       .filter(m => !sentAfter || new Date(m.sentDateTime || m.receivedDateTime || 0).getTime() >= sentAfter)
       // Newest first: a resend supersedes the original.
       .sort((a, b) => new Date(b.sentDateTime || b.receivedDateTime || 0) - new Date(a.sentDateTime || a.receivedDateTime || 0))[0];
@@ -5263,9 +5807,12 @@ Meteor.methods({
     const order = await OrdersCollection.findOneAsync(orderId);
     await validateOrderAccess(order, user);
 
-    // Remove existing trace of same type if exists
+    // Remove existing trace of same type if exists (amendment / cancellation
+    // notices accumulate instead — each one is evidence)
     const existingTraces = order.emailTraces || [];
-    const existingTrace = existingTraces.find(t => t.traceType === traceType);
+    const existingTrace = MULTI_INSTANCE_TRACE_TYPES.has(traceType)
+      ? null
+      : existingTraces.find(t => t.traceType === traceType);
     if (existingTrace) {
       // If it was a file trace, delete the file from disk
       if (existingTrace.filePath && existingTrace.traceMode !== 'phone') {
@@ -5295,23 +5842,8 @@ Meteor.methods({
       loggedBy: userId
     };
 
-    // Auto-advance status based on trace type (same as file traces)
-    const updateFields = { updatedAt: new Date(), updatedBy: userId };
-
-    if (traceType === EMAIL_TRACE_TYPES.ORDER_TO_BANK && order.status !== ORDER_STATUSES.EXECUTED) {
-      updateFields.status = ORDER_STATUSES.TRANSMITTED;
-      updateFields.transmittedAt = new Date();
-      console.log(`[ORDERS] Auto-advancing order ${order.orderReference} to TRANSMITTED (order-to-bank phone trace)`);
-    } else if (traceType === EMAIL_TRACE_TYPES.BANK_CONFIRMATION) {
-      updateFields.status = ORDER_STATUSES.EXECUTED;
-      updateFields.executedAt = new Date();
-      console.log(`[ORDERS] Auto-advancing order ${order.orderReference} to EXECUTED (bank confirmation phone trace)`);
-    }
-
-    await OrdersCollection.updateAsync(orderId, {
-      $push: { emailTraces: trace },
-      $set: updateFields
-    });
+    // Same status side effects as a file trace
+    await pushTraceAndAdvance({ order, trace, traceType, userId });
 
     console.log(`[ORDERS] Phone trace saved: ${traceType} for order ${order.orderReference} (${traceId}) by ${userDisplayName} (${userId})`);
 
@@ -5833,10 +6365,58 @@ ${isFx
 });
 
 /**
+ * Top-of-ticket block for an amendment / cancellation: what the bank must do,
+ * which original instruction it refers to, and (amendment) every changed field.
+ */
+function buildTicketBannerHTML(order, ticket) {
+  const esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const originalSentAt = order.transmittedAt || order.sentAt;
+  const sentOn = originalSentAt ? ` transmitted on ${OrderFormatters.formatDate(originalSentAt)}` : '';
+  const ticketDate = OrderFormatters.formatDateTime(ticket.change?.validatedAt || new Date());
+
+  if (ticket.kind === TICKET_KINDS.CANCEL) {
+    const remaining = Math.max(0, (Number(order.quantity) || 0) - (Number(order.executedQuantity) || 0));
+    const executed = Number(order.executedQuantity) || 0;
+    return `
+  <div class="ticket-banner cancel">
+    <div class="ticket-banner-title">CANCELLATION OF ORDER ${esc(order.orderReference)}</div>
+    <div class="ticket-banner-text">Please <strong>cancel</strong> our order instruction Ref. <strong>${esc(order.orderReference)}</strong>${sentOn}. Issued ${ticketDate}.</div>
+    <table class="ticket-changes">
+      <tbody>
+        <tr><td>Quantity to cancel</td><td class="new-value">${esc(OrderFormatters.formatQuantity(remaining))}</td></tr>
+        ${executed > 0 ? `<tr><td>Already executed (not affected)</td><td>${esc(OrderFormatters.formatQuantity(executed))} of ${esc(OrderFormatters.formatQuantity(order.quantity))}</td></tr>` : ''}
+      </tbody>
+    </table>
+  </div>`;
+  }
+
+  const rows = OrderHelpers.describeOrderChange(ticket.change, order);
+  return `
+  <div class="ticket-banner">
+    <div class="ticket-banner-title">AMENDMENT No. ${ticket.sequence} OF ORDER ${esc(order.orderReference)}</div>
+    <div class="ticket-banner-text">This amends our order instruction Ref. <strong>${esc(order.orderReference)}</strong>${sentOn}. Issued ${ticketDate}. All other terms are unchanged; the order below shows the amended terms.</div>
+    <table class="ticket-changes">
+      <thead><tr><th>Field</th><th>Previous</th><th>Amended</th></tr></thead>
+      <tbody>
+        ${rows.map(row => `<tr><td>${esc(row.label)}</td><td>${esc(row.from)}</td><td class="new-value">${esc(row.to)}</td></tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+/**
  * Generate HTML for Order Confirmation PDF
  */
-function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser, liveIssuer = null) {
+function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser, liveIssuer = null, ticket = null) {
   const orderDate = OrderFormatters.formatDateTime(order.createdAt);
+  // ticket: null for the original order instruction, or the amendment /
+  // cancellation context from buildTicketContext.
+  const isCancelTicket = ticket?.kind === TICKET_KINDS.CANCEL;
+  const isAmendTicket = ticket?.kind === TICKET_KINDS.AMEND;
+  const ticketTitle = isCancelTicket ? 'Order Cancellation' : isAmendTicket ? 'Order Amendment' : 'Order Confirmation';
+  const ticketBanner = ticket ? buildTicketBannerHTML(order, ticket) : '';
+  // Rejected requests never reached the bank, so they stay off its ticket
+  const bankVisibleHistory = (order.limitHistory || []).filter(entry => !entry.rejectedAt && entry.status !== 'rejected');
   // Structured products are dealt directly with the issuer, so the ticket
   // carries the same coordinates as the covering email — the desk works from
   // the PDF once the mail is filed, and shouldn't have to go back to it.
@@ -5858,7 +6438,7 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser, l
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Order Confirmation - ${order.orderReference}</title>
+  <title>${ticketTitle} - ${order.orderReference}</title>
   <style>
     * {
       margin: 0;
@@ -6039,6 +6619,49 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser, l
     .footer-line {
       margin-bottom: 4px;
     }
+    .ticket-banner {
+      margin: 0 0 18px;
+      padding: 14px 16px;
+      border-radius: 6px;
+      border: 2px solid #b45309;
+      background: #fffbeb;
+    }
+    .ticket-banner.cancel {
+      border-color: #b91c1c;
+      background: #fef2f2;
+    }
+    .ticket-banner-title {
+      font-size: 14pt;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      color: #92400e;
+      margin-bottom: 6px;
+    }
+    .ticket-banner.cancel .ticket-banner-title {
+      color: #991b1b;
+    }
+    .ticket-banner-text {
+      font-size: 10.5pt;
+      margin-bottom: 8px;
+    }
+    .ticket-changes {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 10.5pt;
+    }
+    .ticket-changes th {
+      text-align: left;
+      padding: 5px 8px;
+      color: #6b7280;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    .ticket-changes td {
+      padding: 5px 8px;
+      border-bottom: 1px solid #f3f4f6;
+    }
+    .ticket-changes td.new-value {
+      font-weight: 700;
+    }
   </style>
 </head>
 <body>
@@ -6050,9 +6673,11 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser, l
       <div class="order-ref">${order.orderReference}</div>
       <div class="order-date">${orderDate}</div>
       <div class="order-type">${(order.assetType === 'term_deposit' ? OrderFormatters.orderDirectionLabel(order) : (order.orderType || '')).toUpperCase()}</div>
-      <div class="execution-type ${order.executionType === 'pre_executed' ? 'pre-executed' : 'to-execute'}">${EXECUTION_TYPE_LABELS[order.executionType] || 'Order to be Executed'}</div>
+      <div class="execution-type ${order.executionType === 'pre_executed' ? 'pre-executed' : 'to-execute'}">${ticket ? ticketTitle.toUpperCase() : (EXECUTION_TYPE_LABELS[order.executionType] || 'Order to be Executed')}</div>
     </div>
   </div>
+
+  ${ticketBanner}
 
   <div class="section">
     <h2>Account Information</h2>
@@ -6255,7 +6880,7 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser, l
     </div>
   </div>
 
-  ${(order.limitHistory && order.limitHistory.length > 0) ? `
+  ${(!ticket && bankVisibleHistory.length > 0) ? `
   <div class="section">
     <h2>Limit Modification History</h2>
     <table style="width: 100%; border-collapse: collapse; font-size: 10pt;">
@@ -6269,7 +6894,7 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser, l
         </tr>
       </thead>
       <tbody>
-        ${order.limitHistory.map(entry => `
+        ${bankVisibleHistory.map(entry => `
         <tr style="border-bottom: 1px solid #f3f4f6;">
           <td style="padding: 6px 8px;">${OrderFormatters.formatDateTime(entry.changedAt)}</td>
           <td style="padding: 6px 8px;">${OrderFormatters.getPriceTypeLabel(entry.priceType)}</td>
@@ -6293,7 +6918,7 @@ function generateOrderPDFHTML(order, client, bankAccount, bank, createdByUser, l
   ` : ''}
 
   <div class="footer">
-    <div class="footer-line">Order Confirmation generated by Ambervision Platform</div>
+    <div class="footer-line">${ticketTitle} generated by Ambervision Platform</div>
   </div>
 </body>
 </html>
@@ -6333,19 +6958,31 @@ function buildAuditTimeline(order) {
     events.push({ date: order.rejectedAt, event: 'Rejected', by: order.rejectedByName || '', details: order.rejectionReason || '' });
   }
 
-  // Limit modifications
+  // Modification / cancellation requests
   (order.limitHistory || []).forEach(entry => {
+    const isCancel = entry.kind === TICKET_KINDS.CANCEL;
+    const changes = isCancel ? [] : OrderHelpers.describeOrderChange(entry, order);
+    const changeText = changes.map(row => `${row.label}: ${row.from} → ${row.to}`).join('; ');
     events.push({
       date: entry.changedAt,
-      event: 'Limit Modified',
+      event: isCancel ? 'Cancellation Requested' : 'Modification Requested',
       by: entry.changedByName || '',
-      details: entry.reason || `Changed to ${OrderFormatters.getPriceTypeLabel(entry.newPriceType || 'limit')}`
+      details: [changeText, entry.reason ? `Reason: ${entry.reason}` : ''].filter(Boolean).join(' — ')
+        || `Changed to ${OrderFormatters.getPriceTypeLabel(entry.newPriceType || 'limit')}`
     });
     if (entry.validatedAt) {
-      events.push({ date: entry.validatedAt, event: 'Modification Validated', by: entry.validatedByName || '', details: '' });
+      events.push({ date: entry.validatedAt, event: isCancel ? 'Cancellation Validated (Four-Eyes)' : 'Modification Validated (Four-Eyes)', by: entry.validatedByName || '', details: '' });
     }
     if (entry.rejectedAt) {
-      events.push({ date: entry.rejectedAt, event: 'Modification Rejected', by: entry.rejectedByName || '', details: entry.rejectionReason || '' });
+      events.push({ date: entry.rejectedAt, event: isCancel ? 'Cancellation Rejected' : 'Modification Rejected', by: entry.rejectedByName || '', details: entry.rejectionReason || '' });
+    }
+    if (entry.bankNotice?.sentAt) {
+      events.push({
+        date: entry.bankNotice.sentAt,
+        event: isCancel ? 'Cancellation Sent to Bank' : 'Amendment Sent to Bank',
+        by: '',
+        details: entry.bankNotice.sentMethod === 'graph' ? 'Sent via Outlook' : 'Sent mail filed on the order'
+      });
     }
   });
 
@@ -6384,7 +7021,8 @@ function buildAuditTimeline(order) {
   }
 
   // Cancelled
-  if (order.cancelledAt) {
+  // (a four-eyes cancellation is already on the timeline through its history entry)
+  if (order.cancelledAt && !(order.limitHistory || []).some(entry => entry.kind === TICKET_KINDS.CANCEL && entry.validatedAt)) {
     events.push({ date: order.cancelledAt, event: 'Cancelled', by: order.cancelledBy || '', details: order.cancellationReason || '' });
   }
 

@@ -39,7 +39,7 @@ import { checkDataFreshness } from '/imports/api/helpers/dataFreshness.js';
 import HoldingPriceChart from './components/HoldingPriceChart.jsx';
 import PositionCardMobile from './components/pms/PositionCardMobile.jsx';
 import LiveOrderPills from './components/pms/LiveOrderPills.jsx';
-import { LIVE_ORDER_STATUSES } from '/imports/api/orders';
+import { LIVE_AT_BANK_QUERY_STATUSES, isLiveAtBank } from '/imports/api/orders';
 import { getCurrencySymbol, getCurrencyFlag, formatCurrency, formatPrice } from './components/pms/pmsFormatters.js';
 import { resolveChartColor, resolveChartColors } from '/imports/utils/chartColors.js';
 import CashBalanceCardsMobile from './components/pms/CashBalanceCardsMobile.jsx';
@@ -453,7 +453,8 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
 
       try {
         const filters = {
-          status: LIVE_ORDER_STATUSES // validated and still working at the bank
+          // validated and still working at the bank (incl. a change awaiting validation)
+          status: LIVE_AT_BANK_QUERY_STATUSES
         };
 
         // If viewing a specific client, filter by that client
@@ -467,7 +468,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
           sessionId
         });
 
-        setActiveOrders(result.orders || []);
+        setActiveOrders((result.orders || []).filter(isLiveAtBank));
       } catch (error) {
         console.error('[PMS] Error fetching active orders:', error);
         setActiveOrders([]);

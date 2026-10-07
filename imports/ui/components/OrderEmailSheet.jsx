@@ -40,8 +40,8 @@ const OrderEmailSheet = ({ payload, onClose }) => {
 
   if (!payload) return null;
 
-  const { emailData = {}, orderReference, termsheet } = payload;
-  const pdfName = `${orderReference || 'order'}.pdf`;
+  const { emailData = {}, orderReference, fileReference, termsheet } = payload;
+  const pdfName = `${fileReference || orderReference || 'order'}.pdf`;
   const attachmentNames = [pdfName, termsheet?.name].filter(Boolean);
   const attachmentLabel = attachmentNames.length > 1 ? 'PDF + termsheet' : 'PDF';
   const recipients = (emailData.to || '').split(';').map(a => a.trim()).filter(Boolean).join(', ');

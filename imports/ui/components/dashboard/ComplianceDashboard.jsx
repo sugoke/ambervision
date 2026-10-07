@@ -217,6 +217,9 @@ export default function ComplianceDashboard({ onNavigate }) {
                             )}
                           </div>
                         ))}
+                        {cat.key === 'visit' && (
+                          <VisitRequestAction client={client} onChanged={load} />
+                        )}
                       </div>
                     ))}
                     {rows.length > MAX_ROWS_PER_CARD && (
@@ -273,6 +276,71 @@ export default function ComplianceDashboard({ onNavigate }) {
   );
 }
 
+/**
+ * Visit card: ask the client's RM for a meeting report, or show the pending
+ * request. The RM is notified and lands in the meeting-report editor on this
+ * client; finalizing the report closes the request and clears the visit flag.
+ */
+function VisitRequestAction({ client, onChanged }) {
+  const [composing, setComposing] = useState(false);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const stop = (e) => e.stopPropagation();
+
+  const call = async (method, args) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await Meteor.callAsync(method, args, localStorage.getItem('sessionId'));
+      setComposing(false);
+      setNote('');
+      onChanged?.();
+    } catch (err) {
+      setError(err.reason || err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const request = client.visitRequest;
+  return (
+    <div style={styles.requestRow} onClick={stop}>
+      {request ? (
+        <>
+          <span style={styles.requestPill} title={request.note || undefined}>
+            Report requested {request.requestedAtText}{request.requestedByName ? ` by ${request.requestedByName}` : ''} — pending
+          </span>
+          <button style={styles.requestLink} disabled={busy} onClick={() => call('visitReportRequests.cancel', { requestId: request.requestId })}>
+            Withdraw
+          </button>
+        </>
+      ) : composing ? (
+        <>
+          <input
+            autoFocus
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') call('visitReportRequests.create', { entityId: client.entityId, note }); }}
+            placeholder="Note to the RM (optional)"
+            style={styles.requestInput}
+            maxLength={1000}
+          />
+          <button style={styles.requestButton} disabled={busy} onClick={() => call('visitReportRequests.create', { entityId: client.entityId, note })}>
+            {busy ? 'Sending…' : 'Send request'}
+          </button>
+          <button style={styles.requestLink} disabled={busy} onClick={() => { setComposing(false); setNote(''); }}>Cancel</button>
+        </>
+      ) : (
+        <button style={styles.requestButton} onClick={() => setComposing(true)} title={client.rmNames ? `Ask ${client.rmNames} for a meeting report` : 'Ask the RM for a meeting report'}>
+          Request report
+        </button>
+      )}
+      {error && <span style={styles.requestError}>{error}</span>}
+    </div>
+  );
+}
+
 function Header({ subtitle, onRefresh, refreshing }) {
   return (
     <div style={styles.header}>
@@ -299,6 +367,12 @@ const styles = {
   muted: { color: 'var(--text-muted)', fontSize: '14px' },
   errorBox: { padding: '14px', borderRadius: '10px', border: '1px solid var(--loss-color)', color: 'var(--loss-color)' },
   linkButton: { background: 'none', border: 'none', padding: '6px 0 0', color: 'var(--accent-color)', cursor: 'pointer', fontSize: '12.5px', fontWeight: 600, textAlign: 'left' },
+  requestRow: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginTop: '6px', cursor: 'default' },
+  requestButton: { padding: '3px 10px', borderRadius: '6px', border: '1px solid var(--accent-color)', background: 'transparent', color: 'var(--accent-color)', cursor: 'pointer', fontSize: '12px', fontWeight: 600 },
+  requestLink: { background: 'none', border: 'none', padding: 0, color: 'var(--text-muted)', cursor: 'pointer', fontSize: '12px', textDecoration: 'underline' },
+  requestPill: { padding: '2px 8px', borderRadius: '999px', fontSize: '11.5px', fontWeight: 600, color: 'var(--warning-color)', background: 'color-mix(in srgb, var(--warning-color) 12%, transparent)' },
+  requestInput: { flex: '1 1 180px', minWidth: 0, padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '12px' },
+  requestError: { fontSize: '11.5px', color: 'var(--loss-color)' },
   chipRow: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' },
   chip: { padding: '6px 12px', borderRadius: '999px', border: '1px solid var(--border-color)', background: 'var(--bg-secondary)', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '13px' },
   chipActive: { background: 'var(--accent-color)', borderColor: 'var(--accent-color)', color: 'white' },
