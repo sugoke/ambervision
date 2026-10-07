@@ -31,7 +31,7 @@ const formatDate = d => {
 export default function NotificationPreferences() {
   const [prefs, setPrefs] = useState({});
   const [savedPrefs, setSavedPrefs] = useState({});
-  const [meta, setMeta] = useState({ deliveryAddress: null, deliveryEnabled: false, updatedAt: null });
+  const [meta, setMeta] = useState({ deliveryAddress: null, deliveryEnabled: false, updatedAt: null, eligible: true });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -48,7 +48,8 @@ export default function NotificationPreferences() {
       setMeta({
         deliveryAddress: result.deliveryAddress,
         deliveryEnabled: result.deliveryEnabled,
-        updatedAt: result.updatedAt
+        updatedAt: result.updatedAt,
+        eligible: result.eligible !== false
       });
     } catch (err) {
       setError(err.reason || err.message);
@@ -108,6 +109,15 @@ export default function NotificationPreferences() {
 
   if (loading) {
     return <div style={{ ...cardStyle, color: 'var(--text-secondary)' }}>Loading notification preferences…</div>;
+  }
+
+  // Alert emails are reserved to superadmins, RMs and compliance
+  if (!meta.eligible) {
+    return (
+      <div style={{ ...cardStyle, color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.6 }}>
+        Alerts appear on the Notifications page. Email alerts are not sent to this account.
+      </div>
+    );
   }
 
   return (

@@ -1133,9 +1133,11 @@ Meteor.methods({
       if (recipientIds.size > 0) {
         const recipientUsers = await UsersCollection.find(
           { _id: { $in: [...recipientIds] } },
-          { fields: { _id: 1, email: 1, username: 1, profile: 1 } }
+          { fields: { _id: 1, email: 1, username: 1, profile: 1, role: 1 } }
         ).fetchAsync();
+        const { canReceiveAlertEmails } = await import('/imports/constants/notificationPreferences');
         const toList = recipientUsers
+          .filter(canReceiveAlertEmails) // staff only, whatever an account's RM fields hold
           .map(u => {
             const email = u.email || u.username;
             if (!email) return null;

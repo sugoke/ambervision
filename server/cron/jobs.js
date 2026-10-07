@@ -488,27 +488,30 @@ async function productRevaluationJob(options = {}) {
           // Recipients who opted into instant emails for an alert type get it
           // the moment it is created (NotificationEmailDispatcher), so it is
           // left out of their digest to avoid sending it twice.
-          const { NotificationEmailDispatcher } = await import('/imports/api/notificationEmailDispatcher.js');
-          const { isEmailEnabledForEventType } = await import('/imports/constants/notificationPreferences.js');
-          const usersByEmail = new Map();
-          if (NotificationEmailDispatcher.isEnabled()) {
-            const allEmails = [...new Set(notifications.flatMap(n => n.sentToEmails || []).filter(Boolean))];
-            const digestUsers = await UsersCollection.find(
-              { username: { $in: allEmails } },
-              { fields: { username: 1, role: 1, notificationPreferences: 1 } }
-            ).fetchAsync();
-            digestUsers.forEach(u => usersByEmail.set(u.username, u));
-          }
+          const { NotificationEmailDispatcher, userEmailAddress } = await import('/imports/api/notificationEmailDispatcher.js');
+          const { isEmailEnabledForEventType, canReceiveAlertEmails } = await import('/imports/constants/notificationPreferences.js');
+          const instantEnabled = NotificationEmailDispatcher.isEnabled();
+          // Recipients are listed by login (sentToEmails holds usernames such as
+          // "mf"): resolve each to its user, so the digest goes only to the roles
+          // allowed alert emails, and to their real address
+          const allLogins = [...new Set(notifications.flatMap(n => n.sentToEmails || []).filter(Boolean))];
+          const digestUsers = await UsersCollection.find(
+            { username: { $in: allLogins } },
+            { fields: { username: 1, email: 1, emails: 1, role: 1, notificationPreferences: 1 } }
+          ).fetchAsync();
+          const usersByLogin = new Map(digestUsers.map(u => [u.username, u]));
 
           for (const notification of notifications) {
-            const recipientEmails = notification.sentToEmails || [];
-            for (const email of recipientEmails) {
-              if (!email) continue;
-              if (isEmailEnabledForEventType(usersByEmail.get(email), notification.eventType)) continue;
-              if (!digestsByRecipient.has(email)) {
-                digestsByRecipient.set(email, []);
+            for (const login of notification.sentToEmails || []) {
+              const user = usersByLogin.get(login);
+              if (!user || !canReceiveAlertEmails(user)) continue;
+              const address = userEmailAddress(user);
+              if (!address) continue;
+              if (instantEnabled && isEmailEnabledForEventType(user, notification.eventType)) continue;
+              if (!digestsByRecipient.has(address)) {
+                digestsByRecipient.set(address, []);
               }
-              digestsByRecipient.get(email).push(notification);
+              digestsByRecipient.get(address).push(notification);
             }
           }
         }

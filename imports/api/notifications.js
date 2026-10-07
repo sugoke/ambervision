@@ -818,17 +818,19 @@ if (Meteor.isServer) {
       const { UsersCollection } = await import('./users');
       const user = await UsersCollection.findOneAsync(
         { _id: session.userId },
-        { fields: { username: 1, role: 1, notificationPreferences: 1 } }
+        { fields: { username: 1, email: 1, emails: 1, role: 1, notificationPreferences: 1 } }
       );
 
-      const { NotificationEmailDispatcher } = await import('./notificationEmailDispatcher');
-      const { NOTIFICATION_PREFERENCE_KEYS, isPreferenceEnabled } = await import('/imports/constants/notificationPreferences');
+      const { NotificationEmailDispatcher, userEmailAddress } = await import('./notificationEmailDispatcher');
+      const { NOTIFICATION_PREFERENCE_KEYS, isPreferenceEnabled, canReceiveAlertEmails } = await import('/imports/constants/notificationPreferences');
 
       return {
-        // Effective values: a preference never set takes the role default (on for staff)
+        // Only superadmins, RMs and compliance are emailed alerts
+        eligible: canReceiveAlertEmails(user),
+        // Effective values: a preference never set takes the role default
         email: Object.fromEntries(NOTIFICATION_PREFERENCE_KEYS.map(key => [key, isPreferenceEnabled(user, key)])),
         updatedAt: user?.notificationPreferences?.updatedAt || null,
-        deliveryAddress: user?.username || null,
+        deliveryAddress: userEmailAddress(user),
         deliveryEnabled: NotificationEmailDispatcher.isEnabled()
       };
     },
@@ -847,7 +849,12 @@ if (Meteor.isServer) {
         throw new Meteor.Error('not-authorized', 'Invalid session');
       }
 
-      const { NOTIFICATION_PREFERENCE_GROUPS } = await import('/imports/constants/notificationPreferences');
+      const { NOTIFICATION_PREFERENCE_GROUPS, canReceiveAlertEmails } = await import('/imports/constants/notificationPreferences');
+      const { UsersCollection: Users } = await import('./users');
+      const owner = await Users.findOneAsync({ _id: session.userId }, { fields: { role: 1 } });
+      if (!canReceiveAlertEmails(owner)) {
+        throw new Meteor.Error('not-authorized', 'Alert emails are reserved to staff');
+      }
       const email = {};
       NOTIFICATION_PREFERENCE_GROUPS.forEach(group => group.preferences.forEach(pref => {
         if (pref.alwaysEmailed) return;
@@ -879,8 +886,12 @@ if (Meteor.isServer) {
       const { UsersCollection } = await import('./users');
       const user = await UsersCollection.findOneAsync(
         { _id: session.userId },
-        { fields: { username: 1, email: 1, emails: 1, profile: 1 } }
+        { fields: { username: 1, email: 1, emails: 1, profile: 1, role: 1 } }
       );
+      const { canReceiveAlertEmails } = await import('/imports/constants/notificationPreferences');
+      if (!canReceiveAlertEmails(user)) {
+        throw new Meteor.Error('not-authorized', 'Alert emails are reserved to staff');
+      }
       const { NotificationEmailDispatcher, userEmailAddress } = await import('./notificationEmailDispatcher');
       const address = userEmailAddress(user);
       if (!address) {

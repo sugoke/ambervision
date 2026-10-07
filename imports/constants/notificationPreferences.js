@@ -12,10 +12,11 @@
  *     updatedAt: Date
  *   }
  *
- * Default: staff receive every alert by email until they untick it (a missing
- * key means "on"); clients receive none unless they tick it. Recipients are
- * still only the users a notification is addressed to, so an RM only ever gets
- * alerts about their own clients.
+ * Only ALERT_EMAIL_ROLES (superadmin, RM, compliance) are emailed: they receive
+ * every alert until they untick it (a missing key means "on"). Every other role,
+ * clients first, receives none and cannot opt in. Recipients are still only the
+ * users a notification is addressed to, so an RM only ever gets alerts about
+ * their own clients.
  *
  * `alwaysEmailed` marks alerts that already trigger a mandatory email through
  * their own flow (e.g. four-eyes order validation); the dispatcher skips them
@@ -105,11 +106,21 @@ const PREFERENCE_BY_EVENT_TYPE = ALL_PREFERENCES.reduce((acc, pref) => {
  */
 export const getPreferenceForEventType = (eventType) => PREFERENCE_BY_EVENT_TYPE[eventType] || null;
 
-/** Default for a preference the user has never set: on for staff, off for clients. */
-export const isEmailOnByDefault = (role) => role !== 'client';
+/**
+ * The only roles that are ever emailed alerts (instant or daily digest).
+ * Clients, introducers and every other role never are, whatever is stored in
+ * their preferences: the list is checked again where each email is sent.
+ */
+export const ALERT_EMAIL_ROLES = ['superadmin', 'rm', 'compliance'];
+
+export const canReceiveAlertEmails = (user) => ALERT_EMAIL_ROLES.includes(user?.role);
+
+/** Default for a preference the user has never set: on for the roles above. */
+export const isEmailOnByDefault = (role) => ALERT_EMAIL_ROLES.includes(role);
 
 /** Effective value of one preference key for a user. */
 export const isPreferenceEnabled = (user, key) => {
+  if (!canReceiveAlertEmails(user)) return false;
   const value = user?.notificationPreferences?.email?.[key];
   return typeof value === 'boolean' ? value : isEmailOnByDefault(user?.role);
 };
