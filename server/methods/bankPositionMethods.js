@@ -27,12 +27,28 @@ import { findNewSGZipFiles, extractSGZipFile } from '../../imports/utils/zipUtil
 import { decryptAllGpgFiles, isGpgAvailable } from '../../imports/utils/gpgUtils.js';
 import { yieldToEventLoop } from '../../imports/utils/asyncHelpers.js';
 import { buildPortfolioEntityMap, getEntityIdFromMap } from '../../imports/utils/entityResolver.js';
-import { ClientEntityHelpers } from '../../imports/api/clientEntities.js';
+import { ClientEntitiesCollection, ClientEntityHelpers } from '../../imports/api/clientEntities.js';
 import { SizeableTransactionReviewsCollection } from '../../imports/api/sizeableTransactions.js';
 import { buildSignatureIndex, findReplacement } from '../../imports/api/helpers/operationReconcile.js';
 import path from 'path';
 import fs from 'fs';
 import { getBankfilesDir } from '../../imports/api/documentStorage.js';
+
+/**
+ * Name of an account as the team knows it, for alert messages: the account's own
+ * name, else its holder entity, else the legacy login (often just an email).
+ */
+async function accountHolderName(bankAccount, legacyUserId) {
+  if (bankAccount?.name) return bankAccount.name;
+  if (bankAccount?.entityId) {
+    const entity = await ClientEntitiesCollection.findOneAsync(bankAccount.entityId);
+    if (entity) return ClientEntityHelpers.getEntityDisplayName(entity);
+  }
+  const user = legacyUserId ? await UsersCollection.findOneAsync(legacyUserId) : null;
+  return user?.profile?.firstName && user?.profile?.lastName
+    ? `${user.profile.firstName} ${user.profile.lastName}`
+    : user?.email || 'Unknown';
+}
 
 /**
  * Check if ISIN needs re-enrichment from AmbervisionDB
@@ -1272,10 +1288,7 @@ Meteor.methods({
 
           if (shouldAlert) {
             // Get client info for notification
-            const clientForCash = await UsersCollection.findOneAsync(portfolioUserId);
-            const clientNameForCash = clientForCash?.profile?.firstName && clientForCash?.profile?.lastName
-              ? `${clientForCash.profile.firstName} ${clientForCash.profile.lastName}`
-              : clientForCash?.email || 'Unknown';
+            const clientNameForCash = await accountHolderName(bankAccount, portfolioUserId);
 
             // Build message with NET negative cash positions per currency
             const negativeDetails = negativeCurrencies.map(c => {
@@ -1336,7 +1349,7 @@ Meteor.methods({
                   userIds: Array.from(recipientIds),
                   type: 'error',
                   title: 'Negative Cash Balance Alert',
-                  message: `CRITICAL: ${clientNameForCash}'s account ${bank.name} ${bankAccount.accountNumber} has negative cash: ${negativeDetails}${overdraftInfo}`,
+                  message: `CRITICAL: ${clientNameForCash} - account ${bank.name} ${bankAccount.accountNumber} has negative cash: ${negativeDetails}${overdraftInfo}`,
                   metadata,
                   eventType: 'unauthorized_overdraft'
                 });
@@ -1391,11 +1404,7 @@ Meteor.methods({
           if (breaches.length > 0) {
             console.log(`[ALLOCATION_BREACH] Account ${bankAccount.accountNumber} has ${breaches.length} breaches`);
 
-            // Get client name for notification
-            const client = await UsersCollection.findOneAsync(portfolioUserId);
-            const clientName = client?.profile?.firstName && client?.profile?.lastName
-              ? `${client.profile.firstName} ${client.profile.lastName}`
-              : client?.email || 'Unknown';
+            const clientName = await accountHolderName(bankAccount, portfolioUserId);
 
             // Create notification for admin and the client's RM
             const breachDetails = breaches.map(b => `${b.category}: ${b.current}% (limit: ${b.limit}%)`).join(', ');
@@ -1405,7 +1414,7 @@ Meteor.methods({
               userId: user._id,
               type: 'warning',
               title: 'Allocation Limit Breached',
-              message: `${clientName}'s account ${bank.name} ${bankAccount.accountNumber} exceeds investment profile limits.\n\n${breachDetails}`,
+              message: `${clientName} - account ${bank.name} ${bankAccount.accountNumber} exceeds investment profile limits.\n\n${breachDetails}`,
               metadata: {
                 bankAccountId: bankAccount._id,
                 portfolioCode,
@@ -1433,7 +1442,7 @@ Meteor.methods({
                 userId: rmId,
                 type: 'warning',
                 title: 'Allocation Limit Breached',
-                message: `${clientName}'s account ${bank.name} ${bankAccount.accountNumber} exceeds investment profile limits.\n\n${breachDetails}`,
+                message: `${clientName} - account ${bank.name} ${bankAccount.accountNumber} exceeds investment profile limits.\n\n${breachDetails}`,
                 metadata: {
                   bankAccountId: bankAccount._id,
                   portfolioCode,
@@ -2929,10 +2938,7 @@ Meteor.methods({
           if (breaches.length > 0) {
             console.log(`[ALLOCATION_BREACH_TEST] Account ${testBankAccount.accountNumber} has ${breaches.length} breaches`);
 
-            const client = await UsersCollection.findOneAsync(portfolioUserId);
-            const clientName = client?.profile?.firstName && client?.profile?.lastName
-              ? `${client.profile.firstName} ${client.profile.lastName}`
-              : client?.email || 'Unknown';
+            const clientName = await accountHolderName(testBankAccount, portfolioUserId);
 
             const breachDetails = breaches.map(b => `${b.category}: ${b.current}% (limit: ${b.limit}%)`).join(', ');
 
@@ -2940,7 +2946,7 @@ Meteor.methods({
               userId: user._id,
               type: 'warning',
               title: 'Allocation Limit Breached',
-              message: `${clientName}'s account Julius Baer ${testBankAccount.accountNumber} exceeds investment profile limits.\n\n${breachDetails}`,
+              message: `${clientName} - account Julius Baer ${testBankAccount.accountNumber} exceeds investment profile limits.\n\n${breachDetails}`,
               metadata: {
                 bankAccountId: testBankAccount._id,
                 portfolioCode,
@@ -2961,7 +2967,7 @@ Meteor.methods({
                 userId: rmId,
                 type: 'warning',
                 title: 'Allocation Limit Breached',
-                message: `${clientName}'s account Julius Baer ${testBankAccount.accountNumber} exceeds investment profile limits.\n\n${breachDetails}`,
+                message: `${clientName} - account Julius Baer ${testBankAccount.accountNumber} exceeds investment profile limits.\n\n${breachDetails}`,
                 metadata: {
                   bankAccountId: testBankAccount._id,
                   portfolioCode,
