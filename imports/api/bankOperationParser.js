@@ -338,6 +338,7 @@ export const BankOperationParser = {
       // Parse each file and aggregate results
       const allOperations = [];
       const processedFiles = [];
+      const failedFiles = [];
 
       for (const filename of newFiles) {
         console.log(`[BANK_OPERATIONS] Parsing file: ${filename}`);
@@ -346,10 +347,18 @@ export const BankOperationParser = {
           sourceFile: filename
         });
 
+        // A file that failed to read stays unseen so the next sync retries it; marking it
+        // processed would log it as an empty file and lose its movements for good
+        if (result.error) {
+          console.error(`[BANK_OPERATIONS] Failed to parse ${filename}, will retry next sync: ${result.error}`);
+          failedFiles.push({ filename, error: result.error });
+          continue;
+        }
+
         if (result.operations && result.operations.length > 0) {
           allOperations.push(...result.operations);
           console.log(`[BANK_OPERATIONS] Parsed ${result.operations.length} operations from ${filename}`);
-        } else if (!result.error) {
+        } else {
           console.log(`[BANK_OPERATIONS] No operations in ${filename} (empty file)`);
         }
 
@@ -357,11 +366,12 @@ export const BankOperationParser = {
         processedFiles.push(filename);
       }
 
-      console.log(`[BANK_OPERATIONS] Total: ${allOperations.length} operations from ${processedFiles.length} files`);
+      console.log(`[BANK_OPERATIONS] Total: ${allOperations.length} operations from ${processedFiles.length} files${failedFiles.length ? `, ${failedFiles.length} failed` : ''}`);
 
       return {
         operations: allOperations,
         processedFiles,
+        failedFiles,
         totalRecords: allOperations.length
       };
 

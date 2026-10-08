@@ -1730,16 +1730,21 @@ Meteor.methods({
           const opLogMessage = opUnmapped > 0
             ? `Processed ${operations.length} operations: ${opNew} new, ${opUpdated} updated, ${opUnmapped} skipped (unmapped)`
             : `Processed ${operations.length} operations: ${opNew} new, ${opUpdated} updated`;
+          const failedFiles = operationsParseResult.failedFiles || [];
 
           await BankConnectionLogHelpers.logConnectionAttempt({
             connectionId,
             bankId: connection.bankId,
             connectionName: connection.connectionName,
             action: 'process_operations',
-            status: 'success',
+            status: failedFiles.length > 0 ? 'failed' : 'success',
             message: opLogMessage,
+            error: failedFiles.length > 0
+              ? `Unreadable operation files (retried next sync): ${failedFiles.map(f => `${f.filename}: ${f.error}`).join('; ')}`
+              : undefined,
             metadata: {
               processedFiles: processedFiles,
+              failedFiles: failedFiles.length > 0 ? failedFiles : undefined,
               totalRecords: operations.length,
               newRecords: opNew,
               updatedRecords: opUpdated,
