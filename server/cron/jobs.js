@@ -200,6 +200,73 @@ async function initializeScheduleInfoFromLogs() {
   }
 }
 
+const zurichDateString = (date) => date.toLocaleDateString('en-CA', { timeZone: 'Europe/Zurich' });
+
+// A restart kills any job in flight without completeJob/failJob, leaving its log
+// "running" forever (07/10/2026: a restart a few minutes into the 07:30 bank sync
+// lost that day's sync until it was run by hand). Only logs written by this
+// server are touched: dev shares the database, and another instance's "running"
+// job may be genuinely live. An interrupted bank sync started today is run again;
+// two interruptions in a day stop the retries, since the sync itself may be what
+// brings the server down.
+const MAX_BANK_SYNC_RUNS_AFTER_INTERRUPTION = 2;
+
+async function recoverInterruptedJobs() {
+  const serverInstance = process.env.HOSTNAME || 'unknown';
+  const orphans = await CronJobLogsCollection.find(
+    { status: 'running', serverInstance },
+    { sort: { startTime: 1 } }
+  ).fetchAsync();
+
+  if (orphans.length === 0) return;
+
+  const now = new Date();
+  for (const log of orphans) {
+    await CronJobLogsCollection.updateAsync(log._id, {
+      $set: {
+        status: 'error',
+        endTime: now,
+        duration: now - log.startTime,
+        interrupted: true,
+        errorMessage: 'Interrupted by server restart',
+        errorStack: ''
+      }
+    });
+    console.warn(`[CRON] ${log.jobName} started ${log.startTime.toISOString()} was interrupted by a server restart - marked as error`);
+  }
+
+  const today = zurichDateString(now);
+  const interruptedBankSyncToday = orphans.some(log =>
+    log.jobName === 'bankFileSync' && zurichDateString(log.startTime) === today
+  );
+  if (!interruptedBankSyncToday) return;
+
+  const recentBankSyncs = await CronJobLogsCollection.find(
+    { jobName: 'bankFileSync', startTime: { $gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) } }
+  ).fetchAsync();
+  const todaysBankSyncs = recentBankSyncs.filter(log => zurichDateString(log.startTime) === today);
+
+  if (todaysBankSyncs.some(log => log.status === 'success' || log.status === 'running')) {
+    console.log('[CRON] Bank File Sync already completed or running today - no recovery run');
+    return;
+  }
+  const interruptionsToday = todaysBankSyncs.filter(log => log.interrupted).length;
+  if (interruptionsToday > MAX_BANK_SYNC_RUNS_AFTER_INTERRUPTION) {
+    console.error(`[CRON] Bank File Sync interrupted ${interruptionsToday} times today - not retrying, run it manually`);
+    return;
+  }
+
+  console.log('[CRON] Re-running Bank File Sync interrupted by the restart');
+  // Let startup finish before the sync's heavy work begins
+  Meteor.setTimeout(async () => {
+    try {
+      await bankFileSyncJob('restart-recovery');
+    } catch (error) {
+      console.error('[CRON] Bank File Sync recovery run error:', error);
+    }
+  }, 60 * 1000);
+}
+
 /**
  * Calculate next scheduled run time based on cron expression
  * Properly handles Europe/Zurich timezone
@@ -1919,6 +1986,8 @@ export async function initializeCronJobs() {
 
   // Restore lastFinishedAt from database logs (survives server restarts)
   await initializeScheduleInfoFromLogs();
+
+  await recoverInterruptedJobs();
 
   // Calculate initial next run times
   scheduleInfo.marketDataRefresh.nextScheduledRun = getNextRunTime(scheduleInfo.marketDataRefresh.schedule);
