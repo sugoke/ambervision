@@ -638,7 +638,8 @@ export const SGMonacoParser = {
       quantity,
       marketValue,
       marketValueOriginalCurrency: (() => {
-        // SG Monaco POS_MKT_VAL is in portfolio currency (EUR), not instrument currency.
+        // SG Monaco POS_MKT_VAL is in the portfolio currency (PTF_VAL_CUR, EUR or USD),
+        // not the instrument currency, accrued interest included.
         // We need to compute the value in the instrument's original currency.
         if (isCash) {
           // For cash, quantity IS the amount in original currency
@@ -647,6 +648,17 @@ export const SGMonacoParser = {
         if (instrumentCurrency === portfolioCurrency) {
           // Same currency, no conversion needed
           return marketValue;
+        }
+        // Convert through EUR with the day's exchange file (multiply format:
+        // EUR = amount × CUR_XRATE). POS_CUR_SYS_EXG_RAT is 0 on security lines and,
+        // on cash lines, not the day's rate (08/10/2026: 1.1421 for EUR/USD while the
+        // value used 1.1200), so it is only the fallback. Without this a EUR bond in a
+        // USD portfolio showed its USD value as its EUR value.
+        const toEurRate = (ccy) => (ccy === 'EUR' ? 1 : fxRates?.[ccy]);
+        const portfolioToEur = toEurRate(portfolioCurrency);
+        const instrumentToEur = toEurRate(instrumentCurrency);
+        if (marketValue !== null && portfolioToEur && instrumentToEur) {
+          return marketValue * portfolioToEur / instrumentToEur;
         }
         if (exchangeRate && exchangeRate !== 0 && marketValue !== null) {
           // SG FX rates are multiply format: amount_original × rate = amount_EUR
