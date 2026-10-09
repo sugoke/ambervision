@@ -110,7 +110,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
     const filter = {
       type: 'entity',
       id: result.data._id,
-      label: ClientEntityHelpers.getEntityDisplayName(result.data),
+      label: result.data.householdLabel || ClientEntityHelpers.getEntityDisplayName(result.data),
       data: result.data
     };
     setFilter(filter);
@@ -128,7 +128,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
     const filter = {
       type: 'account',
       id: account._id,
-      label: `${entityName} - ${account.accountNumber}`,
+      label: `${account.jointName || entityName} - ${account.accountNumber}`,
       data: {
         ...account,
         entityName,
@@ -160,7 +160,7 @@ const ViewAsFilter = ({ currentUser, onSelect }) => {
       addFavorite({
         type: 'entity',
         id: id,
-        label: ClientEntityHelpers.getEntityDisplayName(result.data),
+        label: result.data.householdLabel || ClientEntityHelpers.getEntityDisplayName(result.data),
         data: result.data
       });
     }

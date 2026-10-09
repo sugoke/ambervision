@@ -57,7 +57,7 @@ import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
 import { BanksCollection, BankHelpers } from '/imports/api/banks';
 import { BankConnectionsCollection, BankConnectionHelpers } from '/imports/api/bankConnections';
 import { BankConnectionLogsCollection, BankConnectionLogHelpers } from '/imports/api/bankConnectionLogs';
-import { BankAccountsCollection, BankAccountHelpers, BANK_ACCOUNT_LIST_FIELDS, accountHolderSelector, ACCOUNT_ACCESS_RIGHTS } from '/imports/api/bankAccounts';
+import { BankAccountsCollection, BankAccountHelpers, BANK_ACCOUNT_LIST_FIELDS, accountHolderSelector, ACCOUNT_ACCESS_RIGHTS, getAccountHolderIds, buildJointAccountName } from '/imports/api/bankAccounts';
 import { ProductPricesCollection, ProductPriceHelpers } from '/imports/api/productPrices';
 import { IssuersCollection, IssuerHelpers, DEFAULT_ISSUERS } from '/imports/api/issuers';
 import { TemplatesCollection, TemplateHelpers, BUILT_IN_TEMPLATES } from '/imports/api/templates';
@@ -6925,6 +6925,34 @@ Meteor.methods({
       }
     ).fetchAsync();
 
+    // A joint account is labelled by all its holders ("WARKENTIN David & Bethany"),
+    // and so is a person whose only holdings are joint accounts with the same
+    // co-holders: picking David lands on the couple's portfolio, so it reads as theirs.
+    const jointNameCache = new Map();
+    const jointAccountName = async (acc) => {
+      const holderIds = getAccountHolderIds(acc);
+      if (holderIds.length < 2) return null;
+      // The bank's own label for the couple wins, as on the Clients screen
+      if (acc.name) return acc.name;
+      const key = [...holderIds].sort().join('|');
+      if (!jointNameCache.has(key)) {
+        const holders = await EntitiesCol.find({ _id: { $in: holderIds } }).fetchAsync();
+        const ordered = holderIds.map(id => holders.find(h => h._id === id)).filter(Boolean);
+        jointNameCache.set(key, buildJointAccountName(ordered) || null);
+      }
+      return jointNameCache.get(key);
+    };
+    const householdLabel = async (entity) => {
+      const held = await BankAccountsCollection.find(
+        { $or: [{ entityId: entity._id }, { holderEntityIds: entity._id }], isActive: true },
+        { fields: { entityId: 1, holderEntityIds: 1, name: 1 } }
+      ).fetchAsync();
+      if (held.length === 0) return null;
+      const holderSets = new Set(held.map(a => [...getAccountHolderIds(a)].sort().join('|')));
+      if (holderSets.size !== 1 || getAccountHolderIds(held[0]).length < 2) return null;
+      return jointAccountName(held[0]);
+    };
+
     // Enrich entities with their bank accounts (owned or beneficial owner)
     const enrichedEntities = await Promise.all(entities.map(async (entity) => {
       const accounts = await BankAccountsCollection.find(
@@ -6943,10 +6971,10 @@ Meteor.methods({
             ownerName = ClientEntityHelpers.getEntityDisplayName(ownerEntity);
           }
         }
-        return { ...acc, bankName: bank?.name || '', ownerName };
+        return { ...acc, bankName: bank?.name || '', ownerName, jointName: await jointAccountName(acc) };
       }));
 
-      return { ...entity, accounts: enrichedAccounts };
+      return { ...entity, accounts: enrichedAccounts, householdLabel: await householdLabel(entity) };
     }));
 
     // Also search by account number — exact match only to avoid picking the wrong account
@@ -7014,10 +7042,10 @@ Meteor.methods({
               ownerName = ClientEntityHelpers.getEntityDisplayName(ownerEntity);
             }
           }
-          return { ...acc, bankName: bank?.name || '', ownerName };
+          return { ...acc, bankName: bank?.name || '', ownerName, jointName: await jointAccountName(acc) };
         }));
 
-        enrichedEntities.push({ ...entity, accounts: enrichedAccounts, matchedByAccount: true });
+        enrichedEntities.push({ ...entity, accounts: enrichedAccounts, matchedByAccount: true, householdLabel: await householdLabel(entity) });
       }
     }
 
