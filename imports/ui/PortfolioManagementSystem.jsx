@@ -576,16 +576,23 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
     // Transform holdings to match our table structure
     const transformedHoldings = filteredHoldings.map((holding) => {
       // Use pre-calculated cost basis from parser (NO calculations in UI!)
-      const costBasisPortfolioCurrency = holding.costBasisPortfolioCurrency || 0;
-      const costBasisOriginalCurrency = holding.costBasisOriginalCurrency || 0;
+      // A security whose bank sends no cost (missing, or 0 on a held position) has
+      // an UNKNOWN cost, not a zero one: read as 0, its whole value showed as profit
+      // (SG Monaco bond EU000A284469, 08/10/2026). Cash keeps its usual 0.
+      const isCashLike = holding.securityType === 'CASH' || holding.securityType === 'TERM_DEPOSIT';
+      const costUnknown = !isCashLike && !holding.costBasisPortfolioCurrency;
+      const costBasisPortfolioCurrency = costUnknown ? null : (holding.costBasisPortfolioCurrency || 0);
+      const costBasisOriginalCurrency = costUnknown ? null : (holding.costBasisOriginalCurrency || 0);
 
       // Use pre-calculated P&L values from parser
-      const unrealizedPnL = holding.unrealizedPnL !== null && holding.unrealizedPnL !== undefined
-        ? holding.unrealizedPnL
-        : 0;
-      const unrealizedPnLPercent = holding.unrealizedPnLPercent !== null && holding.unrealizedPnLPercent !== undefined
-        ? holding.unrealizedPnLPercent
-        : 0;
+      const unrealizedPnL = costUnknown ? null
+        : holding.unrealizedPnL !== null && holding.unrealizedPnL !== undefined
+          ? holding.unrealizedPnL
+          : 0;
+      const unrealizedPnLPercent = costUnknown ? null
+        : holding.unrealizedPnLPercent !== null && holding.unrealizedPnLPercent !== undefined
+          ? holding.unrealizedPnLPercent
+          : 0;
 
       // Link to product if ISIN exists
       const linkedProduct = holding.isin ? productsByIsin[holding.isin.toUpperCase()] : null;
@@ -646,7 +653,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
         name: displayName,
         productIcon: productIcon, // Icon to display for structured products
         quantity: holding.quantity || 0,
-        avgPrice: holding.costPrice || 0,
+        avgPrice: costUnknown ? null : (holding.costPrice || 0),
         currentPrice: holding.marketPrice || 0,
         priceDate: holding.priceDate || null,
         marketValue: holding.marketValue || 0,
@@ -1858,8 +1865,10 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
 
   // Calculate portfolio values for non-cash positions (using PTF_MKT_VAL for portfolio currency)
   const totalNonCashPortfolioValue = nonCashPositions.reduce((sum, pos) => sum + (pos.marketValue || 0), 0);
-  const totalCostBasis = nonCashPositions.reduce((sum, pos) => sum + (pos.costBasis || 0), 0);
-  const totalNonCashGainLoss = totalNonCashPortfolioValue - totalCostBasis;
+  // P&L only over positions whose cost is known; an unknown cost is not a gain
+  const costedNonCashPositions = nonCashPositions.filter(pos => pos.costBasis != null);
+  const totalCostBasis = costedNonCashPositions.reduce((sum, pos) => sum + pos.costBasis, 0);
+  const totalNonCashGainLoss = costedNonCashPositions.reduce((sum, pos) => sum + (pos.marketValue || 0), 0) - totalCostBasis;
   const totalGainLossPercent = totalCostBasis > 0 ? ((totalNonCashGainLoss / totalCostBasis) * 100) : 0;
 
   // Calculate total cash from all currencies (using PTF_MKT_VAL for portfolio currency).
@@ -2083,9 +2092,13 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
   // Helper function to calculate totals for a list of positions
   const calculatePositionsTotals = (positions) => {
     const marketValue = positions.reduce((sum, p) => sum + p.marketValue, 0);
-    const costBasis = positions.reduce((sum, p) => sum + p.costBasis, 0);
-    const gainLoss = marketValue - costBasis;
-    const gainLossPercent = costBasis > 0 ? (gainLoss / costBasis) * 100 : 0;
+    // P&L only over positions whose cost is known; null when none is
+    const costedPositions = positions.filter(p => p.costBasis != null);
+    const costBasis = costedPositions.reduce((sum, p) => sum + p.costBasis, 0);
+    const gainLoss = costedPositions.length > 0
+      ? costedPositions.reduce((sum, p) => sum + p.marketValue, 0) - costBasis
+      : null;
+    const gainLossPercent = gainLoss === null ? null : (costBasis > 0 ? (gainLoss / costBasis) * 100 : 0);
     const percentage = totalPortfolioValue > 0 ? (marketValue / totalPortfolioValue) * 100 : 0;
 
     const currencyCounts = positions.reduce((counts, p) => {
@@ -2335,13 +2348,13 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
         'Asset Class': h.assetClass ? h.assetClass.replace(/_/g, ' ') : '',
         'Sub Class': h.assetSubClass ? h.assetSubClass.replace(/_/g, ' ') : '',
         'Quantity': h.quantity || 0,
-        'Avg Price': h.avgPrice || 0,
+        'Avg Price': h.avgPrice ?? '',
         'Current Price': h.currentPrice || 0,
         'Price Type': h.priceType || '',
-        'Cost Basis': h.costBasis || 0,
+        'Cost Basis': h.costBasis ?? '',
         'Market Value': h.marketValue || 0,
-        'Gain/Loss': h.gainLoss || 0,
-        'Gain/Loss %': h.gainLossPercent || 0,
+        'Gain/Loss': h.gainLoss ?? '',
+        'Gain/Loss %': h.gainLossPercent ?? '',
         'WTD %': perfCell(perf?.wtd?.returnPercent),
         'WTD Contribution %': perfCell(perf?.wtd?.contributionPercent),
         'MTD %': perfCell(perf?.mtd?.returnPercent),
@@ -4249,19 +4262,19 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                           fontSize: '1.1rem',
                           fontWeight: '700',
                           fontVariantNumeric: 'tabular-nums',
-                          color: position.gainLoss >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
+                          color: position.gainLoss == null ? 'var(--text-muted)' : position.gainLoss >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                           lineHeight: '1.2'
                         }}>
-                          {position.gainLoss >= 0 ? '+' : ''}{formatCurrency(position.gainLoss, portfolioCurrency)}
+                          {position.gainLoss == null ? '—' : <>{position.gainLoss >= 0 ? '+' : ''}{formatCurrency(position.gainLoss, portfolioCurrency)}</>}
                         </div>
                         <div style={{
                           fontSize: '0.75rem',
                           fontWeight: '500',
                           fontVariantNumeric: 'tabular-nums',
-                          color: position.gainLossPercent >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
+                          color: position.gainLossPercent == null ? 'var(--text-muted)' : position.gainLossPercent >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                           opacity: 0.85
                         }}>
-                          {position.gainLossPercent >= 0 ? '+' : ''}{position.gainLossPercent.toFixed(2)}%
+                          {position.gainLossPercent == null ? 'No cost from bank' : <>{position.gainLossPercent >= 0 ? '+' : ''}{position.gainLossPercent.toFixed(2)}%</>}
                         </div>
                       </div>
                     </div>
@@ -4330,7 +4343,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                     {/* Avg Price - Tertiary */}
                     <div style={{ textAlign: 'center' }}>
                       <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Avg Purch Price</div>
-                      <div style={{ fontSize: '0.8rem', fontVariantNumeric: 'tabular-nums', color: 'var(--text-secondary)' }}>{formatPrice(position.avgPrice, position.currency, position.priceType)}</div>
+                      <div style={{ fontSize: '0.8rem', fontVariantNumeric: 'tabular-nums', color: 'var(--text-secondary)' }}>{position.avgPrice == null ? '—' : formatPrice(position.avgPrice, position.currency, position.priceType)}</div>
                       <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
                         {position.costBasis != null && totalPortfolioValue > 0
                           ? `${((position.costBasis / totalPortfolioValue) * 100).toFixed(1)}% invested`
@@ -4344,7 +4357,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                         {position.priceDate ? new Date(position.priceDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Last Price'}
                       </div>
                       <div style={{
-                        color: position.currentPrice >= position.avgPrice ? 'var(--gain-color)' : 'var(--loss-color)',
+                        color: position.avgPrice == null ? 'var(--text-secondary)' : position.currentPrice >= position.avgPrice ? 'var(--gain-color)' : 'var(--loss-color)',
                         fontSize: '0.8rem',
                         fontVariantNumeric: 'tabular-nums'
                       }}>
@@ -4353,7 +4366,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                       <div style={{
                         fontSize: '0.65rem',
                         fontVariantNumeric: 'tabular-nums',
-                        color: position.currentPrice >= position.avgPrice ? 'var(--gain-color)' : 'var(--loss-color)'
+                        color: position.avgPrice == null ? 'var(--text-secondary)' : position.currentPrice >= position.avgPrice ? 'var(--gain-color)' : 'var(--loss-color)'
                       }}>
                         {position.avgPrice > 0
                           ? `${position.currentPrice >= position.avgPrice ? '+' : ''}${(((position.currentPrice - position.avgPrice) / position.avgPrice) * 100).toFixed(1)}%`
@@ -4560,12 +4573,12 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                       <div style={{
                         fontSize: isMobile ? '0.875rem' : '0.8rem',
                         fontWeight: '500',
-                        color: subtotal.gainLoss >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
+                        color: subtotal.gainLoss == null ? 'var(--text-muted)' : subtotal.gainLoss >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                         fontVariantNumeric: 'tabular-nums'
                       }}>
-                        {subtotal.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(subtotal.gainLoss), portfolioCurrency)}
+                        {subtotal.gainLoss == null ? '—' : <>{subtotal.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(subtotal.gainLoss), portfolioCurrency)}</>}
                         <span style={{ marginLeft: '0.375rem' }}>
-                          {subtotal.gainLossPercent >= 0 ? '+' : ''}{subtotal.gainLossPercent.toFixed(1)}%
+                          {subtotal.gainLossPercent == null ? '' : <>{subtotal.gainLossPercent >= 0 ? '+' : ''}{subtotal.gainLossPercent.toFixed(1)}%</>}
                         </span>
                       </div>
                     </div>
@@ -4639,10 +4652,10 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                               </div>
                               <div style={{
                                 fontSize: isMobile ? '0.875rem' : '0.75rem',
-                                color: level1Total.gainLoss >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
+                                color: level1Total.gainLoss == null ? 'var(--text-muted)' : level1Total.gainLoss >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                                 fontVariantNumeric: 'tabular-nums'
                               }}>
-                                {level1Total.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(level1Total.gainLoss), portfolioCurrency)}
+                                {level1Total.gainLoss == null ? '—' : <>{level1Total.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(level1Total.gainLoss), portfolioCurrency)}</>}
                               </div>
                             </div>
                           </div>
@@ -4700,10 +4713,10 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                                     </div>
                                     <div style={{
                                       fontSize: isMobile ? '0.875rem' : '0.7rem',
-                                      color: level2Total.gainLoss >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
+                                      color: level2Total.gainLoss == null ? 'var(--text-muted)' : level2Total.gainLoss >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                                       fontVariantNumeric: 'tabular-nums'
                                     }}>
-                                      {level2Total.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(level2Total.gainLoss), portfolioCurrency)}
+                                      {level2Total.gainLoss == null ? '—' : <>{level2Total.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(level2Total.gainLoss), portfolioCurrency)}</>}
                                     </div>
                                   </div>
                                 </div>
@@ -4777,10 +4790,10 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
                               </div>
                               <div style={{
                                 fontSize: isMobile ? '0.875rem' : '0.75rem',
-                                color: subTotal.gainLoss >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
+                                color: subTotal.gainLoss == null ? 'var(--text-muted)' : subTotal.gainLoss >= 0 ? 'var(--gain-color)' : 'var(--loss-color)',
                                 fontVariantNumeric: 'tabular-nums'
                               }}>
-                                {subTotal.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(subTotal.gainLoss), portfolioCurrency)}
+                                {subTotal.gainLoss == null ? '—' : <>{subTotal.gainLoss >= 0 ? '+' : ''}{formatCurrency(Math.abs(subTotal.gainLoss), portfolioCurrency)}</>}
                               </div>
                             </div>
                           </div>

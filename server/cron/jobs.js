@@ -781,10 +781,22 @@ async function createConsolidatedHoldings() {
         consolidated[key].costBasisPortfolioCurrency += pos.costBasisPortfolioCurrency || 0;
         consolidated[key].unrealizedPnL += pos.unrealizedPnL || 0;
         consolidated[key].sourceAccounts.push(pos.portfolioCode);
+        // A security the bank sent without a cost has an unknown cost, and so does
+        // the line consolidating it: summing it as 0 turned its value into profit
+        const isCashLike = pos.securityType === 'CASH' || pos.securityType === 'TERM_DEPOSIT';
+        if (!isCashLike && !pos.costBasisPortfolioCurrency) consolidated[key].costUnknown = true;
       });
 
       // Calculate unrealizedPnLPercent for consolidated positions
       Object.values(consolidated).forEach(pos => {
+        if (pos.costUnknown) {
+          delete pos.costUnknown;
+          pos.costBasisOriginalCurrency = null;
+          pos.costBasisPortfolioCurrency = null;
+          pos.unrealizedPnL = null;
+          pos.unrealizedPnLPercent = null;
+          return;
+        }
         if (pos.costBasisPortfolioCurrency && pos.costBasisPortfolioCurrency !== 0) {
           pos.unrealizedPnLPercent = ((pos.marketValue - pos.costBasisPortfolioCurrency) / Math.abs(pos.costBasisPortfolioCurrency)) * 100;
         } else {
