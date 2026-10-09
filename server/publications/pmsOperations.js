@@ -64,8 +64,11 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
     // Build query filter based on role and viewAsFilter
     let queryFilter = { isActive: true };
 
-    const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
-    const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER;
+    // Same roles as the holdings publication: compliance sees what admins see, an
+    // assistant what its RMs see. Any other role gets nothing (see the end of the chain)
+    const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE;
+    const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
+    const rmIds = isRM ? UserHelpers.getEffectiveRmIds(currentUser) : [];
     const isClient = currentUser.role === USER_ROLES.CLIENT;
 
     // Handle viewAsFilter for admins and RMs
@@ -76,12 +79,14 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
         if (!entity) return this.ready();
         // Archived (closed) relationships are hidden everywhere, no exception
         if (ClientEntityHelpers.isEntityArchived(entity)) return this.ready();
-        if (isRM && entity.relationshipManagerId !== currentUser._id) return this.ready();
+        if (isRM && !rmIds.includes(entity.relationshipManagerId)) return this.ready();
 
-        // Find bank accounts owned by this entity
+        // Accounts this entity holds (primary holder or co-holder of a joint
+        // account) or is beneficial owner of, as in the holdings publication
         const entityAccounts = await BankAccountsCollection.find({
           $or: [
             { entityId: entity._id },
+            { holderEntityIds: entity._id },
             { beneficialOwnerIds: entity._id },
             { beneficialOwnerId: entity._id }
           ],
@@ -110,7 +115,7 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
         if (isRM) {
           const targetClient = await UsersCollection.findOneAsync({
             _id: viewAsFilter.id,
-            relationshipManagerId: currentUser._id
+            relationshipManagerId: { $in: rmIds }
           });
           if (!targetClient) {
             console.log('[PMS_OPERATIONS] RM does not have access to client:', viewAsFilter.id);
@@ -127,11 +132,11 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
         if (isRM) {
           let hasAccess = false;
           if (bankAccount.userId) {
-            const targetClient = await UsersCollection.findOneAsync({ _id: bankAccount.userId, relationshipManagerId: currentUser._id });
+            const targetClient = await UsersCollection.findOneAsync({ _id: bankAccount.userId, relationshipManagerId: { $in: rmIds } });
             if (targetClient) hasAccess = true;
           }
           if (!hasAccess && bankAccount.entityId) {
-            const targetEntity = await ClientEntitiesCollection.findOneAsync({ _id: bankAccount.entityId, relationshipManagerId: currentUser._id });
+            const targetEntity = await ClientEntitiesCollection.findOneAsync({ _id: bankAccount.entityId, relationshipManagerId: { $in: rmIds } });
             if (targetEntity) hasAccess = true;
           }
           if (!hasAccess) return this.ready();
@@ -179,14 +184,14 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
     else if (isRM) {
       // Get entity-based clients
       const rmEntities = await ClientEntitiesCollection.find(
-        { relationshipManagerId: currentUser._id, isActive: true },
+        { relationshipManagerId: { $in: rmIds }, isActive: true },
         { fields: { _id: 1, migratedFromUserId: 1 } }
       ).fetchAsync();
       const entityIds = rmEntities.map(e => e._id);
       const migratedUserIds = rmEntities.map(e => e.migratedFromUserId).filter(Boolean);
 
       // Get legacy user-based clients
-      const assignedClients = await UsersCollection.find({ relationshipManagerId: currentUser._id }).fetchAsync();
+      const assignedClients = await UsersCollection.find({ relationshipManagerId: { $in: rmIds } }).fetchAsync();
       const clientIds = [...new Set([...assignedClients.map(c => c._id), ...migratedUserIds, currentUser._id])];
 
       // Also find portfolio codes from entity bank accounts (for legacy operations without entityId)
@@ -213,6 +218,11 @@ Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter =
       } else {
         queryFilter.userId = currentUser._id;
       }
+    }
+    // Any other role (introducer, staff, ...): no operations. Without this the
+    // filter stayed { isActive: true } and published every client's operations
+    else {
+      return this.ready();
     }
 
     // Exclude operations of archived (closed-relationship) clients from every path, and

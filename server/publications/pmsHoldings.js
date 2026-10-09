@@ -357,6 +357,11 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
         queryFilter.userId = currentUser._id;
       }
     }
+    // Any other role (introducer, staff, ...): no holdings. Without this the
+    // filter stayed { isActive: true } and published every client's holdings
+    else {
+      return this.ready();
+    }
 
     // Exclude holdings of archived (closed-relationship) clients from every path, and of
     // demo clients unless this view is drilled into that demo client.
