@@ -955,6 +955,11 @@ export const CMBMonacoParser = {
     // portfolios (credit line -> investment account) carries the same Order on both
     // sides, and each side is a real movement of its own account.
     const isRealIsin = (v) => /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(String(v || '').trim());
+    // Corporate actions (cash merger...) put the security's ISIN on the cash leg too:
+    // that leg is told apart by its Position, which names the cash account.
+    const isCashAccountLeg = (row) =>
+      /\b(current account|credit account|cash account|deposit account|sight account)\b/i.test(String(row.Position || ''));
+    const isSecurityLeg = (row) => isRealIsin(row.ISIN) && !isCashAccountLeg(row);
     const byOrder = new Map();
     const passthrough = [];
     const extraLegs = new Map(); // order -> security legs seen beyond the first
@@ -967,14 +972,14 @@ export const CMBMonacoParser = {
       // Two security legs under one Order are two bookings (a trade and its
       // cancellation share the Order): both are kept. The later one gets its own
       // reference, as operations are stored one per reference and day.
-      if (isRealIsin(existing.ISIN) && isRealIsin(row.ISIN)) {
+      if (isSecurityLeg(existing) && isSecurityLeg(row)) {
         const n = (extraLegs.get(order) || 1) + 1;
         extraLegs.set(order, n);
         passthrough.push({ ...row, Order: `${orderRef}#${n}` });
         continue;
       }
       // Prefer the security leg (real ISIN) over the cash-account leg.
-      if (!isRealIsin(existing.ISIN) && isRealIsin(row.ISIN)) byOrder.set(order, row);
+      if (!isSecurityLeg(existing) && isSecurityLeg(row)) byOrder.set(order, row);
     }
     const dedupedRows = [...byOrder.values(), ...passthrough];
     if (dedupedRows.length !== rows.length) {
