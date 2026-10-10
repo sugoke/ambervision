@@ -52,7 +52,7 @@ const BankManagement = React.memo(({ user }) => {
   const { dialogState, showConfirm, hideDialog } = useDialog();
   
   // Memoize subscription to prevent re-initialization
-  const subscription = useMemo(() => Meteor.subscribe('banks'), []);
+  const subscription = useMemo(() => Meteor.subscribe('banks', localStorage.getItem('sessionId')), []);
 
   // Set up a timeout for loading state
   useEffect(() => {

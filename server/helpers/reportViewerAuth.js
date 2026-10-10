@@ -1,36 +1,45 @@
-import { SessionHelpers } from '../../imports/api/sessions.js';
-import { UsersCollection } from '../../imports/api/users.js';
-import { findUserByPdfAccessToken } from './pdfAccessTokens.js';
+// Viewer resolution for product-level feeds (evaluation reports, chart data,
+// schedules, commentary, generic products).
+//
+// Two legitimate callers exist:
+//   1. A normal logged-in user — a real hashed session token.
+//   2. The headless PDF renderer — which cannot hold a real session and instead
+//      passes `pdf-temp-<pdfToken>`, a short-lived capability minted by
+//      pdf.generateReport for the user who asked for the PDF.
+//
+// The token identifies the user; the user's access scope decides which
+// products they may read (catalogue roles: all; clients: held products only).
+import { getSessionOrPdfUser } from './sessionAuth.js';
+import { resolveScope, isProductInScope, productIdsInScope } from './accessScope.js';
+
+/** Scope of the viewer behind a session or PDF token, or null. */
+export async function getReportViewerScope(sessionId) {
+  const user = await getSessionOrPdfUser({ sessionId });
+  if (!user) return null;
+  const scope = await resolveScope(user);
+  return scope.denied ? null : scope;
+}
+
+/** Scope of the viewer when they may read `productId`, else null. */
+export async function getProductViewerScope(sessionId, productId) {
+  const scope = await getReportViewerScope(sessionId);
+  if (!scope) return null;
+  return (await isProductInScope(scope, productId)) ? scope : null;
+}
 
 /**
- * Authorises a viewer of product-level data (evaluation reports, chart data,
- * schedules, product commentary). These feeds were previously published to ANY
- * DDP connection with no authentication, leaking the firm's structured-product
- * book (ISINs, evaluations) to anyone.
- *
- * Two legitimate callers exist:
- *   1. A normal logged-in user — a real hashed session token.
- *   2. The headless PDF renderer — which cannot hold a real session and instead
- *      passes a synthetic `pdf-temp-<pdfToken>` string, where <pdfToken> is a
- *      short-lived capability stored on user.services.pdfAccess.token.
- *
- * Returns true if either path validates, false otherwise. Never throws.
+ * Selector clause limiting a product-keyed collection to the viewer's
+ * products: `{}` for catalogue roles, `{ productId: { $in } }` for clients,
+ * null when nothing is visible.
  */
+export async function productFeedClause(scope, field = 'productId') {
+  const ids = await productIdsInScope(scope);
+  if (ids === null) return {};
+  if (ids.size === 0) return null;
+  return { [field]: { $in: [...ids] } };
+}
+
+/** @deprecated kept for callers that only need "is anyone authenticated" */
 export async function isAuthorizedReportViewer(sessionId) {
-  if (typeof sessionId !== 'string' || sessionId.length === 0) return false;
-
-  // PDF renderer path: pdf-temp-<pdfToken>
-  const PDF_PREFIX = 'pdf-temp-';
-  if (sessionId.startsWith(PDF_PREFIX)) {
-    const pdfToken = sessionId.slice(PDF_PREFIX.length);
-    if (!pdfToken) return false;
-    // Either token shape, expiry enforced in the selector — see
-    // server/helpers/pdfAccessTokens.js.
-    const user = await findUserByPdfAccessToken(null, pdfToken, { fields: { _id: 1 } });
-    return !!user;
-  }
-
-  // Normal path: a real, active, unexpired session (hashed lookup).
-  const session = await SessionHelpers.findByToken(sessionId);
-  return !!(session && session.userId);
+  return !!(await getReportViewerScope(sessionId));
 }

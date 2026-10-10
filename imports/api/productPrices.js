@@ -683,14 +683,13 @@ if (Meteor.isServer) {
   });
 
   // Publish product prices to authenticated users
-  Meteor.publish('productPrices', function(sessionId) {
+  Meteor.publish('productPrices', async function(sessionId) {
     check(sessionId, Match.Optional(String));
-    
-    if (sessionId) {
-      // Publish only active prices
-      return ProductPricesCollection.find({ isActive: true });
-    }
-    
-    return this.ready();
+
+    const { getSessionUser } = await import('../../server/helpers/sessionAuth.js');
+    const user = await getSessionUser(sessionId);
+    if (!user) return this.ready();
+
+    return ProductPricesCollection.find({ isActive: true });
   });
 };

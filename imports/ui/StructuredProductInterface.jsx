@@ -261,7 +261,7 @@ const TemplateSelector = React.memo(({ onTemplateSelect, user, onTemplateLoad, o
   useEffect(() => {
     let handle = null;
     if (user) {
-      handle = Meteor.subscribe('templates');
+      handle = Meteor.subscribe('templates', localStorage.getItem('sessionId'));
     }
     
     return () => {

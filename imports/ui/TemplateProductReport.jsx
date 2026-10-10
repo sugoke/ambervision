@@ -298,8 +298,8 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, backLabel, onE
     const allocationsHandle = Meteor.subscribe('productAllocations', productId, sessionId);
     const usersHandle = Meteor.subscribe('customUsers', sessionId);
     const bankAccountsHandle = Meteor.subscribe('allBankAccounts', sessionId);
-    const banksHandle = Meteor.subscribe('banks');
-    const issuersHandle = Meteor.subscribe('issuers');
+    const banksHandle = Meteor.subscribe('banks', localStorage.getItem('sessionId'));
+    const issuersHandle = Meteor.subscribe('issuers', localStorage.getItem('sessionId'));
 
     const productData = ProductsCollection.findOne(productId);
 
@@ -311,7 +311,7 @@ const TemplateProductReport = ({ productId, user, onNavigateBack, backLabel, onE
     let latestPrice = null;
     let notePriceSparkline = null;
     if (productData && productData.isin) {
-      priceHandle = Meteor.subscribe('priceHistory', productData.isin, 200);
+      priceHandle = Meteor.subscribe('priceHistory', productData.isin, 200, sessionId);
       const allPrices = ProductPricesCollection.find(
         { isin: productData.isin.toUpperCase(), isActive: true },
         { sort: { priceDate: 1 } }

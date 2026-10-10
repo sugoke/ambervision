@@ -101,7 +101,7 @@ const IssuerManagementComponent = ({ user: currentUser }) => {
   };
 
   // Memoize subscription to prevent re-initialization
-  const subscription = useMemo(() => Meteor.subscribe('issuers'), []);
+  const subscription = useMemo(() => Meteor.subscribe('issuers', localStorage.getItem('sessionId')), []);
 
   const { issuers, isLoadingIssuers } = useTracker(() => {
     return {

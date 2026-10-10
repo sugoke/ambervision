@@ -625,7 +625,10 @@ if (Meteor.isServer) {
     /**
      * Diagnose price data availability for a ticker
      */
-    'priceService.diagnosePriceData': async function(ticker) {
+    'priceService.diagnosePriceData': async function(ticker, sessionId = null) {
+      const { requireRole } = await import('/server/helpers/sessionAuth.js');
+      const { ADMIN_ROLES } = await import('/server/helpers/accessPolicy.js');
+      await requireRole(sessionId, ADMIN_ROLES);
       // Diagnosing price data
       
       const tickerVariants = [];

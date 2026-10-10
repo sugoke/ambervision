@@ -3,7 +3,12 @@ import { check, Match } from 'meteor/check';
 import fs from 'fs';
 import path from 'path';
 import { Random } from 'meteor/random';
-import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
+import { requireSession } from '../helpers/sessionAuth.js';
+import { SEE_ALL_ROLES, RM_LIKE_ROLES, ORDER_BOOK_ROLES } from '../helpers/accessPolicy.js';
+import {
+  resolveScope, isClientInScope, assertClientInScope, accountBelongsToClient, ordersSelector
+} from '../helpers/accessScope.js';
+import { portfolioCodeRegex } from '/imports/utils/portfolioCode.js';
 import { issueDocumentToken } from '../documentAccess.js';
 import { getOrderTracesDir } from '/imports/api/documentStorage.js';
 import { promoteOrderTermsheetToProduct, TERMSHEET_SOURCES as PRODUCT_TERMSHEET_SOURCES } from '../helpers/termsheetSync.js';
@@ -227,10 +232,13 @@ function loadInitialTermsheetAttachment(order) {
  * carry no userId, and for those only the bankId branch returns anything.
  */
 async function findAccountHoldings(resolved, bankAccount) {
+  // Always pinned to the account's bank: a portfolio code is only unique within
+  // one bank, and the regex is anchored so `504024` never matches `5040241`.
   const holdingsQuery = {
     isActive: true,
     isLatest: true,
-    portfolioCode: { $regex: new RegExp('^' + bankAccount.accountNumber.split('-')[0]) },
+    bankId: bankAccount.bankId,
+    portfolioCode: { $regex: portfolioCodeRegex(bankAccount.accountNumber) },
     assetClass: { $nin: ['cash', 'liquidity', 'Cash', 'Liquidity', 'CASH'] },
     securityName: { $not: /^(cash|liquidity|compte|konto)/i }
   };
@@ -246,9 +254,7 @@ async function findAccountHoldings(resolved, bankAccount) {
     { ...holdingsQuery, userId: resolved.holdingsUserId }, holdingsOpts
   ).fetchAsync();
   if (holdings.length === 0) {
-    holdings = await PMSHoldingsCollection.find(
-      { ...holdingsQuery, bankId: bankAccount.bankId }, holdingsOpts
-    ).fetchAsync();
+    holdings = await PMSHoldingsCollection.find(holdingsQuery, holdingsOpts).fetchAsync();
   }
   return holdings;
 }
@@ -336,20 +342,7 @@ const RECENT_ORDER_DAYS = 7;
  * @returns {Object} - { user, userId, userDisplayName }
  */
 async function validateSession(sessionId) {
-  if (!sessionId) {
-    throw new Meteor.Error('not-authorized', 'Session required');
-  }
-
-  const session = await SessionHelpers.findByToken(sessionId);
-
-  if (!session) {
-    throw new Meteor.Error('not-authorized', 'Invalid or expired session');
-  }
-
-  const user = await UsersCollection.findOneAsync(session.userId);
-  if (!user) {
-    throw new Meteor.Error('not-authorized', 'User not found');
-  }
+  const user = await requireSession(sessionId);
 
   const fn = user.profile?.firstName || '';
   const ln = user.profile?.lastName || '';
@@ -383,7 +376,7 @@ async function validateOrderAccess(order, user) {
   }
 
   // Admins, superadmins, and compliance can access all orders
-  if (user.role === 'admin' || user.role === 'superadmin' || user.role === 'compliance') {
+  if (SEE_ALL_ROLES.includes(user.role)) {
     return true;
   }
 
@@ -397,31 +390,16 @@ async function validateOrderAccess(order, user) {
     return true;
   }
 
-  // RMs/Assistants can access orders for their clients (user-based or entity-based)
-  if (user.role === 'rm' || user.role === 'assistant') {
-    const rmIds = UserHelpers.getEffectiveRmIds(user);
-    // Check user-based client
-    const client = await UsersCollection.findOneAsync(order.clientId);
-    if (client && rmIds.includes(client.relationshipManagerId)) {
+  // RMs/Assistants can access orders for their clients. The perimeter comes
+  // from the shared scope resolver, so an entity linked to the RM through
+  // `assignedUserIds` only (relationshipManagerId being a legacy fallback), or a
+  // legacy user id the entity absorbed, is recognised the same way everywhere.
+  if (RM_LIKE_ROLES.includes(user.role)) {
+    const scope = await resolveScope(user);
+    if (await isClientInScope(scope, order.clientId)) {
       return true;
     }
-    // Check entity-based client. Match the canonical selector: an entity is
-    // linked to an RM via `assignedUserIds`, with `relationshipManagerId` only a
-    // legacy fallback. Matching the deprecated field alone wrongly denied RMs
-    // whose entities use assignedUserIds.
-    const { ClientEntitiesCollection: EntCol } = require('../../imports/api/clientEntities.js');
-    const entity = await EntCol.findOneAsync({
-      $or: [
-        ...(order.entityId ? [{ _id: order.entityId }] : []),
-        { _id: order.clientId },
-        { migratedFromUserId: order.clientId }
-      ],
-      isActive: true
-    });
-    if (entity && (
-      rmIds.includes(entity.relationshipManagerId) ||
-      (entity.assignedUserIds || []).some(id => rmIds.includes(id))
-    )) {
+    if (order.entityId && await isClientInScope(scope, order.entityId)) {
       return true;
     }
   }
@@ -430,8 +408,37 @@ async function validateOrderAccess(order, user) {
 }
 
 /**
+ * The caller's perimeter must contain the client before anything about that
+ * client's accounts is revealed or placed. See-all roles pass; RM/assistant
+ * perimeters are resolved by the shared scope; every other role is denied.
+ */
+async function assertRmHasClient(user, clientId) {
+  if (SEE_ALL_ROLES.includes(user.role)) return;
+  if (RM_LIKE_ROLES.includes(user.role)) {
+    const scope = await resolveScope(user);
+    await assertClientInScope(scope, clientId);
+    return;
+  }
+  throw new Meteor.Error('not-authorized', 'You do not have access to this client');
+}
+
+/**
+ * The account named in a request must really be the client's (holder,
+ * co-holder, legacy userId or beneficial owner), otherwise a caller with a
+ * legitimate client could read any account in the bank by id. Returns the
+ * account document.
+ */
+async function assertAccountForClient(bankAccountId, clientId) {
+  const account = await BankAccountsCollection.findOneAsync(bankAccountId);
+  if (!account || !(await accountBelongsToClient(account, clientId))) {
+    throw new Meteor.Error('not-authorized', 'Account does not belong to client');
+  }
+  return account;
+}
+
+/**
  * Resolve a clientId that may be a user ID or entity ID.
- * Returns { holdingsUserId, relationshipManagerId, profile, entityId }
+ * Returns { holdingsUserId, relationshipManagerId, assignedUserIds, profile, entityId }
  */
 async function resolveClientId(clientId) {
   // Try user first
@@ -440,6 +447,7 @@ async function resolveClientId(clientId) {
     return {
       holdingsUserId: clientId,
       relationshipManagerId: userClient.relationshipManagerId,
+      assignedUserIds: [],
       profile: userClient.profile,
       entityId: null
     };
@@ -456,6 +464,7 @@ async function resolveClientId(clientId) {
     return {
       holdingsUserId: entity.migratedFromUserId || clientId,
       relationshipManagerId: entity.relationshipManagerId,
+      assignedUserIds: entity.assignedUserIds || [],
       profile: entity.profile,
       entityId: entity._id
     };
@@ -491,22 +500,18 @@ async function checkAllocationImpact({ bankAccountId, clientId, assetType, estim
     return { hasProfile: true, hasBreaches: false };
   }
 
-  // Get all holdings for this account (including cash)
-  const portfolioRegex = new RegExp('^' + bankAccount.accountNumber.split('-')[0]);
-  let holdings = await PMSHoldingsCollection.find({
-    userId: holdingsUserId,
+  // Get all holdings for this account (including cash). Pinned to the account's
+  // bank and anchored on the account base, like findAccountHoldings.
+  const accountQuery = {
+    bankId: bankAccount.bankId,
     isActive: true,
     isLatest: true,
-    portfolioCode: { $regex: portfolioRegex }
-  }).fetchAsync();
-  // Fallback: try by bankId + portfolioCode for entity-based accounts
+    portfolioCode: { $regex: portfolioCodeRegex(bankAccount.accountNumber) }
+  };
+  let holdings = await PMSHoldingsCollection.find({ ...accountQuery, userId: holdingsUserId }).fetchAsync();
+  // Fallback: by bankId + portfolioCode only, for entity-based accounts
   if (holdings.length === 0) {
-    holdings = await PMSHoldingsCollection.find({
-      bankId: bankAccount.bankId,
-      isActive: true,
-      isLatest: true,
-      portfolioCode: { $regex: portfolioRegex }
-    }).fetchAsync();
+    holdings = await PMSHoldingsCollection.find(accountQuery).fetchAsync();
   }
 
   // Separate cash and investment holdings
@@ -991,6 +996,13 @@ Meteor.methods({
         _entityId: entity._id
       };
     }
+
+    // The caller's perimeter must contain this client, and the account must be
+    // the client's own. Checked on the id the client actually resolved to, so
+    // the entity-from-account fallback above is judged on the entity it found.
+    const accessClientId = client._entityId || client._id;
+    await assertRmHasClient(user, accessClientId);
+    await assertAccountForClient(bankAccount._id, accessClientId);
 
     // For SELL orders, validate position against the PMS holding.
     //
@@ -2873,13 +2885,21 @@ ${userDisplayName}
 
     const { user } = await validateSession(sessionId);
 
+    // Staff see the firm-wide order book, clients their own orders, nobody else
+    // sees anything.
+    if (!ORDER_BOOK_ROLES.includes(user.role) && user.role !== 'client') {
+      throw new Meteor.Error('not-authorized', 'Not authorized to list orders');
+    }
+
     // Build query
     const query = {};
 
-    // Role-based filtering
+    // Role-based filtering: a client's own perimeter (entities, legacy ids and
+    // accounts) is resolved by the shared scope and wrapped around the query
+    // below, so no filter can widen it.
+    let own = null;
     if (user.role === 'client') {
-      // Clients only see their own orders
-      query.clientId = user._id;
+      own = ordersSelector(await resolveScope(user));
     }
     // All staff (admin, superadmin, compliance, rm, assistant) see every order
 
@@ -2900,7 +2920,9 @@ ${userDisplayName}
       };
     }
 
-    if (filters.clientId) {
+    // A client's own perimeter is fixed above; the blotter's client picker is a
+    // staff-only filter and must never widen it.
+    if (filters.clientId && user.role !== 'client') {
       // One client can hold several accounts and, across the entity migration,
       // several ids: orders may be filed under the entity id or under a legacy
       // user id it absorbed. Filter on all of them so picking a client in the
@@ -2959,6 +2981,11 @@ ${userDisplayName}
     const limit = pagination.limit || 50;
     const skip = pagination.skip || 0;
 
+    // The owner clause is ANDed on, never merged key-by-key: the filters above
+    // build their own keys (including $or for search) and a collision would
+    // silently drop the owner predicate.
+    const finalQuery = own ? { $and: [own, query] } : query;
+
     let total;
     let orders;
     let healthSource = null;
@@ -2968,7 +2995,7 @@ ${userDisplayName}
       // whole match and paginate in memory — the order book is a few thousand
       // rows at most, and the filter narrows the other criteria first.
       const wantAny = filters.healthMissing === HEALTH_FILTER_ANY;
-      const candidates = await OrdersCollection.find(query, { sort }).fetchAsync();
+      const candidates = await OrdersCollection.find(finalQuery, { sort }).fetchAsync();
       healthSource = candidates;
       const matching = candidates.filter(o => {
         const h = getOrderHealthCheck(o);
@@ -2978,8 +3005,8 @@ ${userDisplayName}
       total = matching.length;
       orders = matching.slice(skip, skip + limit);
     } else {
-      total = await OrdersCollection.find(query).countAsync();
-      orders = await OrdersCollection.find(query, { sort, limit, skip }).fetchAsync();
+      total = await OrdersCollection.find(finalQuery).countAsync();
+      orders = await OrdersCollection.find(finalQuery, { sort, limit, skip }).fetchAsync();
     }
 
     // Completeness summary over the WHOLE filtered set, deliberately ignoring
@@ -2988,7 +3015,7 @@ ${userDisplayName}
     // the client from the loaded page, which made "Termsheet signed: 9" read 18
     // the moment you clicked it — the page had simply refilled with 20 orders
     // that were all missing a termsheet.
-    const healthDocs = healthSource || await OrdersCollection.find(query, {
+    const healthDocs = healthSource || await OrdersCollection.find(finalQuery, {
       fields: {
         status: 1, assetType: 1, orderType: 1, orderSource: 1,
         emailTraces: 1, pendingModification: 1, validatedAt: 1,
@@ -3402,6 +3429,10 @@ ${userDisplayName}
     check(sessionId, String);
 
     const { user } = await validateSession(sessionId);
+    // Firm-wide booking status is order-book data: staff only, never a client
+    if (!ORDER_BOOK_ROLES.includes(user.role)) {
+      throw new Meteor.Error('not-authorized', 'Not authorized to check bookings');
+    }
     validateOrderPermission(user);
 
     const results = {};
@@ -3499,7 +3530,10 @@ ${userDisplayName}
     check(orderId, String);
     check(sessionId, String);
 
-    const { userId } = await validateSession(sessionId);
+    const { user, userId } = await validateSession(sessionId);
+    if (!ORDER_BOOK_ROLES.includes(user.role)) {
+      throw new Meteor.Error('not-authorized', 'Not authorized to review orders');
+    }
 
     await OrdersCollection.rawCollection().updateOne(
       { _id: orderId, reviewingBy: userId },
@@ -3584,7 +3618,10 @@ ${userDisplayName}
     check(bulkOrderGroupId, String);
     check(sessionId, String);
 
-    const { userId } = await validateSession(sessionId);
+    const { user, userId } = await validateSession(sessionId);
+    if (!ORDER_BOOK_ROLES.includes(user.role)) {
+      throw new Meteor.Error('not-authorized', 'Not authorized to review orders');
+    }
 
     const result = await OrdersCollection.rawCollection().updateMany(
       { bulkOrderGroupId, reviewingBy: userId },
@@ -3612,7 +3649,12 @@ ${userDisplayName}
     // N PDF renders — do not hold up the caller's other method calls.
     this.unblock();
 
-    await validateSession(sessionId);
+    // Each member is re-checked by orders.validate; this gate only keeps a
+    // non-staff caller from learning which ids belong to a block.
+    const { user } = await validateSession(sessionId);
+    if (!ORDER_BOOK_ROLES.includes(user.role)) {
+      throw new Meteor.Error('not-authorized', 'Not authorized to validate orders');
+    }
 
     const members = await OrdersCollection.find(
       { _id: { $in: orderIds }, bulkOrderGroupId },
@@ -4081,9 +4123,12 @@ ${userDisplayName}
     const { user } = await validateSession(sessionId);
 
     // Reuse the same role-based scoping as orders.list
-    const query = { validatedByName: { $exists: true, $ne: null } };
+    if (!ORDER_BOOK_ROLES.includes(user.role) && user.role !== 'client') {
+      throw new Meteor.Error('not-authorized', 'Not authorized to list orders');
+    }
+    let query = { validatedByName: { $exists: true, $ne: null } };
     if (user.role === 'client') {
-      query.clientId = user._id;
+      query = { $and: [ordersSelector(await resolveScope(user)), query] };
     }
     // All staff see every validator name
 
@@ -4099,9 +4144,8 @@ ${userDisplayName}
 
     const { user } = await validateSession(sessionId);
 
-    // All staff can see the blotter (validate/reject buttons require canValidateOrders on the client)
-    const staffRoles = ['superadmin', 'admin', 'rm', 'compliance', 'staff'];
-    if (!staffRoles.includes(user.role)) {
+    // All order-book staff can see the blotter (validate/reject buttons require canValidateOrders on the client)
+    if (!ORDER_BOOK_ROLES.includes(user.role)) {
       return { orders: [] };
     }
 
@@ -7728,21 +7772,7 @@ Meteor.methods({
     }
 
     // Verify access to client (supports both user IDs and entity IDs)
-    if (user.role === 'rm' || user.role === 'assistant') {
-      const rmIds = UserHelpers.getEffectiveRmIds(user);
-      const client = await UsersCollection.findOneAsync(clientId);
-      if (client) {
-        if (!rmIds.includes(client.relationshipManagerId)) {
-          throw new Meteor.Error('not-authorized', 'You do not have access to this client');
-        }
-      } else {
-        const { ClientEntitiesCollection: EntCol } = require('../../imports/api/clientEntities.js');
-        const entity = await EntCol.findOneAsync({ $or: [{ _id: clientId }, { migratedFromUserId: clientId }], isActive: true });
-        if (!entity || !rmIds.includes(entity.relationshipManagerId)) {
-          throw new Meteor.Error('not-authorized', 'You do not have access to this client');
-        }
-      }
-    }
+    await assertRmHasClient(user, clientId);
 
     // Find accounts by userId OR entityId (supports both legacy users and entity-based clients)
     const accounts = await BankAccountsCollection.find({
@@ -7798,19 +7828,9 @@ Meteor.methods({
     // Resolve client: supports both user IDs and entity IDs
     const resolved = await resolveClientId(clientId);
 
-    // Verify access to client
-    if (user.role === 'rm' || user.role === 'assistant') {
-      const rmIds = UserHelpers.getEffectiveRmIds(user);
-      if (!rmIds.includes(resolved.relationshipManagerId)) {
-        throw new Meteor.Error('not-authorized', 'You do not have access to this client');
-      }
-    }
-
-    // Get the bank account to find portfolioCode
-    const bankAccount = await BankAccountsCollection.findOneAsync(bankAccountId);
-    if (!bankAccount) {
-      return [];
-    }
+    // Verify access to client, then that the account is this client's
+    await assertRmHasClient(user, clientId);
+    const bankAccount = await assertAccountForClient(bankAccountId, clientId);
 
     return findAccountHoldings(resolved, bankAccount);
   },
@@ -7836,13 +7856,9 @@ Meteor.methods({
       throw new Meteor.Error('not-authorized', 'Not authorized to access orders');
     }
 
-    const resolved = await resolveClientId(clientId);
-    if (user.role === 'rm' || user.role === 'assistant') {
-      const rmIds = UserHelpers.getEffectiveRmIds(user);
-      if (!rmIds.includes(resolved.relationshipManagerId)) {
-        throw new Meteor.Error('not-authorized', 'You do not have access to this client');
-      }
-    }
+    await resolveClientId(clientId);
+    await assertRmHasClient(user, clientId);
+    await assertAccountForClient(bankAccountId, clientId);
 
     if (!isin || isPlaceholderIsin(isin)) {
       return { orders: [], sellCommittedQuantity: 0, sellCommittedQuantityFormatted: null, recentDays: RECENT_ORDER_DAYS };
@@ -7958,15 +7974,8 @@ Meteor.methods({
 
     const resolved = await resolveClientId(clientId);
 
-    if (user.role === 'rm' || user.role === 'assistant') {
-      const rmIds = UserHelpers.getEffectiveRmIds(user);
-      if (!rmIds.includes(resolved.relationshipManagerId)) {
-        throw new Meteor.Error('not-authorized', 'You do not have access to this client');
-      }
-    }
-
-    const bankAccount = await BankAccountsCollection.findOneAsync(bankAccountId);
-    if (!bankAccount) return null;
+    await assertRmHasClient(user, clientId);
+    const bankAccount = await assertAccountForClient(bankAccountId, clientId);
 
     return resolveShortCallCoverage({
       resolved,
@@ -7998,18 +8007,9 @@ Meteor.methods({
     // Resolve client: supports both user IDs and entity IDs
     const resolved = await resolveClientId(clientId);
 
-    // Verify RM access
-    if (user.role === 'rm' || user.role === 'assistant') {
-      const rmIds = UserHelpers.getEffectiveRmIds(user);
-      if (!rmIds.includes(resolved.relationshipManagerId)) {
-        throw new Meteor.Error('not-authorized', 'You do not have access to this client');
-      }
-    }
-
-    const bankAccount = await BankAccountsCollection.findOneAsync(bankAccountId);
-    if (!bankAccount) {
-      return { cashBalance: null, currency: null };
-    }
+    // Verify RM access, then that the account is this client's
+    await assertRmHasClient(user, clientId);
+    const bankAccount = await assertAccountForClient(bankAccountId, clientId);
 
     // Load the account's holdings and classify them with the SAME predicates the
     // PMS cash monitor uses. This used to select cash with a name regex
@@ -8017,19 +8017,17 @@ Meteor.methods({
     // Liquidity-Rated" money-market fund as cash: the modal showed a second,
     // positive EUR line of 1.5M next to the real -400,970.09 balance, and the
     // two never matched the PMS.
-    const portfolioRegex = new RegExp('^' + bankAccount.accountNumber.split('-')[0]);
     const accountQuery = {
+      bankId: bankAccount.bankId,
       isActive: true,
       isLatest: true,
-      portfolioCode: { $regex: portfolioRegex }
+      portfolioCode: { $regex: portfolioCodeRegex(bankAccount.accountNumber) }
     };
     // Try with userId first
     let accountHoldings = await PMSHoldingsCollection.find({ ...accountQuery, userId: resolved.holdingsUserId }).fetchAsync();
-    let scope = { userId: resolved.holdingsUserId };
     // If no results, try with bankId + portfolioCode only (entity-based accounts)
     if (accountHoldings.length === 0) {
-      accountHoldings = await PMSHoldingsCollection.find({ ...accountQuery, bankId: bankAccount.bankId }).fetchAsync();
-      scope = { bankId: bankAccount.bankId };
+      accountHoldings = await PMSHoldingsCollection.find(accountQuery).fetchAsync();
     }
 
     // Holdings whose own fields say nothing are classified from securities
@@ -8165,6 +8163,11 @@ Meteor.methods({
     if (!OrderHelpers.canPlaceOrders(user.role)) {
       throw new Meteor.Error('not-authorized', 'Not authorized');
     }
+
+    // The projected allocation reveals the account's holdings: same perimeter
+    // and account checks as the holdings and cash lookups.
+    await assertRmHasClient(user, clientId);
+    await assertAccountForClient(bankAccountId, clientId);
 
     // Skip check for sell orders
     if (orderType === 'sell') {

@@ -1,25 +1,22 @@
 // Issuers Publications
-// Handles all issuer-related publications
+// Reference data for any logged-in user; full management list for admins.
 
+import { Meteor } from 'meteor/meteor';
+import { check, Match } from 'meteor/check';
 import { IssuersCollection } from '/imports/api/issuers';
-import { UsersCollection, USER_ROLES } from '/imports/api/users';
+import { getSessionUser } from '../helpers/sessionAuth.js';
+import { ADMIN_ROLES } from '../helpers/accessPolicy.js';
 
-// Publish issuers for general use
-Meteor.publish("issuers", function () {
+Meteor.publish("issuers", async function (sessionId = null) {
+  check(sessionId, Match.Maybe(String));
+  const user = await getSessionUser(sessionId);
+  if (!user) return this.ready();
   return IssuersCollection.find({ active: true }, { sort: { name: 1 } });
 });
 
-// Publish all issuers for management (admin only)
-Meteor.publish("issuersManagement", async function () {
-  const user = await UsersCollection.findOneAsync(this.userId);
-  if (!user || (user.role !== USER_ROLES.ADMIN && user.role !== USER_ROLES.SUPERADMIN)) {
-    return this.ready();
-  }
+Meteor.publish("issuersManagement", async function (sessionId = null) {
+  check(sessionId, Match.Maybe(String));
+  const user = await getSessionUser(sessionId);
+  if (!user || !ADMIN_ROLES.includes(user.role)) return this.ready();
   return IssuersCollection.find({}, { sort: { name: 1 } });
 });
-
-
-
-
-
-

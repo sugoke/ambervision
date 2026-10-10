@@ -178,7 +178,7 @@ const ValidationBlotter = ({ user, onOrderUpdate }) => {
     });
     // Issuer records back the contact fallback for orders created before the
     // coordinates were snapshotted onto the order itself.
-    Meteor.subscribe('issuers');
+    Meteor.subscribe('issuers', localStorage.getItem('sessionId'));
 
     if (!handle.ready()) {
       return { displayOrders: [], isLoading: true };

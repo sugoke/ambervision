@@ -1,246 +1,26 @@
 // PMS Operations Publications
-// Handles all PMS operations/transactions related publications
+// Bank transactions, scoped through the access scope (server/helpers/accessScope.js).
 
+import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { PMSOperationsCollection } from '/imports/api/pmsOperations';
-import { BankAccountsCollection } from '/imports/api/bankAccounts';
-import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
-import { ClientEntitiesCollection, ClientEntityHelpers } from '/imports/api/clientEntities';
-import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
-import { Meteor } from 'meteor/meteor';
+import { parseViewAs } from '/imports/utils/viewAs';
+import { getSessionUser } from '../helpers/sessionAuth.js';
+import { resolveScope, operationsSelector } from '../helpers/accessScope.js';
 
-// Debug method to check operations count
-Meteor.methods({
-  'pmsOperations.debugCount': async function() {
-    const total = await PMSOperationsCollection.find({}).countAsync();
-    const active = await PMSOperationsCollection.find({ isActive: true }).countAsync();
-    const withBankId = await PMSOperationsCollection.find({ isActive: true, bankId: { $exists: true } }).countAsync();
-    const sample = await PMSOperationsCollection.findOneAsync({ isActive: true });
-    // Get distinct bankIds
-    const bankIds = await PMSOperationsCollection.rawCollection().distinct('bankId', { isActive: true });
-    return {
-      total, active, withBankId,
-      distinctBankIds: bankIds,
-      sampleBankId: sample?.bankId || 'MISSING',
-      samplePortfolio: sample?.portfolioCode || 'none'
-    };
-  }
-});
-
-Meteor.publish('pmsOperations', async function (sessionId = null, viewAsFilter = null) {
+Meteor.publish('pmsOperations', async function (sessionId = null, rawViewAs = null) {
   check(sessionId, Match.Maybe(String));
-  check(viewAsFilter, Match.Maybe(Match.ObjectIncluding({
-    type: String,
-    id: String
-  })));
+  const viewAs = parseViewAs(rawViewAs);
 
-  if (!this.userId && !sessionId) {
-    return this.ready();
-  }
+  const user = await getSessionUser(sessionId, { touch: true });
+  if (!user) return this.ready();
 
-  try {
-    // Get current user with session-based authentication
-    let currentUser = null;
+  const scope = await resolveScope(user, viewAs);
+  if (scope.denied) return this.ready();
 
-    if (sessionId) {
-      const session = await SessionHelpers.findByToken(sessionId);
+  const query = { $and: [await operationsSelector(scope), { isActive: true }] };
 
-      if (session && session.userId) {
-        currentUser = await UsersCollection.findOneAsync(session.userId);
-
-        // Update last used timestamp asynchronously (non-blocking)
-        SessionsCollection.updateAsync(session._id, {
-          $set: { lastUsed: new Date() }
-        }).catch(err => console.error('Error updating session lastUsed:', err));
-      }
-    } else if (this.userId) {
-      currentUser = await UsersCollection.findOneAsync(this.userId);
-    }
-
-    if (!currentUser) {
-      return this.ready();
-    }
-
-    // Build query filter based on role and viewAsFilter
-    let queryFilter = { isActive: true };
-
-    // Same roles as the holdings publication: compliance sees what admins see, an
-    // assistant what its RMs see. Any other role gets nothing (see the end of the chain)
-    const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE;
-    const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
-    const rmIds = isRM ? UserHelpers.getEffectiveRmIds(currentUser) : [];
-    const isClient = currentUser.role === USER_ROLES.CLIENT;
-
-    // Handle viewAsFilter for admins and RMs
-    if (viewAsFilter && (isAdmin || isRM)) {
-      if (viewAsFilter.type === 'entity') {
-        // Entity-based filter
-        const entity = await ClientEntitiesCollection.findOneAsync(viewAsFilter.id);
-        if (!entity) return this.ready();
-        // Archived (closed) relationships are hidden everywhere, no exception
-        if (ClientEntityHelpers.isEntityArchived(entity)) return this.ready();
-        if (isRM && !rmIds.includes(entity.relationshipManagerId)) return this.ready();
-
-        // Accounts this entity holds (primary holder or co-holder of a joint
-        // account) or is beneficial owner of, as in the holdings publication
-        const entityAccounts = await BankAccountsCollection.find({
-          $or: [
-            { entityId: entity._id },
-            { holderEntityIds: entity._id },
-            { beneficialOwnerIds: entity._id },
-            { beneficialOwnerId: entity._id }
-          ],
-          isActive: true
-        }).fetchAsync();
-        const accountNumbers = entityAccounts.map(a => a.accountNumber).filter(Boolean);
-
-        // Build OR conditions: entityId, legacy userId, or portfolioCode match
-        const orConditions = [
-          { entityId: entity._id }
-        ];
-        if (entity.migratedFromUserId) {
-          orConditions.push({ userId: entity.migratedFromUserId, entityId: { $exists: false } });
-        }
-        if (accountNumbers.length > 0) {
-          // Match operations by portfolioCode (may have suffixes like -1)
-          const portfolioRegexes = accountNumbers.map(num => {
-            const base = num.split('-')[0];
-            return { portfolioCode: { $regex: `^${base}` } };
-          });
-          orConditions.push(...portfolioRegexes);
-        }
-        queryFilter.$or = orConditions;
-      } else if (viewAsFilter.type === 'client') {
-        // For RMs, verify they have access to this client
-        if (isRM) {
-          const targetClient = await UsersCollection.findOneAsync({
-            _id: viewAsFilter.id,
-            relationshipManagerId: { $in: rmIds }
-          });
-          if (!targetClient) {
-            console.log('[PMS_OPERATIONS] RM does not have access to client:', viewAsFilter.id);
-            return this.ready();
-          }
-        }
-        // Filter by client userId (all accounts aggregated)
-        queryFilter.userId = viewAsFilter.id;
-      } else if (viewAsFilter.type === 'account') {
-        // Filter by specific bank account
-        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-        if (!bankAccount) return this.ready();
-        // For RMs, verify access via user or entity
-        if (isRM) {
-          let hasAccess = false;
-          if (bankAccount.userId) {
-            const targetClient = await UsersCollection.findOneAsync({ _id: bankAccount.userId, relationshipManagerId: { $in: rmIds } });
-            if (targetClient) hasAccess = true;
-          }
-          if (!hasAccess && bankAccount.entityId) {
-            const targetEntity = await ClientEntitiesCollection.findOneAsync({ _id: bankAccount.entityId, relationshipManagerId: { $in: rmIds } });
-            if (targetEntity) hasAccess = true;
-          }
-          if (!hasAccess) return this.ready();
-        }
-        // Build query with entity support
-        if (bankAccount.entityId) {
-          queryFilter.$or = [
-            { entityId: bankAccount.entityId },
-            ...(bankAccount.userId ? [{ userId: bankAccount.userId, entityId: { $exists: false } }] : [])
-          ];
-        } else if (bankAccount.userId) {
-          queryFilter.userId = bankAccount.userId;
-        }
-        const baseAccountNumber = bankAccount.accountNumber.split('-')[0];
-        queryFilter.portfolioCode = { $regex: `^${baseAccountNumber}` };
-        queryFilter.bankId = bankAccount.bankId;
-      }
-    }
-    // Handle viewAsFilter for clients - only allow filtering to their OWN accounts
-    else if (viewAsFilter && isClient) {
-      if (viewAsFilter.type === 'account') {
-        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-        // Security: Verify the client owns this account
-        if (bankAccount && bankAccount.userId === currentUser._id) {
-          queryFilter.userId = currentUser._id;
-          const baseAccountNumber = bankAccount.accountNumber.split('-')[0];
-          queryFilter.portfolioCode = { $regex: `^${baseAccountNumber}` };
-          queryFilter.bankId = bankAccount.bankId;
-          console.log('[PMS_OPERATIONS] Client filtering to own account:', bankAccount.accountNumber);
-        } else {
-          // If account not found or not owned by client, fall through to default client filter
-          console.log('[PMS_OPERATIONS] Client viewAsFilter rejected - account not owned:', viewAsFilter.id);
-          queryFilter.userId = currentUser._id;
-        }
-      } else {
-        // For any other filter type from clients, default to their own operations
-        queryFilter.userId = currentUser._id;
-      }
-    }
-    // Admins without filter - see all operations
-    else if (isAdmin) {
-      // No additional filter - see all active operations
-    }
-    // Relationship Managers without filter - see all assigned clients' operations
-    else if (isRM) {
-      // Get entity-based clients
-      const rmEntities = await ClientEntitiesCollection.find(
-        { relationshipManagerId: { $in: rmIds }, isActive: true },
-        { fields: { _id: 1, migratedFromUserId: 1 } }
-      ).fetchAsync();
-      const entityIds = rmEntities.map(e => e._id);
-      const migratedUserIds = rmEntities.map(e => e.migratedFromUserId).filter(Boolean);
-
-      // Get legacy user-based clients
-      const assignedClients = await UsersCollection.find({ relationshipManagerId: { $in: rmIds } }).fetchAsync();
-      const clientIds = [...new Set([...assignedClients.map(c => c._id), ...migratedUserIds, currentUser._id])];
-
-      // Also find portfolio codes from entity bank accounts (for legacy operations without entityId)
-      const entityAccounts = await BankAccountsCollection.find({
-        entityId: { $in: entityIds },
-        isActive: true
-      }, { fields: { accountNumber: 1 } }).fetchAsync();
-      const portfolioRegexes = entityAccounts
-        .map(a => a.accountNumber?.split('-')[0])
-        .filter(Boolean)
-        .map(base => ({ portfolioCode: { $regex: `^${base}` } }));
-
-      const orConditions = [];
-      if (entityIds.length > 0) orConditions.push({ entityId: { $in: entityIds } });
-      if (clientIds.length > 0) orConditions.push({ userId: { $in: clientIds } });
-      if (portfolioRegexes.length > 0) orConditions.push(...portfolioRegexes);
-      queryFilter.$or = orConditions.length > 0 ? orConditions : [{ userId: currentUser._id }];
-    }
-    // Clients - only their own operations
-    else if (isClient) {
-      const entity = await ClientEntitiesCollection.findOneAsync({ migratedFromUserId: currentUser._id, isActive: true });
-      if (entity) {
-        queryFilter.$or = [{ entityId: entity._id }, { userId: currentUser._id }];
-      } else {
-        queryFilter.userId = currentUser._id;
-      }
-    }
-    // Any other role (introducer, staff, ...): no operations. Without this the
-    // filter stayed { isActive: true } and published every client's operations
-    else {
-      return this.ready();
-    }
-
-    // Exclude operations of archived (closed-relationship) clients from every path, and
-    // of demo clients unless this view is drilled into that demo client.
-    const archivedExclusion = await ClientEntityHelpers.hiddenHoldingsSelector({
-      exceptEntityId: await ClientEntityHelpers.resolveScopedEntityId(viewAsFilter)
-    });
-    if (archivedExclusion.$nor) {
-      queryFilter.$nor = archivedExclusion.$nor;
-    }
-
-    // Return operations sorted by date (most recent first)
-    return PMSOperationsCollection.find(queryFilter, {
-      sort: { operationDate: -1, inputDate: -1 }
-    });
-
-  } catch (error) {
-    console.error('PMS operations publication error:', error);
-    return this.ready();
-  }
+  return PMSOperationsCollection.find(query, {
+    sort: { operationDate: -1, inputDate: -1 }
+  });
 });

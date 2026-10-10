@@ -820,7 +820,7 @@ const PortfolioManagementSystem = ({ user, onOpenProductReport }) => {
   const { bankAccounts, accountProfiles, isLoadingAccounts } = useTracker(() => {
     const sessionId = typeof window !== 'undefined' ? localStorage.getItem('sessionId') : null;
     const accountsHandle = Meteor.subscribe('userBankAccounts', sessionId, viewAsFilter);
-    const banksHandle = Meteor.subscribe('banks');
+    const banksHandle = Meteor.subscribe('banks', localStorage.getItem('sessionId'));
     const profilesHandle = Meteor.subscribe('accountProfiles', sessionId, viewAsFilter?.id);
 
     if (!accountsHandle.ready() || !banksHandle.ready()) {

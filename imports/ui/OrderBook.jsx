@@ -280,8 +280,8 @@ const OrderBook = ({ user }) => {
   // Subscribe to banks for filter dropdown, and to issuers so structured-product
   // orders created before issuer coordinates were snapshotted can still resolve them.
   const { banks, issuers } = useTracker(() => {
-    Meteor.subscribe('banks');
-    Meteor.subscribe('issuers');
+    Meteor.subscribe('banks', localStorage.getItem('sessionId'));
+    Meteor.subscribe('issuers', localStorage.getItem('sessionId'));
     return {
       banks: BanksCollection.find({ isActive: true }).fetch(),
       issuers: IssuersCollection.find().fetch()

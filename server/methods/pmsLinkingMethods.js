@@ -37,16 +37,9 @@ Meteor.methods({
     check(bankId, String);
     check(fileDate, Date);
 
-    // Allow server-side calls (scheduled jobs, automated processes)
-    // Only require authentication if there's a userId present
-    if (this.userId) {
-      // User is authenticated, validate they have admin permissions
-      const user = await UsersCollection.findOneAsync(this.userId);
-      if (!user || (user.role !== USER_ROLES.ADMIN && user.role !== USER_ROLES.SUPERADMIN)) {
-        throw new Meteor.Error('not-authorized', 'Only administrators can auto-link holdings');
-      }
-    }
-    // If this.userId is undefined, it's a server-side call (e.g., from cron job or server method) - allow it
+    // Server-internal only (called from bankPositionMethods after an import).
+    // Server-side Meteor.callAsync has no DDP connection; wire calls are refused.
+    if (this.connection) throw new Meteor.Error('not-authorized', 'Server-side only');
 
     try {
       // Get all unlinked holdings from this bank file import
@@ -275,12 +268,8 @@ Meteor.methods({
    * user → allocation; auto-creates allocations from the holding when missing.
    */
   async 'pmsHoldings.autoLinkAllUnlinked'() {
-    if (this.userId) {
-      const user = await UsersCollection.findOneAsync(this.userId);
-      if (!user || (user.role !== USER_ROLES.ADMIN && user.role !== USER_ROLES.SUPERADMIN)) {
-        throw new Meteor.Error('not-authorized', 'Only administrators can run this');
-      }
-    }
+    // Server-internal only: no UI caller exists; wire calls are refused.
+    if (this.connection) throw new Meteor.Error('not-authorized', 'Server-side only');
 
     const unlinkedHoldings = await PMSHoldingsCollection.find({
       isLatest: true,

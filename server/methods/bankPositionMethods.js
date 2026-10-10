@@ -8,6 +8,7 @@ import { BankAccountsCollection } from '../../imports/api/bankAccounts.js';
 import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
 import { UsersCollection } from '../../imports/api/users.js';
 import { isSystemSession } from '../systemAuth.js';
+import { requireRole } from '../helpers/sessionAuth.js';
 import { PMSHoldingsHelpers, PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
 import { PMSOperationsHelpers, PMSOperationsCollection } from '../../imports/api/pmsOperations.js';
 import { PortfolioSnapshotHelpers, PortfolioSnapshotsCollection } from '../../imports/api/portfolioSnapshots.js';
@@ -3462,17 +3463,12 @@ Meteor.methods({
     const keys = portfolioKeys.filter(k => k.portfolioCode && k.portfolioCode !== 'CONSOLIDATED');
     if (keys.length === 0) return null;
 
-    // SECURITY: the caller names the portfolios, so confirm they may see them.
-    // Staff see every book; a client only the accounts they hold.
-    const STAFF_ROLES = ['superadmin', 'admin', 'compliance', 'rm', 'assistant', 'staff'];
-    if (!STAFF_ROLES.includes(currentUser.role)) {
-      const { accountHolderSelector } = await import('/imports/api/bankAccounts.js');
-      const owned = await BankAccountsCollection.find({
-        ...accountHolderSelector([currentUser._id]),
-        isActive: true
-      }, { fields: { bankId: 1, accountNumber: 1 } }).fetchAsync();
-      const allowed = new Set(owned.map(a => `${a.bankId}|${a.accountNumber}`));
-      if (keys.some(k => !allowed.has(`${k.bankId}|${k.portfolioCode}`))) {
+    // SECURITY: the caller names the portfolios, so confirm every one of them
+    // belongs to an account in the caller's access scope.
+    {
+      const { resolveScope, isPortfolioCodeInScope } = await import('/server/helpers/accessScope.js');
+      const scope = await resolveScope(currentUser);
+      if (scope.denied || keys.some(k => !isPortfolioCodeInScope(scope, k.bankId, k.portfolioCode))) {
         throw new Meteor.Error('not-authorized', 'Not authorized for these portfolios');
       }
     }
@@ -3649,43 +3645,17 @@ Meteor.methods({
       throw new Meteor.Error('not-authorized', 'User not found');
     }
 
-    const isAdmin = currentUser.role === 'admin' || currentUser.role === 'superadmin';
-
-    // Determine target user
-    let targetUserId;
-    if (userId && isAdmin) {
-      targetUserId = userId;
-    } else if (isAdmin && !userId) {
-      // Admin without specific user - get all data
-      targetUserId = null;
-    } else {
-      // Regular user - only their own data
-      targetUserId = session.userId;
-    }
+    // The caller's access scope decides whose accounts are covered; an admin
+    // may narrow to one legacy user with `userId`.
+    const { resolveScope, holdingsSelector } = await import('/server/helpers/accessScope.js');
+    const scope = await resolveScope(currentUser, (userId && currentUser.role !== 'client') ? { type: 'client', id: userId } : null);
+    if (scope.denied) throw new Meteor.Error('not-authorized', 'Out of scope');
 
     // Import freshness helper
     const { checkDataFreshness, formatDataDate, getFreshnessIcon } = await import('../../imports/api/helpers/dataFreshness.js');
 
-    // Get all bank accounts for the user(s)
-    const bankAccountQuery = targetUserId ? { userId: targetUserId } : {};
-    console.log('[DataFreshness] bankAccountQuery:', bankAccountQuery, 'targetUserId:', targetUserId);
-    const bankAccounts = await BankAccountsCollection.find(bankAccountQuery).fetchAsync();
-    console.log('[DataFreshness] Found bankAccounts:', bankAccounts.length);
-
-    // Get portfolio codes from bank accounts
-    const portfolioCodes = bankAccounts.map(a => a.accountNumber).filter(Boolean);
-    console.log('[DataFreshness] portfolioCodes:', portfolioCodes);
-
-    // Build holdings query - if we have portfolio codes, use them; otherwise get all latest holdings
-    // This ensures we show freshness even when bank accounts aren't properly linked
-    let holdingsQuery;
-    if (portfolioCodes.length > 0) {
-      holdingsQuery = { portfolioCode: { $in: portfolioCodes }, isLatest: true };
-    } else {
-      // Fallback: get all latest holdings (for admin or if no bank accounts linked)
-      console.log('[DataFreshness] No portfolio codes found, using fallback query for all holdings');
-      holdingsQuery = { isLatest: true };
-    }
+    // Latest holdings within the scope (every bank for a see-all view)
+    const holdingsQuery = { $and: [await holdingsSelector(scope), { isLatest: true }] };
 
     const allHoldings = await PMSHoldingsCollection.find(holdingsQuery, {
       fields: { bankId: 1, snapshotDate: 1, fileDate: 1, portfolioCode: 1 }
@@ -3783,7 +3753,8 @@ Meteor.methods({
    * Reset SG Monaco operations tracking (temporary debug method)
    * Clears seenOperationFiles so trans files get reprocessed
    */
-  async 'bank.resetSGOperationsTracking'() {
+  async 'bank.resetSGOperationsTracking'(sessionId) {
+    await requireRole(sessionId, ['superadmin']);
     console.log('[BANK_OPERATIONS] Resetting SG Monaco operations tracking...');
 
     // Clear seenOperationFiles for SG Monaco connection

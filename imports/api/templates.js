@@ -519,31 +519,4 @@ if (Meteor.isServer) {
     // No database insertion needed
   });
 
-  // Simple templates publication without parameters
-  Meteor.publish('templates', function() {
-    // Debug logging disabled to reduce console noise
-    // console.log('=== SIMPLE TEMPLATES PUBLICATION CALLED ===');
-    // console.log('Templates publication: this.userId =', this.userId);
-    // console.log('Templates publication: connection ID =', this.connection?.id);
-    
-    try {
-      // Return all templates - simple approach
-      const cursor = TemplatesCollection.find({}, {
-        sort: { 
-          isBuiltIn: -1,
-          updatedAt: -1 
-        }
-      });
-      
-      // console.log('Templates publication: Returning cursor (sync method)');
-      // console.log('=== END SIMPLE TEMPLATES PUBLICATION ===');
-      
-      return cursor;
-      
-    } catch (error) {
-      console.error('Templates publication: ERROR:', error);
-      // console.log('=== TEMPLATES PUBLICATION ERROR END ===');
-      return this.ready();
-    }
-  });
 }

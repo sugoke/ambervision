@@ -396,8 +396,11 @@ if (Meteor.isServer) {
     },
 
     // Clear currency cache
-    async 'currencyCache.clear'(pair = null) {
+    async 'currencyCache.clear'(pair = null, sessionId = null) {
       check(pair, Match.Optional(Match.OneOf(String, null)));
+      const { requireRole } = await import('/server/helpers/sessionAuth.js');
+      const { ADMIN_ROLES } = await import('/server/helpers/accessPolicy.js');
+      await requireRole(sessionId, ADMIN_ROLES);
       
       try {
         const query = pair ? { pair: pair } : {};

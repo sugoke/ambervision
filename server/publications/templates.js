@@ -1,21 +1,15 @@
 // Templates Publications
-// Handles all template-related publications
+// Product templates are reference data for any logged-in user.
 
-// Publish templates for all users
-Meteor.publish("templates", async function () {
+import { Meteor } from 'meteor/meteor';
+import { check, Match } from 'meteor/check';
+import { getSessionUser } from '../helpers/sessionAuth.js';
+
+Meteor.publish("templates", async function (sessionId = null) {
+  check(sessionId, Match.Maybe(String));
+  const user = await getSessionUser(sessionId);
+  if (!user) return this.ready();
+
   const { TemplatesCollection } = require('/imports/api/templates');
-
-  // Debug: Check how many templates exist
-  const count = await TemplatesCollection.find({}).countAsync();
-  // console.log(`Templates publication: Found ${count} templates in database`);
-
-  return TemplatesCollection.find({}, {
-    sort: { name: 1 }
-  });
+  return TemplatesCollection.find({}, { sort: { name: 1 } });
 });
-
-
-
-
-
-

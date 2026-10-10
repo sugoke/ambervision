@@ -4,11 +4,14 @@ import { EJSON } from 'meteor/ejson';
 import puppeteer from 'puppeteer';
 import fs from 'fs';
 import path from 'path';
-import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
-import { UsersCollection } from '../../imports/api/users.js';
 import { storePdfExport, sweepPdfExports } from '../pdfExportStore.js';
 import { issueDocumentToken } from '../documentAccess.js';
 import { issuePdfAccessToken, revokePdfAccessToken } from '../helpers/pdfAccessTokens.js';
+import { requireSession } from '../helpers/sessionAuth.js';
+import { isSeeAll, isStaff } from '../helpers/accessPolicy.js';
+import { resolveScope, assertAccountInScope, assertProductInScope } from '../helpers/accessScope.js';
+import { viewAsFromQueryString } from '../../imports/utils/viewAs.js';
+import { PortfolioReviewsCollection, canReadReview } from '../../imports/api/portfolioReviews.js';
 
 /**
  * PDF Generation Methods
@@ -32,22 +35,65 @@ const PDF_RENDER_TIMEOUT_MS = 4 * 60 * 1000;
  * @returns {Object} - { user, userId }
  */
 async function validateSession(sessionId) {
-  if (!sessionId) {
-    throw new Meteor.Error('not-authorized', 'Session required');
-  }
-
-  const session = await SessionHelpers.findByToken(sessionId);
-
-  if (!session) {
-    throw new Meteor.Error('not-authorized', 'Invalid or expired session');
-  }
-
-  const user = await UsersCollection.findOneAsync(session.userId);
-  if (!user) {
-    throw new Meteor.Error('not-authorized', 'User not found');
-  }
-
+  const user = await requireSession(sessionId);
   return { user, userId: user._id };
+}
+
+const notAuthorized = (msg) => new Meteor.Error('not-authorized', msg);
+
+/** An account filter that names one bank account rather than a roll-up. */
+const isSingleAccount = (filter) =>
+  typeof filter === 'string' && filter !== '' && filter !== 'all' && filter !== 'consolidated';
+
+/**
+ * May `user` have this report rendered?
+ *
+ * The PDF token minted below proves identity only: the report page
+ * authenticates with it and then applies the user's scope. The same scope
+ * rules are enforced here, before the token exists, so a request for someone
+ * else's portfolio, review or product is refused outright rather than
+ * rendering an "access denied" page into a PDF.
+ */
+async function authorizeReportRequest(user, reportType, reportId, options) {
+  switch (reportType) {
+    case 'pms': {
+      // viewAsFilter arrives JSON-encoded (it is forwarded as a query string).
+      // Present but unparseable is a malformed request, not "no filter".
+      let viewAs = null;
+      if (options.viewAsFilter) {
+        viewAs = viewAsFromQueryString(options.viewAsFilter);
+        if (!viewAs) throw notAuthorized('Invalid View As filter');
+      }
+      const scope = await resolveScope(user, viewAs);
+      if (scope.denied) throw notAuthorized('Portfolio is outside your access scope');
+      // The account is carried both in the path (reportId) and in options.
+      for (const account of new Set([reportId, options.accountFilter])) {
+        if (isSingleAccount(account)) await assertAccountInScope(scope, account);
+      }
+      return;
+    }
+    case 'risk-analysis':
+    case 'underlyings':
+      // Firm-wide aggregates (every client's exposure): see-all roles only.
+      if (!isSeeAll(user)) throw notAuthorized('Insufficient permissions');
+      return;
+    case 'portfolio-review': {
+      const review = await PortfolioReviewsCollection.findOneAsync(reportId, {
+        fields: { generatedBy: 1, viewAsFilter: 1 }
+      });
+      if (!review) throw new Meteor.Error('not-found', 'Portfolio review not found');
+      if (!(await canReadReview(user, review))) {
+        throw notAuthorized('Portfolio review is outside your access scope');
+      }
+      return;
+    }
+    case 'product':
+    case 'template':
+      await assertProductInScope(await resolveScope(user), reportId);
+      return;
+    default:
+      throw new Meteor.Error('invalid-report-type', 'Invalid report type specified');
+  }
 }
 
 Meteor.methods({
@@ -148,8 +194,10 @@ Meteor.methods({
     check(sessionId, String);
     check(options, Object);
 
-    // Validate session
+    // Validate session. Arbitrary HTML is rendered server-side here, so this
+    // is a staff tool only.
     const { user, userId } = await validateSession(sessionId);
+    if (!isStaff(user)) throw notAuthorized('Insufficient permissions');
 
     console.log('[PDF] Starting PDF generation for user:', userId);
 
@@ -249,8 +297,9 @@ Meteor.methods({
     // generations running at once for one user would clobber each other's
     // token. Meteor's per-connection method queue keeps them sequential.
 
-    // Validate session
+    // Validate session, then the request itself — before any token is minted.
     const { user, userId } = await validateSession(sessionId);
+    await authorizeReportRequest(user, reportType, reportId, options);
 
     console.log('[PDF] Generating report PDF:', reportType, reportId, 'for user:', userId, 'language:', lang);
 

@@ -1,24 +1,22 @@
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { ProductCommentaryCollection } from '/imports/api/riskAnalysis';
+import { getSessionOrPdfUser } from '../helpers/sessionAuth.js';
+import { resolveScope, isProductInScope } from '../helpers/accessScope.js';
 
 /**
- * Publish the latest commentary for a specific product
+ * Latest commentary for a product the viewer may see. Also serves the PDF
+ * renderer (`pdf-temp-<token>` in place of a session id).
  */
 Meteor.publish('productCommentary', async function(productId, sessionId) {
   check(productId, String);
   check(sessionId, Match.Maybe(String));
 
-  // SECURITY: previously type-checked the session but never validated it — any string
-  // received the data. Require a real session or a valid PDF-render token.
-  const { isAuthorizedReportViewer } = await import('../helpers/reportViewerAuth.js');
-  if (!(await isAuthorizedReportViewer(sessionId))) return this.ready();
+  const user = await getSessionOrPdfUser({ sessionId });
+  if (!user) return this.ready();
 
-  return ProductCommentaryCollection.find(
-    { productId },
-    {
-      sort: { generatedAt: -1 },
-      limit: 1
-    }
-  );
+  const scope = await resolveScope(user);
+  if (!(await isProductInScope(scope, productId))) return this.ready();
+
+  return ProductCommentaryCollection.find({ productId }, { sort: { generatedAt: -1 }, limit: 1 });
 });

@@ -2,31 +2,34 @@ import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { GenericProductsCollection, GenericProductReportsCollection } from './collections.js';
 
-// SECURITY: these were published to any DDP connection, leaking the generic-product
-// catalog and reports. Require a real session or a valid PDF-render token.
-async function requireViewer(sessionId, self) {
-  const { isAuthorizedReportViewer } = await import('../../../server/helpers/reportViewerAuth.js');
-  return isAuthorizedReportViewer(sessionId);
-}
+// Generic products are product master data: catalogue roles read them all,
+// clients read the ones in their scope. A real session or the PDF-render token
+// identifies the viewer (see server/helpers/reportViewerAuth.js).
 
 if (Meteor.isServer) {
   Meteor.publish('genericProducts.list', async function (sessionId) {
     check(sessionId, Match.Maybe(String));
-    if (!(await requireViewer(sessionId))) return this.ready();
-    return GenericProductsCollection.find({}, { sort: { lastUpdated: -1 } });
+    const { getReportViewerScope, productFeedClause } = await import('../../../server/helpers/reportViewerAuth.js');
+    const scope = await getReportViewerScope(sessionId);
+    if (!scope) return this.ready();
+    const feed = await productFeedClause(scope, '_id');
+    if (!feed) return this.ready();
+    return GenericProductsCollection.find(feed, { sort: { lastUpdated: -1 } });
   });
 
   Meteor.publish('genericProducts.byId', async function (productId, sessionId) {
     check(productId, String);
     check(sessionId, Match.Maybe(String));
-    if (!(await requireViewer(sessionId))) return this.ready();
+    const { getProductViewerScope } = await import('../../../server/helpers/reportViewerAuth.js');
+    if (!(await getProductViewerScope(sessionId, productId))) return this.ready();
     return GenericProductsCollection.find({ _id: productId });
   });
 
   Meteor.publish('genericProductReports.forProduct', async function (productId, sessionId) {
     check(productId, String);
     check(sessionId, Match.Maybe(String));
-    if (!(await requireViewer(sessionId))) return this.ready();
+    const { getProductViewerScope } = await import('../../../server/helpers/reportViewerAuth.js');
+    if (!(await getProductViewerScope(sessionId, productId))) return this.ready();
     return GenericProductReportsCollection.find(
       { productId },
       { sort: { createdAt: -1 }, limit: 20 }

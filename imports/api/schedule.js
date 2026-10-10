@@ -48,9 +48,8 @@ if (Meteor.isServer) {
     check(productId, String);
     check(sessionId, Match.Maybe(String));
 
-    // SECURITY: require a real session or a valid PDF-render token.
-    const { isAuthorizedReportViewer } = await import('../../server/helpers/reportViewerAuth.js');
-    if (!(await isAuthorizedReportViewer(sessionId))) return this.ready();
+    const { getProductViewerScope } = await import('../../server/helpers/reportViewerAuth.js');
+    if (!(await getProductViewerScope(sessionId, productId))) return this.ready();
 
     return ScheduleCollection.find({ productId }, {
       sort: { 'events.date': 1 }
@@ -63,10 +62,14 @@ if (Meteor.isServer) {
     check(toDate, Date);
     check(sessionId, Match.Maybe(String));
 
-    const { isAuthorizedReportViewer } = await import('../../server/helpers/reportViewerAuth.js');
-    if (!(await isAuthorizedReportViewer(sessionId))) return this.ready();
+    const { getReportViewerScope, productFeedClause } = await import('../../server/helpers/reportViewerAuth.js');
+    const scope = await getReportViewerScope(sessionId);
+    if (!scope) return this.ready();
+    const feed = await productFeedClause(scope);
+    if (!feed) return this.ready();
 
     return ScheduleCollection.find({
+      ...feed,
       'events.date': {
         $gte: fromDate,
         $lte: toDate
@@ -128,19 +131,33 @@ if (Meteor.isServer) {
     /**
      * Get schedule for a product
      */
-    async 'schedule.getForProduct'(productId) {
+    async 'schedule.getForProduct'(productId, sessionId = null) {
       check(productId, String);
-      
+      check(sessionId, Match.Maybe(String));
+
+      // Same rule as the publication: a session or PDF token identifies the
+      // viewer, the viewer's scope decides whether this product is theirs.
+      const { requireSessionOrPdfToken } = await import('../../server/helpers/sessionAuth.js');
+      const { resolveScope, assertProductInScope } = await import('../../server/helpers/accessScope.js');
+      const user = await requireSessionOrPdfToken({ sessionId });
+      await assertProductInScope(await resolveScope(user), productId);
+
       return await ScheduleCollection.findOneAsync({ productId });
     },
 
     /**
      * Get upcoming events for a product
      */
-    async 'schedule.getUpcomingEvents'(productId, fromDate = new Date()) {
+    async 'schedule.getUpcomingEvents'(productId, fromDate = new Date(), sessionId = null) {
       check(productId, String);
       check(fromDate, Date);
-      
+      check(sessionId, Match.Maybe(String));
+
+      const { requireSessionOrPdfToken } = await import('../../server/helpers/sessionAuth.js');
+      const { resolveScope, assertProductInScope } = await import('../../server/helpers/accessScope.js');
+      const user = await requireSessionOrPdfToken({ sessionId });
+      await assertProductInScope(await resolveScope(user), productId);
+
       const schedule = await ScheduleCollection.findOneAsync({ productId });
       
       if (!schedule) return [];

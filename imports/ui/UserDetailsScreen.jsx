@@ -510,7 +510,7 @@ export default function UserDetailsScreen({ userId, entityId = null, onBack, emb
   // Subscribe to data
   const { user, entity, allEntities, linkedEntities, linkedUsers, bankAccounts, beneficiaryAccounts, relationshipManagers, introducers, banks, accountProfiles, portfolioSnapshots, isLoading } = useTracker(() => {
     const userHandle = Meteor.subscribe('customUsers', sessionId);
-    const banksHandle = Meteor.subscribe('banks');
+    const banksHandle = Meteor.subscribe('banks', localStorage.getItem('sessionId'));
     const bankAccountsHandle = Meteor.subscribe('allBankAccounts', sessionId);
     const entityHandle = Meteor.subscribe('clientEntities', sessionId);
     // The list publication omits the KYC block (data minimisation) — the detail

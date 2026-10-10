@@ -1,62 +1,46 @@
 // Market Data Publications
-// Handles all market data related publications
+// Market prices are reference data for any logged-in user; the raw cache is admin-only.
 
-import { UsersCollection, USER_ROLES } from '/imports/api/users';
-import { ProductPricesCollection } from '/imports/api/productPrices';
+import { Meteor } from 'meteor/meteor';
+import { check, Match } from 'meteor/check';
+import { getSessionUser } from '../helpers/sessionAuth.js';
+import { ADMIN_ROLES } from '../helpers/accessPolicy.js';
 
-// Publish market data cache (admin only)
-Meteor.publish("marketDataCache", async function () {
-  const user = await UsersCollection.findOneAsync(this.userId);
-  if (!user || (user.role !== USER_ROLES.ADMIN && user.role !== USER_ROLES.SUPERADMIN)) {
-    return this.ready();
-  }
+// Raw market data cache (admin only)
+Meteor.publish("marketDataCache", async function (sessionId = null) {
+  check(sessionId, Match.Maybe(String));
+  const user = await getSessionUser(sessionId);
+  if (!user || !ADMIN_ROLES.includes(user.role)) return this.ready();
 
-  // Import here to avoid circular dependency
   const { MarketDataCacheCollection } = require('/imports/api/marketDataCache');
-  return MarketDataCacheCollection.find({}, {
-    sort: { date: -1 },
-    limit: 1000 // Limit for performance
-  });
+  return MarketDataCacheCollection.find({}, { sort: { date: -1 }, limit: 1000 });
 });
 
-// Publish market data for underlyings view (public - for all authenticated users)
-Meteor.publish("underlyingsMarketData", function () {
-  // Import here to avoid circular dependency
-  const { MarketDataCacheCollection } = require('/imports/api/marketDataCache');
+// Market data for the underlyings view
+Meteor.publish("underlyingsMarketData", async function (sessionId = null) {
+  check(sessionId, Match.Maybe(String));
+  const user = await getSessionUser(sessionId);
+  if (!user) return this.ready();
 
-  // Return only the latest market data for each symbol
-  return MarketDataCacheCollection.find({}, {
-    sort: { timestamp: -1 },
-    limit: 500 // Reasonable limit for performance
-  });
+  const { MarketDataCacheCollection } = require('/imports/api/marketDataCache');
+  return MarketDataCacheCollection.find({}, { sort: { timestamp: -1 }, limit: 500 });
 });
 
-// Publish ticker prices for MarketTicker component (public - for all users)
-Meteor.publish("tickerPrices", function () {
-  // Import here to avoid circular dependency
+// Ticker prices for the MarketTicker component
+Meteor.publish("tickerPrices", async function (sessionId = null) {
+  check(sessionId, Match.Maybe(String));
+  const user = await getSessionUser(sessionId);
+  if (!user) return this.ready();
+
   const { TickerPriceCacheCollection } = require('/imports/api/tickerCache');
-
-  // Return only valid, non-expired ticker prices
   return TickerPriceCacheCollection.find({
-    price: { $gt: 0 },              // Only valid prices
-    expiresAt: { $gt: new Date() }  // Not expired
+    price: { $gt: 0 },
+    expiresAt: { $gt: new Date() }
   }, {
     fields: {
-      symbol: 1,
-      price: 1,
-      change: 1,
-      changePercent: 1,
-      previousClose: 1,
-      source: 1,
-      timestamp: 1,
-      lastUpdated: 1
+      symbol: 1, price: 1, change: 1, changePercent: 1, previousClose: 1,
+      source: 1, timestamp: 1, lastUpdated: 1
     },
     sort: { symbol: 1 }
   });
 });
-
-
-
-
-
-

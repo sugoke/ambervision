@@ -50,7 +50,7 @@ const UserManagement = ({ user: currentUser }) => {
   const subscriptions = useMemo(() => ({
     users: Meteor.subscribe('customUsers', localStorage.getItem('sessionId')),
     bankAccounts: Meteor.subscribe('allBankAccounts', localStorage.getItem('sessionId')),
-    banks: Meteor.subscribe('banks')
+    banks: Meteor.subscribe('banks', localStorage.getItem('sessionId'))
   }), []);
 
   const { users, bankAccounts, banks, isLoadingUsers } = useTracker(() => {

@@ -45,7 +45,7 @@ const TestInput = () => {
   const clearCache = async () => {
     setLoading(true);
     try {
-      Meteor.call('tickerCache.clear', symbol, (error, response) => {
+      Meteor.call('tickerCache.clear', symbol, localStorage.getItem('sessionId'), (error, response) => {
         if (error) {
           setResult({ error: error.message });
         } else {

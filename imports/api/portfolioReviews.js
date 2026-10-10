@@ -13,6 +13,15 @@ import { UsersCollection } from './users.js';
  */
 export const PortfolioReviewsCollection = new Mongo.Collection('portfolioReviews');
 
+/**
+ * May `user` read `review`? Assigned on the server below (shared file: the
+ * access helpers live under /server and are imported lazily there); null on
+ * the client. Used by the methods here and by pdf.generateReport.
+ *
+ * @type {null | ((user: object, review: object, scope?: object|null) => Promise<boolean>)}
+ */
+export let canReadReview = null;
+
 if (Meteor.isServer) {
   // Ensure indexes for efficient queries
   Meteor.startup(() => {
@@ -32,13 +41,58 @@ if (Meteor.isServer) {
     ).catch(err => console.warn('[PortfolioReviews] Index creation warning:', err.message));
   });
 
+  /**
+   * A portfolio review is a firm-wide staff artifact about one client. See-all
+   * roles read every review; an RM or assistant reads the reviews they
+   * generated and those whose View As target (client, entity or account) is
+   * inside their perimeter. Nobody else reads any.
+   *
+   * `scope` is the caller's already-resolved scope when it has one (list
+   * resolves it once for every review); otherwise it is resolved here.
+   */
+  canReadReview = async function (user, review, scope = null) {
+    if (!user || !review) return false;
+    const { isSeeAll, isStaff } = await import('../../server/helpers/accessPolicy.js');
+    if (!isStaff(user)) return false;
+    if (isSeeAll(user)) return true;
+    if (review.generatedBy && review.generatedBy === user._id) return true;
+
+    const targetId = review.viewAsFilter?.id;
+    if (typeof targetId !== 'string' || !targetId) return false;
+
+    const { resolveScope, isClientInScope } = await import('../../server/helpers/accessScope.js');
+    const own = scope || await resolveScope(user);
+    if (own.denied) return false;
+    if (own.bankAccountIds.includes(targetId) || own.entityIds.includes(targetId)) return true;
+    return isClientInScope(own, targetId);
+  };
+
+  /**
+   * The publications below used `this.userId`, which is always null in this
+   * app (no Meteor accounts), so they matched nothing. They now take the
+   * session token last, like every other publication.
+   */
+  const reviewPublisher = async (sessionId) => {
+    const { getSessionUser } = await import('../../server/helpers/sessionAuth.js');
+    const { isSeeAll, isStaff } = await import('../../server/helpers/accessPolicy.js');
+    const user = await getSessionUser(sessionId);
+    if (!isStaff(user)) return null;
+    return { user, seeAll: isSeeAll(user) };
+  };
+
   // Publish reviews for a specific client/account context
-  Meteor.publish('portfolioReviews.forClient', function (viewAsFilter, accountFilter, limit = 20) {
+  Meteor.publish('portfolioReviews.forClient', async function (viewAsFilter, accountFilter, limit = 20, sessionId = null) {
+    check(viewAsFilter, Match.Maybe(Object));
+    check(accountFilter, Match.Maybe(String));
     check(limit, Number);
+    check(sessionId, Match.Maybe(String));
 
-    const query = { generatedBy: this.userId };
+    const viewer = await reviewPublisher(sessionId);
+    if (!viewer) return this.ready();
 
-    if (viewAsFilter && viewAsFilter.id) {
+    const query = viewer.seeAll ? {} : { generatedBy: viewer.user._id };
+
+    if (viewAsFilter && typeof viewAsFilter.id === 'string' && viewAsFilter.id) {
       query['viewAsFilter.id'] = viewAsFilter.id;
     }
     if (accountFilter && accountFilter !== 'consolidated') {
@@ -62,9 +116,18 @@ if (Meteor.isServer) {
   });
 
   // Publish the latest generating review (for toast notification)
-  Meteor.publish('portfolioReviews.active', function () {
+  Meteor.publish('portfolioReviews.active', async function (sessionId = null) {
+    check(sessionId, Match.Maybe(String));
+
+    const viewer = await reviewPublisher(sessionId);
+    if (!viewer) return this.ready();
+
+    const query = viewer.seeAll
+      ? { status: 'generating' }
+      : { generatedBy: viewer.user._id, status: 'generating' };
+
     return PortfolioReviewsCollection.find(
-      { generatedBy: this.userId, status: 'generating' },
+      query,
       {
         sort: { generatedAt: -1 },
         limit: 1,
@@ -132,6 +195,22 @@ if (Meteor.isServer) {
       check(language, String);
 
       const currentUser = await requireReviewStaff(sessionId);
+
+      // The review is built from the target's holdings, so the target must be
+      // inside the caller's perimeter: an RM may not review another RM's
+      // client. resolveScope denies a malformed filter and an out-of-perimeter
+      // target alike; the original object is still stored (the UI reads its
+      // `label`).
+      {
+        const { resolveScope, assertAccountInScope } = await import('../../server/helpers/accessScope.js');
+        const scope = await resolveScope(currentUser, viewAsFilter || null);
+        if (scope.denied) {
+          throw new Meteor.Error('not-authorized', 'Client is outside your access scope');
+        }
+        if (accountFilter !== 'consolidated' && accountFilter !== 'all') {
+          await assertAccountInScope(scope, accountFilter);
+        }
+      }
 
       console.log('[PortfolioReview] Starting generation, account:', accountFilter, 'language:', language);
 
@@ -202,11 +281,14 @@ if (Meteor.isServer) {
       check(reviewId, String);
       check(sessionId, String);
 
-      await requireReviewStaff(sessionId);
+      const user = await requireReviewStaff(sessionId);
 
       const review = await PortfolioReviewsCollection.findOneAsync(reviewId);
       if (!review) {
         throw new Meteor.Error('not-found', 'Portfolio review not found');
+      }
+      if (!(await canReadReview(user, review))) {
+        throw new Meteor.Error('not-authorized', 'Portfolio review is outside your access scope');
       }
 
       return review;
@@ -221,11 +303,15 @@ if (Meteor.isServer) {
       check(pdfToken, String);
 
       // Validate the short-lived PDF token (previously the token was ignored).
-      await validateReviewPdfToken(userId, pdfToken);
+      // The token proves identity only; the same scope rule as on screen applies.
+      const user = await validateReviewPdfToken(userId, pdfToken);
 
       const review = await PortfolioReviewsCollection.findOneAsync(reviewId);
       if (!review) {
         throw new Meteor.Error('not-found', 'Portfolio review not found');
+      }
+      if (!(await canReadReview(user, review))) {
+        throw new Meteor.Error('not-authorized', 'Portfolio review is outside your access scope');
       }
 
       return review;
@@ -240,11 +326,11 @@ if (Meteor.isServer) {
       check(accountFilter, Match.Maybe(String));
       check(limit, Number);
 
-      await requireReviewStaff(sessionId);
+      const user = await requireReviewStaff(sessionId);
 
       const query = {};
 
-      if (viewAsFilter && viewAsFilter.id) {
+      if (viewAsFilter && typeof viewAsFilter.id === 'string' && viewAsFilter.id) {
         query['viewAsFilter.id'] = viewAsFilter.id;
       }
       if (accountFilter && accountFilter !== 'consolidated') {
@@ -270,7 +356,18 @@ if (Meteor.isServer) {
         }
       }).fetchAsync();
 
-      return reviews;
+      // Reviews are few: filter in memory with the one rule, resolving the
+      // caller's scope once. See-all roles pass without a scope lookup.
+      const { isSeeAll } = await import('../../server/helpers/accessPolicy.js');
+      if (isSeeAll(user)) return reviews;
+
+      const { resolveScope } = await import('../../server/helpers/accessScope.js');
+      const scope = await resolveScope(user);
+      const readable = [];
+      for (const review of reviews) {
+        if (await canReadReview(user, review, scope)) readable.push(review);
+      }
+      return readable;
     },
 
     /**

@@ -21,7 +21,7 @@ import { DashboardMetricsHelpers } from '../../imports/api/dashboardMetrics.js';
 import { ClientEntitiesCollection, ClientEntityHelpers, ENTITY_STATUSES } from '../../imports/api/clientEntities.js';
 import { aggregateSnapshotsByDay } from '../helpers/currencyHelpers.js';
 import { UserEntityAccessHelpers } from '../../imports/api/userEntityAccess.js';
-import { getFilteredEntityIds, buildEntityOrUserFilter } from '../../imports/utils/entityResolver.js';
+import { buildEntityOrUserFilter } from '../../imports/utils/entityResolver.js';
 import { INVESTMENT_QUOTES } from '../quotesData.js';
 
 // Database collections for quotes system
@@ -142,6 +142,16 @@ export async function getFilteredClientIds(currentUser, viewAsFilter = null) {
   const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
   const isCompliance = currentUser.role === USER_ROLES.COMPLIANCE;
   const isClient = currentUser.role === USER_ROLES.CLIENT;
+
+  // Every perimeter but the see-all "whole firm" one comes from the access scope
+  // (server/helpers/accessScope.js), the single implementation of the owner rules.
+  // The firm-wide list below is kept for the dashboard aggregates that iterate it.
+  if (!((isAdmin || isCompliance) && !viewAsFilter)) {
+    const { resolveScope } = await import('../helpers/accessScope.js');
+    const { parseViewAsOrNull } = await import('../../imports/utils/viewAs.js');
+    const scope = await resolveScope(currentUser, parseViewAsOrNull(viewAsFilter));
+    return scope.denied ? [] : scope.ownerIds;
+  }
 
   // Client sees themselves plus any entities they hold access grants for
   if (isClient) {

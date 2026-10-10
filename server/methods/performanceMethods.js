@@ -1,13 +1,55 @@
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
-import { SessionsCollection, SessionHelpers } from '../../imports/api/sessions.js';
-import { UsersCollection } from '../../imports/api/users.js';
 import { PortfolioSnapshotHelpers, filterSnapshotsByBankStartDate, dedupeSnapshotsPerAccountDay } from '../../imports/api/portfolioSnapshots.js';
 import { getAssetClassLabel, getGranularCategoryLabel } from '../../imports/api/securitiesMetadata.js';
 import { PMSHoldingsCollection } from '../../imports/api/pmsHoldings.js';
-import { getHeldProductIdsForScope } from '../helpers/holdingsScope.js';
+import { parseViewAs } from '../../imports/utils/viewAs.js';
+import { requireSession } from '../helpers/sessionAuth.js';
+import {
+  resolveScope, holdingsSelector, snapshotsSelector, heldProductIds, isPortfolioCodeInScope
+} from '../helpers/accessScope.js';
 import { buildEURRatesMap, convertCurrency } from '../helpers/currencyHelpers.js';
 import { snapshotValueCurrency } from '../../imports/api/helpers/twrCalculator.js';
+
+const ViewAsArg = Match.OneOf(Match.ObjectIncluding({ type: String, id: String }), null, undefined);
+
+/**
+ * The viewer's scope for a (possibly narrowed) performance request. Throws
+ * when the View As target is outside the caller's perimeter.
+ */
+async function scopeFor(user, viewAsFilter) {
+  const scope = await resolveScope(user, parseViewAs(viewAsFilter));
+  if (scope.denied) throw new Meteor.Error('not-authorized', 'Out of scope');
+  return scope;
+}
+
+/**
+ * Portfolio codes a request may read: the one asked for, if it belongs to an
+ * account in scope, else every account in scope. Null for a see-all view.
+ */
+function portfolioCodesFor(scope, portfolioCode) {
+  if (portfolioCode) {
+    if (!isPortfolioCodeInScope(scope, null, portfolioCode)) {
+      throw new Meteor.Error('not-authorized', 'Portfolio is outside your access scope');
+    }
+    return [portfolioCode];
+  }
+  if (scope.isAdmin) return null;
+  return [...new Set(scope.bankAccounts.map(a => a.accountNumber).filter(Boolean))];
+}
+
+/**
+ * Owner id the snapshot helpers key on for a View As target: the account's
+ * owner, or the entity/client id (the helpers match `$or: [{ userId }, { entityId }]`).
+ */
+async function targetOwnerIdFor(scope, user) {
+  if (!scope.viewAs) return user._id;
+  if (scope.viewAs.type === 'account') {
+    const account = scope.bankAccounts.find(a => a._id === scope.viewAs.id);
+    return account ? (account.userId || account.entityId) : null;
+  }
+  return scope.viewAs.id;
+}
 
 // Snapshot amounts, each stored in its account's reference currency (snapshotValueCurrency)
 const SNAPSHOT_AMOUNT_FIELDS = ['totalAccountValue', 'cashBalance', 'totalMarketValue', 'totalCostBasis', 'totalCapitalInvested', 'unrealizedPnL'];
@@ -33,29 +75,6 @@ async function convertSnapshots(snapshots, currency) {
   return converted;
 }
 
-/**
- * Validate session and get user
- */
-async function validateSession(sessionId) {
-  if (!sessionId) {
-    throw new Meteor.Error('not-authorized', 'Session required');
-  }
-
-  const session = await SessionHelpers.findByToken(sessionId);
-
-  if (!session) {
-    throw new Meteor.Error('not-authorized', 'Invalid session');
-  }
-
-  const user = await UsersCollection.findOneAsync(session.userId);
-
-  if (!user) {
-    throw new Meteor.Error('not-authorized', 'User not found');
-  }
-
-  return user;
-}
-
 Meteor.methods({
   /**
    * Get portfolio performance for a date range
@@ -66,7 +85,9 @@ Meteor.methods({
     check(startDate, Match.Optional(Match.OneOf(String, Date, null)));
     check(endDate, Match.Optional(Match.OneOf(String, Date, null)));
 
-    const user = await validateSession(sessionId);
+    const user = await requireSession(sessionId);
+    const scope = await scopeFor(user, null);
+    portfolioCodesFor(scope, portfolioCode); // throws when the code is outside the scope
 
     console.log(`[PERFORMANCE] Calculating performance for user: ${user.username}`);
 
@@ -101,45 +122,26 @@ Meteor.methods({
   async 'performance.getPeriods'({ sessionId, portfolioCode = null, viewAsFilter = null }) {
     check(sessionId, String);
     check(portfolioCode, Match.OneOf(String, null, undefined));
-    check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
-      type: String,
-      id: String
-    }), null, undefined));
+    check(viewAsFilter, ViewAsArg);
 
-    const user = await validateSession(sessionId);
+    const user = await requireSession(sessionId);
+    const scope = await scopeFor(user, viewAsFilter);
+    portfolioCodesFor(scope, portfolioCode); // throws when the code is outside the scope
 
-    console.log(`[PERFORMANCE] Getting period performance for user: ${user.username}, viewAs: ${viewAsFilter ? viewAsFilter.type : 'none'}`);
+    console.log(`[PERFORMANCE] Getting period performance for user: ${user.username}, viewAs: ${scope.viewAs ? scope.viewAs.type : 'none'}`);
 
     const now = new Date();
 
-    // Check if admin viewing all clients (no filter)
-    const isAdminAllClients = (user.role === 'admin' || user.role === 'superadmin') && !viewAsFilter;
+    // A see-all view without View As aggregates every client
+    const isAdminAllClients = scope.isAdmin;
 
-    // Determine target userId and portfolioCode based on viewAsFilter
-    let targetUserId = user._id;
+    // Owner id the snapshot helpers key on (they match `$or: [{ userId }, { entityId }]`,
+    // so an entity-only client resolves through its entity id); the account's
+    // number when one account is drilled into.
+    const targetUserId = await targetOwnerIdFor(scope, user);
     let targetPortfolioCode = portfolioCode;
-
-    if (viewAsFilter && (user.role === 'admin' || user.role === 'superadmin')) {
-      const { BankAccountsCollection } = await import('../../imports/api/bankAccounts.js');
-
-      if (viewAsFilter.type === 'client' || viewAsFilter.type === 'entity') {
-        // For entity clients, the snapshot helpers match by entityId via
-        // `$or: [{ userId }, { entityId: userId }]`, so passing the entity id as the
-        // target id resolves entity-only clients (no legacy userId) correctly.
-        targetUserId = viewAsFilter.id;
-        // Only reset portfolioCode if not explicitly provided
-        // (allows selecting specific account within a client view)
-        if (!portfolioCode) {
-          targetPortfolioCode = null;
-        }
-      } else if (viewAsFilter.type === 'account') {
-        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-        if (bankAccount) {
-          // Entity-owned accounts have no userId — fall back to entityId (helpers OR on both).
-          targetUserId = bankAccount.userId || bankAccount.entityId;
-          targetPortfolioCode = bankAccount.accountNumber;
-        }
-      }
+    if (scope.viewAs?.type === 'account' && !portfolioCode) {
+      targetPortfolioCode = scope.bankAccounts.find(a => a._id === scope.viewAs.id)?.accountNumber || null;
     }
 
     if (isAdminAllClients) {
@@ -229,10 +231,10 @@ Meteor.methods({
    * snapshotDate <= periodStart. Positions with no snapshot before the
    * period start (opened mid-period) return null for that period.
    *
-   * The caller passes the current holdings it already received through the
-   * (access-controlled) pmsHoldings publication, so no additional owner
-   * scoping is needed here — we only look up historical prices by the
-   * opaque uniqueKey the client legitimately holds.
+   * The caller passes the current holdings it received through the pmsHoldings
+   * publication. uniqueKey is a predictable hash (bank | portfolio | ISIN), so
+   * the keys are re-checked against the caller's access scope here and any
+   * key outside it is dropped before a single price is looked up.
    *
    * @param {String}  sessionId
    * @param {Array}   holdings   [{ uniqueKey, portfolioCode, portfolioCurrency, currentPrice, currentValue }]
@@ -244,11 +246,21 @@ Meteor.methods({
     check(asOfDate, Match.OneOf(Date, String, null, undefined));
     check(holdings, [Match.ObjectIncluding({ uniqueKey: String })]);
 
-    await validateSession(sessionId);
+    const user = await requireSession(sessionId);
 
     if (!holdings.length) return {};
 
-    const uniqueKeys = [...new Set(holdings.map(h => h.uniqueKey).filter(Boolean))];
+    const requestedKeys = [...new Set(holdings.map(h => h.uniqueKey).filter(Boolean))];
+    const scope = await scopeFor(user, null);
+    const inScope = await PMSHoldingsCollection.find(
+      { $and: [await holdingsSelector(scope), { uniqueKey: { $in: requestedKeys } }] },
+      { fields: { uniqueKey: 1 } }
+    ).fetchAsync();
+    const allowedKeys = new Set(inScope.map(h => h.uniqueKey));
+    holdings = holdings.filter(h => allowedKeys.has(h.uniqueKey));
+    if (!holdings.length) return {};
+
+    const uniqueKeys = [...allowedKeys];
 
     // Anchor the periods to the LATEST available data date (max snapshotDate of
     // the in-scope holdings), not wall-clock "today". The current prices we
@@ -385,14 +397,12 @@ Meteor.methods({
    */
   async 'holdings.getHeldProductIds'({ sessionId, viewAsFilter = null }) {
     check(sessionId, String);
-    check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
-      type: String,
-      id: String
-    }), null, undefined));
+    check(viewAsFilter, ViewAsArg);
 
-    const user = await validateSession(sessionId);
-    const ids = await getHeldProductIdsForScope({ currentUser: user, viewAsFilter });
-    return [...ids];
+    const user = await requireSession(sessionId);
+    const scope = await resolveScope(user, parseViewAs(viewAsFilter));
+    if (scope.denied) return [];
+    return [...await heldProductIds(scope)];
   },
 
   /**
@@ -406,14 +416,12 @@ Meteor.methods({
     check(portfolioCode, Match.OneOf(String, null, undefined));
     check(startDate, Match.OneOf(String, Date, null, undefined));
     check(endDate, Match.OneOf(String, Date, null, undefined));
-    check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
-      type: String,
-      id: String
-    }), null, undefined));
+    check(viewAsFilter, ViewAsArg);
 
-    const user = await validateSession(sessionId);
+    const user = await requireSession(sessionId);
+    const scope = await scopeFor(user, viewAsFilter);
 
-    console.log(`[PERFORMANCE] Getting chart data for user: ${user.username}, viewAs: ${viewAsFilter ? viewAsFilter.type : 'none'}`);
+    console.log(`[PERFORMANCE] Getting chart data for user: ${user.username}, viewAs: ${scope.viewAs ? scope.viewAs.type : 'none'}`);
 
     // Convert dates if needed
     const start = startDate ? new Date(startDate) : null;
@@ -422,65 +430,35 @@ Meteor.methods({
     let snapshots;
     let convertedAtSpot = false;
 
-    // Admin/SuperAdmin without filter = aggregate ALL clients
-    if ((user.role === 'admin' || user.role === 'superadmin') && !viewAsFilter) {
+    // A see-all view without View As aggregates every client
+    if (scope.isAdmin && !portfolioCode) {
       console.log(`[PERFORMANCE] Admin view: aggregating all clients`);
       snapshots = await PortfolioSnapshotHelpers.getAggregatedSnapshots({
         startDate: start,
         endDate: end
       });
     } else {
-      // Account-centric approach: resolve portfolio codes from accounts
-      const { BankAccountsCollection } = await import('../../imports/api/bankAccounts.js');
-      const { ClientEntitiesCollection } = await import('../../imports/api/clientEntities.js');
+      // Account-centric approach: the portfolio codes of the accounts in scope
+      // (or the one asked for, once it is known to be in scope).
       const { PortfolioSnapshotsCollection } = await import('../../imports/api/portfolioSnapshots.js');
 
-      let targetPortfolioCodes = portfolioCode ? [portfolioCode] : null;
-
-      if (viewAsFilter && (user.role === 'admin' || user.role === 'superadmin' || user.role === 'rm' || user.role === 'assistant')) {
-        if (viewAsFilter.type === 'entity') {
-          if (!portfolioCode) {
-            const entityAccounts = await BankAccountsCollection.find(
-              { $or: [{ entityId: viewAsFilter.id }, { beneficialOwnerIds: viewAsFilter.id }, { beneficialOwnerId: viewAsFilter.id }], isActive: true },
-              { fields: { accountNumber: 1 } }
-            ).fetchAsync();
-            targetPortfolioCodes = entityAccounts.map(a => a.accountNumber);
-          }
-        } else if (viewAsFilter.type === 'client') {
-          if (!portfolioCode) {
-            const clientAccounts = await BankAccountsCollection.find(
-              { $or: [{ userId: viewAsFilter.id }, { entityId: viewAsFilter.id }], isActive: true },
-              { fields: { accountNumber: 1 } }
-            ).fetchAsync();
-            targetPortfolioCodes = clientAccounts.map(a => a.accountNumber);
-          }
-        } else if (viewAsFilter.type === 'account') {
-          const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-          if (bankAccount) {
-            targetPortfolioCodes = [bankAccount.accountNumber];
-          } else {
-            return { hasData: false, labels: [], datasets: [] };
-          }
-        }
-      } else if (!portfolioCode) {
-        // Current user's own accounts
-        const entity = await ClientEntitiesCollection.findOneAsync({ migratedFromUserId: user._id, isActive: true });
-        const accountQuery = entity
-          ? { $or: [{ entityId: entity._id }, { userId: user._id }], isActive: true }
-          : { userId: user._id, isActive: true };
-        const ownAccounts = await BankAccountsCollection.find(accountQuery, { fields: { accountNumber: 1 } }).fetchAsync();
-        targetPortfolioCodes = ownAccounts.map(a => a.accountNumber);
-      }
+      const targetPortfolioCodes = portfolioCodesFor(scope, portfolioCode);
 
       console.log(`[PERFORMANCE] Target portfolioCodes: ${targetPortfolioCodes?.join(',') || 'none'}`);
 
-      // Query snapshots directly by portfolioCode
+      // Query snapshots by portfolioCode, inside the owner clause so a code can
+      // never read another client's account at a different bank
       if (targetPortfolioCodes && targetPortfolioCodes.length > 0) {
+        const dateClause = {};
+        if (start) dateClause.snapshotDate = { ...(dateClause.snapshotDate || {}), $gte: start };
+        if (end) dateClause.snapshotDate = { ...(dateClause.snapshotDate || {}), $lte: end };
         const snapshotQuery = {
-          portfolioCode: targetPortfolioCodes.length === 1 ? targetPortfolioCodes[0] : { $in: targetPortfolioCodes }
+          $and: [
+            await snapshotsSelector(scope),
+            { portfolioCode: targetPortfolioCodes.length === 1 ? targetPortfolioCodes[0] : { $in: targetPortfolioCodes } },
+            dateClause
+          ]
         };
-        if (start) snapshotQuery.snapshotDate = { ...(snapshotQuery.snapshotDate || {}), $gte: start };
-        if (end) snapshotQuery.snapshotDate = { ...(snapshotQuery.snapshotDate || {}), $lte: end };
 
         const fetchedSnapshots = await PortfolioSnapshotsCollection.find(snapshotQuery, { sort: { snapshotDate: 1 } }).fetchAsync();
         // Exclude snapshots from banks with known bad historical pricing (e.g. CMB before 2026-01-09)
@@ -613,31 +591,18 @@ Meteor.methods({
     check(sessionId, String);
     check(portfolioCode, Match.OneOf(String, null, undefined));
     check(date, Match.OneOf(String, Date, null, undefined));
-    check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
-      type: String,
-      id: String
-    }), null, undefined));
+    check(viewAsFilter, ViewAsArg);
 
-    const user = await validateSession(sessionId);
+    const user = await requireSession(sessionId);
+    const scope = await scopeFor(user, viewAsFilter);
+    portfolioCodesFor(scope, portfolioCode); // throws when the code is outside the scope
 
-    // Determine target userId and portfolioCode based on viewAsFilter
-    let targetUserId = user._id;
+    const targetUserId = await targetOwnerIdFor(scope, user);
     let targetPortfolioCode = portfolioCode;
-
-    if (viewAsFilter && (user.role === 'admin' || user.role === 'superadmin')) {
-      const { BankAccountsCollection } = await import('../../imports/api/bankAccounts.js');
-
-      if (viewAsFilter.type === 'client') {
-        targetUserId = viewAsFilter.id;
-        targetPortfolioCode = null;
-      } else if (viewAsFilter.type === 'account') {
-        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-        if (bankAccount) {
-          targetUserId = bankAccount.userId;
-          targetPortfolioCode = bankAccount.accountNumber;
-        }
-      }
+    if (scope.viewAs?.type === 'account' && !portfolioCode) {
+      targetPortfolioCode = scope.bankAccounts.find(a => a._id === scope.viewAs.id)?.accountNumber || null;
     }
+    if (!targetUserId) return { hasData: false, assetClasses: [] };
 
     // Get the most recent snapshot for the specified date (or latest if no date)
     const targetDate = date ? new Date(date) : new Date();
@@ -692,10 +657,12 @@ Meteor.methods({
    */
   async 'snapshots.getAvailableDates'({ sessionId, portfolioCode = null, limit = 90 }) {
     check(sessionId, String);
-    check(portfolioCode, Match.Optional(String));
+    check(portfolioCode, Match.Maybe(String));
     check(limit, Match.Optional(Number));
 
-    const user = await validateSession(sessionId);
+    const user = await requireSession(sessionId);
+    const scope = await scopeFor(user, null);
+    portfolioCodesFor(scope, portfolioCode); // throws when the code is outside the scope
 
     console.log(`[SNAPSHOTS] Getting available dates for user: ${user.username}`);
 
@@ -703,10 +670,7 @@ Meteor.methods({
       const { PortfolioSnapshotsCollection } = await import('../../imports/api/portfolioSnapshots.js');
 
       // Build query
-      const query = { userId: user._id };
-      if (portfolioCode) {
-        query.portfolioCode = portfolioCode;
-      }
+      const query = { $and: [await snapshotsSelector(scope), portfolioCode ? { portfolioCode } : {}] };
 
       // Get distinct snapshot dates
       const snapshots = await PortfolioSnapshotsCollection.find(query, {
@@ -744,62 +708,23 @@ Meteor.methods({
     check(sessionId, String);
     check(portfolioCode, Match.OneOf(String, null, undefined));
     check(currency, Match.OneOf(String, null, undefined));
-    check(viewAsFilter, Match.OneOf(Match.ObjectIncluding({
-      type: String,
-      id: String
-    }), null, undefined));
+    check(viewAsFilter, ViewAsArg);
 
-    const user = await validateSession(sessionId);
+    const user = await requireSession(sessionId);
+    const scope = await scopeFor(user, viewAsFilter);
 
     const now = new Date();
-    const isAdminAllClients = (user.role === 'admin' || user.role === 'superadmin') && !viewAsFilter;
+    const isAdminAllClients = scope.isAdmin && !portfolioCode;
 
-    // Resolve target portfolio codes — account-centric approach (no userId dependency)
-    const { BankAccountsCollection } = await import('../../imports/api/bankAccounts.js');
-    const { ClientEntitiesCollection } = await import('../../imports/api/clientEntities.js');
-    const { PortfolioSnapshotsCollection } = await import('../../imports/api/portfolioSnapshots.js');
-
-    let targetPortfolioCodes = portfolioCode ? [portfolioCode] : null;
-
-    if (viewAsFilter && (user.role === 'admin' || user.role === 'superadmin' || user.role === 'rm' || user.role === 'assistant')) {
-      if (viewAsFilter.type === 'entity') {
-        // Get all account numbers where entity is owner OR beneficial owner
-        const entityAccounts = await BankAccountsCollection.find(
-          { $or: [{ entityId: viewAsFilter.id }, { beneficialOwnerIds: viewAsFilter.id }, { beneficialOwnerId: viewAsFilter.id }], isActive: true },
-          { fields: { accountNumber: 1 } }
-        ).fetchAsync();
-        if (!portfolioCode) {
-          targetPortfolioCodes = entityAccounts.map(a => a.accountNumber);
-        }
-      } else if (viewAsFilter.type === 'client') {
-        // Get all account numbers for this user
-        if (!portfolioCode) {
-          const clientAccounts = await BankAccountsCollection.find(
-            { $or: [{ userId: viewAsFilter.id }, { entityId: viewAsFilter.id }], isActive: true },
-            { fields: { accountNumber: 1 } }
-          ).fetchAsync();
-          targetPortfolioCodes = clientAccounts.map(a => a.accountNumber);
-        }
-      } else if (viewAsFilter.type === 'account') {
-        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-        if (bankAccount) {
-          targetPortfolioCodes = [bankAccount.accountNumber];
-        }
-      }
-    } else if (!isAdminAllClients && !portfolioCode) {
-      // Current user's own accounts (client or RM viewing own)
-      const entity = await ClientEntitiesCollection.findOneAsync({ migratedFromUserId: user._id, isActive: true });
-      const accountQuery = entity
-        ? { $or: [{ entityId: entity._id }, { userId: user._id }], isActive: true }
-        : { userId: user._id, isActive: true };
-      const ownAccounts = await BankAccountsCollection.find(accountQuery, { fields: { accountNumber: 1 } }).fetchAsync();
-      targetPortfolioCodes = ownAccounts.map(a => a.accountNumber);
-    }
+    // Portfolio codes of the accounts in scope (or the one asked for, once it is
+    // known to be in scope); the owner clause keeps the query inside the scope.
+    const targetPortfolioCodes = portfolioCodesFor(scope, portfolioCode);
 
     return computeTWR({
       codes: targetPortfolioCodes,
       portfolioCode,
       isAdminAllClients,
+      ownerSelector: scope.isAdmin ? null : await snapshotsSelector(scope),
       currency,
       now,
       label: user.username
@@ -816,9 +741,12 @@ Meteor.methods({
  * @param {String} portfolioCode - set when ONE account was picked explicitly:
  *        it is then measured even if it is not an investment account
  * @param {Boolean} isAdminAllClients - firm-wide aggregate
+ * @param {Object|null} ownerSelector - the caller's snapshot scope clause (see
+ *        accessScope.snapshotsSelector), ANDed into the snapshot query so a
+ *        portfolio code can never read another client's account
  * @param {String} currency - currency to express the return in
  */
-export async function computeTWR({ codes, portfolioCode = null, isAdminAllClients = false, currency = null, now = new Date(), label = '' }) {
+export async function computeTWR({ codes, portfolioCode = null, isAdminAllClients = false, ownerSelector = null, currency = null, now = new Date(), label = '' }) {
   const { BankAccountsCollection } = await import('../../imports/api/bankAccounts.js');
   const { PortfolioSnapshotsCollection } = await import('../../imports/api/portfolioSnapshots.js');
   let targetPortfolioCodes = codes ? [...codes] : null;
@@ -851,13 +779,11 @@ export async function computeTWR({ codes, portfolioCode = null, isAdminAllClient
       endDate: now
     });
   } else if (targetPortfolioCodes && targetPortfolioCodes.length > 0) {
-    const snapshotQuery = {};
-    if (targetPortfolioCodes.length === 1) {
-      snapshotQuery.portfolioCode = targetPortfolioCodes[0];
-    } else {
-      snapshotQuery.portfolioCode = { $in: targetPortfolioCodes };
-    }
-    if (now) snapshotQuery.snapshotDate = { $lte: now };
+    const codeClause = {
+      portfolioCode: targetPortfolioCodes.length === 1 ? targetPortfolioCodes[0] : { $in: targetPortfolioCodes }
+    };
+    if (now) codeClause.snapshotDate = { $lte: now };
+    const snapshotQuery = ownerSelector ? { $and: [ownerSelector, codeClause] } : codeClause;
 
     console.log(`[TWR] Snapshot query: ${JSON.stringify(snapshotQuery)}`);
 

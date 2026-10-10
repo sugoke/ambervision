@@ -1,4 +1,5 @@
 import { Mongo } from 'meteor/mongo';
+import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 
 export const ChartDataCollection = new Mongo.Collection('chartData');
@@ -85,8 +86,17 @@ if (Meteor.isServer) {
       return removeChartData(productId);
     },
     
-    async 'chartData.getByProduct'(productId) {
+    async 'chartData.getByProduct'(productId, sessionId = null) {
       check(productId, String);
+      check(sessionId, Match.Maybe(String));
+
+      // Same rule as the publication: a session or PDF token identifies the
+      // viewer, the viewer's scope decides whether this product is theirs.
+      const { requireSessionOrPdfToken } = await import('../../server/helpers/sessionAuth.js');
+      const { resolveScope, assertProductInScope } = await import('../../server/helpers/accessScope.js');
+      const user = await requireSessionOrPdfToken({ sessionId });
+      await assertProductInScope(await resolveScope(user), productId);
+
       return await ChartDataCollection.findOneAsync({ productId });
     },
     
@@ -126,9 +136,8 @@ if (Meteor.isServer) {
     check(productId, String);
     check(sessionId, Match.Maybe(String));
 
-    // SECURITY: require a real session or a valid PDF-render token.
-    const { isAuthorizedReportViewer } = await import('../../server/helpers/reportViewerAuth.js');
-    if (!(await isAuthorizedReportViewer(sessionId))) return this.ready();
+    const { getProductViewerScope } = await import('../../server/helpers/reportViewerAuth.js');
+    if (!(await getProductViewerScope(sessionId, productId))) return this.ready();
 
     return ChartDataCollection.find({ productId });
   });
@@ -137,12 +146,15 @@ if (Meteor.isServer) {
     check(limit, Number);
     check(sessionId, Match.Maybe(String));
 
-    const { isAuthorizedReportViewer } = await import('../../server/helpers/reportViewerAuth.js');
-    if (!(await isAuthorizedReportViewer(sessionId))) return this.ready();
+    const { getReportViewerScope, productFeedClause } = await import('../../server/helpers/reportViewerAuth.js');
+    const scope = await getReportViewerScope(sessionId);
+    if (!scope) return this.ready();
+    const feed = await productFeedClause(scope);
+    if (!feed) return this.ready();
 
-    return ChartDataCollection.find({}, {
+    return ChartDataCollection.find(feed, {
       sort: { updatedAt: -1 },
-      limit: limit
+      limit: Math.min(limit, 500)
     });
   });
 }

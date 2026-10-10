@@ -631,8 +631,11 @@ if (Meteor.isServer) {
     },
 
     // Clear ticker cache
-    async 'tickerCache.clear'(symbol = null) {
+    async 'tickerCache.clear'(symbol = null, sessionId = null) {
       check(symbol, Match.Optional(Match.OneOf(String, null)));
+      const { requireRole } = await import('/server/helpers/sessionAuth.js');
+      const { ADMIN_ROLES } = await import('/server/helpers/accessPolicy.js');
+      await requireRole(sessionId, ADMIN_ROLES);
 
       try {
         const query = symbol ? { symbol: symbol } : {};
@@ -653,7 +656,10 @@ if (Meteor.isServer) {
     },
 
     // Clear invalid prices (price <= 0, null, or undefined) from cache
-    async 'tickerCache.clearInvalidPrices'() {
+    async 'tickerCache.clearInvalidPrices'(sessionId = null) {
+      const { requireRole } = await import('/server/helpers/sessionAuth.js');
+      const { ADMIN_ROLES } = await import('/server/helpers/accessPolicy.js');
+      await requireRole(sessionId, ADMIN_ROLES);
       try {
         const removed = await TickerPriceCacheCollection.removeAsync({
           $or: [

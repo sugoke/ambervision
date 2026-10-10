@@ -1,9 +1,9 @@
 import assert from "assert";
 
-describe("meteor-app", function () {
+describe("ambervision", function () {
   it("package.json has correct name", async function () {
     const { name } = await import("../package.json");
-    assert.strictEqual(name, "meteor-app");
+    assert.strictEqual(name, "ambervision");
   });
 
   if (Meteor.isClient) {
@@ -21,3 +21,11 @@ describe("meteor-app", function () {
 
 import "./productSchedule.test.js";
 import "./termSheetTextChecks.test.js";
+
+if (Meteor.isServer) {
+  // Never run the isolation suite against a shared cluster: it seeds and removes rows.
+  if ((process.env.MONGO_URL || '').includes('mongodb+srv')) {
+    throw new Error('Refusing to run tests against an Atlas MONGO_URL');
+  }
+  require("./access/index.js");
+}

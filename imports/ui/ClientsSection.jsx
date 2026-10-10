@@ -122,7 +122,7 @@ const ClientsSection = ({ user: currentUser, theme, initialEntityId = null, onIn
   const { entities, allBankAccounts, banks, entityIdsWithAccounts, accessRecords, isEntitiesLoading } = useTracker(() => {
     const isEntitiesReady = entitySubscription.ready();
     Meteor.subscribe('allBankAccounts', localStorage.getItem('sessionId'));
-    Meteor.subscribe('banks');
+    Meteor.subscribe('banks', localStorage.getItem('sessionId'));
 
     // Query all client entities
     const allEntities = ClientEntitiesCollection.find(

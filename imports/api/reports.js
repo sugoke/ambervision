@@ -82,9 +82,8 @@ if (Meteor.isServer) {
     check(productId, String);
     check(sessionId, Match.Maybe(String));
 
-    // SECURITY: require a real session or a valid PDF-render token.
-    const { isAuthorizedReportViewer } = await import('../../server/helpers/reportViewerAuth.js');
-    if (!(await isAuthorizedReportViewer(sessionId))) return this.ready();
+    const { getProductViewerScope } = await import('../../server/helpers/reportViewerAuth.js');
+    if (!(await getProductViewerScope(sessionId, productId))) return this.ready();
 
     return ReportsCollection.find({ productId }, {
       sort: { createdAt: -1 },
@@ -98,11 +97,14 @@ if (Meteor.isServer) {
     check(toDate, Date);
     check(sessionId, Match.Maybe(String));
 
-    // SECURITY: require a real session or a valid PDF-render token.
-    const { isAuthorizedReportViewer } = await import('../../server/helpers/reportViewerAuth.js');
-    if (!(await isAuthorizedReportViewer(sessionId))) return this.ready();
+    const { getReportViewerScope, productFeedClause } = await import('../../server/helpers/reportViewerAuth.js');
+    const scope = await getReportViewerScope(sessionId);
+    if (!scope) return this.ready();
+    const feed = await productFeedClause(scope);
+    if (!feed) return this.ready();
 
     return ReportsCollection.find({
+      ...feed,
       evaluationDate: {
         $gte: fromDate,
         $lte: toDate
@@ -156,10 +158,18 @@ if (Meteor.isServer) {
     /**
      * Get reports for a product
      */
-    async 'reports.getForProduct'(productId, limit = 50) {
+    async 'reports.getForProduct'(productId, limit = 50, sessionId = null) {
       check(productId, String);
       check(limit, Number);
-      
+      check(sessionId, Match.Maybe(String));
+
+      // Same rule as the publication: a session or PDF token identifies the
+      // viewer, the viewer's scope decides whether this product is theirs.
+      const { requireSessionOrPdfToken } = await import('../../server/helpers/sessionAuth.js');
+      const { resolveScope, assertProductInScope } = await import('../../server/helpers/accessScope.js');
+      const user = await requireSessionOrPdfToken({ sessionId });
+      await assertProductInScope(await resolveScope(user), productId);
+
       return await ReportsCollection.find(
         { productId },
         { 
@@ -172,9 +182,15 @@ if (Meteor.isServer) {
     /**
      * Get latest report for a product
      */
-    async 'reports.getLatest'(productId) {
+    async 'reports.getLatest'(productId, sessionId = null) {
       check(productId, String);
-      
+      check(sessionId, Match.Maybe(String));
+
+      const { requireSessionOrPdfToken } = await import('../../server/helpers/sessionAuth.js');
+      const { resolveScope, assertProductInScope } = await import('../../server/helpers/accessScope.js');
+      const user = await requireSessionOrPdfToken({ sessionId });
+      await assertProductInScope(await resolveScope(user), productId);
+
       return await ReportsCollection.findOneAsync(
         { productId },
         { sort: { createdAt: -1 } }

@@ -22,6 +22,12 @@ import './serverLogs';
 import './clientDocuments';
 import './orders';
 import './manualPriceTrackers';
+import './links';
+import './underlyingsAnalysis';
+import './accountProfiles';
+import './clientEntities';
+import './userEntityAccess';
+import './portfolioSnapshots';
 
 
 

@@ -13,9 +13,7 @@ import { ProductsCollection } from '/imports/api/products';
 import { TemplateReportsCollection } from '/imports/api/templateReports';
 import { ChartDataCollection } from '/imports/api/chartData';
 import { ProductPriceHelpers } from '/imports/api/productPrices';
-import { AllocationsCollection } from '/imports/api/allocations';
-import { UsersCollection, USER_ROLES } from '/imports/api/users';
-import { clientAllocationSelector } from '../clientAllocationScope.js';
+import { resolveScope, isProductInScope } from '../accessScope.js';
 import { formatterFor } from '../reportKit/format.js';
 import { translatorFor } from './i18n.js';
 import { statusOf, timelineOf, priceOf, chartOf, toIso } from './common.js';
@@ -30,22 +28,13 @@ const chunk = (rows, size) => {
 };
 
 /**
- * Same rule as the products.single publication: staff with a book-wide view
- * see every product; a client the products allocated to them; an RM those
- * allocated to their clients.
+ * Same rule as the products.single publication: catalogue roles see every
+ * product; a client the products in their access scope.
  */
 async function canViewProduct(user, productId) {
   if (!user) return false;
-  if ([USER_ROLES.SUPERADMIN, USER_ROLES.ADMIN, USER_ROLES.COMPLIANCE].includes(user.role)) return true;
-  if (user.role === USER_ROLES.CLIENT) {
-    const selector = await clientAllocationSelector(user);
-    return !!(selector && await AllocationsCollection.findOneAsync({ $and: [{ productId }, selector] }));
-  }
-  if (user.role === USER_ROLES.RELATIONSHIP_MANAGER) {
-    const clients = await UsersCollection.find({ role: USER_ROLES.CLIENT, relationshipManagerId: user._id }, { fields: { _id: 1 } }).fetchAsync();
-    return !!await AllocationsCollection.findOneAsync({ productId, clientId: { $in: clients.map(c => c._id) } });
-  }
-  return false;
+  const scope = await resolveScope(user);
+  return isProductInScope(scope, productId);
 }
 
 export async function buildProductReport({ currentUser, productId, lang = 'en', now = new Date() }) {

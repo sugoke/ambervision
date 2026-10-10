@@ -9,8 +9,8 @@
 import { Meteor } from 'meteor/meteor';
 import { check } from 'meteor/check';
 import { RiskAnalysisReportsCollection } from '/imports/api/riskAnalysis';
-import { UsersCollection } from '/imports/api/users';
 import { findUserByPdfAccessToken } from '../helpers/pdfAccessTokens.js';
+import { isSeeAll } from '../helpers/accessPolicy.js';
 
 /**
  * Validate PDF token and return the user
@@ -45,6 +45,12 @@ Meteor.methods({
     // Validate PDF token
     const currentUser = await validatePdfToken(userId, pdfToken);
     console.log('[RISK_PDF] Token validated for user:', currentUser.emails?.[0]?.address);
+
+    // The token proves identity only. Risk reports span the whole book, so the
+    // same rule as the on-screen publication applies: see-all roles only.
+    if (!isSeeAll(currentUser)) {
+      throw new Meteor.Error('not-authorized', 'Insufficient permissions');
+    }
 
     // Fetch the report
     const report = await RiskAnalysisReportsCollection.findOneAsync({ _id: reportId });

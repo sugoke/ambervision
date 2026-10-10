@@ -1,462 +1,90 @@
 // PMS Holdings Publications
-// Handles all PMS holdings related publications
+// Bank positions, scoped through the access scope (server/helpers/accessScope.js).
 
+import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { PMSHoldingsCollection } from '/imports/api/pmsHoldings';
-import { BankAccountsCollection } from '/imports/api/bankAccounts';
-import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
-import { ClientEntitiesCollection, ClientEntityHelpers } from '/imports/api/clientEntities';
-import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
-import { resolveEntityId } from '/imports/utils/entityResolver';
-import { Meteor } from 'meteor/meteor';
+import { parseViewAs } from '/imports/utils/viewAs';
+import { getSessionUser } from '../helpers/sessionAuth.js';
+import { resolveScope, holdingsSelector } from '../helpers/accessScope.js';
 
-// Debug method to test full publication logic
-Meteor.methods({
-  'pmsHoldings.debugFullPublicationLogic': async function(asOfDateStr) {
-    const asOfDate = new Date(asOfDateStr);
+/**
+ * Publish a cursor through observeChanges so the owner `$and` never reaches the
+ * oplog matcher as a complex selector: ids are resolved first, then a plain
+ * `_id: { $in }` cursor is observed (same pattern the publication always used
+ * for `$or` filters).
+ */
+async function publishByIds(pub, collectionName, query, options) {
+  const ids = (await PMSHoldingsCollection.find(query, { fields: { _id: 1 } }).fetchAsync()).map(d => d._id);
+  const cursor = PMSHoldingsCollection.find({ _id: { $in: ids } }, options);
+  const handle = await cursor.observeChanges({
+    added(id, fields) { pub.added(collectionName, id, fields); },
+    changed(id, fields) { pub.changed(collectionName, id, fields); },
+    removed(id) { pub.removed(collectionName, id); }
+  });
+  pub.ready();
+  pub.onStop(() => handle.stop());
+}
 
-    // Step 0: Test basic collection access
-    const basicCount = await PMSHoldingsCollection.find({}).countAsync();
-    const activeCount = await PMSHoldingsCollection.find({ isActive: true }).countAsync();
+Meteor.publish('pmsHoldings', async function (sessionId = null, rawViewAs = null, latestOnly = true, asOfDate = null) {
+  check(sessionId, Match.Maybe(String));
+  const viewAs = parseViewAs(rawViewAs);
+  check(latestOnly, Match.Maybe(Boolean));
+  check(asOfDate, Match.Maybe(Match.OneOf(Date, String)));
 
-    // Test date comparison
-    const withDateCount = await PMSHoldingsCollection.find({
-      isActive: true,
-      snapshotDate: { $lte: asOfDate }
-    }).countAsync();
+  const parsedAsOfDate = asOfDate ? (asOfDate instanceof Date ? asOfDate : new Date(asOfDate)) : null;
 
-    // Test raw collection
-    const rawCount = await PMSHoldingsCollection.rawCollection().countDocuments({
-      isActive: true,
-      snapshotDate: { $lte: asOfDate }
-    });
+  const user = await getSessionUser(sessionId, { touch: true });
+  if (!user) return this.ready();
 
-    const queryFilter = { isActive: true, snapshotDate: { $lte: asOfDate } };
-
-    // Step 1: Count total holdings
-    const totalCount = await PMSHoldingsCollection.find(queryFilter).countAsync();
-
-    // Step 2: Fetch all holdings with sorting
-    const allHoldings = await PMSHoldingsCollection.find(queryFilter, {
-      sort: { snapshotDate: -1, version: -1 }
-    }).fetchAsync();
-
-    // Step 3: Group by uniqueKey
-    const latestByKey = new Map();
-    for (const holding of allHoldings) {
-      if (!latestByKey.has(holding.uniqueKey)) {
-        latestByKey.set(holding.uniqueKey, holding);
-      }
-    }
-
-    // Step 4: Get IDs
-    const holdingIds = Array.from(latestByKey.values()).map(h => h._id);
-
-    // Step 5: Final query
-    const finalCount = await PMSHoldingsCollection.find({
-      _id: { $in: holdingIds }
-    }).countAsync();
-
-    // Get sample of final results
-    const finalSample = await PMSHoldingsCollection.find({
-      _id: { $in: holdingIds }
-    }, { limit: 3 }).fetchAsync();
-
-    return {
-      // Diagnostic step 0 - collection access tests
-      step0_basicCount: basicCount,
-      step0_activeCount: activeCount,
-      step0_withDateCount: withDateCount,
-      step0_rawCount: rawCount,
-      // Original steps
-      step1_queryFilter: JSON.stringify(queryFilter),
-      step2_totalFetched: allHoldings.length,
-      step3_uniqueKeys: latestByKey.size,
-      step4_holdingIds: holdingIds.length,
-      step5_finalCount: finalCount,
-      sampleNames: finalSample.map(h => h.securityName),
-      sampleDates: finalSample.map(h => h.snapshotDate?.toISOString())
-    };
-  }
-});
-
-Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = null, latestOnly = true, asOfDate = null) {
-  // Log IMMEDIATELY to ensure we see publication being called
-  console.log('[PMS_HOLDINGS] *** PUBLICATION ENTRY ***', new Date().toISOString());
+  const scope = await resolveScope(user, viewAs);
+  if (scope.denied) return this.ready();
 
   try {
-    console.log('[PMS_HOLDINGS] Raw params:', {
-      sessionId: sessionId ? 'present' : 'null',
-      viewAsFilter: viewAsFilter ? JSON.stringify(viewAsFilter) : 'null',
-      latestOnly,
-      asOfDate: String(asOfDate),
-      asOfDateType: typeof asOfDate,
-      asOfDateIsDate: asOfDate instanceof Date
-    });
+    const ownerClause = await holdingsSelector(scope);
+    const base = [ownerClause, { isActive: true }];
 
-    check(sessionId, Match.Maybe(String));
-    check(viewAsFilter, Match.Maybe(Match.ObjectIncluding({
-      type: String,
-      id: String
-    })));
-    check(latestOnly, Match.Maybe(Boolean));
-    // Accept Date, String, or null for asOfDate - convert strings to Date
-    check(asOfDate, Match.Maybe(Match.OneOf(Date, String)));
-    console.log('[PMS_HOLDINGS] All checks passed');
-  } catch (checkError) {
-    console.error('[PMS_HOLDINGS] Check failed:', checkError.message);
-    throw checkError;
-  }
-
-  // Convert string to Date if needed
-  let parsedAsOfDate = null;
-  if (asOfDate) {
-    parsedAsOfDate = asOfDate instanceof Date ? asOfDate : new Date(asOfDate);
-    console.log('[PMS_HOLDINGS] asOfDate converted:', {
-      original: asOfDate,
-      type: typeof asOfDate,
-      parsed: parsedAsOfDate?.toISOString?.(),
-      isValidDate: parsedAsOfDate instanceof Date && !isNaN(parsedAsOfDate)
-    });
-  } else {
-    console.log('[PMS_HOLDINGS] No asOfDate provided, will use latestOnly logic');
-  }
-
-  if (!this.userId && !sessionId) {
-    return this.ready();
-  }
-
-  try {
-    // Get current user with session-based authentication
-    let currentUser = null;
-
-    if (sessionId) {
-      const session = await SessionHelpers.findByToken(sessionId);
-
-      if (session && session.userId) {
-        currentUser = await UsersCollection.findOneAsync(session.userId);
-
-        // Update last used timestamp asynchronously (non-blocking)
-        SessionsCollection.updateAsync(session._id, {
-          $set: { lastUsed: new Date() }
-        }).catch(err => console.error('Error updating session lastUsed:', err));
-      }
-    } else if (this.userId) {
-      currentUser = await UsersCollection.findOneAsync(this.userId);
-    }
-
-    if (!currentUser) {
-      return this.ready();
-    }
-
-    // Build query filter based on role and viewAsFilter
-    let queryFilter = { isActive: true };
-    // Entity this view is drilled into. A demo client's fictional holdings are hidden
-    // from every other path, so this is what lets the demo portfolio render at all.
-    let scopedEntityId = null;
-
-    const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE;
-    const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
-    const isClient = currentUser.role === USER_ROLES.CLIENT;
-
-    // Handle viewAsFilter for admins and RMs/Assistants
-    if (viewAsFilter && (isAdmin || isRM)) {
-      if (viewAsFilter.type === 'entity') {
-        // Entity-based filter: show holdings for a specific client entity
-        const entity = await ClientEntitiesCollection.findOneAsync(viewAsFilter.id);
-        if (!entity) {
-          console.log('[PMS_HOLDINGS] Entity not found:', viewAsFilter.id);
-          return this.ready();
-        }
-        // Archived (closed) relationships are hidden everywhere, no exception
-        if (ClientEntityHelpers.isEntityArchived(entity)) {
-          console.log('[PMS_HOLDINGS] Entity is archived, returning empty:', viewAsFilter.id);
-          return this.ready();
-        }
-        scopedEntityId = entity._id;
-        // For RMs, verify they manage this entity
-        if (isRM) {
-          const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
-          if (!rmIds.includes(entity.relationshipManagerId)) {
-            console.log('[PMS_HOLDINGS] RM does not manage entity:', viewAsFilter.id);
-            return this.ready();
-          }
-        }
-        // Accounts this entity holds (primary holder or co-holder of a joint
-        // account) OR where it is a beneficial owner
-        const entityAccounts = await BankAccountsCollection.find({
-          $or: [
-            { entityId: entity._id },
-            { holderEntityIds: entity._id },
-            { beneficialOwnerIds: entity._id },
-            { beneficialOwnerId: entity._id }
-          ],
-          isActive: true
-        }).fetchAsync();
-        const accountNumbers = entityAccounts.map(a => a.accountNumber).filter(Boolean);
-
-        // Filter by entityId, or by (bankId + portfolioCode) for each of the entity's accounts.
-        // The per-account (bankId + portfolioCode) match catches holdings that haven't been
-        // migrated to entityId yet, while staying scoped to accounts this entity actually owns.
-        const orConditions = [
-          { entityId: entity._id }
-        ];
-        if (entity.migratedFromUserId) {
-          orConditions.push({ userId: entity.migratedFromUserId, entityId: { $exists: false } });
-        }
-        for (const acct of entityAccounts) {
-          if (!acct.accountNumber || !acct.bankId) continue;
-          const baseNum = acct.accountNumber.split('-')[0];
-          // Pre-resolve actual portfolioCodes to avoid $regex inside $or (breaks oplog tailing)
-          const codesForAccount = await PMSHoldingsCollection.rawCollection().distinct('portfolioCode', {
-            portfolioCode: { $regex: `^${baseNum}` },
-            bankId: acct.bankId
-          });
-          if (codesForAccount.length > 0) {
-            orConditions.push({ bankId: acct.bankId, portfolioCode: { $in: codesForAccount } });
-          }
-        }
-        queryFilter.$or = orConditions;
-        console.log(`[PMS_HOLDINGS] Entity filter: ${entity._id}, accounts: ${JSON.stringify(accountNumbers)}, conditions: ${JSON.stringify(orConditions)}`);
-      } else if (viewAsFilter.type === 'client') {
-        // For RMs/Assistants, verify they have access to this client
-        if (isRM) {
-          const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
-          const targetClient = await UsersCollection.findOneAsync({
-            _id: viewAsFilter.id,
-            relationshipManagerId: { $in: rmIds }
-          });
-          if (!targetClient) {
-            console.log('[PMS_HOLDINGS] RM/Assistant does not have access to client:', viewAsFilter.id);
-            return this.ready();
-          }
-        }
-        // Filter by client userId (all accounts aggregated)
-        queryFilter.userId = viewAsFilter.id;
-      } else if (viewAsFilter.type === 'account') {
-        // Filter by specific bank account
-        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-        if (bankAccount) {
-          scopedEntityId = bankAccount.entityId || null;
-          // For RMs/Assistants, verify they have access via entity or user
-          if (isRM) {
-            const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
-            let hasAccess = false;
-            // Check entity-based access
-            if (bankAccount.entityId) {
-              const entity = await ClientEntitiesCollection.findOneAsync(bankAccount.entityId);
-              if (entity && rmIds.includes(entity.relationshipManagerId)) {
-                hasAccess = true;
-              }
-            }
-            // Fallback: check user-based access
-            if (!hasAccess && bankAccount.userId) {
-              const targetClient = await UsersCollection.findOneAsync({
-                _id: bankAccount.userId,
-                relationshipManagerId: { $in: rmIds }
-              });
-              if (targetClient) hasAccess = true;
-            }
-            if (!hasAccess) {
-              console.log('[PMS_HOLDINGS] RM/Assistant does not have access to account owner:', bankAccount.entityId || bankAccount.userId);
-              return this.ready();
-            }
-          }
-          // Filter holdings by bankId + portfolioCode — this pair uniquely identifies the
-          // account's holdings. Additional entity/user scoping would exclude un-migrated
-          // records (e.g. CFM imports that only carry bankId + portfolioCode, or holdings
-          // whose userId belongs to a legacy orphan record for the same account number).
-          const baseAccountNumber = bankAccount.accountNumber.split('-')[0];
-          queryFilter.portfolioCode = { $regex: `^${baseAccountNumber}(-|$)` };
-          queryFilter.bankId = bankAccount.bankId;
-        } else {
-          // Account not found - return empty result
-          return this.ready();
-        }
-      }
-    }
-    // Handle viewAsFilter for clients - only allow filtering to their OWN accounts
-    else if (viewAsFilter && isClient) {
-      if (viewAsFilter.type === 'account') {
-        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-        // Security: Verify the client owns this account (via entity access or direct userId)
-        let ownsAccount = false;
-        if (bankAccount) {
-          if (bankAccount.userId === currentUser._id) {
-            ownsAccount = true;
-          } else if (bankAccount.entityId) {
-            const { UserEntityAccessHelpers } = await import('../../imports/api/userEntityAccess.js');
-            ownsAccount = await UserEntityAccessHelpers.hasAccess(currentUser._id, bankAccount.entityId);
-          }
-        }
-        if (ownsAccount) {
-          // Ownership has been verified above — bankId + portfolioCode alone is a safe scope
-          // and avoids excluding un-migrated holdings (CFM imports, legacy orphan records).
-          const baseAccountNumber = bankAccount.accountNumber.split('-')[0];
-          queryFilter.portfolioCode = { $regex: `^${baseAccountNumber}(-|$)` };
-          queryFilter.bankId = bankAccount.bankId;
-          console.log('[PMS_HOLDINGS] Client filtering to own account:', bankAccount.accountNumber);
-        } else {
-          // If account not found or not owned by client, fall through to default client filter
-          console.log('[PMS_HOLDINGS] Client viewAsFilter rejected - account not owned:', viewAsFilter.id);
-          queryFilter.userId = currentUser._id;
-        }
-      } else {
-        // For any other filter type from clients, default to their own holdings
-        queryFilter.userId = currentUser._id;
-      }
-    }
-    // Admins without filter - see all holdings
-    else if (isAdmin) {
-      // No additional filter - see all active holdings
-    }
-    // Relationship Managers without filter - see all assigned clients' holdings
-    else if (isRM) {
-      // Get entities assigned to this RM
-      const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
-      const assignedEntities = await ClientEntitiesCollection.find({
-        relationshipManagerId: { $in: rmIds },
-        isActive: true
-      }).fetchAsync();
-      const entityIds = assignedEntities.map(e => e._id);
-
-      // Also include entities from accounts where RM is backup
-      const backupAccounts = await BankAccountsCollection.find(
-        { backupRmIds: { $in: rmIds }, isActive: true, entityId: { $exists: true } },
-        { fields: { entityId: 1 } }
-      ).fetchAsync();
-      const backupEntityIds = backupAccounts.map(a => a.entityId).filter(Boolean);
-      const allEntityIds = [...new Set([...entityIds, ...backupEntityIds])];
-
-      // Also get legacy user-based clients
-      const assignedClients = await UsersCollection.find({
-        relationshipManagerId: { $in: rmIds }
-      }).fetchAsync();
-      const clientIds = assignedClients.map(c => c._id);
-      clientIds.push(currentUser._id); // Include RM's own holdings
-
-      // Match by entityId OR userId
-      queryFilter.$or = [
-        ...(allEntityIds.length > 0 ? [{ entityId: { $in: allEntityIds } }] : []),
-        { userId: { $in: clientIds } }
-      ];
-    }
-    // Clients - their own holdings via entity access or direct userId
-    else if (isClient) {
-      // Check entity access for this user
-      const { UserEntityAccessHelpers } = await import('../../imports/api/userEntityAccess.js');
-      const accessRecords = await UserEntityAccessHelpers.getAccessRecordsForUser(currentUser._id);
-      const entityIds = accessRecords.map(a => a.entityId);
-
-      if (entityIds.length > 0) {
-        queryFilter.$or = [
-          { entityId: { $in: entityIds } },
-          { userId: currentUser._id }
-        ];
-      } else {
-        queryFilter.userId = currentUser._id;
-      }
-    }
-    // Any other role (introducer, staff, ...): no holdings. Without this the
-    // filter stayed { isActive: true } and published every client's holdings
-    else {
-      return this.ready();
-    }
-
-    // Exclude holdings of archived (closed-relationship) clients from every path, and of
-    // demo clients unless this view is drilled into that demo client.
-    // Top-level keys are implicitly ANDed, so this composes with any existing $or.
-    const hiddenExclusion = await ClientEntityHelpers.hiddenHoldingsSelector({
-      exceptEntityId: scopedEntityId
-    });
-    if (hiddenExclusion.$nor) {
-      queryFilter.$nor = hiddenExclusion.$nor;
-    }
-
-    console.log('[PMS_HOLDINGS] After role check - queryFilter:', JSON.stringify(queryFilter));
-    console.log('[PMS_HOLDINGS] parsedAsOfDate value:', parsedAsOfDate?.toISOString?.() || 'null');
-
-    // Handle asOfDate - view holdings as of a specific date
-    if (parsedAsOfDate) {
-      console.log(`[PMS_HOLDINGS] ENTERING HISTORICAL PATH for date: ${parsedAsOfDate.toISOString()}`);
-
-      // Get all holdings up to this date
-      queryFilter.snapshotDate = { $lte: parsedAsOfDate };
-
-      console.log('[PMS_HOLDINGS] Historical query filter:', JSON.stringify(queryFilter));
-
-      // Pick the newest record per uniqueKey with $top instead of a pipeline-level
-      // $sort + $group/$first. A blocking $sort over the full history exceeds
-      // MongoDB's 32MB sort memory limit while the multiplanner trials candidate
-      // plans (allowDiskUse is NOT honored during plan selection), which made this
-      // aggregation throw and the publication silently return zero holdings.
+    // Historical view: newest record per uniqueKey up to the date.
+    // $top instead of a pipeline-level $sort + $group/$first: a blocking $sort
+    // over the full history exceeds MongoDB's 32MB sort memory limit while the
+    // multiplanner trials candidate plans (allowDiskUse is NOT honored during
+    // plan selection), which made this aggregation throw and the publication
+    // silently return zero holdings.
+    if (parsedAsOfDate && !isNaN(parsedAsOfDate)) {
       const pipeline = [
-        { $match: queryFilter },
+        { $match: { $and: [...base, { snapshotDate: { $lte: parsedAsOfDate } }] } },
         {
           $group: {
             _id: '$uniqueKey',
             top: {
               $top: {
                 sortBy: { snapshotDate: -1, version: -1 },
-                output: { holdingId: '$_id', snapshotDate: '$snapshotDate' }
+                output: { holdingId: '$_id' }
               }
             }
           }
         }
       ];
-
       const latestByKey = await PMSHoldingsCollection.rawCollection()
         .aggregate(pipeline, { allowDiskUse: true })
         .toArray();
-
       const holdingIds = latestByKey.map(doc => doc.top.holdingId);
-      console.log(`[PMS_HOLDINGS] Returning ${holdingIds.length} unique positions for historical view`);
-
-      return PMSHoldingsCollection.find({
-        _id: { $in: holdingIds }
-      }, {
-        sort: { securityName: 1 }
-      });
+      return PMSHoldingsCollection.find({ _id: { $in: holdingIds } }, { sort: { securityName: 1 } });
     }
 
-    // Show all historical versions (not filtered by date)
+    // Every historical version
     if (!latestOnly) {
-      return PMSHoldingsCollection.find(queryFilter, {
+      return publishByIds(this, 'pmsHoldings', { $and: base }, {
         sort: { snapshotDate: -1, version: -1, securityName: 1 }
       });
     }
 
-    // Default: show only current latest versions
-    queryFilter.isLatest = true;
-
-    // Diagnostic logging
-    const totalWithLatestFilter = await PMSHoldingsCollection.find(queryFilter).countAsync();
-    console.log('[PMS_HOLDINGS] Publication diagnostic:', {
-      queryFilter: JSON.stringify(queryFilter),
-      totalWithLatestFilter
-    });
-
-    // Pre-fetch IDs then return simple cursor (avoids oplog issues with $or)
-    if (queryFilter.$or) {
-      const ids = (await PMSHoldingsCollection.find(queryFilter, { fields: { _id: 1 } }).fetchAsync()).map(d => d._id);
-      console.log(`[PMS_HOLDINGS] $or resolved to ${ids.length} IDs for entity`);
-      const simpleCursor = PMSHoldingsCollection.find({ _id: { $in: ids } }, { sort: { securityName: 1 } });
-      // Use observeChanges pattern for async publication compatibility
-      const pub = this;
-      const handle = simpleCursor.observeChanges({
-        added(id, fields) { pub.added('pmsHoldings', id, fields); },
-        changed(id, fields) { pub.changed('pmsHoldings', id, fields); },
-        removed(id) { pub.removed('pmsHoldings', id); }
-      });
-      this.ready();
-      this.onStop(() => handle.stop());
-      return;
+    // Default: current positions
+    const query = { $and: [...base, { isLatest: true }] };
+    if (scope.isAdmin) {
+      return PMSHoldingsCollection.find(query, { sort: { securityName: 1 } });
     }
-
-    return PMSHoldingsCollection.find(queryFilter, {
-      sort: { securityName: 1 }
-    });
-
+    return publishByIds(this, 'pmsHoldings', query, { sort: { securityName: 1 } });
   } catch (error) {
     console.error('PMS holdings publication error:', error);
     return this.ready();
@@ -464,113 +92,34 @@ Meteor.publish('pmsHoldings', async function (sessionId = null, viewAsFilter = n
 });
 
 /**
- * Publication for available snapshot dates
- * Returns distinct snapshot dates for date selector dropdown
+ * Distinct snapshot dates within the viewer's scope, for the date selector.
  */
-Meteor.publish('pmsHoldings.snapshotDates', async function (sessionId = null, viewAsFilter = null) {
+Meteor.publish('pmsHoldings.snapshotDates', async function (sessionId = null, rawViewAs = null) {
   check(sessionId, Match.Maybe(String));
-  check(viewAsFilter, Match.Maybe(Match.ObjectIncluding({
-    type: String,
-    id: String
-  })));
+  const viewAs = parseViewAs(rawViewAs);
 
-  if (!this.userId && !sessionId) {
-    return this.ready();
-  }
+  const user = await getSessionUser(sessionId);
+  if (!user) return this.ready();
+
+  const scope = await resolveScope(user, viewAs);
+  if (scope.denied) return this.ready();
 
   try {
-    // Get current user with session-based authentication
-    let currentUser = null;
-
-    if (sessionId) {
-      const session = await SessionHelpers.findByToken(sessionId);
-
-      if (session && session.userId) {
-        currentUser = await UsersCollection.findOneAsync(session.userId);
-      }
-    } else if (this.userId) {
-      currentUser = await UsersCollection.findOneAsync(this.userId);
-    }
-
-    if (!currentUser) {
-      return this.ready();
-    }
-
-    // Build query filter based on role and viewAsFilter (same logic as main publication)
-    let queryFilter = { isActive: true };
-    // Entity being drilled into, so the demo client's snapshot dates survive the
-    // exclusion below when (and only when) the demo is the thing being viewed.
-    let scopedEntityId = null;
-
-    const isSnapshotAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE;
-
-    if (viewAsFilter && isSnapshotAdmin) {
-      if (viewAsFilter.type === 'client') {
-        queryFilter.userId = viewAsFilter.id;
-      } else if (viewAsFilter.type === 'entity') {
-        // No owner filter here (pre-existing behaviour — the date list stays broad);
-        // we only record the scope so the demo exclusion can stand down.
-        scopedEntityId = viewAsFilter.id;
-      } else if (viewAsFilter.type === 'account') {
-        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-        if (bankAccount) {
-          scopedEntityId = bankAccount.entityId || null;
-          queryFilter.userId = bankAccount.userId;
-          queryFilter.portfolioCode = bankAccount.accountNumber;
-          queryFilter.bankId = bankAccount.bankId;
-        } else {
-          return this.ready();
-        }
-      }
-    } else if (isSnapshotAdmin) {
-      // No filter
-    } else if (currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT) {
-      const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
-      const assignedClients = await UsersCollection.find({
-        relationshipManagerId: { $in: rmIds }
-      }).fetchAsync();
-      const clientIds = assignedClients.map(c => c._id);
-      clientIds.push(currentUser._id);
-      queryFilter.userId = { $in: clientIds };
-    } else if (currentUser.role === USER_ROLES.CLIENT) {
-      queryFilter.userId = currentUser._id;
-    }
-
-    // Exclude archived (closed-relationship) clients' holdings from the date selector too,
-    // and demo clients unless the demo is what is being viewed.
-    const snapshotArchivedExclusion = await ClientEntityHelpers.hiddenHoldingsSelector({
-      exceptEntityId: scopedEntityId
-    });
-    if (snapshotArchivedExclusion.$nor) {
-      queryFilter.$nor = snapshotArchivedExclusion.$nor;
-    }
-
-    // Get distinct snapshot dates using aggregation
     const pipeline = [
-      { $match: queryFilter },
-      {
-        $group: {
-          _id: '$snapshotDate',
-          count: { $sum: 1 }
-        }
-      },
+      { $match: { $and: [await holdingsSelector(scope), { isActive: true }] } },
+      { $group: { _id: '$snapshotDate', count: { $sum: 1 } } },
       { $sort: { _id: -1 } },
-      { $limit: 100 } // Last 100 snapshot dates
+      { $limit: 100 }
     ];
+    const dates = await PMSHoldingsCollection.rawCollection().aggregate(pipeline).toArray();
 
-    const dates = await PMSHoldingsCollection.rawCollection()
-      .aggregate(pipeline).toArray();
-
-    // Publish as a synthetic collection
     dates.forEach((dateDoc, index) => {
       this.added('pmsHoldingsSnapshotDates', index.toString(), {
         date: dateDoc._id,
         holdingsCount: dateDoc.count
       });
     });
-
     this.ready();
-
   } catch (error) {
     console.error('PMS holdings snapshot dates publication error:', error);
     return this.ready();
@@ -578,47 +127,24 @@ Meteor.publish('pmsHoldings.snapshotDates', async function (sessionId = null, vi
 });
 
 /**
- * Publication for holdings linked to a specific product by ISIN
- * Matches by isin field (primary) or linkedProductId (manual link, fallback)
- * Used by TemplateProductReport to show client positions from bank files
+ * Holdings linked to a product by ISIN, within the viewer's scope.
+ * Used by the product report to show client positions from bank files.
  */
-Meteor.publish('pmsHoldings.byProduct', async function(isin, sessionId = null) {
+Meteor.publish('pmsHoldings.byProduct', async function (isin, sessionId = null) {
   check(isin, Match.Maybe(String));
   check(sessionId, Match.Maybe(String));
-
   if (!isin) return this.ready();
 
+  const user = await getSessionUser(sessionId);
+  if (!user) return this.ready();
+
+  const scope = await resolveScope(user);
+  if (scope.denied) return this.ready();
+
   try {
-    let currentUser = null;
-
-    if (sessionId) {
-      const session = await SessionHelpers.findByToken(sessionId);
-      if (session && session.userId) {
-        currentUser = await UsersCollection.findOneAsync(session.userId);
-      }
-    } else if (this.userId) {
-      currentUser = await UsersCollection.findOneAsync(this.userId);
-    }
-
-    if (!currentUser) return this.ready();
-
-    const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
-    const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
-
-    const baseQuery = { isin, isLatest: true, isActive: true };
-
-    // Archived (closed-relationship) clients' positions must not show on product reports
-    const byProductExclusion = await ClientEntityHelpers.archivedHoldingsSelector();
-    if (byProductExclusion.$nor) {
-      baseQuery.$nor = byProductExclusion.$nor;
-    }
-
-    if (isAdmin || isRM) {
-      return PMSHoldingsCollection.find(baseQuery);
-    }
-
-    // Clients see only their own active holdings — enough to gate UI like the Market Price card
-    return PMSHoldingsCollection.find({ ...baseQuery, userId: currentUser._id });
+    const query = { $and: [await holdingsSelector(scope), { isin, isLatest: true, isActive: true }] };
+    if (scope.isAdmin) return PMSHoldingsCollection.find(query);
+    return publishByIds(this, 'pmsHoldings', query, {});
   } catch (error) {
     console.error('[pmsHoldings.byProduct] Error:', error);
     return this.ready();

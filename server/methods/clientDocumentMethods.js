@@ -75,13 +75,15 @@ const assertSafeSubjectId = (userId) => {
   }
 };
 
-// Client documents are KYC/PII. Only the subject themselves or a staff member may
-// read or mutate them — a bare valid session is not sufficient (matches getDownloadUrl).
-const STAFF_ROLES = ['admin', 'superadmin', 'compliance', 'rm', 'assistant'];
-const authorizeDocumentSubject = (user, subjectUserId) => {
-  const isSelf = user._id === subjectUserId;
-  const isStaff = STAFF_ROLES.includes(user.role);
-  if (!isSelf && !isStaff) {
+// Client documents are KYC/PII. Only the subject themselves, or a staff member
+// whose access scope contains that client, may read or mutate them — a bare
+// valid session is not sufficient.
+const authorizeDocumentSubject = async (user, subjectUserId) => {
+  if (user._id === subjectUserId) return;
+  // Subject = login id or entity id. A client's scope holds their own ids,
+  // staff hold their perimeter, every other role resolves to a denied scope.
+  const { resolveScope, isClientInScope } = await import('../helpers/accessScope.js');
+  if (!(await isClientInScope(await resolveScope(user), subjectUserId))) {
     throw new Meteor.Error('not-authorized', 'Not authorized for this client\'s documents');
   }
 };
@@ -166,7 +168,7 @@ Meteor.methods({
     // or staff — this is KYC/PII and was previously writable by any logged-in user
     // with an arbitrary (traversal-capable) userId.
     assertSafeSubjectId(userId);
-    authorizeDocumentSubject(currentUser, userId);
+    await authorizeDocumentSubject(currentUser, userId);
     await assertAccountOfSubject(bankAccountId, userId);
 
     // SECURITY: restrict stored file type (extension + mime) and size. The extension
@@ -270,7 +272,7 @@ Meteor.methods({
     if (!doc) {
       throw new Meteor.Error('not-found', 'Document not found');
     }
-    authorizeDocumentSubject(currentUser, doc.userId);
+    await authorizeDocumentSubject(currentUser, doc.userId);
 
     console.log(`🗑️ Deleting client document: ${doc.documentType} for user ${doc.userId}`);
 
@@ -307,7 +309,7 @@ Meteor.methods({
     if (!doc) {
       throw new Meteor.Error('not-found', 'Document not found');
     }
-    authorizeDocumentSubject(currentUser, doc.userId);
+    await authorizeDocumentSubject(currentUser, doc.userId);
 
     // Parse date if string
     let parsedDate = null;
@@ -347,7 +349,7 @@ Meteor.methods({
     if (!doc) {
       throw new Meteor.Error('not-found', 'Document not found');
     }
-    authorizeDocumentSubject(currentUser, doc.userId);
+    await authorizeDocumentSubject(currentUser, doc.userId);
 
     const updateFields = {};
 
@@ -394,14 +396,8 @@ Meteor.methods({
       throw new Meteor.Error('not-found', 'Document not found');
     }
 
-    // Authorize: the client themselves, or a staff member (client documents are
-    // KYC/PII, so a bare valid session is not sufficient).
-    const STAFF_ROLES = ['admin', 'superadmin', 'compliance', 'rm', 'assistant'];
-    const isSelf = user._id === doc.userId;
-    const isStaff = STAFF_ROLES.includes(user.role);
-    if (!isSelf && !isStaff) {
-      throw new Meteor.Error('not-authorized', 'Not authorized to access this document');
-    }
+    // The client themselves, or a staff member whose scope contains the client
+    await authorizeDocumentSubject(user, doc.userId);
 
     // Mint a short-lived, single-use token bound to this exact path. The
     // endpoint (/fichier_central) requires it — the URL alone is not enough.

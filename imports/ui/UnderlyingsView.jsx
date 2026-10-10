@@ -84,7 +84,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
     const asOfDate = asOfStringToDate(asOfDateStr);
     setIsLoadingHistorical(true);
     setRefreshError(null);
-    Meteor.callAsync('underlyingsAnalysis.generateAsOf', asOfDate)
+    Meteor.callAsync('underlyingsAnalysis.generateAsOf', asOfDate, sessionId)
       .then((doc) => {
         if (!cancelled) setHistoricalAnalysis(doc);
       })
@@ -99,7 +99,7 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
         if (!cancelled) setIsLoadingHistorical(false);
       });
     return () => { cancelled = true; };
-  }, [asOfDateStr]);
+  }, [asOfDateStr, sessionId]);
 
   // Live mode: gate by ACTUAL bank holdings (source of truth). A product that
   // was sold or matured leaves the holdings feed, so it must not appear here even
@@ -179,11 +179,12 @@ const UnderlyingsView = ({ user, onNavigateToReport }) => {
       if (asOfDateStr) {
         const doc = await Meteor.callAsync(
           'underlyingsAnalysis.generateAsOf',
-          asOfStringToDate(asOfDateStr)
+          asOfStringToDate(asOfDateStr),
+          sessionId
         );
         setHistoricalAnalysis(doc);
       } else {
-        await Meteor.callAsync('underlyingsAnalysis.generate');
+        await Meteor.callAsync('underlyingsAnalysis.generate', sessionId);
       }
     } catch (error) {
       console.error('Error refreshing analysis:', error);

@@ -47,6 +47,18 @@ Meteor.methods({
     check(sections, Match.Maybe([String]));
 
     const currentUser = await validatePdfToken(userId, pdfToken);
+
+    // The token identifies the user; their access scope decides what the
+    // statement may cover. A View As target outside the perimeter, or an
+    // account the viewer may not see, is refused before anything is built.
+    const { parseViewAs } = await import('../../imports/utils/viewAs.js');
+    const { resolveScope, assertAccountInScope } = await import('../helpers/accessScope.js');
+    const scope = await resolveScope(currentUser, parseViewAs(viewAsFilter));
+    if (scope.denied) throw new Meteor.Error('not-authorized', 'Out of scope');
+    if (accountId && accountId !== 'all' && accountId !== 'consolidated') {
+      await assertAccountInScope(scope, accountId);
+    }
+
     await AuditLog.record({
       actorUserId: currentUser._id,
       actorRole: currentUser.role,

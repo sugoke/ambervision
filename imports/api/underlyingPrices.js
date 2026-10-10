@@ -1,6 +1,6 @@
 import { Mongo } from 'meteor/mongo';
 import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
+import { check, Match } from 'meteor/check';
 import { ProductsCollection } from './products.js';
 import { MarketDataCacheCollection } from './marketDataCache.js';
 import { ManualPriceTrackersCollection } from './manualPriceTrackers.js';
@@ -16,23 +16,32 @@ if (Meteor.isServer) {
   UnderlyingPricesCollection.createIndex({ lastUpdated: 1 });
 
   // Publications
-  Meteor.publish('underlyingPrices', function(tickers, startDate, endDate) {
+  Meteor.publish('underlyingPrices', async function(tickers, startDate, endDate, sessionId = null) {
     check(tickers, [String]);
     check(startDate, Date);
     check(endDate, Date);
+    check(sessionId, Match.Maybe(String));
+
+    // Market data: any logged-in user
+    const { getSessionOrPdfUser } = await import('../../server/helpers/sessionAuth.js');
+    if (!(await getSessionOrPdfUser({ sessionId }))) return this.ready();
 
     return UnderlyingPricesCollection.find({
-      ticker: { $in: tickers },
+      ticker: { $in: tickers.slice(0, 200) },
       date: { $gte: startDate, $lte: endDate }
     }, {
       sort: { ticker: 1, date: 1 }
     });
   });
 
-  Meteor.publish('underlyingPricesForProduct', function(productId) {
+  Meteor.publish('underlyingPricesForProduct', async function(productId, sessionId = null) {
     check(productId, String);
-    
-    const product = ProductsCollection.findOne(productId);
+    check(sessionId, Match.Maybe(String));
+
+    const { getProductViewerScope } = await import('../../server/helpers/reportViewerAuth.js');
+    if (!(await getProductViewerScope(sessionId, productId))) return this.ready();
+
+    const product = await ProductsCollection.findOneAsync(productId);
     if (!product || !product.underlyings) {
       return this.ready();
     }

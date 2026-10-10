@@ -136,10 +136,10 @@ if (Meteor.isServer) {
     check(productId, String);
     check(sessionId, Match.Maybe(String));
 
-    // SECURITY: was published to any DDP connection. Require a real session or a
-    // valid PDF-render token (the report PDF flow passes pdf-temp-<token>).
-    const { isAuthorizedReportViewer } = await import('../../server/helpers/reportViewerAuth.js');
-    if (!(await isAuthorizedReportViewer(sessionId))) return this.ready();
+    // A real session or the PDF-render token identifies the viewer; the viewer's
+    // access scope decides whether this product is theirs to read.
+    const { getProductViewerScope } = await import('../../server/helpers/reportViewerAuth.js');
+    if (!(await getProductViewerScope(sessionId, productId))) return this.ready();
 
     return TemplateReportsCollection.find(
       { productId },
@@ -160,7 +160,12 @@ if (Meteor.isServer) {
       check(sessionId, String);
       this.unblock();
 
-      const user = await validateSessionAndGetUser(sessionId);
+      // Replaces the product's reports: a catalogue (staff) role is required,
+      // not merely a valid session. The system session minted by
+      // templateReports.generate for cron/batch runs is a superadmin's.
+      const { requireRole } = await import('../../server/helpers/sessionAuth.js');
+      const { PRODUCT_CATALOGUE_ROLES } = await import('../../server/helpers/accessPolicy.js');
+      const user = await requireRole(sessionId, PRODUCT_CATALOGUE_ROLES);
 
       // Create issue collector to track processing issues
       const issueCollector = new ProcessingIssueCollector(productData._id);
@@ -469,11 +474,14 @@ if (Meteor.isServer) {
           sessionId = sessionData.sessionId;
           console.log('[templateReports.generate] Created new system session');
         } else {
-          // For manual triggers, triggeredBy should be a sessionId
+          // For manual triggers, triggeredBy is the caller's sessionId. Check
+          // it here, before any evaluation work, with the same rule as
+          // templateReports.create (which re-checks it).
           sessionId = triggeredBy;
+          const { requireRole } = await import('../../server/helpers/sessionAuth.js');
+          const { PRODUCT_CATALOGUE_ROLES } = await import('../../server/helpers/accessPolicy.js');
+          await requireRole(sessionId, PRODUCT_CATALOGUE_ROLES);
         }
-
-        console.log(`[templateReports.generate] Using sessionId: ${sessionId}`);
 
         const reportId = await Meteor.callAsync('templateReports.create', productData, sessionId);
         const currentReport = await TemplateReportsCollection.findOneAsync(reportId);
@@ -523,8 +531,16 @@ if (Meteor.isServer) {
     /**
      * Get latest report for a product
      */
-    async 'templateReports.getLatest'(productId) {
+    async 'templateReports.getLatest'(productId, sessionId = null) {
       check(productId, String);
+      check(sessionId, Match.Maybe(String));
+
+      // Same rule as the publication: a session or PDF token identifies the
+      // viewer, the viewer's scope decides whether this product is theirs.
+      const { requireSessionOrPdfToken } = await import('../../server/helpers/sessionAuth.js');
+      const { resolveScope, assertProductInScope } = await import('../../server/helpers/accessScope.js');
+      const user = await requireSessionOrPdfToken({ sessionId });
+      await assertProductInScope(await resolveScope(user), productId);
 
       return await TemplateReportsCollection.findOneAsync(
         { productId },

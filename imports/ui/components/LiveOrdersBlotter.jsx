@@ -30,7 +30,7 @@ const LiveOrdersBlotter = ({ user, onOpenOrder }) => {
       priceType: RESTING_PRICE_TYPES,
       limit: 500
     });
-    Meteor.subscribe('banks');
+    Meteor.subscribe('banks', localStorage.getItem('sessionId'));
     if (!handle.ready()) return [];
     return OrdersCollection.find(
       { status: { $in: LIVE_AT_BANK_QUERY_STATUSES }, priceType: { $in: RESTING_PRICE_TYPES } },

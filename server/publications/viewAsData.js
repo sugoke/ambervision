@@ -1,160 +1,68 @@
-// Publications for View As Filter
-// Allows admins to see list of clients and bank accounts for filtering
-console.log('🔍 Loading viewAsData.js publication file...');
+// Publications for the View As picker: the clients, entities and accounts a
+// staff user may drill into — i.e. exactly their access scope.
 
 import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
-import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
+import { check, Match } from 'meteor/check';
+import { UsersCollection, USER_ROLES } from '/imports/api/users';
 import { ClientEntitiesCollection } from '/imports/api/clientEntities';
-import { BankAccountsCollection } from '/imports/api/bankAccounts';
+import { BankAccountsCollection, BANK_ACCOUNT_LIST_FIELDS } from '/imports/api/bankAccounts';
 import { BanksCollection } from '/imports/api/banks';
-import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
+import { getSessionUser } from '../helpers/sessionAuth.js';
+import { isStaff } from '../helpers/accessPolicy.js';
+import { resolveScope, usersSelector, entitiesSelector, bankAccountsSelector } from '../helpers/accessScope.js';
 
-// Publish list of all clients for admins to filter by
+const CLIENT_FIELDS = { email: 1, username: 1, role: 1, profile: 1, relationshipManagerId: 1 };
+const ENTITY_FIELDS = { type: 1, profile: 1, relationshipManagerId: 1, assignedUserIds: 1, referenceCurrency: 1 };
+
+// Client logins in scope
 Meteor.publish('users.clients', async function(sessionId = null) {
-  const effectiveSessionId = sessionId || this.connection.headers?.sessionid || this.connection.id;
-  let currentUser = null;
+  check(sessionId, Match.Maybe(String));
+  const user = await getSessionUser(sessionId);
+  if (!isStaff(user)) return this.ready();
 
-  // Try to get user from session
-  if (effectiveSessionId) {
-    try {
-      const session = await SessionHelpers.validateSession(effectiveSessionId);
-      if (session && session.userId) {
-        currentUser = await UsersCollection.findOneAsync(session.userId);
-      }
-    } catch (error) {
-      console.log('[VIEW AS] Session validation error:', error.message);
-    }
-  }
+  const scope = await resolveScope(user);
+  if (scope.denied) return this.ready();
 
-  // Only allow admins and superadmins to view client list
-  if (!currentUser || (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN)) {
-    console.log('[VIEW AS] Access denied - user is not admin/superadmin');
-    return this.ready();
-  }
-
-  console.log('[VIEW AS] Publishing client list for admin:', currentUser.email);
-
-  // Return all clients with basic info (excluding passwords)
   return UsersCollection.find(
-    { role: USER_ROLES.CLIENT },
-    {
-      fields: {
-        email: 1,
-        username: 1,
-        role: 1,
-        profile: 1,
-        relationshipManagerId: 1
-      },
-      sort: { 'profile.lastName': 1, 'profile.firstName': 1 }
-    }
+    { $and: [await usersSelector(scope), { role: USER_ROLES.CLIENT }] },
+    { fields: CLIENT_FIELDS, sort: { 'profile.lastName': 1, 'profile.firstName': 1 } }
   );
 });
 
-// Publish list of all bank accounts for admins to filter by
+// Bank accounts in scope (no KYC fields)
 Meteor.publish('bankAccounts.all', async function(sessionId = null) {
-  const effectiveSessionId = sessionId || this.connection.headers?.sessionid || this.connection.id;
-  let currentUser = null;
+  check(sessionId, Match.Maybe(String));
+  const user = await getSessionUser(sessionId);
+  if (!isStaff(user)) return this.ready();
 
-  // Try to get user from session
-  if (effectiveSessionId) {
-    try {
-      const session = await SessionHelpers.validateSession(effectiveSessionId);
-      if (session && session.userId) {
-        currentUser = await UsersCollection.findOneAsync(session.userId);
-      }
-    } catch (error) {
-      console.log('[VIEW AS] Session validation error:', error.message);
-    }
-  }
+  const scope = await resolveScope(user);
+  if (scope.denied) return this.ready();
 
-  // Only allow admins and superadmins to view all bank accounts
-  if (!currentUser || (currentUser.role !== USER_ROLES.ADMIN && currentUser.role !== USER_ROLES.SUPERADMIN)) {
-    console.log('[VIEW AS] Access denied - user is not admin/superadmin');
-    return this.ready();
-  }
-
-  console.log('[VIEW AS] Publishing bank accounts list for admin:', currentUser.email);
-
-  // Return all active bank accounts
   return BankAccountsCollection.find(
-    { isActive: true },
-    { sort: { accountNumber: 1 } }
+    { $and: [bankAccountsSelector(scope), { isActive: true }] },
+    { ...BANK_ACCOUNT_LIST_FIELDS, sort: { accountNumber: 1 } }
   );
 });
 
-// Publish list of all banks (needed to show bank names in the filter)
+// Banks (names for the filter) — any logged-in user
 Meteor.publish('banks.all', async function(sessionId = null) {
-  const effectiveSessionId = sessionId || this.connection.headers?.sessionid || this.connection.id;
-  let currentUser = null;
-
-  // Try to get user from session
-  if (effectiveSessionId) {
-    try {
-      const session = await SessionHelpers.validateSession(effectiveSessionId);
-      if (session && session.userId) {
-        currentUser = await UsersCollection.findOneAsync(session.userId);
-      }
-    } catch (error) {
-      console.log('[VIEW AS] Session validation error:', error.message);
-    }
-  }
-
-  // Only allow authenticated users
-  if (!currentUser) {
-    console.log('[VIEW AS] Access denied - user not authenticated');
-    return this.ready();
-  }
-
-  // Return all banks
+  check(sessionId, Match.Maybe(String));
+  const user = await getSessionUser(sessionId);
+  if (!user) return this.ready();
   return BanksCollection.find({});
 });
 
-// Publish client entities for ViewAs dropdown (entity-based architecture)
+// Client entities in scope
 Meteor.publish('entities.forViewAs', async function(sessionId = null) {
-  const effectiveSessionId = sessionId || this.connection.headers?.sessionid || this.connection.id;
-  let currentUser = null;
+  check(sessionId, Match.Maybe(String));
+  const user = await getSessionUser(sessionId);
+  if (!isStaff(user)) return this.ready();
 
-  if (effectiveSessionId) {
-    try {
-      const session = await SessionHelpers.validateSession(effectiveSessionId);
-      if (session && session.userId) {
-        currentUser = await UsersCollection.findOneAsync(session.userId);
-      }
-    } catch (error) {
-      console.log('[VIEW AS] Session validation error:', error.message);
-    }
-  }
+  const scope = await resolveScope(user);
+  if (scope.denied) return this.ready();
 
-  if (!currentUser) return this.ready();
-
-  const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN || currentUser.role === USER_ROLES.COMPLIANCE;
-  const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER;
-  const isAssistant = currentUser.role === USER_ROLES.ASSISTANT;
-
-  if (isAdmin) {
-    return ClientEntitiesCollection.find({ isActive: true }, {
-      fields: { type: 1, profile: 1, relationshipManagerId: 1, referenceCurrency: 1 },
-      sort: { 'profile.lastName': 1, 'profile.firstName': 1, 'profile.companyName': 1 }
-    });
-  }
-
-  if (isRM) {
-    return ClientEntitiesCollection.find({ relationshipManagerId: currentUser._id, isActive: true }, {
-      fields: { type: 1, profile: 1, relationshipManagerId: 1, referenceCurrency: 1 },
-      sort: { 'profile.lastName': 1, 'profile.firstName': 1, 'profile.companyName': 1 }
-    });
-  }
-
-  if (isAssistant) {
-    const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
-    return ClientEntitiesCollection.find({ relationshipManagerId: { $in: rmIds }, isActive: true }, {
-      fields: { type: 1, profile: 1, relationshipManagerId: 1, referenceCurrency: 1 },
-      sort: { 'profile.lastName': 1, 'profile.firstName': 1, 'profile.companyName': 1 }
-    });
-  }
-
-  return this.ready();
+  return ClientEntitiesCollection.find(
+    { $and: [entitiesSelector(scope), { isActive: true }] },
+    { fields: ENTITY_FIELDS, sort: { 'profile.lastName': 1, 'profile.firstName': 1, 'profile.companyName': 1 } }
+  );
 });
-
-console.log('[VIEW AS] Publications registered successfully');

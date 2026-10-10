@@ -173,7 +173,7 @@ const OrderModal = ({
   const [underlyings, setUnderlyings] = useState('');
 
   // Subscribe to active issuers (used for the structured-product issuer dropdown)
-  const issuersSub = useMemo(() => Meteor.subscribe('issuers'), []);
+  const issuersSub = useMemo(() => Meteor.subscribe('issuers', localStorage.getItem('sessionId')), []);
   const issuers = useTracker(() => {
     if (!issuersSub.ready()) return [];
     return IssuersCollection.find({ active: true }, { sort: { name: 1 } }).fetch();

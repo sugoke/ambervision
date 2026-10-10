@@ -1,6 +1,6 @@
 import { Mongo } from 'meteor/mongo';
 import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
+import { check, Match } from 'meteor/check';
 import { ProductsCollection } from './products';
 import { MarketDataCacheCollection } from './marketDataCache';
 import { AllocationsCollection } from './allocations';
@@ -367,12 +367,26 @@ export async function buildUnderlyingsAnalysis(asOfDate = null) {
 }
 
 if (Meteor.isServer) {
+  /**
+   * The analysis is firm-wide notional per product and ISIN — the same
+   * aggregate the phoenixUnderlyingsAnalysis publication restricts to see-all
+   * roles, so generating or reading it on demand follows the same rule.
+   */
+  const requireSeeAll = async (sessionId) => {
+    const { requireRole } = await import('../../server/helpers/sessionAuth.js');
+    const { SEE_ALL_ROLES } = await import('../../server/helpers/accessPolicy.js');
+    return requireRole(sessionId, SEE_ALL_ROLES);
+  };
+
   Meteor.methods({
     /**
      * Generate and store underlyings analysis for live Phoenix products.
-     * All users can read the same cached result.
+     * Every see-all viewer reads the same cached result.
      */
-    async 'underlyingsAnalysis.generate'() {
+    async 'underlyingsAnalysis.generate'(sessionId = null) {
+      check(sessionId, Match.Maybe(String));
+      await requireSeeAll(sessionId);
+
       const doc = await buildUnderlyingsAnalysis(null);
 
       await UnderlyingsAnalysisCollection.upsertAsync(
@@ -395,8 +409,11 @@ if (Meteor.isServer) {
      * Build the analysis as of a specific past date and return it directly.
      * Does NOT persist — historical results are computed on demand.
      */
-    async 'underlyingsAnalysis.generateAsOf'(asOfDate) {
+    async 'underlyingsAnalysis.generateAsOf'(asOfDate, sessionId = null) {
       check(asOfDate, Date);
+      check(sessionId, Match.Maybe(String));
+      await requireSeeAll(sessionId);
+
       if (asOfDate.getTime() > Date.now()) {
         throw new Meteor.Error('invalid-date', 'asOfDate cannot be in the future');
       }

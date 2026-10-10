@@ -316,30 +316,18 @@ if (Meteor.isServer) {
     },
 
     /**
-     * Debug method to check where term sheets are actually stored
-     */
-    'products.debugPaths'() {
-      const termsheetsDir = getTermsheetsDir();
-
-      return {
-        cwd: process.cwd(),
-        projectRoot: resolveProjectRoot(),
-        termsheetsDir,
-        termsheetsPathEnv: process.env.TERMSHEETS_PATH || null,
-        termsheetsExists: fs.existsSync(termsheetsDir),
-        termsheetsContents: fs.existsSync(termsheetsDir) ? fs.readdirSync(termsheetsDir) : []
-      };
-    },
-
-    /**
      * Find products by underlying ticker
      * Used by MarketDataManager to link securities to their products
      */
-    async 'products.findByUnderlying'(ticker) {
+    async 'products.findByUnderlying'(ticker, sessionId = null) {
       check(ticker, String);
+      const { requireRole } = await import('/server/helpers/sessionAuth.js');
+      const { STAFF_ROLES } = await import('/server/helpers/accessPolicy.js');
+      await requireRole(sessionId, STAFF_ROLES);
 
-      // Strip exchange suffix for matching (e.g., "AAPL.US" -> "AAPL")
-      const baseTicker = ticker.split('.')[0];
+      // Strip exchange suffix for matching (e.g., "AAPL.US" -> "AAPL"),
+      // then escape it: the ticker is user input used inside a $regex.
+      const baseTicker = String(ticker).split('.')[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
       return await ProductsCollection.find({
         $or: [

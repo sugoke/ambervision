@@ -25,7 +25,7 @@ const ProductDetailsCard = ({ productDetails, onUpdateProductDetails, onRegenera
 
   // Subscribe to issuers data
   const issuers = useTracker(() => {
-    Meteor.subscribe('issuers');
+    Meteor.subscribe('issuers', localStorage.getItem('sessionId'));
     return IssuersCollection.find({ active: true }, { sort: { name: 1 } }).fetch();
   });
 

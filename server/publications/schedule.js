@@ -1,294 +1,45 @@
 // Schedule Publications
-// Provides aggregated observation schedule data from all live products
-// Last updated: 2025-10-10
-
-console.log('🗓️ Loading schedule.js publication file...');
+// Aggregated observation schedule from the products in the viewer's scope.
 
 import { Meteor } from 'meteor/meteor';
-import { Mongo } from 'meteor/mongo';
-import { check } from 'meteor/check';
-import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
+import { check, Match } from 'meteor/check';
 import { ProductsCollection } from '/imports/api/products';
 import { AllocationsCollection } from '/imports/api/allocations';
-import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
-import { getHeldProductIdsForScope } from '/server/helpers/holdingsScope';
-import { clientAllocationSelector } from '/server/helpers/clientAllocationScope';
+import { parseViewAs } from '/imports/utils/viewAs';
+import { getSessionUser } from '../helpers/sessionAuth.js';
+import { resolveScope, allocationsSelector, heldProductIds as heldProductIdsForScope } from '../helpers/accessScope.js';
 
-// Publication that aggregates all observations from live products
-Meteor.publish("schedule.observations", async function (sessionId = null, viewAsFilter = null) {
-  console.log('[SCHEDULE] Publication called with sessionId:', sessionId, 'viewAsFilter:', viewAsFilter);
+Meteor.publish("schedule.observations", async function (sessionId = null, rawViewAs = null) {
+  check(sessionId, Match.Maybe(String));
+  const viewAs = parseViewAs(rawViewAs);
 
-  const effectiveSessionId = sessionId || this.connection.headers?.sessionid || this.connection.id;
-  let currentUser = null;
+  const currentUser = await getSessionUser(sessionId);
+  if (!currentUser) return this.ready();
 
-  // Try to get user from session
-  if (effectiveSessionId) {
-    try {
-      const session = await SessionHelpers.validateSession(effectiveSessionId);
-      if (session && session.userId) {
-        currentUser = await UsersCollection.findOneAsync(session.userId);
-        console.log('[SCHEDULE] User found:', currentUser.email, 'Role:', currentUser.role);
-      }
-    } catch (error) {
-      console.log('[SCHEDULE] Session validation error:', error.message);
-    }
-  }
+  const scope = await resolveScope(currentUser, viewAs);
+  if (scope.denied) return this.ready();
 
-  // If no authenticated user, return empty (security)
-  if (!currentUser) {
-    console.log('[SCHEDULE] No authenticated user, returning empty');
-    return this.ready();
-  }
-
-  // Determine which products the user has access to based on role
-  let productQuery = {};
   // Allocations that define the *scope* of the current view — used to sum
   // nominal invested per product so the Nominal column reflects what the
-  // filtered client/entity/account actually holds. Stays null for admin
-  // views without a viewAs filter (no single-client context to aggregate).
+  // filtered client/entity/account actually holds. Stays null for a see-all
+  // view without View As (no single-client context to aggregate).
   let scopedAllocations = null;
+  let productSelector = {};
 
-  const isAdmin = currentUser.role === USER_ROLES.ADMIN || currentUser.role === USER_ROLES.SUPERADMIN;
-  const isRM = currentUser.role === USER_ROLES.RELATIONSHIP_MANAGER || currentUser.role === USER_ROLES.ASSISTANT;
-
-  // Handle View As filter for admins and RMs
-  if (viewAsFilter && (isAdmin || isRM)) {
-    console.log(`[SCHEDULE] ${currentUser.email} viewing as:`, viewAsFilter);
-
-    if (viewAsFilter.type === 'entity') {
-      // Entity-based filter: find products allocated to this entity
-      const { BankAccountsCollection } = await import('/imports/api/bankAccounts');
-      const { ClientEntitiesCollection } = await import('/imports/api/clientEntities');
-
-      const entity = await ClientEntitiesCollection.findOneAsync(viewAsFilter.id);
-      if (!entity) {
-        console.log('[SCHEDULE] Entity not found:', viewAsFilter.id);
-        return this.ready();
-      }
-
-      // For RMs, verify they manage this entity
-      if (isRM) {
-        const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
-        if (!rmIds.includes(entity.relationshipManagerId) &&
-            !(entity.assignedUserIds || []).some(id => rmIds.includes(id))) {
-          console.log('[SCHEDULE] RM does not manage entity:', viewAsFilter.id);
-          return this.ready();
-        }
-      }
-
-      // Find bank accounts for this entity
-      const entityAccounts = await BankAccountsCollection.find({
-        $or: [
-          { entityId: entity._id },
-          { beneficialOwnerIds: entity._id },
-          { beneficialOwnerId: entity._id }
-        ],
-        isActive: true
-      }).fetchAsync();
-
-      const bankAccountIds = entityAccounts.map(a => a._id);
-      const userIdsFromAccounts = [...new Set(entityAccounts.map(a => a.userId).filter(Boolean))];
-
-      // Also find ALL bank account records sharing the same account numbers
-      // (legacy accounts for the same physical account may have different _ids)
-      const accountNumbers = [...new Set(entityAccounts.map(a => a.accountNumber).filter(Boolean))];
-      let allBankAccountIds = [...bankAccountIds];
-      if (accountNumbers.length > 0) {
-        const allAccountRecords = await BankAccountsCollection.find({
-          accountNumber: { $in: accountNumbers }
-        }).fetchAsync();
-        allBankAccountIds = [...new Set([...bankAccountIds, ...allAccountRecords.map(a => a._id)])];
-        // Also collect userIds from all matching account records
-        allAccountRecords.forEach(a => {
-          if (a.userId) userIdsFromAccounts.push(a.userId);
-        });
-      }
-      const uniqueUserIds = [...new Set(userIdsFromAccounts)];
-
-      // Build OR conditions to find allocations for this entity
-      const orConditions = [];
-      if (entity.migratedFromUserId) {
-        orConditions.push({ clientId: entity.migratedFromUserId });
-      }
-      if (allBankAccountIds.length > 0) {
-        orConditions.push({ bankAccountId: { $in: allBankAccountIds } });
-      }
-      if (uniqueUserIds.length > 0) {
-        orConditions.push({ clientId: { $in: uniqueUserIds } });
-      }
-
-      if (orConditions.length === 0) {
-        console.log('[SCHEDULE] No allocation paths found for entity:', viewAsFilter.id);
-        return this.ready();
-      }
-
-      const allocations = await AllocationsCollection.find({
-        $or: orConditions
-      }).fetchAsync();
-
-      const productIds = [...new Set(allocations.map(alloc => alloc.productId))];
-      console.log(`[SCHEDULE] Entity filter: ${productIds.length} products for entity ${viewAsFilter.id}`);
-
-      if (productIds.length === 0) {
-        return this.ready();
-      }
-
-      productQuery = { _id: { $in: productIds } };
-      scopedAllocations = allocations;
-
-    } else {
-      // Client or account filter
-      let targetClientId = null;
-
-      if (viewAsFilter.type === 'client') {
-        targetClientId = viewAsFilter.id;
-      } else if (viewAsFilter.type === 'account') {
-        const { BankAccountsCollection } = await import('/imports/api/bankAccounts');
-        const bankAccount = await BankAccountsCollection.findOneAsync(viewAsFilter.id);
-        if (bankAccount) {
-          targetClientId = bankAccount.userId;
-        }
-      }
-
-      if (targetClientId) {
-        // For RMs, verify access to this client
-        if (isRM) {
-          const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
-          const targetClient = await UsersCollection.findOneAsync({
-            _id: targetClientId,
-            relationshipManagerId: { $in: rmIds }
-          });
-          if (!targetClient) {
-            console.log('[SCHEDULE] RM does not have access to client:', targetClientId);
-            return this.ready();
-          }
-        }
-
-        const allocations = await AllocationsCollection.find({
-          clientId: targetClientId
-        }).fetchAsync();
-
-        const productIds = [...new Set(allocations.map(alloc => alloc.productId))];
-        console.log(`[SCHEDULE] Filtering to ${productIds.length} products for client ${targetClientId}`);
-
-        if (productIds.length === 0) {
-          return this.ready();
-        }
-
-        productQuery = { _id: { $in: productIds } };
-        scopedAllocations = allocations;
-      }
-    }
-  } else if (isAdmin) {
-    // Admin sees all products (when not using View As)
-    productQuery = {};
-  } else if (isRM) {
-    // RM/Assistant sees products of their assigned clients (legacy + entity-based)
-    const rmIds = UserHelpers.getEffectiveRmIds(currentUser);
-
-    // Legacy: users with relationshipManagerId
-    const assignedClients = await UsersCollection.find({
-      role: USER_ROLES.CLIENT,
-      relationshipManagerId: { $in: rmIds }
-    }).fetchAsync();
-    const clientIds = assignedClients.map(client => client._id);
-
-    // Entity-based: entities assigned to this RM
-    const { ClientEntitiesCollection } = await import('/imports/api/clientEntities');
-    const { BankAccountsCollection } = await import('/imports/api/bankAccounts');
-
-    const rmEntities = await ClientEntitiesCollection.find({
-      $or: [
-        { assignedUserIds: { $in: rmIds } },
-        { relationshipManagerId: { $in: rmIds } }
-      ],
-      isActive: true
-    }).fetchAsync();
-
-    const migratedUserIds = rmEntities.map(e => e.migratedFromUserId).filter(Boolean);
-    const entityIds = rmEntities.map(e => e._id);
-
-    // Get bank accounts for these entities
-    let bankAccountIds = [];
-    let bankAccountUserIds = [];
-    if (entityIds.length > 0) {
-      const entityAccounts = await BankAccountsCollection.find({
-        entityId: { $in: entityIds },
-        isActive: true
-      }).fetchAsync();
-      bankAccountIds = entityAccounts.map(a => a._id);
-      bankAccountUserIds = entityAccounts.map(a => a.userId).filter(Boolean);
-    }
-
-    // Combine all client IDs
-    const allClientIds = [...new Set([...clientIds, ...migratedUserIds, ...bankAccountUserIds])];
-
-    if (allClientIds.length === 0 && bankAccountIds.length === 0) {
-      return this.ready();
-    }
-
-    // Build allocation query
-    const orConditions = [];
-    if (allClientIds.length > 0) {
-      orConditions.push({ clientId: { $in: allClientIds } });
-    }
-    if (bankAccountIds.length > 0) {
-      orConditions.push({ bankAccountId: { $in: bankAccountIds } });
-    }
-
-    const clientAllocations = await AllocationsCollection.find(
-      orConditions.length === 1 ? orConditions[0] : { $or: orConditions }
-    ).fetchAsync();
-
-    const productIds = [...new Set(clientAllocations.map(alloc => alloc.productId))];
-    productQuery = { _id: { $in: productIds } };
-    scopedAllocations = clientAllocations;
-  } else if (currentUser.role === USER_ROLES.CLIENT) {
-    // Client sees only products they have allocations in — keyed by login,
-    // entity or bank account (see server/helpers/clientAllocationScope.js)
-    const selector = await clientAllocationSelector(currentUser);
-    if (!selector) return this.ready();
-    const userAllocations = await AllocationsCollection.find(selector).fetchAsync();
-
-    const productIds = [...new Set(userAllocations.map(alloc => alloc.productId))];
-    if (productIds.length === 0) {
-      return this.ready();
-    }
-
-    productQuery = { _id: { $in: productIds } };
-    scopedAllocations = userAllocations;
-  }
-
-  // Gate by ACTUAL bank holdings (source of truth): only show products that are
-  // currently held in this scope. A sold/matured product leaves the holdings feed
-  // (isActive:false / quantity 0), so it drops out automatically. This restricts
-  // both the scoped case (client no longer holds it) and the admin global case
-  // (matured product held by nobody). See server/helpers/holdingsScope.js.
-  const heldProductIds = await getHeldProductIdsForScope({ currentUser, viewAsFilter });
-
-  // productQuery is either {} (admin, no scope) or { _id: { $in: [...] } } (access-scoped).
-  //
-  // A redeemed product leaves the holdings feed, so intersecting with "currently
-  // held" used to drop it from the schedule entirely — and its PAST observations
-  // went with it, leaving holes in the history exactly where products had been
-  // called. Those products stay in scope here; the loop below emits only their
-  // past observations, so the history is complete while a closed position never
-  // advertises a date that will never be observed.
-  let productSelector;
-  if (productQuery._id && Array.isArray(productQuery._id.$in)) {
-    // Access-scoped: allocations are the durable record of what this scope held,
-    // so they still cover positions the holdings feed has since dropped.
-    const accessibleIds = productQuery._id.$in.map(String);
-    if (accessibleIds.length === 0) {
-      return this.ready();
-    }
+  if (!scope.isAdmin) {
+    // Allocations are the durable record of what this scope held, so they
+    // still cover positions the holdings feed has since dropped (a redeemed
+    // product keeps its past observations; the loop below emits only those).
+    scopedAllocations = await AllocationsCollection.find(await allocationsSelector(scope)).fetchAsync();
+    const accessibleIds = [...new Set(scopedAllocations.map(a => String(a.productId)).filter(Boolean))];
+    if (accessibleIds.length === 0) return this.ready();
     productSelector = { _id: { $in: accessibleIds } };
-  } else {
-    // Admin with no view-as: every product, currently held or since redeemed.
-    productSelector = {};
   }
 
-  console.log(`[SCHEDULE] Held products in scope: ${heldProductIds.size}`);
+  // Gate future observations by ACTUAL bank holdings (source of truth): a
+  // sold/matured product leaves the holdings feed and never advertises a date
+  // that will not be observed.
+  const heldProductIds = await heldProductIdsForScope(scope);
 
   const products = await ProductsCollection.find({
     ...productSelector,

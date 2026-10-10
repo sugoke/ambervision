@@ -170,7 +170,7 @@ const MarketDataManager = ({ user }) => {
     setTickerProducts([]);
 
     try {
-      const products = await Meteor.callAsync('products.findByUnderlying', fullTicker);
+      const products = await Meteor.callAsync('products.findByUnderlying', fullTicker, localStorage.getItem('sessionId'));
       setTickerProducts(products);
     } catch (error) {
       console.error('Error finding products:', error);

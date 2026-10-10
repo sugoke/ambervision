@@ -1,90 +1,71 @@
 /**
  * Client Documents Publications
+ *
+ * KYC / identity documents: the caller must be the client themselves or a
+ * staff member whose access scope contains that client.
  */
 
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { ClientDocumentsCollection } from '/imports/api/clientDocuments.js';
-import { SessionsCollection, SessionHelpers } from '/imports/api/sessions.js';
-import { UsersCollection } from '/imports/api/users.js';
+import { getSessionUser } from '../helpers/sessionAuth.js';
+import { isStaff } from '../helpers/accessPolicy.js';
+import { resolveScope, isClientInScope, usersSelector, bankAccountsSelector } from '../helpers/accessScope.js';
 
-// Client documents are KYC/PII: a bare valid session is not enough — the caller
-// must be the client themselves or a staff member (mirrors clientDocuments.getDownloadUrl).
-const STAFF_ROLES = ['admin', 'superadmin', 'compliance', 'rm', 'assistant'];
-
-/**
- * Publish documents for a specific client
- * Uses async session validation with manual publish for Meteor 3.x compatibility
- */
+/** Documents of one client (entity id or legacy user id). */
 Meteor.publish('clientDocuments', async function (userId, sessionId) {
   check(userId, Match.Maybe(String));
   check(sessionId, Match.Maybe(String));
+  if (!userId) return this.ready();
 
-  console.log('[clientDocuments pub] ====== SUBSCRIPTION CALLED ======');
-  console.log('[clientDocuments pub] userId:', userId, 'sessionId:', sessionId?.substring(0, 8) + '...');
+  const user = await getSessionUser(sessionId);
+  if (!user) return this.ready();
 
-  // Quick validation. SECURITY: string-only sessionId — a selector object would match
-  // a live session and, combined with staff role, leak KYC documents.
-  if (typeof sessionId !== 'string' || sessionId.length === 0 || typeof userId !== 'string' || userId.length === 0) {
-    console.log('[clientDocuments pub] Missing/invalid params, returning ready()');
-    return this.ready();
-  }
-
-  // Async session validation for Meteor 3.x
-  const session = await SessionHelpers.findByToken(sessionId);
-  if (!session) {
-    console.log('[clientDocuments pub] No valid session found');
-    return this.ready();
-  }
-
-  // Authorize: the requested userId must be the caller themselves, or the caller
-  // must be staff. Previously any valid session could read ANY user's documents
-  // by passing an arbitrary userId (IDOR on KYC/identity documents).
-  const currentUser = await UsersCollection.findOneAsync(session.userId);
-  if (!currentUser) {
-    return this.ready();
-  }
-  const isSelf = currentUser._id === userId;
-  const isStaff = STAFF_ROLES.includes(currentUser.role);
-  if (!isSelf && !isStaff) {
-    console.log('[clientDocuments pub] Not authorized for userId:', userId);
-    return this.ready();
+  // The subject is the client's login id or their entity id. A client's own
+  // scope contains both; a staff member's scope contains their perimeter; any
+  // other role resolves to a denied scope and gets nothing.
+  if (user._id !== userId) {
+    const scope = await resolveScope(user);
+    if (!(await isClientInScope(scope, userId))) return this.ready();
   }
 
   return ClientDocumentsCollection.find({ userId });
 });
 
-/**
- * Publish all documents with expiration warnings (for dashboard alerts)
- * Only returns documents expiring within 3 months or already expired
- */
-Meteor.publish('clientDocuments.expiring', function () {
-  if (!this.userId) {
-    return this.ready();
-  }
+/** Documents in scope expiring within three months (dashboard alerts) — staff only. */
+Meteor.publish('clientDocuments.expiring', async function (sessionId) {
+  check(sessionId, Match.Maybe(String));
+  const user = await getSessionUser(sessionId);
+  if (!isStaff(user)) return this.ready();
+
+  const scope = await resolveScope(user);
+  if (scope.denied) return this.ready();
 
   const threeMonthsFromNow = new Date();
   threeMonthsFromNow.setMonth(threeMonthsFromNow.getMonth() + 3);
 
-  // Get documents expiring soon or already expired
-  return ClientDocumentsCollection.find({
-    expirationDate: { $lte: threeMonthsFromNow }
-  });
+  const owner = scope.isAdmin
+    ? {}
+    : { $or: [await usersSelector(scope), { userId: { $in: scope.entityIds } }, bankAccountsSelector(scope)] };
+  return ClientDocumentsCollection.find({ $and: [owner, { expirationDate: { $lte: threeMonthsFromNow } }] });
 });
 
-/**
- * Publish documents for multiple clients (for bulk views)
- */
-Meteor.publish('clientDocuments.forUsers', function (userIds) {
+/** Documents of several clients — each must be in scope. */
+Meteor.publish('clientDocuments.forUsers', async function (userIds, sessionId) {
   check(userIds, [String]);
+  check(sessionId, Match.Maybe(String));
+  if (userIds.length === 0) return this.ready();
 
-  if (!this.userId) {
-    return this.ready();
+  const user = await getSessionUser(sessionId);
+  if (!isStaff(user)) return this.ready();
+
+  const scope = await resolveScope(user);
+  if (scope.denied) return this.ready();
+
+  const allowed = [];
+  for (const id of [...new Set(userIds)].slice(0, 500)) {
+    if (await isClientInScope(scope, id)) allowed.push(id);
   }
-
-  if (!userIds || userIds.length === 0) {
-    return this.ready();
-  }
-
-  return ClientDocumentsCollection.find({ userId: { $in: userIds } });
+  if (allowed.length === 0) return this.ready();
+  return ClientDocumentsCollection.find({ userId: { $in: allowed } });
 });

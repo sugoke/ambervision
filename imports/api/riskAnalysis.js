@@ -706,6 +706,11 @@ Write the summary now:`;
       check(language, String);
       check(asOfDate, Match.Maybe(Date));
 
+      // Firm-wide dossier (every client's exposure): see-all roles only.
+      const { requireRole } = await import('../../server/helpers/sessionAuth.js');
+      const { SEE_ALL_ROLES } = await import('../../server/helpers/accessPolicy.js');
+      const user = await requireRole(sessionId, SEE_ALL_ROLES);
+
       if (asOfDate && asOfDate.getTime() > Date.now()) {
         throw new Meteor.Error('invalid-date', 'asOfDate cannot be in the future');
       }
@@ -747,7 +752,7 @@ Write the summary now:`;
 
         const healthReport = {
           generatedAt: new Date(),
-          generatedBy: this.userId,
+          generatedBy: user._id,
           asOfDate: asOfDate || null,
           language,
           summary: {
@@ -881,7 +886,7 @@ Write the summary now:`;
       // Create report document
       const report = {
         generatedAt: new Date(),
-        generatedBy: this.userId,
+        generatedBy: user._id,
         asOfDate: asOfDate || null,
         language, // Store language for reference
         summary,
@@ -919,6 +924,10 @@ Write the summary now:`;
       check(reportId, String);
       check(sessionId, String);
 
+      const { requireRole } = await import('../../server/helpers/sessionAuth.js');
+      const { SEE_ALL_ROLES } = await import('../../server/helpers/accessPolicy.js');
+      await requireRole(sessionId, SEE_ALL_ROLES);
+
       const report = await RiskAnalysisReportsCollection.findOneAsync(reportId);
 
       if (!report) {
@@ -937,6 +946,10 @@ Write the summary now:`;
     async 'riskAnalysis.listReports'(sessionId, limit = 10) {
       check(sessionId, String);
       check(limit, Number);
+
+      const { requireRole } = await import('../../server/helpers/sessionAuth.js');
+      const { SEE_ALL_ROLES } = await import('../../server/helpers/accessPolicy.js');
+      await requireRole(sessionId, SEE_ALL_ROLES);
 
       const reports = await RiskAnalysisReportsCollection.find(
         {},
@@ -965,6 +978,11 @@ Write the summary now:`;
     async 'productCommentary.generate'(productId, sessionId) {
       check(productId, String);
       check(sessionId, String);
+
+      // Writes product master data (and spends API budget): catalogue roles only.
+      const { requireRole } = await import('../../server/helpers/sessionAuth.js');
+      const { PRODUCT_CATALOGUE_ROLES } = await import('../../server/helpers/accessPolicy.js');
+      const user = await requireRole(sessionId, PRODUCT_CATALOGUE_ROLES);
 
       console.log(`[ProductCommentary] Generating commentary for product ${productId}...`);
       const startTime = Date.now();
@@ -1205,7 +1223,7 @@ Write the commentary now:`;
           isin,
           commentary,
           generatedAt: new Date(),
-          generatedBy: this.userId,
+          generatedBy: user._id,
           processingTimeMs: Date.now() - startTime,
           version: '1.0.0'
         };
@@ -1235,6 +1253,13 @@ Write the commentary now:`;
     async 'productCommentary.getLatest'(productId, sessionId) {
       check(productId, String);
       check(sessionId, String);
+
+      // Product master data: a session or PDF token identifies the viewer,
+      // the viewer's scope decides whether this product is theirs.
+      const { requireSessionOrPdfToken } = await import('../../server/helpers/sessionAuth.js');
+      const { resolveScope, assertProductInScope } = await import('../../server/helpers/accessScope.js');
+      const viewer = await requireSessionOrPdfToken({ sessionId });
+      await assertProductInScope(await resolveScope(viewer), productId);
 
       const commentary = await ProductCommentaryCollection.findOneAsync(
         { productId },

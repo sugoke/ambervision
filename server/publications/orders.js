@@ -1,60 +1,40 @@
 // Order Publications
-// Handles all order-related publications with role-based access control
+//
+// The order book is a desk tool: every staff role in ORDER_BOOK_ROLES sees the
+// whole firm's orders. A client sees its own orders only (resolved through the
+// access scope, so entity-keyed and legacy-keyed orders both show). Any other
+// role sees nothing.
 
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import { OrdersCollection, ORDER_STATUSES } from '/imports/api/orders';
-import { UsersCollection, USER_ROLES, UserHelpers } from '/imports/api/users';
-import { SessionsCollection, SessionHelpers } from '/imports/api/sessions';
+import { USER_ROLES } from '/imports/api/users';
+import { getSessionUser } from '../helpers/sessionAuth.js';
+import { ORDER_BOOK_ROLES } from '../helpers/accessPolicy.js';
+import { resolveScope, ordersSelector, IMPOSSIBLE } from '../helpers/accessScope.js';
 
 /**
- * Validate session and get user
- * @param {String} sessionId - Session ID
- * @returns {Object|null} User object or null
+ * The owner clause for this viewer: `{}` for the order book, the client's own
+ * scope for a client, IMPOSSIBLE for everyone else.
  */
-async function validateSessionAndGetUser(sessionId) {
-  if (!sessionId) return null;
+async function viewerOrdersClause(user) {
+  if (ORDER_BOOK_ROLES.includes(user.role)) return {};
+  if (user.role === USER_ROLES.CLIENT) return ordersSelector(await resolveScope(user));
+  return { $and: [IMPOSSIBLE] };
+}
 
-  const session = await SessionHelpers.findByToken(sessionId);
-
-  if (!session) return null;
-
-  return await UsersCollection.findOneAsync(session.userId);
+async function publishCursor(pub, cursor) {
+  const handle = await cursor.observeChanges({
+    added(id, fields) { pub.added('orders', id, fields); },
+    changed(id, fields) { pub.changed('orders', id, fields); },
+    removed(id) { pub.removed('orders', id); }
+  });
+  pub.ready();
+  pub.onStop(() => handle.stop());
 }
 
 /**
- * Get client IDs for an RM or assistant user
- */
-async function getClientIdsForUser(user) {
-  const rmIds = UserHelpers.getEffectiveRmIds(user);
-  if (rmIds.length === 0) return [];
-  // User-based clients
-  const clients = await UsersCollection.find({ relationshipManagerId: { $in: rmIds } }).fetchAsync();
-  const ids = clients.map(c => c._id);
-  // Entity-based clients (orders may store entityId or migratedFromUserId as clientId)
-  const { ClientEntitiesCollection } = require('../../imports/api/clientEntities.js');
-  const entities = await ClientEntitiesCollection.find(
-    {
-      $or: [
-        { assignedUserIds: { $in: rmIds } },
-        { relationshipManagerId: { $in: rmIds } }
-      ],
-      isActive: true
-    },
-    { fields: { _id: 1, migratedFromUserId: 1 } }
-  ).fetchAsync();
-  for (const ent of entities) {
-    ids.push(ent._id);
-    if (ent.migratedFromUserId) ids.push(ent.migratedFromUserId);
-  }
-  return [...new Set(ids)];
-}
-
-/**
- * Orders publication with role-based filtering
- * - Admins/Superadmins: All orders
- * - RMs/Assistants: Orders for their clients only
- * - Clients: Their own orders only (read-only)
+ * Orders list with optional filters.
  */
 Meteor.publish('orders', async function(sessionId, filters = {}) {
   check(sessionId, Match.Maybe(String));
@@ -66,61 +46,30 @@ Meteor.publish('orders', async function(sessionId, filters = {}) {
     limit: Match.Maybe(Number)
   });
 
-  const user = await validateSessionAndGetUser(sessionId);
+  const user = await getSessionUser(sessionId);
+  if (!user) return this.ready();
 
-  if (!user) {
-    return this.ready();
-  }
+  const clauses = [await viewerOrdersClause(user)];
+  const extra = {};
 
-  // Build query based on role
-  const query = {};
-
-  if (user.role === USER_ROLES.CLIENT) {
-    // Clients only see their own orders
-    query.clientId = user._id;
-  }
-  // All staff (admin, superadmin, compliance, rm, assistant) see every order
-
-  // Apply additional filters
   if (filters.status) {
-    query.status = Array.isArray(filters.status) ? { $in: filters.status } : filters.status;
+    extra.status = Array.isArray(filters.status) ? { $in: filters.status } : filters.status;
   }
-
-  if (filters.clientId && (user.role === 'admin' || user.role === 'superadmin' || user.role === 'rm' || user.role === 'assistant')) {
-    // Override for specific client filter (if user has permission)
-    query.clientId = filters.clientId;
+  // The client picker is a staff filter; a client's perimeter is already fixed above.
+  if (filters.clientId && ORDER_BOOK_ROLES.includes(user.role)) {
+    extra.clientId = filters.clientId;
   }
-
-  if (filters.bankId) {
-    query.bankId = filters.bankId;
-  }
-
+  if (filters.bankId) extra.bankId = filters.bankId;
   if (filters.priceType) {
-    query.priceType = Array.isArray(filters.priceType) ? { $in: filters.priceType } : filters.priceType;
+    extra.priceType = Array.isArray(filters.priceType) ? { $in: filters.priceType } : filters.priceType;
   }
+  clauses.push(extra);
 
-  const options = {
+  const cursor = OrdersCollection.find({ $and: clauses }, {
     sort: { createdAt: -1 },
-    limit: filters.limit || 100
-  };
-
-  // Use observeChanges for reactivity (async publications can't return cursors reactively)
-  const pub = this;
-  const cursor = OrdersCollection.find(query, options);
-  const handle = cursor.observeChanges({
-    added(id, fields) {
-      pub.added('orders', id, fields);
-    },
-    changed(id, fields) {
-      pub.changed('orders', id, fields);
-    },
-    removed(id) {
-      pub.removed('orders', id);
-    }
+    limit: Math.min(filters.limit || 100, 1000)
   });
-
-  this.ready();
-  this.onStop(() => handle.stop());
+  await publishCursor(this, cursor);
 });
 
 /**
@@ -130,36 +79,11 @@ Meteor.publish('orders.single', async function(sessionId, orderId) {
   check(sessionId, Match.Maybe(String));
   check(orderId, String);
 
-  const user = await validateSessionAndGetUser(sessionId);
+  const user = await getSessionUser(sessionId);
+  if (!user) return this.ready();
 
-  if (!user) {
-    return this.ready();
-  }
-
-  const order = await OrdersCollection.findOneAsync(orderId);
-
-  if (!order) {
-    return this.ready();
-  }
-
-  // Check access based on role
-  if (user.role === USER_ROLES.CLIENT) {
-    // Clients can only see their own orders
-    if (order.clientId !== user._id) {
-      return this.ready();
-    }
-  }
-  // All staff (admin, superadmin, compliance, rm, assistant) can view any order
-
-  const pub = this;
-  const cursor = OrdersCollection.find({ _id: orderId });
-  const handle = cursor.observeChanges({
-    added(id, fields) { pub.added('orders', id, fields); },
-    changed(id, fields) { pub.changed('orders', id, fields); },
-    removed(id) { pub.removed('orders', id); }
-  });
-  this.ready();
-  this.onStop(() => handle.stop());
+  const cursor = OrdersCollection.find({ $and: [await viewerOrdersClause(user), { _id: orderId }] });
+  await publishCursor(this, cursor);
 });
 
 /**
@@ -175,68 +99,38 @@ Meteor.publish('orders.liveTraces', async function(sessionId, orderIds) {
   check(sessionId, Match.Maybe(String));
   check(orderIds, [String]);
 
-  const user = await validateSessionAndGetUser(sessionId);
-  if (!user) {
-    return this.ready();
-  }
+  const user = await getSessionUser(sessionId);
+  if (!user) return this.ready();
 
   const ids = [...new Set(orderIds)].slice(0, 500);
-  if (ids.length === 0) {
-    return this.ready();
-  }
+  if (ids.length === 0) return this.ready();
 
-  const query = { _id: { $in: ids } };
-  if (user.role === USER_ROLES.CLIENT) {
-    // Clients only ever see their own orders
-    query.clientId = user._id;
-  }
-
-  const pub = this;
-  const cursor = OrdersCollection.find(query, {
-    fields: { emailTraces: 1, status: 1, termsheetStatus: 1, clientOrderDeferred: 1, updatedAt: 1 }
-  });
-  const handle = cursor.observeChanges({
-    added(id, fields) { pub.added('orders', id, fields); },
-    changed(id, fields) { pub.changed('orders', id, fields); },
-    removed(id) { pub.removed('orders', id); }
-  });
-  this.ready();
-  this.onStop(() => handle.stop());
+  const cursor = OrdersCollection.find(
+    { $and: [await viewerOrdersClause(user), { _id: { $in: ids } }] },
+    { fields: { emailTraces: 1, status: 1, termsheetStatus: 1, clientOrderDeferred: 1, updatedAt: 1 } }
+  );
+  await publishCursor(this, cursor);
 });
 
 /**
- * Pending orders count publication (for dashboard badge)
+ * Pending orders count publication (for dashboard badge) — order-book staff only.
  */
 Meteor.publish('orders.pendingCount', async function(sessionId) {
   check(sessionId, Match.Maybe(String));
 
-  const user = await validateSessionAndGetUser(sessionId);
-
-  if (!user) {
-    return this.ready();
-  }
-
-  // Only show pending count to RMs and Admins
-  if (!['rm', 'assistant', 'admin', 'superadmin'].includes(user.role)) {
-    return this.ready();
-  }
+  const user = await getSessionUser(sessionId);
+  if (!user || !ORDER_BOOK_ROLES.includes(user.role)) return this.ready();
 
   const query = {
     status: { $in: [ORDER_STATUSES.PENDING_VALIDATION, ORDER_STATUSES.PENDING, ORDER_STATUSES.TRANSMITTED, ORDER_STATUSES.SENT] }
   };
-  // All staff see the full pending count (no per-RM scoping)
 
-  // Use a count-only cursor for efficiency
   const self = this;
   let count = 0;
-
   const initialCount = await OrdersCollection.find(query).countAsync();
-
-  // Publish as a virtual document
   self.added('orderCounts', 'pending', { count: initialCount });
 
-  // Watch for changes
-  const handle = OrdersCollection.find(query).observeChanges({
+  const handle = await OrdersCollection.find(query).observeChanges({
     added: () => {
       count++;
       self.changed('orderCounts', 'pending', { count: initialCount + count });
@@ -248,33 +142,19 @@ Meteor.publish('orders.pendingCount', async function(sessionId) {
   });
 
   self.ready();
-
-  self.onStop(() => {
-    handle.stop();
-  });
+  self.onStop(() => handle.stop());
 });
 
 /**
- * Bulk order group publication
+ * Bulk order group publication — order-book staff only (compliance validates
+ * in the four-eyes blotter, so it needs the group too).
  */
 Meteor.publish('orders.bulkGroup', async function(sessionId, bulkOrderGroupId) {
   check(sessionId, Match.Maybe(String));
   check(bulkOrderGroupId, String);
 
-  const user = await validateSessionAndGetUser(sessionId);
+  const user = await getSessionUser(sessionId);
+  if (!user || !ORDER_BOOK_ROLES.includes(user.role)) return this.ready();
 
-  if (!user) {
-    return this.ready();
-  }
-
-  // Staff who can create or validate orders see the whole bulk group. Compliance
-  // validates in the four-eyes blotter, so it needs the group too.
-  if (!['rm', 'assistant', 'admin', 'superadmin', 'compliance', 'staff'].includes(user.role)) {
-    return this.ready();
-  }
-
-  const query = { bulkOrderGroupId };
-  // All staff see the full bulk-order group
-
-  return OrdersCollection.find(query, { sort: { createdAt: 1 } });
+  return OrdersCollection.find({ bulkOrderGroupId }, { sort: { createdAt: 1 } });
 });
